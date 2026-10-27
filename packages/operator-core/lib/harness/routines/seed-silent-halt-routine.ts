@@ -32,8 +32,7 @@
  *   tsx seed-silent-halt-routine.ts --dry-run      # detect and log only, page nobody
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.SILENT_HALT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -41,42 +40,31 @@ const SLUG = process.env.SILENT_HALT_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
  *  so the loop-liveness janitors never contend for the same read. */
 const CRON = '0 4,24,44 * * * *';
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const dryRun = process.argv.includes('--dry-run');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'reconcile-silent-halts';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = {
-    cron: CRON,
-    ...(dryRun ? { dry_run: true } : {}),
-  };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:reconcile-silent-halts', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a re-seed must
-      -- never clobber an operator's runtime pause/resume of this routine.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-silent-halt-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `20-minute sweep paging the OWNER about live sessions whose loop is inactive with no wake source` +
-      (dryRun ? ', dry_run=true' : '') +
-      '.',
-  );
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-silent-halt-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-silent-halt-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const dryRun = process.argv.includes('--dry-run');
+    const name = 'reconcile-silent-halts';
+    const triggerConfig = {
+        cron: CRON,
+        ...(dryRun ? { dry_run: true } : {}),
+      };
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: 'system:reconcile-silent-halts',
+      dryRun,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, dryRun, name, triggerConfig }) => {
+    console.log(
+        `[seed-silent-halt-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `20-minute sweep paging the OWNER about live sessions whose loop is inactive with no wake source` +
+          (dryRun ? ', dry_run=true' : '') +
+          '.',
+      );
+  },
+});

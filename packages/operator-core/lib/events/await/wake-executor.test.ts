@@ -2280,6 +2280,51 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
   });
 
+  it('uses the surviving event delivery id for inbox replay after removing a stale loop headline', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const awaitFire = work({
+      id: 40,
+      eventKey: 'candidate:ready',
+      summary: 'candidate c-1 is ready for the parked waiter',
+      payload: { candidate: 'c-1', state: 'ready' },
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const endedLoopHeadline = work({
+      id: 41,
+      eventKey: 'coord:inbox-wake:su-abc',
+      source: 'loop:rt-loop',
+      payload: loopPayload,
+      summary: 'STALE LOOP CHECKPOINT: continue the ended loop',
+      createdAt: new Date().toISOString(),
+    });
+    const coalesced = coalesceDeliveries([awaitFire, endedLoopHeadline]);
+    const sent: Array<{ msgId?: string; body?: string; extra?: Record<string, unknown> }> = [];
+    const sendCoordMessage = vi.fn(async (
+      _identity: unknown,
+      message: { msgId?: string; body?: string; extra?: Record<string, unknown> },
+    ) => {
+      sent.push(message);
+      return {} as never;
+    });
+    const d = deps({
+      getLoopStatusFn: vi.fn(async () => null) as never,
+      presence: vi.fn(async () => stalePresence) as never,
+      sendCoordMessage: sendCoordMessage as never,
+    });
+
+    const out = await executeWake(coalesced, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      msgId: 'event-wake-inbox-40',
+      extra: { event_key: 'candidate:ready', wake_delivery_id: 40 },
+    });
+    expect(sent[0]?.body).toContain('event-wake delivery #40');
+    expect(sent[0]?.body).toContain('candidate:ready');
+    expect(sent[0]?.body).not.toContain('STALE LOOP CHECKPOINT');
+  });
+
   it('still drops a coalesced attempt whose every folded component is a loop fire', async () => {
     const { coalesceDeliveries } = await import('./engine');
     const olderLoop = work({
@@ -2330,7 +2375,7 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.spawnDetached).not.toHaveBeenCalled();
   });
 
-  it('delivers a lineage-mismatched wake to the durable inbox without resuming the wrong loop', async () => {
+  it('drops a lineage-mismatched loop wake instead of marking an inbox notice as its turn', async () => {
     const d = deps({
       getLoopStatusFn: vi.fn(async () => ({
         active: true,
@@ -2346,15 +2391,10 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
       d,
     );
 
-    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
-    expect(d.sendCoordMessage).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        to: ['su-abc'],
-        category: 'event',
-        summary: expect.stringMatching(/stale-loop-harness.*current-loop-harness/),
-      }),
-    );
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('queued loop delivery') });
+    expect((out as { reason: string }).reason).toContain('stale-loop-harness');
+    expect((out as { reason: string }).reason).toContain('current-loop-harness');
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
     expect(d.findPsuHost).not.toHaveBeenCalled();
     expect(d.injectPsuHost).not.toHaveBeenCalled();
     expect(d.resumePlanRun).not.toHaveBeenCalled();
@@ -3354,6 +3394,36 @@ describe('withClaudeResumeEffortClamp (WI-10005900)', () => {
 });
 
 describe('resumeCommandFor', () => {
+  it('reapplies an admitted OMP removal on both headless and PTY wake routes', () => {
+    const policy = {
+      clientVersions: { omp: '18.0.3' },
+      ompNativeTools: ['read', 'bash'],
+      readiness: [{ family: 'shell-ssh-interpreters' as const, cutoverReady: true, openGapIds: [] }],
+      cutoverStaging: { 'shell-ssh-interpreters': 'full' as const },
+      adoption: [{ client: 'omp' as const, family: 'shell-ssh-interpreters' as const,
+        managedPathProven: true, nativeBypassRefused: true, atClientVersion: '18.0.3' }],
+      matrix: [{ client: 'omp' as const, family: 'shell-ssh-interpreters' as const,
+        allScenariosPassed: true, declaredScenarioCount: 7, unmet: [] }],
+    };
+    const prior = process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+    try {
+      for (const pty of ['0', '1']) {
+        process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = pty;
+        const handle = { agent: 'omp', sessionId: null, ompThreadId: 'exact-thread' };
+        const result = resumeCommandFor(handle, 'WAKE', null, policy)!;
+        expect(result.promptViaPty).toBe(pty === '1');
+        expect(result.args.slice(0, 2)).toEqual(['-r', 'exact-thread']);
+        const selection = result.args[result.args.indexOf('--tools') + 1].split(',');
+        expect(selection).toContain('read');
+        expect(selection).not.toContain('bash');
+        expect(resumeCommandFor(handle, 'WAKE', null)!.args).not.toContain('--tools');
+      }
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
+      else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prior;
+    }
+  });
+
   it('claude: exact-session resume with the prompt as positional arg', () => {
     const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
     expect(r).not.toBeNull();
@@ -4795,9 +4865,9 @@ describe('executeWake — the liveness ladder', () => {
     { repairResult: { ok: false, reason: 'unused' },
       error: 'Invalid character at row 102\nAuthorization = "Bearer opaque-test-bearer-value-for-resume-repair"',
       reason: 'Invalid character at row 102\nAuthorization = "Bearer [redacted]"' },
-  ])(
-    'parks a Codex auto-route resume when home repair cannot restore the gateway ($reason)',
-    async ({ repairResult, reason, error }) => {
+  ].flatMap(row => ['default', 'auto', 'pin'].map(route => ({ ...row, route }))))(
+    'parks a Codex $route resume when home repair is incomplete ($reason)',
+    async ({ repairResult, reason, error, route }) => {
       const advSessionId = 1002;
       const home = codexHomeForAdvSession(advSessionId);
       const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -4826,7 +4896,8 @@ describe('executeWake — the liveness ladder', () => {
                 agent: 'codex',
                 sessionId: nativeId,
                 coordOwnerId: 'su-codex-route',
-                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless',
+                  `--account=${route === 'pin' ? 'original-account' : route}`],
               }),
             ) as never,
             claimResume,
@@ -4837,7 +4908,7 @@ describe('executeWake — the liveness ladder', () => {
 
         expect(out).toEqual({
           kind: 'park',
-          reason: expect.stringContaining(`Codex auto gateway route repair did not complete (${reason})`),
+          reason: expect.stringContaining(`Codex ${route} home repair did not complete (${reason})`),
         });
         expect(repair).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -4845,8 +4916,8 @@ describe('executeWake — the liveness ladder', () => {
             owner: 'su-codex-route',
             codexHome: home,
             headless: true,
-            requireGatewayProvider: true,
-            codexGatewayAccountId: null,
+            requireGatewayProvider: route === 'auto',
+            codexGatewayAccountId: route === 'pin' ? 'original-account' : null,
           }),
         );
         expect(claimResume).not.toHaveBeenCalled();
@@ -5407,6 +5478,41 @@ describe('executeWake — the liveness ladder', () => {
     expect(getSessionInWorkspace).toHaveBeenCalledWith(current.id, 'tenant-ws');
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
     expect(injectPsuHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the bounded owner-session fallback finish after the primary acquisition deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const current = session({ workspaceId: 'tenant-ws', pid: 8888 });
+      const getSession = vi.fn(async () => null);
+      const getLatestSessionForOwner = vi.fn(
+        () => new Promise((resolve) => setTimeout(() => resolve(current), 15_000)),
+      );
+      const getSessionInWorkspace = vi.fn(async (id: number, workspaceId: string) =>
+        id === current.id && workspaceId === current.workspaceId ? current : null,
+      );
+      const injectPsuHost = vi.fn(async () => true);
+      const pending = executeWake(
+        work({ workspaceId: DEFAULT_COORD_WORKSPACE, wakeHandle: advHandle({ pid: 9999 }) }),
+        deps({
+          getSession: getSession as never,
+          getLatestSessionForOwner: getLatestSessionForOwner as never,
+          getSessionInWorkspace: getSessionInWorkspace as never,
+          alive: vi.fn((pid: number | null) => pid === current.pid),
+          findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/su-abc.sock' })) as never,
+          injectPsuHost: injectPsuHost as never,
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(pending).resolves.toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+      expect(getLatestSessionForOwner).toHaveBeenCalledWith('su-abc');
+      expect(getSessionInWorkspace).toHaveBeenCalledWith(current.id, 'tenant-ws');
+      expect(injectPsuHost).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('parks a captured adv-session whose owner differs from the wake subscriber before any side effect', async () => {
@@ -6056,6 +6162,97 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(msg.data).toContain('## Next action\nresume');
   });
 
+  /**
+   * WI-6554700010029492 — the cold decision is RECORDED where loop:status can show it.
+   * Before this a cold-armed fire that stayed warm (here: D-005, a human typing) was
+   * delivered as a plain inject with its reason thrown away, indistinguishable from a
+   * reset that was attempted and failed.
+   */
+  it('WI-6554700010029492: a cold-armed fire that stays WARM records WHY on its routine', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 3, harness: 'papercusp', routineId: 'routine-cold-1' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        activeInteractiveExchange: vi.fn(() => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(recordColdDecisionFn).toHaveBeenCalledTimes(1);
+    expect(recordColdDecisionFn).toHaveBeenCalledWith({
+      routineId: 'routine-cold-1',
+      record: expect.objectContaining({
+        cold: false,
+        mode: null,
+        wakeCount: 3,
+        reason: expect.stringContaining('D-005'),
+      }),
+    });
+  });
+
+  it('WI-6554700010029492: a fire that DOES go cold records the mode it took', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-2' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(recordColdDecisionFn).toHaveBeenCalledWith({
+      routineId: 'routine-cold-2',
+      record: expect.objectContaining({ cold: true, mode: 'reset', wakeCount: 1 }),
+    });
+  });
+
+  it('WI-6554700010029492 CONTROL: a plain WARM loop fire never pays the write', async () => {
+    const recordColdDecisionFn = vi.fn(async () => {});
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { wakeCount: 2, harness: 'papercusp', routineId: 'routine-warm' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => false),
+        recordColdDecisionFn,
+      }),
+    );
+    expect(recordColdDecisionFn).not.toHaveBeenCalled();
+  });
+
+  it('WI-6554700010029492: a FAILING decision write never costs the wake', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-3' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        recordColdDecisionFn: vi.fn(async () => {
+          throw new Error('pg unavailable');
+        }),
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+  });
+
   it('the degrade-to-inbox body is NEVER tagged (coord messages carry native provenance)', async () => {
     const sendCoordMessage = vi.fn(async () => ({}) as never);
     const { tag } = spyTagger();
@@ -6288,6 +6485,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
           subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
           wakeText: `⟦tagged:loop-fire:2⟧\n${tagCalls[1]?.text}`,
           turnOrigin: 'loop-fire',
+          loopFire: { routineId: 'loop-su-abc', wakeCount: 7 },
         }));
         expect(tagCalls).toHaveLength(2);
         expect(tagCalls[1]?.nowMs).toBe(nowMs + staleDelayMs);

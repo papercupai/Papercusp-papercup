@@ -29,7 +29,7 @@ import {
 import { resolveClusterWorkers } from './cluster-fork';
 import { getResourceProfile } from './resource-profile';
 import type { AdmissionContext, ResourceDemand } from './resource-governor/admission';
-import { beginGovernedExecution, governedExecutionRuntime } from './resource-governor/execution';
+import { beginGovernedExecution, governedExecutionRuntime, settleGovernedExecutionInBackground } from './resource-governor/execution';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -38,32 +38,16 @@ import { beginGovernedExecution, governedExecutionRuntime } from './resource-gov
 // unlike a renamed `createRequire`, stays statically inlinable by the desktop
 // sidecar's esbuild bundle (a createRequire'd literal would not inline → "cannot
 // find module" in the shipped sidecar).
-// Lazy-resolve at call time (not module load) to work around CJS interop timing
-// race on first spawnPty call in wake-resume flow.
-//
-// EI-13212: neither package declares a package.json "exports" map, only
-// "main" (CJS) + "module" (an ESM build, the bundler-only convention). The
-// two build targets disagree on `.default`:
-//   - Node/tsx has no "exports" map to honor, so it always resolves "main"
-//     (CJS) — and Node's CJS→ESM interop then SYNTHESIZES `ns.default =
-//     module.exports` for a namespace import, so `.default.Terminal` happens
-//     to also work here too (redundant with the direct property, never
-//     actually needed).
-//   - Rolldown/Vite (the operator-vite / desktop-sidecar production build)
-//     instead prefers the "module" field for a browser target — a REAL ESM
-//     file (`export{Jr as Terminal}` / `export{...,D as SerializeAddon}`,
-//     verified against the installed build) that ships no default at all. The
-//     bundler can PROVE that statically and flags the dead `.default` access
-//     as an IMPORT_IS_UNDEFINED warning.
-// So `(ns as any).default?.X` was never anything but dead weight: redundant
-// under Node, and provably-undefined under the bundler that actually warned.
-// The namespace's own named property is the only path either target needs —
-// keep it that way; do not reintroduce a `.default` fallback without first
-// re-checking the shipped "module" build (pty-bridge.test.ts statically
-// inspects that file directly, so a regression can't hide behind Node's
-// interop-synthesized default, which only Node ever sees).
-const getHeadlessTerminal = () => xtermHeadless.Terminal;
-const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon;
+// Node's CJS namespace can expose ONLY default/module.exports (measured for
+// @xterm/headless 6 under Node/tsx), while the shipped ESM builds expose the
+// named constructors with no default. Resolve both runtime shapes. Reflect.get
+// keeps the CJS-only lookup from being treated as a static default import by
+// bundlers selecting the ESM build (EI-13212). The native-loader regression
+// complements the shipped-ESM checks; Vitest alone masks the CJS shape.
+const getHeadlessTerminal = () => xtermHeadless.Terminal
+  ?? (Reflect.get(xtermHeadless, 'default') as typeof xtermHeadless | undefined)?.Terminal;
+const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon
+  ?? (Reflect.get(xtermAddonSerialize, 'default') as typeof xtermAddonSerialize | undefined)?.SerializeAddon;
 
 export interface SpawnPtyOpts {
   /** Authorization boundary captured by the handle and required for every id lookup. */
@@ -270,7 +254,7 @@ export async function spawnGovernedPty(
     throw error;
   }
   handle.onExit.add(() => {
-    void execution.finish();
+    settleGovernedExecutionInBackground(execution, { kind: 'release' });
   });
   return handle;
 }

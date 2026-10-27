@@ -28,7 +28,7 @@ import { readProcessIdentity } from '../process-identity';
 import { createInferenceGateway, type GatewayDeps } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
-import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
+import { closedClaudeSessionPopulation, closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions,
   settleLearningSpend, listLearningSpendEvents } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
@@ -53,14 +53,17 @@ const goalAdmission = vi.hoisted(() => vi.fn());
 // the trusted composition seam rather than querying an unrelated live org DB.
 const operationPolicy = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['readAcceptedOperationModelPolicy']>>());
 const operationAttestation = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['recordAcceptedOperationModelAttestation']>>());
-const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
+const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>(), byOwner: new Map<string, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
   INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 // Only the private home allocator is substituted. SQL bindings, filesystem
 // bytes, process pins, request observation and HTTP reads use production IO.
-vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: (id: number | string) => hostHome.byId.get(Number(id)) ?? hostHome.path }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({
+  codexHomeForSessionKey: (id: number | string) => hostHome.byId.get(Number(id)) ?? hostHome.path,
+  sessionClaudeConfigDir: (ownerId: string) => hostHome.byOwner.get(ownerId) ?? hostHome.path,
+}));
 
 const workspaceId = 'bench-current-private';
 const handle = { slug: 'xbench-current-private', featureId: 'xbench-private-task', worktreePath: '/private/task' };
@@ -198,6 +201,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
+  hostHome.byOwner.clear();
   await sql`TRUNCATE agent_lock_waiters, agent_file_locks`;
   await sql`TRUNCATE harness_shared.bench_runs CASCADE`;
   await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
@@ -1272,6 +1276,281 @@ describe('private workload native tool-result authority', () => {
   });
 });
 
+async function workloadClaudeFixture(binding: { runId: string; trialBindingHash: string }) {
+  const home = mkdtempSync(join(tmpdir(), 'private-claude-workload-')); roots.push(home);
+  const nativeSessionId = randomUUID(), nativeMessageId = 'msg-workload-complete';
+  const text = 'Exact dependency π\nbytes.', args = { path: 'src/example.ts' };
+  const output = [{ type: 'text', text: 'Retained failure π\n' }];
+  const usage = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const records: Array<{ type: string; sessionId: string; uuid: string; parentUuid: string | null; timestamp: string;
+    message: { role: string; content: Array<Record<string, unknown>>; id?: string; model?: string;
+      stop_reason?: string; usage?: typeof usage } }> = [
+    { type: 'user', sessionId: nativeSessionId, uuid: 'input', parentUuid: null, timestamp: '2026-10-11T00:00:00.300Z',
+      message: { role: 'user', content: [{ type: 'text', text }] } },
+    { type: 'assistant', sessionId: nativeSessionId, uuid: 'call', parentUuid: 'input', timestamp: '2026-10-11T00:00:00.500Z',
+      message: { role: 'assistant', id: 'msg-workload-call', model: 'claude-sonnet-4-6', stop_reason: 'tool_use', usage,
+        content: [{ type: 'tool_use', id: 'toolu-workload', name: 'Read', input: args }] } },
+    { type: 'user', sessionId: nativeSessionId, uuid: 'result', parentUuid: 'call', timestamp: '2026-10-11T00:00:01Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-workload', content: output, is_error: true }] } },
+    { type: 'assistant', sessionId: nativeSessionId, uuid: 'complete', parentUuid: 'result', timestamp: '2026-10-11T00:00:01.500Z',
+      message: { role: 'assistant', id: nativeMessageId, model: 'claude-sonnet-4-6', stop_reason: 'end_turn', usage,
+        content: [{ type: 'text', text: 'Retained completion.' }] } },
+  ];
+  const transcript = records.map(row => JSON.stringify(row) + '\n').join('');
+  const directory = join(home, 'projects', '-task'); mkdirSync(directory, { recursive: true });
+  const file = join(directory, `${nativeSessionId}.jsonl`); writeFileSync(file, transcript);
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const common = { subjectId: 'private-claude-subject', taskId: 'private-claude-task', ownerId: 'private-claude-owner',
+    label: 'private-claude-label', agent: 'claude' as const, claudeConfigDir: home, nativeSessionId, nativeMessageId,
+    messageRecordIndex: 3, sourceSha256: hash(transcript), index: 3 };
+  const context = { ...common, receiptRef: 'native-input:private-claude', recordIndex: 0, contentIndex: 0,
+    contextId: 'dependency-context', consumer: 'dependent-solver' };
+  const tool = { ...common, receiptRef: 'native-tool:private-claude', callRecordIndex: 1, callContentIndex: 0,
+    resultRecordIndex: 2, resultContentIndex: 0, callId: 'toolu-workload', toolName: 'Read',
+    argumentsSha256: hash(JSON.stringify(args)), outputSha256: hash(canonicalJson(output)) };
+  const harnessSlug = 'private-claude-harness';
+  await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${common.subjectId}, 'wip')`;
+  await sql`INSERT INTO harness_shared.task_ledger (workspace_id, task_id, detail, started_at, ended_at)
+    VALUES (${workspaceId}, ${common.taskId}, ${sql.json({ coordOwnerId: common.ownerId, label: common.label })},
+      '2026-10-11T00:00:00Z', '2026-10-11T00:00:02Z')`;
+  await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent, started_at)
+    VALUES (${workspaceId}, ${common.ownerId}, ${nativeSessionId}, 'claude', '2026-10-11T00:00:00Z')`;
+  hostHome.byOwner.set(common.ownerId, home);
+  await sql`INSERT INTO harness_shared.interactive_usage_files VALUES (${workspaceId}, ${file}, ${Buffer.byteLength(transcript)},
+    ${sql.json({ initialized: true, fileGeneration: 0 })})`;
+  const options = { sql, workspaceId, harnessSlug, ...binding, notBefore: '2026-10-11T00:00:00Z' };
+  return { context, tool, options, text, output, file, records };
+}
+
+describe('private Claude workload native authority', () => {
+  const binding = { runId: 'private-claude-workload', trialBindingHash: 'a'.repeat(64) };
+  it('binds exact native input and block tool errors without synthesizing a turn or provider consumption', async () => {
+    const f = await workloadClaudeFixture(binding);
+    const input = await currentBenchWorkloadContextReader({ ...f.options, receipts: [f.context] })(f.context.receiptRef, binding);
+    const tool = await currentBenchWorkloadToolResultReader({ ...f.options, receipts: [f.tool] })(f.tool.receiptRef, binding);
+    expect(input).toMatchObject([{ content: f.text, metadata: { nativeInputSource: { agent: 'claude',
+      nativeMessageId: f.context.nativeMessageId, messageRecordIndex: 3, recordUuid: 'input',
+      sourceSha256: f.context.sourceSha256, completedAt: '2026-10-11T00:00:01.500Z' } } }]);
+    expect(tool).toMatchObject([{ content: canonicalJson(f.output), name: 'Read', metadata: { nativeToolSource: {
+      agent: 'claude', nativeMessageId: f.tool.nativeMessageId, callType: 'tool_use', isError: true,
+      callRecordIndex: 1, callContentIndex: 0, resultRecordIndex: 2, resultContentIndex: 0,
+      completedAt: '2026-10-11T00:00:01.500Z', outputKind: 'blocks' } } }]);
+    expect(input?.[0].metadata?.nativeInputSource).not.toHaveProperty('nativeTurnId');
+    expect(tool?.[0].metadata?.nativeToolSource).not.toHaveProperty('nativeTurnId');
+    expect(input?.[0].metadata).not.toHaveProperty('providerInputSource');
+  });
+  it.each(['workspace', 'harness', 'owner', 'label', 'session', 'agent', 'home', 'live-task', 'missing-end',
+    'late-message', 'source-hash', 'message-id', 'message-index', 'frontier', 'foreign-trial', 'candidate-ref'])
+  ('refuses %s evidence borrowing for both native receipt kinds', async fault => {
+    const f = await workloadClaudeFixture(binding);
+    if (fault === 'workspace') await sql`UPDATE harness_shared.task_ledger SET workspace_id = 'foreign'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign'`;
+    if (fault === 'owner') await sql`UPDATE harness_shared.adv_sessions SET coord_owner_id = 'foreign'`;
+    if (fault === 'label') await sql`UPDATE harness_shared.task_ledger SET detail = ${sql.json({ coordOwnerId: f.context.ownerId, label: 'foreign' })}`;
+    if (fault === 'session') await sql`UPDATE harness_shared.adv_sessions SET session_id = ${randomUUID()}`;
+    if (fault === 'agent') await sql`UPDATE harness_shared.adv_sessions SET agent = 'codex'`;
+    if (fault === 'home') hostHome.byOwner.clear();
+    if (fault === 'live-task') await sql`UPDATE harness_shared.task_ledger SET state = 'running'`;
+    if (fault === 'missing-end') await sql`UPDATE harness_shared.task_ledger SET ended_at = NULL`;
+    if (fault === 'late-message') await sql`UPDATE harness_shared.task_ledger SET ended_at = '2026-10-11T00:00:01.250Z'`;
+    if (fault === 'source-hash') f.context.sourceSha256 = f.tool.sourceSha256 = 'f'.repeat(64);
+    if (fault === 'message-id') f.context.nativeMessageId = f.tool.nativeMessageId = 'msg-foreign';
+    if (fault === 'message-index') f.context.messageRecordIndex = f.tool.messageRecordIndex = 1;
+    if (fault === 'frontier') await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = 1`;
+    const trial = fault === 'foreign-trial' ? { ...binding, runId: 'foreign' } : binding;
+    expect(await currentBenchWorkloadContextReader({ ...f.options, receipts: [f.context] })(
+      fault === 'candidate-ref' ? 'candidate-ref' : f.context.receiptRef, trial)).toBeNull();
+    expect(await currentBenchWorkloadToolResultReader({ ...f.options, receipts: [f.tool] })(
+      fault === 'candidate-ref' ? 'candidate-ref' : f.tool.receiptRef, trial)).toBeNull();
+  });
+  it('freezes native source pins and rejects mixed backend receipts and unsupported dispatch joins', async () => {
+    const f = await workloadClaudeFixture(binding);
+    const reader = currentBenchWorkloadContextReader({ ...f.options, receipts: [f.context] });
+    f.context.nativeMessageId = 'candidate-change';
+    expect((await reader(f.context.receiptRef, binding))?.[0].content).toBe(f.text);
+    expect(() => currentBenchWorkloadContextReader({ ...f.options, receipts: [{ ...f.context,
+      nativeTurnId: randomUUID(), codexHome: f.context.claudeConfigDir } as never] })).toThrow(/unique native input/);
+    expect(() => currentBenchWorkloadToolResultReader({ ...f.options, receipts: [{ ...f.tool,
+      dispatch: { invocationId: '1', requestTraceId: 'trace', toolName: 'Read', argumentsSha256: 'a'.repeat(64),
+        invocationSha256: 'b'.repeat(64) } }] })).toThrow(/unique pinned/);
+  });
+});
+
+describe('private Claude workload provider authority', () => {
+  const binding = { runId: 'private-claude-provider', trialBindingHash: 'a'.repeat(64) };
+  async function fixture(kind: 'input' | 'tool-result' = 'input', variant: 'blocks' | 'string' | 'args-order' = 'blocks') {
+    const f = await workloadClaudeFixture(binding), reservationId = randomUUID();
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+    if (kind === 'tool-result' && variant !== 'blocks') {
+      if (variant === 'string') f.records[2].message.content[0].content = 'Exact tool text π';
+      else f.records[1].message.content[0].input = { z: 'tail', path: 'src/example.ts' };
+      const transcript = f.records.map(row => JSON.stringify(row) + '\n').join('');
+      writeFileSync(f.file, transcript);
+      f.context.sourceSha256 = f.tool.sourceSha256 = hash(transcript);
+      f.tool.argumentsSha256 = hash(JSON.stringify(f.records[1].message.content[0].input));
+      f.tool.outputSha256 = hash(variant === 'string' ? 'Exact tool text π' : canonicalJson(f.output));
+      await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${Buffer.byteLength(transcript)} WHERE file_path = ${f.file}`;
+    }
+    const host = { workspaceId, loopId: `claude-provider:${randomUUID()}`, runId: binding.runId, preregHash: 'b'.repeat(64),
+      assignmentId: currentBenchAssignmentId(binding.runId, 'baseline', 't1', 1) };
+    const body = { model: 'claude-sonnet-4-6', output_config: { effort: 'high' }, max_tokens: 10,
+      messages: f.records.slice(0, 3).map(record => record.message) };
+    // Provider Messages carry role/content, not native CLI message headers.
+    const request = { ...body, messages: body.messages.map(({ role, content }) => ({ role, content })) };
+    if (kind === 'input' && variant === 'string') Object.assign(request.messages[0], { content: f.text });
+    if (variant === 'args-order') request.messages[1].content[0].input = { path: 'src/example.ts', z: 'tail' };
+    const bytes = JSON.stringify(request);
+    const identity = { attemptId: reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
+      transport: 'anthropic-http' as const, target: 'https://api.anthropic.com/v1/messages', credentialHeader: 'x-api-key' as const,
+      anthropicVersion: '2023-06-01', anthropicBeta: null, accountId: 'private-claude-account',
+      credentialSha256: 'c'.repeat(64), bodySha256: hash(bytes), clockId: 'private-claude-clock' };
+    const candidateCheckoutRoot = join(repoRoot, 'candidate'); mkdirSync(candidateCheckoutRoot);
+    const capture = currentBenchWorkloadProviderInputCapture({ accountingBinding: host, captureRoot: repoRoot,
+      candidateCheckoutRoot, agent: 'claude', model: body.model, effort: 'high', accountId: identity.accountId,
+      maxRequests: 1, maxBytes: 16_384 });
+    await capture.captureProviderInput({ ...identity, body: bytes, signal: new AbortController().signal });
+    const captured = capture.readCapture(reservationId)!;
+    const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 10, armIds: [host.assignmentId],
+      usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 60_000, wallClockMsPerArm: 60_000 };
+    await registerLearningLoop(sql, { workspaceId, loopId: host.loopId, budgetKind: 'lifetime', budgetUsd: 60,
+      enabled: true, meta: { reservationBinding: host.preregHash, reservationResourceBudget: resources } });
+    expect((await reserveLearningSpend(sql, { workspaceId, loopId: host.loopId, requestedUsd: 0.003, floorUsd: 0,
+      attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }), exact: { reservationId,
+        binding: host.preregHash, expectedBudgetUsd: 60, expectedResourceBudget: resources,
+        resources: { armId: host.assignmentId, inputTokens: 100, outputTokens: 10 } } })).ok).toBe(true);
+    expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId,
+      result: { ...identity, reservationRef: reservationId, outcome: 'response-headers', responseStatus: 200,
+        costUsdMeasurementMissing: true } })).toEqual({ ok: true });
+    const result: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: reservationId,
+      outcome: 'response-completed', responseStatus: 200, costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64),
+      responseBytes: 300, providerCompletion: { responseId: f.context.nativeMessageId, model: body.model, providerEffort: null,
+        usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0 } } };
+    expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId, result })).toEqual({ ok: true });
+    expect((await settleLearningSpend(sql, { workspaceId, reservationId, disposition: 'used', usedUsd: 0.002 })).ok).toBe(true);
+    await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = '2026-10-11T00:00:01.100Z' WHERE id = ${reservationId}`;
+    const [row] = await sql`SELECT note, settled_at FROM harness_shared.learning_spend_reservations WHERE id = ${reservationId}`;
+    const receipt = { ...(kind === 'input' ? f.context : { ...f.tool, nativeSource: 'tool-result' as const,
+      contextId: f.context.contextId, consumer: f.context.consumer }), reservationId, reservationNoteSha256: hash(row.note),
+      settledAt: row.settled_at.toISOString(), bodyRef: captured.bodyRef, bodyPath: captured.bodyPath,
+      maxBytes: 16_384, inputIndex: kind === 'input' ? 0 : 2, textIndex: 0, model: body.model, effort: 'high', accountId: identity.accountId };
+    const options = { ...f.options, agent: 'claude' as const, checkoutRoot: repoRoot, accountingBinding: host, receipts: [receipt] };
+    return { ...f, receipt, options, note: JSON.parse(row.note), body: request, hash, identity, hostBinding: host,
+      candidateCheckoutRoot };
+  }
+  async function composedFixture(kind: 'input' | 'tool-result', freeze = true) {
+    const f = await fixture(kind), protocol = currentProtocolFixture(binding.runId);
+    for (const arm of protocol.arms) { arm.account = f.identity.accountId; arm.model = f.body.model; }
+    protocol.arms.find(arm => arm.id === 'baseline')!.agent = 'claude';
+    const input: CurrentTaskInput = { options: { workspaceId, runId: binding.runId, armId: 'baseline', seed: 1,
+      agent: 'claude', model: f.body.model, effort: 'high', account: f.identity.accountId,
+      preregistration: { preregHash: f.hostBinding.preregHash, config: protocol } }, protocol,
+      task: { benchmark: 'swe-bench-pro', instanceId: 't1', repo: 'fixture', baseCommit: 'a'.repeat(40),
+        problemStatement: 'Private Claude provider composition', graderMeta: { dockerhub_tag: 't1', FAIL_TO_PASS: [], PASS_TO_PASS: [], testFiles: [] } },
+      scope: { sql, workspaceId }, context: { workspaceId, principal: { slug: 'private-claude-host' } } as CurrentTaskInput['context'],
+      resources: { requestsPerArm: 1 } as CurrentTaskInput['resources'], loopId: f.hostBinding.loopId,
+      hostRunId: 'private-claude-composition-host', checkout: { dir: f.candidateCheckoutRoot,
+        repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} },
+      observation: { runtimeWorkspaceId: 'private-runtime', workerUnit: 'worker', gatewayUnit: 'gateway' } };
+    const config = { current: { preregHash: f.hostBinding.preregHash }, protocol, loopId: f.hostBinding.loopId };
+    await sql`INSERT INTO harness_shared.bench_runs (id, workspace_id, arm, task_set_id, model, status, config)
+      VALUES (${input.hostRunId}, ${workspaceId}, 'baseline', 'custom', ${input.options.model!}, 'running',
+        ${JSON.stringify(config)}::text::jsonb)`;
+    const host = await currentBenchTaskProviderCapture(input); roots.push(host.captureRoot);
+    await host.captureProviderInput({ ...f.identity, body: JSON.stringify(f.body), signal: new AbortController().signal });
+    if (freeze) await freezeCurrentBenchTaskProviderReservation(input, f.receipt.reservationId);
+    const allocation = { harnessSlug: f.options.harnessSlug, trialBindingHash: binding.trialBindingHash,
+      notBefore: f.options.notBefore, receipts: [f.receipt] };
+    return { ...f, input, host, allocation };
+  }
+  it.each([['input', 'blocks'], ['tool-result', 'blocks'], ['input', 'string'], ['tool-result', 'string'],
+    ['tool-result', 'args-order']] as const)('joins %s/%s to exact native message, completed response and settled host note', async (kind, variant) => {
+    const f = await fixture(kind, variant), reader = currentBenchWorkloadProviderInputReader(f.options);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toMatchObject([{ kind: 'input', role: f.context.consumer,
+      content: kind === 'input' ? f.text : variant === 'string' ? 'Exact tool text π' : canonicalJson(f.output),
+      metadata: { providerInputSource: { agent: 'claude', responseId: f.context.nativeMessageId,
+        anthropicVersion: '2023-06-01', anthropicBeta: null, reservationId: f.receipt.reservationId } } }]);
+    f.receipt.accountId = 'candidate';
+    expect(await reader(f.receipt.receiptRef, binding)).toEqual(rows);
+  });
+  it.each(['message-id', 'native-turn', 'version', 'beta-missing', 'beta-enabled', 'credential-header', 'account',
+    'headers-only', 'body-drift', 'text', 'role', 'duplicate-call', 'duplicate-result', 'tool-name', 'tool-args', 'tool-output',
+    'tool-error', 'late-request', 'unsettled', 'settlement-drift', 'note-drift'])('refuses %s substitutions with retained pins', async fault => {
+    const f = await fixture(['text', 'role'].includes(fault) ? 'input' : 'tool-result');
+    const note = f.note, attempt = note.nativeGatewayAttempt, result = note.nativeGatewayAttemptResult;
+    if (fault === 'message-id') result.providerCompletion.responseId = 'msg-foreign';
+    if (fault === 'native-turn') attempt.nativeTurnId = result.nativeTurnId = randomUUID();
+    if (fault === 'version') attempt.anthropicVersion = result.anthropicVersion = 'foreign';
+    if (fault === 'beta-missing') { delete attempt.anthropicBeta; delete result.anthropicBeta; }
+    if (fault === 'beta-enabled') attempt.anthropicBeta = result.anthropicBeta = 'beta';
+    if (fault === 'credential-header') attempt.credentialHeader = result.credentialHeader = 'authorization';
+    if (fault === 'account') attempt.accountId = result.accountId = 'foreign';
+    if (fault === 'headers-only') result.outcome = 'response-headers';
+    if (fault === 'text') f.body.messages[0].content = [{ type: 'text', text: 'foreign' }];
+    if (fault === 'role') f.body.messages[0].role = 'assistant';
+    if (fault === 'duplicate-call') f.body.messages[1].content.push({ ...f.body.messages[1].content[0] });
+    if (fault === 'duplicate-result') f.body.messages[2].content.push({ ...f.body.messages[2].content[0] });
+    if (fault === 'tool-name') f.body.messages[1].content[0].name = 'Write';
+    if (fault === 'tool-args') f.body.messages[1].content[0].input = { path: 'foreign' };
+    if (fault === 'tool-output') f.body.messages[2].content[0].content = [{ type: 'text', text: 'foreign' }];
+    if (fault === 'tool-error') f.body.messages[2].content[0].is_error = false;
+    if (['text', 'role', 'duplicate-call', 'duplicate-result', 'tool-name', 'tool-args', 'tool-output', 'tool-error'].includes(fault)) {
+      const bytes = JSON.stringify(f.body); writeFileSync(join(repoRoot, f.receipt.bodyPath), bytes);
+      attempt.bodySha256 = result.bodySha256 = f.hash(bytes);
+    }
+    if (fault === 'body-drift') writeFileSync(join(repoRoot, f.receipt.bodyPath), JSON.stringify(f.body) + ' ');
+    const encoded = JSON.stringify(note); f.receipt.reservationNoteSha256 = f.hash(encoded);
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${encoded} WHERE id = ${f.receipt.reservationId}`;
+    if (fault === 'late-request') await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = '2026-10-11T00:00:01.750Z'`;
+    if (fault === 'unsettled') await sql`UPDATE harness_shared.learning_spend_reservations SET status = 'open'`;
+    if (fault === 'settlement-drift') await sql`UPDATE harness_shared.learning_spend_reservations SET settled_at = settled_at + interval '1 second'`;
+    if (fault === 'note-drift') await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' '`;
+    expect(await currentBenchWorkloadProviderInputReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it.each(['input', 'tool-result'] as const)('composes %s from frozen host pins after checkout removal without writes', async kind => {
+    const f = await composedFixture(kind);
+    await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId}`;
+    rmSync(f.input.checkout.dir, { recursive: true });
+    Object.assign(f.allocation.receipts[0], { bodyPath: '../candidate', bodyRef: 'candidate', accountId: 'candidate',
+      reservationNoteSha256: 'e'.repeat(64), settledAt: 'invalid', maxBytes: 1, model: 'foreign', effort: 'low' });
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    const reader = await currentBenchTaskProviderInputReader(f.input, f.allocation);
+    expect(await reader(f.receipt.receiptRef, binding)).toMatchObject([{ kind: 'input',
+      content: kind === 'input' ? f.text : canonicalJson(f.output), metadata: { providerInputSource: {
+        agent: 'claude', bodyRef: f.host.readCapture(f.receipt.reservationId)!.bodyRef,
+        accountId: f.identity.accountId, responseId: f.context.nativeMessageId } } }]);
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+  });
+  it('refuses unfrozen Claude settlement without writing a pin', async () => {
+    const f = await composedFixture('input', false);
+    await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(/explicitly frozen/);
+    const [row] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(row.config.providerInputCaptures[f.host.allocation.accountingBinding.assignmentId]).not.toHaveProperty('settledProviderInputs');
+  });
+  it.each(['backend', 'native-turn', 'message', 'source', 'host-pin', 'settlement'])('refuses %s drift in Claude host composition', async fault => {
+    const f = await composedFixture('tool-result');
+    if (fault === 'backend') {
+      Object.assign(f.allocation.receipts[0], { agent: 'codex' });
+      await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(/native host request/); return;
+    }
+    if (fault === 'native-turn') {
+      Object.assign(f.allocation.receipts[0], { nativeTurnId: randomUUID() });
+      await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(); return;
+    }
+    if (fault === 'host-pin') {
+      const path = ['providerInputCaptures', f.host.allocation.accountingBinding.assignmentId, 'settledProviderInputs', f.receipt.reservationId];
+      await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${path}::text[],
+        ${JSON.stringify({ ...f.host.readCapture(f.receipt.reservationId), settledAt: 'invalid' })}::text::jsonb)`;
+      await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(); return;
+    }
+    if (fault === 'message') f.allocation.receipts[0].nativeMessageId = 'msg-foreign';
+    if (fault === 'source') f.allocation.receipts[0].sourceSha256 = 'f'.repeat(64);
+    const reader = await currentBenchTaskProviderInputReader(f.input, f.allocation);
+    if (fault === 'settlement') await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' '`;
+    expect(await reader(f.receipt.receiptRef, binding)).toBeNull();
+  });
+});
+
 describe('private workload provider input authority', () => {
   const binding = { runId: 'private-provider-input-run', trialBindingHash: 'a'.repeat(64) };
   async function fixture() {
@@ -1774,7 +2053,7 @@ describe('legacy SQL usage measurement', () => {
 });
 
 describe('production native accounting with private PG and full source bytes', () => {
-  async function costFixture(maxWallClockMs = 100, repeated = false) {
+  async function costFixture(maxWallClockMs = 100, repeated = false, agent: 'codex' | 'claude' = 'codex') {
     const fixtureProtocol = repeated ? controlledProtocolFixture() : currentProtocolFixture('PRIVATE', maxWallClockMs);
     if (repeated) {
       fixtureProtocol.runId = 'PRIVATE';
@@ -1782,15 +2061,21 @@ describe('production native accounting with private PG and full source bytes', (
       fixtureProtocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';
     }
     const opts: CurrentSuBenchOptions = { workspaceId, runId: 'PRIVATE', armId: repeated ? 'baseline' : 'papercusp', seed: 1,
-      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
+      agent, model: 'configured-alias', effort: 'high', account: 'auto',
       preregistration: { preregHash: createHash('sha256').update(repeated ? canonicalJson(fixtureProtocol) : 'private-cost-protocol')
         .digest('hex'), config: fixtureProtocol } };
     const label = currentBenchLaunchRequest(opts, handle, 'Private cost fixture.').label;
     async function addSource(home: string, ownerId: string) {
-      const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
-      const dir = join(home, 'sessions', '2026', '10', '10'); mkdirSync(dir, { recursive: true });
-      const file = join(dir, `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
-      const transcript = [
+      const nativeSessionId = randomUUID(), nativeTurnId = randomUUID(), nativeMessageId = `msg_${randomUUID()}`;
+      const dir = agent === 'claude' ? join(home, 'projects', 'private-project') : join(home, 'sessions', '2026', '10', '10');
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, agent === 'claude' ? `${nativeSessionId}.jsonl` : `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
+      const transcript = (agent === 'claude' ? [
+        { type: 'assistant', sessionId: nativeSessionId, message: { id: nativeMessageId,
+          model: 'configured-alias', stop_reason: 'end_turn', usage: {
+            input_tokens: 80, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 0,
+          } } },
+      ] : [
         { type: 'session_meta', payload: { id: nativeSessionId, cli_version: '0.162.0' } },
         { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias', effort: 'high' } },
         { type: 'event_msg', payload: { type: 'token_count', info: {
@@ -1798,9 +2083,10 @@ describe('production native accounting with private PG and full source bytes', (
           last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
         } } },
         { type: 'event_msg', payload: { type: 'task_complete', turn_id: nativeTurnId } },
-      ].map(record => JSON.stringify(record) + '\n').join('');
+      ]).map(record => JSON.stringify(record) + '\n').join('');
       writeFileSync(file, transcript);
-      const population = closedCodexSessionPopulation({ transcript, file, fileGeneration: 0, nativeSessionId });
+      const population = (agent === 'claude' ? closedClaudeSessionPopulation : closedCodexSessionPopulation)(
+        { transcript, file, fileGeneration: 0, nativeSessionId });
       if (!population.ok) throw new Error(population.detail);
       await sql`INSERT INTO harness_shared.interactive_usage_files VALUES
         (${workspaceId}, ${file}, ${Buffer.byteLength(transcript)}, '{"initialized":true,"fileGeneration":0}'::jsonb)`;
@@ -1808,15 +2094,18 @@ describe('production native accounting with private PG and full source bytes', (
         (workspace_id, session_id, usage_event_key, usage_provenance, cost_source, cost_usd,
          identity_activation_event_id, identity_owner_id, identity_principal_id, identity_specification_revision, identity_state_revision)
         VALUES (${workspaceId}, ${nativeSessionId}, ${population.usageEventKeys[0]},
-          ${sql.json({ turnId: nativeTurnId, costBound: null })}, 'provider', 0.002,
+          ${sql.json(agent === 'claude' ? { adapter: 'claude', sourceId: `message:${nativeMessageId}`,
+            providerResponseId: nativeMessageId, providerResponseIdSource: 'native-message-id', costBound: null }
+            : { turnId: nativeTurnId, costBound: null })}, 'provider', 0.002,
           'private-cost-activation', ${ownerId}, 'private-cost-principal', 'private-spec', 'private-state')`;
-      return { file, nativeSessionId, nativeTurnId };
+      return { file, nativeSessionId, nativeTurnId, nativeMessageId };
     }
     async function addParticipant(taskId: string, ownerId: string, parentTaskId: string | null = null) {
       const home = join(repoRoot, taskId), source = await addSource(home, ownerId);
       const [a] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
-        VALUES (${workspaceId}, ${ownerId}, ${source.nativeSessionId}, 'codex') RETURNING id`;
+        VALUES (${workspaceId}, ${ownerId}, ${source.nativeSessionId}, ${agent}) RETURNING id`;
       hostHome.byId.set(Number(a.id), home);
+      hostHome.byOwner.set(ownerId, home);
       await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail, class, state, parent_task_id)
         VALUES (${taskId}, ${workspaceId}, ${source.nativeSessionId},
           ${sql.json({ coordOwnerId: ownerId, ...(parentTaskId === null ? { label } : {}) })}, 'agent-session', 'exited', ${parentTaskId})`;
@@ -1840,13 +2129,14 @@ describe('production native accounting with private PG and full source bytes', (
       const hosted = startHost ? await controller.startNativeGateway(() => {},
         async () => ({ port: 32103, stop: async () => {} } as never)) : undefined;
       if (hosted) gateways.push(hosted); else controller.revoke();
-      async function addAttempt(source: { nativeSessionId: string; nativeTurnId: string },
+      async function addAttempt(source: { nativeSessionId: string; nativeTurnId: string; nativeMessageId?: string },
         outcome: 'response-completed' | 'fetch-failed' = 'response-completed') {
         const id = randomUUID(), identity = { attemptId: id, manifestSha256: binding.preregHash, armId: binding.assignmentId,
-          nativeSessionId: source.nativeSessionId, nativeTurnId: source.nativeTurnId, transport: 'bearer-http' as const,
-          accountId: 'private-provider-account', credentialHeader: 'authorization' as const,
+          ...(agent === 'claude' ? {} : { nativeSessionId: source.nativeSessionId, nativeTurnId: source.nativeTurnId }),
+          transport: agent === 'claude' ? 'anthropic-http' as const : 'bearer-http' as const,
+          accountId: 'private-provider-account', credentialHeader: agent === 'claude' ? 'x-api-key' as const : 'authorization' as const,
           credentialSha256: 'b'.repeat(64), bodySha256: 'c'.repeat(64), clockId: 'private-host-clock',
-          target: 'https://api.openai.com/v1/responses' };
+          target: agent === 'claude' ? 'https://api.anthropic.com/v1/messages' : 'https://api.openai.com/v1/responses' };
         const receipt = await reserveLearningSpend(sql, { workspaceId, loopId, requestedUsd: 0.003, floorUsd: 0,
           attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
           exact: { reservationId: id, binding: binding.preregHash, expectedBudgetUsd: 60,
@@ -1863,7 +2153,7 @@ describe('production native accounting with private PG and full source bytes', (
         if (outcome === 'response-completed') {
           const terminal: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: id, outcome, responseStatus: 200,
             costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
-            providerCompletion: { responseId: `response-${id}`, model: 'configured-alias', providerEffort: 'high',
+            providerCompletion: { responseId: agent === 'claude' ? source.nativeMessageId! : `response-${id}`, model: 'configured-alias', providerEffort: 'high',
               usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 0 } } };
           expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId: id, result: terminal })).toEqual({ ok: true });
         }
@@ -2152,6 +2442,38 @@ describe('production native accounting with private PG and full source bytes', (
         usageEventKey: expect.stringMatching(/^[a-f0-9]{64}$/), sampleId: expect.any(String),
         activationEventId: 'private-cost-activation' } });
   });
+  it('settles Claude message bills once using the exact closed source and Anthropic response', async () => {
+    const f = await costFixture(100, false, 'claude'), accounting = await f.accountingFixture();
+    const result = await accounting.read(); await accounting.read();
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20,
+      costUsdMeasurementMissing: false, armMeta: { nativeCostAccounting: { billedCostUsd: 0.002,
+        sources: [{ agent: 'claude', nativeTurnIds: [], nativeMessageIds: [f.solver.nativeMessageId] }] } } });
+    expect(() => requireCurrentBenchNativeRunCost(result)).not.toThrow();
+    const final = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    expect(final.positions).toMatchObject({ usedUsd: 0.002, unsettledUsd: 0 });
+    expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(1);
+    if (final.census?.status !== 'complete') throw new Error('Incomplete Claude settlement census');
+    const proof = JSON.parse(final.census.reservations[0].note!).nativeGatewaySettlement;
+    expect(proof).toMatchObject({ nativeSessionId: f.solver.nativeSessionId, nativeMessageId: f.solver.nativeMessageId,
+      billedInferenceMicros: '2000', sourceSha256: createHash('sha256').update(readFileSync(f.solver.file)).digest('hex') });
+    expect(proof).not.toHaveProperty('nativeTurnId');
+  });
+  it.each(['wrong-message', 'unknown-bill', 'wrong-bill-message', 'partial-source', 'carry-source'] as const)(
+    'keeps Claude spend open for %s', async fault => {
+      const f = await costFixture(100, false, 'claude'), accounting = await f.accountingFixture();
+      if (fault === 'wrong-message') await sql`UPDATE harness_shared.learning_spend_reservations SET note =
+        jsonb_set(note::jsonb, '{nativeGatewayAttemptResult,providerCompletion,responseId}', '"msg_foreign"'::jsonb)::text`;
+      if (fault === 'unknown-bill') await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimated'`;
+      if (fault === 'wrong-bill-message') await sql`UPDATE harness_shared.agent_usage_samples SET usage_provenance =
+        jsonb_set(usage_provenance, '{providerResponseId}', '"msg_foreign"'::jsonb)`;
+      if (fault === 'partial-source') writeFileSync(f.solver.file, readFileSync(f.solver.file, 'utf8').replace('"end_turn"', 'null'));
+      if (fault === 'carry-source') await f.addSource(f.solver.home, f.solver.ownerId);
+      expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: true,
+        armMeta: { nativeCostAccounting: { billedCostUsd: null } } });
+      expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions)
+        .toMatchObject({ usedUsd: 0, unsettledUsd: 0.003 });
+      expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(0);
+    });
   it('refuses settlement when the reservation changed after its bill was matched', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
     const before = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
@@ -2379,6 +2701,27 @@ async function hostFixture() {
 }
 
 describe('host-backed benchmark observation with private physical IO', () => {
+  it.each(['codex', 'claude'] as const)('reads the exact %s enrollment from a PostgreSQL bigint without accepting unsafe keys', async agent => {
+    const ownerId = `su-private-${randomUUID()}`, nativeSessionId = randomUUID();
+    const task: CurrentBenchTask = { taskId: `binding-${randomUUID()}`, workspaceId, state: 'running', exitCode: null,
+      sessionId: nativeSessionId, detail: { coordOwnerId: ownerId } };
+    const [enrolled] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES (${workspaceId}, ${ownerId}, ${nativeSessionId}, ${agent}) RETURNING id, pg_typeof(id)::text AS id_type`;
+    expect(enrolled.id_type).toBe('bigint');
+    expect(typeof enrolled.id).toBe('string');
+    const home = join(repoRoot, `${agent}-binding-home`);
+    hostHome.byId.set(Number(enrolled.id), home); hostHome.byOwner.set(ownerId, home);
+    await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail)
+      VALUES (${task.taskId}, ${workspaceId}, ${nativeSessionId}, ${sql.json(task.detail as { coordOwnerId: string })})`;
+    const io = liveCurrentBenchObservationReaderPorts({ ...scope(), runtimeWorkspaceId: workspaceId,
+      workerUnit: 'unused-worker', gatewayUnit: 'unused-gateway', gatewayBaseUrl: 'http://127.0.0.1:1' });
+    expect(await io.readBinding(task)).toEqual({ ownerId, nativeSessionId,
+      ...(agent === 'claude' ? { agent, claudeConfigDir: home } : { codexHome: home }) });
+    for (const invalid of ['0', '-1', '9007199254740992']) {
+      await sql`UPDATE harness_shared.adv_sessions SET id = ${invalid}::bigint`;
+      expect(await io.readBinding(task), `invalid ${agent} enrollment key ${invalid}`).toBeNull();
+    }
+  });
   it('joins actual private SQL, transcript bytes, process pins and gateway provider evidence', async () => {
     const f = await hostFixture(), observation = await f.read(f.task);
     expect(observation).not.toBeNull();

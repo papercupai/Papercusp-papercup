@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "kind": "maintained-native-catalog-fragment-extraction",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "capturedAt": "2026-10-25T21:39:41.902Z",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "priorEdition": {
+    "path": "docs/evidence/idop-p001-retained-native-catalog-fragments-2026-10-25.json",
+    "sha256": "4f5fd208f9b8f73e2db0e0b48ab7929061caedc62a54c8d2d30ce96e400cf7cd",
+    "relation": "separate edition; this instrument did not produce the prior artifact"
+  },
+  "sourceRecovery": {
+    "path": "docs/evidence/idop-p001-canonical-native-source-recovery-2026-10-25.json",
+    "sha256": "860608eee27dfb16e26e68a5f7cc59d12de5869abd479197ec279f2c9bb92fdd"
+  },
+  "hashConventions": {
+    "recordSha256": "Original native output JSONL record bytes, including retained line terminator.",
+    "priorCallRecordSha256": "Original native call JSONL record bytes, including retained line terminator; distinct from the prior edition's sorted-payload priorCallSha256."
+  },
+  "instrument": [
+    {
+      "path": "scripts/capture-idop-p001-native-fragments.ts",
+      "sha256": "6983b9f300bd0b5dcdff9043ef3585cd009af38409b32e4f8983167bbc4ef82b"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-identities/idop-p001-native-fragments.ts",
+      "sha256": "c21b29b189692bd96330c18288631695f35e4f08411edc9122430e0fbcd51c36"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-identities/idop-p001-native-fragments.test.ts",
+      "sha256": "2bfc4f4c2f9e37ba699c8ab1bf507aa7bb2d9d5c037b988c5db14c740ce1332b"
+    }
+  ],
+  "population": {
+    "source": "Explicit native sources named in the prior fragment edition, independently pinned by source recovery",
+    "nativeSessionIds": [
+      "01a16461-be32-7870-ad38-42bd7cb2a49b",
+      "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+      "01a16461-bf1a-7622-b133-f81d3d8e3304"
+    ]
+  },
+  "controls": {
+    "parseableFragments": 2,
+    "retainedAnnotationRows": 24,
+    "rejectedOutputs": 1,
+    "fullCatalogsAccepted": 0,
+    "effectiveArgumentScopesAccepted": 0
+  },
+  "observations": [
+    {
+      "source": {
+        "nativeSessionId": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+        "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+        "nativeSha256": "5c341fe128b589431c036fd7a22cf5f1e52a82fa5e384bc60ecb65860ac79220",
+        "nativePath": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/01a16461-be32-7870-ad38-42bd7cb2a49b.jsonl",
+        "bytes": 475826
+      },
+      "fragments": [
+        {
+          "sourceNative": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+          "sourceOwner": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+          "nativeSha256": "5c341fe128b589431c036fd7a22cf5f1e52a82fa5e384bc60ecb65860ac79220",
+          "line": 24,
+          "recordSha256": "9b3462ff842d746b577b7eda3bf80e712caaa829cb367d821f3b498e4905d2d4",
+          "recordHashIncludesLineTerminator": true,
+          "timestamp": "2026-10-22T16:12:00.039Z",
+          "callId": "call_d18b800d2f0743ca8ea66e6663cffc7e",
+          "priorCallLine": 21,
+          "priorCallRecordSha256": "46854bc4c93c33a6d1f186369a123483229ade4e5d8cf9112d502f437f758bec",
+          "priorCallHashIncludesLineTerminator": true,
+          "nativeExitCode": 0,
+          "retainedCatalogLineSha256": "399bf71a936f5c32c58cd98a41009a1744d27feb0615f2aa1af6eac6fa4f9b86",
+          "callerRole": "operator",
+          "isSuperuser": true,
+          "declaredCount": 500,
+          "partial": true,
+          "projectionTruncated": true,
+          "projectionRenderedCount": 151,
+          "tools": [
+            {
+              "name": "harness:list",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "15eabfbe46f0d403641409610213741de08e44ff610eeed39af76e53f460c4c5"
+            },
+            {
+              "name": "harness:get",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "a34d2ee12bef87fcd187298e6b285b4acfbbed8e7dad63c90adf8c388458b2cb"
+            },
+            {
+              "name": "harness:status",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "d83d8c54aeccc8f47cd25f0ec21d47a42681c2e73b58c9784c65bc854f32bd5a"
+            },
+            {
+              "name": "tasks:list",
+              "capability": "tasks:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "3ce7218cbd16ac610760e2e453511470d436b1c640acfaf2da84c1625dc5338a"
+            },
+            {
+              "name": "tasks:get",
+              "capability": "tasks:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "e1e549d35de0206ada4ea8d9c9caf3e7061f31cc928d2b501d89e940e74a6d03"
+            },
+            {
+              "name": "features:get",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "cd681f8641bcefba3eea796992ca0dd79be0e2c450729bf72aec44ed522e41eb"
+            },
+            {
+              "name": "features:history",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "080c02435059748220e2791164a139060b575ea231bed4da56aabeac9415c873"
+            },
+            {
+              "name": "features:search",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "8cb963fdccf628ee3c30396b68bf0b0e13c7edd6e8c5cd674a12110a81d48ae8"
+            },
+            {
+              "name": "features:list_related",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "e8e7836a99577a448ca0add2728ecff182e9d2b9f50a65496f7a89ef4b4055e5"
+            },
+            {
+              "name": "features:tag_vocabulary",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "1a202d55077635437825c2f760b9c2a6f05cba48fc0d4a457f3e4b49018bcacc"
+            },
+            {
+              "name": "goals:list",
+              "capability": "goals:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "c1f9cc2860c6182ee8f12d648e8b955fd1f93c7cbe965ea2a249862ce2538af8"
+            },
+            {
+              "name": "goals:get",
+              "capability": "goals:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "1b9d5397f797de25f08525944c4b50c0289129a8689f04e8d63d15b12e10b69d"
+            }
+          ]
+        }
+      ],
+      "rejected": [],
+      "fullCatalogsAccepted": 0,
+      "effectiveArgumentScopesAccepted": 0
+    },
+    {
+      "source": {
+        "nativeSessionId": "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+        "ownerId": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+        "nativeSha256": "bd618d905f876761841e8bba5d41d5a294bb49046ea8f4443aeacd80eae013f1",
+        "nativePath": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/01a16461-be99-7a71-a6b7-2c4e9c247c2d.jsonl",
+        "bytes": 641034
+      },
+      "fragments": [
+        {
+          "sourceNative": "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+          "sourceOwner": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+          "nativeSha256": "bd618d905f876761841e8bba5d41d5a294bb49046ea8f4443aeacd80eae013f1",
+          "line": 24,
+          "recordSha256": "18d8789305059950c6fa49c65838323c4a62c558d7c50dc5fcc11ac60e207fe0",
+          "recordHashIncludesLineTerminator": true,
+          "timestamp": "2026-10-22T16:11:59.918Z",
+          "callId": "call_0d0177acee8d4e7394b47095b8250a4e",
+          "priorCallLine": 21,
+          "priorCallRecordSha256": "7ec7bf24d759cde30ff22d607b53dadb258d1b32f42d84d131c1f9b43ceee888",
+          "priorCallHashIncludesLineTerminator": true,
+          "nativeExitCode": 0,
+          "retainedCatalogLineSha256": "60b66aca1f8f8e74670fa2aac9397a33e5ffc7936bfa67938284421ceaed4eb0",
+          "callerRole": "operator",
+          "isSuperuser": true,
+          "declaredCount": 500,
+          "partial": true,
+          "projectionTruncated": true,
+          "projectionRenderedCount": 151,
+          "tools": [
+            {
+              "name": "harness:list",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "15eabfbe46f0d403641409610213741de08e44ff610eeed39af76e53f460c4c5"
+            },
+            {
+              "name": "harness:get",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "a34d2ee12bef87fcd187298e6b285b4acfbbed8e7dad63c90adf8c388458b2cb"
+            },
+            {
+              "name": "harness:status",
+              "capability": "harness:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "d83d8c54aeccc8f47cd25f0ec21d47a42681c2e73b58c9784c65bc854f32bd5a"
+            },
+            {
+              "name": "tasks:list",
+              "capability": "tasks:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "3ce7218cbd16ac610760e2e453511470d436b1c640acfaf2da84c1625dc5338a"
+            },
+            {
+              "name": "tasks:get",
+              "capability": "tasks:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "e1e549d35de0206ada4ea8d9c9caf3e7061f31cc928d2b501d89e940e74a6d03"
+            },
+            {
+              "name": "features:get",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "cd681f8641bcefba3eea796992ca0dd79be0e2c450729bf72aec44ed522e41eb"
+            },
+            {
+              "name": "features:history",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "080c02435059748220e2791164a139060b575ea231bed4da56aabeac9415c873"
+            },
+            {
+              "name": "features:search",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "8cb963fdccf628ee3c30396b68bf0b0e13c7edd6e8c5cd674a12110a81d48ae8"
+            },
+            {
+              "name": "features:list_related",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "e8e7836a99577a448ca0add2728ecff182e9d2b9f50a65496f7a89ef4b4055e5"
+            },
+            {
+              "name": "features:tag_vocabulary",
+              "capability": "features:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "1a202d55077635437825c2f760b9c2a6f05cba48fc0d4a457f3e4b49018bcacc"
+            },
+            {
+              "name": "goals:list",
+              "capability": "goals:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "c1f9cc2860c6182ee8f12d648e8b955fd1f93c7cbe965ea2a249862ce2538af8"
+            },
+            {
+              "name": "goals:get",
+              "capability": "goals:read",
+              "allowed": true,
+              "retainedDescriptionSha256": "1b9d5397f797de25f08525944c4b50c0289129a8689f04e8d63d15b12e10b69d"
+            }
+          ]
+        }
+      ],
+      "rejected": [],
+      "fullCatalogsAccepted": 0,
+      "effectiveArgumentScopesAccepted": 0
+    },
+    {
+      "source": {
+        "nativeSessionId": "01a16461-bf1a-7622-b133-f81d3d8e3304",
+        "ownerId": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+        "nativeSha256": "4f15139a0d68175e5019697b342605284cf598159d926f450bed4ba4d40fd309",
+        "nativePath": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/01a16461-bf1a-7622-b133-f81d3d8e3304.jsonl",
+        "bytes": 458709
+      },
+      "fragments": [],
+      "rejected": [
+        {
+          "line": 25,
+          "callId": "call_2859effdb9224a1597f4b65872321830",
+          "reason": "P001 native fragment: catalog JSON is incomplete or invalid"
+        }
+      ],
+      "fullCatalogsAccepted": 0,
+      "effectiveArgumentScopesAccepted": 0
+    }
+  ],
+  "limits": [
+    "Partial catalog rows only; count is the recorded request cap, not retained or total universe coverage.",
+    "Source recovery supplies the expected digests and owner joins; this instrument checks those pins and recorded caller attribution.",
+    "No missing catalog, schema, annotation, effective argument scope, historical vault setting, or actual stack admission is inferred.",
+    "Source/test hashes identify this edition's producer; committed-source qualification and canonical support binding are separate steps.",
+    "The baseline amendment, D-023 source question, independent acceptance, milestones, and shipment holds remain open."
+  ]
+}

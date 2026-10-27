@@ -78,11 +78,11 @@ describe('escalateAlarm', () => {
     warn.mockRestore();
   });
 
-  it('opens the actionable condition on every measured breach despite the owner cooldown', async () => {
+  it('broadcasts alarm conditions without making them scheduler-actionable', async () => {
     const broadcast = vi.fn(async () => true);
     const notify = vi.fn(async () => {});
     const conditionKey = 'alarm:replication-slot';
-    expect(isActionableConditionKey(conditionKey)).toBe(true);
+    expect(isActionableConditionKey(conditionKey)).toBe(false);
     expect(await escalateAlarm({ ...request, conditionKey }, {
       broadcast, notify, recentlyEscalated: async () => true,
     })).toBe(false);

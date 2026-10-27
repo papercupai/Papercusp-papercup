@@ -63,7 +63,7 @@
  */
 import type { Sql } from 'postgres';
 
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { managedSetInterval, createManagedSweepStarter, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getGoalTransitionExecutor } from '@papercusp/agent-mcp';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import {
@@ -3373,60 +3373,38 @@ export function startStandingGoalBootArm(
   );
 }
 
-let watchdogTimer: ManagedHandle | null = null;
-let holderRespawnerTimer: ManagedHandle | null = null;
 
 /**
  * Start the goal-liveness watchdog: a recurring process-level sweep.
  * Idempotent. Runtime gate: FLAGS.GOAL_LIVENESS_WATCHDOG (checked per tick).
  */
-export function startGoalLivenessWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? GOAL_LIVENESS_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'goal-liveness-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runGoalLivenessSweepOnce(sql)
-        .catch((e) => {
+const armGoalLivenessWatchdog = createManagedSweepStarter({
+  name: 'goal-liveness-watchdog',
+  intervalMs: GOAL_LIVENESS_SWEEP_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'timeout-reaper' },
+  onError: (e) => {
           console.warn(
             `[goal-liveness-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // D-004: 'timeout-reaper'. The trigger is ELAPSED TIME with no holder — a goal going
-    // quiet emits nothing, and absence-over-a-deadline has no publisher to subscribe to.
-    { category: 'watchdog', classification: 'timeout-reaper' },
-  );
+        },
+});
+
+export function startGoalLivenessWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armGoalLivenessWatchdog(() => runGoalLivenessSweepOnce(sql), opts.intervalMs);
 }
 
 /** Start P-009's independently gated, idempotent holder-recovery timer. */
-export function startGoalHolderRespawner(sql: Sql, opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? GOAL_HOLDER_RESPAWN_INTERVAL_MS;
-  if (holderRespawnerTimer) holderRespawnerTimer.stop();
-  let sweeping = false;
-  holderRespawnerTimer = managedSetInterval(
-    'goal-holder-respawner',
-    intervalMs,
-    () => {
-      if (sweeping) return;
-      sweeping = true;
-      void runGoalHolderRespawnOnce(sql)
-        .catch((error) => {
+const armGoalHolderRespawner = createManagedSweepStarter({
+  name: 'goal-holder-respawner',
+  intervalMs: GOAL_HOLDER_RESPAWN_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'timeout-reaper' },
+  onError: (error) => {
           console.warn(
             `[goal-holder-respawner] sweep failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    { category: 'watchdog', classification: 'timeout-reaper' },
-  );
+        },
+});
+
+export function startGoalHolderRespawner(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armGoalHolderRespawner(() => runGoalHolderRespawnOnce(sql), opts.intervalMs);
 }

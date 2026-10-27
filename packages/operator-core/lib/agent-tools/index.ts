@@ -573,6 +573,7 @@ import './dev/resolve_owner';
 // tool-call-batching-wrappers-2026-06-21 P-001 — tool co-occurrence miner
 // (the deterministic wrapper-candidate / code-recipes-promotion signal).
 import './dev/tool_cooccurrence';
+import './dev/sql_tool_candidates';
 import './processes/kill';
 // task-manager-no-escape-2026-07-27 P-013/P-014: the ledger-backed task-manager
 // control plane. `list` is the provenance inventory (who launched it, for which
@@ -739,6 +740,7 @@ import './testing/flakiness';
 import './testing/case-categories';
 import './testing/run';
 import './testing/record-run';
+import './testing/record-native-check';
 import './testing/run-status';
 import './testing/runs';
 import './testing/verdict-diff';
@@ -969,6 +971,7 @@ import './sessions/digest';
 // transcript-watcher pull path) self-registers via register-system-actions.ts.
 import './sessions/ingest-gate-event';
 import './sessions/record-prompt-origin';
+import './sessions/continue-released-operation';
 import './sessions/list-pending-gates';
 // hud-session-display-names-2026-08-31 P-007: the agent half of the rename
 // write path (the human half is POST /api/adv/sessions/rename).
@@ -1166,6 +1169,7 @@ import './work_items/claim';
 // COMPOUND work-pickup (code-execution B-CX-1B): get(detail)+claim(+declare-intent) in
 // one round-trip — the #1 measured agent flow; also closes the get→claim race.
 import './work_items/pickup';
+import './work_items/review-admission';
 import './work_items/release';
 // The "announced consequence" rail (WI-5974): request a live peer release a work-item
 // with an explicit deadline + consequence, instead of a bare force-release refusal with

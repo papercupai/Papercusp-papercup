@@ -4,6 +4,7 @@ import {
   defineTool,
   listAllProjectedTools,
   projectedToolRegistryRevision,
+  projectedToolProviderVersion,
   SU_ROLES,
 } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -81,6 +82,7 @@ export const validateCapabilityProviderTool = defineTool({
       return {
         name,
         pluginName: tool.pluginName,
+        providerVersion: projectedToolProviderVersion(tool),
         inputSchema: tool.discoveryInputSchema ?? tool.inputSchema,
         outputSchema: tool.outputJsonSchema ?? null,
       };

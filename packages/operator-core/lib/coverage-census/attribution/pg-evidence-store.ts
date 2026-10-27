@@ -130,7 +130,7 @@ export function createPgEvidenceStore(options: PgEvidenceStoreOptions = {}): Evi
             (surface_ref, evidence_kind, verdict, generated, test_file, test_case, test_run_id, details)
           VALUES
             (${ref}, 'traffic', ${r.verdict}, ${r.generated}, ${r.testFile}, ${r.testCase},
-             NULL, ${JSON.stringify(details)}::jsonb)
+             NULL, ${sql.json(details)})
           ON CONFLICT (
             surface_ref, evidence_kind,
             COALESCE(test_file, ''), COALESCE(test_case, ''), COALESCE(test_run_id, -1)

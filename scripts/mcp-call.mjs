@@ -50,7 +50,7 @@ import { fileURLToPath } from 'node:url';
 const REQUEST_ID = 1;
 
 /**
- * Exit status when the call was delivered and the tool ANSWERED ok:false: a
+ * Exit status when the delivered result reports a refusal or output error: a
  * refused write, a missing id, or a partially failed batch. The result is still
  * printed in full on stdout. This matches ptool's PTOOL_TOOL_NOT_OK_EXIT, so a
  * script can tell "refused" (5) from "failed or unreachable" (1-4) with either
@@ -62,23 +62,27 @@ export const MCP_CALL_TOOL_NOT_OK_EXIT = 5;
 
 /**
  * Why a parsed tool result reports failure, or null when it does not. It fails
- * when its top-level `ok` is false or any entry of a `results` batch has
- * `ok: false`. Only an explicit `false` counts: a body with no `ok` field (a
- * projection that picked other fields, prose, an array) is not a refusal. This
- * is the same rule as ptool's toolNotOkReason, applied to the value mcp-call
- * already parsed.
+ * when its top-level `ok` is false, any entry of a `results` batch has
+ * `ok: false`, or the canonical output envelope reports `state: 'error'`.
+ * Other bodies without `ok` (projections, prose, arrays, application states)
+ * are not refusals. The ok:false rules match ptool's toolNotOkReason.
  * @param {unknown} result
  * @returns {string | null}
  */
 export function toolResultNotOkReason(result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const outputError = result.schemaVersion === 'papercusp.output-envelope/v1' && result.state === 'error';
   const results = Array.isArray(result.results) ? result.results : [];
   const failed = results.filter((r) => r && typeof r === 'object' && r.ok === false);
-  if (result.ok !== false && failed.length === 0) return null;
+  if (!outputError && result.ok !== false && failed.length === 0) return null;
+  const envelopeError = outputError && result.error && typeof result.error === 'object' ? result.error : {};
+  const envelopeReason = [envelopeError.code, envelopeError.message]
+    .filter((value) => typeof value === 'string' && value.trim()).join(': ');
   const first = failed[0] ?? {};
-  const detail = [result.reason, result.error, result.code, first.error, first.reason, first.code]
+  const detail = [envelopeReason, result.reason, result.error, result.code, first.error, first.reason, first.code]
     .find((v) => typeof v === 'string' && v.trim()) ?? 'no reason given';
-  const reason = failed.length > 0 ? `${failed.length} of ${results.length} result(s) ok:false; first: ${detail}` : detail;
+  const reason = outputError ? `output envelope error: ${detail}`
+    : failed.length > 0 ? `${failed.length} of ${results.length} result(s) ok:false; first: ${detail}` : detail;
   return reason.length > 300 ? `${reason.slice(0, 297)}...` : reason;
 }
 
@@ -1254,7 +1258,7 @@ async function main() {
   const notOk = toolResultNotOkReason(out.result);
   if (notOk !== null) {
     console.error(
-      `mcp-call: the tool answered ok:false (${notOk}). The result above is complete; exiting ${MCP_CALL_TOOL_NOT_OK_EXIT} so a \`|| fail\` guard sees the refusal. (EI-24654733539966460)`,
+      `mcp-call: the tool reported failure (${notOk}). The response is printed above; exiting ${MCP_CALL_TOOL_NOT_OK_EXIT} so a \`|| fail\` guard sees the failure. (EI-24654733539966460)`,
     );
     // exitCode, never process.exit(): exiting here can cut off a large stdout
     // result that is still draining into a pipe.

@@ -66,6 +66,11 @@ const H = vi.hoisted(() => {
     state.txCalls.push({ strings, values });
     // WI-5825 regression hook: force the statement to match 0 rows.
     if (state.forceNoMatch) return Promise.resolve([]);
+    // The real pinned resolver reads these tables before the start gates. This
+    // fixture has only built-in types and no pins or custom definitions.
+    if (/FROM harness_shared\.(?:plan_item_type_definitions|plan_type_definitions|plan_type_pins)\b/.test(strings.join(''))) {
+      return Promise.resolve([]);
+    }
     return Promise.resolve([{ op_status: 'started', op_updated_at: '2026-06-02T00:00:00.000Z' }]);
   };
   const withWorkspace = async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(tx);

@@ -13,6 +13,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/work_items/claimable.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 
 vi.mock('../../scheduler/get-next', () => ({
   readIssueClaimability: vi.fn(),
@@ -111,12 +113,23 @@ const ROWS = [
   { id: 'WI-C', kind: 'task', title: 'c', status: 'open', severity: null, plan: null, featureOrder: null, createdTs: 3 },
 ];
 
-const run = async (args: unknown) => {
-  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1', log: logM } as never)) as {
+const run = async (args: unknown, metadata?: (data: Record<string, unknown>) => void) => {
+  const res = (await tool.handler(args as never, { ownerId: 'probe', workspaceId: 'ws-1', log: logM, metadata } as never)) as {
     content: { text: string }[];
   };
   return JSON.parse(res.content[0]!.text);
 };
+
+it('binds the exact post-floor admission result to native invocation metadata', async () => {
+  const metadata = vi.fn();
+  const result = await run({ harness: 'papercusp' }, metadata);
+  expect(metadata).toHaveBeenCalledWith({ operationalOutput: { schemaVersion: 1,
+    observedAt: result.countEvidence.contract.measuredAt,
+    sha256: createHash('sha256').update(canonicalJson(result)).digest('hex') } });
+  const changed = structuredClone(result); changed.claimableCount++;
+  expect(createHash('sha256').update(canonicalJson(changed)).digest('hex'))
+    .not.toBe(metadata.mock.calls[0][0].operationalOutput.sha256);
+});
 
 const EMPTY_QUEUE_CONTROL_SAMPLE = {
   activeClaims: [],

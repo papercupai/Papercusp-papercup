@@ -17,6 +17,7 @@ import {
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
+  type SuSessionExecutionKind,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -83,6 +84,7 @@ export interface OmpSuSessionControls {
 
 export interface OmpSuSessionDescriptorOptions {
   agentChatId: string;
+  executionKind?: SuSessionExecutionKind;
   model?: string | null;
   accountRoute?: string | null;
   servedAccountReader?: SuSessionServedAccountReader;
@@ -225,8 +227,13 @@ function defaultControls(): OmpSuSessionControls {
  */
 export function ompCapabilities(): SuSessionCapabilities {
   return {
+    version: 2,
+    input: { parts: [], origins: ['owner'] },
     commands: {
       owner_turn: { state: 'supported', implementation: 'native' },
+      queue: { state: 'unsupported', reason: 'explicit queue delivery is not attached to this runtime' },
+      steer: { state: 'unsupported', reason: 'active-turn steering is not attached to this runtime' },
+      handoff: { state: 'unsupported', reason: 'identity-safe execution transfer requires the managed handoff coordinator' },
       interrupt: { state: 'supported', implementation: 'native' },
       resume: {
         state: 'conditional', implementation: 'native',
@@ -316,6 +323,7 @@ function descriptorFor(
       harnessSlug: binding.harnessSlug,
     },
     lifecycle: 'starting',
+    executionKind: options.executionKind ?? 'pty',
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
@@ -651,6 +659,10 @@ export class OmpSuSessionAdapter {
         break;
       case 'fork':
         return commandRefusal(refused('fork_requires_launcher', 'OMP fork must be created through the tracked launcher so it receives a new durable identity', true));
+      case 'queue':
+      case 'steer':
+      case 'handoff':
+        return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:
         return assertNeverSuSession(command);
     }

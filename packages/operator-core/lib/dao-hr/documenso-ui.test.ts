@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Browser, Page } from 'playwright-core';
-import { assertCompletionResponse, register, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
+import { accountToken, assertCompletionResponse, register, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 
 describe('Documenso UI failure diagnostics', () => {
   it.each([false, true])('fills signup identity after the signature interaction establishes hydration (initial hydration pending=%s)', async hydrationPending => {
@@ -74,6 +74,43 @@ describe('Documenso UI failure diagnostics', () => {
     expect(submit).toHaveBeenCalledTimes(Number(!browserInvalid));
     for (const value of [...privateValues, values.password!]) expect(error!.stack).not.toContain(value);
     expect(error!.cause).toBeUndefined();
+  });
+
+  it('labels created-token readback failures without retaining the token value', async () => {
+    const token = 'api_0123456789abcdef';
+    const inputValue = vi.fn().mockRejectedValue(new Error('readback failed for ' + token));
+    let currentUrl = 'https://provider.invalid/';
+    const dialog = {
+      locator: (selector: string) => selector.includes('createdToken') ? { inputValue } : { fill: vi.fn() },
+      getByRole: () => ({ click: vi.fn() }),
+    };
+    const page = {
+      goto: vi.fn(async (target: string) => {
+        currentUrl = target.includes('/settings/tokens') ?
+          'https://provider.invalid/t/team-id/settings/tokens' : 'https://provider.invalid/t/team-id/';
+      }),
+      url: () => currentUrl,
+      getByRole: (role: string) => role === 'dialog' ? dialog : { click: vi.fn() },
+      locator: () => ({
+        evaluateAll: async (callback: (elements: object[]) => unknown) => callback([]),
+        evaluate: async (callback: (element: object) => unknown) => callback({ innerText: '' }),
+      }),
+    } as unknown as Page;
+    const poll = vi.spyOn(expect, 'poll').mockImplementation(((callback: () => Promise<unknown>) => ({
+      toBe: async (expected: unknown) => expect(await callback()).toBe(expected),
+      toMatch: async (expected: RegExp) => expect(await callback()).toMatch(expected),
+    })) as typeof expect.poll);
+    try {
+      const error = await accountToken(page).then(() => null, value => value as Error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error!.message).toBe('Documenso UI phase failed: read created provider token; errorType=Error; ' +
+        'errorCode=unclassified; issues=[]; controls=[]');
+      expect(error!.stack).not.toContain(token);
+      expect(error!.cause).toBeUndefined();
+      expect(inputValue).toHaveBeenCalledOnce();
+    } finally {
+      poll.mockRestore();
+    }
   });
 
   it.each([false, true])('waits for the PDF viewer before navigating to a virtualized signature field (signature dialog=%s)', async needsSignature => {

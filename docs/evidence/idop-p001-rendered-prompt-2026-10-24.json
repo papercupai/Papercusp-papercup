@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "clause": {
+    "id": "SPEC-P-001-PROMPT",
+    "revision": 1,
+    "fingerprint": "1a1f7b2ec4b5af42450664659c14673a0987d0dafc12f06a8f2a7491cb35c621"
+  },
+  "kind": "frozen real-launch rendered-prompt/native-delivery observation",
+  "capturedAt": "2026-10-24T02:24:49.296297+00:00",
+  "capturedBy": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "workspace": "papercusp-workspace",
+  "acceptance": "OPEN",
+  "sourceSession": {
+    "ownerId": "su-fb3381b8-24a8-4192-bfd8-46c8d399fc7a",
+    "nativeSessionId": "01a16763-00b7-7042-bcb3-26dd3bbfc6bf",
+    "advSessionId": 50568,
+    "launchedBy": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+    "startedAt": "2026-10-23 06:11:48.099786+00",
+    "nativeMetaTimestamp": "2026-10-23T06:11:43.973Z",
+    "nativeMessageTimestamp": "2026-10-23T06:11:45.863Z",
+    "nativeRecordLine": 4,
+    "nativeTranscript": "~/.papercusp/su-codex-homes/session-50568/sessions/2026/10/23/rollout-2026-10-23T02-11-43-01a16763-00b7-7042-bcb3-26dd3bbfc6bf.jsonl",
+    "sourceClosure": "~/.papercusp/evidence/idop-p001-qualified-mode-measurement-20261023-v4/source-closure.json",
+    "sourceClosureSha256": "4f55159e122c80516ec9796bf334efbac0222d738a677a995a1b00518a5f92dd",
+    "specificationRevision": "dd29d99398a2c07176dd4969a3af0d559c930bcb1701fa1ea57dbc8a34bc295d",
+    "launchStateRevision": "b844cd1095f9f948e0e5c040",
+    "selectedStack": [
+      "practice:su.practice"
+    ],
+    "registeredModesAtLaunch": []
+  },
+  "renderedPrompt": {
+    "sourceInputRefs": [
+      "inline:su#0",
+      "rendered:effective"
+    ],
+    "sha256": "c34cd2a1a6b32ab9753442f00a1e3e94c2d7ce227bdca304c46ddae3c749100d",
+    "bytes": 142496,
+    "characters": 141270,
+    "frozenPath": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/rendered-effective.md"
+  },
+  "nativeDelivery": {
+    "recordSha256": "2244ca9742893dc8bebb597580c033d212836de1d6884ebd7837c58fb787593d",
+    "completeAgentsTextSha256": "68b95439e762d2f5a788b75f5f0a6063f8bd62db5551d78d2dd9cd22500d2835",
+    "completeAgentsTextBytes": 143210,
+    "occurrences": 1,
+    "renderMatchesSourceInputs": true,
+    "prefix": "# AGENTS.md instructions\n\n<INSTRUCTIONS>\n",
+    "suffix": "\n---\n## Codex Lock Enforcement Status\n\n<!-- papercusp-rule:file-locking=explicit-manual -->\n- **Effective lockMode:** `manual` (hook health: `configured-unverified`; runtimeProbed: `false`; generation: `1`).\n- **Effective instruction:** Before every file edit, explicitly call locks:acquire and release the returned lock after the atomic edit; do not assume a hook covered it.\n- **Why:** Hooks are configured, but this exact Codex owner has not produced a successful runtime decision yet.\n- **Resync:** `coord:orient.codexLocks` is authoritative after launch. Replace this snapshot when its generation changes; never merge automatic and manual instructions.\n</INSTRUCTIONS>",
+    "excludedRenderedFields": [],
+    "qualification": "The source render is preserved in full. Native CLI framing and lock-status suffix are enumerated separately; no render bytes were normalized or removed."
+  },
+  "files": [
+    {
+      "path": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/rendered-effective.md",
+      "sha256": "c34cd2a1a6b32ab9753442f00a1e3e94c2d7ce227bdca304c46ddae3c749100d",
+      "bytes": 142496
+    },
+    {
+      "path": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/native-agents-record.jsonl",
+      "sha256": "2244ca9742893dc8bebb597580c033d212836de1d6884ebd7837c58fb787593d",
+      "bytes": 146156
+    },
+    {
+      "path": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/native-session-meta.jsonl",
+      "sha256": "10d12d7ec8f90d4f2a7719dd3c4d7120f3b8901870429678a2a56bde98f33bb0",
+      "bytes": 22691
+    },
+    {
+      "path": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/source-closure.json",
+      "sha256": "4f55159e122c80516ec9796bf334efbac0222d738a677a995a1b00518a5f92dd",
+      "bytes": 2007872
+    }
+  ],
+  "limits": [
+    "Bounded initial base/practice launch observation; no newly applied mode or fleet-posture coverage.",
+    "This artifact does not replace the unchanged 2026-10-22 frozen baseline or its static repository prompt pin.",
+    "No complete role/identity/stack tool or effective-argument census, vault baseline acceptance, independent acceptance, activation audit, or shipment is claimed.",
+    "Native session bytes and recorded launch inputs establish prompt delivery; they do not authenticate disputed owner turns or answer source question349651.",
+    "Raw prompt/source/native records remain in an owner-only evidence directory; this repository artifact stores digests, metadata and explicitly enumerated CLI framing only."
+  ],
+  "publication": {
+    "revision": 2,
+    "originalManifestSha256": "b97c76ba622e84b0e9f27728455f994f5d01822ce8c9221f570f2f65b1869697",
+    "originalManifestRef": "~/.papercusp/evidence/idop-p001-rendered-prompt-20261024-v1/manifest-original-b97c76ba.json",
+    "pathResolution": "Resolve a leading ~/ against the current reader's home directory.",
+    "qualification": "Only serialized file references were made home-relative. Original rendered prompt, native records and recorded launch inputs remain unchanged."
+  }
+}

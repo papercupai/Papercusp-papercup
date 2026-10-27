@@ -31,6 +31,10 @@
  * Pure functions only: file and database I/O live in `run-p2p-candidate-manifest.ts`.
  */
 import { createHash } from 'node:crypto';
+export { validateP521Qualifications } from './p521-qualification-evidence';
+export type { P521Subject, EndgameRawOriginal, P521QualificationInput, P521QualificationDeps, P521QualificationReport } from './p521-qualification-evidence';
+export { verifyP521SeedPopulation } from './p521-seed-population';
+export type { P521SeedPopulationInput, P521SeedPopulationDeps } from './p521-seed-population';
 import type { EvidenceRef } from '@papercusp/release-profile';
 import {
   candidateArtifactDigest,
@@ -38,6 +42,8 @@ import {
   type P2pCandidateArtifact,
   type P2pCandidateProvenance,
   type P2pJourneyResult,
+  type P521LocalPrecheck,
+  type P521PrecheckSubject,
 } from './p2p-candidate-manifest';
 
 export const CANDIDATE_PROVENANCE_SCHEMA_VERSION = 1 as const;
@@ -322,7 +328,7 @@ export function validateEndgameShipmentLedger(value: unknown, pins: EndgameEvide
     const implementers = Array.isArray(eligibility.implementerIds) ? eligibility.implementerIds : [];
     if (!nonempty(eligibility.ref) || eligibility.graderId !== grade.graderId
       || !nonempty(eligibility.rubricAuthorId) || !implementers.length || !implementers.every(nonempty)
-      || grade.graderId === eligibility.rubricAuthorId || implementers.includes(grade.graderId)
+      || grade.graderId === eligibility.rubricAuthorId || implementers.some(id => id === grade.graderId)
       || eligibility.liveAtGrading !== true || eligibility.outsideRubricAuthorLineage !== true
       || eligibility.outsideImplementationLineage !== true || eligibility.soleVettingCritic !== false
       || eligibility.launchedByImplementer !== false)
@@ -845,11 +851,15 @@ export interface JourneyEvidenceBinding {
   reason: string;
   measuredAt: string;
   observedPeers: string[];
+  startedAt?: string;
+  precheckSubject?: P521PrecheckSubject;
+  localPrechecks?: readonly P521LocalPrecheck[];
   selected: boolean;
 }
 
 export interface DerivedJourneyEvidence {
   journeys: Record<string, P2pJourneyResult>;
+  localPrechecks?: readonly P521LocalPrecheck[];
   bindings: JourneyEvidenceBinding[];
   /** Candidate-bound evidence that declares no P-521 journey: reported, never counted. */
   unmapped: { path: string; sha256: string; name: string | null }[];
@@ -1079,11 +1089,16 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
       reason,
       measuredAt,
       observedPeers: observedPeersOf(doc),
+      startedAt: typeof doc.startedAt === 'string' ? doc.startedAt : undefined,
+      precheckSubject: doc.precheckSubject as P521PrecheckSubject | undefined,
+      localPrechecks: Array.isArray(doc.localPrechecks) ? doc.localPrechecks as P521LocalPrecheck[] : undefined,
       selected: false,
     });
   }
 
   const journeys: Record<string, P2pJourneyResult> = {};
+  const localPrechecks: P521LocalPrecheck[] = [];
+  const precheckDocs = new Set<string>();
   for (const journey of P521_JOURNEYS) {
     const candidates = bindings.filter((b) => b.journeys.includes(journey.key));
     if (candidates.length === 0) continue;
@@ -1092,6 +1107,10 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
     const onCandidate = candidates.filter((b) => b.binding === 'this-candidate');
     const chosen = onCandidate.length ? latest(onCandidate) : latest(candidates);
     chosen.selected = true;
+    if (!precheckDocs.has(chosen.path)) {
+      localPrechecks.push(...(chosen.localPrechecks ?? []));
+      precheckDocs.add(chosen.path);
+    }
     const refs: EvidenceRef[] = [
       {
         ref: chosen.path,
@@ -1114,11 +1133,13 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
       evidence: refs,
       artifactDigest: chosen.binding === 'this-candidate' ? digest : foreignDigest(chosen.artifactSha256s),
       observedPeers: chosen.observedPeers,
+      startedAt: chosen.startedAt,
+      precheckSubject: chosen.precheckSubject,
     };
   }
 
   for (const m of mappings) {
     if (m.reason === 'pending') m.reason = 'no evidence document at this path';
   }
-  return { journeys, bindings, unmapped, ignored, mappings };
+  return { journeys, localPrechecks, bindings, unmapped, ignored, mappings };
 }

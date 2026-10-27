@@ -44,12 +44,13 @@ import { readExternalBlockers, type ExternalBlockerRecord } from '../../external
 import { setIssueState } from '../../issues-engineer';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from '../../git-pipeline-stats';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 
 export const EPISODE_SCOPED_OPERATIONAL_RECONCILE = 'episode-scoped-operational-reconcile';
 export const DEFAULT_EPISODE_SCOPED_OPERATIONAL_RECONCILE_CAP = 100;
 export const MAX_EPISODE_SCOPED_OPERATIONAL_RECONCILE_CAP = 500;
 
-const ISSUE_FAMILY_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 const TERMINAL_STATES = new Set(ANY_FAMILY_TERMINAL_STATES);
 
 /** A typed blocker `ref` naming a specific historical green-checkpoint episode. */
@@ -222,7 +223,7 @@ export async function reconcileEpisodeScopedOperationalRows(input: {
         SELECT workspace_id, harness_slug, feature_id, status, item_kind, title, payload
           FROM harness_shared.work_items
          WHERE workspace_id = ANY(${workspaceIds}::text[])
-           AND item_kind = ANY(ARRAY['bug','change','task'])
+           AND item_kind = ANY(ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
            AND status <> ALL(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
            AND COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
            AND COALESCE(payload, '{}'::jsonb) ->> '_lane' IS DISTINCT FROM 'observation'

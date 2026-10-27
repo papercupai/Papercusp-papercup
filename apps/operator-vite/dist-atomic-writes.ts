@@ -79,6 +79,7 @@ export function emittedByteLength(item: {
 export function distAtomicWritesPlugin(): Plugin {
   let outDir = '';
   let assetsDir = 'assets';
+  let writesEnabled = true;
   let stashedHtml: Array<{ fileName: string; bytes: Buffer }> = [];
   return {
     name: 'papercusp-dist-atomic-writes',
@@ -87,6 +88,7 @@ export function distAtomicWritesPlugin(): Plugin {
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
       assetsDir = config.build.assetsDir || 'assets';
+      writesEnabled = config.build.write !== false;
     },
     buildStart() {
       stashedHtml = [];
@@ -100,6 +102,9 @@ export function distAtomicWritesPlugin(): Plugin {
     generateBundle: {
       order: 'post',
       handler(_opts, bundle) {
+      // In-memory consumers need the COMPLETE output graph. They never call
+      // writeBundle, and must not update retained assets' mtimes either.
+      if (!writesEnabled) return;
       stashedHtml = [];
       for (const [key, item] of Object.entries(bundle)) {
         const { fileName } = item;
@@ -136,6 +141,7 @@ export function distAtomicWritesPlugin(): Plugin {
     // written successfully, so index.html never points at chunks that a failed
     // build didn't produce.
     writeBundle() {
+      if (!writesEnabled) return;
       for (const { fileName, bytes } of stashedHtml) {
         const target = join(outDir, fileName);
         try {

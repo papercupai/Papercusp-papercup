@@ -44,6 +44,24 @@ describe('autoStartAfterActivationAudit (WI-10008137)', () => {
     });
   });
 
+  it('preserves a typed refusal from the transport result-door text envelope', async () => {
+    const start = vi.fn().mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: false,
+          results: [{ ok: false, slug: 's', error: 'spec_quality_not_current', message: 'evaluate spec quality first' }],
+        }),
+      }],
+    });
+    const out = await autoStartAfterActivationAudit({ slug: 's', planContent: plan('draft'), start });
+    expect(out).toEqual({
+      attempted: true,
+      started: false,
+      refusal: { error: 'spec_quality_not_current', message: 'evaluate spec quality first' },
+    });
+  });
+
   it('uses the hint when a refusal carries no message (consult_available shape)', async () => {
     const start = vi.fn().mockResolvedValue({
       data: { ok: false, results: [{ ok: false, error: 'consult_available', hint: 'review candidates' }] },

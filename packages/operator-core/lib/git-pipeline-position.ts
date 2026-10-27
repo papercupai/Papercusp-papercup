@@ -66,6 +66,7 @@ import {
   projectRetriageCell,
   type RetriageCellProjection,
 } from './release/in-flight-retriage';
+import { projectRunStatusCell, type RunStatusCellProjection } from './release/run-status-cell';
 import {
   GATE_ABORT_DETAIL_LIVENESS_MARKER,
   gateAbortDetailAtRead,
@@ -1518,6 +1519,11 @@ export interface PipelinePosition {
        * Emitted only when a live authority answered, so the cache-only reply shape is unchanged.
        */
       activeSource?: 'run-lock' | 'process-authority';
+      /** WI-6554700010029556: the live run's pid, emitted ONLY when a live authority answered
+       *  (`activeSource` present) — the run lock is `kill(pid,0)`-verified on this read and the
+       *  process authority is identified from the process's own env + cgroup. Never carried
+       *  from the cache: a snapshot-age pid can name a recycled process. */
+      pid?: number;
       /** P-009: the run is in the pre-lock startup/materialization interval and was
        * identified from its gate authority stamps, exact integration-root env, and
        * unified cgroup. Present only with activeSource='process-authority'. */
@@ -1598,6 +1604,11 @@ export interface PipelinePosition {
       progressAtMs?: number | null;
       /** Current phase published by the active checkpoint run, when readable. */
       currentPhase?: string | null;
+      /** WI-6554700010029556: what the run is doing inside `currentPhase`
+       *  (`repair-head-verification`, `repair-tick-legs`, `materialization`), when published. */
+      currentActivity?: string;
+      /** WI-6554700010029556: the leg in flight, 1-based `index` of `total`, when published. */
+      currentLeg?: { label: string; index: number; total: number };
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -1748,6 +1759,15 @@ export interface PipelinePosition {
      * destructive green-light this cell withholds.
      */
     retriage?: RetriageCellProjection;
+    /**
+     * WI-6554700010029556 (owner #2439) — IS THE GATE RUN ALIVE, AND WHAT IS IT DOING?
+     * The CELLED reading of `checkpointRunInFlight` (`gate.greenCheckpoint.run`): liveness and
+     * its authority, the verified pid, phase/activity/leg, elapsed, heartbeat age, and the
+     * shared `certifyCheckpointProgress` verdict, in one read.
+     *
+     * ⚠ ALWAYS an object — `code: 'no-run-reading'` is the unmeasured answer, never `null`.
+     */
+    run?: RunStatusCellProjection;
     /**
      * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
      * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the
@@ -5042,6 +5062,8 @@ export function mapCheckpointRunInFlight(
   // cache can make an old run look like the live run's heartbeat/phase.
   const progressAtMs = active && cachedDescribesNow ? cachedRun!.progressAtMs : undefined;
   const currentPhase = active && cachedDescribesNow ? cachedRun!.currentPhase : undefined;
+  const currentActivity = active && cachedDescribesNow ? cachedRun!.currentActivity : undefined;
+  const currentLeg = active && cachedDescribesNow ? cachedRun!.currentLeg : undefined;
   const systemd = cachedDescribesNow ? cachedRun!.systemd : undefined;
   // Terminal marker/evidence are facts about the most recently finished unit, not detail
   // about the run that is active now. A live lock can release between the derived snapshot
@@ -5059,6 +5081,13 @@ export function mapCheckpointRunInFlight(
   // Consulted ONLY when there is no refire marker: a refire supersedes the candidate the run
   // started on, so `retriage` legitimately wins where both exist.
   const candMarker = active && !marker && candidateMarker ? candidateMarker : null;
+  // WI-6554700010029556: the pid only when THIS read's live authority produced it. Gated on
+  // `lockDecides` + `held` so a not-held lock (or the cache-wins startup sliver) never
+  // attaches a pid to a run it did not verify.
+  const livePid =
+    active && lockDecides && liveLock?.held === true
+      ? (typeof liveLock.pid === 'number' ? liveLock.pid : liveLock.processAuthority?.pid)
+      : undefined;
   return {
     active,
     ...(systemd !== undefined ? { systemd } : {}),
@@ -5066,6 +5095,7 @@ export function mapCheckpointRunInFlight(
     ...(terminalEvidence ? { terminalEvidence } : {}),
     // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
     ...(lockDecides ? { activeSource: liveLock?.source ?? ('run-lock' as const) } : {}),
+    ...(typeof livePid === 'number' ? { pid: livePid } : {}),
     ...(active && liveLock?.source === 'process-authority' && liveLock.processAuthority
       ? { processAuthority: liveLock.processAuthority }
       : {}),
@@ -5115,6 +5145,8 @@ export function mapCheckpointRunInFlight(
     elapsedSec,
     ...(progressAtMs !== undefined ? { progressAtMs } : {}),
     ...(currentPhase !== undefined ? { currentPhase } : {}),
+    ...(currentActivity !== undefined ? { currentActivity } : {}),
+    ...(currentLeg !== undefined ? { currentLeg: { ...currentLeg } } : {}),
     // Still the CACHE's age (that is what the field documents), so it stays null when the
     // lock answered with no cache behind it — there is no cache to be stale.
     asOfAgeMs: cacheAgeMs,
@@ -6536,6 +6568,10 @@ export async function gitPipelinePosition(
     //
     // ⚠ ALWAYS AN OBJECT, never null — same contract as the two projections above.
     retriage: projectRetriageCell(checkpointRunInFlight, snap.gate.inFlightRetriage, Date.now()),
+    // WI-6554700010029556 (owner #2439). The CELLED "is the gate run alive, and what is it
+    // doing" — the same mapped leg as `retriage` above, projected with the shared
+    // certifyCheckpointProgress verdict so no second stall rule exists. ALWAYS an object.
+    run: projectRunStatusCell(checkpointRunInFlight, Date.now()),
     // WI-1702869. Sits beside `repairQueue` because it is the same subject read one level
     // deeper: the queue says WHICH sha is frozen, this says WHAT IS FAILING on it and
     // whether each failure is already repaired at repairHead.

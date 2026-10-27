@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { BenchTask } from './types';
 import type { ProcExec } from './grader/swe-bench-pro';
 import {
@@ -233,6 +234,87 @@ describe('makeFrontierSweCloneGradeSeam', () => {
     await expect(
       makeFrontierSweCloneGradeSeam({ version: 'v', exec: failing.exec }).teardown({ containerId: 'cid', image: 'i', instanceId: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('in-container Claude frozen binary and isolated session mount', () => {
+  const made: string[] = [];
+  afterEach(() => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+  function fixture(probe: 'ok' | 'loader-failure' | 'wrong-version' | 'timeout' | 'drift' = 'ok') {
+    const base = mkdtempSync(join(tmpdir(), 'fswe-seam-claude-')); made.push(base);
+    const homesRoot = join(base, 'session-claude'), claudeBinary = join(base, '2.1.293');
+    mkdirSync(join(homesRoot, 'foreign-session'), { recursive: true });
+    writeFileSync(join(homesRoot, 'foreign-session', 'credentials.json'), 'must stay host-only');
+    const header = Buffer.alloc(20); header.write('7f454c460201', 0, 'hex');
+    header.writeUInt16LE(process.arch === 'arm64' ? 183 : 62, 18);
+    writeFileSync(claudeBinary, header, { mode: 0o755 });
+    const config = { homesRoot, claudeBinary, version: '2.1.293', sha256: createHash('sha256').update(header).digest('hex'),
+      hostOwner: { uid: 4242, gid: 4343 }, versionProbeTimeoutMs: probe === 'timeout' ? 5 : 30_000 };
+    const docker = fakeDocker({}), calls = docker.calls;
+    const exec: ProcExec = async (cmd, args) => {
+      if (args[0] === 'exec' && args.includes('--version')) {
+        calls.push(args);
+        if (probe === 'timeout') return new Promise(() => {});
+        if (probe === 'drift') writeFileSync(claudeBinary, 'replacement');
+        return { code: probe === 'loader-failure' ? 127 : 0, stderr: '',
+          stdout: probe === 'wrong-version' ? '2.1.292 (Claude Code)\n' : '2.1.293 (Claude Code)\n' };
+      }
+      return docker.exec(cmd, args);
+    };
+    const egress = { async openTaskNetwork() {
+      calls.push(['egress-open']);
+      return { network: 'claude-task-network', async release() { calls.push(['egress-release']); return []; } };
+    } };
+    return { base, config, calls, exec, egress };
+  }
+  it('mounts only this task home and frozen binary, probes without host environment and restores private transcripts', async () => {
+    const f = fixture();
+    const seam = makeFrontierSweCloneGradeSeam({ exec: f.exec, inContainerClaude: f.config, egress: f.egress });
+    const h = await seam.clone(task());
+    expect(h.inContainerCodex).toBeUndefined();
+    expect(h.inContainerClaude).toMatchObject({ binPath: '/opt/papercusp/claude', version: f.config.version, sha256: f.config.sha256 });
+    const m = h.inContainerClaude!, root = m.roots[0];
+    const run = f.calls.find(c => c[0] === 'run')!;
+    expect(run.flatMap((a, i) => a === '--mount' ? [run[i + 1]] : [])).toEqual([
+      `type=bind,source=${root.perTaskDir},target=${f.config.homesRoot}`,
+      `type=bind,source=${f.config.claudeBinary},target=/opt/papercusp/claude,readonly`,
+    ]);
+    expect(readdirSync(root.perTaskDir)).toEqual([]);
+    expect(f.calls.find(c => c.includes('--version'))).toEqual(['exec', '-w', '/app', h.containerId, 'env', '-i',
+      'HOME=/tmp', 'CLAUDE_CONFIG_DIR=/tmp/papercusp-claude-version', '/opt/papercusp/claude', '--version']);
+    const relocated = join(root.perTaskDir, 'own-session'); mkdirSync(relocated);
+    writeFileSync(join(relocated, 'transcript.jsonl'), 'retained', { mode: 0o600 });
+    symlinkSync(relocated, join(root.hostRoot, 'own-session'));
+    await seam.teardown(h);
+    expect(readFileSync(join(root.hostRoot, 'own-session', 'transcript.jsonl'), 'utf8')).toBe('retained');
+    expect(existsSync(root.perTaskDir)).toBe(false);
+    expect(f.calls.find(c => c[0] === 'exec' && c.includes('chown'))).toEqual(['exec', '-u', '0', h.containerId, 'chown', '-R', '4242:4343', root.hostRoot]);
+    expect(f.calls.findIndex(c => c[0] === 'rm')).toBeLessThan(f.calls.findIndex(c => c[0] === 'egress-release'));
+  });
+  it.each(['loader-failure', 'wrong-version', 'timeout', 'drift'] as const)('refuses %s before returning an assignment and cleans the task', async probe => {
+    const f = fixture(probe);
+    const seam = makeFrontierSweCloneGradeSeam({ exec: f.exec, inContainerClaude: f.config, egress: f.egress });
+    await expect(seam.clone(task())).rejects.toThrow(/Claude/);
+    expect(f.calls.filter(c => c[0] === 'rm')).toEqual([['rm', '-f', 'deadbeefcafe']]);
+    expect(f.calls.filter(c => c[0] === 'egress-release')).toHaveLength(1);
+    expect(readdirSync(f.base)).toEqual(['2.1.293', 'session-claude']);
+  });
+  it('rejects a changed binary before allocating a network and snapshots caller configuration', async () => {
+    const f = fixture(), original = f.config.sha256;
+    const seam = makeFrontierSweCloneGradeSeam({ exec: f.exec, inContainerClaude: f.config, egress: f.egress });
+    f.config.version = '9.9.9'; f.config.sha256 = '0'.repeat(64);
+    const handle = await seam.clone(task());
+    expect(handle.inContainerClaude).toMatchObject({ version: '2.1.293', sha256: original });
+    await seam.teardown(handle); f.calls.splice(0);
+    writeFileSync(f.config.claudeBinary, 'changed');
+    await expect(seam.clone(task())).rejects.toThrow(/SHA256/);
+    expect(f.calls).toEqual([]);
+  });
+  it('requires egress, a frozen binary hash and a single native backend', () => {
+    const f = fixture();
+    expect(() => makeFrontierSweCloneGradeSeam({ inContainerClaude: f.config })).toThrow(/egress/);
+    expect(() => makeFrontierSweCloneGradeSeam({ inContainerClaude: { ...f.config, sha256: '0'.repeat(64) }, egress: f.egress })).toThrow(/SHA256/);
+    expect(() => makeFrontierSweCloneGradeSeam({ inContainerClaude: f.config, inContainerCodex: true, egress: f.egress })).toThrow(/one native/);
   });
 });
 

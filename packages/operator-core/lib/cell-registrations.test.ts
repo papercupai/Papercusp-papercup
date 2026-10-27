@@ -21,6 +21,7 @@ import {
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
+  GATE_RUN_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
@@ -41,6 +42,7 @@ const OPERATOR_PIPELINE_CELLS = [
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
+  GATE_RUN_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
 ];
@@ -218,6 +220,9 @@ describe('P-007: the four verdict cells', () => {
       // flight — must I stand down?". A pure lens over gitPipelinePosition()'s already-mapped
       // checkpointRunInFlight leg, so it IS in the pipeline family below.
       'gate.greenCheckpoint.retriage',
+      // WI-6554700010029556 (owner #2439): "is the gate run alive, and what is it doing?" —
+      // the same mapped checkpointRunInFlight leg as `retriage`, so also pipeline-family.
+      'gate.greenCheckpoint.run',
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',

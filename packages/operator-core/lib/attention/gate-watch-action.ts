@@ -24,9 +24,20 @@ import { tickGateWatch } from './gate-watch';
 import { sweepSessionIndependentGates } from './gate-reaper';
 import { sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
 import { sweepOmittedReviews } from './review-stall-reaper';
+import { sweepOwnerDirectiveRecovery } from '../owner-directive-recovery';
 
 registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
+  // Run before transcript IO: a broken/missing transcript cannot strand the
+  // requests of a session that has already ended. No new routine or worker.
+  try {
+    const recovered = await sweepOwnerDirectiveRecovery({ workspaceId: ctx.workspaceId, harness: ctx.installSlug });
+    if (recovered.created || recovered.retained || recovered.errors.length) {
+      console.log(`[owner-directive-recovery] ${JSON.stringify(recovered)}`);
+    }
+  } catch (error) {
+    console.warn(`[owner-directive-recovery] ${error instanceof Error ? error.message : String(error)}`);
+  }
   const maxFiles = Number(cfg.max_files);
   const result = await tickGateWatch({
     roots: readRoots(cfg.roots),

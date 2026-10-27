@@ -242,13 +242,95 @@
       "status": "boot-refused",
       "refusal": "bootstrap-su HTTP400: su.md tiling is unsound; three observation-practice headings are not tile anchors",
       "limitation": "Old serving runtime is not qualified current-build evidence. No successful mode measurement."
+    },
+    {
+      "idempotencyKey": "idop-p001-qualified-mode-measurement-20261022-v1",
+      "transportIdempotencyKey": "59363766-ccbf-4e26-83bc-be6906618ed8",
+      "requestedStack": ["practice:su.practice", "autonomy:su.mode-auto", "audit:su.mode-audit", "ideation:su.mode-ideate"],
+      "ownerId": "su-0b5486e3-1dc5-4c6e-94d3-427538b8dafe",
+      "observedAt": "2026-10-23T01:35:22.361Z",
+      "runtime": "http://127.0.0.1:3170",
+      "runtimeBuildSha": "bbb84aeed6239440aa2ad73d2e123eb7692c02ea",
+      "runtimeQualification": {
+        "event": "staging-ast-guard-qualified-20261022",
+        "awaitId": 351917,
+        "deliveryId": 949981,
+        "workItem": "EI-26711931152517691"
+      },
+      "status": "boot-refused",
+      "opened": 0,
+      "failed": 1,
+      "refusal": "bootstrap-su HTTP400: selected SU identity su.practice is missing practice document",
+      "knownDefect": "EI-26700090355079325",
+      "evidence": {
+        "workItemComment": 1197958,
+        "sourceDiagnosisComment": 1197992,
+        "nativeResultPath": "/tmp/idop-p001-observer-replay-20261023-0136.err",
+        "launchLogPath": "~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/IDOP-P001-read-only-measurement-2652792-1792719322361.log"
+      },
+      "limitation": "Qualified runtime reproduced the refusal; no effective tool catalog or worn-layer receipt was obtained. Earlier transport timeouts remain separate historical outcomes."
+    },
+    {
+      "idempotencyKey": "idop-p001-qualified-mode-measurement-20261023-v2",
+      "transportIdempotencyKey": "2b490d2c-5315-4e82-bba4-780fe815ef49",
+      "requestedStack": ["practice:su.practice", "autonomy:su.mode-auto", "audit:su.mode-audit", "ideation:su.mode-ideate"],
+      "ownerId": "su-31eac535-a867-4982-baa8-0c9d25caa18b",
+      "nativeSessionId": "01a166d6-b773-7811-a94f-83d8bffe6f83",
+      "advSessionId": 50416,
+      "runtime": "http://127.0.0.1:3170",
+      "runtimeBuildSha": "4cb0b7d107",
+      "status": "native-subset-captured-source-provenance-incomplete",
+      "opened": 1,
+      "failed": 0,
+      "captureStartedAt": "2026-10-23T03:42:50.810Z",
+      "captureCompletedAt": "2026-10-23T03:42:58.665Z",
+      "countControl": { "pages": 1, "tools": 63, "uniqueNames": 63, "fullSchemas": 63, "nextCursor": null },
+      "exposureScope": "Configured native tools/list after discovery; dynamic deferred subset, not the complete reachable catalog.",
+      "specificationRevision": "7633138d613af588f6706bdc084d601e78f21fa95745105b78755eb10c92e4e0",
+      "stateRevision": "b844cd1095f9f948e0e5c040",
+      "activationEventIds": [89121, 89122, 89123],
+      "appliedSpecificationLayerRefs": ["collaboration-stance:su-collaborator", "domain:papercusp-engineer"],
+      "registryModes": [],
+      "knownDefect": "EI-26740652954544046",
+      "evidence": {
+        "launchReceiptPath": "/tmp/idop-p001-observer-v2-20261023-0348.json",
+        "nativeCapturePath": "~/idop-P001-native-su-31eac535-20261023T034100-c8f55d58.json",
+        "nativeCaptureSha256": "04f8ca47ca1c85b04222fed052d80dd26301cb34013b4271109c81633db104cc",
+        "activationReceiptPath": "~/idop-P001-native-su-31eac535-20261023T034100-c8f55d58-receipts.json",
+        "activationReceiptSha256": "5017e46020ca71c5f4ec74df6240eba35e541e08971e85926dd9fb688e6e5b0e"
+      },
+      "limitation": "Successful boot and authentic native schema capture establish neither complete reachable-tool coverage nor worn-layer coverage for the requested practice/modes. The compiler drops provider-only layer source documents. Explicit stack selection and registry mode activation remain distinct."
     }
   ],
+  "qualifiedModeObservationV4": {
+    "workItem": "WI-6554700010022507",
+    "ownerId": "su-fb3381b8-24a8-4192-bfd8-46c8d399fc7a",
+    "nativeSessionId": "01a16763-00b7-7042-bcb3-26dd3bbfc6bf",
+    "advSessionId": 50568,
+    "summaryPath": "~/.papercusp/evidence/idop-p001-qualified-mode-measurement-20261023-v4/summary.json",
+    "summarySha256": "6c9d31b435a7f8cf08143adc67242a2f3d2046a4c0277487ec74119df494956c",
+    "parentEvidenceComment": 1199306,
+    "observerEvidenceComment": 1199305,
+    "artifactFileHashesVerified": true,
+    "ready": false,
+    "launchPrincipal": { "kind": "su", "role": "su", "profile": "engineer" },
+    "mcpCaller": { "role": "operator", "isSuperuser": true },
+    "specificationRevision": "dd29d99398a2c07176dd4969a3af0d559c930bcb1701fa1ea57dbc8a34bc295d",
+    "practiceSource": "Applied base activation89350 and its immutable specification include blueprint-layer su.practice and hash-matching rendered prompt bytes; this repairs the V2 source omission only.",
+    "phases": [
+      { "phase": "base", "registeredModes": [], "controlGeneration": 1, "activation": "applied", "nativeTools": 1020, "seededTools": 67, "permissionCensusComplete": false },
+      { "phase": "auto", "registeredModes": ["auto"], "controlGeneration": 2, "activation": "desired", "nativeTools": 1020, "seededTools": 62, "permissionCensusComplete": false, "validPermissionPartitions": 2, "expectedPermissionPartitions": 18 },
+      { "phase": "audit", "registeredModes": ["auto", "audit"], "controlGeneration": 3, "activation": "desired", "nativeTools": 1020, "seededTools": 62, "permissionCensusComplete": false, "validPermissionPartitions": 4, "expectedPermissionPartitions": 18 },
+      { "phase": "ideate", "registeredModes": ["auto", "audit", "ideate"], "controlGeneration": 4, "activation": "prepared", "nativeTools": 1020, "seededTools": 62, "permissionCensusComplete": false, "validPermissionPartitions": 7, "expectedPermissionPartitions": 18 }
+    ],
+    "nativeCatalogControls": "Each phase has a terminal tools/list cursor, unique names and verified argument-schema hashes. Counts measure catalog exposure, not permission annotations or enforcement.",
+    "limitation": "Only the base generation was applied during these captures. Registered auto/audit/ideate catalogs cannot establish applied worn-mode coverage. Permission partitions stopped on recorded errors. Standard su launch is not a successful named composition:su receipt; the prior refusal remains."
+  },
   "unresolved": [
-    { "identity": "su", "reason": "Named composition rejected by launch API preflight; EI-26709802590274641 is assigned to the driving owner." },
-    { "identity": "su.practice", "reason": "Boot refused; qualified current-build observation is still required." },
-    { "identity": "su.mode-audit", "reason": "New compound launch failed before effective tool observation." },
-    { "identity": "su.mode-ideate", "reason": "New compound launch failed before effective tool observation." }
+    { "identity": "su", "reason": "Selector repair is contained on staging, but no successful named-composition catalog receipt has been obtained; EI-26709802590274641." },
+    { "identity": "su.practice", "reason": "V4 applied base receipt and immutable source closure include this layer, repairing the V2 omission. Its complete permission-annotation census remains unproved; retain V2 evidence as historical." },
+    { "identity": "su.mode-audit", "reason": "V4 registered the mode and captured the complete native catalog, but activation remained desired with the base generation still applied; permission annotations are partial. Applied worn-mode coverage remains unproved." },
+    { "identity": "su.mode-ideate", "reason": "V4 registered the mode and captured the complete native catalog, but activation remained prepared with the base generation still applied; permission annotations are partial. Applied worn-mode coverage remains unproved." }
   ],
   "cleanup": {
     "measurementOnly": true,

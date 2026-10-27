@@ -306,9 +306,9 @@ export interface ScoutTickResult {
     | 'cycle-error'
     | 'workspace-ceiling'
     /** 'generation-preflight' (WI-10007380 / P-003): paid generation was skipped
-     *  before the tick — a deep admission throttle or dedup saturation that the
-     *  novelty widening could not break. The specific cause is on the gated tick
-     *  record (detail.reason). A GATE, not a failure. */
+     *  after the scheduled cycle's zero-cost corpus path — a deep admission throttle or dedup saturation
+     *  that the novelty widening could not break. The digest and observation stamps
+     *  still run; the specific cause is on the gated tick record (detail.reason). */
     | 'generation-preflight'
     | 'not-hive-runner'
     | 'no-capacity'

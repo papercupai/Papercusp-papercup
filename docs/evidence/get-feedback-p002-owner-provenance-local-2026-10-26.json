@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "parent": "WI-10005889",
+  "repair": "EI-27007718704640207",
+  "governingDecision": "D-006",
+  "scope": "Local attributed-caller owner consistency guard; not native acceptance, historical lease-transition or ABA proof.",
+  "rootCause": "activity:report preferred args.owner without comparing an attributable caller, before telemetry and native lifecycle classification; the activity renewal subscriber consumes the presented owner.",
+  "change": "Reject an attributable non-transport caller's mismatched owner before noteLiveNativeSession, recordActivity and lifecycle effects. Equal-owner hooks and legacy transport-only ingestion retain their controls.",
+  "sourcePins": {
+    "packages/operator-core/lib/agent-tools/activity/report.ts": "93e72cc78d8feaec8b3106d435f780947ee53898a3fab578259d65c15a193fdf",
+    "packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts": "d40aa0fa6d3c9f6f645497717d8f635bbb5117fae4d75265c948fb4c191caa97"
+  },
+  "verification": {
+    "command": "npm run test:file -- packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts",
+    "baselineHead": "30c8a3d0b8",
+    "worktreeDirty": true,
+    "before": {
+      "passed": 14, "failed": 2, "skipped": 0, "exit": 1,
+      "failures": "The two foreign-owner cases, with and without a native session id, failed their expected refusal before the guard existed.",
+      "log": "/tmp/gf-p002-owner-provenance-before-20261026.log",
+      "sha256": "06d766271755a106551110fd5e75ad9c807b47ef567255e989a75eebd3b5c5d6"
+    },
+    "after": {
+      "passed": 16, "failed": 0, "skipped": 0, "exit": 0,
+      "log": "/tmp/gf-p002-owner-provenance-after-20261026.log",
+      "sha256": "16987321c439e9c9676b89ab78904c4ddf9d25f146cff010153c01511aba31ae"
+    },
+    "limitation": "Local dirty proof. Other report compatibility tests and clean committed verification are required before closing the repair. No canonical evidence binding was added."
+  },
+  "consult": {
+    "conversationId": "conv-request-227e833c72d5afedcd38813985ea98b311df2879c4bb5ab11882f4eeb4e7ad02",
+    "postId": 1206240,
+    "answeringOwner": "su-7133b8ec-e2f3-444d-8969-dc02850bf1c9",
+    "use": "Corroborated source-path diagnosis and equal-owner hook compatibility. Its timestamp correlation proposal is not accepted as exhaustive ABA history."
+  },
+  "currentGfAssessment": {
+    "evaluatorBuild": "f4ccd8d873",
+    "verdict": "fail",
+    "draggingBindingIds": {
+      "traceability": [28326, 28545],
+      "execution-integrity": [28326, 28545],
+      "freshness": [28326, 28545, 70435],
+      "disclosed-gap": [69704, 69782, 70681, 70842]
+    },
+    "shipDryRun": "Governed status=shipped,dryRun=true,pendingDeliveryBarKeys=[R-7] refused acceptance_bar_contract_not_ready. No shipment or reviewer recruitment."
+  },
+  "preserved": ["22091425/22092186 and 70842/70843", "original native28326/28545", "host632 proof without replay", "existing loop fixer and reporter/version-timeout issues"],
+  "remaining": ["Other activity-report compatibility tests", "Clean committed guard proof", "Full native matrix and actor/lease transition history including ABA", "Custody, cohorts, independent acceptance and shipment"],
+  "next": "Continue this owned repair from saved bytes and logs; do not repeat the pre-fix reproduction or completed P002 proof runs."
+}

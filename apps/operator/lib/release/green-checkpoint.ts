@@ -22,8 +22,13 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   mkdirSync,
+  closeSync,
+  fsyncSync,
+  globSync,
+  openSync,
   writeFileSync,
   appendFileSync,
   readdirSync,
@@ -36,6 +41,7 @@ import {
 } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   git,
   revParse,
@@ -178,6 +184,7 @@ import {
 } from "@papercusp/operator-core/lib/release/upstream-inherited-legs";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import type { ReleaseFixerDispatchSkip } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap-cache-retention";
 import {
@@ -193,14 +200,35 @@ import {
   checkpointPidIdentity,
   probeRunnerLiveness,
   readStoredQualification,
+  composeStoredQualificationWork,
+  recordStoredQualificationWorkProgress,
+  recordStoredQualificationWorkYield,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationNativeProducer,
+  recoverStoredQualificationNativeCompletions,
   reserveStoredQualificationRunner,
+  readPreparedCheckpointSelection,
+  commitPreparedCheckpointSelection,
+  checkpointSelectionQueueAuthorityMatches,
+  isPreparedCheckpointSelectionRecord,
+  preparedCheckpointQueueMatches,
+  type PreparedCheckpointSelectionRecord,
   type QualificationPhysicalRunner,
+  type QualificationWorkProgressInput,
   type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import { executedSourceRunContext, executedSourceRunnerIdentity } from "@papercusp/test-config/test-pass-reuse-skip";
+import { readNativeArtifactBytes, writeBudgetedTaskNativeExecutionReceipt } from "../../../../scripts/lib/budgeted-task-scheduler.mjs";
+import { nativeProcessTraceEnv } from "../../../../scripts/lib/vitest-startup-trace.mjs";
+import { evaluatePartialTaskContinuation, partialCurrentExecutionFingerprint, partialTaskCheckpointPath, preparePartialContinuationManifest,
+  preparePartialNativeProducerChannels, preparePartialNativeProducerSelection,
+  preparePartialRemainingSelection, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion,
+  writePartialTaskCheckpointAtomic } from "../../../../scripts/lib/partial-task-resume.mjs";
+// eslint-disable-next-line import/no-relative-packages -- share the native reporter's maintained input classifier
+import { classifyReadPaths } from "../../../../libs/test-config/src/executed-source-map-reporter";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
-import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
+import type { CheckpointVerdict, RecordCheckpointVerdictOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
   isCheckpointCandidateSource,
   type CheckpointCandidateSource,
@@ -359,7 +387,8 @@ import {
 import { recordGateReuseDecision, TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
-import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { armTargetedTaskReuse, defaultRunnerIdentity } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import { judgedTreeProofFormat } from "../../../../scripts/lib/test-pass-reuse.mjs";
 import { applyGitOptionalLocksDefault } from "../../../../scripts/lib/git-optional-locks.mjs";
 // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
 // isolated pass proofs for the pure lane, which records none during the suite (isolate:false).
@@ -385,8 +414,13 @@ import { EXIT_NOT_CHECKED } from "../../../../scripts/lib/not-checked.mjs";
 import {
   resolveBatchTimeoutMs,
   resolveTaskTimeoutMs,
+  resolveQualificationYieldBudget,
+  createQualificationYieldBoundary,
+  type QualificationYieldBudget,
   // @ts-ignore -- plain .mjs policy module, no type declarations; keep immediately above the module specifier.
 } from "../../../../scripts/lib/batch-watchdog.mjs";
+import { runQualificationCommand, type QualificationCommandOptions } from '@papercusp/operator-core/lib/release/checkpoint-qualification-command';
+import { TASK_DEADLINE_EPOCH_MS_ENV } from '@papercusp/operator-core/lib/systemd-scope';
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
 // Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
@@ -507,6 +541,7 @@ export interface PrewarmedCheckpointDependencyGeneration {
    *  Missing/unparseable degrades to false (conservative: keep the exclusive barrier). */
   reused: boolean;
 }
+export type { PreparedCheckpointSelectionRecord };
 
 export interface CheckpointMaterializationSelection {
   /** Workspace directories whose tests/guards are actually selected. */
@@ -762,6 +797,8 @@ export type StagingLineageAbsorptionResult =
     };
 
 export interface CheckpointDeps {
+  qualificationWorkForVerdict?(verdict: Pick<CheckpointVerdict, 'green' | 'candidate' | 'runId'>):
+    Promise<RecordCheckpointVerdictOptions['qualificationWork']>;
   /** Internal trace shared across this physical run's recursive refires. Never live state. */
   decisionTrace?: GateDecisionReplay[];
   /**
@@ -1571,6 +1608,10 @@ export interface CheckpointDeps {
     pending: FrozenRepairPendingCarry,
     record: FrozenRepairCarryRecord,
   ): Promise<boolean>;
+  readPreparedCheckpointSelection?(input: Pick<PreparedCheckpointSelectionRecord,
+    "attemptId" | "integrationRoot" | "checkpointRoot">): Promise<PreparedCheckpointSelectionRecord | null>;
+  commitPreparedCheckpointSelection?(record: PreparedCheckpointSelectionRecord,
+    expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }): Promise<boolean>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
     options: WriteFrozenCandidateRepairQueueOptions,
@@ -1641,6 +1682,12 @@ export interface CheckpointDeps {
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
     checkpointEvidence?: CheckpointEvidence,
+    /**
+     * WI-6554700010029683: receives the dispatcher's typed refusal when it returns no spawn
+     * (`dispatchReleaseFixer`'s scope / stale-candidate / snapshot-mismatch / … guards), so
+     * the gate can say WHY instead of only "did not return a spawn".
+     */
+    onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
   /**
    * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
@@ -3740,9 +3787,24 @@ export function checkpointRunLockDir(
  *  value is introduced that a reader must be able to depend on. */
 export const PHASE_PROTOCOL = 3;
 
+export type CheckpointRunPhaseName = "materializing" | "suite" | "isolating" | "delivering";
+
+/** WI-6554700010029556 (owner #2439): WHAT the run is doing inside its phase, so a reader of the
+ *  run-lock's `phase.json` (dev:pipeline_position, release:trace, the stall watchdog) can name the
+ *  live activity and leg instead of only a coarse phase. `phase` alone keeps its throttle meaning
+ *  for pc-heavy; these fields are additive and never carry a nested `"phase"` key, because
+ *  pc-heavy parses the marker with a greedy `"phase":"…"` sed match. */
+export interface CheckpointRunPhaseDetail {
+  /** e.g. `repair-head-verification`, `repair-tick-legs`, `materialization`. */
+  activity?: string;
+  /** The leg in flight, 1-based `index` of `total`. */
+  leg?: { label: string; index: number; total: number };
+}
+
 export function writeCheckpointRunPhase(
   lockDir: string,
-  phase: "materializing" | "suite" | "isolating" | "delivering",
+  phase: CheckpointRunPhaseName,
+  detail?: CheckpointRunPhaseDetail,
 ): void {
   try {
     writeFileSync(
@@ -3751,10 +3813,90 @@ export function writeCheckpointRunPhase(
         phase,
         at: new Date().toISOString(),
         phaseProtocol: PHASE_PROTOCOL,
+        ...(detail?.activity ? { activity: detail.activity } : {}),
+        ...(detail?.leg
+          ? { leg: { label: detail.leg.label, index: detail.leg.index, total: detail.leg.total } }
+          : {}),
       }),
     );
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
+  }
+}
+
+/** Read this run's own `phase.json` back. Never throws; an absent, unreadable or unrecognized
+ *  marker is `null`. */
+export function readCheckpointRunPhaseMarker(
+  lockDir: string,
+): ({ phase: CheckpointRunPhaseName } & CheckpointRunPhaseDetail) | null {
+  try {
+    const raw = JSON.parse(readFileSync(path.join(lockDir, "phase.json"), "utf8")) as Record<string, unknown>;
+    const phase = raw.phase;
+    if (phase !== "materializing" && phase !== "suite" && phase !== "isolating" && phase !== "delivering") {
+      return null;
+    }
+    const leg = raw.leg as { label?: unknown; index?: unknown; total?: unknown } | undefined;
+    return {
+      phase,
+      ...(typeof raw.activity === "string" ? { activity: raw.activity } : {}),
+      ...(leg && typeof leg.label === "string" && typeof leg.index === "number" && typeof leg.total === "number"
+        ? { leg: { label: leg.label, index: leg.index, total: leg.total } }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** WI-6554700010029556: publish `materializing` (with its heartbeat) for exactly the duration of
+ *  `fn`, then restore the phase the caller had published before it. Measured 2026-10-26: a
+ *  frozen-repair run (verify the repair head, then 26 repair-tick legs) wrote `materializing`
+ *  at the start of its pass and never wrote another phase, so for 2h+ every surface reported
+ *  "materializing, last progress 15:34:29" and pc-heavy kept the fleet clamped to one slot.
+ *  Callers now publish their measurement phase first; a materialization inside it (the
+ *  exclusive pc-heavy barrier needs a closed front door) borrows `materializing` and gives the
+ *  measurement phase back. A prior marker that was itself `materializing`, or absent, is left
+ *  to the caller's next write. */
+export interface PublishedMaterializationDeps {
+  write?: typeof writeCheckpointRunPhase;
+  read?: typeof readCheckpointRunPhaseMarker;
+  heartbeat?: (lockDir: string) => () => void;
+}
+
+/** The begin/end form of {@link withPublishedMaterialization}, for a call site whose
+ *  try/finally already exists. Call the returned function exactly once, in `finally`. */
+export function beginPublishedMaterialization(
+  lockDir: string,
+  deps: PublishedMaterializationDeps = {},
+): () => void {
+  const write = deps.write ?? writeCheckpointRunPhase;
+  const prior = (deps.read ?? readCheckpointRunPhaseMarker)(lockDir);
+  write(lockDir, "materializing", { activity: "materialization" });
+  const stopHeartbeat = (deps.heartbeat ?? startMaterializationHeartbeat)(lockDir);
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    stopHeartbeat();
+    if (prior && prior.phase !== "materializing") {
+      write(lockDir, prior.phase, {
+        ...(prior.activity ? { activity: prior.activity } : {}),
+        ...(prior.leg ? { leg: prior.leg } : {}),
+      });
+    }
+  };
+}
+
+export async function withPublishedMaterialization<T>(
+  lockDir: string,
+  fn: () => Promise<T>,
+  deps: PublishedMaterializationDeps = {},
+): Promise<T> {
+  const end = beginPublishedMaterialization(lockDir, deps);
+  try {
+    return await fn();
+  } finally {
+    end();
   }
 }
 
@@ -4168,8 +4310,17 @@ export async function scheduledAttemptPrewarmTarget(
     );
   }
 
+  // Only a SUITE-PRODUCING decision names the candidate this run will judge. `recover-dead-fixer`
+  // also proceeds (the writer recovers the dead fixer, then re-runs the policy), but its
+  // repairHead is a recovery target, not a judging one. Attaching with it while the queue is still
+  // awaiting-fixer is refused by the reservation's pre-suite retarget guard
+  // (`candidate-mismatch:pre-suite-retarget-queue-not-ready-to-verify`), so every fire that joined
+  // the attempt crashed before the writer could recover the queue (WI-6554700010010801).
+  const judgesPolicyCandidate = queuePreflight.queueDecision === "test-candidate" ||
+    queuePreflight.queueDecision === "verify-repair" ||
+    queuePreflight.queueDecision === "run-normal-gate";
   const policyCandidate =
-    queuePreflight.proceed && queuePreflight.candidate?.trim()
+    queuePreflight.proceed && judgesPolicyCandidate && queuePreflight.candidate?.trim()
       ? queuePreflight.candidate.trim()
       : null;
   const candidate = policyCandidate ?? pinnedCandidate;
@@ -4264,6 +4415,505 @@ export function startCheckpointQualificationProgress(
       await pending;
     },
   };
+}
+
+/** Host-side adapter for the affected runner's existing native OUT announcements.
+ * Selection is supplied independently by the host. Output supplies artifact locations,
+ * never the selected population or custody. Callers must await finish and honor a
+ * refusal before composition; runCmd's diagnostic observer cannot propagate failures.
+ */
+export function createCheckpointQualificationNativeObserver(
+  input: {
+    target: GateVerdictTarget;
+    progress: QualificationWorkProgressInput;
+    tasks: ReadonlyMap<string, {
+      workspaceName: string;
+      selectedSpecifications: unknown[];
+      supersedesCompletionIds?: Record<string, string>;
+    }>;
+    classifyReadPaths?: Parameters<typeof recoverStoredQualificationNativeCompletions>[2];
+    commands?: Map<string, ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'][number]>;
+  },
+  deps: {
+    enroll: typeof recordStoredQualificationNativeProducer;
+    recover: typeof recoverStoredQualificationNativeCompletions;
+    record?: typeof recordStoredQualificationWorkProgress;
+  } = { enroll: recordStoredQualificationNativeProducer, recover: recoverStoredQualificationNativeCompletions },
+) {
+  const target = structuredClone(input.target);
+  const progress = structuredClone({ ...input.progress, updates: [] });
+  const tasks = new Map([...input.tasks].map(([key, task]) => [key, structuredClone(task)]));
+  const commands = new Map([...(input.commands ?? [])].map(([key, definition]) => [key, structuredClone(definition)]));
+  const completedCommands = new Map<string, string>();
+  const streams = new Map<string, { remainder: string; discarding: boolean }>();
+  const producers = new Map<string, string>();
+  const taskProducers = new Map<string, string>();
+  let pending: Promise<void> = Promise.resolve();
+  let failure: string | null = input.progress.updates.length ? 'native-producer-mixed-updates' : null;
+  let finished: Promise<
+    { status: 'ready'; transaction: Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction'] } |
+    { status: 'refused'; reason: string }
+  > | undefined;
+  const refuse = (reason: string) => { failure ??= reason; };
+  const acceptLine = (line: string) => {
+    if (!failure && line.startsWith('QUALIFICATION_TASK_COMPLETION')) {
+      let observation: { task: string; root: string; receipt: { ref: string; sha256: string; byteLength: number } };
+      try {
+        if (line.length > 16_384 || !line.startsWith('QUALIFICATION_TASK_COMPLETION=')) throw new Error('invalid');
+        observation = JSON.parse(line.slice('QUALIFICATION_TASK_COMPLETION='.length));
+      } catch { refuse('task-command-announcement-invalid'); return; }
+      const definition = commands.get(observation?.task);
+      if (!definition) { refuse('task-command-announcement-outside-selection'); return; }
+      const key = JSON.stringify(observation);
+      if (completedCommands.has(observation.task)) {
+        if (completedCommands.get(observation.task) !== key) refuse('task-command-announcement-conflict');
+        return;
+      }
+      completedCommands.set(observation.task, key);
+      pending = pending.then(async () => {
+        if (failure) return;
+        const record = deps.record ?? recordStoredQualificationWorkProgress;
+        const custody = await record(target, progress);
+        if (custody.status !== 'updated' && custody.status !== 'idempotent') {
+          refuse(`task-command-custody-${custody.status}`); return;
+        }
+        const observed = readPartialTaskCommandCompletion(observation, { ...progress, sourceCommit: progress.candidate,
+          runnerReservedAtMs: custody.transaction.currentPhysicalRunner?.reservedAtMs, nowMs: Date.now() }, definition);
+        if (observed.status !== 'ready') { refuse(`task-command-${observed.reason}`); return; }
+        const stored = await record(target, { ...progress, updates: observed.receipts.map(receipt => {
+          const prior = custody.transaction.continuation?.receipts.find(row => row.unitId === receipt.unitId);
+          return { receipt, ...(prior ? { supersedesCompletionId: prior.completionId } : {}) };
+        }) });
+        if (stored.status !== 'updated' && stored.status !== 'idempotent') refuse(`task-command-store-${stored.status}`);
+      }).catch(() => { refuse('task-command-completion-unreadable'); });
+      return;
+    }
+    if (failure || !line.startsWith('QUALIFICATION_NATIVE_PRODUCER')) return;
+    const match = line.length <= 16_384 && line.match(
+      /^QUALIFICATION_NATIVE_PRODUCER task=("(?:[^"\\]|\\.)*") path=("(?:[^"\\]|\\.)*")$/,
+    );
+    if (!match) { refuse('native-producer-announcement-invalid'); return; }
+    let taskKey: string, producerPath: string;
+    try { taskKey = JSON.parse(match[1]!); producerPath = JSON.parse(match[2]!); }
+    catch { refuse('native-producer-announcement-invalid'); return; }
+    const task = tasks.get(taskKey);
+    if (!task || !path.isAbsolute(producerPath) || !producerPath.endsWith('.producer.json')) {
+      refuse('native-producer-announcement-outside-selection'); return;
+    }
+    const prior = producers.get(producerPath);
+    if (prior !== undefined) {
+      if (prior !== taskKey) refuse('native-producer-announcement-conflict');
+      return;
+    }
+    // One native producer per independently selected task in this physical run.
+    // This also bounds the asynchronous enrollment queue by that frozen inventory.
+    if (taskProducers.has(taskKey)) { refuse('native-producer-announcement-conflict'); return; }
+    producers.set(producerPath, taskKey);
+    taskProducers.set(taskKey, producerPath);
+    pending = pending.then(async () => {
+      if (failure) return;
+      const enrolled = await deps.enroll(target, progress, {
+        ...task, taskKey, producerPath, path: producerPath.slice(0, -'.producer.json'.length),
+      });
+      if (enrolled.status !== 'updated' && enrolled.status !== 'idempotent')
+        refuse(`native-producer-enrollment-${enrolled.status}`);
+    }).catch(() => { refuse('native-producer-enrollment-unreadable'); });
+  };
+  const recover = () => {
+    // Serialize with enrollment and command stores, including output received
+    // during a previous read. A snapshot must never overtake its durable writes.
+    const result = pending.then(async () => {
+      if (failure) return { status: 'refused' as const, reason: failure };
+      try {
+        const recovered = await deps.recover(target, progress, input.classifyReadPaths);
+        if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
+          refuse(`native-producer-recovery-${recovered.status}`);
+        if (failure) return { status: 'refused' as const, reason: failure };
+        if (recovered.status === 'updated' || recovered.status === 'idempotent')
+          return { status: 'ready' as const, transaction: recovered.transaction };
+        return { status: 'refused' as const, reason: 'native-producer-recovery-unmeasured' };
+      } catch {
+        refuse('native-producer-recovery-unreadable');
+        return { status: 'refused' as const, reason: failure! };
+      }
+    });
+    pending = result.then(() => {});
+    return result;
+  };
+  return {
+    onOutput(stream: 'stdout' | 'stderr', text: string) {
+      if (finished) { refuse('native-producer-output-after-finish'); return; }
+      const state = streams.get(stream) ?? { remainder: '', discarding: false };
+      let chunk = text;
+      if (state.discarding) {
+        const newline = chunk.indexOf('\n');
+        if (newline < 0) return;
+        chunk = chunk.slice(newline + 1);
+        state.discarding = false;
+      }
+      const lines = (state.remainder + chunk).split(/\r?\n/);
+      state.remainder = lines.pop() ?? '';
+      for (const line of lines) acceptLine(line);
+      if (state.remainder.length > 16_384) {
+        if (state.remainder.startsWith('QUALIFICATION_NATIVE_PRODUCER') || state.remainder.startsWith('QUALIFICATION_TASK_COMPLETION'))
+          refuse('native-producer-announcement-invalid');
+        state.remainder = '';
+        state.discarding = true;
+      }
+      streams.set(stream, state);
+    },
+    /** Repeatable, authenticated durable-prefix read for the quantum boundary.
+     * Keep observing the physical child; unfinished output is never parsed as a
+     * complete announcement, and any recovery refusal remains a green barrier. */
+    snapshot() { return finished ?? recover(); },
+    finish() {
+      if (finished) return finished;
+      for (const state of streams.values()) if (!state.discarding) acceptLine(state.remainder);
+      // Recover already-enrolled producers even when this invocation emitted none.
+      finished = recover();
+      return finished;
+    },
+  };
+}
+
+/** Connect the quantum policy to authenticated native snapshots and the existing
+ * row-locked receipt store. Process teardown remains the owning executor's job. */
+export function createCheckpointQualificationYieldBoundary(input: {
+  target: GateVerdictTarget;
+  progress: QualificationWorkProgressInput;
+  observer: Pick<ReturnType<typeof createCheckpointQualificationNativeObserver>, 'snapshot'>;
+  budget: QualificationYieldBudget;
+  baselineReceipts: Array<{ unitId: string; completionId: string }>;
+  onYield: Parameters<typeof createQualificationYieldBoundary>[0]['onYield'];
+  onKill: Parameters<typeof createQualificationYieldBoundary>[0]['onKill'];
+}, deps = { record: recordStoredQualificationWorkYield }) {
+  const target = structuredClone(input.target), progress = structuredClone(input.progress);
+  if (progress.updates.length) throw new Error('qualification-yield-mixed-updates');
+  const identity = partialCurrentExecutionFingerprint({ ...progress, sourceCommit: progress.candidate });
+  if (!identity) throw new Error('qualification-yield-identity-unmeasured');
+  const units = progress.manifest.units.filter(unit => !unit.exclusion).map(unit => unit.id);
+  const selected = new Set(units);
+  let receipts = new Map<string, string>();
+  return createQualificationYieldBoundary({ identity, budget: input.budget, unitIds: units,
+    baselineReceipts: structuredClone(input.baselineReceipts.filter(receipt => selected.has(receipt.unitId))),
+    readDurableProgress: async signal => {
+      if (signal.aborted) return { status: 'refused' };
+      const observed = await input.observer.snapshot();
+      if (signal.aborted || observed.status !== 'ready') return { status: 'refused' };
+      const current = observed.transaction, runner = current.currentPhysicalRunner;
+      if (current.attemptId !== progress.attemptId || current.candidate !== progress.candidate ||
+          current.repairHead !== progress.repairHead || current.runId !== progress.runId ||
+          runner?.id !== progress.runnerId || runner.pidIdentity !== progress.pidIdentity ||
+          !current.continuation) return { status: 'refused' };
+      const completed = current.continuation.receipts.filter(receipt => selected.has(receipt.unitId));
+      receipts = new Map(completed.map(receipt => [receipt.unitId, receipt.completionId]));
+      return { status: 'ready', identity, receipts: completed };
+    },
+    commitYield: async (cursor, signal) => {
+      if (signal.aborted) return false;
+      const result = await deps.record(target, { ...progress, updates: [] }, {
+        runnerId: progress.runnerId, runId: progress.runId, savedAtMs: Date.now(),
+        executionCutoffEpochMs: cursor.budget.executionCutoffEpochMs,
+        yieldDeadlineEpochMs: cursor.budget.yieldDeadlineEpochMs,
+        cleanupDeadlineEpochMs: cursor.budget.cleanupDeadlineEpochMs,
+        orphanDeadlineEpochMs: cursor.budget.orphanDeadlineEpochMs,
+        callerDeadlineEpochMs: cursor.budget.callerDeadlineEpochMs,
+        completed: cursor.completedUnitIds.map(unitId => ({ unitId, completionId: receipts.get(unitId)! })),
+        pendingUnitIds: [...cursor.pendingUnitIds],
+      }, signal);
+      return !signal.aborted && (result.status === 'updated' || result.status === 'idempotent');
+    }, onYield: input.onYield, onKill: input.onKill });
+}
+
+export class CheckpointQualificationBoundaryError extends Error {
+  constructor(readonly disposition: 'yielded' | 'killed', readonly detail: string) {
+    super(`QUALIFICATION_BOUNDARY status=${disposition} reason=${detail}`);
+  }
+}
+
+/** Derive every bound from the original invocation clock. Preparation consumes
+ * that budget; a later suite, retry, or scope launch cannot refresh it. */
+export function checkpointQualificationBudgetFromEnv(startedAtMs: number,
+  environment: NodeJS.ProcessEnv = process.env,
+  processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000)) {
+  const inherited = Number(environment[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const watchdog = selfWatchdogConfigFromEnv(environment);
+  const callerDeadline = Number.isSafeInteger(inherited) && inherited > 0 ? inherited :
+    processStartedAtMs + (watchdog.trigger === 'manual-run-deadline' ? watchdog.ms : GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    deadlineEpochMs: callerDeadline, orphanDeadlineEpochMs: processStartedAtMs + watchdog.ms });
+}
+
+/** One quantum owns the suite and its post-suite workers. Stop publication first,
+ * then drain the fenced executors' death-aware cleanup before releasing this call. */
+export function createCheckpointQualificationExecution(input: {
+  target: GateVerdictTarget;
+  progress: QualificationWorkProgressInput;
+  observer: Pick<ReturnType<typeof createCheckpointQualificationNativeObserver>, 'snapshot'>;
+  budget: QualificationYieldBudget;
+  baselineReceipts: Array<{ unitId: string; completionId: string }>;
+  execute: CheckpointExec;
+  onStop: (error: CheckpointQualificationBoundaryError) => void;
+}, deps = { boundary: createCheckpointQualificationYieldBoundary }) {
+  input = { ...input, target: structuredClone(input.target), progress: structuredClone(input.progress),
+    baselineReceipts: structuredClone(input.baselineReceipts) };
+  const cancellation = new AbortController();
+  const pending = new Set<Promise<CheckpointExecResult>>();
+  let failure: CheckpointQualificationBoundaryError | undefined;
+  const fail = (error: CheckpointQualificationBoundaryError) => {
+    failure ??= error;
+    cancellation.abort();
+    input.onStop(failure);
+  };
+  const boundary = deps.boundary({ ...input,
+    onYield: () => fail(new CheckpointQualificationBoundaryError('yielded', 'durable-progress-saved')),
+    onKill: decision => fail(new CheckpointQualificationBoundaryError('killed', decision.reason)),
+  });
+  const execute: CheckpointExec = async (cmd, args, options) => {
+    if (failure) throw failure;
+    cancellation.signal.throwIfAborted();
+    const relative = path.relative(input.progress.root, options?.cwd ?? process.cwd());
+    const inCandidate = relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    const running = input.execute(cmd, args, { ...options,
+      signal: options?.signal ? AbortSignal.any([options.signal, cancellation.signal]) : cancellation.signal,
+      ...(inCandidate ? { qualification: { target: input.target, progress: input.progress,
+        deadlineEpochMs: input.budget.cleanupDeadlineEpochMs } } : {}),
+    });
+    pending.add(running);
+    try {
+      const result = await running;
+      if (failure) throw failure;
+      return result;
+    } finally { pending.delete(running); }
+  };
+  return { execute,
+    assertRunning() { if (failure) throw failure; cancellation.signal.throwIfAborted(); },
+    async stop() {
+      boundary.stop(); cancellation.abort();
+      await Promise.allSettled([...pending]);
+    },
+  };
+}
+
+/** Recheck the candidate's actual child interpreter and preload before execution. */
+export async function checkpointQualificationRunnerIdentity(root: string, selection: unknown, environment: NodeJS.ProcessEnv,
+  measure = defaultRunnerIdentity) {
+  try {
+    // The candidate's own helper names the preload the candidate child will
+    // actually load. The orchestration process may run another checkout/runtime.
+    const trace = await import(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
+    const finalEnvironment = trace.nativeProcessTraceEnv({ ...environment }, { enabled: true }) as NodeJS.ProcessEnv;
+    const expectedPreload = `--import=${JSON.stringify(pathToFileURL(path.join(root, 'scripts/lib/vitest-startup-trace.mjs')).href)}`;
+    if (!finalEnvironment.NODE_OPTIONS?.includes(expectedPreload)) return null;
+    const format = judgedTreeProofFormat(root) ?? undefined;
+    const selected = selection as { tasks?: Array<{ dir: string; runner: string; command: string;
+      steps?: Array<{ lifecycle?: boolean; command: string; discovery: Array<{ runner: string }> }> }> };
+    const identities = new Set<string>();
+    for (const task of selected.tasks ?? []) {
+      const commands = task.runner === 'vitest' ? [task.command] : task.runner === 'command-chain'
+        ? task.steps?.filter(step => !step.lifecycle && step.discovery?.[0]?.runner === 'vitest').map(step => step.command) ?? [] : [];
+      for (const command of commands) {
+        const measured = measure(root, finalEnvironment, format,
+          { workspaceRoot: path.resolve(root, task.dir), scriptText: command });
+        if (!measured) return null;
+        identities.add(measured);
+      }
+    }
+    if (!identities.size) {
+      const measured = measure(root, finalEnvironment, format);
+      if (!measured) return null;
+      identities.add(measured);
+    }
+    // A single qualification identity cannot safely label mixed interpreters.
+    return identities.size === 1 ? [...identities][0]! : null;
+  } catch { return null; }
+}
+
+export async function prepareCheckpointQualificationNativeRun(
+  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string;
+    select: () => Promise<unknown>; environment?: NodeJS.ProcessEnv },
+  deps = {
+    read: readStoredQualification, record: recordStoredQualificationWorkProgress,
+    recover: recoverStoredQualificationNativeCompletions,
+    pidIdentity: () => checkpointPidIdentity(process.pid),
+    runnerIdentity: checkpointQualificationRunnerIdentity as (root: string, selection: unknown,
+      environment: NodeJS.ProcessEnv) => string | null | Promise<string | null>,
+    classify: checkpointQualificationInputClassifier,
+    observe: createCheckpointQualificationNativeObserver,
+  },
+): Promise<{ status: 'legacy' } | { status: 'refused'; reason: string } |
+  { status: 'ready'; observer: ReturnType<typeof createCheckpointQualificationNativeObserver>;
+    commandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'];
+    recheckRunnerIdentity: () => Promise<string | null>;
+    postSuite: { target: GateVerdictTarget; progress: QualificationWorkProgressInput };
+    checkpoint: { root: string; taskKey: string; sourceCommit: string; sourceDigest: string;
+      selectedFiles: string[]; passedFiles: string[]; state: string;
+      physicalExecution: { fingerprint: string; evidenceRoot: string; tasks: string[] };
+      continuation: NonNullable<Extract<StoredQualificationMutation, { status: 'updated' | 'idempotent' }>['transaction']['continuation']> } }> {
+  const refuse = (reason: string) => ({ status: 'refused' as const, reason });
+  const stored = await deps.read(input.target);
+  if (stored.status !== 'present') return refuse(`qualification-${stored.status}`);
+  const current = stored.transaction;
+  if (current.attemptId !== input.attemptId || current.candidate !== input.candidate || current.runId !== input.runId)
+    return refuse('qualification-lineage-mismatch');
+  const work = current.continuation;
+  if (!work) return { status: 'legacy' };
+  const runner = current.currentPhysicalRunner, pidIdentity = deps.pidIdentity();
+  if (!runner || !pidIdentity || runner.pidIdentity !== pidIdentity || work.root !== input.root)
+    return refuse('qualification-runner-fence-mismatch');
+  // This query runs the maintained selector in the candidate tree, before any
+  // suite child. Neither its stdout outcomes nor saved producer samples select work.
+  const raw = await input.select();
+  const selection = raw as { taskInventory?: unknown[]; tasks: Array<{
+    id: string; workspace: string; dir: string; command: string; runner: string;
+    files: string[]; commandObligations?: unknown[];
+  }>; unenumerated: Array<{ task: string }>; commandObligations: Array<{ task: string }> };
+  const prepared = preparePartialContinuationManifest({ root: input.root, selection,
+    tasks: selection?.taskInventory, postSuite: postSuiteContinuationPopulation(),
+    exclusions: work.manifest.units.filter(unit => unit.exclusion).map(unit => ({ unitId: unit.id, ...unit.exclusion })),
+  });
+  if (prepared.status !== 'ready') return refuse(`qualification-selection-${prepared.reason}`);
+  if (!isDeepStrictEqual(prepared.manifest, work.manifest)) return refuse('qualification-selection-manifest-mismatch');
+  const environment = { ...(input.environment ?? process.env) };
+  const runnerIdentity = await deps.runnerIdentity(input.root, selection, environment);
+  if (!runnerIdentity) return refuse('qualification-runtime-identity-unmeasured');
+  const progress: QualificationWorkProgressInput = {
+    attemptId: input.attemptId, candidate: input.candidate, repairHead: current.repairHead,
+    runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
+    manifest: work.manifest, retryStates: work.retryStates, runContext: executedSourceRunContext({ GREEN_CHECKPOINT: '1' }),
+    runnerIdentity, updates: [],
+  };
+  const classifier = await deps.classify(input.root);
+  const frozen = await deps.record(input.target, progress);
+  if (frozen.status !== 'updated' && frozen.status !== 'idempotent') return refuse(`qualification-custody-${frozen.status}`);
+  const recovered = frozen.transaction.continuation?.nativeProducers?.length
+    ? await deps.recover(input.target, progress, classifier, { recoverMissingSnapshots: true }) : frozen;
+  if (recovered.status !== 'updated' && recovered.status !== 'idempotent')
+    return refuse(`qualification-native-recovery-${recovered.status}`);
+  const remaining = preparePartialRemainingSelection({ root: input.root, taskKey: work.taskKey,
+    continuation: recovered.transaction.continuation }, { ...progress, sourceCommit: input.candidate },
+  { selection, postSuite: postSuiteContinuationPopulation() });
+  if (remaining.status !== 'ready') return refuse(`qualification-${remaining.reason}`);
+  const commandPreparation = prepareCheckpointQualificationTaskCommands(progress, selection, remaining.tasks);
+  if (commandPreparation.status !== 'ready') return refuse(`qualification-${commandPreparation.reason}`);
+  const tasks = new Map<string, { workspaceName: string; selectedSpecifications: unknown[];
+    supersedesCompletionIds: Record<string, string> }>();
+  for (const task of remaining.tasks) {
+    if (!task.files.length && task.runner !== 'command-chain') continue;
+    const localSelection = { ...selection, tasks: [task], files: task.files,
+      unenumerated: selection.unenumerated.filter(value => value.task === task.id),
+      commandObligations: selection.commandObligations.filter(value => value.task === task.id),
+    };
+    if (task.runner === 'command-chain') {
+      // The child retains its original npm command and routes each observed
+      // lifecycle into a separate OUT. Independently derive the step keys and
+      // populations here; stdout supplies locations, never selection authority.
+      const inventory = selection.taskInventory as Array<{ id: string }>;
+      const native = preparePartialNativeProducerChannels({ root: input.root,
+        selection: { ...localSelection, tasks: [selection.tasks.find(value => value.id === task.id)] },
+        task: inventory.find(value => value.id === task.id), remainingFiles: task.files,
+        outPath: path.join(input.root, 'qualification-native-selection.out'),
+        postSuite: postSuiteContinuationPopulation() });
+      if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
+      for (const channel of native.channels) {
+        if (!channel.selectedSpecifications.length) continue;
+        tasks.set(channel.taskKey, { workspaceName: task.workspace,
+        selectedSpecifications: channel.selectedSpecifications,
+        supersedesCompletionIds: Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
+          .filter(receipt => channel.selectedSpecifications.some((spec: { testFile: string }) =>
+            receipt.unitId === `test:${spec.testFile}`))
+          .map(receipt => [receipt.unitId, receipt.completionId])) });
+      }
+      continue;
+    }
+    if (task.runner !== 'vitest') return refuse('qualification-native-task-unsupported');
+    const native = preparePartialNativeProducerSelection(localSelection, task, input.root);
+    if (native.status !== 'ready') return refuse(`qualification-native-selection-${native.reason}`);
+    const predecessors = Object.fromEntries((recovered.transaction.continuation?.receipts ?? [])
+      .filter(receipt => task.files.some((file: string) => receipt.unitId === `test:${file}`))
+      .map(receipt => [receipt.unitId, receipt.completionId]));
+    tasks.set(task.id, { workspaceName: task.workspace, selectedSpecifications: native.selectedSpecifications!,
+      supersedesCompletionIds: predecessors });
+  }
+  const fingerprint = partialCurrentExecutionFingerprint({ ...progress, sourceCommit: input.candidate });
+  if (!fingerprint) return refuse('qualification-physical-execution-unmeasured');
+  return { status: 'ready', observer: deps.observe({ target: input.target, progress, tasks, classifyReadPaths: classifier,
+      commands: new Map(commandPreparation.definitions.map(definition => [definition.task, definition])) }),
+    commandDefinitions: commandPreparation.definitions,
+    recheckRunnerIdentity: async () => await deps.runnerIdentity(input.root, selection, environment),
+    postSuite: { target: input.target, progress },
+    checkpoint: { root: input.root, taskKey: work.taskKey, sourceCommit: input.candidate,
+      sourceDigest: createHash('sha256').update(progress.runnerIdentity).digest('hex'),
+      selectedFiles: work.manifest.units.filter(unit => unit.kind === 'test').map(unit => unit.path),
+      passedFiles: [], state: 'partial', continuation: recovered.transaction.continuation!,
+      physicalExecution: { fingerprint, tasks: commandPreparation.definitions.map(definition => definition.task),
+        evidenceRoot: path.join(os.tmpdir(), 'papercusp-qualification-task',
+        createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex')) } } };
+}
+
+/** Original commands come from the maintained selector, before execution. The
+ * artifact directory is the existing immutable native receipt transport. */
+export function prepareCheckpointQualificationTaskCommands(progress: QualificationWorkProgressInput, selection: unknown,
+  remaining: Array<{ id: string; runner?: string; files: unknown[] }> = []) {
+  const evidenceRoot = path.join(os.tmpdir(), 'papercusp-qualification-task',
+    createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+  const selected = selection as { invocations?: Array<{ task: string; argv: string[]; emptyArgv?: string[] }> };
+  return preparePartialTaskCommandDefinitions({ root: progress.root, selection,
+    postSuite: postSuiteContinuationPopulation(), evidenceRoot, invocations: (selected.invocations ?? []).map(invocation =>
+      remaining.some(task => task.id === invocation.task && task.runner === 'vitest' && !task.files.length)
+        ? { ...invocation, argv: invocation.emptyArgv ?? invocation.argv } : invocation) });
+}
+
+async function checkpointQualificationInputClassifier(root: string) {
+  const tracked = new Set((await git(root, ['ls-files', '-z', '--recurse-submodules'])).split('\0').filter(Boolean));
+  return (reads: unknown, repoRoot: string) => {
+    if (!Array.isArray(reads) || reads.some(read => typeof read !== 'string'))
+      throw new Error('qualification-read-paths-unmeasured');
+    return classifyReadPaths(reads, { repoRoot, isTracked: rel => tracked.has(rel), exists: existsSync });
+  };
+}
+
+/** The production suite's final green barrier, after absorption and exclusions.
+ * Composition leaves custody and terminal settlement untouched. */
+export async function composeCheckpointQualificationBeforePromotion(
+  input: { target: GateVerdictTarget; attemptId: string; candidate: string; runId: string; root: string; spaWorkspace?: string;
+    runnerIdentity?: string | null;
+    commandDefinitions?: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'] },
+  deps: { read: typeof readStoredQualification; compose: typeof composeStoredQualificationWork;
+    pidIdentity: () => string | null; runnerIdentity: () => string | null;
+    classify?: (root: string) => NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths'] |
+      Promise<NonNullable<Parameters<typeof composeStoredQualificationWork>[2]>['classifyReadPaths']> } = {
+    read: readStoredQualification, compose: composeStoredQualificationWork,
+    pidIdentity: () => checkpointPidIdentity(process.pid), runnerIdentity: executedSourceRunnerIdentity,
+    classify: checkpointQualificationInputClassifier,
+  },
+): Promise<{ status: 'legacy' | 'ready' } | { status: 'refused'; reason: string }> {
+  const stored = await deps.read(input.target);
+  if (stored.status !== 'present') return { status: 'refused', reason: `qualification-${stored.status}` };
+  const transaction = stored.transaction;
+  if (transaction.attemptId !== input.attemptId || transaction.candidate !== input.candidate ||
+      transaction.runId !== input.runId) return { status: 'refused', reason: 'qualification-lineage-mismatch' };
+  const work = transaction.continuation;
+  if (!work) return { status: 'legacy' };
+  const runner = transaction.currentPhysicalRunner;
+  const pidIdentity = deps.pidIdentity();
+  if (!runner || !pidIdentity || runner.pidIdentity !== pidIdentity || work.root !== input.root)
+    return { status: 'refused', reason: 'qualification-runner-fence-mismatch' };
+  const runnerIdentity = input.runnerIdentity === undefined ? deps.runnerIdentity() : input.runnerIdentity;
+  if (!runnerIdentity) return { status: 'refused', reason: 'qualification-runtime-identity-unmeasured' };
+  const composed = await deps.compose(input.target, {
+    attemptId: input.attemptId, candidate: input.candidate, repairHead: transaction.repairHead,
+    runnerId: runner.id, runId: input.runId, pidIdentity, root: input.root, taskKey: work.taskKey,
+    manifest: work.manifest, retryStates: work.retryStates, runContext: executedSourceRunContext({ GREEN_CHECKPOINT: '1' }),
+    runnerIdentity, updates: [],
+  }, { classifyReadPaths: await deps.classify?.(input.root),
+    currentCommandDefinition: (unit, progress) => unit.kind === 'guard'
+      ? input.commandDefinitions?.find(definition => definition.unitIds.includes(unit.id))
+      : checkpointQualificationPostSuiteDefinition(progress, unit.id, input.spaWorkspace) });
+  return composed.status === 'updated' || composed.status === 'idempotent'
+    ? { status: 'ready' }
+    : { status: 'refused', reason: `qualification-composition-${composed.status}${
+      composed.status === 'conflict' && composed.refusalReason ? `:${composed.refusalReason}` : ''}` };
 }
 
 /**
@@ -5566,10 +6216,15 @@ export interface RedTriage {
    *  the operator's action: `charged-budget` = the same breakage survived N rescues, so the tip is
    *  genuinely broken and a human is needed; `absolute-ceiling`/`deadline` = every individual red
    *  was rescued but the tree was never simultaneously green inside one run window, so the answer
-   *  is to slow the tree or widen the window, NOT to debug the last-named files. */
+   *  is to slow the tree or widen the window, NOT to debug the last-named files.
+   *  `unlocked-preparation` (WI-6554700010029570) = the run executes a committed prepared selection
+   *  for one candidate, so an in-process recursion onto the tip would hit the runner's entry guard
+   *  ("prepared selection candidate changed"). The tip needs a new unlocked preflight in a later
+   *  checkpoint run; the evidence still proves the red stale. */
   refireBlockedBy:
     | "cap-disabled"
     | "charged-budget"
+    | "unlocked-preparation"
     | "absolute-ceiling"
     | "deadline"
     | null;
@@ -5869,6 +6524,10 @@ export function classifyRedAgainstTip(input: {
   absoluteCeiling?: number;
   /** Would one more pass overrun the run's wall-clock budget (see `refireDeadlineExceeded`)? */
   deadlineExceeded?: boolean;
+  /** WI-6554700010029570: does a refire onto `tip` need a new unlocked preparation (this run holds
+   *  a committed prepared selection for a different candidate)? Mirrors the admission refire's
+   *  `requiresUnlockedPreparation`. */
+  requiresUnlockedPreparation?: boolean;
   /** Completion time of the tip measurement. Injectable so the pure classifier's wording and
    *  machine-readable provenance share one exact instant. */
   tipObservedAtMs?: number;
@@ -5941,6 +6600,10 @@ export function classifyRedAgainstTip(input: {
         ? "cap-disabled"
         : refireAttempts >= maxRefires
           ? "charged-budget"
+          // After charged-budget: a breakage that survived every rescue is still reported as the
+          // genuinely-broken tip (isProvenStaleCandidate's one carve-out, which dispatches a fixer).
+          : input.requiresUnlockedPreparation === true
+            ? "unlocked-preparation"
           : totalRefires >= absoluteCeiling
             ? "absolute-ceiling"
             : input.deadlineExceeded === true
@@ -5955,6 +6618,10 @@ export function classifyRedAgainstTip(input: {
       "charged-budget":
         `refire cap reached (charged budget ${refireAttempts}/${maxRefires} spent — the SAME breakage ` +
         "survived every rescue, so the tip is genuinely broken: a human is needed)",
+      "unlocked-preparation":
+        "refire DEFERRED — this run executes a committed prepared selection for the candidate, so the " +
+        "tip needs a new unlocked preflight in a later checkpoint run; recursing here would trip the " +
+        "prepared-selection entry guard",
       "absolute-ceiling":
         `refire ABSOLUTE CEILING reached (${totalRefires}/${absoluteCeiling} refires, charged budget only ` +
         `${refireAttempts}/${maxRefires}) — every individual red WAS rescued, but the tree was never ` +
@@ -10533,6 +11200,21 @@ export function canonicalGreenCheckpointSourceEnv(
   return env;
 }
 
+/** P016 telemetry is separate from deliberately unscoped CI test_runs. */
+export function testFileCoverageScopeEnv(
+  treeDir: string,
+  cfg: { checkpointRoot: string; integrationRoot: string; releaseRoot: string },
+  candidate: string | null | undefined,
+  target: { workspaceId: string; installSlug: string } | null,
+): Record<string, string> {
+  const executionRoot = path.resolve(treeDir), repositoryRoot = path.resolve(cfg.integrationRoot);
+  if (!target || !candidate || !/^[a-f0-9]{40,64}$/.test(candidate)
+    || executionRoot !== path.resolve(cfg.checkpointRoot) || executionRoot === repositoryRoot
+    || executionRoot === path.resolve(cfg.releaseRoot)) return {};
+  return { PC_TEST_FILE_COVERAGE_SCOPE: JSON.stringify({ workspaceId: target.workspaceId,
+    harnessSlug: target.installSlug, executionRoot, repositoryRoot, candidate }) };
+}
+
 /**
  * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.
  *
@@ -10718,6 +11400,14 @@ export function buildGreenCheckpointEnv(
   frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // Main qualification resumes valid passes instead of spending its budget on
+  // audit-only reruns. Pin the common environment for scheduled and detached
+  // manual launches; the reuse validator still invalidates changed inputs.
+  env.AFFECTED_TEST_REUSE_AUDIT_RATE = "0";
+  // This control value is the launcher's immutable ceiling, independent of test inputs.
+  const callerDeadline = Number(source[TASK_DEADLINE_EPOCH_MS_ENV]);
+  if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
+    env[TASK_DEADLINE_EPOCH_MS_ENV] = String(callerDeadline);
   // Targeted repair tasks bypass affected-tests, so their Git reads need the same
   // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
   applyGitOptionalLocksDefault(env);
@@ -10779,6 +11469,11 @@ export function buildGreenCheckpointEnv(
   // still indexes exactly the "recent gate runs" read this exists to serve.
   env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
+  // The activated parent owns the logical attempt; bind native completion OUT
+  // to that attempt AND this physical run after the host identity was stripped.
+  delete env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+  const qualificationAttemptId = source[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+  if (runId && qualificationAttemptId) env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = qualificationAttemptId;
   // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution on the gate's
   // child processes, so a gate run contributes the same surface→test evidence an agent's
   // `testing:run` already does (run.ts) and the admin-UI runner already does
@@ -11030,6 +11725,19 @@ export function frozenRepairCapacityHoldSummary(
 }
 
 /**
+ * WI-6554700010029683: the one phrasing for WHY a frozen-repair dispatch returned no spawn.
+ * Before this, the gate logged only "did not return a spawn", so a dispatcher refusing every
+ * tick (snapshot-mismatch, stale-candidate, …) was indistinguishable from a broken launcher
+ * and the cause had to be dug out of the idle actuator's escalations instead. Empty when the
+ * dispatcher reported nothing (a dependency that returned null without a refusal).
+ */
+export function frozenRepairNoSpawnDetail(skip: ReleaseFixerDispatchSkip | null | undefined): string {
+  if (!skip) return "";
+  const retry = skip.retryable ? "" : "; another dispatch cannot help until the verdict or head changes";
+  return ` (dispatcher refused: ${skip.code} — ${skip.reason}${retry})`;
+}
+
+/**
  * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE escalation body
  * for a held frozen candidate, whatever exhausted it. It has to be actionable from the
  * escalation alone: the gate will not move on its own, the fix path is an ADMISSION onto the
@@ -11274,6 +11982,8 @@ export function summarizeLegStreams(
 }
 
 export interface CheckpointOpts {
+  /** Exact proposal prepared and committed by preflight, never selected again in the runner. */
+  preparedSelection?: PreparedCheckpointSelectionRecord;
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
   /** Internal pre-lock tip snapshot. Unlike candidate, this does not bypass quiet-cut. */
@@ -12502,6 +13212,13 @@ async function applyFrozenRepairCarryAtCut(
   }
 }
 
+function frozenCandidateAlreadyGreen(
+  queue: FrozenCandidateRepairQueue, lastReady: string | null,
+): boolean {
+  return queue.phase === "ready-to-test" && lastReady !== null &&
+    queue.candidate === lastReady && queue.repairHead !== queue.candidate;
+}
+
 /** Shared read-only candidate policy; preparation and execution must use the same decision. */
 async function selectCheckpointFreshCandidate(
   cfg: ReleaseConfig,
@@ -12518,6 +13235,8 @@ async function selectCheckpointFreshCandidate(
 ): Promise<{ candidate: string; tip: string; quietCutApplied: boolean; freezeCut: FreezeCutRecord | null }> {
   let { candidate } = input;
   const { lastReady, opts, repairVerification, initialCandidateVerification, diagnosticOnly, repairQueue } = input;
+  // A supplied candidate can be a tip hint; only pinned provenance suppresses fresh cuts.
+  const isPinnedCandidate = checkpointCandidateProvenance(opts).candidateSource === "pinned";
   // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
   // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
   // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
@@ -12534,7 +13253,7 @@ async function selectCheckpointFreshCandidate(
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
   if (
-    !opts.candidate &&
+    !isPinnedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     // P-021: a bounded-life re-cut judges exactly the target its carry was measured against.
@@ -12582,7 +13301,7 @@ async function selectCheckpointFreshCandidate(
   // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
   let freezeCut: FreezeCutRecord | null = null;
   if (
-    !opts.candidate &&
+    !isPinnedCandidate &&
     !repairVerification &&
     !initialCandidateVerification &&
     !diagnosticOnly &&
@@ -12616,11 +13335,31 @@ async function selectCheckpointFreshCandidate(
   return { candidate, tip: candidateBeforeQuietCut, quietCutApplied, freezeCut };
 }
 
+/**
+ * WI-6554700010029556: publish `gate_health.inFlightCandidate`, first asking whether the marker
+ * about to be replaced is a dead run's residue (our own write destroys that evidence). Shared by
+ * the candidate-FINAL publish and the repair-head verification publish, so both keep the same
+ * report-then-record order.
+ */
+async function publishInFlightCandidateMarker(
+  deps: CheckpointDeps,
+  diagnosticOnly: boolean,
+  info: Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0],
+): Promise<void> {
+  const abandonedNote = diagnosticOnly ? null : await deps.reportAbandonedInFlightCandidate?.();
+  if (abandonedNote) deps.log(abandonedNote);
+  await deps.recordInFlightCandidate?.(info);
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  if (opts.preparedSelection) await validatePreparedCheckpointSelection(cfg, opts.preparedSelection);
+  if (opts.preparedSelection && opts.candidate &&
+      await revParse(cfg.integrationRoot, opts.candidate) !== opts.preparedSelection.candidate)
+    throw new Error("prepared selection candidate changed; unlocked dependency preparation required");
   const decisionTrace = deps.decisionTrace ?? [];
   // EI-19343532231631821 — the deadline bound's two clocks. A stale-red auto-refire RECURSES into
   // this function in the SAME process, so `passStartedAtMs` restarts per pass (it predicts the next
@@ -12671,7 +13410,7 @@ async function runGreenCheckpointInner(
   }
   const transportedCandidate = await revParse(
     cfg.integrationRoot,
-    opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch,
+    opts.preparedSelection?.candidate ?? opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch,
   );
   let candidate = transportedCandidate;
   const lastReady = (await refExists(cfg.integrationRoot, cfg.releaseRef))
@@ -12747,6 +13486,9 @@ async function runGreenCheckpointInner(
      *  "another checkpoint owns the window", and reporting a capacity wall under it
      *  would log a confidently wrong cause. */
     capacityHold: { summary: string; retryAtMs: number | null } | null;
+    /** WI-6554700010029683: the dispatcher's typed refusal when `fired` carries no spawn;
+     *  absent on every path that never reached the dispatcher. */
+    dispatchSkip?: ReleaseFixerDispatchSkip | null;
   }> => {
     // WI-606293: refuse BEFORE reserving the dispatch window, so a walled pool costs
     // neither a repair attempt nor a reservation other checkpoints are queued behind.
@@ -12855,10 +13597,16 @@ async function runGreenCheckpointInner(
 
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
+    // A holder, not a `let`: the callback assigns it inside the awaited call, which control-flow
+    // narrowing cannot see.
+    const skipBox: { skip: ReleaseFixerDispatchSkip | null } = { skip: null };
     try {
       await renewalChain;
       if (!reservationLost) {
-        fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence)) ?? null;
+        fired =
+          (await deps.dispatchFrozenRepairFixer?.(dispatchQueue, checkpointEvidence, (skip) => {
+            skipBox.skip = skip;
+          })) ?? null;
       }
     } catch (error) {
       dispatchError = error;
@@ -12920,6 +13668,7 @@ async function runGreenCheckpointInner(
       fired,
       reservationBlocked: false,
       capacityHold: null,
+      dispatchSkip: fired?.spawnId ? null : skipBox.skip,
     };
   };
 
@@ -13227,20 +13976,13 @@ async function runGreenCheckpointInner(
     // and never a re-cut (D-007). The immutable candidate is untouched. `repairHead !== candidate`
     // is required: with nothing admitted there is genuinely nothing to verify, and that row is an
     // operator `retire` decision rather than this one.
-    if (
-      repairQueue.phase === "ready-to-test" &&
-      lastReady &&
-      repairQueue.candidate === lastReady &&
-      repairQueue.repairHead !== repairQueue.candidate
-    ) {
+    if (frozenCandidateAlreadyGreen(repairQueue, lastReady)) {
       const unreachable = repairQueue;
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
         (fresh) =>
-          fresh.phase === "ready-to-test" &&
-          fresh.candidate === lastReady &&
-          fresh.repairHead !== fresh.candidate
+          frozenCandidateAlreadyGreen(fresh, lastReady)
             ? { ...fresh, phase: "ready-to-verify" }
             : fresh,
         "resume-unreachable-ready-to-test",
@@ -13694,7 +14436,7 @@ async function runGreenCheckpointInner(
         const fired = dispatch.fired;
         const summary = fired?.spawnId
           ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
-          : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
+          : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}${frozenRepairNoSpawnDetail(dispatch.dispatchSkip)}; queue remains unassigned for retry`;
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -13805,6 +14547,30 @@ async function runGreenCheckpointInner(
         selectiveRepairSupported: !existsSync(path.join(cfg.integrationRoot, "package.json")) ||
           existsSync(path.join(cfg.integrationRoot, "scripts/affected-tests.mjs")),
       };
+      // WI-6554700010029556: the frozen-repair path never reaches the normal path's
+      // `materializing` → `suite` writes below, so without this the pass-start
+      // `materializing` marker described the whole multi-hour run (measured 2026-10-26).
+      writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
+      deps.reportProgress?.("phase:suite");
+      // WI-6554700010029556 (step 4): the same gap held for `gate_health.inFlightCandidate`. Its
+      // candidate-FINAL publish below is reached by a repair-head run only when the selective
+      // verification is green; a red re-queues and returns from this block. So a whole repair-
+      // verification pass (hours on a 50-leg signature) left the marker null, and every "which sha
+      // is the gate judging?" reader saw no run at all (measured 2026-10-26). Publish the repair
+      // head now. The later publish re-stamps it if the head proceeds to the full gate, and the
+      // CLI seam clears it on every exit.
+      await publishInFlightCandidateMarker(deps, diagnosticOnly, {
+        candidate,
+        candidateSource,
+        base: lastReady ?? null,
+        selectedAtMs: Date.now(),
+        quietCutApplied: false,
+        tipAtSelection: null,
+        refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
+        pid: process.pid,
+        ...(deps.routineId ? { routineId: deps.routineId } : {}),
+        ...(deps.routineFireWorkflowId ? { routineFireWorkflowId: deps.routineFireWorkflowId } : {}),
+      });
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
       // P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): a red whose signature
@@ -13860,6 +14626,7 @@ async function runGreenCheckpointInner(
             );
           } else if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
+            writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
             verification = await verifyRepairHead(verifyDeps, repairQueue);
             deps.log(
               `repair head ${candidate.slice(0, 8)}: ${verification.summary} (re-judged in-run after gen:*:check self-heal)`,
@@ -13997,7 +14764,17 @@ async function runGreenCheckpointInner(
     }
   }
 
-  const selected = await selectCheckpointFreshCandidate(cfg, deps, {
+  if (opts.preparedSelection && candidate !== opts.preparedSelection.candidate) {
+    const prepared = opts.preparedSelection;
+    throw new Error(
+      `prepared selection invalidated by changed repair authority: ` +
+      `prepared=${prepared.candidate}, selected=${candidate}; ` +
+      `preparedQueue=${prepared.queue?.phase ?? "none"}@${prepared.queue?.updatedAtMs ?? "none"}, ` +
+      `selectedQueue=${repairQueue?.phase ?? "none"}@${repairQueue?.updatedAtMs ?? "none"}; ` +
+      `frozenCandidate=${repairQueue?.candidate ?? "none"}, repairHead=${repairQueue?.repairHead ?? "none"}`,
+    );
+  }
+  const selected = opts.preparedSelection ?? await selectCheckpointFreshCandidate(cfg, deps, {
     candidate, lastReady, opts, repairVerification, initialCandidateVerification,
     diagnosticOnly, repairQueue,
   });
@@ -14011,6 +14788,7 @@ async function runGreenCheckpointInner(
   // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its
   // own lineage, and an explicit candidate is the caller's choice.
   if (
+    !opts.preparedSelection &&
     !opts.candidate &&
     !repairVerification &&
     !initialCandidateVerification &&
@@ -14328,11 +15106,7 @@ async function runGreenCheckpointInner(
   // only instant that question can be asked — our own write destroys the evidence. A loss detected
   // here is announced into the transcript AND persisted to `gate_health.lastLostRun`, so "a run
   // died judging that sha" stops being indistinguishable from "a run is judging that sha".
-  const abandonedNote = diagnosticOnly
-    ? null
-    : await deps.reportAbandonedInFlightCandidate?.();
-  if (abandonedNote) deps.log(abandonedNote);
-  await deps.recordInFlightCandidate?.({
+  await publishInFlightCandidateMarker(deps, diagnosticOnly, {
     candidate,
     candidateSource,
     base: lastReady ?? null,
@@ -15599,6 +16373,7 @@ async function runGreenCheckpointInner(
         repairQueue.phase === "awaiting-fixer"
       ) {
         let fired: FrozenRepairDispatchResult | null = null;
+        let dispatchSkip: ReleaseFixerDispatchSkip | null | undefined = null;
         if (hasFrozenRepairDispatchReservation) {
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
@@ -15651,6 +16426,7 @@ async function runGreenCheckpointInner(
           }
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
+          dispatchSkip = dispatch.dispatchSkip;
         } else {
           // Compatibility path for direct/older callers that do not expose the CAS hooks.
           await deps.writeFrozenRepairQueue(repairQueue, {
@@ -15659,6 +16435,7 @@ async function runGreenCheckpointInner(
           const dispatch = await dispatchFrozenRepair(repairQueue, false, checkpointEvidence);
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
+          dispatchSkip = dispatch.dispatchSkip;
         }
         // WI-479091 — DO NOT return a terminal result here.
         //
@@ -15688,7 +16465,7 @@ async function runGreenCheckpointInner(
         repairFixerDispatchedThisPass = true;
         repairDispatchNote =
           `\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
-          `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
+          `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : `dispatch returned no spawn${frozenRepairNoSpawnDetail(dispatchSkip)} and will retry`} ` +
           `from head ${repairQueue.repairHead.slice(0, 8)}.`;
         deps.log(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red persisted and fixer dispatch resolved; ` +
@@ -16191,6 +16968,11 @@ async function runGreenCheckpointInner(
                     runStartedAtMs,
                     passStartedAtMs,
                   ),
+                  // WI-6554700010029570: the refire below recurses with `candidate: tip` and the
+                  // SAME opts.preparedSelection, which the entry guard refuses for any other sha.
+                  ...(refireRequiresUnlockedPreparation(opts.preparedSelection, tip)
+                    ? { requiresUnlockedPreparation: true }
+                    : {}),
                 }], decisionTrace);
         retriage = {
           ...verdict,
@@ -17242,6 +18024,10 @@ export async function measureRepairTickLegs(
       workspace: string | null,
     ): Promise<{ code: number; tail: string; subjectPaths?: string[] }>;
     log(line: string): void;
+    /** WI-6554700010029556: publish the leg now in flight (realCheckpointDeps writes it into the
+     *  run-lock's phase.json) so a reader can name the leg without tailing the run log.
+     *  Best-effort: a throw here never fails the measurement. */
+    onLegStart?(leg: { label: string; index: number; total: number }): void;
     now?: () => number;
     /** Injectable for tests so the bounded setup-contention retry below costs no real
      *  wall-clock. Production uses a real timer. */
@@ -17352,6 +18138,11 @@ export async function measureRepairTickLegs(
       io.log(
         `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} started`,
       );
+      try {
+        io.onLegStart?.({ label, index: legIndex + 1, total: registryEntries.length });
+      } catch {
+        /* best-effort: publishing the leg must never fail the measurement */
+      }
       const scriptStartedAt = now();
       try {
         const r = await io.runScript(script, workspace);
@@ -17972,6 +18763,7 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  if (opts.preparedSelection) opts = { ...opts, candidateSource: opts.preparedSelection.candidateSource };
   let suiteReplayCanary: CheckpointResult['suiteReplayCanary'];
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const replayProvenance = { candidateSource, ...(diagnostic ? { diagnostic } : {}),
@@ -18045,6 +18837,11 @@ export async function runGreenCheckpoint(
   try {
     inner = await runGreenCheckpointInner(cfg, { ...deps, decisionTrace }, innerOpts);
   } catch (error) {
+    if (error instanceof CheckpointQualificationBoundaryError) return {
+      advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
+      green: null, reason: 'infra-inconclusive', summary: error.message,
+      ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
+    };
     // Measured 2026-10-12: every headroom refusal that day was setup's OWN exit 77, thrown
     // mid-materialization after the preflight passed — so it never reached a returned result.
     // Classify it with the crash handler's own function; anything that is not a typed
@@ -18130,6 +18927,12 @@ export async function runGreenCheckpoint(
       );
     } else if (consumed?.kind === "refire" && consumed.request) {
       const admissionRefires = opts.admissionRefires ?? 0;
+      // Preparation is committed before acquiring the checkpoint serializer. A changed
+      // head needs a new unlocked preflight; recursive execution must neither reuse the
+      // old generation nor discard its identity guard. The refire decision retains the
+      // durable marker, so a later run can select and prepare under current authority.
+      const requiresUnlockedPreparation = refireRequiresUnlockedPreparation(
+        opts.preparedSelection, consumed.request.repairHead);
       const nowMs = Date.now();
       const deadlineExceeded = refireDeadlineExceeded({
         elapsedMs: nowMs - admissionRunStartedAtMs,
@@ -18137,6 +18940,7 @@ export async function runGreenCheckpoint(
         budgetMs: refireRunBudgetMsFromEnv(),
       });
       if (
+        !requiresUnlockedPreparation &&
         admissionRefires < MAX_ADMISSION_REFIRE_ATTEMPTS &&
         !deadlineExceeded
       ) {
@@ -18153,8 +18957,10 @@ export async function runGreenCheckpoint(
         });
       }
       deps.log(
-        `repair admission retest remains requested at ${consumed.request.repairHead.slice(0, 8)}; ` +
-          (deadlineExceeded
+        `repair admission retest ${requiresUnlockedPreparation ? "deferred" : "remains requested"} at ${consumed.request.repairHead.slice(0, 8)}; ` +
+          (requiresUnlockedPreparation
+            ? "the changed candidate requires unlocked preparation in a future checkpoint run"
+            : deadlineExceeded
             ? "the shared gate-run wall budget cannot fit another pass"
             : `the admission self-refire bound ${MAX_ADMISSION_REFIRE_ATTEMPTS} is exhausted`) +
           ". The durable marker remains pending for a future checkpoint run; no immediate retry was scheduled.",
@@ -18343,12 +19149,16 @@ export type CheckpointExec = (
      * stdout/stderr buffers. setupTree uses this to persist setup-release's stage markers in
      * the checkpoint transcript instead of losing every useful line when the 30m bound fires. */
     onOutput?: (stream: "stdout" | "stderr", text: string) => void;
+    /** Observe the actual spawn, including an optional heavy wrapper. Diagnostic only. */
+    onSpawn?: (child: { pid: number; command: string[]; cwd: string }) => void;
     /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
     onProgress?: () => void;
     /** WI-6554700010018556: abort the child. On abort the child is SIGKILLed (its whole
      *  process GROUP when `killProcessGroupOnTimeout` is set) and the call rejects. Optional
      *  so every injected test fake keeps compiling untouched — a fake simply ignores it. */
     signal?: AbortSignal;
+    /** Fenced qualification commands require an independently bounded OS scope. */
+    qualification?: Pick<QualificationCommandOptions, 'target' | 'progress' | 'deadlineEpochMs'>;
   },
 ) => Promise<CheckpointExecResult>;
 
@@ -18435,6 +19245,7 @@ export async function ensureCheckpointDependencyGeneration(
 }
 
 export interface CheckpointDependencyPrebuildDeps {
+  checkpointSelection?: { deps: CheckpointDeps; opts?: CheckpointOpts };
   /** Host observer for the existing prebuild-state read; no new delivery path. */
   observeFallback?: typeof import("@papercusp/operator-core/lib/degradation/fallback-observations").observeFallback;
   /** Explicit null disables the state plane (old/manual launcher compatibility). */
@@ -18650,6 +19461,7 @@ export async function beginCheckpointPreflight(
       candidate: string;
       prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
       lock: CheckpointRunLock;
+      preparedSelection?: PreparedCheckpointSelectionRecord;
     }
   | {
       kind: "not-applicable";
@@ -18698,6 +19510,9 @@ export async function beginCheckpointPreflight(
     }
     throw error;
   }
+  if (dependencyPrebuildDeps.checkpointSelection) {
+    return beginPreparedCheckpointPreflight(cfg, candidate, exec, dependencyPrebuildDeps);
+  }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
     null;
   const observeFallback = dependencyPrebuildDeps.observeFallback ??
@@ -18734,6 +19549,164 @@ export async function beginCheckpointPreflight(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
   );
   return { kind: "ready", candidate, prewarmedDependencyGeneration, lock };
+}
+
+/** Recheck immutable inputs at BOTH the locked commit and the materialization boundary. */
+async function validatePreparedCheckpointSelection(
+  cfg: ReleaseConfig, record: PreparedCheckpointSelectionRecord, exec: CheckpointExec = runCmd,
+): Promise<void> {
+  if (!isPreparedCheckpointSelectionRecord(record) ||
+      record.integrationRoot !== path.resolve(cfg.integrationRoot) ||
+      record.checkpointRoot !== path.resolve(cfg.checkpointRoot))
+    throw new Error("invalid prepared selection authority or root mismatch");
+  const generation = record.generation;
+  const root = resolveDependencyGenerationRoot(cfg.integrationRoot);
+  if (generation.root !== root ||
+      liveDependencyGenerationToken(root, generation.identity, generation.token) !== generation.token ||
+      await checkpointDependencyInputFingerprint(cfg, record.candidate, exec) !== generation.inputFingerprint)
+    throw new Error("prepared dependency generation root, token or input identity is invalid");
+}
+
+/**
+ * WI-6554700010010801: the candidate the CLI hands runGreenCheckpoint after its preflight.
+ *
+ * `--candidate` (release-checkpoint-launch.ts transports an exact sha) is the preflight's
+ * selection INPUT. Queue and known-good policy may legitimately resolve a different candidate,
+ * and the preflight commits that one as the prepared selection. Forwarding the raw input made
+ * the runner's entry guard ("prepared selection candidate changed") refuse every such run as a
+ * crash, though the runner judges `preparedSelection.candidate` regardless. The guard exists to
+ * refuse a candidate changed AFTER preparation (a refire); the input to preparation is not one.
+ * Without an explicit `--candidate` the runner's selection behaviour is unchanged (undefined).
+ */
+export function checkpointRunnerCandidate(
+  candidateArg: string | undefined,
+  preparedSelection: Pick<PreparedCheckpointSelectionRecord, "candidate"> | undefined,
+): string | undefined {
+  return candidateArg && preparedSelection ? preparedSelection.candidate : candidateArg;
+}
+
+/**
+ * WI-6554700010029570: would an in-process refire onto `nextCandidate` trip the runner's entry
+ * guard? Preparation is committed before the checkpoint serializer is acquired, so a recursion
+ * that keeps `opts.preparedSelection` may only re-judge the prepared candidate itself; any other
+ * sha needs a new unlocked preflight in a later checkpoint run. ONE definition shared by both
+ * in-process refires (the repair-admission refire and the stale-red auto-refire), so they cannot
+ * drift into disagreeing about when recursion is safe.
+ */
+export function refireRequiresUnlockedPreparation(
+  preparedSelection: Pick<PreparedCheckpointSelectionRecord, "candidate"> | undefined,
+  nextCandidate: string | null | undefined,
+): boolean {
+  return Boolean(preparedSelection && nextCandidate && nextCandidate !== preparedSelection.candidate);
+}
+
+async function readCheckpointSelectionQueue(deps: CheckpointDeps): Promise<FrozenCandidateRepairQueue | null> {
+  if (deps.readFrozenRepairQueueState) {
+    const read = await deps.readFrozenRepairQueueState();
+    if (read.status === "unreadable") throw new Error("checkpoint selection queue authority unavailable");
+    return read.status === "value" ? read.queue : null;
+  }
+  return await deps.readFrozenRepairQueue?.() ?? null;
+}
+
+/** Propose without effects, prepare unlocked, then validate and atomically commit under the serializer. */
+async function beginPreparedCheckpointPreflight(
+  cfg: ReleaseConfig, tip: string, exec: CheckpointExec, input: CheckpointDependencyPrebuildDeps,
+): ReturnType<typeof beginCheckpointPreflight> {
+  const { deps, opts = {} } = input.checkpointSelection!;
+  const { checkpointSelection: _selection, ...prebuild } = input;
+  const attemptId = deps.qualificationAttemptId ?? deps.runId ?? randomUUID();
+  const roots = { attemptId, integrationRoot: path.resolve(cfg.integrationRoot), checkpointRoot: path.resolve(cfg.checkpointRoot) };
+  const startedAt = opts.runStartedAtMs ?? Date.now();
+  const exhausted = (replans: number) => Date.now() - startedAt >= refireRunBudgetMsFromEnv() ||
+    (opts.totalRefires ?? opts.refireAttempts ?? 0) + replans >= refireAbsoluteCeiling(autoRefireCapFromEnv());
+  if (Boolean(deps.readPreparedCheckpointSelection) !== Boolean(deps.commitPreparedCheckpointSelection))
+    throw new Error("prepared selection durable authority requires both read and atomic commit hooks");
+  for (let replans = 0; ; replans++) {
+    if (exhausted(replans)) throw new Error("prepared selection authority churn exhausted run deadline/refire budget");
+    let recovered: PreparedCheckpointSelectionRecord | null | undefined;
+    try {
+      recovered = await deps.readPreparedCheckpointSelection?.(roots);
+    } catch (error) {
+      // A rejected restart may still inherit the SIGKILLed writer's serializer.
+      // Use its existing PID/start-identity proof; a live or unknown holder is
+      // preserved. No queue/carry authority is consumed on this refusal path.
+      const lockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
+      if (existsSync(lockDir)) {
+        const cleanup = acquireCheckpointRunLock(lockDir);
+        if (cleanup.acquired) cleanup.release();
+      }
+      throw error;
+    }
+    if (recovered) {
+      if (recovered.attemptId !== attemptId) throw new Error("prepared selection attempt authority mismatch");
+      const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
+      try {
+        await validatePreparedCheckpointSelection(cfg, recovered, exec);
+        if (!preparedCheckpointQueueMatches(recovered, await readCheckpointSelectionQueue(deps)))
+          throw new Error("prepared selection queue authority changed after commit");
+        return { kind: "ready", candidate: recovered.candidate, prewarmedDependencyGeneration: recovered.generation,
+          preparedSelection: recovered, lock };
+      } catch (error) { if (lock.acquired) lock.release(); throw error; }
+    }
+    const queue = structuredClone(await readCheckpointSelectionQueue(deps));
+    const pendingCarry = structuredClone(await deps.readFrozenRepairPendingCarry?.() ?? null);
+    const base = await refExists(cfg.integrationRoot, cfg.releaseRef) ? await revParse(cfg.integrationRoot, cfg.releaseRef) : null;
+    const provenance = checkpointCandidateProvenance(opts);
+    const requested = opts.candidate ? await revParse(cfg.integrationRoot, opts.candidate) : null;
+    // A server-selected queue candidate is a hint, not an explicit diagnostic pin.
+    // Use the same decision as execution: an untested frozen candidate must be judged
+    // before its admitted repairs. Mirror the runner's already-green phase recovery
+    // without consuming or mutating the queue during unlocked preparation.
+    const explicit = provenance.candidateSource === "pinned" ? requested : null;
+    const queueForSelection = queue && frozenCandidateAlreadyGreen(queue, base)
+      ? { ...queue, phase: "ready-to-verify" as const } : queue;
+    const queueDecision = decideFrozenCandidateRepairQueue(queueForSelection, { nowMs: Date.now() });
+    const queueCandidate = queueDecision.kind === "test-candidate" || queueDecision.kind === "verify-repair"
+      ? queueDecision.candidate : queue?.repairHead;
+    const selected = await selectCheckpointFreshCandidate(cfg, deps, {
+      candidate: explicit ?? queueCandidate ?? requested ?? tip, lastReady: base, opts,
+      repairVerification: queue !== null && queueDecision.kind !== "test-candidate",
+      initialCandidateVerification: queueDecision.kind === "test-candidate",
+      diagnosticOnly: provenance.candidateSource === "pinned", repairQueue: queue,
+    });
+    let carry: FrozenRepairCarryRecord | null = null;
+    if (!explicit && !queue && pendingCarry) {
+      const carried = await planCheckpointCarryAtCut({ pending: pendingCarry, candidate: selected.candidate, stagingTip: tip },
+        deps.frozenRepairBlobAt ?? ((sha, file) => gitBlobAt(cfg.integrationRoot, sha, file)));
+      carry = carried.record;
+      if (carried.candidate !== selected.candidate) {
+        selected.candidate = carried.candidate; selected.quietCutApplied = false; selected.freezeCut = null;
+      }
+    }
+    // The existing preflight publishes dependencies before taking the serializer. No selection recursion.
+    const ready = await beginCheckpointPreflight(cfg, selected.candidate, exec, prebuild);
+    if (ready.kind !== "ready") return ready;
+    if (!ready.lock.acquired) return ready; // A contender never consumes authority.
+    let handoff = false;
+    try {
+      // WI-6554700010030147: compare the selection authority, not the row — a running admission
+      // pre-check's heartbeats otherwise replan every preparation until the run budget expires.
+      if (!checkpointSelectionQueueAuthorityMatches(queue, await readCheckpointSelectionQueue(deps)) ||
+          !isDeepStrictEqual(pendingCarry, await deps.readFrozenRepairPendingCarry?.() ?? null)) continue;
+      const record: PreparedCheckpointSelectionRecord = {
+        schemaVersion: 1, ...roots, ...selected, base, candidateSource: queue && !explicit ? "frozen-repair-queue" : provenance.candidateSource,
+        generation: Object.assign(ready.prewarmedDependencyGeneration, { root: resolveDependencyGenerationRoot(cfg.integrationRoot) }),
+        carry, queue,
+      };
+      await validatePreparedCheckpointSelection(cfg, record, exec);
+      if (exhausted(replans)) throw new Error("prepared selection run deadline/refire budget exhausted before commit");
+      if (deps.commitPreparedCheckpointSelection) {
+        if (!await deps.commitPreparedCheckpointSelection(record, { queue, pendingCarry })) continue;
+      } else if (carry && pendingCarry) {
+        // Compatibility for old in-process callers. This path does not claim durable recovery.
+        if (!deps.consumeFrozenRepairCarry) throw new Error("prepared carry authority has no commit hook");
+        if (!await deps.consumeFrozenRepairCarry(pendingCarry, carry)) continue;
+      }
+      handoff = true;
+      return { ...ready, preparedSelection: record };
+    } finally { if (!handoff) ready.lock.release(); }
+  }
 }
 
 /** A signaled child is not a successful zero-exit command, even though Node reports
@@ -19472,6 +20445,38 @@ async function mapPostSuiteBounded<T, R>(
   return results;
 }
 
+// One inventory drives both pre-execution continuation selection and measured
+// post-suite records. A result sample can never shrink the required population.
+const POST_SUITE_LEG_DEFINITIONS = [
+  { id: "lint:tsc", outcome: "typecheck", commands: ["lint:tsc"] },
+  { id: "lint:tsc:papercusp-libs", outcome: "typecheckPapercuspLibs", commands: ["lint:tsc:papercusp-libs"] },
+  { id: "lint:tsc:workspaces", outcome: "typecheckWorkspaces", commands: ["lint:tsc:workspaces"] },
+  { id: "lint:tsc:operator", outcome: "typecheckOperator", commands: ["lint:tsc:operator"] },
+  { id: "lint:tsc:orchestrator", outcome: "typecheckOrchestrator", commands: ["lint:tsc:orchestrator"] },
+  { id: "lint:tsc:scripts", outcome: "typecheckScripts", commands: ["lint:tsc:scripts"] },
+  { id: "lint:migrations", outcome: "lintMigrations", commands: ["lint:migrations"] },
+  { id: "lint:migration-forward-compat", outcome: "lintMigrationForwardCompat", commands: ["lint:migration-forward-compat"] },
+  { id: "lint:identity-leak", outcome: "lintIdentity", commands: ["lint:no-owner-name-tags", "lint:no-box-identity", "lint:no-identity-literals"] },
+  { id: "lint:design-primitives", outcome: "lintDesignPrimitives", commands: ["lint:design-primitives"] },
+  { id: "lint:no-control-bytes", outcome: "lintNoControlBytes", commands: ["lint:no-control-bytes"] },
+  { id: "lint:guard-reachability", outcome: "lintGuardReachability", commands: ["lint:guard-reachability"] },
+  { id: "lint:condition-rail", outcome: "lintConditionRail", commands: ["lint:condition-rail"] },
+  { id: "lint:mock-cast-escape", outcome: "lintMockCastEscape", commands: ["lint:mock-cast-escape"] },
+  { id: "lint:timer-classification", outcome: "lintTimerClassification", commands: ["lint:timer-classification"] },
+  { id: "lint:no-raw-setinterval", outcome: "lintNoRawSetinterval", commands: ["lint:no-raw-setinterval"] },
+  { id: "lint:plane-integrity", outcome: "lintPlane", commands: ["lint:plane-producers", "lint:declared-consumed", "lint:no-bespoke-state-read", "lint:plane-ratchet", "lint:plane-adoption", "lint:derived-signal-firings", "lint:plane-guards"] },
+  { id: "lint:vacuous-negatives", outcome: "lintVacuousNegatives", commands: ["lint:vacuous-negatives"] },
+  { id: "spa-build", outcome: "build", commands: ["spa:conflict-markers", "build"] },
+] as const;
+
+/** Independent population, before any post-suite execution or skip decision. */
+export function postSuiteContinuationPopulation() {
+  return { schemaVersion: 1 as const, coverage: "complete" as const,
+    units: POST_SUITE_LEG_DEFINITIONS.map(leg => ({
+      id: `post:${leg.id}`, kind: "post-suite" as const, path: "package.json",
+    })) };
+}
+
 function postSuiteCommandId(cmd: string, args: readonly string[]): string {
   if (cmd === "npm") {
     const runIndex = args.indexOf("run");
@@ -19481,7 +20486,338 @@ function postSuiteCommandId(cmd: string, args: readonly string[]): string {
   return `${cmd}:${args.join(" ")}`;
 }
 
+const SPA_CONFLICT_MARKER_ARGS = [
+  'grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.',
+];
+
+const checkpointCommandWrapperInputs = (root: string, command: readonly string[]) => {
+  try {
+    const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
+    const inputs: Array<{ path: string; sha256: string }> = [];
+    let scripts: Record<string, string> | undefined;
+    for (const file of files) {
+      const absolute = path.join(root, file);
+      if (file !== 'package.json' && !existsSync(absolute)) continue;
+      const size = statSync(absolute).size;
+      const bytes = readNativeArtifactBytes(absolute, size, 16 * 1024 * 1024);
+      inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      if (file === 'package.json') scripts = JSON.parse(bytes.toString('utf8')).scripts;
+    }
+    if (command[0] === 'npm' && command[1] === '--workspace') {
+      if (command.length !== 5 || command[3] !== 'run' || command[4] !== 'build') return null;
+      const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+      const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
+      if (!Array.isArray(workspaces) || workspaces.some(value => typeof value !== 'string')) return null;
+      const patterns = workspaces.filter((value: string) => !value.startsWith('!'))
+        .map((value: string) => `${value.replace(/\/$/, '')}/package.json`);
+      const exclude = workspaces.filter((value: string) => value.startsWith('!'))
+        .map((value: string) => `${value.slice(1).replace(/\/$/, '')}/package.json`);
+      const candidates = globSync(patterns, { cwd: root, exclude });
+      if (candidates.length > 4096) return null;
+      const matches: Array<{ file: string; scripts?: Record<string, string> }> = [];
+      for (const file of candidates) {
+        const bytes = readNativeArtifactBytes(path.join(root, file), statSync(path.join(root, file)).size,
+          16 * 1024 * 1024);
+        const workspace = JSON.parse(bytes.toString('utf8'));
+        if (workspace.name === command[2] || path.dirname(file) === command[2])
+          matches.push({ file, scripts: workspace.scripts });
+      }
+      if (matches.length !== 1) return null;
+      const selected = matches[0]!;
+      for (const file of [selected.file, path.join(path.dirname(selected.file), '.npmrc')]) {
+        if (file !== selected.file && !existsSync(path.join(root, file))) continue;
+        const bytes = readNativeArtifactBytes(path.join(root, file), statSync(path.join(root, file)).size,
+          16 * 1024 * 1024);
+        inputs.push({ path: file, sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
+      scripts = selected.scripts;
+    }
+    return { inputs, script: command[0] === 'npm' ? scripts?.[command[command.indexOf('run') + 1]!] ?? null : null };
+  } catch { return null; }
+};
+
+const checkpointPostSuiteEvidenceRoot = (progress: QualificationWorkProgressInput) => path.join(os.tmpdir(),
+  'papercusp-qualification-post-suite', createHash('sha256').update(`${progress.root}\0${progress.attemptId}`).digest('hex'));
+
+/** Reconstruct the complete original leg from source-owned definitions, never
+ * from the stored outcome sample. This describes execution, not reuse closure. */
+export function checkpointQualificationPostSuiteDefinition(
+  progress: QualificationWorkProgressInput, unitId: string, spaWorkspace = '',
+) {
+  const leg = POST_SUITE_LEG_DEFINITIONS.find(leg => `post:${leg.id}` === unitId);
+  if (!leg) return null;
+  const commands = leg.commands.map(id => {
+    if (id === 'build' && !spaWorkspace) return null;
+    const argv = id === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
+      id === 'build' ? ['npm', '--workspace', spaWorkspace, 'run', 'build'] : ['npm', 'run', id];
+    const wrapper = checkpointCommandWrapperInputs(progress.root, argv);
+    return wrapper ? { id, task: `${unitId}:${id}`, argv, cwd: progress.root,
+      originalCommand: wrapper.script, inputs: wrapper.inputs,
+      exitCodes: id === 'spa:conflict-markers' ? [0, 1] : [0], emptyStdout: id === 'spa:conflict-markers' } : null;
+  });
+  return commands.every(command => command !== null) ? {
+    evidenceRoot: checkpointPostSuiteEvidenceRoot(progress), wrapper: resolveHeavyWrapper(), commands,
+  } : null;
+}
+
+/** Save measured post-suite outcomes through the existing qualification fence.
+ * A logical leg is the bounded chunk: grouped commands bank only once every
+ * member closes. Raw output uses the existing immutable native receipt store.
+ * Runtime-input closure stays unmeasured. Current-only composition separately
+ * authenticates these physical captures and cannot use them to skip a later run.
+ */
+export function createCheckpointQualificationPostSuiteExecutor(
+  input: { target: GateVerdictTarget; progress: QualificationWorkProgressInput },
+  execute: CheckpointExec,
+  deps = { record: recordStoredQualificationWorkProgress, now: Date.now },
+): CheckpointExec {
+  const progress = structuredClone({ ...input.progress, updates: [] });
+  const target = structuredClone(input.target);
+  const evidenceRoot = checkpointPostSuiteEvidenceRoot(progress);
+  // These are wrapper inputs, not a claim about everything a command can read.
+  // Read both populations independently: adding/removing a lockfile or npmrc
+  // during execution must differ just as changing its bytes does.
+  const wrapperInputs = (command: readonly string[]) => checkpointCommandWrapperInputs(progress.root, command);
+  type NativeReceipt = ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>;
+  const observations = new Map<string, { receipt: NativeReceipt; state: 'pass' | 'fail' | 'infra'; endedAtMs: number }>();
+  const started = new Set<string>();
+  let pending: Promise<unknown> = Promise.resolve();
+  let failed = input.progress.updates.length > 0;
+  let failure: unknown = failed
+    ? new Error('qualification-post-suite-mixed-updates') : undefined;
+  const fenced = async (updates: QualificationWorkProgressInput['updates']) => {
+    const stored = await deps.record(target, { ...progress, updates });
+    if (stored.status !== 'updated' && stored.status !== 'idempotent')
+      throw new Error(`qualification-post-suite-custody-${stored.status}`);
+    return stored.transaction;
+  };
+  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+    const next = pending.then(() => {
+      if (failed) throw failure;
+      return operation();
+    });
+    // Retain a rejected write as a hard barrier for concurrent/later commands,
+    // while attaching its rejection handler immediately.
+    pending = next.catch(error => { failed = true; failure = error; });
+    return next;
+  };
+  return async (cmd, args, options) => {
+    if (path.resolve(options?.cwd ?? progress.root) !== path.resolve(progress.root))
+      throw new Error('qualification-post-suite-root-mismatch');
+    // Snapshot before the first await. A mutable caller env must not let a
+    // saved result answer an invocation with different database/config inputs.
+    // The diagnostic OUT/preload are added afterwards and are not caller input.
+    const environment = { ...(options?.env ?? process.env) };
+    const invocation = { command: [cmd, ...args], environmentSha256: createHash('sha256')
+      .update(JSON.stringify(Object.entries(environment).filter(([, value]) => value !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b)))).digest('hex') };
+    const executionOptions = { ...options };
+    const commandId = postSuiteCommandId(cmd, args);
+    const definition = POST_SUITE_LEG_DEFINITIONS.find(leg => (leg.commands as readonly string[]).includes(commandId));
+    if (!definition || !progress.manifest.units.some(unit => unit.id === `post:${definition.id}` && unit.kind === 'post-suite'))
+      throw new Error('qualification-post-suite-command-outside-manifest');
+    const replay = await serialize(async (): Promise<CheckpointExecResult | undefined> => {
+      if (started.has(commandId)) throw new Error('qualification-post-suite-command-duplicate');
+      const transaction = await fenced([]);
+      const prior = transaction.continuation?.receipts.find(receipt => receipt.unitId === `post:${definition.id}`);
+      const previous = prior ? structuredClone(prior) : undefined;
+      if (previous) {
+        const eligibility = evaluatePartialTaskContinuation({ root: progress.root, taskKey: progress.taskKey,
+          continuation: transaction.continuation }, { ...progress, sourceCommit: progress.candidate });
+        if (eligibility.status !== 'ready') throw new Error(`qualification-post-suite-eligibility-${eligibility.reason}`);
+        if ((eligibility.reused as readonly string[]).includes(previous.unitId)) {
+          // A proof chooses whether work can be omitted. The saved original
+          // output supplies the leg result; an invented empty success cannot.
+          if ((await git(progress.root, ['rev-parse', 'HEAD'])).trim() !== progress.candidate ||
+              (await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim())
+            throw new Error('qualification-post-suite-reuse-source-drift');
+          const outcomes = previous.proof?.commandOutcomes;
+          if (!Array.isArray(outcomes) || outcomes.length !== definition.commands.length ||
+              new Set(outcomes.map(outcome => outcome?.command)).size !== outcomes.length ||
+              !definition.commands.every(command => outcomes.some(outcome => outcome?.command === command)))
+            throw new Error('qualification-post-suite-reuse-outcomes-unmeasured');
+          let bytesRead = 0;
+          const readPin = (root: string, pin: { ref: string; sha256: string; byteLength: number }) => {
+            if (root !== evidenceRoot || !pin || typeof pin.ref !== 'string' || path.basename(pin.ref) !== pin.ref ||
+                !/^[a-f0-9]{64}$/.test(pin.sha256) || !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+              throw new Error('qualification-post-suite-reuse-artifact-invalid');
+            const bytes = readNativeArtifactBytes(path.join(root, pin.ref), pin.byteLength,
+              64 * 1024 * 1024 - bytesRead, count => { bytesRead += count; });
+            if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
+              throw new Error('qualification-post-suite-reuse-artifact-digest');
+            return bytes;
+          };
+          const readRetainedArtifacts = (root: string, value: unknown): void => {
+            if (!value || typeof value !== 'object') return;
+            for (const [key, child] of Object.entries(value)) {
+              if (key === 'artifact' && child && typeof child === 'object' &&
+                  'ref' in child && 'sha256' in child && 'byteLength' in child)
+                readPin(root, child as { ref: string; sha256: string; byteLength: number });
+              else readRetainedArtifacts(root, child);
+            }
+          };
+          const results = new Map<string, CheckpointExecResult>();
+          const wrappers: Array<{ command: string[]; inputs: Array<{ path: string; sha256: string }> }> = [];
+          // Authenticate the WHOLE grouped leg before returning even its first
+          // command. A missing later member cannot turn into a partial replay.
+          for (const outcome of outcomes) {
+            const native = JSON.parse(readPin(outcome.root, outcome.receipt).toString('utf8'));
+            readRetainedArtifacts(outcome.root, native);
+            const execution = native.execution;
+            const requested = execution?.invocation?.command;
+            if (!Array.isArray(requested) || requested.some(word => typeof word !== 'string') ||
+                !/^[a-f0-9]{64}$/.test(execution?.invocation?.environmentSha256))
+              throw new Error('qualification-post-suite-reuse-command-mismatch');
+            const current = wrapperInputs(requested);
+            if (native.schemaVersion !== 1 || native.kind !== 'affected-task-native-execution' ||
+                native.task !== `post:${definition.id}:${outcome.command}` ||
+                !current ||
+                native.sourceInputsUnchanged !== true || !isDeepStrictEqual(native.before?.inputs, current.inputs) ||
+                !isDeepStrictEqual(native.after?.inputs, current.inputs) || execution?.cwd !== progress.root ||
+                execution.captureComplete !== true || execution.signal !== null || execution.error !== null ||
+                !Number.isSafeInteger(execution.exitCode))
+              throw new Error('qualification-post-suite-reuse-outcome-mismatch');
+            const canonical = outcome.command === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
+              outcome.command === 'build' ? ['npm', '--workspace', requested[2], 'run', 'build'] : ['npm', 'run', outcome.command];
+            if (!isDeepStrictEqual(requested, canonical) ||
+                (outcome.command === commandId && (!isDeepStrictEqual(invocation.command, requested) ||
+                  execution.invocation.environmentSha256 !== invocation.environmentSha256)) ||
+                native.originalCommand !== current.script ||
+                !(isDeepStrictEqual(execution.command, requested) ||
+                  isDeepStrictEqual(execution.command, [resolveHeavyWrapper(), ...requested])))
+              throw new Error('qualification-post-suite-reuse-command-mismatch');
+            const stdout = readPin(outcome.root, execution.logs.stdout).toString('utf8');
+            const stderr = readPin(outcome.root, execution.logs.stderr).toString('utf8');
+            if (outcome.command === 'spa:conflict-markers'
+              ? !(execution.exitCode === 1 || execution.exitCode === 0 && !stdout.trim())
+              : execution.exitCode !== 0)
+              throw new Error('qualification-post-suite-reuse-outcome-not-pass');
+            wrappers.push({ command: requested, inputs: current.inputs });
+            results.set(outcome.command, { code: execution.exitCode, signal: null, stdout, stderr });
+          }
+          // Re-check custody after artifact IO, before acknowledging the replay.
+          const acknowledged = await fenced([]);
+          if (!isDeepStrictEqual(previous,
+            acknowledged.continuation?.receipts.find(receipt => receipt.unitId === previous.unitId)))
+            throw new Error('qualification-post-suite-reuse-receipt-changed');
+          if ((await git(progress.root, ['rev-parse', 'HEAD'])).trim() !== progress.candidate ||
+              (await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim() ||
+              wrappers.some(wrapper => !isDeepStrictEqual(wrapper.inputs, wrapperInputs(wrapper.command)?.inputs)))
+            throw new Error('qualification-post-suite-reuse-source-drift');
+          started.add(commandId);
+          return results.get(commandId)!;
+        }
+        if (!(eligibility.run as readonly string[]).includes(previous.unitId))
+          throw new Error('qualification-post-suite-retained-terminal-outcome');
+      }
+      started.add(commandId);
+      return undefined;
+    });
+    if (replay) return replay;
+    const before = wrapperInputs(invocation.command);
+    const traceOut = path.join(evidenceRoot, `${randomUUID()}.out`);
+    mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
+    let nativeSpawn: { pid: number; command: string[]; cwd: string } | undefined;
+    let nativeSpawnIdentity: string | null = null;
+    const sourceSnapshot = async () => {
+      try { return { commit: (await git(progress.root, ['rev-parse', 'HEAD'])).trim(),
+        clean: !(await git(progress.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).trim() }; }
+      catch { return null; }
+    };
+    const sourceBefore = await sourceSnapshot();
+    const startedAtMs = deps.now();
+    let result: CheckpointExecResult | undefined;
+    let thrown: unknown;
+    let errored = false;
+    try { result = await execute(cmd, invocation.command.slice(1), { ...executionOptions,
+      env: nativeProcessTraceEnv({ ...environment, PC_EXECUTED_SOURCE_MAP_OUT: traceOut }),
+      onSpawn: child => {
+        // Copy before notifying another observer; caller mutation is not evidence.
+        nativeSpawn = structuredClone(child);
+        nativeSpawnIdentity = checkpointPidIdentity(child.pid);
+        try { executionOptions.onSpawn?.(child); }
+        catch { /* Caller diagnostics cannot alter the command outcome. */ }
+      },
+    }); }
+    catch (error) { errored = true; thrown = error; }
+    const endedAtMs = deps.now();
+    const sourceAfter = await sourceSnapshot();
+    const after = wrapperInputs(invocation.command);
+    const state = !result || result.signal ? 'infra' :
+      commandId === 'spa:conflict-markers'
+        ? (result.code === 1 || result.code === 0 && !result.stdout.trim() ? 'pass' : 'fail')
+        : result.code === 0 ? 'pass' : 'fail';
+    await serialize(async () => {
+      const receipt = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
+        task: `post:${definition.id}:${commandId}`, attempt: progress.runId,
+        cwd: nativeSpawn?.cwd ?? options?.cwd ?? progress.root,
+        command: nativeSpawn?.command ?? [cmd, ...args],
+        invocation,
+        ...(nativeSpawn && nativeSpawnIdentity ? { currentExecution: { schemaVersion: 1,
+          fingerprint: partialCurrentExecutionFingerprint({ ...progress, sourceCommit: progress.candidate }),
+          childPid: nativeSpawn.pid, childIdentity: nativeSpawnIdentity, sourceBefore, sourceAfter } } : {}),
+        originalCommand: before?.script ?? null,
+        before: before?.inputs ?? null, after: after?.inputs ?? null,
+        ...(nativeSpawn ? { processTrace: { out: traceOut, rootPid: nativeSpawn.pid } } : {}),
+        startedAtMs, finishedAtMs: endedAtMs, exitCode: result?.code ?? null,
+        signal: result?.signal ?? null, error: errored ? String(thrown) : null,
+        captureComplete: !errored, stdout: Buffer.from(result?.stdout ?? ''),
+        stderr: Buffer.from(result?.stderr ?? ''),
+      });
+      observations.set(commandId, { receipt, state, endedAtMs });
+      if (!definition.commands.every(command => observations.has(command))) return;
+      // The row must never acknowledge a result whose content-addressed output
+      // still exists only in the kernel's write cache.
+      const syncPath = (file: string) => {
+        const fd = openSync(file, 'r');
+        try { fsyncSync(fd); } finally { closeSync(fd); }
+      };
+      for (const command of definition.commands) {
+        const saved = observations.get(command)!.receipt;
+        for (const pin of [saved.receipt, saved.logs.stdout, saved.logs.stderr])
+          syncPath(path.join(saved.root, pin.ref));
+        // The receipt now retains process events, streams and loader sources.
+        // Flush their archived bytes too; syncing only the JSON reference would
+        // acknowledge an input observation that could disappear after a crash.
+        const syncRetainedArtifacts = (value: unknown): void => {
+          if (!value || typeof value !== 'object') return;
+          for (const [key, child] of Object.entries(value)) {
+            if (key === 'artifact' && child && typeof child === 'object' && 'ref' in child) {
+              const ref = child.ref;
+              if (typeof ref !== 'string' || path.basename(ref) !== ref)
+                throw new Error('qualification-post-suite-artifact-reference-invalid');
+              syncPath(path.join(saved.root, ref));
+            } else syncRetainedArtifacts(child);
+          }
+        };
+        syncRetainedArtifacts(saved.observation);
+        syncPath(saved.root);
+        syncPath(path.dirname(saved.root));
+        syncPath(path.dirname(path.dirname(saved.root)));
+      }
+      const transaction = await fenced([]);
+      const unitId = `post:${definition.id}`;
+      const previous = transaction.continuation?.receipts.find(receipt => receipt.unitId === unitId);
+      const commands = definition.commands.map(command => ({ command, ...observations.get(command)! }));
+      const unitState = commands.some(command => command.state === 'fail') ? 'fail' :
+        commands.some(command => command.state === 'infra') ? 'infra' : 'pass';
+      await fenced([{ receipt: {
+        unitId, completionId: randomUUID(), observedAtMs: Math.max(...commands.map(command => command.endedAtMs)),
+        state: unitState, observedCount: commands.length,
+        proof: { commandOutcomes: commands.map(({ command, receipt }) => ({
+          command, root: receipt.root, receipt: receipt.receipt,
+        })), opaqueReasons: ['post-suite-runtime-inputs-unmeasured'] },
+      }, ...(previous ? { supersedesCompletionId: previous.completionId } : {}) }]);
+    });
+    if (errored) throw thrown;
+    // Older injected exec seams can report code 0 alongside a signal. Preserve
+    // the measured signal and ensure the existing leg checks cannot count it green.
+    return result!.signal && result!.code === 0 ? { ...result!, code: 1 } : result!;
+  };
+}
+
 interface PostSuiteRunOptions {
+  qualification?: Parameters<typeof createCheckpointQualificationPostSuiteExecutor>[0];
   /** Deterministic test seam; production uses the monotonic-enough wall clock. */
   now?: () => number;
   /** Stable openedAtMs of the frozen queue candidate being judged, when applicable. */
@@ -19541,6 +20877,8 @@ export async function runPostSuiteLegs(
   spaWorkspace: string,
   options: PostSuiteRunOptions = {},
 ): Promise<PostSuiteLegs> {
+  const execute = options.qualification
+    ? createCheckpointQualificationPostSuiteExecutor(options.qualification, execRaw) : execRaw;
   const now = options.now ?? Date.now;
   const startedAt = now();
   const resourceDerivedLowMemoryConcurrency = Math.min(
@@ -19579,7 +20917,7 @@ export async function runPostSuiteLegs(
     let result: Awaited<ReturnType<CheckpointExec>> | undefined;
     let thrown: unknown;
     try {
-      result = await execRaw(cmd, args, opts);
+      result = await execute(cmd, args, opts);
       return result;
     } catch (error) {
       thrown = error;
@@ -20564,7 +21902,7 @@ export async function runPostSuiteLegs(
     // separator is excluded as FP-prone). git grep exit 0 = match found, 1 = clean.
     const markers = await exec(
       "git",
-      ["grep", "-n", "-I", "-E", "^(<{7}|>{7}|\\|{7})([ \\t]|$)", "--", "."],
+      [...SPA_CONFLICT_MARKER_ARGS],
       {
         cwd: treeDir,
         env,
@@ -20754,63 +22092,8 @@ export async function runPostSuiteLegs(
         : {}),
     };
   };
-  legs.records = [
-    record("lint:tsc", legs.typecheck, ["lint:tsc"]),
-    record("lint:tsc:papercusp-libs", legs.typecheckPapercuspLibs, [
-      "lint:tsc:papercusp-libs",
-    ]),
-    record("lint:tsc:workspaces", legs.typecheckWorkspaces, [
-      "lint:tsc:workspaces",
-    ]),
-    record("lint:tsc:operator", legs.typecheckOperator, ["lint:tsc:operator"]),
-    record("lint:tsc:orchestrator", legs.typecheckOrchestrator, [
-      "lint:tsc:orchestrator",
-    ]),
-    record("lint:tsc:scripts", legs.typecheckScripts, ["lint:tsc:scripts"]),
-    record("lint:migrations", legs.lintMigrations, ["lint:migrations"]),
-    record("lint:migration-forward-compat", legs.lintMigrationForwardCompat, [
-      "lint:migration-forward-compat",
-    ]),
-    record("lint:identity-leak", legs.lintIdentity, [
-      "lint:no-owner-name-tags",
-      "lint:no-box-identity",
-      "lint:no-identity-literals",
-    ]),
-    record("lint:design-primitives", legs.lintDesignPrimitives, [
-      "lint:design-primitives",
-    ]),
-    record("lint:no-control-bytes", legs.lintNoControlBytes, [
-      "lint:no-control-bytes",
-    ]),
-    record("lint:guard-reachability", legs.lintGuardReachability, [
-      "lint:guard-reachability",
-    ]),
-    record("lint:condition-rail", legs.lintConditionRail, [
-      "lint:condition-rail",
-    ]),
-    record("lint:mock-cast-escape", legs.lintMockCastEscape, [
-      "lint:mock-cast-escape",
-    ]),
-    record("lint:timer-classification", legs.lintTimerClassification, [
-      "lint:timer-classification",
-    ]),
-    record("lint:no-raw-setinterval", legs.lintNoRawSetinterval, [
-      "lint:no-raw-setinterval",
-    ]),
-    record("lint:plane-integrity", legs.lintPlane, [
-      "lint:plane-producers",
-      "lint:declared-consumed",
-      "lint:no-bespoke-state-read",
-      "lint:plane-ratchet",
-      "lint:plane-adoption",
-      "lint:derived-signal-firings",
-      "lint:plane-guards",
-    ]),
-    record("lint:vacuous-negatives", legs.lintVacuousNegatives, [
-      "lint:vacuous-negatives",
-    ]),
-    record("spa-build", legs.build, ["spa:conflict-markers", "build"]),
-  ];
+  legs.records = POST_SUITE_LEG_DEFINITIONS.map(leg =>
+    record(leg.id, legs[leg.outcome], [...leg.commands]));
   const telemetry = [
     `POST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${lowMemoryConcurrency} ` +
       `memoryBudgetMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB} ` +
@@ -20949,6 +22232,12 @@ export function realCheckpointDeps(
   reclaimSnapCacheHeadroomOverride?: () =>
     | SnapCacheOutcome
     | Promise<SnapCacheOutcome>,
+  /** Exercise the production orchestration around a prepared qualification and
+   * its durable boundary without opening the live custody store in unit tests. */
+  qualificationDeps = {
+    prepare: prepareCheckpointQualificationNativeRun,
+    execution: createCheckpointQualificationExecution,
+  },
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -21448,7 +22737,26 @@ export function realCheckpointDeps(
   // carries the measured sentence a projection cannot reconstruct) always wins. One
   // checkpoint process is one tick, so a closure variable is the whole lifetime needed.
   let freezeDispositionRecordedThisTick = false;
+  let qualificationWorkContext: { progress: QualificationWorkProgressInput;
+    commandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'];
+    recheckRunnerIdentity: () => Promise<string | null> } | undefined;
+  const qualificationWorkForVerdict: NonNullable<CheckpointDeps['qualificationWorkForVerdict']> = async verdict => {
+    const context = qualificationWorkContext;
+    if (!context || verdict.green !== true || verdict.candidate !== context.progress.candidate ||
+        verdict.runId !== context.progress.runId) return undefined;
+    if (await context.recheckRunnerIdentity() !== context.progress.runnerIdentity)
+      throw new Error('qualification-final-runtime-identity-changed');
+    const commands = structuredClone(context.commandDefinitions);
+    return { input: structuredClone(context.progress), options: {
+      classifyReadPaths: await checkpointQualificationInputClassifier(context.progress.root),
+      currentCommandDefinition: (unit, progress) => unit.kind === 'guard'
+        ? commands.find(definition => definition.unitIds.includes(unit.id))
+        : checkpointQualificationPostSuiteDefinition(progress, unit.id, cfg.spaBuildWorkspace),
+    } };
+  };
+  const executeCheckpointCommand = exec;
   return {
+    qualificationWorkForVerdict,
     isolationRun,
     concurrentRun,
     workspaceRerun,
@@ -21979,6 +23287,13 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          ...(process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() ? {
+            readPreparedCheckpointSelection: (input: Pick<PreparedCheckpointSelectionRecord,
+              "attemptId" | "integrationRoot" | "checkpointRoot">) => readPreparedCheckpointSelection(repairTarget, input),
+            commitPreparedCheckpointSelection: (record: PreparedCheckpointSelectionRecord,
+              expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null }) =>
+              commitPreparedCheckpointSelection(repairTarget, record, expected),
+          } : {}),
           // P-012: the per-sync batch check's newest PASSED commit (sync_delta.lastPassed). Used
           // by the fresh cut and the P-021 re-cut, each under decideKnownGoodFreezeCut's rules.
           async resolveKnownGoodRecutTarget() {
@@ -22223,15 +23538,19 @@ export function realCheckpointDeps(
           async dispatchFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
             checkpointEvidence?: CheckpointEvidence,
+            onSkip?: (skip: ReleaseFixerDispatchSkip) => void,
           ) {
             const { dispatchReleaseFixer } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            // WI-6554700010029683: forward onSkip so a refused dispatch reports its typed
+            // reason into the gate summary, matching the idle actuator's wiring.
             return dispatchReleaseFixer(
               repairTarget,
               queue.repairHead,
               queue.failingTests,
               queue,
               checkpointEvidence,
+              { onSkip },
             );
           },
           // WI-10007408: the fixer LIVENESS probe and the dead-fixer CLASSIFIER, deleted by
@@ -22715,6 +24034,7 @@ export function realCheckpointDeps(
         return await recordCheckpointVerdict(
           target,
           checkpointVerdictFromResult(r),
+          { qualificationWork: await qualificationWorkForVerdict(r) },
         );
       } catch (e) {
         console.error(
@@ -22902,6 +24222,12 @@ export function realCheckpointDeps(
       );
       let setup: CheckpointExecResult;
       materializationStartedAtMs = Date.now();
+      // WI-6554700010029556: the whole-box barrier needs `materializing` published for its
+      // duration on EVERY path (the frozen-repair verify and tick legs materialize here too,
+      // under a `suite` marker); the caller's phase is restored afterwards.
+      const endPublishedMaterialization = exclusiveMaterialization
+        ? beginPublishedMaterialization(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot))
+        : null;
       try {
         setup = await exec(
           "bash",
@@ -22955,6 +24281,7 @@ export function realCheckpointDeps(
         );
       } finally {
         flushSetupOutput();
+        endPublishedMaterialization?.();
       }
       const setupOutput = setup.stdout + setup.stderr;
       const dependencyGeneration = setupOutput.match(
@@ -22976,6 +24303,15 @@ export function realCheckpointDeps(
       };
     },
     async runGreen(treeDir, base, execution) {
+      // This closure survives a boundary winning the race. A late DB/output
+      // continuation still sees its cancelled executor and cannot fork again.
+      let qualificationExecution: ReturnType<typeof createCheckpointQualificationExecution> | undefined;
+      const exec: CheckpointExec = (cmd, args, options) =>
+        (qualificationExecution?.execute ?? executeCheckpointCommand)(cmd, args, options);
+      let rejectBoundary!: (error: CheckpointQualificationBoundaryError) => void;
+      const stopped = new Promise<never>((_, reject) => { rejectBoundary = reject; });
+      const operation = (async () => {
+      qualificationWorkContext = undefined;
       // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
       // can't run the npm green command — it dies with `Missing script` (rc=1) before any
       // test, and the gate went hard-RED with an empty failing-test signature, churning the
@@ -23012,6 +24348,7 @@ export function realCheckpointDeps(
         // judge sidecar reviewBy by the frozen queue's clock, like the post-suite leg does.
         execution?.frozenCandidateOpenedAtMs,
       );
+      log(`TEST_PASS_REUSE_POLICY auditRate=${env.AFFECTED_TEST_REUSE_AUDIT_RATE} reason=related-inputs-only`);
       // This is the one candidate-suite call site. Grant dirty-checkout restoration only when
       // the executed tree is the configured checkpoint checkout and that checkout is not the
       // protected integration tree. The helper in affected-tests re-verifies Git's actual roots
@@ -23023,6 +24360,9 @@ export function realCheckpointDeps(
       const checkpointRoot = path.resolve(cfg.checkpointRoot);
       const integrationRoot = path.resolve(cfg.integrationRoot);
       const releaseRoot = path.resolve(cfg.releaseRoot);
+      // The collector verifies canonical source hashes before rebasing any observation.
+      Object.assign(env, testFileCoverageScopeEnv(treeDir, cfg, execution?.candidate ?? resolveCandidateSha(treeDir),
+        gateVerdictTargetFromEnv() ?? resolveHomeGateVerdictTarget()));
       if (
         path.resolve(treeDir) === checkpointRoot &&
         checkpointRoot !== integrationRoot &&
@@ -23036,6 +24376,54 @@ export function realCheckpointDeps(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
       );
       const resolvedHeadAtStart = resolveCandidateSha(treeDir);
+      const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim();
+      let nativeObserver: ReturnType<typeof createCheckpointQualificationNativeObserver> | undefined;
+      let postSuiteQualification: PostSuiteRunOptions['qualification'];
+      let qualificationCommandDefinitions: ReturnType<typeof preparePartialTaskCommandDefinitions>['definitions'] | undefined;
+      let nativeRefusal: string | undefined;
+      if (repairTarget && qualificationAttemptId) {
+        const prepared = await qualificationDeps.prepare({
+          target: repairTarget, attemptId: qualificationAttemptId,
+          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir, environment: env,
+          async select() {
+            if (cfg.greenCmd !== 'npm run test:affected') throw new Error('qualification-green-command-unsupported');
+            const selected = await exec('node', ['scripts/affected-tests.mjs', '--print-selection', '--enumerate-specifications'], {
+              cwd: treeDir, env, allowNonZero: true, timeoutMs: SETUP_TREE_TIMEOUT_MS,
+            });
+            if (!commandCompletedSuccessfully(selected)) throw new Error('qualification-selection-command-failed');
+            const lines = selected.stdout.split(/\r?\n/).filter(line => line.startsWith('AFFECTED_TESTS_SELECTION='));
+            if (lines.length !== 1) throw new Error('qualification-selection-output-unmeasured');
+            return JSON.parse(lines[0]!.slice('AFFECTED_TESTS_SELECTION='.length)) as unknown;
+          },
+        }).catch(() => ({ status: 'refused' as const, reason: 'qualification-native-preparation-unreadable' }));
+        if (prepared.status === 'refused') {
+          const summary = `QUALIFICATION_NATIVE status=refused reason=${prepared.reason}`;
+          log(summary);
+          return { green: false, summary, failingTests: ['qualification-native-preparation'] };
+        }
+        if (prepared.status === 'ready') {
+          const budget = checkpointQualificationBudgetFromEnv(Date.now());
+          if (budget.status !== 'ready')
+            throw new CheckpointQualificationBoundaryError('killed', budget.reason);
+          nativeObserver = prepared.observer;
+          qualificationExecution = qualificationDeps.execution({
+            target: repairTarget, progress: prepared.postSuite.progress, observer: prepared.observer, budget,
+            baselineReceipts: prepared.checkpoint.continuation.receipts,
+            execute: executeCheckpointCommand, onStop: rejectBoundary,
+          });
+          qualificationCommandDefinitions = prepared.commandDefinitions;
+          postSuiteQualification = prepared.postSuite;
+          qualificationWorkContext = { progress: structuredClone(prepared.postSuite.progress),
+            commandDefinitions: structuredClone(prepared.commandDefinitions), recheckRunnerIdentity: prepared.recheckRunnerIdentity };
+          // Reuse the integrity-sealed partial checkpoint transport. The child
+          // independently reselects the full inventory and regrades the proofs
+          // before applying task-local file filters to original npm invocations.
+          const workPath = partialTaskCheckpointPath(os.tmpdir(), treeDir,
+            `${prepared.checkpoint.taskKey}:${runId}:${randomUUID()}`);
+          writePartialTaskCheckpointAtomic(workPath, prepared.checkpoint);
+          args.push('--', '--qualification-work', workPath);
+        }
+      }
       const postSuiteIdentity: NonNullable<PostSuiteRunOptions["identity"]> = {
         runId,
         candidate: execution?.candidate ?? resolvedHeadAtStart ?? "unknown",
@@ -23047,6 +24435,7 @@ export function realCheckpointDeps(
         ...(execution?.setup ? { setup: execution.setup } : {}),
       };
       const postSuiteOptions: PostSuiteRunOptions = {
+        ...(postSuiteQualification ? { qualification: postSuiteQualification } : {}),
         identity: postSuiteIdentity,
         operatorPgEnv: gateOperatorPgEnv(process.env),
         ...(execution?.frozenCandidateOpenedAtMs !== undefined
@@ -23090,9 +24479,16 @@ export function realCheckpointDeps(
         allowNonZero: true,
         heavy: true,
         relayAffectedProgress: true,
-      }).then((result) => {
+        ...(nativeObserver ? { onOutput: nativeObserver.onOutput } : {}),
+      }).then(async (result) => {
         // Measure the child completion itself, before a slower concurrent repair leg.
         suiteCompletedAtMs = Date.now();
+        // runCmd treats diagnostic observers as best-effort. The durable bridge's
+        // asynchronous refusal must be awaited and remain a hard green barrier.
+        if (nativeObserver) {
+          const native = await nativeObserver.finish();
+          if (native.status === 'refused') nativeRefusal = native.reason;
+        }
         return result;
       });
       // P-004 (green-gate-zero-wait-convergence-2026-09-08): a frozen repair
@@ -23762,6 +25158,36 @@ export function realCheckpointDeps(
       }
       // P-008 (#D-015): what quarantine and downgrades removed from this run's count. The repair
       // round records it, so the convergence trajectory compares rounds over one population.
+      if (nativeRefusal) {
+        green = false;
+        failingTests.push('qualification-native-completion');
+        const note = `QUALIFICATION_NATIVE status=refused reason=${nativeRefusal}`;
+        summary = `${summary}\n\n${note}`;
+        fullOutput += `\n${note}\n`;
+        log(note);
+        if (logPath) appendFileSync(logPath, `\n${note}\n`);
+      }
+      if (green && repairTarget && qualificationAttemptId) {
+        qualificationExecution?.assertRunning();
+        // This must follow every absorption/downgrade/inheritance path that can
+        // turn the suite green, and precede returning green to the advance path.
+        const composed = await composeCheckpointQualificationBeforePromotion({
+          target: repairTarget, attemptId: qualificationAttemptId,
+          candidate: execution?.candidate ?? resolvedHeadAtStart ?? '', runId, root: treeDir,
+          spaWorkspace: cfg.spaBuildWorkspace,
+          commandDefinitions: qualificationCommandDefinitions,
+          runnerIdentity: await qualificationWorkContext?.recheckRunnerIdentity(),
+        });
+        if (composed.status === 'refused') {
+          green = false;
+          failingTests.push('qualification-composition');
+          const note = `QUALIFICATION_COMPOSITION status=refused reason=${composed.reason}`;
+          summary = `${summary}\n\n${note}`;
+          fullOutput += `\n${note}\n`;
+          log(note);
+          if (logPath) appendFileSync(logPath, `\n${note}\n`);
+        }
+      }
       const excludedFromCount = green
         ? []
         : failingBeforeExclusions.filter((entry) => !failingTests.includes(entry));
@@ -23860,6 +25286,11 @@ export function realCheckpointDeps(
         ...(ratchetShadow ? { ratchetShadow } : {}),
         ...(excludedFromCount.length ? { excludedFromCount } : {}),
       };
+      })();
+      try { return await Promise.race([operation, stopped]); }
+      finally {
+        await qualificationExecution?.stop();
+      }
     },
     advance: (candidate) =>
       advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
@@ -24202,9 +25633,14 @@ export function realCheckpointDeps(
         undefined,
         opts?.frozenCandidateOpenedAtMs,
       );
+      // WI-6554700010029556: name the activity and each leg in the run-lock's phase.json.
+      const tickPhaseLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
+      writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs" });
       return measureRepairTickLegs(
         {
           setupTree: (r) => this.setupTree(r),
+          onLegStart: (leg) =>
+            writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs", leg }),
           resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
           signal: opts?.signal,
           runScript: async (script, workspace) => {
@@ -24955,6 +26391,8 @@ export function runCmd(
     /** Observe every child-output chunk without changing the retained stdout/stderr result.
      * Diagnostic only: observer failures are swallowed so they cannot change a command verdict. */
     onOutput?: (stream: "stdout" | "stderr", text: string) => void;
+    /** Observe the actual spawn; observer failures cannot change its verdict. */
+    onSpawn?: (child: { pid: number; command: string[]; cwd: string }) => void;
     /** Report every stdout/stderr chunk as real child-process progress. The callback is
      *  diagnostic/liveness-only; failures in it must never change the command verdict. */
     onProgress?: () => void;
@@ -24962,6 +26400,7 @@ export function runCmd(
      *  `killProcessGroupOnTimeout` is set, exactly like a timeout kill) and reject. An
      *  already-aborted signal rejects without spawning anything. */
     signal?: AbortSignal;
+    qualification?: Pick<QualificationCommandOptions, 'target' | 'progress' | 'deadlineEpochMs'>;
   } = {},
 ): Promise<CheckpointExecResult> {
   return new Promise((resolve, reject) => {
@@ -24987,7 +26426,7 @@ export function runCmd(
     // The two timeoutMs callers are the isolation + workspace re-runs, which are single-file /
     // single-fork by construction — light enough that leaving them unthrottled costs nothing.
     const wrapper =
-      opts.heavy && !opts.timeoutMs ? resolveHeavyWrapper() : null;
+      opts.heavy && (!opts.timeoutMs || opts.qualification) ? resolveHeavyWrapper() : null;
     if (wrapper) {
       argsToRun = [cmdToRun, ...argsToRun];
       cmdToRun = wrapper;
@@ -25005,6 +26444,30 @@ export function runCmd(
       };
     }
 
+    if (opts.qualification) {
+      const remainders = new Map<string, string>();
+      void runQualificationCommand(cmdToRun, argsToRun, {
+        ...opts.qualification, cwd: opts.cwd ?? process.cwd(), env, signal: opts.signal,
+        timeoutMs: opts.timeoutMs, timeoutResetsOnProgress: opts.timeoutResetsOnProgress,
+        hardTimeoutMs: opts.hardTimeoutMs, onSpawn: opts.onSpawn, onProgress: opts.onProgress,
+        onOutput(stream, text) {
+          try { opts.onOutput?.(stream, text); } catch { /* diagnostic */ }
+          if (!opts.relayAffectedProgress) return;
+          const lines = ((remainders.get(stream) ?? '') + text).split(/\r?\n/);
+          remainders.set(stream, lines.pop() ?? '');
+          for (const line of lines) if (line.startsWith('AFFECTED_TASK_PROGRESS ') ||
+            /^AFFECTED_TESTS_ADMISSION_(?:QUEUED|GRANTED|YIELD) /.test(line) || line.startsWith('Full run log: '))
+            console.log(`${orchestratorStdoutTag()} ${line}`);
+        },
+      }).then(result => {
+        const measured = { ...result, code: result.code ?? 1 };
+        if (!opts.allowNonZero && (measured.code !== 0 || measured.signal))
+          reject(new Error(`${cmd} ${args.join(' ')} exited ${measured.code}${measured.signal ? ` (${measured.signal})` : ''}\n${measured.stderr}`));
+        else resolve(measured);
+      }, reject);
+      return;
+    }
+
     // WI-7069: only DETACH (new process group, this child becomes its own group leader) when
     // the caller asked for a group-kill on timeout. Every other call keeps inheriting THIS
     // process's pgid, which is what lets the self-watchdog's blanket `kill(-pid)` reach it too
@@ -25016,6 +26479,10 @@ export function runCmd(
       env,
       detached: detach,
     });
+    if (child.pid !== undefined) {
+      try { opts.onSpawn?.({ pid: child.pid, command: [cmdToRun, ...argsToRun], cwd: opts.cwd ?? process.cwd() }); }
+      catch { /* Native process observation cannot change the child verdict. */ }
+    }
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -25307,6 +26774,7 @@ if (require.main === module) {
    * deployed tree driving the integration tree's CLI) working. Any failure here degrades to the
    * same place, so this can never leave the gate blind: the worst case is the old behaviour.
    */
+  let qualificationWorkForFinalVerdict: CheckpointDeps['qualificationWorkForVerdict'];
   const recordOwnVerdict = async (
     r: CheckpointResult,
     recordOpts: { signedShardDeadlineMs?: number } = {},
@@ -25321,7 +26789,7 @@ if (require.main === module) {
       return await recordCheckpointVerdict(
         target,
         checkpointVerdictFromResult(r),
-        recordOpts,
+        { ...recordOpts, qualificationWork: await qualificationWorkForFinalVerdict?.(r) },
       );
     } catch (e) {
       console.error(
@@ -25346,6 +26814,9 @@ if (require.main === module) {
   const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
   const processStartedAtMs = Math.floor(Date.now() - process.uptime() * 1000);
+  // Preparation and execution share one run clock, so initialize the transcript
+  // here too; the inner runner only resets it for callers without an inherited clock.
+  resetOrchestratorLog();
   let resolvedCandidateForRun: string | null = null;
 
   /**
@@ -25384,6 +26855,7 @@ if (require.main === module) {
 
   const beginCheckpoint = async (): Promise<void> => {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+    let preparedSelection: PreparedCheckpointSelectionRecord | undefined;
     let lock: CheckpointRunLock;
     let qualificationProgress: ReturnType<typeof startCheckpointQualificationProgress> = {
       note: () => {},
@@ -25494,6 +26966,11 @@ if (require.main === module) {
       const preflight = await beginCheckpointPreflight(
         cfg,
         candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
+        runCmd,
+        { checkpointSelection: { deps: realCheckpointDeps(cfg, undefined, runId), opts: {
+          candidate: candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? undefined,
+          candidateSource, runStartedAtMs: processStartedAtMs,
+        } } },
       );
       if (preflight.kind === "not-applicable") {
         await emitResult({
@@ -25511,6 +26988,7 @@ if (require.main === module) {
       }
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
+      preparedSelection = preflight.preparedSelection;
       lock = preflight.lock;
       if (lock.acquired) {
         // The preflight may resolve the final executable candidate after dependency preparation.
@@ -25818,6 +27296,7 @@ if (require.main === module) {
         prewarmedDependencyGeneration,
         gateFireId,
       );
+      qualificationWorkForFinalVerdict = checkpointDeps.qualificationWorkForVerdict;
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
       // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
       checkpointDeps.enterPostVerdictPhase = (verdict) => {
@@ -25862,7 +27341,9 @@ if (require.main === module) {
         releaseAndExit,
       });
       runGreenCheckpoint(cfg, checkpointDeps, {
-        candidate: candidateArg,
+        preparedSelection,
+        runStartedAtMs: processStartedAtMs,
+        candidate: checkpointRunnerCandidate(candidateArg, preparedSelection),
         candidateHint: prewarmedDependencyGeneration.candidate,
         candidateSource,
         ...(diagnostic ? { diagnostic } : {}),

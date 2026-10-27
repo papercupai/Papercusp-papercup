@@ -57,6 +57,28 @@ describe('secrets-guard rules', () => {
     expect(pem.some((x) => x.rule === 'private-key-pem')).toBe(true);
   });
 
+  it('does NOT flag a private-key-pem header whose same-line body is an XXXX placeholder (documented example)', () => {
+    // npm's config docs (the `key` definition) show the header, an escaped newline
+    // and XXXX. A native-process evidence capture of that source sat quarantined
+    // from the commit for 53+ ticks (WI-6554700010028546). Header assembled at
+    // runtime so this file's bytes never carry a PEM-shaped block.
+    const pemHeader = ['-----BEGIN ', 'PRIVATE KEY-----'].join('');
+    const hasPem = (path: string, text: string) =>
+      scanTextForSecrets(path, text).some((x) => x.rule === 'private-key-pem');
+    // The exact shape of the captured npm line (two backslashes before each n).
+    expect(hasPem('definitions.js.source', `      key="${pemHeader}\\\\nXXXX\\\\nXXXX\\\\n-----`)).toBe(false);
+    // Single-backslash and whitespace separators are the same documented shape.
+    expect(hasPem('a.json', `"k":"${pemHeader}\\nXXXX\\nXXXX\\n"`)).toBe(false);
+    expect(hasPem('a.md', `${pemHeader} xxxxxxxx`)).toBe(false);
+    // Recall is preserved. A header that ENDS its line (every real multi-line key)
+    // still flags, as does one followed by base64 key material on the same line,
+    // and an X run that merely opens a longer base64 token is not a placeholder.
+    expect(hasPem('id_rsa', `${pemHeader}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n`)).toBe(true);
+    expect(hasPem('a.json', `"k":"${pemHeader}\\nMIIEvQIBADANBgkqhkiG9w0B\\n"`)).toBe(true);
+    expect(hasPem('a.json', `"k":"${pemHeader}\\nXXXXMIIEvQIBADANBgkq\\n"`)).toBe(true);
+    expect(hasPem('a.json', `"k":"${pemHeader}XXX\\n"`)).toBe(true);
+  });
+
   it('secret-assignment rule is entropy-gated: real value flagged, placeholder ignored', () => {
     // Value assembled from <20-char fragments so this file's bytes can't match
     // the {20,} capture — the runtime string is still a realistic secret.

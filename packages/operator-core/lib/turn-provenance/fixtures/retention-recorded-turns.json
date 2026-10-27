@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-26995183706038210",
+  "capturedAt": "2026-10-26T00:24:00Z",
+  "note": "Verbatim recorded inputs, not author-invented prompts. Recorded instruction has persisted unenrolled-origin provenance; this corpus preserves its visibility without upgrading authorship.",
+  "machine": {
+    "sourceFile": "$CODEX_HOME/sessions/2026/10/25/rollout-2026-10-25T19-21-52-01a1755e-d966-7400-a74f-d4347574c56e.jsonl",
+    "sourceLine": 508,
+    "timestamp": "2026-10-25T23:58:36.598Z",
+    "text": "⟦turn-origin:wake-pump nonce:dd3f335d6db79de9⟧\n[await-event] git-sync:committed fired — git-sync:committed fired; inspect current state before continuing.. (your note: P001/self: existing native22070971 is 2passed0failed0skip; no rerun. Last committed fixture SHA cfaf9603 differs from tested dd2a9caa8d217c6c4ad051837ae56b1e562afefe916fed37f9dd335682ff0be0 (null-contract correction). Native git-sync:run refused request-only; sanctioned :3271 ptool fire returned in_progress at22:33Z; existing local-sync PID3341748 progress updated22:34Z. On commit event verify exact test SHA at committed HEAD then bind ORIGINAL22070971 to SEARCH-FRESHNESS-BOUNDARIES@2. Preserve original gitSHA17cf04f3/dirtytrue. If event is unrelated, do not bind; inspect routine progress once. No LIVE_GATE_OPS or new paid route/workers.) payload: {\"sha\":\"f1e47c8fe156c7ad4214177350145147ff891e8a\",\"installSlug\":\"papercusp\",\"workspaceId\":\"papercusp-workspace\",\"committedAtMs\":1792968461915} (event-wake delivery #984175 — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)",
+    "textSha256": "7e4ffb34f99ecf1721a973b71e4083876a07f746c215c6174972875eb76c06f0",
+    "sourceLineSha256": "2722280297c64c6b389fb74ee2814ed0b96fdd850e625495918ac90fc356615e",
+    "ledgerSource": "$PAPERCUSP_TURN_PROVENANCE_DIR/su-45e55f4b-3b99-466a-85fb-973108f644c9.jsonl",
+    "enrollment": {
+      "sid": "su-45e55f4b-3b99-466a-85fb-973108f644c9",
+      "nonce": "dd3f335d6db79de9",
+      "origin": "wake-pump",
+      "sha256": "889175a5e6c75cfb770cf4f9fb88bd0693b1af011c7efbf07206d769d3c6c0d4",
+      "ts": 1792968541928
+    }
+  },
+  "owner": {
+    "ref": "session_turn:codex:01a16517-9e1a-7d52-9b2a-48374ad88b6a:11",
+    "turn_idx": 11,
+    "speaker": "user",
+    "owner": "su-45e55f4b-3b99-466a-85fb-973108f644c9",
+    "ts": "2026-10-22 16:55:03.661-04",
+    "text": "put yourself on auto mode and carry this plan to shipped status yourself now",
+    "persistedOriginVerdict": "unenrolled-origin"
+  }
+}

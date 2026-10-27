@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { retractFact, findFactKeyElsewhere, findFactKeyMatches, findFactKeyState, FACT_SCOPES } from '../../agent-facts/store';
-import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
+import { resolveScopeRefFromCtx, resolveScopeRefAlias, foldScopeRefAliases } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:retract',
@@ -24,18 +24,21 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
-  args: z.object({
+  // WI-6554700010029664: `scope_ref` / `ref` are folded into scopeRef before parse (not advertised).
+  args: z.preprocess(foldScopeRefAliases, z.object({
     scope: z
       .enum(FACT_SCOPES)
       .optional()
       .describe('Optional only when key matches exactly one current fact; required when the key is ambiguous.'),
-    scopeRef: z.string().max(120).optional(),
-    scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
-    ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
+    scopeRef: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Scope reference. Also accepted, folded into scopeRef before parse (scopeRef wins): scope_ref, ref (EI-7371).'),
     harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
     key: z.string().min(1).max(120),
     reason: z.string().min(1).max(500).describe('Why this fact stopped being true, ≤500 chars (longer is refused) — retained in the 30-day audit trail.'),
-  }),
+  })),
   async handler(args, ctx) {
     const { resolveAgentIdentity } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
@@ -43,7 +46,7 @@ export default defineTool({
     let scopeRefInput: string | null | undefined;
 
     if (!scope) {
-      const suppliedScopeRef = args.scopeRef ?? args.scope_ref ?? args.ref ?? args.harness;
+      const suppliedScopeRef = args.scopeRef ?? args.harness;
       if ((suppliedScopeRef ?? '').trim()) {
         return {
           data: {

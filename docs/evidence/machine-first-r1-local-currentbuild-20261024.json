@@ -1,0 +1,300 @@
+{
+  "scope": "Actual local operator, two independent browser windows, two saved targets. Excludes Portal, real desktop pixels, launch and existing-agent continuity.",
+  "sourceHashes": {
+    "apps/operator/app/_components/WorkspaceSwitcher.tsx": "9eca4b2c432619f6a48f2986bd9f225afb78f99bb74d0d9b09529be9d66bed21",
+    "apps/operator/app/_components/WorkspaceSwitcher.test.tsx": "7cc344f58c41685b8f441d281744d606272434c6cb1a91488fb4d72e183afd1c",
+    "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts": "3394e30c94b6f4058c4777c8eec384dd656bdeaafe2f0990ece127284c6e636d",
+    "apps/operator/app/cloud-workspaces/MachineSwitcher.tsx": "4bed238fb519d597dd2bad1b586be362623ac5f3f1468617d0c3634905941f32"
+  },
+  "runtimeOrigin": "http://127.0.0.1:46125",
+  "origin": "http://127.0.0.1:42187",
+  "account": {
+    "userId": "3d509489-1ca1-4674-9cc1-af0a781216bd",
+    "organizationIds": [
+      "fe536340-93b1-4581-8b06-3d670f8f18d9",
+      "e97eb2df-e96f-4ece-90b0-9956f7c88275"
+    ]
+  },
+  "cases": [
+    {
+      "window": 0,
+      "name": "before",
+      "url": "http://127.0.0.1:42187/desktops?ws=test-runtime-497e546d-5c3-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a",
+      "profile": {
+        "status": 200,
+        "body": {
+          "updated_at": "2026-10-24T05:55:29.812Z",
+          "display_name": "R1 destination a"
+        }
+      },
+      "registry": {
+        "status": 200,
+        "body": {
+          "current": "test-runtime-497e546d-5c3-a",
+          "workspaces": [
+            {
+              "id": "test-runtime-497e546d-5c3-a",
+              "name": "R1 machine A",
+              "createdAt": 0
+            }
+          ]
+        }
+      },
+      "selector": "R1 machine A \u2014 running\nConnect your computer\nManage machines",
+      "screenshot": "docs/evidence/machine-first-r1-local-0-before-20261024.png"
+    },
+    {
+      "window": 1,
+      "name": "before",
+      "url": "http://127.0.0.1:42187/desktops?ws=test-runtime-497e546d-5c3-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a",
+      "profile": {
+        "status": 200,
+        "body": {
+          "updated_at": "2026-10-24T05:55:29.812Z",
+          "display_name": "R1 destination a"
+        }
+      },
+      "registry": {
+        "status": 200,
+        "body": {
+          "current": "test-runtime-497e546d-5c3-a",
+          "workspaces": [
+            {
+              "id": "test-runtime-497e546d-5c3-a",
+              "name": "R1 machine A",
+              "createdAt": 0
+            }
+          ]
+        }
+      },
+      "selector": "R1 machine A \u2014 running\nConnect your computer\nManage machines",
+      "screenshot": "docs/evidence/machine-first-r1-local-1-before-20261024.png"
+    },
+    {
+      "window": 0,
+      "name": "switched-b",
+      "url": "http://127.0.0.1:42187/desktops?ws=test-runtime-497e546d-5c3-b&desktopHost=r1-host-b&host=r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b",
+      "profile": {
+        "status": 200,
+        "body": {
+          "updated_at": "2026-10-24T05:55:30.058Z",
+          "display_name": "R1 destination b"
+        }
+      },
+      "registry": {
+        "status": 200,
+        "body": {
+          "current": "test-runtime-497e546d-5c3-b",
+          "workspaces": [
+            {
+              "id": "test-runtime-497e546d-5c3-b",
+              "name": "R1 machine B",
+              "createdAt": 0
+            }
+          ]
+        }
+      },
+      "selector": "R1 machine B \u2014 running\nConnect your computer\nManage machines",
+      "screenshot": "docs/evidence/machine-first-r1-local-0-switched-b-20261024.png"
+    },
+    {
+      "window": 1,
+      "name": "retained-a",
+      "url": "http://127.0.0.1:42187/desktops?ws=test-runtime-497e546d-5c3-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a",
+      "profile": {
+        "status": 200,
+        "body": {
+          "updated_at": "2026-10-24T05:55:29.812Z",
+          "display_name": "R1 destination a"
+        }
+      },
+      "registry": {
+        "status": 200,
+        "body": {
+          "current": "test-runtime-497e546d-5c3-a",
+          "workspaces": [
+            {
+              "id": "test-runtime-497e546d-5c3-a",
+              "name": "R1 machine A",
+              "createdAt": 0
+            }
+          ]
+        }
+      },
+      "selector": "R1 machine A \u2014 running\nConnect your computer\nManage machines",
+      "screenshot": "docs/evidence/machine-first-r1-local-1-retained-a-20261024.png"
+    },
+    {
+      "window": 0,
+      "name": "reload-b",
+      "url": "http://127.0.0.1:42187/desktops?ws=test-runtime-497e546d-5c3-b&desktopHost=r1-host-b&host=r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b",
+      "profile": {
+        "status": 200,
+        "body": {
+          "updated_at": "2026-10-24T05:55:30.058Z",
+          "display_name": "R1 destination b"
+        }
+      },
+      "registry": {
+        "status": 200,
+        "body": {
+          "current": "test-runtime-497e546d-5c3-b",
+          "workspaces": [
+            {
+              "id": "test-runtime-497e546d-5c3-b",
+              "name": "R1 machine B",
+              "createdAt": 0
+            }
+          ]
+        }
+      },
+      "selector": "R1 machine B \u2014 running\nConnect your computer\nManage machines",
+      "screenshot": "docs/evidence/machine-first-r1-local-0-reload-b-20261024.png"
+    }
+  ],
+  "requests": [
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": ""
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 1,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": ""
+    },
+    {
+      "window": 1,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 1,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "",
+      "workspace": ""
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "",
+      "workspace": ""
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": ""
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b"
+    },
+    {
+      "window": 1,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 1,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-a",
+      "workspace": "test-runtime-497e546d-5c3-a"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": ""
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b"
+    },
+    {
+      "window": 0,
+      "url": "http://127.0.0.1:42187/api/workspaces",
+      "machine": "r1-host-b",
+      "workspace": "test-runtime-497e546d-5c3-b"
+    }
+  ],
+  "errors": [],
+  "result": "passed-scoped",
+  "schemaVersion": "machine-first-current-build-browser-receipt-v1",
+  "workItem": "WI-6554700010016648",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "acceptance": "partial; R1 remains open",
+  "remaining": [
+    "Portal two-target switch: candidate attempt failed, cause unestablished",
+    "Unavailable/reconnection",
+    "Real desktop pixels",
+    "Subsequent real launch target",
+    "Pre-existing actual agent/session continuity",
+    "Independent acceptance and shipment"
+  ],
+  "trace": "docs/evidence/machine-first-r1-local-currentbuild-20261024.zip",
+  "regression": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/app/_components/WorkspaceSwitcher.test.tsx",
+    "before": "1 failed,14 passed,0 skipped; stale injected ws-a instead of ws-b",
+    "after": "15 passed,0 skipped,exit0",
+    "logs": [
+      "/tmp/machine-first-r1-workspace-context-red-20261024.log",
+      "/tmp/machine-first-r1-workspace-context-green-20261024.log"
+    ],
+    "typecheck": "operator scoped check exit0 at/below existing baseline; 4 diagnostics in one checked/imported file. Fixture scoped check exit0 with zero diagnostics."
+  },
+  "failureBeforeFix": {
+    "receipt": "/tmp/machine-first-r1-gui-v10-local.json",
+    "settledReceipt": "/tmp/machine-first-r1-gui-v10-settled-switch.json",
+    "observation": "URL/selector B; injected workspace A; API403 machine_workspace_mismatch persisted30seconds"
+  },
+  "sourceStillMatches": {
+    "apps/operator/app/_components/WorkspaceSwitcher.tsx": true,
+    "apps/operator/app/_components/WorkspaceSwitcher.test.tsx": true,
+    "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts": true,
+    "apps/operator/app/cloud-workspaces/MachineSwitcher.tsx": true
+  }
+}

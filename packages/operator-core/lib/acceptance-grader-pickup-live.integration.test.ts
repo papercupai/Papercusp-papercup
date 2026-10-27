@@ -263,7 +263,7 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       // leave a trace if dedup failed — is left REAL.
       const deps = {
         readPlan: async () => ({
-          row: { workspaceId: LIST_WORKSPACE, harnessSlug: HARNESS, planSlug: PLAN_SLUG, content: '' },
+          row: { workspaceId: LIST_WORKSPACE, harnessSlug: HARNESS, planSlug: PLAN_SLUG, content: '', items: [] },
         }),
         getRubric: async () => ({ rubricId: RUBRIC_ID, revision: 4 }),
       } as unknown as Parameters<typeof resolveAcceptanceGrader>[2];
@@ -597,15 +597,19 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
   });
 
   describe('a final acceptance card closes its grading cascade', () => {
-    it('persists the card answer and closes the consult without requiring a reply', async () => {
-      const conversationId = 'conv-r3-card-final-answer';
+    it.each(['legacy', 'converted'])('persists the %s card answer and closes the consult without requiring a reply', async (kind) => {
+      const conversationId = `conv-r3-card-final-answer-${kind}`;
+      const sourceOwnerId = `su-r3-final-grader-${kind}`;
+      const answeringOwnerId = kind === 'converted' ? 'su-r3-converted-answerer' : sourceOwnerId;
+      const rubricId = `acceptance-r3-card-final-plan-${kind}`;
       const nowIso = new Date().toISOString();
       const routing = {
         selection: {
           min: 1,
           max: 2,
           selected: [{
-            ownerId: 'su-r3-final-grader',
+            ownerId: sourceOwnerId,
+            ...(kind === 'converted' ? { answeringOwnerId } : {}),
             via: 'floor',
             score: 0.9,
             relevance: 0.9,
@@ -617,7 +621,7 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
         cascade: {
           flavor: GRADING_CASCADE_FLAVOR,
           planSlug: 'r3-card-final-plan',
-          rubricId: 'acceptance-r3-card-final-plan',
+          rubricId,
           harnessSlug: HARNESS,
         },
       };
@@ -627,30 +631,39 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
            latency_contract, routing, cascade_digest, cascade_cursor, wakes_used,
            created_at, updated_at, expires_at)
         VALUES
-          (${LIST_WORKSPACE}, ${conversationId}, ${'su-r3-requester'}, ${'su-r3-final-grader'},
+          (${LIST_WORKSPACE}, ${conversationId}, ${'su-r3-requester'}, ${sourceOwnerId},
            ${'active'}, ${'grade it'}, ${'proceed'}, ${db.adminSql.json(routing as never)},
            ${db.adminSql.json([] as never)}, ${0}, ${1}, ${nowIso}::timestamptz,
            ${nowIso}::timestamptz, ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz)`;
 
+      const unrelated = await advanceGradingCascadeOnCard({
+        workspaceId: LIST_WORKSPACE,
+        rubricRef: rubricId,
+        graderOwnerId: 'su-r3-unrelated-card-author',
+        cardSummary: 'not the selected answerer',
+      });
+      expect(unrelated).toEqual({ advanced: false, reason: 'not_current_grader' });
+
       const result = await advanceGradingCascadeOnCard({
         workspaceId: LIST_WORKSPACE,
-        rubricRef: 'acceptance-r3-card-final-plan',
-        graderOwnerId: 'su-r3-final-grader',
+        rubricRef: rubricId,
+        graderOwnerId: answeringOwnerId,
         cardSummary: 'complete independent grade',
       });
 
       expect(result).toEqual({ advanced: false, reason: 'menu_exhausted' });
       const [row] = await db.adminSql<
-        Array<{ state: string; closed: boolean; expires_at: string | null; outcome: Record<string, unknown> | null }>
-      >`SELECT state, closed_at IS NOT NULL AS closed, expires_at, outcome
+        Array<{ state: string; closed: boolean; expires_at: string | null; outcome: Record<string, unknown> | null; digest: unknown[] }>
+      >`SELECT state, closed_at IS NOT NULL AS closed, expires_at, outcome, cascade_digest AS digest
           FROM harness_shared.consult_state
          WHERE workspace_id = ${LIST_WORKSPACE} AND conversation_id = ${conversationId}`;
       expect(row).toMatchObject({ state: 'closed_answered', closed: true, expires_at: null });
       expect(row?.outcome).toMatchObject({
         source: 'acceptance-grader-card',
         reason: 'cascade_complete',
-        answeredBy: 'su-r3-final-grader',
+        answeredBy: answeringOwnerId,
       });
+      expect(row?.digest).toContainEqual(expect.objectContaining({ kind: 'answer', ownerId: answeringOwnerId }));
     });
   });
 });

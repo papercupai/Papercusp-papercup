@@ -5,7 +5,7 @@
  * per test isolates the module-level _runs map.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
@@ -66,6 +66,33 @@ const spawnMock = vi.fn(() => {
 });
 const execFileSyncMock = vi.fn();
 const persistSqlMock = vi.fn();
+const outputIo = vi.hoisted(() => ({
+  wholeReads: [] as string[], reads: [] as Array<{ path: string; requested: number; bytes: number }>,
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const isOutput = (path: unknown) => /\.(stdout|stderr)\.log$/.test(String(path));
+  return {
+    ...actual,
+    readFile: (...args: Parameters<typeof actual.readFile>) => {
+      if (isOutput(args[0])) outputIo.wholeReads.push(String(args[0]));
+      return actual.readFile(...args);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (!isOutput(args[0])) return handle;
+      return new Proxy(handle, { get(target, key) {
+        if (key === 'read') return async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await target.read(buffer, offset, length, position);
+          outputIo.reads.push({ path: String(args[0]), requested: length, bytes: result.bytesRead });
+          return result;
+        };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    },
+  };
+});
 const RUN_STARTED_AT = '2026-10-15T10:00:00.000Z';
 const taskManagerMocks = vi.hoisted(() => ({
   begin: vi.fn(),
@@ -2190,6 +2217,80 @@ describe('durable detached snapshot lifecycle', () => {
     expect(updates).toHaveLength(1);
   });
 
+  it('recovers a withheld Vitest PASS when an unavailable ledger later returns exact file evidence', async () => {
+    const runId = 'terminal-pass-ledger-unavailable-then-readable';
+    const requestedFiles = ['lib/first.test.ts'];
+    const ledgerRows = [{
+      file_path: requestedFiles[0]!,
+      status: 'pass',
+      finished_at: new Date(1_700_000_011_000),
+      output_tail: null,
+      execution_details: measuredPass(requestedFiles[0]!, runId),
+    }];
+    let failFirstLedgerRead = true;
+    const durableRow: Record<string, unknown> = {
+      run_id: runId,
+      task_id: 'task-terminal-pass-ledger-unavailable',
+      kind: 'vitest',
+      label: 'detached Vitest run',
+      file_path: null,
+      command: ['node', 'scripts/test-files.mjs'],
+      status: 'pass',
+      exit_code: 0,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: new Date(1_700_000_010_000),
+      output: '',
+      truncated: false,
+    };
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          ...durableRow,
+          task_state: 'exited',
+          task_exit_code: 0,
+          task_ended_at: new Date(1_700_000_010_000),
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        if (failFirstLedgerRead) {
+          failFirstLedgerRead = false;
+          throw Object.assign(new Error('private query text'), { code: '57014' });
+        }
+        return ledgerRows;
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        Object.assign(durableRow, {
+          status: values[0],
+          exit_code: values[1],
+          finished_at: values[2],
+          output: values[3],
+          truncated: values[4],
+        });
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const withheld = await store.getRunAsync(runId, sql);
+    expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+    const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
+    expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toMatchObject({
+      reason: 'ledger-read-unavailable',
+      ledgerReadFailure: { phase: 'query', errorName: 'Error', errorCode: '57014' },
+    });
+    expect(withheld?.output).not.toContain('private query text');
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({ runId, status: 'pass', exitCode: 0 });
+    expect(recovered?.output).not.toContain('[coverage-gate]');
+    expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+  });
+
   it('rechecks a withheld Vitest PASS when exact requested-file ledger rows arrive later', async () => {
     const runId = 'terminal-pass-ledger-late';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
@@ -2398,6 +2499,78 @@ describe('durable detached snapshot lifecycle', () => {
       finishedAt: null,
     });
   });
+
+  it.each(['timed_out', 'killed', 'ended_unobserved', 'deadline', 'legacy-error',
+    'oversized', 'missing-stderr', 'redirected', 'cas-race', 'live'] as const)(
+    'recovers bounded orphan diagnostics without inventing a test verdict: %s', async scenario => {
+      const directory = await mkdtemp('/tmp/detached-orphan-output-');
+      try {
+        const runId = 'orphan-diagnostic-run';
+        const stdoutPath = join(directory, `${runId}.stdout.log`);
+        const stderrPath = join(directory, `${runId}.stderr.log`);
+        const large = scenario === 'oversized' ? 'x'.repeat(2 * 1024 * 1024) : '';
+        await writeFile(stdoutPath, large + 'ROUTER_PROGRESS completedCases=42\n');
+        if (scenario !== 'missing-stderr') await writeFile(stderrPath, large + 'CHILD_BUDGET timeoutMs=87986\n');
+        if (scenario === 'redirected') {
+          const outside = join(directory, 'unrelated');
+          await writeFile(outside, 'PRIVATE_UNRELATED_CONTENT');
+          await rm(stdoutPath); await symlink(outside, stdoutPath);
+        }
+        const legacy = scenario === 'legacy-error';
+        const persisted = {
+          run_id: runId, task_id: 'task-orphan-diagnostic', kind: 'vitest', label: 'orphan diagnostics',
+          file_path: 'lib/example.test.ts', command: ['node', 'router.js'],
+          status: legacy ? 'error' : 'running', exit_code: null,
+          started_at: new Date(Date.now() - 120_000),
+          finished_at: legacy ? new Date(Date.now() - 1_000) : null,
+          output: legacy ? '[detached-recovery] no test verdict was observed.\n' : 'partial output\n',
+          truncated: false, task_state: scenario === 'deadline' || scenario === 'live' ? 'running' :
+            scenario === 'ended_unobserved' ? 'ended_unobserved' : scenario === 'killed' ? 'killed' : 'timed_out',
+          task_deadline_at: scenario === 'deadline' ? new Date(Date.now() - 1_000) : null,
+          task_exit_code: null, task_ended_at: scenario === 'live' || scenario === 'deadline' ? null : new Date(),
+          task_detail: { detachedReportArtifacts: { schemaVersion: 1, artifacts: [{
+            reportPath: join(directory, 'missing-report.json'), root: directory,
+            scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+            worktreeBefore: { commit: null, porcelain: null }, stdoutPath, stderrPath,
+          }] } },
+        };
+        const updates: unknown[][] = [];
+        const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const statement = strings.join(' ');
+          if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{ ...persisted }];
+          if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+            updates.push(values);
+            if (scenario === 'cas-race') return [];
+            Object.assign(persisted, { status: values[0], exit_code: values[1], finished_at: values[2],
+              output: values[3], truncated: values[4] });
+            return [{ run_id: runId }];
+          }
+          return [];
+        }) as unknown as Sql;
+        outputIo.wholeReads.length = 0; outputIo.reads.length = 0;
+        const result = await store.getRunAsync(runId, sql);
+        if (scenario === 'live' || scenario === 'cas-race') {
+          expect(result).toMatchObject({ status: 'running', output: 'partial output\n', finishedAt: null });
+          if (scenario === 'live') expect(outputIo.reads).toHaveLength(0);
+        } else {
+          expect(result).toMatchObject({ status: 'error', exitCode: null, finishedAt: expect.any(Number) });
+          if (scenario !== 'redirected') expect(result?.output).toContain('ROUTER_PROGRESS completedCases=42');
+          if (scenario !== 'missing-stderr') expect(result?.output).toContain('CHILD_BUDGET timeoutMs=87986');
+          expect(result?.output).not.toContain('PRIVATE_UNRELATED_CONTENT');
+          expect(result?.output.length).toBeLessThanOrEqual(16 * 1024);
+          if (scenario === 'oversized') expect(result?.truncated).toBe(true);
+          expect(updates).toHaveLength(1);
+          const readCount = outputIo.reads.length;
+          const again = await store.getRunAsync(runId, sql);
+          expect(again?.output).toBe(result?.output);
+          expect(updates).toHaveLength(1);
+          expect(outputIo.reads).toHaveLength(readCount);
+        }
+        expect(outputIo.wholeReads).toHaveLength(0);
+        expect(outputIo.reads.reduce((sum, row) => sum + row.bytes, 0)).toBeLessThanOrEqual(16 * 1024);
+        expect(outputIo.reads.every(row => row.requested <= 8 * 1024)).toBe(true);
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    });
 
   it('still launches when the durable write fails and reports durable=false', async () => {
     const sql = vi.fn(async () => {

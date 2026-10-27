@@ -1,0 +1,757 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-bar-requalification",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "status": "BAR mechanical PASS; GF source clause and dependent native acceptance remain OPEN",
+  "route": {
+    "execution": "SELF",
+    "carry": "warm",
+    "currentBuildEndpoint": "http://127.0.0.1:3170",
+    "testClass": "operator-api"
+  },
+  "checkpointArchives": [
+    {
+      "workItem": "WI-6554700010020902",
+      "hash": "2284979cf12c",
+      "comments": [
+        1203495,
+        1203496
+      ],
+      "characters": 31750,
+      "verbatimReadbackMatched": true
+    },
+    {
+      "workItem": "WI-10005889",
+      "hash": "90bbfc9d1a28",
+      "comments": [
+        1203497,
+        1203498
+      ],
+      "characters": 27742,
+      "verbatimReadbackMatched": true
+    }
+  ],
+  "trigger": {
+    "ok": true,
+    "evaluatorBuild": {
+      "sha": "b0b5d23760",
+      "version": "0.0.0"
+    },
+    "classRefSource": "active-acceptance-rubric",
+    "governing": true,
+    "rows": [
+      {
+        "specId": "AUTO-BAR-R-2-P-002",
+        "verdict": "fail",
+        "evaluationMode": "mechanical",
+        "mechanicalProof": {
+          "applicable": true,
+          "verdict": "fail",
+          "requiredFiles": [
+            "apps/operator/lib/psu-launcher.test.ts",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "packages/operator-core/lib/session-port/service.test.ts",
+            "packages/operator-core/lib/session-port/store.integration.test.ts"
+          ],
+          "passingTestBindingIds": {
+            "packages/operator-core/lib/session-port/service.test.ts": 65882
+          },
+          "caughtMutantBindingIds": [
+            65897
+          ],
+          "gaps": [
+            "apps/operator/lib/psu-launcher.test.ts: the passing run is no longer current — binding 67057 stale (source-stale)",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts: the passing run is no longer current — binding 66761 stale (source-stale)",
+            "packages/operator-core/lib/session-port/store.integration.test.ts: the passing run is no longer current — binding 66768 stale (source-stale)"
+          ]
+        },
+        "wouldBlock": [
+          "mechanical-test-adequacy"
+        ]
+      },
+      {
+        "specId": "GF-P002-source",
+        "verdict": "fail",
+        "evaluationMode": "judgment",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "draggingBindingIds": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28820,
+            45213,
+            45214,
+            68221,
+            68339,
+            68551
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28326,
+            28545,
+            28820,
+            45213,
+            45214,
+            66844,
+            67056,
+            68221,
+            68374,
+            68375
+          ],
+          "disclosed-gap": [
+            28820,
+            68339
+          ]
+        }
+      }
+    ],
+    "nonPassingDetail": {
+      "tool": "plans:evaluate-spec-test-adequacy",
+      "args": {
+        "harness": "papercusp",
+        "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "classRef": "plan-class-feature-ship",
+        "specIds": [
+          "GF-P002-source",
+          "AUTO-BAR-R-2-P-002"
+        ],
+        "criteria": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "detail": "full"
+      },
+      "omitted": [
+        "rows[].scorecardDraft",
+        "rows[].ratings of passing criteria"
+      ]
+    }
+  },
+  "actualNamedSourceDrift": [
+    {
+      "id": 67057,
+      "run": 21828145,
+      "moved": [
+        {
+          "path": "apps/operator/scripts/psu-launcher.mjs",
+          "dimension": "source",
+          "change": "changed"
+        },
+        {
+          "path": "apps/operator/scripts/psu-pty-host.mjs",
+          "dimension": "source",
+          "change": "changed"
+        },
+        {
+          "path": "apps/operator/scripts/ptool.mjs",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ]
+    },
+    {
+      "id": 66768,
+      "run": 21818097,
+      "moved": [
+        {
+          "path": "packages/operator-core/lib/adv-sessions.ts",
+          "dimension": "source",
+          "change": "changed"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-launch-core.ts",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ]
+    },
+    {
+      "id": 66761,
+      "run": 21817294,
+      "moved": [
+        {
+          "path": "packages/operator-core/lib/agent-launch-core.ts",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "sourceCommit": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+    "driver": "Maintained scripts/with-test-pg.mjs wrapping npm run lint:as-committed -- test:file --any --ref=92746d8842fef1f4210f197da7ae8ac0c3a90cba -- <three affected files>",
+    "result": "Exit 0; requested=3 executed=3 matched=3 childSubstituted=0 skippedTests=0; owned private PostgreSQL stopped normally",
+    "canonicalRuns": [
+      {
+        "id": 21871346,
+        "filePath": "packages/operator-core/lib/session-port/store.integration.test.ts",
+        "commitSha": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+        "status": "pass",
+        "executionDetails": {
+          "passed": 2,
+          "failed": 0,
+          "skipped": 0
+        },
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "id": 21871310,
+        "filePath": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "commitSha": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+        "status": "pass",
+        "executionDetails": {
+          "passed": 148,
+          "failed": 0,
+          "skipped": 0
+        },
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "id": 21871301,
+        "filePath": "apps/operator/lib/psu-launcher.test.ts",
+        "commitSha": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+        "status": "pass",
+        "executionDetails": {
+          "passed": 1209,
+          "failed": 0,
+          "skipped": 0
+        },
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "receiptPathNote": "lint-as-committed owns and deletes its temporary reporter receipt file; durable canonical run rows, this artifact and the full log are the retained receipts."
+  },
+  "testByteComparison": [
+    {
+      "path": "apps/operator/lib/psu-launcher.test.ts",
+      "priorCommit": "181ee2c9bc809168a0b18bcde4d21f0cd534a732",
+      "currentCommit": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+      "testBytesIdentical": true,
+      "sha256": "9477b064d3e69796812451c31873b3cbedd3a66cbc737cd9d17ac3ca55253377"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "priorCommit": "8fa43342f66b6060857e2f4d3b005b130229a93c",
+      "currentCommit": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+      "testBytesIdentical": true,
+      "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f"
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/store.integration.test.ts",
+      "priorCommit": "8fa43342f66b6060857e2f4d3b005b130229a93c",
+      "currentCommit": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+      "testBytesIdentical": true,
+      "sha256": "9aa96efef91b4f9dac5484c8129cf42539bb10ffa9d4ca046efe095d0b0f9002"
+    }
+  ],
+  "priorDeclaredCaseComparison": [
+    {
+      "old": 67057,
+      "newRun": 21871301,
+      "oldCaseCount": 0,
+      "recordedPassCount": 1207,
+      "passed": 1209,
+      "clean": true,
+      "missing": []
+    },
+    {
+      "old": 67056,
+      "newRun": 21871301,
+      "oldCaseCount": 538,
+      "recordedPassCount": 1207,
+      "passed": 1209,
+      "clean": true,
+      "missing": []
+    },
+    {
+      "old": 66844,
+      "newRun": 21871346,
+      "oldCaseCount": 2,
+      "recordedPassCount": 2,
+      "passed": 2,
+      "clean": true,
+      "missing": []
+    },
+    {
+      "old": 66822,
+      "newRun": 21871310,
+      "oldCaseCount": 0,
+      "recordedPassCount": 148,
+      "passed": 148,
+      "clean": true,
+      "missing": []
+    },
+    {
+      "old": 66768,
+      "newRun": 21871346,
+      "oldCaseCount": 2,
+      "recordedPassCount": 2,
+      "passed": 2,
+      "clean": true,
+      "missing": []
+    },
+    {
+      "old": 66761,
+      "newRun": 21871310,
+      "oldCaseCount": 0,
+      "recordedPassCount": 148,
+      "passed": 148,
+      "clean": true,
+      "missing": []
+    }
+  ],
+  "independentQualificationBeforeRetirement": {
+    "bounded": {
+      "limit": 200,
+      "truncatedByLimit": false
+    },
+    "rows": [
+      {
+        "id": 68603,
+        "run": 21871310,
+        "spec": "AUTO-BAR-R-2-P-002",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 66761,
+        "cases": 0
+      },
+      {
+        "id": 68602,
+        "run": 21871346,
+        "spec": "AUTO-BAR-R-2-P-002",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 66768,
+        "cases": 2
+      },
+      {
+        "id": 68601,
+        "run": 21871310,
+        "spec": "GF-P002-source",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 66822,
+        "cases": 0
+      },
+      {
+        "id": 68600,
+        "run": 21871346,
+        "spec": "GF-P002-source",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 66844,
+        "cases": 2
+      },
+      {
+        "id": 68599,
+        "run": 21871301,
+        "spec": "GF-P002-source",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 67056,
+        "cases": 538
+      },
+      {
+        "id": 68598,
+        "run": 21871301,
+        "spec": "AUTO-BAR-R-2-P-002",
+        "current": "current",
+        "stale": [],
+        "unknown": [],
+        "old": 67057,
+        "cases": 0
+      }
+    ]
+  },
+  "exactRetirement": {
+    "receipt": "/tmp/gf-p002-exact-six-retirement-20261024.json",
+    "results": [
+      {
+        "bindingId": 67057,
+        "status": "retracted",
+        "reason": "Exact BAR launcher replacement68598 independently server-measured CURRENT after clean21871301=1209/0/0. Same test bytes and bounded recipe; source/fixture scope only."
+      },
+      {
+        "bindingId": 66761,
+        "status": "retracted",
+        "reason": "Exact BAR dispatcher replacement68603 independently server-measured CURRENT after clean21871310=148/0/0. Same test bytes and bounded recipe; no native scope retired."
+      },
+      {
+        "bindingId": 66768,
+        "status": "retracted",
+        "reason": "Exact BAR store replacement68602 independently server-measured CURRENT after clean21871346=2/0/0. Both original named cases and bounded recipe preserved."
+      },
+      {
+        "bindingId": 67056,
+        "status": "retracted",
+        "reason": "Exact GF launcher replacement68599 independently server-measured CURRENT after clean21871301=1209/0/0. All538 declared prior case titles, identical test bytes and bounded recipe preserved."
+      },
+      {
+        "bindingId": 66822,
+        "status": "retracted",
+        "reason": "Exact GF dispatcher replacement68601 independently server-measured CURRENT after clean21871310=148/0/0. Same test bytes, bounded source/fixture recipe, original coverage flags and native disclosed gap preserved."
+      },
+      {
+        "bindingId": 66844,
+        "status": "retracted",
+        "reason": "Exact GF store replacement68600 independently server-measured CURRENT after clean21871346=2/0/0. Both declared case titles, identical test bytes and bounded source/fixture recipe preserved."
+      }
+    ]
+  },
+  "finalAudit": [
+    {
+      "id": 68603,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21871310,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 68602,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21871346,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 68601,
+      "spec": "GF-P002-source",
+      "run": 21871310,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 68600,
+      "spec": "GF-P002-source",
+      "run": 21871346,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 68599,
+      "spec": "GF-P002-source",
+      "run": 21871301,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 68598,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21871301,
+      "withdrawn": false,
+      "current": "current",
+      "stale": [],
+      "unknown": []
+    },
+    {
+      "id": 67057,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21828145,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    },
+    {
+      "id": 67056,
+      "spec": "GF-P002-source",
+      "run": 21828145,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    },
+    {
+      "id": 66844,
+      "spec": "GF-P002-source",
+      "run": 21818097,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    },
+    {
+      "id": 66822,
+      "spec": "GF-P002-source",
+      "run": 21817294,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    },
+    {
+      "id": 66768,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21818097,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    },
+    {
+      "id": 66761,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "run": 21817294,
+      "withdrawn": true,
+      "current": "stale",
+      "stale": [
+        "source-stale"
+      ],
+      "unknown": []
+    }
+  ],
+  "governingAssessment": {
+    "build": {
+      "sha": "92746d8842",
+      "version": "0.0.0"
+    },
+    "governing": true,
+    "rows": [
+      {
+        "spec": "AUTO-BAR-R-2-P-002",
+        "verdict": "pass",
+        "mode": "mechanical",
+        "wouldBlock": [],
+        "proof": {
+          "applicable": true,
+          "verdict": "pass",
+          "requiredFiles": [
+            "apps/operator/lib/psu-launcher.test.ts",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "packages/operator-core/lib/session-port/service.test.ts",
+            "packages/operator-core/lib/session-port/store.integration.test.ts"
+          ],
+          "passingTestBindingIds": {
+            "apps/operator/lib/psu-launcher.test.ts": 68598,
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts": 68603,
+            "packages/operator-core/lib/session-port/service.test.ts": 65882,
+            "packages/operator-core/lib/session-port/store.integration.test.ts": 68602
+          },
+          "caughtMutantBindingIds": [
+            65897
+          ],
+          "gaps": []
+        }
+      },
+      {
+        "spec": "GF-P002-source",
+        "verdict": "fail",
+        "mode": "judgment",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "falsifiability",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "unknown",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "unknown",
+          "disclosed-gap": "fail"
+        },
+        "dragging": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28820,
+            45213,
+            45214,
+            68221,
+            68339,
+            68551
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28326,
+            28545,
+            28820,
+            45213,
+            45214,
+            68221,
+            68374,
+            68375
+          ],
+          "disclosed-gap": [
+            28820,
+            68339,
+            68601
+          ]
+        }
+      }
+    ]
+  },
+  "preservedScopeAudit": {
+    "pairs": [
+      {
+        "old": 67057,
+        "new": 68598,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 66761,
+        "new": 68603,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 66768,
+        "new": 68602,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 67056,
+        "new": 68599,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 66822,
+        "new": 68601,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 66844,
+        "new": 68600,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      }
+    ],
+    "falsifier": [
+      {
+        "id": 68221,
+        "current": "stale",
+        "moved": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "dimension": "source",
+            "change": "changed"
+          }
+        ]
+      }
+    ]
+  },
+  "preservedLimits": [
+    "Completed host136-case proof68551 and terminal recorder were not replayed.",
+    "Source and fixture proof only; no complete imported dependency graph, native physical execution, universal actor or source immutability claim.",
+    "Original operational28326/28545 remain bound. Existing native and dated source/cohort limitations are unchanged.",
+    "Original e99 quality cohort4/8 and supplementary f01c cohort3/8 remain distinct; missing requester evidence and shortfalls remain unknown. No quota consultations.",
+    "EI-26837794414133856 stays OPEN/owned: six original intermittent functional mechanisms and old worker-finalization cause remain unproven.",
+    "P002, dependent P006, R5cold900, independent acceptance and owner-gated final shipment remain OPEN.",
+    "No product source, test, spec, BAR, floor, timeout, execution route or carry mode changed."
+  ],
+  "nextAction": "Use the exact current source-clause assessment and named movement of68221 to select the next justified proof/calibration/native step. Preserve original history and all scope walls; do not replay only for HEAD movement.",
+  "evidenceRecords": [
+    {
+      "path": "/tmp/gf-p002-current-governing-20261024.json",
+      "sha256": "492d2617a41c14965f0429eff5ed4d11e569f6a01808d204acc3a621d5d3ffca"
+    },
+    {
+      "path": "/tmp/gf-p002-bar-direct-runs-20261024.json",
+      "sha256": "35ef9edeffb84ccac8f18b1ee30bf64095adfad5d4cd3e17e2b52023ee157ff0"
+    },
+    {
+      "path": "/tmp/gf-p002-bar-case-comparison-20261024.json",
+      "sha256": "2136ad1e4e9640824cabef0c39230f9cdb34269f7dfbd3ca292872be35de6e2c"
+    },
+    {
+      "path": "/tmp/gf-p002-successor-current-20261024.json",
+      "sha256": "badcc0480c050b96c724ea7afd50fab2cfc528088e65ffa32801084280581eae"
+    },
+    {
+      "path": "/tmp/gf-p002-exact-six-retirement-20261024.json",
+      "sha256": "51ecb960cc85d68cbf31d46897ffa77d51920553f9962c5120cc7e03fe2689b8"
+    },
+    {
+      "path": "/tmp/gf-p002-final-twelve-audit-20261024.json",
+      "sha256": "f42e4f0aa4a69db47afb69b6b21f0847fb8c5da0112017d68e9fb34c68372194"
+    },
+    {
+      "path": "/tmp/gf-p002-post-refresh-governing-20261024.json",
+      "sha256": "c1951f55034e1b5678db2aaf96b6b0713acc4e57f28f0da8fae4f721ce854ca6"
+    },
+    {
+      "path": "/tmp/gf-p002-replacement-scope-audit-20261024.json",
+      "sha256": "38b7d015bbd6047966eb38614c9198cd7564cb39e255f863322f2fad92012cc8"
+    },
+    {
+      "path": "/dev/shm/get-feedback-p002-bar-refresh-20261024.log",
+      "sha256": "e8eee4584314695864e7e9681aef95ba8b7a7c3898bedf648ca3a24e153fbc33"
+    }
+  ]
+}

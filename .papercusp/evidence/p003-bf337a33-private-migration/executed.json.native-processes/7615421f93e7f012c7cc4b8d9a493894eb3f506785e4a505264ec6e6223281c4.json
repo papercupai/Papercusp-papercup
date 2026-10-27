@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"d08dd4c0-7961-42ef-846d-6943dc00aeb6","pid":2967096,"ppid":2953226,"atMs":1792906685366,"loadId":70,"url":"file:///mnt/data/offload/papercusp-r2gcs-p003-bf337a33/node_modules/@testing-library/dom/dist/queries/text.js","scope":"node-sync-load-hook"}

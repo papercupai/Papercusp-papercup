@@ -18,7 +18,11 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { fileURLToPath } from 'node:url';
+import { unknownAnchor } from './plan-items/anchors';
+import { readPlanItemAnchors, writePlanItemAnchors } from './plan-items/anchor-store';
+import { codePayloadForPlanItems } from './plan-workitem-promotion';
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -55,6 +59,7 @@ const h = vi.hoisted(() => ({
     }
   >(),
   flagOn: true,
+  repoRoot: '',
   specQuality: {
     satisfied: true,
     applicable: false,
@@ -94,6 +99,15 @@ const h = vi.hoisted(() => ({
    * the common, correct "not goal work" outcome.
    */
   goalByOwner: new Map<string, string>(),
+  carryForwardCalls: [] as Array<{
+    workspaceId: string;
+    harnessSlug: string;
+    planSlug: string;
+    planItemId: string;
+    workItemId: string;
+    actorId: string;
+  }>,
+  carryForwardFailureOnce: false,
 }));
 
 vi.mock('./modes/goal-context', async (importOriginal) => {
@@ -184,7 +198,7 @@ vi.mock('./workspace-registry', async () => {
 });
 vi.mock('./harness-core', async () => {
   const actual = await vi.importActual<typeof import('./harness-core')>('./harness-core');
-  return { ...actual, resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }) };
+  return { ...actual, resolveProject: async (slug: string) => ({ slug, path: h.repoRoot || `/tmp/${slug}` }) };
 });
 // Force the promotion flag ON — promotePlanItems early-returns flagOff when getFlag is false.
 vi.mock('@papercusp/flags/server', async () => {
@@ -238,7 +252,18 @@ vi.mock('./agent-tools/plans/source', async (importOriginal) => {
 // focused on its own dependency-edge contract.
 vi.mock('./agent-tools/plans/spec-evidence-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./agent-tools/plans/spec-evidence-store')>();
-  return { ...actual, ensureWorkItemSpecRevisionEdges: async () => [] };
+  return {
+    ...actual,
+    ensureWorkItemSpecRevisionEdges: async () => [],
+    carryForwardCurrentSpecEvidence: async (input: (typeof h.carryForwardCalls)[number]) => {
+      h.carryForwardCalls.push(input);
+      if (h.carryForwardFailureOnce) {
+        h.carryForwardFailureOnce = false;
+        throw new Error('injected: spec evidence carry-forward failed');
+      }
+      return { sourceWorkItemId: null, copiedBindingIds: [] };
+    },
+  };
 });
 // This legacy promotion fixture intentionally omits the first-class acceptance-BAR
 // tables. Keep the lifecycle seam satisfied so these tests exercise promotion's
@@ -319,6 +344,7 @@ beforeAll(async () => {
     )
   `);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   // The real issue-family claim path consults watchdog recovery continuity before it
   // serves a row. This fresh-DB fixture must therefore carry the same canonical table
   // dependency as every other claim-path integration fixture.
@@ -367,10 +393,12 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.harness_design_artifacts, harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.agent_fleets RESTART IDENTITY`;
   await db.sql`TRUNCATE harness_shared.plan_items`;
+  await db.sql`TRUNCATE harness_shared.plan_item_anchors`;
   await db.sql`TRUNCATE harness_shared.harness_plans`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.goalByOwner.clear();
   h.flagOn = true;
+  h.repoRoot = '';
   h.specQuality = {
     satisfied: true,
     applicable: false,
@@ -385,6 +413,8 @@ beforeEach(async () => {
   h.laneSyncFailures.clear();
   h.laneSyncRejections.clear();
   h.mintBarrier = null;
+  h.carryForwardCalls = [];
+  h.carryForwardFailureOnce = false;
   h.plans.clear();
 });
 
@@ -425,6 +455,97 @@ const depEdges = async () => {
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
 describe('promotePlanItems (P-006): plan → placeable work-items, against real PG', () => {
+  it('retries current-spec evidence transfer after the canonical item was already minted', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Reopen the plan item' }] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Reopen the plan item','todo')`;
+    h.carryForwardFailureOnce = true;
+
+    await expect(run.promotePlanItems(base)).rejects.toThrow('injected: spec evidence carry-forward failed');
+    expect(h.carryForwardCalls).toHaveLength(1);
+    const canonicalId = h.carryForwardCalls[0].workItemId;
+    expect((await wi.getWorkItem(canonicalId, HARNESS))?.state).toBe('open');
+
+    const retry = await run.promotePlanItems(base);
+    expect(retry.promoted).toBe(0);
+    expect(retry.workItems).toMatchObject([{ planItemId: 'P-001', workItemId: canonicalId }]);
+    expect(h.carryForwardCalls.map((call) => call.workItemId)).toEqual([canonicalId, canonicalId]);
+    expect(h.carryForwardCalls[0]).toMatchObject({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      planItemId: 'P-001',
+      workItemId: canonicalId,
+      actorId: base.createdBy,
+    });
+  });
+
+  it('copies stored anchors, prefers their files, and derives existing files only for unlinked items', async () => {
+    h.repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const linkedPath = 'packages/operator-core/lib/plan-items/anchors.ts';
+    const otherPath = 'packages/operator-core/lib/plan-workitem-promotion.ts';
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN };
+    const linked = { ...unknownAnchor({ symbol: 'linked' }, 'no-snapshot'),
+      symbolId: 'sym-linked', symbolName: 'linked', path: linkedPath, line: 42,
+      signature: 'linked()', contentHash: 'declaration-hash', consumers: [{ path: otherPath, line: 9 }],
+      consumersTotal: 1, tests: ['packages/operator-core/lib/plan-workitem-promotion.test.ts'],
+      resolution: 'resolved' as const, unknownReason: null, freshness: 'stale' as const, resolvedCommit: 'snapshot-sha' };
+    h.plans.set(PLAN, { items: [
+      { id: 'P-001', status: 'todo', text: `Linked work mentions ${otherPath}` },
+      { id: 'P-002', status: 'todo', text: `Unlinked work touches ${otherPath}` },
+      { id: 'P-003', status: 'todo', text: `Unresolved symbol mentions ${otherPath}` },
+    ] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Linked','todo'),
+        (${WS},${HARNESS},${PLAN},'P-002',2,'Fallback','todo'),
+        (${WS},${HARNESS},${PLAN},'P-003',3,'Unknown','todo')`;
+    await db.sql.begin(async tx => {
+      await writePlanItemAnchors(tx, scope, { itemId: 'P-001', anchors: [linked, linked] }, 'author');
+      await writePlanItemAnchors(tx, scope, { itemId: 'P-003', anchors: [unknownAnchor({ symbol: 'missing' }, 'timeout')] }, 'author');
+    });
+    const stored = await readPlanItemAnchors(scope);
+    const result = await run.promotePlanItems(base);
+    expect(result.promoted).toBe(3);
+    const payloadFor = async (itemId: string) => (await wi.getWorkItem(
+      result.workItems.find(item => item.planItemId === itemId)!.workItemId, HARNESS))!.payload;
+    expect(await payloadFor('P-001')).toMatchObject({ paths: [linkedPath], anchors: stored['P-001'] });
+    expect(await payloadFor('P-002')).toMatchObject({ paths: [otherPath] });
+    expect(await payloadFor('P-002')).not.toHaveProperty('anchors');
+    expect(await payloadFor('P-003')).toMatchObject({ paths: [], anchors: stored['P-003'] });
+    expect((await run.promotePlanItems(base)).promoted).toBe(0);
+  });
+
+  it('persists the deduplicated file union when one work item covers multiple linked plan items', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN };
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'First','todo'),
+        (${WS},${HARNESS},${PLAN},'P-002',2,'Second','todo')`;
+    await db.sql.begin(async tx => {
+      await writePlanItemAnchors(tx, scope, { itemId: 'P-001', anchors: [unknownAnchor({ path: 'src/a.ts' }, 'not-found')] }, 'author');
+      await writePlanItemAnchors(tx, scope, { itemId: 'P-002', anchors: [unknownAnchor({ path: 'src/a.ts' }, 'not-found'),
+        unknownAnchor({ path: 'src/b.ts' }, 'not-found')] }, 'author');
+    });
+    const anchors = await readPlanItemAnchors(scope);
+    const item = await wi.createWorkItem({ kind: 'feature', title: 'Grouped lane', harness: HARNESS,
+      workspaceId: WS, sourcePlanSlug: PLAN, sourcePlanItemIds: ['P-001', 'P-002'], createdBy: 'author',
+      payload: { ...codePayloadForPlanItems(['P-001', 'P-002'], anchors, 'src/unlinked.ts') } });
+    expect((await wi.getWorkItem(item.id, HARNESS))!.payload).toMatchObject({
+      paths: ['src/a.ts', 'src/b.ts'], anchors: [...anchors['P-001'], ...anchors['P-002']],
+    });
+  });
+
+  it('keeps pre-serialized anchor JSON an array on a stock Postgres connection', async () => {
+    const json = JSON.stringify([unknownAnchor({ path: 'src/a.ts' }, 'not-found')]);
+    const [shape] = await db.sql`SELECT jsonb_typeof(${json}::jsonb) AS implicit,
+      jsonb_typeof(${json}::text::jsonb) AS explicit`;
+    // The old anchor writer used the first binding; the canonical plan writer
+    // already uses the second. This distinguishes a binding defect from bad data.
+    expect(shape).toEqual({ implicit: 'string', explicit: 'array' });
+  });
+
   it('promotes against the audited quality card when dropped items retain explicit exemptions', async () => {
     h.plans.set(PLAN, {
       items: [

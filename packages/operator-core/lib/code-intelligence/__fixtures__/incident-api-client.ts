@@ -98,7 +98,11 @@ try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);
   const root = (await loadHarnessRegistry(workspace)).projects.find(p => p.slug === workspace)?.path;
   assert(root, 'Maintained private home harness must resolve');
-  if (argv[4] === 'first-touch' || argv[4] === 'grep') {
+  if (argv[4] === 'reuse' || argv[4] === 'reuse-claim') {
+    const { runNativeReuseJourney } = await import('./reuse-api-journey.ts');
+    await runNativeReuseJourney({ call, workspace, root, owner: identity.ownerId, repo, handlerHash,
+      claimOnly: argv[4] === 'reuse-claim' });
+  } else if (argv[4] === 'first-touch' || argv[4] === 'grep') {
     await runNativeSnapshotJourney({ call, workspace, root, owner: identity.ownerId, repo, endpoint, leg: argv[4] });
   } else if (argv[4] === 'task-brief') {
     await runNativeTaskBriefJourney({ call, workspace, root, owner: identity.ownerId });

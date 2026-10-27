@@ -13,6 +13,7 @@ vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({ lazyWithRetry: 
 vi.mock('@/app/harness/Select', () => ({ Select: () => null }));
 vi.mock('@/app/_components/OperatorChatSidebar', () => ({ OperatorChatSidebar: () => null }));
 vi.mock('../app/quick-panel/PromptsTab', () => ({ default: () => <input aria-label="Prompts" /> }));
+vi.mock('../app/quick-panel/QuickAccessLauncher', () => ({ default: () => <input aria-label="Quick Access search" /> }));
 
 afterEach(() => {
   cleanup();
@@ -21,6 +22,15 @@ afterEach(() => {
 });
 
 describe('the native Quick Panel Docs frame lifecycle', () => {
+  it('opens Search by default, keeps the existing tabs and dismisses the native popup', async () => {
+    (window as unknown as Record<string, unknown>).__PAPERCUSP_QUICK_PANEL_WINDOW__ = true;
+    render(<NuqsTestingAdapter><QuickPanelPage chatSidebar={false} /></NuqsTestingAdapter>);
+    expect(screen.getByRole('tab', { name: 'Quick Access' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('textbox', { name: 'Quick Access search' })).toBeTruthy();
+    for (const name of ['Prompts', 'Brainstorm', 'Docs']) expect(screen.getByRole('tab', { name })).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  });
   it('dismisses after switching to a deferred Docs pane, and cleans up on unmount', async () => {
     (window as unknown as Record<string, unknown>).__PAPERCUSP_QUICK_PANEL_WINDOW__ = true;
     const view = render(

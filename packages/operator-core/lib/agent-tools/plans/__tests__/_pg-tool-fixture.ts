@@ -25,6 +25,7 @@ import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
 import { _resetForTests } from '@papercusp/db-org';
 import { createOrgTestDb } from '../../../../test/_org-test-db';
+import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
@@ -87,6 +88,7 @@ export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): 
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   process.env.HARNESS_DATABASE_URL = withUser(dsn, 'harness_app', 'harness_app_pwd');
   process.env.HARNESS_ADMIN_DATABASE_URL = withUser(dsn, 'harness_admin', 'harness_admin_pwd');
+  _resetHarnessAdminUrlCacheForTests();
   _resetUrlCacheForTests();
   await _resetForTests();
 
@@ -110,6 +112,9 @@ export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): 
     else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
     if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
     else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+    // Dedicated pools (including lock bootstrap) resolve through a separate
+    // memoized admin URL. Retire that pin before deleting the owned database.
+    _resetHarnessAdminUrlCacheForTests();
     _resetUrlCacheForTests();
     await _resetForTests();
     await privateDb?.cleanup();

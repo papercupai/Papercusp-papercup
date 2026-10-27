@@ -25,7 +25,13 @@ vi.mock('../../autonomy/policy-store', () => ({
   getAutonomyCategoryPolicy: vi.fn(),
   setAutonomyPolicy: vi.fn(),
 }));
-vi.mock('../../autonomy/tripwire/core', () => ({ demoteGraduatedLevel: vi.fn() }));
+// Partial mock: the tool's import graph also reads core's real constants
+// (e.g. DEFAULT_TRIPWIRE_WINDOW_HOURS via attention/bulk-run-store), so a
+// whole-module factory fails collection. Only the demote decision is stubbed.
+vi.mock('../../autonomy/tripwire/core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../autonomy/tripwire/core')>()),
+  demoteGraduatedLevel: vi.fn(),
+}));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 vi.mock('../../autonomy/tripwire/revert-executor', () => ({
   executeRevertVia: vi.fn(),

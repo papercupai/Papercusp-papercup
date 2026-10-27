@@ -48,7 +48,7 @@ const NON_SUFFIX_MUTATORS = [
   'fleet:headcount-target', 'fleet:request_remote_spawn', 'fleet:recolor',
   'fleet:reconfigure-member', 'fleet:respawn-member',
   'coord:mark-terminal', 'coord:focus-window', // capability coord:mark-terminal
-  'testing:record-run', 'testing:run', // capability testing:run
+  'testing:record-run', 'testing:record-native-check', 'testing:run', // capability testing:run
   // WI-10004577: mutators that SHARE a `*:read` capability with genuine readers, so they carry an
   // explicit per-tool `effect:'write'` (the documented convention at WRITE_CAPABILITIES).
   'voice:say', // speaks aloud (writes the sentinel_says FIFO)

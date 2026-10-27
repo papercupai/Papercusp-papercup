@@ -13,7 +13,7 @@ vi.mock('./agent-chat-stream', () => ({
   runAgentChat: (...a: unknown[]) => runAgentChatMock(...a),
 }));
 
-import { runHaiku, runHaikuTurn } from './haiku';
+import { runHaiku, runHaikuTurn, runHaikuAttempt } from './haiku';
 
 // runHaiku logs failures loudly (by design); suppress the warn so
 // vitest-fail-on-console doesn't treat the expected log as a failure.
@@ -34,6 +34,34 @@ function emits(...events: Array<Record<string, unknown>>) {
 }
 
 describe('runHaiku', () => {
+  it('retains measured liability when a provider emits usage then fails', async () => {
+    emits({ type: 'result', finalText: 'uncommitted', costUsd: 0.002, tokensIn: 30, tokensOut: 8 },
+      { type: 'error', message: 'stream failed' });
+    await expect(runHaikuAttempt('summarize')).resolves.toMatchObject({
+      status: 'failed', costUsd: 0.002, tokensIn: 30, tokensOut: 8,
+    });
+    await expect(runHaikuTurn('summarize')).resolves.toBeNull();
+  });
+
+  it('distinguishes unknown usage from measured zero after an iterator failure', async () => {
+    runAgentChatMock.mockImplementation(async function* () { throw new Error('offline'); yield {}; });
+    const unknown = await runHaikuAttempt('summary');
+    expect(unknown).toEqual({ status: 'failed', model: expect.any(String) });
+    emits({ type: 'result', finalText: '', costUsd: 0, tokensIn: 0, tokensOut: 0 });
+    await expect(runHaikuAttempt('summary')).resolves.toMatchObject({ status: 'failed', costUsd: 0, tokensIn: 0, tokensOut: 0 });
+  });
+
+  it('settles caller cancellation with the usage already observed and no coverage text', async () => {
+    const controller = new AbortController();
+    runAgentChatMock.mockImplementation(async function* () {
+      yield { type: 'result', finalText: 'draft', costUsd: 0.003, tokensIn: 40 };
+      controller.abort();
+      await new Promise(() => {});
+    });
+    const result = await runHaikuAttempt('summary', { signal: controller.signal });
+    expect(result).toMatchObject({ status: 'incomplete', costUsd: 0.003, tokensIn: 40 });
+    expect(result).not.toHaveProperty('text');
+  });
   it('settles at the caller deadline even when the iterator ignores cancellation', async () => {
     vi.useFakeTimers();
     let signal: AbortSignal | undefined;

@@ -1,0 +1,440 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10007524",
+  "parentWorkItemId": "WI-6554700010020902",
+  "status": "acceptance-and-shipment-open",
+  "qualificationCorrection": {
+    "takesPrecedenceOverEarlierCalibrationLanguage": true,
+    "finding": "Exact ledger reads show execution_details.mutation=NULL in21805373,21806124 and21806212. Their logs explicitly withheld descriptors because the reader URL was the host instead of its/api/health endpoint.",
+    "interpretation": "The controls passed and mutations were caught, and binding hashes measured current. Those facts do not establish machine-verified calibration linkage. Treat the earlier descriptor-free mutation rows as unqualified for acceptance.",
+    "adequacy": "The final fixtureDriftRefresh below takes precedence: governing evaluator afe9d2e1ae passes all four current P004 clauses after independently current replacements and qualified stale-row retirements. Clean HTTP21813089/binding66638 remains current, including its completed runtime. Earlier two-failure and four-pass snapshots remain historical. Native acceptance and exact shipment remain open.",
+    "retirements": "The31 old-row retirements applied, but stronger proof equivalence remains an open repair until required-descriptor replacements pass adequacy. No P004 acceptance or shipment was certified.",
+    "repair": "Use PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=1 and PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL=http://127.0.0.1:3170/api/health. Preserve a fresh committed source with maintained --retain-for; refuse before tests if descriptor preflight fails.",
+    "repairState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "repairLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "repairRetentionMarker": "/tmp/gf-p004-required-proof-20261023.inflight",
+    "sourceRetentionCorrection": "A later current-HTTP rerun never started because its kept checkout had been swept (spawn node ENOENT). It supplies no new test evidence."
+  },
+  "requiredDescriptorRepair": {
+    "sourceCommit": "e1e3892922a7ecea39a5097f4496245d86e7b7f9",
+    "readerHealthUrl": "http://127.0.0.1:3170/api/health",
+    "descriptorRequired": true,
+    "agenda": { "baseline": 21807145, "copyBaseline": 21807148, "mutant": 21807150, "bindingIds": [66381, 66382, 66383, 66384] },
+    "callable": { "baseline": 21807152, "copyBaseline": 21807153, "mutant": 21807154, "bindingIds": [66388, 66389, 66390, 66391] },
+    "disposition": { "baseline": 21807160, "copyBaseline": 21807165, "mutant": 21807179, "bindingIds": [66434, 66435], "bindingState": "Bound to GF-P004-disposition revision2 with the explicit scenario and measured case." },
+    "observedDescriptorProof": "Exact canonical agenda rows have non-null matching baseline/copy-baseline/mutant descriptors and worktreeDirty:false. All three maintained probes completed their passing controls and caught mutations before the workflow advanced to HTTP.",
+    "mechanicalAdequacy": {
+      "specId": "AUTO-BAR-R-4-P-004",
+      "verdict": "pass",
+      "governing": true,
+      "evaluatorBuild": "604eb4eb4f",
+      "passingTestBindingIds": [66381, 66388, 66251, 66218],
+      "caughtMutantBindingIds": [66382, 66389],
+      "gaps": [],
+      "receipt": "/tmp/gf-p004-required-adequacy-20261023.json"
+    },
+    "historicalClauseVerdictsBeforeD032": {
+      "GF-P004-agenda-absence": "unknown: falsifiability and plan-class-risk-floor",
+      "GF-P004-callable-absence": "fail: falsifiability, freshness and plan-class-risk-floor",
+      "GF-P004-disposition": "unknown: falsifiability, correct-layer and plan-class-risk-floor"
+    },
+    "scenarioAssociation": "Completed under D-032; the scenarioAssociationRepair below supersedes the historical clause verdicts above. Original behavior, observations, probeMethod, required evidence/layers and mutation requirements are preserved.",
+    "workflowState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "retentionMarker": "/tmp/gf-p004-required-proof-20261023.inflight",
+    "http": "Workflow completed at2026-10-23T08:23:02.540Z and removed its retention marker. Canonical test-run21807673 passed1/0/0 with worktreeDirty:false. Binding66465 preserves the original21-source/3-fixture basis but is stale after scripts/with-test-pg.mjs changed; see completedRequiredHttpProof. No duplicate workflow is running."
+  },
+  "scenarioAssociationRepair": {
+    "decision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-032",
+    "revisionReadback": {
+      "GF-P004-agenda-absence": { "revision": 2, "contentHash": "da717b589207f11a579729b52da26bd2185564255857871292e578d122ceca7d", "scenarioId": "p004-agenda-no-reporting" },
+      "GF-P004-callable-absence": { "revision": 2, "contentHash": "0829b9a2c5d981c9c699be9b9c8ca96fabd76d88adec660359598b1cdff90e7a", "scenarioId": "p004-callable-retired-tool" },
+      "GF-P004-disposition": { "revision": 2, "contentHash": "8204db3e59ffd2b7e7d25b82f92dfeb5b8c4e6670bd6121dd2f83dbc41bf8de2", "scenarioId": "p004-disposition-preserved" }
+    },
+    "scenarioBindings": {
+      "agenda": { "baseline": 66430, "caughtMutation": 66431, "integration": [66440, 66441] },
+      "callable": { "baseline": 66432, "caughtMutation": 66433, "integration": [66438] },
+      "disposition": { "baseline": 66434, "caughtMutation": 66435, "integration": [66436, 66437] }
+    },
+    "layerBindings": {
+      "agenda": [66449, 66455],
+      "callable": [66450, 66454],
+      "disposition": [66451, 66452, 66453, 66457]
+    },
+    "targetingContract": "Falsifier bindings target the canonical scenario with singleton scenarioIds and exact measured testCases. Separate passing layer bindings target the clause's own specId and retain scenarioIds. correct-layer requires this clause identity; a scenario target alone does not establish its layer coverage.",
+    "dispositionUnitProof": { "testRunId": 21805364, "bindingId": 66457, "cases": "Six measured retained-history cases: active, closed_answered, closed_cant_help, graduated, declined and expired. Each preserves the four requester-authored dispositions and leaves missing history unknown." },
+    "currentness": {
+      "scenarioBindingIds": [66430, 66431, 66432, 66433, 66434, 66435, 66436, 66437, 66438, 66440, 66441],
+      "layerAndSupplementalBindingIds": [66449, 66450, 66451, 66452, 66453, 66454, 66455, 66456, 66457],
+      "result": "Independent server measurement returned current for each listed binding, with no stale or unknown reasons. The earlier eleven-row read also confirmed every applicable dimension current. Binding66456 has no explicit case list;66457 supplies the exact unit case association."
+    },
+    "adequacyBeforeHttpBinding": {
+      "ok": true,
+      "governing": true,
+      "evaluatorBuild": { "sha": "e1e3892922", "version": "0.0.0" },
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ]
+    },
+    "preservedLimits": "No production or test source changed and no tests were replayed for this metadata repair. Original clause revisions, proof history and quality cohorts remain. The pre-HTTP PASS snapshot is historical after binding66465 exposed actual helper drift. Full executed-source graph, broader native acceptance and exact shipment remain unmeasured or open."
+  },
+  "completedRequiredHttpProof": {
+    "workflowState": "/tmp/gf-p004-required-proof-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-required-proof-20261023.log",
+    "finishedAt": "2026-10-23T08:23:02.540Z",
+    "phase": "complete",
+    "retentionMarkerPresent": false,
+    "testRunId": 21807673,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "sourceCommit": "e1e3892922a7ecea39a5097f4496245d86e7b7f9",
+    "runtimeReceipt": {
+      "runId": "20261023T081325Z-1483804",
+      "resultSha256": "308f03982fa1dbc89b03fdf86cbb120e6b91b86c7194f335000813e13bd3587d",
+      "sourceSha256": "bf598e6bedb6ae389e4fc905199058f579920159217766de1e4723bd599f492f",
+      "lifecycleSha256": "d90d4ca15866bc5b5a39e98d1c63a8b9c7dfdc75308a3059b4e74f16da1d87c7"
+    },
+    "bindingId": 66465,
+    "originalRecipeBindingId": 39071,
+    "sourcePathCount": 21,
+    "fixturePathCount": 3,
+    "currentness": {
+      "overall": "stale",
+      "source": "stale",
+      "test": "current",
+      "fixture": "stale",
+      "environment": "unknown",
+      "testRun": "current",
+      "staleReasons": ["source-stale", "fixture-stale"],
+      "unknownReasons": ["environment-current-fingerprint-not-supplied"]
+    },
+    "distinguishingObservation": "git diff from the executed e1e3892922 commit across the original21 source paths identifies scripts/with-test-pg.mjs. The change replaces unconditional AsyncExitHook signal unhooking with unhookRegisteredExitSignals. This is actual named source/fixture drift; HEAD movement alone did not cause the refresh requirement.",
+    "currentAdequacyAfterBinding": {
+      "governing": true,
+      "evaluatorBuild": "e1e3892922",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "fail", "wouldBlock": ["freshness"] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ]
+    },
+    "next": "The first helper refresh failed on an unrelated committed dependency export mismatch before API assertions. The corrected committed candidate is in httpExportRefresh below. Preserve binding66465 and its completed run as historical evidence; do not remove it merely to recover a PASS. Reuse R2, qualified descriptor probes and original cohorts."
+  },
+  "httpHelperRefreshFailure": {
+    "workflowState": "/tmp/gf-p004-http-helper-refresh-20261023.state.json",
+    "phase": "failed",
+    "finishedAt": "2026-10-23T09:15:55.896Z",
+    "exitCode": 1,
+    "testRunId": 21811737,
+    "status": "fail",
+    "worktreeDirty": false,
+    "sourceCommit": "ccbbc7111a2c5a9995991b10118dc33f377fd29e",
+    "isolatedRunId": "20261023T090713Z-665020",
+    "buildLog": "/mnt/data/offload/verification-harness/isolated-integration/20261023T090713Z-665020/phases/execute/operator-api-build.log",
+    "failure": "Private operator bundle cannot resolve the test-coverage-map and test-coverage-store subpath exports from @papercusp/test-config. API assertions were not reached.",
+    "rootCauseEvidence": "The executed root pins libs/test-config at37092189419574d5fd0426c7f9216accf9538fa8. Its committed package.json contains neither required export, while the committed consumer imports both. A stale installed copy alone does not explain the missing committed declarations.",
+    "existingIssue": "EI-26758654879848411",
+    "evidenceCommentId": 1199712,
+    "ownedCapture": "EI-26761519981166665",
+    "ownership": "The existing issue was unassigned and not_claimable. Exact-item admission recovery was requested; no assignment was confirmed. The later capture remains assigned to this session pending canonical ownership reconciliation. No duplicate implementation lane was launched.",
+    "recurrenceGuardFollowup": "Validate reachable workspace subpath imports against the committed package exports at the maintained source preflight, before copying dependencies. The owned capture retains this follow-up."
+  },
+  "httpExportRefresh": {
+    "workflowState": "/tmp/gf-p004-http-export-refresh-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-http-export-refresh-20261023.log",
+    "reporterReceipt": "/tmp/gf-p004-http-export-refresh-20261023.test-runs.json",
+    "retentionMarker": "/tmp/gf-p004-http-export-refresh-20261023.inflight",
+    "sourceCommit": "6bffe39570ed67111efcd2689c991791b3bb28b2",
+    "testConfigPin": "0c3aa7afb92cce655c428240f5e71ecbd31abedf",
+    "helperSha256": "97e9c296d89947617c7b3617d830d9670f4413ea8c915d00ef3a4c847457746c",
+    "pid": 1910797,
+    "startedAt": "2026-10-23T09:28:08.963Z",
+    "observedPhase": "complete",
+    "finishedAt": "2026-10-23T10:04:26.534Z",
+    "exitCode": 0,
+    "retentionMarkerPresent": false,
+    "bundlePreflightExitCode": 0,
+    "bundleSha256": "80a405092671077583400501e16d474152c3012e316afea178cc3b42b5da67f6",
+    "sourceVerified": true,
+    "coverageExportsVerified": true,
+    "executionContract": "Materialize one exact committed source root retained by the external marker. Verify both coverage exports and their source files inside that root. Run the maintained host bundler first; start the private-PG HTTP test only if that bundle passes. Reconcile the state/log before retrying after context loss.",
+    "testRunId": 21813089,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "runtimeReceipt": {
+      "runId": "20261023T095435Z-3730617",
+      "resultSha256": "a2fc1066e017226fdfd7a280f5dc49b9329872c5017b796887780eb07e03b473",
+      "sourceSha256": "5389ab6110081f3de05a8f71831fabe82606957fd807b019410dcdb1a45f83a5",
+      "lifecycleSha256": "c5f60f5f87f658f213fe72c740f8fd20decb81cdc4afae458c91180ecac74afb",
+      "runtimeExitCode": 0,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true
+    },
+    "bindingId": 66638,
+    "originalRecipeBindingId": 39071,
+    "sourcePathCount": 21,
+    "fixturePathCount": 3,
+    "evidencePlane": "live",
+    "currentness": {
+      "overall": "current",
+      "applicableDimensions": ["spec", "source", "test", "fixture", "environment", "testRun"],
+      "staleReasons": [],
+      "unknownReasons": [],
+      "provenance": "server-measured"
+    },
+    "qualifiedRetirements": {
+      "bindingIds": [66465, 66634],
+      "reason": "Retired only after replacement66638 independently measured current. Historical66465 retains its passing run and original recipe in the withdrawn-row ledger. Metadata-incomplete66634 used the same new run but omitted ORIGINAL39071 live-plane metadata. No test was replayed for that correction and no history was deleted."
+    },
+    "currentAdequacy": {
+      "governing": true,
+      "evaluatorBuild": "fbf1cdd90a",
+      "receipt": "/tmp/gf-p004-governing-four-adequacy.json",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "fail", "wouldBlock": ["mechanical-test-adequacy"] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "fail", "wouldBlock": ["freshness"] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ],
+      "remainingDrift": "The changed plans/__tests__/_pg-tool-fixture.ts stales start-auto-flip binding66251 and agenda bindings66441/66449. A bounded latest-run lookup found no replacement start-auto-flip run in the prior three hours. Refresh only those affected cases, retain their original measurement recipes, and leave current HTTP/probes/R2/cohorts alone."
+    },
+    "qualification": "The clean committed HTTP case and its completed private-runtime witness are qualified current proof. They do not establish current native acceptance or exact deployed shipment. The full executed source graph remains unmeasured."
+  },
+  "fixtureDriftRefresh": {
+    "workflowState": "/tmp/gf-p004-fixture-drift-refresh-20261023.state.json",
+    "workflowLog": "/dev/shm/get-feedback-p004-fixture-drift-refresh-20261023.log",
+    "reporterReceipt": "/tmp/gf-p004-fixture-drift-refresh-20261023.test-runs.json",
+    "sourceCommit": "afe9d2e1ae751fbbf6786356db53947f90548340",
+    "phase": "complete",
+    "finishedAt": "2026-10-23T10:21:05.163Z",
+    "exitCode": 0,
+    "retentionMarkerPresent": false,
+    "planStart": {
+      "testRunId": 21813683,
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "originalRecipeBindings": [66251, 66441],
+      "replacementBindingIds": [66662, 66663],
+      "independentCurrentness": "Both current in every applicable dimension, with no stale or unknown reasons; /tmp/gf-fixture-start-current.json."
+    },
+    "focusedAgenda": {
+      "testRunId": 21813750,
+      "passed": 1,
+      "failed": 0,
+      "unselected": 12,
+      "worktreeDirty": false,
+      "testNamePattern": "keeps proceed advice and retained requester history out of the reporting agenda",
+      "originalRecipeBinding": 66449,
+      "replacementBindingId": 66666,
+      "independentCurrentness": "Current in every applicable dimension, with no stale or unknown reasons; /tmp/gf-fixture-agenda-current.json."
+    },
+    "scope": "Only the two proof inputs made stale by actual fixture changes. The earlier current HTTP, required-descriptor probes, R2 proof and original cohorts were reused. The R5 timing case was excluded.",
+    "qualifiedRetirements": {
+      "bindingIds": [66251, 66441, 66449],
+      "status": "retracted",
+      "receipt": "/tmp/gf-fixture-qualified-retirements.json",
+      "basis": "Each exact replacement independently measured current before its equivalent stale row was retired. Original test receipts and withdrawn binding history remain preserved."
+    },
+    "finalGoverningAdequacy": {
+      "governing": true,
+      "evaluatorBuild": "afe9d2e1ae",
+      "receipt": "/tmp/gf-p004-post-fixture-governing-adequacy.json",
+      "rows": [
+        { "specId": "AUTO-BAR-R-4-P-004", "revision": 4, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-agenda-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-callable-absence", "revision": 2, "verdict": "pass", "wouldBlock": [] },
+        { "specId": "GF-P004-disposition", "revision": 2, "verdict": "pass", "wouldBlock": [] }
+      ],
+      "wouldBlock": [],
+      "mechanicalGaps": []
+    },
+    "qualification": "Both exact affected tests completed cleanly, all three replacements independently measured current, equivalent stale rows were retired, and the unfiltered four-clause evaluation is governing PASS. This establishes P004 test adequacy; native acceptance and exact shipment remain open."
+  },
+  "r5CapturedDiagnostic": {
+    "workItemId": "WI-6554700010022519",
+    "testRunId": 21811706,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "unselected": 12,
+    "worktreeDirty": true,
+    "phaseReport": "/tmp/gf-r5-orient-diagnostic-20261023.phases.json",
+    "phaseReportSha256": "c2f91825b6fe51e836399ae3e72672d69ea1f41f13564adfa0ed80559e102e2a",
+    "completedAt": "2026-10-23T09:06:05.927Z",
+    "phaseGuardsPassed": true,
+    "matchedWindows": 20,
+    "unchangedNamedSources": 15,
+    "sourceHashComparison": "sourceStart equals sourceEnd in the completed phase report. These named sources do not identify the complete imported graph.",
+    "observation": "The original focused case preserved the expected facts, worklists and obligation states in both portfolio arms with the unchanged900ms provider budget. Its matched shared-arm timing checks passed. The initial seeded read remains recorded separately.",
+    "interpretation": "The earlier intermittent agenda loss was not reproduced in this single working-source diagnostic. No root-cause fix, clean-commit acceptance or deployed-runtime claim follows; preserve original failing21806199 and keep the investigation open.",
+    "causalCorrection": "The reset-cache hypothesis is rejected for this focused invocation: it calls setupBaselineCoordFixture, whose admin-URL resets already existed at original7267510 lines41/176/198. The only changed file adds resets inside setupPlanPgFixture/dispose, neither called by the R5 case; seedPlan is the only imported helper used. Fourteen matching named sources plus this unused function delta do not explain the pass.",
+    "originalFailureLocalization": "The original TEST_FILE_CASE_TRACE points to line645:120, Promise.all index2, in the eight-read cold-concurrent phase. Original arm/window and inner portfolio SQL timings were not captured. Preserve the900ms budget and exact agenda oracle; localize cold-concurrent source stages before choosing a fix.",
+    "causalCheckpoint": { "workItemId": "WI-6554700010022519", "contentHash": "008443a39e7b" }
+  },
+  "preservedArtifact": {
+    "path": "docs/evidence/get-feedback-p004-and-rubric9-proof-2026-10-23.json",
+    "sha256": "2dcfea52fbdc3e39de156871166fb4ad8526f37757ae3cd47c6dc3c5735e852d",
+    "unchanged": true
+  },
+  "committedSource": "7267510ed07ba25599a4d6d26d0c7ed7e6f575dc",
+  "cleanUnitProof": {
+    "log": "/dev/shm/get-feedback-p004-clean-units-20261023-0607.log",
+    "requesterInterest": { "testRunId": 21805363, "passed": 17, "failed": 0, "skipped": 0, "worktreeDirty": false },
+    "routingHealth": { "testRunId": 21805364, "passed": 27, "failed": 0, "skipped": 0, "worktreeDirty": false },
+    "bindingIds": [66215, 66216, 66217, 66218, 66219],
+    "independentCurrentness": "All five replacements measured current by pinned staging plans:get-spec-evidence; receipt /tmp/gf-p004-current-evidence-20261023.json. Full executed-source graph remains unmeasured."
+  },
+  "readerMutation": {
+    "log": "/dev/shm/get-feedback-p004-reader-clean-probe-20261023-0611.log",
+    "baselineTestRunId": 21805373,
+    "copyBaselineTestRunId": 21805375,
+    "mutantTestRunId": 21806124,
+    "verdict": "caught",
+    "worktreeDirty": false,
+    "assertion": "consultation reporting retirement > does not query consult follow-through or put reporting obligations on the agenda",
+    "change": "Restore the legacy consultReconciliations read; the legacyRead not-called assertion fails.",
+    "bindingIds": [66223, 66224],
+    "independentCurrentness": "Both replacements measured current; original dirty21802627 remains unknown and receives no acceptance credit.",
+    "sourceIntegrity": "Maintained mutation-probe verified original subject bytes unchanged."
+  },
+  "callableMutation": {
+    "log": "/dev/shm/get-feedback-p004-callable-clean-probe-20261023-0621.log",
+    "baselineTestRunId": 21806187,
+    "copyBaselineTestRunId": 21806190,
+    "mutantTestRunId": 21806212,
+    "verdict": "caught",
+    "worktreeDirty": false,
+    "assertion": "consult:get_feedback requester guidance > keeps the retired reporting verb out of the production registration entrypoint",
+    "sourceIntegrity": "Maintained mutation-probe verified original subject bytes unchanged.",
+    "discardedAttempt": "The earlier0617 mutation was malformed and rejected before mutant scoring; its controls supply no mutation acceptance proof. The corrected0621 probe reuses the saved literal import recipe."
+  },
+  "dispositionMutation": {
+    "log": "/dev/shm/get-feedback-p004-disposition-clean-probe-20261023-0621.log",
+    "baselineTestRunId": 21806211,
+    "copyBaselineTestRunId": 21806230,
+    "mutantTestRunId": 21806235,
+    "verdict": "caught",
+    "assertion": "retired requester reporting — historical outcome preservation: confirmed > preserves the exact historical record through an answered close",
+    "scope": "Reuse the original saved SQL historical-record merge removal.",
+    "bindingId": 66297,
+    "independentCurrentness": "STALE at the later measurement: source and test-run remain current, but test/fixture bytes changed. Do not credit this as current acceptance proof."
+  },
+  "integrationProof": {
+    "planStart": { "testRunId": 21806142, "passed": 16, "failed": 0, "skipped": 0, "worktreeDirty": false, "log": "/dev/shm/get-feedback-p004-clean-integration-20261023-0615.log" },
+    "lifecycleBatch": {
+      "log": "/dev/shm/get-feedback-p004-lifecycle-clean-integration-20261023-0618.log",
+      "passed": 190,
+      "failed": 1,
+      "passingTestRunIds": [21806196, 21806197, 21806198],
+      "failedTestRunId": 21806199,
+      "failure": "The matched R5 complete-agenda timing case received unknown/fewer obligations after goal-portfolio exceeded its900ms budget twice.",
+      "ownedInvestigation": "WI-6554700010022519",
+      "limitation": "The complete orient file did not pass. A focused P004 case must be recorded separately. No production timeout change or load attribution."
+    },
+    "focusedAgenda": {
+      "testRunId": 21806372,
+      "passed": 1,
+      "failed": 0,
+      "unselected": 12,
+      "worktreeDirty": false,
+      "log": "/dev/shm/get-feedback-p004-agenda-focused-clean-integration-20261023-0628.log",
+      "scope": "Original P004 reporting-absence case only; the full-file R5 failure remains recorded separately."
+    },
+    "httpPretestRefusal": "The first HTTP attempt reached the existing shared-PG storage-headroom guard before assertions. It supplies no passing HTTP proof; followup uses maintained private-PG isolation."
+  },
+  "audit": {
+    "scorecardId": "EI-26746750949539896",
+    "state": "passed",
+    "auditIssueId": "EI-26749623122938685",
+    "auditedAt": "2026-10-23T06:13:48.676Z",
+    "rubricVetting": "revision9 independently read back as vetted/current with satisfied:true and attestation EI-26746750949539896",
+    "reviewerOwnerId": "su-31185fb5-5fa9-48f6-a259-89063bc8c6f1",
+    "reconciledTimeoutAwaitId": 353843,
+    "acknowledgedTimeoutDeliveryId": 952315,
+    "replacementAwaitId": 353946,
+    "replacementDeadline": "2026-10-23T06:34:26.043Z",
+    "qualification": "Later authoritative scorecard and rubric reads establish independent audit pass and current vetting. The0634 timeout delivery952585 was stale; acknowledgement refused already-settled/not-found and was not retried. No duplicate reviewer launch or audit rearm. This is rubric-quality vetting, not implementation acceptance."
+  },
+  "lifecycleDriftRefresh": {
+    "commit": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "reason": "Measured source/test/fixture drift, including two new dispatch-lease controls, invalidated the7267510 lifecycle proof. This refresh does not replay R2 or alter the original cohort.",
+    "log": "/dev/shm/get-feedback-p004-lifecycle-drift-refresh-20261023-0655.log",
+    "passed": 180,
+    "failed": 0,
+    "skipped": 0,
+    "testRunIds": [21806517, 21806518, 21806519],
+    "bindingIds": [66325, 66326, 66327, 66328, 66329],
+    "bindingReceipt": "/tmp/gf-p004-drift-refresh-bind-result-20261023.json",
+    "independentCurrentnessReceipt": "/tmp/gf-p004-drift-refresh-current-20261023.json",
+    "independentCurrentness": "All five replacement rows have aggregate currentness=current. The response trims some dimension detail; no missing field is interpreted as a negative result.",
+    "focusedAgendaBindings": [66311, 66312],
+    "focusedAgendaCurrentnessReceipt": "/tmp/gf-p004-focused-current-20261023.json",
+    "focusedAgendaCurrentness": "Both focused agenda bindings independently measure current in every applicable dimension.",
+    "dispositionMutationRefresh": {
+      "log": "/dev/shm/get-feedback-p004-disposition-drift-probe-20261023-0700.log",
+      "baselineTestRunId": 21807028,
+      "copyBaselineTestRunId": 21807030,
+      "mutantTestRunId": 21807034,
+      "verdict": "caught",
+      "assertion": "retired requester reporting — historical outcome preservation: confirmed > preserves the exact historical record through an answered close",
+      "bindingIds": [66330, 66331],
+      "independentCurrentnessReceipt": "/tmp/gf-p004-disposition-drift-current-20261023.json",
+      "independentCurrentness": "Both replacement rows measure current in every applicable dimension, with no stale or unknown reasons."
+    },
+    "limitation": "Current production HTTP proof remains separate; no final P004 adequacy or shipment verdict follows from the180 passing tests and caught mutation."
+  },
+  "qualifiedRetirements": {
+    "requestAndReplacementMap": "/tmp/gf-p004-qualified-replacements-20261023.json",
+    "logicalKey": "gf-p004-qualified-retire-20261023-v1",
+    "requested": 31,
+    "outcome": "Applied, reconciled from four complete authoritative evidence populations after the write response was lost. All31 exact old binding IDs are absent; no fresh write retry occurred.",
+    "readbackPrefix": "/tmp/gf-p004-after-retire-",
+    "preserved": "Historical R4 revision2 rows were not touched. Older HTTP binding39071 remains pending a qualified current replacement. No surviving mutant was removed."
+  },
+  "completedHttpSnapshot": {
+    "sourceCommit": "7267510ed07ba25599a4d6d26d0c7ed7e6f575dc",
+    "testRunId": 21807047,
+    "status": "pass",
+    "worktreeDirty": false,
+    "runtimeRunId": "20261023T070446Z-1380713",
+    "resultSha256": "2beb6992c1b9dd7e2f3b7e71bd1b933cb494e54d45f2ab918919b133732c54f2",
+    "sourceSha256": "18f681225ae585d83bd15a9cbd543fd6ac006c35a3a3e77100656097bcce9e5e",
+    "lifecycleSha256": "9cb0b7a8c88bca46ffe0d2db875123819bf8afea1d43b59ae2d5f51aa82b8bda",
+    "log": "/dev/shm/get-feedback-p004-http-private-clean-integration-20261023-0626.log",
+    "scope": "HTTP case passed and the owning command exited0. Later source changes prevent treating this older snapshot as current production proof without measurement. The private invoked-source checkout was cleaned after completion; durable ledger and isolated-runtime receipts remain.",
+    "incidentalOwnedDefect": "EI-26753429946407343 records optional org-template migration295 skipping after dict_snowball SQLSTATE58P01. Main HTTP success does not establish that optional setup is healthy."
+  },
+  "calibratedBindingReconciliation": {
+    "writeReceipt": "/tmp/gf-p004-calibrated-bind-result-20261023.json",
+    "request": "/tmp/gf-p004-calibrated-bind-20261023.json",
+    "independentRead": "/tmp/gf-p004-exact-mutant-current-20261023.json",
+    "agendaMutation": { "bindingId": 66287, "currentness": "current" },
+    "callableMutation": { "bindingId": 66291, "currentness": "current" },
+    "dispositionMutation": { "bindingId": 66297, "currentness": "stale-test-and-fixture" },
+    "unknownOutcomeHandling": "The full calibrated write response was trimmed. A broad currentness read and focused ledger read later timed out; no write was repeated. Exact bounded mutation read succeeded and distinguishes the current rows from the stale disposition row."
+  },
+  "rootCheckpointArchive": {
+    "contentHash": "2750f7f87c4d",
+    "commentIds": [1198997, 1199001, 1199002, 1199003, 1199004],
+    "format": "Concatenate each ordered part after its ARCHIVE-CONTENT delimiter. Archive write returned five successful posts before checkpoint replacement."
+  },
+  "preservedLimits": [
+    "No R2 proof replay for recovery or HEAD movement.",
+    "Original e99 quality cohort4/8 and supplement f01c3/8 remain unchanged; no quota calls.",
+    "P004 current adequacy, independent native acceptance and exact final shipment remain open.",
+    "No live gate operations or peer AST/loop monitoring."
+  ]
+}

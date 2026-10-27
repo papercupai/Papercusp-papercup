@@ -449,6 +449,11 @@ export function improvementsStatus(_d: ImprovementsHealth): PanelStatus {
  * WARN (visible), ending the culture of dismissing tool-call errors as normal. */
 export const MCP_PROXY_HARD_FAIL_CRIT = 10;
 
+/** One admission shed means a valid MCP request was refused before forwarding.
+ *  Show any such request as a warning; without a validated impact threshold, this
+ *  signal alone never raises the Infra panel to critical. */
+export const MCP_PROXY_SHED_WARN = 1;
+
 /** A critical continuation write still queued for five minutes is a real durability
  *  incident. Short queueing is expected (measured work_items:complete dwell reached 61.8s),
  *  so the alarm floor suppresses routine/low-volume waits while catching the observed
@@ -655,7 +660,7 @@ export function evaluateHostPressure(
  *  fleet-wide (EI-18798264517111160 — the transport is fine, the tool's own work is
  *  not), or the gateway is enabled
  *  but unreachable (the spine is down). unknown = PG unreadable. warn = a per-thread perf
- *  warn (hot worker / RSS / gateway flap) or ANY MCP-proxy hard failure in the window
+ *  warn (hot worker / RSS / gateway flap), any MCP-proxy hard failure or admission shed in the window
  *  (visible, sub-page). ok otherwise. A null/stale perf verdict — and a null (unreadable)
  *  mcpProxy leg — contribute nothing (fail-soft). */
 export function infraStatus(d: InfraHealth): PanelStatus {
@@ -680,11 +685,14 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   const diskBand = worstDiskBand(d.disk);
   if (diskBand === 'crit') return 'crit';
   if (d.hostPressure?.status === 'crit') return 'crit';
-  if (d.pg === null) return 'unknown';
+  // A recorded admission shed is an agent-facing refusal and remains visible even
+  // when the independent PG health read is unavailable.
+  if (d.pg === null) return (d.mcpProxy?.shed ?? 0) >= MCP_PROXY_SHED_WARN ? 'warn' : 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if (d.performanceHistory?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
+  if ((d.mcpProxy?.shed ?? 0) >= MCP_PROXY_SHED_WARN) return 'warn';
   // A partial/ramping handler failure — visible, sub-page (EI-18798264517111160).
   if (d.toolFailures?.rating === 'degraded') return 'warn';
   if (d.hostPressure?.status === 'warn') return 'warn';
@@ -744,6 +752,15 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   const mcpQueueStalls = d.mcpProxy?.criticalContinuationQueueStalls ?? 0;
   const mcpQueueCrit = mcpQueueStalls > 0;
   const mcpWarn = mcpHard > 0 && !mcpCrit;
+  const mcpShed = d.mcpProxy?.shed ?? 0;
+  const shedKinds: string[] = [];
+  const maxInFlightSheds = d.mcpProxy?.byKind?.shed_max_in_flight ?? 0;
+  const ordinaryQueueSheds = d.mcpProxy?.byKind?.shed_ordinary_queue_full ?? 0;
+  if (maxInFlightSheds > 0) shedKinds.push(`max-in-flight=${maxInFlightSheds}`);
+  if (ordinaryQueueSheds > 0) shedKinds.push(`ordinary-queue-full=${ordinaryQueueSheds}`);
+  const mcpShedSummary = mcpShed >= MCP_PROXY_SHED_WARN
+    ? `MCP PROXY ADMISSION SHEDDING: ${mcpShed} valid agent request(s) refused before forwarding/1h${shedKinds.length > 0 ? ` (${shedKinds.join(', ')})` : ''}`
+    : null;
   const perfCrit = d.perf?.status === 'crit';
   const worstDiskVol = d.disk && d.disk.length > 0 ? d.disk.reduce((a, b) => (b.usedPct > a.usedPct ? b : a)) : null;
   const worstDisk = worstDiskVol?.usedPct ?? null;
@@ -784,14 +801,38 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
     return `DISK ${worstDisk}% used on ${worstDiskVol!.path}${freeNote} — ${verdict}`;
   }
   if (hostPressureCrit) return d.hostPressure!.summary;
-  if (!d.pg) return 'PG unreadable';
+  if (!d.pg) return mcpShedSummary ? `PG unreadable; ${mcpShedSummary}` : 'PG unreadable';
   const gatewayNote = gatewayEnabled ? `, gateway ${d.gatewayReachable ? 'up' : 'down'}` : '';
   const mcpNote = mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : '';
+  const mcpShedNote = mcpShedSummary ? `, ${mcpShedSummary}` : '';
   const perfNote = d.perf?.status === 'warn' ? `, perf warn (${d.perf.reasons[0] ?? ''})` : '';
   const hostPressureNote = hostPressureWarn ? `, ${d.hostPressure!.summary}` : '';
   const historyNote = d.performanceHistory && ['warn', 'unknown'].includes(d.performanceHistory.status)
     ? `, ${d.performanceHistory.note}` : '';
-  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}${hostPressureNote}${historyNote}`;
+  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${mcpShedNote}${perfNote}${hostPressureNote}${historyNote}`;
+}
+
+/** Render the MCP proxy Infra metric from every independently actionable count.
+ *  Admission sheds warn on any occurrence; only hard failures and critical
+ *  continuation stalls retain their existing critical thresholds. */
+export function infraMcpProxyMetric(
+  mcpProxy: InfraHealth['mcpProxy'],
+): { value: string; tone?: Extract<PanelStatus, 'warn' | 'crit'> } {
+  if (!mcpProxy) return { value: 'n/a' };
+  const queueStalls = mcpProxy.criticalContinuationQueueStalls ?? 0;
+  const hardFailures = mcpProxy.hardFailures ?? 0;
+  const shed = mcpProxy.shed ?? 0;
+  const parts: string[] = [];
+  if (queueStalls > 0) {
+    parts.push(`${queueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m observed in the last hour (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)`);
+  }
+  if (hardFailures > 0) parts.push(`${hardFailures} fail/1h`);
+  if (shed >= MCP_PROXY_SHED_WARN) parts.push(`${shed} shed/1h`);
+  if (parts.length === 0) return { value: mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok' };
+  const tone = queueStalls > 0 || hardFailures >= MCP_PROXY_HARD_FAIL_CRIT
+    ? 'crit'
+    : hardFailures > 0 || shed >= MCP_PROXY_SHED_WARN ? 'warn' : undefined;
+  return { value: parts.join(', '), tone };
 }
 
 /**

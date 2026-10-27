@@ -94,6 +94,49 @@ describe('cpu-task-worker — repository census guard', () => {
     )).toBe(false);
   });
 
+  it('distinguishes fresh fixture roots returned by a helper from repository census roots', async () => {
+    const m = await mod();
+    const fixtureInventory = `
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-'));
+  const donor = path.join(root, 'donor');
+  return { root, donor };
+}
+function inventory(root) {
+  function visit(file) { for (const name of fs.readdirSync(file)) visit(path.join(file, name)); }
+  visit(root);
+}
+const f = fixture();
+const runRoot = path.join(f.root, 'graph');
+inventory(f.donor);
+`;
+    expect(await m.detectBroadRepoTreeScanOffThread(fixtureInventory)).toBe(false);
+    expect(await m.detectBroadRepoTreeScanOffThread(fixtureInventory + `
+const REPO_ROOTS = ['packages']; REPO_ROOTS.forEach(inventory);
+`)).toBe(true);
+    // A local same-name binding must not borrow the outer fixture's provenance.
+    expect(await m.detectBroadRepoTreeScanOffThread(fixtureInventory + `
+function census(runRoot) { inventory(runRoot); } census(process.cwd());
+`)).toBe(true);
+  });
+
+  it.each([
+    "let runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-'));",
+    "const runRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-')), '..', 'repo');",
+    "const runRoot = fs.mkdtempSync(path.join(process.cwd(), 'fixture-'));",
+    "const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-')); runRoot.path = process.cwd();",
+    "const fs = { mkdtempSync: () => process.cwd() }; const runRoot = fs.mkdtempSync();",
+  ])('keeps ambiguous or mutable root provenance conservative: %s', async declaration => {
+    const m = await mod();
+    const namespaces = declaration.startsWith('const fs =') ? '' : "const fs = require('node:fs');";
+    expect(await m.detectBroadRepoTreeScanOffThread(`
+${namespaces} const os = require('node:os'), path = require('node:path');
+${declaration}
+function walk(root) { return readdirSync(root); } walk(runRoot);
+`)).toBe(true);
+  });
+
   it('serves a main-thread heartbeat while parsing a large source and still returns the guard verdict', async () => {
     const m = await mod();
     await m.detectBroadRepoTreeScanOffThread('const small = 1;');

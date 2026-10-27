@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "GF-P002-source-clause-proof-refresh",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "specId": "GF-P002-source",
+  "specRevision": 1,
+  "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+  "status": "partial; P002 and shipment remain open",
+  "priorProof": {
+    "path": "docs/evidence/get-feedback-p002-source-proof-continuation-2026-10-23.json",
+    "sha256": "a42fc5ba042e5ef00c9a743da7fd412b3b54b8cfd9e30124fdfe2a50c115db86"
+  },
+  "execution": {
+    "newTestRuns": [],
+    "method": "Reuse already completed clean committed runs after inspecting the exact clause, old measurement recipes, current bindings, reporter records and per-case ledger. No test was rerun for recovery or HEAD movement.",
+    "reader": "ptool --url=http://127.0.0.1:3170",
+    "reusedRuns": [
+      { "testRunId": 21817288, "file": "apps/operator/lib/psu-launcher.test.ts", "passed": 1209, "failed": 0, "skipped": 0 },
+      { "testRunId": 21802288, "file": "packages/operator-core/lib/session-port/service.test.ts", "passed": 56, "failed": 0, "skipped": 0 },
+      { "testRunId": 21818097, "file": "packages/operator-core/lib/session-port/store.integration.test.ts", "passed": 2, "failed": 0, "skipped": 0 },
+      { "testRunId": 21817294, "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts", "passed": 148, "failed": 0, "skipped": 0 }
+    ]
+  },
+  "replacementBindings": [
+    { "old": 65113, "replacement": 66842, "testRunId": 21817288, "priorNamedCasesPreserved": 538 },
+    { "old": 65109, "replacement": 66843, "testRunId": 21802288, "priorNamedCasesPreserved": 52 },
+    { "old": 65107, "replacement": 66844, "testRunId": 21818097, "priorNamedCasesPreserved": 2 },
+    { "old": 45260, "replacement": 66822, "testRunId": 21817294, "priorNamedCasesPreserved": 0 }
+  ],
+  "qualification": {
+    "independentCurrentness": "/tmp/gf-p002-source-final-currentness-20261023.json",
+    "qualifiedBindingIds": [66842, 66843, 66844, 66822],
+    "result": "Each replacement was independently server-measured current in every applicable dimension, with zero stale or unknown reasons, before retirement. Prior named-case declarations, coverage flags and any native disclosure were preserved.",
+    "sourceRecipes": "Launcher, service and store preserve the prior bounded source and fixture sets. Dispatcher extends the prior single-file source set to the existing seven-file measured BAR recipe, retaining its inline fixture.",
+    "caseComparison": "/tmp/gf-p002-source-old-case-coverage-20261023.json",
+    "caseComparisonResult": "The exact newer reporter/per-case records contain every previously declared named case: 538 launcher, 52 service and 2 store; none missing. Dispatcher previously declared no individual cases.",
+    "scope": "The existing L1/L2 attestations remain L1/L2. These are bounded source and fixture measurements, not full imported-graph or native physical acceptance."
+  },
+  "retirement": {
+    "receipt": "/tmp/gf-p002-source-seven-retirements-20261023.json",
+    "readback": "/tmp/gf-p002-source-post-refresh-verdict-20261023.json",
+    "retiredExactOldBindings": [65113, 65109, 65107, 45260],
+    "retiredIntermediateBindings": [66819, 66820, 66821],
+    "intermediateReason": "The first three new bindings omitted the old named-case declarations. Replacements 66842/66843/66844 restore those declarations after comparison with the saved passing records. Intermediates were retired only after final qualification.",
+    "disclosure": "The dispatcher native-delivery/source-actor disclosure remains verbatim on 66822. No historical operational/native gap was retired to obtain a pass."
+  },
+  "governingAssessment": {
+    "receipt": "/tmp/gf-p002-source-post-refresh-verdict-20261023.json",
+    "rows": [
+      { "specId": "AUTO-BAR-R-2-P-002", "revision": 3, "evaluationMode": "mechanical", "verdict": "pass", "wouldBlock": [] },
+      {
+        "specId": "GF-P002-source",
+        "revision": 1,
+        "evaluationMode": "judgment",
+        "verdict": "fail",
+        "requiredProofFloor": "l4",
+        "wouldBlock": ["traceability", "fixture-calibration", "falsifiability", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"]
+      }
+    ]
+  },
+  "remainingWork": [
+    "The source clause still needs durable, calibrated, current, clause-scoped falsifier/L4 proof and resolution of its disclosed native acceptance gaps. A BAR pass does not discharge this clause.",
+    "Existing mutation records lack a qualified current same-clause named-case/baseline link; do not manufacture that link or treat an own-spec-id target as an explicit falsifier scenario.",
+    "Native actor and source-transition limits remain on EI-26733731037199530 and WI-10005891. Original and supplementary quality cohorts, independent acceptance and exact final shipment remain open."
+  ],
+  "scope": [
+    "No product source, tests, spec revision, sourceBar link, proof floor, execution route or carry mode changed.",
+    "No new consultation, cohort member, native matrix replay or shipment claim was created.",
+    "Original native/cohort evidence and the prior proof artifact are preserved."
+  ]
+}

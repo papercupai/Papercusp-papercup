@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GitNexus P-005 engine comparison: aggregate re-derived on the current committed engine-comparison sources (8aa6d79855) from the four persisted live arm reports",
+  "framework": "shell",
+  "command": ["npx", "tsx", "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts", "--aggregate", "--out", "<copy of docs/evidence/gitnexus-engine-comparison-2026-10-01>"],
+  "exitCode": 0,
+  "startedAt": "2026-10-27T01:21:08Z",
+  "finishedAt": "2026-10-27T01:21:22Z",
+  "commit": "8aa6d798557614b55534313916d590d961b1d5a7",
+  "workingTree": "clean as-committed clone materialized by npm run lint:as-committed -- --materialize-only --ref=8aa6d79855",
+  "sourceBlobs": {
+    "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts": "730d39d2930fb45082dd737995449f859b809489",
+    "packages/operator-core/lib/code-intelligence/engine-comparison.ts": "d874a016c2d02b00936d9a4c5a7fb409b3aa508f",
+    "packages/operator-core/lib/code-intelligence/engine-comparison-report.ts": "8c18a929c685def88023af652e3b4195b34e4923"
+  },
+  "summary": "Supersedes the 2026-10-02 aggregate evidence (gitnexus-r8-engine-comparison-aggregate-live-2026-10-02d.json, binding 22377), which went source-stale when engine-comparison-cli.ts changed in a37ab596aa (2026-10-17). That change replaced os.homedir()-joined bench and vendor paths with papercuspPath(); it does not change the comparison logic. The aggregate step was re-run on the current committed sources into a copy of the comparison directory. All twelve files in the copy are byte-identical to the committed docs/evidence/gitnexus-engine-comparison-2026-10-01 directory (diff -rq reports no difference). verdict.json sha256 is 2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03, the same as the earlier run.",
+  "results": {
+    "aggregateExitCode": 0,
+    "outputsByteIdentical": true,
+    "verdictSha256": "2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03",
+    "armsPresent": ["baseline-lsp-rg", "gitnexus-installed", "gitnexus-candidate", "codebase-memory"],
+    "fairnessAuditPresent": true
+  },
+  "limits": "The aggregate step re-derives the comparison from the persisted per-arm reports. It does not re-run the four engines. The per-arm measurements are the 2026-10-01/02 live runs recorded in those reports. This record shows that the current CLI and report code reproduce the same verdict from them.",
+  "workItem": "WI-10001409",
+  "directive": "owner directive #2460, tracked on WI-6554700010029782"
+}

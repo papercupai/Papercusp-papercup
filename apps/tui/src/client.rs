@@ -810,6 +810,19 @@ fn filter_lock_resolve_fixtures(
 }
 
 impl OperatorClient {
+    /// Opens only the selected operator's live-card redirect; never receives
+    /// the private provider URL or embeds bearer credentials in a browser argv.
+    pub fn card_link_url(&self, correlation_id: &str) -> Result<String> {
+        if correlation_id.is_empty() || !correlation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+            anyhow::bail!("invalid card identity");
+        }
+        let base = reqwest::Url::parse(&self.endpoint)?;
+        if !matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]" | "::1")) {
+            anyhow::bail!("private card links require the selected local operator");
+        }
+        Ok(base.join(&format!("/api/ui/cards/{correlation_id}/link"))?.to_string())
+    }
+
     /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
     /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
     /// operator over HTTP. A launcher may use the standard
@@ -3742,6 +3755,17 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn su_exec_p007_private_link_uses_selected_local_operator_and_routed_identity() {
+        let client = OperatorClient { transport: Transport::Http(HttpClient::new("http://127.0.0.1:3170".into(), None)),
+            endpoint: "http://127.0.0.1:3170".into(), selection_source: "test".into() };
+        let id = "su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assert_eq!(client.card_link_url(id).unwrap(), format!("http://127.0.0.1:3170/api/ui/cards/{id}/link"));
+        assert!(client.card_link_url("../other").is_err());
+        let remote = OperatorClient { endpoint: "https://operator.example".into(), ..client };
+        assert!(remote.card_link_url(id).is_err());
+    }
 
     #[test]
     fn operator_config_reads_effective_tiers_from_agent_config_without_palette_dispatch() {

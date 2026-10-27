@@ -107,6 +107,7 @@ import type { FilterNode } from '../../scheduler/claim-spec';
 import { compileFilter } from '../../scheduler/get-next';
 import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter } from '../../scheduler/claim-spec-match';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../../work-nature/agent-work-predicate';
 export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
 
 export interface AgentReviewLedgerGrade {
@@ -272,7 +273,7 @@ export async function preserveAgentReviewAuthorityBeforePlanRoute(input: {
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${input.workItemId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task', 'feature'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}, 'feature'])
        FOR UPDATE`;
     const workItem = workItems[0];
     if (!workItem) return { preserved: false, reason: 'not-found' };
@@ -975,7 +976,7 @@ export async function adoptNextAgentReviewRevision(
      WHERE workspace_id = ${ws}
        AND harness_slug = ${input.harnessSlug}
        AND status = 'open'
-       AND item_kind IN ('bug', 'change', 'task', 'feature')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}, 'feature')
        AND ${depsBlockedExclusionSql(sql)}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
@@ -1987,7 +1988,7 @@ export async function claimNextAgentReview(
       FROM harness_shared.work_items wi
      WHERE workspace_id = ${ws}
        AND status = 'open'
-       AND item_kind IN ('bug', 'change', 'task', 'feature')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}, 'feature')
        AND (taken_by IS NULL OR btrim(taken_by) = '')
        AND ${depsBlockedExclusionSql(sql)}
        AND ${agentReviewPendingSelectorSql(sql)}

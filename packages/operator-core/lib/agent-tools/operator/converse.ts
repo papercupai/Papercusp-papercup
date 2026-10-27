@@ -36,6 +36,7 @@
  */
 
 import { z } from 'zod';
+import { loadRoleConverse, loadRolePersona } from '../../prompt-assembly';
 import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { agentSpawnTransformConfigured } from '@papercusp/papercusp-shared/agent';
@@ -67,12 +68,16 @@ import { classifyChatModelFailure } from '../../chat-model-failure';
 import type { AgentBackend } from '../../agent-config-constants';
 import {
   buildConverseMcpMount,
+  compactConverseSchemasForAdmission,
   CONVERSE_HOST_TRUSTS,
   selectConverseTools,
   PUBLIC_MANUAL_TOOLS,
   type ConverseHostTrust,
 } from './converse-toolset';
-import type { ChatEvent } from '@papercusp/chat-protocol';
+import { parseChatEnvelope, type ChatEvent, type ChatEventEnvelope, type ChatEventV1, type ChatTurnToolCall } from '@papercusp/chat-protocol';
+import { getOrgPg } from '@papercusp/db-org';
+import { admitConverseTurn, converseToolResultBlocks } from './converse-turn';
+import { operatorChatSessionAuthority } from '../../operator-chat-store';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -238,7 +243,8 @@ export async function resolveConverseBrain(
  * either host round-trips it. Every frame this tool streams goes through here
  * so the wire cannot drift from the protocol type.
  */
-function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ChatEvent): void {
+type ConverseEvent = ChatEvent | Extract<ChatEventV1, { type: 'result' }>;
+function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ConverseEvent): void {
   ctx.emit(ev.type, ev);
 }
 
@@ -288,11 +294,17 @@ export default defineTool({
   modality: ['text', 'voice'],
   args: ArgsSchema,
   events: {
+    'chat-event': z.custom<ChatEventEnvelope>(value => parseChatEnvelope(value).ok),
+    'turn-meta': z.object({ schemaVersion: z.literal(1), conversationId: z.string(), turnId: z.string() }),
     delta: z.object({ text: z.string() }),
     tool_call: z.object({ name: z.string(), input: z.unknown(), callId: z.string().optional() }),
     tool_result: z.object({ name: z.string(), summary: z.string(), ok: z.boolean(), callId: z.string().optional() }),
   },
   handler: async (input: Args, ctx) => {
+    // Required content is an operation precondition, before turn/session writes.
+    const role = input.lessonContext ? 'papercup' : input.role ?? 'operator';
+    loadRoleConverse(role);
+    loadRolePersona(role);
     const sessionUser: ConverseSessionUser | null = input.lessonContext ? null : input.sessionUser ?? null;
     // Per-turn phase timing (reply-latency instrumentation, grade-loop
     // 2026-07-16): the IPC converse path never lands in tool_invocations, so
@@ -308,7 +320,6 @@ export default defineTool({
     // backends either have no on-disk session store (anthropic-direct) or
     // are not wired for it (omp/codex). The per-surface backend override is
     // resolved here (and reused below) instead of after the build.
-    const role = input.lessonContext ? 'papercup' : input.role ?? 'operator';
     const hostTrust: ConverseHostTrust = input.lessonContext || input.hostTrust === 'public' ? 'public' : 'owner';
     // The role's model + backend, resolved ONCE up front: the backend gates
     // session reuse below (claude-code only), and the papercup pin carries its
@@ -357,15 +368,16 @@ export default defineTool({
               && projected.capabilities.every((capability) => publicPrincipal.capabilities.has(capability));
           })
           : selectedOperatorTools;
-    // The `?tools=` MCP mount loads exactly these selected schemas non-deferred.
-    // Account for the selected set at that runtime seam; promptWeight() remains
-    // the description/guidance-only metric for the assembled prompt catalog.
+    // The `?tools=` MCP mount loads exactly this selected set, and
+    // `?tools_compact=` serves its compact schemas. Admission measures the same
+    // projection the MCP host will list; promptWeight() remains the separate
+    // description/guidance-only metric for the assembled prompt catalog.
     assertSelectedInputSchemaBudget(
-      operatorTools.flatMap((fullName) => {
+      compactConverseSchemasForAdmission(operatorTools.flatMap((fullName) => {
         const canonicalName = fullName.replace(/^mcp__agentmcp__/, '');
         const projected = lookupByMcpName(canonicalName);
         return projected ? [{ name: canonicalName, inputSchema: projected.inputSchema }] : [];
-      }),
+      })),
       { label: `operator:converse ${hostTrust} tool set` },
     );
     const convId =
@@ -485,30 +497,78 @@ export default defineTool({
     // never copied from the operator's '*' principal.
     const customerPiToolNames = operatorTools.map((name) => name.replace(/^mcp__agentmcp__/, ''));
     let customerPiSession: Awaited<ReturnType<typeof startPiSession>> | null = null;
-    if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
-      const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
-      if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
-      const capabilities = [...new Set(
-        customerPiToolNames.flatMap((name) => lookupByMcpName(name)!.capabilities),
-      )].sort();
-      customerPiSession = await startPiSession({
-        workspaceId,
-        sessionId: `operator-converse-${globalThis.crypto.randomUUID()}`,
-        capabilities,
-        allowedTools: customerPiToolNames,
-        expiresAt: new Date(Date.now() + CONVERSE_PI_SESSION_TTL_MS),
-      });
-    }
     const revokeCustomerPiSession = async (): Promise<void> => {
       if (!customerPiSession) return;
+      const session = customerPiSession;
+      customerPiSession = null;
       try {
-        await endPiSession(workspaceId, customerPiSession.sessionId);
+        await endPiSession(workspaceId, session.sessionId);
       } catch (err) {
         // The durable expires_at is the crash/revocation backstop; a cleanup
         // failure must not erase the completed chat result.
         console.warn('[operator:converse] PI session cleanup failed:', err instanceof Error ? err.message : err);
       }
     };
+    const credential = hostTrust === 'owner' && ownerPrincipal
+      ? { kind: 'system' as const, name: ownerPrincipal.name, bearer: ownerPrincipal.bearer }
+      : publicPrincipal?.kind === 'pi' && input.principalToken
+        ? { kind: 'pi' as const, sessionId: publicPrincipal.slug.replace(/^pi:/, ''), bearer: input.principalToken.trim() }
+        : null;
+    let durableTurn: Awaited<ReturnType<typeof admitConverseTurn>> | null = null;
+    if (!input.lessonContext && input.conversationId) {
+      if (!principalOk || !credential) throw new Error('unauthorized');
+      const principalId = credential.kind === 'system' ? `system:${credential.name}` : `pi:${credential.sessionId}`;
+      durableTurn = await admitConverseTurn({ options: { sql: getOrgPg().sql, workspaceId,
+        turn: { conversationId: input.conversationId, turnId: globalThis.crypto.randomUUID() },
+        scope: { principalId, tenantId: workspaceId, customerId: principalId, publicOwnerId: principalId } },
+      // The existing operator provisioner grants chat:write for persisted chat
+      // and decisions. The outer converse dispatcher remains its own gate.
+      credential, capability: 'chat:write', toolName: 'chat:ask_choice',
+      runId: ctx.runId || globalThis.crypto.randomUUID(), source: turnModality === 'voice' ? 'voice_tts' : 'text_typed' });
+    }
+    let totalCost = 0;
+    let assembled = '';
+    const collectedTools: ChatTurnToolCall[] = [];
+    let finalizationAttempted = false;
+    const emission: { failure?: { error: unknown } } = {};
+    const emit = async (event: ConverseEvent): Promise<void> => {
+      if (durableTurn) {
+        await durableTurn.publish(event as ChatEventV1, committed => {
+          ctx.emit('chat-event', committed);
+          emitChatEvent(ctx, committed.event as ConverseEvent);
+        });
+      } else emitChatEvent(ctx, event);
+    };
+    let persistedTurn: { conversationId: string; turnId: string; seq: number } | undefined;
+    let cancellationWatch: { stop(): void } | undefined;
+    let cancellationWatchFailure: { error: unknown } | undefined;
+    const executionAbort = new AbortController();
+    ctx = { ...ctx, signal: AbortSignal.any([ctx.signal, executionAbort.signal]) };
+    const finishTurn = async (status: 'completed' | 'failed' | 'cancelled') => {
+      if (!durableTurn) return;
+      finalizationAttempted = true;
+      const parsed = parseOperatorTurn(assembled);
+      persistedTurn = await durableTurn.finalize({ status, text: parsed.say ?? '', tools: collectedTools,
+        report: parsed.report ?? null });
+    };
+    try {
+    if (durableTurn) {
+      cancellationWatch = await durableTurn.watchCancellation(() => executionAbort.abort(), error => {
+        cancellationWatchFailure = { error };
+        executionAbort.abort(error);
+      });
+      ctx.emit('turn-meta', { schemaVersion: 1, ...durableTurn.identity });
+      if (cancellationWatchFailure) throw cancellationWatchFailure.error;
+      if (ctx.signal.aborted) throw new Error('cancelled');
+    }
+    if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
+      const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
+      if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
+      const capabilities = [...new Set(customerPiToolNames.flatMap((name) => lookupByMcpName(name)!.capabilities))].sort();
+      customerPiSession = await startPiSession({ workspaceId,
+        sessionId: `operator-converse-${globalThis.crypto.randomUUID()}`, capabilities, allowedTools: customerPiToolNames,
+        expiresAt: new Date(Date.now() + CONVERSE_PI_SESSION_TTL_MS) });
+    }
 
     // The agentmcp HTTP MCP mount (converse-toolset.ts) — one set feeds BOTH the
     // `?tools=` allowlist and `--allowed-tools`, so the listed surface and the
@@ -530,7 +590,7 @@ export default defineTool({
     // PendingCardsBar (registers under '*', surface subscribed to the real
     // workspaceId — no overlap). Plan ref: bespoke-card-improvements-2026-05-13
     // §4.4 wire shape.
-    const mount = buildConverseMcpMount({
+    let mount = buildConverseMcpMount({
       hostTrust,
       baseUrl: selfUrl(),
       workspaceId,
@@ -542,6 +602,7 @@ export default defineTool({
         ? (input.principalToken ?? null)
         : (customerPiSession?.bearer ?? null),
     });
+    if (mount && durableTurn) mount = await durableTurn.bindMount(mount);
     const mcpConfig =
       principalOk && mount
         ? {
@@ -569,8 +630,6 @@ export default defineTool({
       promptHash: hashSystemPrompt(systemPromptText),
     } : undefined;
 
-    let totalCost = 0;
-    let assembled = '';
     let unreportedFrames = 0;
     let emittedToolCall = false;
     let firstEventAt: number | null = null;
@@ -596,7 +655,7 @@ export default defineTool({
     const emptyAttempts: BrainAttemptOutcome[] = [];
     let skippedFailover: SkippedBrainFailover | null = null;
     try {
-      emitChatEvent(ctx, {
+      await emit({
         type: 'provenance',
         engine: brainEngine,
         model: brainModel,
@@ -669,14 +728,22 @@ export default defineTool({
             allowedTools: [...allowedTools],
             // Reuse chat-protocol's result summary for public manual evidence.
             // Owner/private tools never publish their return bodies here.
-            ...(hostTrust === 'public' ? { onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
+            onToolResult: (result: { name: string; output: string; isError: boolean; callId?: string }) => {
+              durableTurn?.observeToolResult(result);
+              if (hostTrust === 'owner') {
+                const blocks = converseToolResultBlocks(result, workspaceId);
+                if (blocks.length) void emit({ type: 'result', blocks })
+                  .catch(error => { emission.failure ??= { error }; });
+              }
+              if (hostTrust !== 'public') return;
               const name = canonicalToolName(result.name);
               if (!PUBLIC_MANUAL_TOOLS.includes(`mcp__agentmcp__${name}`)) return;
               const evidence = captureToolResultEvidence(name, result.output, result.isError);
-              emitChatEvent(ctx, { type: 'tool_result', name: evidence.name,
+              void emit({ type: 'tool_result', name: evidence.name,
                 summary: evidence.output, ok: !evidence.isError,
-                ...(result.callId ? { callId: result.callId } : {}) });
-            } } : {}),
+                ...(result.callId ? { callId: result.callId } : {}) })
+                .catch(error => { emission.failure ??= { error }; });
+            },
             permissionMode: 'bypassPermissions',
             // Isolate the claude-code brain spawn from the host ~/.claude so
             // it loads ONLY its agentmcp tools + persona — not the dev box's
@@ -701,9 +768,10 @@ export default defineTool({
           })) {
             if (firstEventAt === null) firstEventAt = Date.now();
             if (ctx.signal.aborted) break;
+            if (emission.failure) throw emission.failure.error;
             if (ev.type === 'delta') {
-              emitChatEvent(ctx, { type: 'delta', text: ev.text });
               assembled += ev.text;
+              await emit({ type: 'delta', text: ev.text });
             } else if (ev.type === 'tool_call') {
               emittedToolCall = true;
               // Claude Code strips the colon before the model sees the name, so
@@ -712,7 +780,8 @@ export default defineTool({
               // ask_choice gates match on; without it the card silently never
               // renders and the user sees a "pick one" with nothing to pick.
               const name = canonicalToolName(ev.name);
-              emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input,
+              collectedTools.push({ name, input: ev.input, ...(ev.callId ? { callId: ev.callId } : {}) });
+              await emit({ type: 'tool_call', name, input: ev.input,
                 ...(ev.callId ? { callId: ev.callId } : {}) });
             } else if (ev.type === 'result') {
               totalCost += ev.costUsd ?? 0;
@@ -774,7 +843,7 @@ export default defineTool({
             brainBackend = failover.backend;
             brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
             // Re-announce what actually runs now; the chat reducer keeps the latest frame.
-            emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel,
+            await emit({ type: 'provenance', engine: brainEngine, model: brainModel,
               ...(publicToolContext ? { toolContext: publicToolContext } : {}) });
           } else {
             console.error(
@@ -798,6 +867,9 @@ export default defineTool({
       );
       throw new Error(brainNoOutputMessage({ attempts: emptyAttempts, skippedFailover }));
     }
+    if (emission.failure) throw emission.failure.error;
+    if (cancellationWatchFailure) throw cancellationWatchFailure.error;
+    await finishTurn(ctx.signal.aborted ? 'cancelled' : 'completed');
 
     // WI-5071: output committed on a session-backed turn — bump the marker so
     // the NEXT turn resumes (turnCount 0 → 1 is what flips `resumed` on).
@@ -843,18 +915,21 @@ export default defineTool({
 
     // Post-stream side-effects. All fire-and-forget so transient
     // failures don't fail the user-visible response.
-    void recordSpend(totalCost);
 
     // Rolling-summary compaction pass (operator-context-compaction-2026-06-05):
     // fold turns that aged out of the verbatim window into the conversation's
     // PG summary so the NEXT turn still remembers them. Single-flighted +
-    // threshold-gated inside; no-op without a conversationId.
-    if (!input.lessonContext && input.conversationId) {
+    // threshold-gated inside; no-op without an authenticated conversation.
+    if (!input.lessonContext && input.conversationId && credential) {
       void (async () => {
         const { maybeCompactConversation } = await import(
           '../../operator-conversation-compaction'
         );
-        await maybeCompactConversation(input.conversationId!);
+        const ownerId = credential.kind === 'system' ? `system:${credential.name}` : `pi:${credential.sessionId}`;
+        await maybeCompactConversation(input.conversationId!, { signal: ctx.signal,
+          context: { workspaceId, ownerId,
+            authorize: operatorChatSessionAuthority({ workspaceId, principalId: ownerId, credential,
+              capability: 'chat:write', toolName: 'chat:ask_choice' }) } });
       })().catch((err) => {
         console.warn(
           '[operator-converse] compaction pass failed:',
@@ -991,8 +1066,21 @@ export default defineTool({
       data: {
         totalCost,
         assembled,
+        ...(persistedTurn ? { persistedTurn } : {}),
         ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
       },
     };
+    } catch (error) {
+      // An uncertain final acknowledgement never authorizes a second terminal
+      // write with a different result. Recovery must reconcile that execution.
+      if (!finalizationAttempted) await finishTurn(ctx.signal.aborted && !cancellationWatchFailure ? 'cancelled' : 'failed');
+      throw error;
+    } finally {
+      cancellationWatch?.stop();
+      // Provider usage survives a failed/cancelled stream or uncertain PG
+      // finalization. Keep the existing host accounting hook, exactly once.
+      void recordSpend(totalCost);
+      await revokeCustomerPiSession();
+    }
   },
 });

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,6 +6,30 @@ import { join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupOwnedTestState, removePrivateState } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
+
+describe('private PostgreSQL dependency signal ownership', () => {
+  it.each([false, true])('handles actual lazy exit-hook registration (registered=%s)', registered => {
+    const helper = resolve(import.meta.dirname, '../../../scripts/lib/with-test-pg-cleanup.mjs');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import exitHook from 'async-exit-hook';
+      import { unhookRegisteredExitSignals } from ${JSON.stringify(helper)};
+      if (${registered}) exitHook(() => {});
+      const before = exitHook.hookedEvents();
+      unhookRegisteredExitSignals(exitHook);
+      unhookRegisteredExitSignals(exitHook);
+      console.log(JSON.stringify({ before, after: exitHook.hookedEvents(),
+        signals: ['SIGINT', 'SIGTERM'].map(signal => process.listenerCount(signal)) }));
+    `], { cwd: resolve(import.meta.dirname, '../../..'), encoding: 'utf8', timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.signal).toBeNull();
+    const observed = JSON.parse(result.stdout);
+    expect(observed.before.includes('SIGINT')).toBe(registered);
+    expect(observed.before.includes('SIGTERM')).toBe(registered);
+    expect(observed.after).toEqual(observed.before.filter((event: string) =>
+      event !== 'SIGINT' && event !== 'SIGTERM'));
+    expect(observed.signals).toEqual([0, 0]);
+  });
+});
 
 describe('private PostgreSQL independent cleanup', () => {
   function fixture(failedStop?: 'child' | 'profile' | 'pg') {

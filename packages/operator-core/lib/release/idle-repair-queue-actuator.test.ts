@@ -5,9 +5,12 @@ import {
   IDLE_DISPATCH_RETRY_LIMIT,
   decideIdleQueueAction,
   dispatchIdleQueueFixer,
+  idleQueueFixerDispatch,
   parseEpisode,
   runIdleQueueActuatorPass,
   evaluateIdleQueueActuatorWindow,
+  buildIdleQueueActuatorObservation,
+  IDLE_ACTUATOR_PASS_MARKER,
   type IdleQueueActuatorObservation,
   type IdleQueueActuatorDeps,
   type IdleQueueEpisode,
@@ -15,7 +18,9 @@ import {
   type IdleRungResult,
 } from './idle-repair-queue-actuator';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { currentRepairLimbExecutor, parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import { buildCandidateSnapshot, candidateSnapshotMatchesDispatch } from './candidate-snapshot';
 
 const MIN = 60_000;
 const OPENED = Date.parse('2026-10-08T00:00:00Z');
@@ -171,6 +176,59 @@ describe('idle repair-queue fixer handoff', () => {
       ok: false,
       detail: 'dispatcher returned no spawn; reservation released',
     });
+  });
+});
+
+describe('idle rung dispatch targets the repair head (WI-6554700010029686)', () => {
+  const frozenCandidate = 'a'.repeat(40);
+  const repairHead = 'c'.repeat(40);
+  // A queue that has admitted a fix: its repair head has moved off the immutable pin.
+  const admitted = {
+    ...createFrozenCandidateRepairQueue({
+      candidate: frozenCandidate, base: 'b'.repeat(40), failingTests: ['lib/red.test.ts'], nowMs: OPENED,
+    }),
+    repairHead,
+    phase: 'awaiting-fixer' as const,
+  };
+
+  it('hands the dispatcher the repair head, the queue failures and the queue row', async () => {
+    const calls: unknown[][] = [];
+    const dispatch = idleQueueFixerDispatch('target', async (...args) => {
+      calls.push(args);
+      return null;
+    });
+    await dispatch(admitted, () => {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 5)).toEqual(['target', repairHead, ['lib/red.test.ts'], admitted, undefined]);
+  });
+
+  it('builds a dispatch the real snapshot matcher accepts once the repair head has moved', async () => {
+    const snapshot = buildCandidateSnapshot(
+      {
+        candidate: repairHead,
+        failingTests: ['lib/red.test.ts'],
+        repairQueue: { candidate: frozenCandidate, repairHead, phase: 'awaiting-fixer' },
+      },
+      OPENED,
+    );
+    expect(snapshot).not.toBeNull();
+    const verdicts: boolean[] = [];
+    const dispatch = idleQueueFixerDispatch('target', async (_target, candidate, failingTests, repairQueue) => {
+      verdicts.push(candidateSnapshotMatchesDispatch(snapshot, { candidate, failingTests, repairQueue, nowMs: OPENED + MIN }));
+      return null;
+    });
+    await dispatch(admitted, () => {});
+    expect(verdicts).toEqual([true]);
+    // The pre-fix argument, the immutable pin, is refused by construction: the
+    // snapshot-mismatch the idle rung hit on every attempt on 2026-10-26.
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: frozenCandidate,
+        failingTests: admitted.failingTests,
+        repairQueue: admitted,
+        nowMs: OPENED + MIN,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -539,5 +597,48 @@ describe('original idle-actuator history acceptance', () => {
     const h = history();
     expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs - 1).assertions.every(a => a.passed)).toBe(false);
     expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs, Infinity).assertions.every(a => a.passed)).toBe(false);
+  });
+});
+
+describe('pass-record content marker (gate-repair-plane R-6)', () => {
+  const pass = () => ({ startedAtMs: OPENED, completedAtMs: OPENED + MIN, snapshot: snapshot(), episode: null,
+    result: { decision: 'not-idle' as const, acted: [] } });
+
+  const writer: RepairLimbExecutor = {
+    hostId: 'port-3271',
+    processId: '424242',
+    executingBuild: { sha: 'abc1234def5678', source: 'baked' },
+  };
+
+  it('stamps every pass record with the build marker and keeps the pass fields intact', () => {
+    const record = buildIdleQueueActuatorObservation(pass(), writer);
+    expect(IDLE_ACTUATOR_PASS_MARKER).toMatch(/\S/);
+    expect(record).toEqual({ version: 1, ...pass(), executor: writer, marker: IDLE_ACTUATOR_PASS_MARKER });
+  });
+
+  it('leaves a marked record valid for the original-history measurement', () => {
+    const marked = buildIdleQueueActuatorObservation(pass(), writer);
+    expect(marked.version).toBe(1);
+    expect(Object.keys(marked).sort()).toEqual(
+      ['completedAtMs', 'episode', 'executor', 'marker', 'result', 'snapshot', 'startedAtMs', 'version']);
+  });
+
+  // #P-038 / #D-010: R-6's subject is the first record carrying the marker whose OWN stamped
+  // build contains it, so the stamp must be on the pass record itself, not only on the
+  // upserted episode row (pipeline_events 842662/843492 carried none).
+  it('stamps the pass record with the writing executor (host, process, loaded build) by default', () => {
+    const record = buildIdleQueueActuatorObservation(pass());
+    expect(record.executor).toEqual(currentRepairLimbExecutor());
+    expect(record.executor?.hostId).toMatch(/\S/);
+  });
+
+  it('keeps the executor stamp evaluable from the stored record alone (JSON round trip)', () => {
+    const stored = JSON.parse(JSON.stringify(buildIdleQueueActuatorObservation(pass(), writer))) as Record<string, unknown>;
+    expect(stored.marker).toBe(IDLE_ACTUATOR_PASS_MARKER);
+    expect(parseRepairLimbExecutor(stored.executor)).toEqual(writer);
+  });
+
+  it('runs a fresh proof: the marker is not the unstamped 2026-10-27 value whose records are residue', () => {
+    expect(IDLE_ACTUATOR_PASS_MARKER).not.toBe('gate-repair-plane-r6-proof-2026-10-27');
   });
 });

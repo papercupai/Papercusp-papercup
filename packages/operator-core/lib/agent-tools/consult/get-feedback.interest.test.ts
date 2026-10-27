@@ -48,7 +48,11 @@ vi.mock('../coordination/conversations', () => ({
 vi.mock('../coordination/notify-agents', () => ({ notifyAgents: h.notifyAgents }));
 vi.mock('../../consult/consult-dispatch', () => ({
   makeConsultReachDispatcher: h.makeConsultReachDispatcher,
+  continueCascadeDispatchProd: vi.fn(async () => true),
 }));
+vi.mock('../../rubrics', () => ({ resolveAcceptanceBarApproverScreen: async () => ({
+  check: async () => ({ eligible: true, reason: 'eligible' }),
+}) }));
 
 import tool from './get-feedback';
 import { lookupByMcpName } from '@papercusp/tooldef';
@@ -106,6 +110,15 @@ beforeEach(() => {
 });
 
 describe('consult:get_feedback requester interest handle (P-024)', () => {
+  it('preserves the explicit METHOD independence target in the accepted request', async () => {
+    await call('proceed', { policy: 'method-review', method_review_rubric_ref: 'acceptance-native', allow_dispatch: false });
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]![0]).toMatchObject({
+      policy: 'method-review', methodReviewRubricRef: 'acceptance-native',
+    });
+    // The accepted request runs asynchronously; drain this test's continuation
+    // before the next case resets the shared mocks.
+    await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledTimes(1));
+  });
   it('registers the hard-blocked reply waiter before dispatch and returns its cancel handle', async () => {
     let releaseArm!: () => void;
     const armGate = new Promise<void>((resolve) => { releaseArm = resolve; });

@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "kind": "retained-record-evidence-supplement",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "governingDecision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+  "observedAt": "2026-10-25T10:08:00Z",
+  "status": "Recorded request-serving identity and named source comparison; asynchronous lease-renewal execution and complete lease transitions remain unmeasured.",
+  "extends": {
+    "path": "docs/evidence/get-feedback-p002-retained-hook-actors-2026-10-25.json",
+    "sha256": "f325f2ef6a97ec4c935cddbfe07f21e53a85082d5b24811e7d37280c6be1a2e8",
+    "commit": "17ee76383b82148f7d0aa5a3dc403f508a6694ee",
+    "originalArtifactUnchanged": true,
+    "scope": "Adds serving-process provenance to the six exact hook payloads and their known-positive consult reply. It does not replace the original native execution or source-claim evidence."
+  },
+  "identities": {
+    "sourceOwnerId": "su-0dd61ff4-d577-4fe7-9f60-ea00a582bfea",
+    "answererOwnerId": "su-3cf167ac-da89-444f-b45f-4605d51bf16d",
+    "answererNativeSessionId": "01a170e5-3c39-7962-a712-c2812561f04c",
+    "answererAdvSessionId": 51916,
+    "conversationId": "conv-request-c713ac82ffc39be484e4d6e566f284fd78b816afd192e52a406155ecd6ad979f"
+  },
+  "serverRead": {
+    "tool": "dev:pg_query",
+    "sql": "SELECT id,tool_name,invoked_at,serving_host,serving_process_id,serving_build_sha FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-3cf167ac-da89-444f-b45f-4605d51bf16d' AND id IN (44213849,44213903,44213939,44214041,44214170,44214171,44214242) ORDER BY id",
+    "maxRows": 7,
+    "returnedRows": 7,
+    "truncated": false,
+    "rows": [
+      { "id": 44213849, "tool": "activity:report", "invokedAt": "2026-10-25T02:30:35.068Z" },
+      { "id": 44213903, "tool": "activity:report", "invokedAt": "2026-10-25T02:30:50.564Z" },
+      { "id": 44213939, "tool": "activity:report", "invokedAt": "2026-10-25T02:31:00.291Z" },
+      { "id": 44214041, "tool": "activity:report", "invokedAt": "2026-10-25T02:31:21.452Z" },
+      { "id": 44214170, "tool": "consult:reply", "invokedAt": "2026-10-25T02:31:59.689Z" },
+      { "id": 44214171, "tool": "activity:report", "invokedAt": "2026-10-25T02:31:59.882Z" },
+      { "id": 44214242, "tool": "journal:record-turn", "invokedAt": "2026-10-25T02:32:19.870Z" }
+    ],
+    "sharedRecordedServingIdentity": {
+      "host": "port-3170",
+      "processId": "linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:4470057",
+      "buildSha": "7fc93a9d30",
+      "resolvedCommit": "7fc93a9d305865150939f43e54389920b477c5aa"
+    },
+    "positiveControl": { "id": 44214170, "tool": "consult:reply", "returned": true },
+    "scope": "These columns identify the process that recorded each selected tool settlement. They are separate from caller identity, native carrier binding and database row-mutation history."
+  },
+  "writerSemantics": {
+    "inspection": [
+      "projected-tool-deps.ts: recordToolInvocation obtains getServingHostIdentity() and persists its host, processId and buildSha in serving_host, serving_process_id and serving_build_sha.",
+      "serving-host-identity.ts: processId is a kernel-backed process-incarnation identifier. The cached buildSha comes from getBuildInfo().sha; null is not replaced by a current checkout SHA at this layer.",
+      "build-info.ts: a baked bundle SHA takes precedence, then PAPERCUSP_BUILD_SHA, then a development-host one-time Git fallback. The selected invocation rows do not record which resolution branch supplied their SHA."
+    ],
+    "filesAtRecordedCommit": {
+      "packages/operator-core/lib/projected-tool-deps.ts": "6c0f5f047774f37cfc63da0a70df164a641e4e5a24d472fad430cdd82938789a",
+      "packages/operator-core/lib/serving-host-identity.ts": "3e5a8e0c4308a2a7f60aaeba951ae6bee88125bb27c3806aa65898dc67a7476a",
+      "packages/operator-core/lib/build-info.ts": "ea31b635aa4d7c7b0b7ceb056ff3e0428cd0bf49bd519a263668bc394bc6a13f"
+    },
+    "currentBytesEqualRecordedCommit": true,
+    "limitation": "Recorded build identity plus repository blob equality is not an independent attestation of every byte loaded into the historical process. No historical bundle manifest or loaded-module digest is established here."
+  },
+  "namedSourceComparison": {
+    "method": "Resolve the serving SHA as a Git commit; SHA256 each of the five superproject blobs. Resolve libs/papercusp through that commit's gitlink and SHA256 the sixth SQL blob in the submodule. Compare every result with the immutable prior supplement and current tree bytes.",
+    "superprojectCommit": "7fc93a9d305865150939f43e54389920b477c5aa",
+    "submodule": {
+      "path": "libs/papercusp",
+      "gitlinkCommit": "9dede2869db80eaca2b7a84451573d537dedce91",
+      "scope": "A repository source pin; it does not prove the historical database had this function installed."
+    },
+    "files": {
+      "packages/operator-core/lib/agent-tools/activity/report.ts": "dd68bcfd348ab12fd665147e2908fd4da2b7a7ab26666084c413ce19d154901a",
+      "packages/operator-core/lib/agent-tools/journal/record-turn.ts": "9a48ff321ffe506014300e165f8b2812bb9e2691588c19ac0884d69865fe8d37",
+      "packages/operator-core/lib/plan-items/activity-claim-renewal.ts": "932db505875fa7685bddccb66b60d0128f4514d1dcf7662b2f6580dc90ed51b1",
+      "packages/operator-core/lib/plan-items/claims.ts": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "packages/operator-core/lib/consult/native-consult.ts": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+    },
+    "eachHistoricalBlobEqualsPriorPin": true,
+    "eachCurrentFileEqualsPriorPin": true
+  },
+  "asynchronousRenewalBoundary": {
+    "sourceInspection": [
+      "activity:report inserts an activity record using the payload owner.",
+      "agent-activity-bus.ts registers PG LISTEN consumers; ownerFromPayload extracts the notified owner and fans it out to local handlers.",
+      "dbos/bootstrap.ts arms startPlanItemActivityRenewal. That subscriber forwards its notified owner into renewOwnerActivityClaims, through each managed workspace.",
+      "renewOwnerActivityClaims filters UPDATE by owner equality and a non-expired lease. That inspected predicate describes the source behavior; selected tool settlement rows do not record the asynchronous UPDATE's executing process or affected row images."
+    ],
+    "verdict": "The seven request-serving stamps do not identify which activity-bus consumer executed a historical renewal, or establish that a particular renewal occurred.",
+    "missing": [
+      "The historical renewal consumer's execution identity and loaded-source provenance.",
+      "Complete claim transition/actor history, including old and new lease-incarnation values and mutate-then-revert."
+    ]
+  },
+  "preserved": {
+    "originalOperationalBindings": [28326, 28545],
+    "additionalNativeBindings": [69704, 69782],
+    "identityGuardBinding": 69338,
+    "nativeCensus": "docs/evidence/get-feedback-p002-native-call-census-2026-10-25.json",
+    "nativeCensusSha256": "4f6a3d44a267053d01eed7e1487ad0a3be2e9c4b7cbeb04a2661f51fbc191e20",
+    "reporterGap": "EI-26900834772734276: original timeout21936773 cause remains unknown; backend68733 is not requalified."
+  },
+  "qualification": {
+    "newNativeExecution": false,
+    "newSourceTestExecution": false,
+    "canonicalTestRunReceipt": false,
+    "nativeMatrixComplete": false,
+    "sourceLeaseImmutabilityEstablished": false,
+    "independentAcceptance": false,
+    "shipped": false,
+    "remaining": "Source/native matrix, source lease transitions and actors, cohort limits, custody, admission, approval, independent acceptance and shipment remain open."
+  }
+}

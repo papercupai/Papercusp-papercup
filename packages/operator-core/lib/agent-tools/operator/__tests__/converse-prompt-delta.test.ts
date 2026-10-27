@@ -28,8 +28,7 @@ vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => h.memBlock),
   lastUserContext: vi.fn(() => ''),
 }));
-vi.mock('../../../harness-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../harness-registry')>()),
+vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
 }));
 vi.mock('../../../workspace-registry', () => ({

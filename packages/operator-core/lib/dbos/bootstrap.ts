@@ -522,6 +522,8 @@ async function startDbosOnce(): Promise<void> {
   // D-131 (p2p-public-release-endgame): debounced auto-verify after a persisted repair admit.
   // Same split: register before launch, wire the enqueue seam after.
   const { wireRepairAutoVerify } = await import('./repair-auto-verify-workflow');
+  // P004: registration precedes launch so committed per-plan admissions recover after restart.
+  await import('./acceptance-grading-dispatch-workflow');
 
   try {
     await DBOS.launch();

@@ -9,6 +9,116 @@ const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
 
+describe('verifier disk reservation cleanup', () => {
+  const cleanup = source.match(/^release_verifier_disk_reservations\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!cleanup) throw new Error('Maintained verifier reservation cleanup was not found');
+
+  function probe(setup: string) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-disk-cleanup-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', setup, cleanup, 'release_verifier_disk_reservations',
+        'printf "remaining=%s\\n" "${#VERIFIER_DISK_RESERVATIONS[@]}"',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+        DESKTOP_DIR: resolve(repo, 'papercusp-desktop'), FIXTURE_DIR: dir,
+      } });
+      return { ...result, reservationExists: existsSync(resolve(dir, 'reservation')) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('does not invoke an uninitialized helper before any reservation was acquired', () => {
+    const result = probe('VERIFIER_DISK_RESERVATIONS=("")');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe('remaining=0\n');
+  });
+
+  it('loads the maintained helper to release an early cargo reservation owned by this shell', () => {
+    const result = probe([
+      // Seed a real receipt without loading helper functions into the caller.
+      '( . "$DESKTOP_DIR/bin/lib/disk-preflight.sh"; printf "pid=%s\\nstart=%s\\n" "$$" "$(papercusp_proc_starttime "$$")" > "$FIXTURE_DIR/reservation" )',
+      'VERIFIER_DISK_RESERVATIONS=("$FIXTURE_DIR/reservation")',
+    ].join('\n'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.reservationExists).toBe(false);
+    expect(result.stdout).toBe('remaining=0\n');
+  });
+
+  it('releases each nonempty receipt with the initialized helper and clears the list', () => {
+    const result = probe([
+      'VERIFIER_DISK_RESERVATIONS=(first "" second)',
+      'papercusp_release_disk_reservation() { printf "released=%s\\n" "$PAPERCUSP_DISK_RESERVATION_FILE"; }',
+    ].join('\n'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('released=first\nreleased=second\nremaining=0\n');
+  });
+});
+
+describe('native budget calibration lifetime', () => {
+  const start = source.indexOf('# Share source-preview\'s absolute task admission');
+  const end = source.indexOf('# WI-10005763', start);
+  const cleanup = source.match(/^cleanup_verifier_source_snapshot\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (start < 0 || end < start || !cleanup) throw new Error('Maintained verifier budget lifecycle was not found');
+
+  function probe(rows: object[], mutation = 'delete') {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-budget-lifetime-'));
+    const original = resolve(dir, 'prior-run/phases.jsonl');
+    const wrapper = resolve(dir, 'frozen-wrapper');
+    mkdirSync(resolve(dir, 'scripts/lib'), { recursive: true });
+    mkdirSync(resolve(dir, 'prior-run'));
+    for (const name of ['verify-tauri-deadline.mjs', 'task-deadline.mjs']) {
+      writeFileSync(resolve(dir, 'scripts/lib', name), readFileSync(resolve(repo, 'scripts/lib', name)));
+    }
+    const body = rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+    writeFileSync(original, body);
+    writeFileSync(wrapper, '# frozen wrapper\n');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', cleanup, 'trap cleanup_verifier_source_snapshot EXIT',
+        source.slice(start, end),
+        // The real harness may prune the original during vh_init. No native
+        // boot is needed to exercise each subsequent production budget read.
+        'if [ "$TEST_BUDGET_MUTATION" = delete ]; then rm -rf -- "$(dirname "$VERIFY_TAURI_BUDGET_ORIGINAL_PATH")"; else printf "changed" > "$VERIFY_TAURI_BUDGET_ORIGINAL_PATH"; fi',
+        'for phase in prepare boot assert; do preflight_verifier_task_deadline "$phase"; done',
+        'cat -- "$VERIFY_TAURI_BUDGET_FROM"',
+      ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+        REPO_DIR: dir, VERIFY_TAURI_SOURCE_SNAPSHOT_PATH: wrapper,
+        VERIFY_TAURI_BUDGET_FROM: original, VERIFY_TAURI_BUDGET_ORIGINAL_PATH: original,
+        PREPARE_ONLY: '0', ASSERTION_MODE: '1', VERIFY_TAURI_ASSERT_ESTIMATE_MS: '900000',
+        VERIFY_TAURI_MAX_BOOT_ATTEMPTS: '2', VERIFY_TAURI_BUILD_TIMEOUT: '300', VERIFY_TAURI_TIMEOUT: '180',
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 3_600_000),
+        PAPERCUSP_APP_OPERATION_LIVE_PROFILE: '', TEST_BUDGET_MUTATION: mutation,
+      } });
+      return { ...result, body, snapshotExists: existsSync(`${wrapper}.budget.jsonl`) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it.each(['delete', 'overwrite'])('keeps the validated forecast when retention or a writer can %s its source', mutation => {
+    const result = probe([{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }], mutation);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(result.body);
+    expect(result.stderr).toContain('VERIFY_TAURI_BUDGET_SNAPSHOT');
+    for (const phase of ['prepare', 'boot', 'assert']) {
+      expect(result.stderr).toContain(`VERIFY_TAURI_TASK_BUDGET phase=${phase}`);
+    }
+    expect(result.stderr).not.toContain('unknownTasks=1');
+    expect(result.snapshotExists).toBe(false);
+  });
+
+  it.each([
+    [{ phase: 'prepare', status: 'failed', elapsedMs: 4000 }],
+    [{ phase: 'prepare', status: 'passed', elapsedMs: -1 }],
+    [{ phase: 'prepare', status: 'passed', elapsedMs: 4000 }, { phase: 'prepare', status: 'passed', elapsedMs: 5000 }],
+  ])('refuses invalid calibration before retention (%j)', (...rows) => {
+    const result = probe(rows);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Verifier budget requires one completed prepare phase');
+    expect(result.stdout).toBe('');
+    expect(result.snapshotExists).toBe(false);
+  });
+});
+
 describe('isolated Postgres source identity', () => {
   const select = source.match(/^select_isolated_pg_source\(\) \{[\s\S]*?^\}/m)?.[0];
   if (!select) throw new Error('Maintained isolated Postgres source selector was not found');
@@ -414,16 +524,25 @@ function checkPreflight(candidate: string) {
 describe('frozen native SPA preparation', () => {
   function prepare(options: { pinned?: boolean; missingBuilder?: boolean; buildExit?: number;
     incomplete?: boolean; external?: boolean; sourceVolumeFull?: boolean;
-    prebuildExit?: number; sourceExit?: number } = {}) {
+    prebuildExit?: number; sourceExit?: number; modelExit?: number } = {}) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-spa-preflight-'));
     const frozen = resolve(dir, 'frozen');
     const app = resolve(frozen, 'apps/operator-vite');
     const capture = resolve(dir, 'build.json');
     const events = resolve(dir, 'events.jsonl');
+    const model = resolve(dir, 'donor/apps/operator/public/porcupine/porcupine_params.pv');
     const preparation = source.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0];
     if (!preparation) throw new Error('Frozen SPA preparation was not found');
     mkdirSync(resolve(app, 'bin'), { recursive: true });
     mkdirSync(resolve(frozen, 'scripts'), { recursive: true });
+    mkdirSync(resolve(frozen, 'apps/operator/scripts'), { recursive: true });
+    mkdirSync(resolve(model, '..'), { recursive: true });
+    writeFileSync(model, 'fixture model');
+    writeFileSync(resolve(frozen, 'apps/operator/scripts/setup-porcupine-runtime.sh'), `#!/bin/bash
+set -eu
+[ "$1" = --source ] && [ -s "$2" ]
+exit ${options.modelExit ?? 0}
+`);
     if (!options.missingBuilder) writeFileSync(resolve(app, 'bin/vite-build-singleflight'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(resolve(frozen, 'scripts/pc-heavy.sh'), '#!/bin/bash\n[ "$1" != -- ] || shift\nexec "$@"\n');
     writeFileSync(resolve(frozen, 'scripts/source-preview.mjs'), `
@@ -450,6 +569,7 @@ if (!${Boolean(options.incomplete)}) fs.writeFileSync(process.env.VITE_BUILD_OUT
     try {
       const result = spawnSync('bash', ['-c', `set -euo pipefail
 OPERATOR_SOURCE_ROOT="$FIXTURE_FROZEN"
+REPO_DIR="$FIXTURE_DIR/donor"
 WORK="$FIXTURE_DIR"
 log() { :; }
 ${preparation}
@@ -458,6 +578,7 @@ printf '%s' "$VERIFIER_SPA_DIST"
 `], { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`,
         FIXTURE_DIR: dir, FIXTURE_FROZEN: frozen, FIXTURE_CAPTURE: capture, FIXTURE_EVENTS: events,
         VERIFY_TAURI_SOURCE_RECEIPT: resolve(dir, 'source-receipt.json'),
+        VERIFY_TAURI_SOURCE_REPO_DIR: repo,
         VERIFY_TAURI_SOURCE_REF: options.pinned === false ? '' : 'committed-pin',
         PAPERCUSP_SHARED_SPA_DIST: options.external ? resolve(dir, 'unbound-donor-dist') : '',
         VITE_BUILD_CMD: 'unbound-command', VITE_BUILD_LOCK: 'donor-lock', VITE_BUILD_SNAPSHOT_DIR: 'donor-snapshot' } });
@@ -493,11 +614,14 @@ printf '%s' "$VERIFIER_SPA_DIST"
   });
 
   it.each([
+    [{ modelExit: 11 }, []],
     [{ prebuildExit: 19 }, ['prebuild']],
     [{ sourceExit: 23 }, ['prebuild', 'verify']],
-  ] as const)('rejects prebuild/source failures before the expensive SPA build (%j)', (options, steps) => {
+  ] as const)('rejects model/prebuild/source failures before the expensive SPA build (%j)', (options, steps) => {
     const result = prepare(options);
-    expect(result.status).toBe('prebuildExit' in options ? options.prebuildExit : options.sourceExit);
+    const expected = 'modelExit' in options ? options.modelExit
+      : 'prebuildExit' in options ? options.prebuildExit : options.sourceExit;
+    expect(result.status, result.stderr).toBe(expected);
     expect(result.events.map(event => event.step)).toEqual(steps);
     expect(result.build).toBeNull();
     expect(result.selected).toBe('');
@@ -506,7 +630,7 @@ printf '%s' "$VERIFIER_SPA_DIST"
   it.each([
     [{ missingBuilder: true }, 3, 'VERIFY_TAURI_SPA_BUILD_MISSING'],
     [{ incomplete: true }, 3, 'VERIFY_TAURI_SPA_BUILD_INCOMPLETE'],
-    [{ external: true }, 3, 'VERIFY_TAURI_SPA_UNBOUND'],
+    [{ external: true }, 2, 'VERIFY_TAURI_SPA_UNBOUND'],
     [{ buildExit: 17 }, 17, ''],
     [{ buildExit: 28 }, 28, ''],
   ] as const)('refuses boot when frozen SPA preparation fails (%j)', (options, status, marker) => {

@@ -16,6 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
+import { processHlc } from '@papercusp/locks-core';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -195,11 +196,17 @@ describe('(c) a contiguous fold passes over prior snapshot sets instead of re-ex
 
   it('the worker path appends byte-identical blocks to the inline path', async () => {
     const a = await logWithPriorSets();
-    const b = await logWithPriorSets();
-    expect(await rawRange(a.log, 0, a.log.length)).toEqual(await rawRange(b.log, 0, b.log.length));
+    const b = await freshLog();
+    // Replay one captured history: separately generated inputs have different HLCs.
+    const captured = await rawRange(a.log, 0, a.log.length);
+    await b.appendRawBatch!(captured.map((hex) => Buffer.from(hex, 'hex')));
+    expect(await rawRange(b, 0, b.length)).toEqual(captured);
+    // Only new envelope clocks are controlled; captured row bytes remain intact.
+    const clock = vi.spyOn(processHlc(), 'now').mockReturnValue({ ms: NOW, count: 0 });
+    cleanups.push(() => clock.mockRestore());
     const refused = expectRefusal();
     const ra = await snapshot(a.log, 'inline');
-    const rb = await snapshot(b.log, 'worker');
+    const rb = await snapshot(b, 'worker');
     refused();
     // The hold duration measures two separate executions; byte and row results
     // must agree, but elapsed milliseconds need not.
@@ -208,7 +215,7 @@ describe('(c) a contiguous fold passes over prior snapshot sets instead of re-ex
     expect(workerResult).toEqual(inlineResult);
     expect(inlineHoldMs).toBeGreaterThanOrEqual(0);
     expect(workerHoldMs).toBeGreaterThanOrEqual(0);
-    expect(await rawRange(b.log, rb.coversUpTo, rb.coversUpTo + rb.chunkCount)).toEqual(
+    expect(await rawRange(b, rb.coversUpTo, rb.coversUpTo + rb.chunkCount)).toEqual(
       await rawRange(a.log, ra.coversUpTo, ra.coversUpTo + ra.chunkCount),
     );
   });

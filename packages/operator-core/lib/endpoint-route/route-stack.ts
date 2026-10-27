@@ -222,7 +222,7 @@ const NATIVE_SHELL_ORIGINS = new Set([
  * established :3055 operator-dev origin, but let a launcher override/add its
  * actual instance through the existing base/origin environment variables.
  */
-function configuredLocalBrowserOrigins(): Set<string> {
+export function configuredLocalBrowserOrigins(): Set<string> {
   const origins = new Set(['http://localhost:3055', 'http://127.0.0.1:3055']);
   for (const key of [
     'PAPERCUSP_OPERATOR_BASE',

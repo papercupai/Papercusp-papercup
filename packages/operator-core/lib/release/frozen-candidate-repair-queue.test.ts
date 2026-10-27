@@ -35,11 +35,16 @@ import {
   summarizeFrozenRepairConvergence,
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
+  assessFrozenRepairConvergence,
+  FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX,
   projectFrozenRepairConvergenceCell,
   projectFrozenRepairConvergenceScope,
   frozenRepairAdmissionHandoffBlock,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+import type { RepairLimbExecutor } from './repair-limb-executor';
+import { precheckPopulation } from './admission-fix-precheck';
 
 const C = '1111111111111111111111111111111111111111';
 const C1 = '2222222222222222222222222222222222222222';
@@ -68,6 +73,7 @@ describe('frozen-candidate repair queue', () => {
         repairHead: C,
         builtCommit: C1,
         builtTree: C2,
+        testEnvironment: 'pinned-private-pg-v1',
         files: ['lib/a.test.ts'],
         actor: 'su-test',
         runnerPid: 123,
@@ -83,6 +89,29 @@ describe('frozen-candidate repair queue', () => {
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
+    const measurement = { schemaVersion: 1 as const, identity: 'a'.repeat(64), results: [
+      { path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1, durationMs: 12, detail: 'native assertion failed' },
+    ] };
+    const measured = { ...pending, admissionPrecheck: { ...pending.admissionPrecheck!, measurement } };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(measured)))?.admissionPrecheck?.measurement).toEqual(measurement);
+    for (const bad of [
+      { ...measurement, identity: 'stale' },
+      { ...measurement, results: [...measurement.results, ...measurement.results] },
+      { ...measurement, results: [{ path: 'foreign.test.ts', status: 'pass' }] },
+      { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'skip' }] },
+      { ...measurement, results: [{ path: 'lib/a.test.ts', status: 'pass', durationMs: -1 }] },
+      // measured-wide-repair-admission-2026-10-24#D-004: a malformed paired baseline rejects the record.
+      { ...measurement, previousHead: { commit: '', results: [] } },
+      { ...measurement, previousHead: { commit: C, results: [{ path: 'foreign.test.ts', status: 'fail' }] } },
+      { ...measurement, previousHead: { commit: C, results: [{ path: 'lib/a.test.ts', status: 'skip' }] } },
+      { ...measurement, previousHead: { commit: C, results: {} } },
+      { ...measurement, previousHead: { commit: C, results: [], detail: 7 } },
+    ]) expect(parseFrozenCandidateRepairQueue({ ...measured, admissionPrecheck: { ...measured.admissionPrecheck, measurement: bad } })?.admissionPrecheck, JSON.stringify(bad)).toBeUndefined();
+    // D-004: the paired baseline round-trips beside the aggregate so the door re-judges against it.
+    const paired = { ...measurement, previousHead: { commit: C, results: [{ path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1 }],
+      detail: 'partial' } };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify({ ...measured,
+      admissionPrecheck: { ...measured.admissionPrecheck, measurement: paired } })))?.admissionPrecheck?.measurement).toEqual(paired);
     expect(parseFrozenCandidateRepairQueue({
       ...pending,
       admissionPrecheck: { ...pending.admissionPrecheck, runnerPid: -1 },
@@ -151,6 +180,63 @@ describe('frozen-candidate repair queue', () => {
     expect(admitted.admissionPrecheck).toBeUndefined();
   });
 
+  // EI-27120593727206825: precheckPopulation deliberately leaves report-only radius files out of
+  // `files` (WI-6554700010029981). The persisted operation built from it must still parse, or the
+  // worker reads no running pre-check and the admission is silently dropped.
+  it('keeps a running pre-check whose report-only radius files are not executed (producer→parser contract)', () => {
+    const population = precheckPopulation({
+      signature: [{ kind: 'test-file', id: 'lib/a.test.ts' }],
+      admittedPaths: ['lib/fix.ts', 'lib/fix.test.ts'],
+      radius: {
+        status: 'measured',
+        reason: 'ok',
+        guarded: ['lib/near.test.ts'],
+        reportOnly: ['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts'],
+        legs: { 'lib/near.test.ts': '@t/a', 'lib/red-leg-1.test.ts': '@t/b', 'lib/red-leg-2.test.ts': '@t/b' },
+      },
+    });
+    // The producer's own contract: report-only files are recorded but not executed.
+    expect(population.files).not.toContain('lib/red-leg-1.test.ts');
+    expect(population.radius?.reportOnly).toEqual(['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts']);
+    const running: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      admissionPrecheck: {
+        schemaVersion: 1,
+        operationId: 'repair-precheck-report-only',
+        status: 'running',
+        candidate: C,
+        repairHead: C,
+        builtCommit: C1,
+        builtTree: C2,
+        testEnvironment: 'pinned-private-pg-v1',
+        files: [...population.files],
+        actor: 'su-test',
+        runnerPid: 123,
+        runnerTaskId: '0mvqgdmmm1s7nlna6hu',
+        startedAtMs: T0 + 1,
+        updatedAtMs: T0 + 1,
+        expiresAtMs: T0 + 60_000,
+        currentFile: population.files[0] as string,
+        completedCount: 0,
+        totalCount: population.files.length,
+        heartbeatAtMs: T0 + 1,
+        ...(population.radius ? { radius: population.radius } : {}),
+      },
+    };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(running)));
+    expect(parsed?.admissionPrecheck?.operationId).toBe('repair-precheck-report-only');
+    expect(parsed?.admissionPrecheck?.radius?.reportOnly).toEqual(['lib/red-leg-1.test.ts', 'lib/red-leg-2.test.ts']);
+    // Guarded files are executed, so they must still be among the operation's files.
+    const guardedMissing = {
+      ...running,
+      admissionPrecheck: {
+        ...running.admissionPrecheck!,
+        radius: { ...population.radius!, guarded: ['lib/not-executed.test.ts'] },
+      },
+    };
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(guardedMissing)))?.admissionPrecheck).toBeUndefined();
+  });
+
   it.each([
     ['currentFile outside the population', { currentFile: 'lib/missing.test.ts' }],
     ['completedCount is not an integer', { completedCount: 0.5 }],
@@ -200,6 +286,28 @@ describe('frozen-candidate repair queue', () => {
     const malformed = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patch: { ...patch, sha256: 'bad' } }] });
     expect(malformed?.admissions?.[0]).toMatchObject({ mode: 'committed-patch' });
     expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
+  });
+
+  it('round-trips the complete ordered patch series and drops malformed series metadata', () => {
+    const patches = [
+      { commit: C1, parent: C, sha256: 'a'.repeat(64) },
+      { commit: C2, parent: C1, sha256: 'b'.repeat(64) },
+    ];
+    const admission = {
+      atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'committed-patch' as const, patch: patches[1], patches,
+    };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0]).toMatchObject({ patch: patches[1], patches });
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(parsed)))?.admissions?.[0].patches).toEqual(patches);
+    for (const malformed of [[], [patches[0]], [patches[0], patches[0]],
+      [patches[0], { ...patches[1], sha256: 'bad' }], [...patches].reverse()]) {
+      const read = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patches: malformed }] });
+      expect(read?.admissions?.[0]).not.toHaveProperty('patches');
+      expect(read?.admissions?.[0].patch).toEqual(patches[1]);
+    }
   });
 
   it("carries a newer build's admission keys through parse and persist (WI-6554700010009930)", () => {
@@ -1841,6 +1949,96 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(summary.converging).toBeNull();
   });
 
+  // WI-6554700010029491: persisted failing sets are cut to FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  // so a count AT the cap is a floor. Live 2026-10-26: rounds read 50/50/50 and the projection
+  // reported `shrinkTotal: 0, converging: false` while the real size was unknown.
+  const atCap = (prefix: string) =>
+    Array.from({ length: FROZEN_REPAIR_PERSISTED_FAILURE_CAP }, (_, i) => `lib/${prefix}${i}.test.ts`);
+
+  it('rounds pinned AT the persisted cap are "at least N", never a measured plateau', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: atCap('now'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+        { round: 3, head: C, failingCount: cap, atMs: T0 + 2_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 3_000);
+    expect(summary.converging).toBeNull();
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.truncatedByLimit).toBe(true);
+    expect(summary.saturationCap).toBe(cap);
+    expect(summary.shrinkPerRound).toEqual([
+      { round: 1, failingCount: cap, delta: null, atLeast: true },
+      { round: 2, failingCount: cap, delta: null, atLeast: true },
+      { round: 3, failingCount: cap, delta: null, atLeast: true },
+    ]);
+    expect(assessFrozenRepairConvergence({
+      ...summary, candidate: C, repairHead: C, phase: 'ready-to-verify', observedAtMs: T0 + 3_000,
+    })).toBe('not-yet-knowable');
+  });
+
+  it('leaving the cap is a KNOWN shrink even though its size is unknown', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: 9, atMs: T0 + 1_000 },
+        { round: 3, head: C, failingCount: 2, atMs: T0 + 2_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 3_000);
+    expect(summary.converging).toBe(true);
+    // The baseline is a floor, so the total shrink has no honest number.
+    expect(summary.shrinkTotal).toBeNull();
+    expect(summary.shrinkPerRound.map((entry) => entry.delta)).toEqual([null, null, -7]);
+    expect(summary.truncatedByLimit).toBe(true);
+  });
+
+  it('climbing INTO the cap is a known growth, so the cycle is not converging', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const queue = readyToVerify({
+      failingTests: atCap('grew'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 12, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+      ],
+    });
+    const summary = summarizeFrozenRepairConvergence(queue, T0 + 2_000);
+    expect(summary.converging).toBe(false);
+    expect(summary.shrinkTotal).toBeNull();
+  });
+
+  it('an uncapped cycle reports truncatedByLimit:false, and the gate_health round-trip keeps the new fields', () => {
+    const cap = FROZEN_REPAIR_PERSISTED_FAILURE_CAP;
+    const uncapped = summarizeFrozenRepairConvergence(readyToVerify({
+      failingTests: ['lib/a.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 3, atMs: T0 },
+        { round: 2, head: C, failingCount: 1, atMs: T0 + 1_000 },
+      ],
+    }), T0 + 2_000);
+    expect(uncapped.truncatedByLimit).toBe(false);
+    const stored = buildFrozenRepairConvergenceGateHealth(readyToVerify({
+      failingTests: atCap('rt'),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: cap, atMs: T0 },
+        { round: 2, head: C, failingCount: cap, atMs: T0 + 1_000 },
+      ],
+    }), T0 + 2_000);
+    const reread = parseFrozenRepairConvergence(JSON.parse(JSON.stringify(stored)));
+    expect(reread).not.toBeNull();
+    expect(reread!.truncatedByLimit).toBe(true);
+    expect(reread!.saturationCap).toBe(cap);
+    expect(reread!.converging).toBeNull();
+    expect(reread!.shrinkPerRound[1]).toEqual({ round: 2, failingCount: cap, delta: null, atLeast: true });
+    // A wrong type still rejects the whole blob rather than being coerced.
+    expect(parseFrozenRepairConvergence({ ...stored, truncatedByLimit: 'yes' })).toBeNull();
+  });
+
   it('off switch: ON (the deployed default) opens a cycle on a first real red', () => {
     expect(decideFrozenConvergenceCycleEntry({ flagEnabled: true, hasOpenQueue: false })).toEqual({
       kind: 'open-cycle',
@@ -2601,6 +2799,26 @@ describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the 
     expect(block!.detail).toContain('records its verdict');
   });
 
+  // WI-6554700010030197: a parked, runner-less direct successor never records a verdict, so
+  // "wait for its verdict" sent admitters into a wait that could not end.
+  it('names the scheduled resume, not a verdict, for a parked direct successor of the origin', () => {
+    const parked = {
+      status: 'present',
+      transaction: { attemptId: 'live-2-bbbb', phase: 'waiting', repairHead: head, previousAttemptId: 'origin-1-aaaa',
+        currentPhysicalRunner: null },
+    } as const;
+    const block = frozenRepairAdmissionHandoffBlock(queueWith('origin-1-aaaa'), parked);
+    expect(block).toMatchObject({ reason: 'qualification-attempt-mismatch', transactionPhase: 'waiting' });
+    expect(block!.detail).toContain('next scheduled qualification resume re-stamps the origin');
+    expect(block!.detail).not.toContain('records its verdict');
+    // A waiting attempt that is NOT the origin's direct successor keeps the generic wording.
+    const unrelated = frozenRepairAdmissionHandoffBlock(queueWith('origin-1-aaaa'), {
+      ...parked,
+      transaction: { ...parked.transaction, previousAttemptId: 'someone-else' },
+    });
+    expect(unrelated!.detail).toContain('records its verdict');
+  });
+
   it('blocks a terminal non-origin attempt and a missing transaction, each with its own retry point', () => {
     expect(frozenRepairAdmissionHandoffBlock(queueWith('origin-1'), present('other-2', 'terminal'))!.detail)
       .toContain('re-stamps the origin');
@@ -2608,5 +2826,120 @@ describe('WI-6554700010019177 — frozenRepairAdmissionHandoffBlock mirrors the 
       transactionAttemptId: null,
       detail: expect.stringContaining('no qualification transaction is stored'),
     });
+  });
+});
+
+describe('orphaned admission pre-check reservation (measured 2026-10-27)', () => {
+  const op = `${FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX}${C.slice(0, 12)}-${C1.slice(0, 12)}-a1-b2`;
+  const marker = (operationId: string) => ({
+    schemaVersion: 1,
+    operationId,
+    status: 'running',
+    candidate: C,
+    repairHead: C,
+    builtCommit: C1,
+    builtTree: C2,
+    testEnvironment: 'pinned-private-pg-v1',
+    files: ['lib/a.test.ts'],
+    actor: 'su-test',
+    runnerPid: 123,
+    runnerPidIdentity: 'boot-id:456',
+    startedAtMs: T0 + 1,
+    updatedAtMs: T0 + 1,
+    expiresAtMs: T0 + 90_000_000,
+    currentFile: 'lib/a.test.ts',
+    completedCount: 0,
+    totalCount: 1,
+    heartbeatAtMs: T0 + 1,
+  });
+  const reservation = (token: string) => ({ token, claimedAtMs: T0 + 1, expiresAtMs: T0 + 90_000_000 });
+  const parse = (extra: Record<string, unknown>) =>
+    parseFrozenCandidateRepairQueue({ ...JSON.parse(JSON.stringify(fresh())), ...extra });
+
+  it('keeps a pre-check reservation while its marker names the same operation', () => {
+    const parsed = parse({ admissionPrecheck: marker(op), dispatchReservation: reservation(op) });
+    expect(parsed?.dispatchReservation?.token).toBe(op);
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })?.decision).toBe(
+      'wait-for-dispatch-reservation',
+    );
+  });
+
+  it('reads a pre-check reservation as absent when its marker is gone or names another operation', () => {
+    for (const admissionPrecheck of [undefined, marker(`${op}-other`)]) {
+      const parsed = parse({
+        ...(admissionPrecheck ? { admissionPrecheck } : {}),
+        dispatchReservation: reservation(op),
+      });
+      expect(parsed, JSON.stringify(admissionPrecheck ?? null)).not.toBeNull();
+      expect(parsed?.dispatchReservation).toBeUndefined();
+      expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })?.decision).not.toBe(
+        'wait-for-dispatch-reservation',
+      );
+    }
+  });
+
+  it('never treats a fixer-dispatch reservation as a pre-check orphan', () => {
+    const parsed = parse({ dispatchReservation: reservation('tok-1') });
+    expect(parsed?.dispatchReservation?.token).toBe('tok-1');
+  });
+});
+
+describe('repair-limb executor attribution (gate-repair-plane-on-current-build-2026-10-15 R-1/R-2)', () => {
+  const executor: RepairLimbExecutor = {
+    hostId: 'port-3271',
+    processId: 'pid-4242',
+    executingBuild: { sha: 'a1b2c3d4e5f6', source: 'baked' },
+  };
+  const reservation = { token: 'tok-1', claimedAtMs: T0, expiresAtMs: T0 + 60_000 };
+  const receipt = { ...executor, spawnId: 'spawn-1', runId: 'run-1', dispatchedAtMs: T0 + 5 };
+
+  it('round-trips the lease holder and the launch receipt through persist and parse', () => {
+    const queue: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      dispatchReservation: { ...reservation, executor },
+      fixerDispatchReceipt: receipt,
+    };
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.dispatchReservation).toEqual({ ...reservation, executor });
+    expect(parsed?.fixerDispatchReceipt).toEqual(receipt);
+    const status = diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 });
+    expect(status?.dispatchReservation).toMatchObject({ executor, active: true });
+    expect(status?.fixerDispatchReceipt).toEqual(receipt);
+  });
+
+  it('drops a malformed stamp as evidence without invalidating the lease or the queue', () => {
+    const badStamps = [
+      { ...executor, hostId: ' ' },
+      { ...executor, executingBuild: { sha: null, source: 'baked' } },
+      { ...executor, executingBuild: { sha: 'abc', source: 'unresolved' } },
+      { ...executor, executingBuild: { sha: 'abc', source: 'guessed' } },
+      'port-3271',
+    ];
+    for (const bad of badStamps) {
+      const parsed = parseFrozenCandidateRepairQueue({
+        ...JSON.parse(JSON.stringify(fresh())),
+        dispatchReservation: { ...reservation, executor: bad },
+        fixerDispatchReceipt: typeof bad === 'object' ? { ...receipt, ...bad } : bad,
+      });
+      expect(parsed, JSON.stringify(bad)).not.toBeNull();
+      expect(parsed?.dispatchReservation, JSON.stringify(bad)).toEqual(reservation);
+      expect(parsed?.fixerDispatchReceipt, JSON.stringify(bad)).toBeUndefined();
+    }
+    // A receipt with a valid executor but no spawn binding is not a receipt.
+    const unbound = parseFrozenCandidateRepairQueue({
+      ...JSON.parse(JSON.stringify(fresh())),
+      fixerDispatchReceipt: { ...receipt, spawnId: '' },
+    });
+    expect(unbound?.fixerDispatchReceipt).toBeUndefined();
+  });
+
+  it('keeps an unstamped legacy row free of attribution keys', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...JSON.parse(JSON.stringify(fresh())),
+      dispatchReservation: reservation,
+    });
+    expect(parsed?.dispatchReservation).toEqual(reservation);
+    expect(parsed).not.toHaveProperty('fixerDispatchReceipt');
+    expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 10 })).not.toHaveProperty('fixerDispatchReceipt');
   });
 });

@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
 import Page from '@/app/quick-panel/page';
-import QuickPanelHeaderControls from '../components/adv/QuickPanelHeaderControls';
 
 /**
  * /quick-panel — the global-shortcut popup's tabbed body (saved prompts /
@@ -19,5 +18,5 @@ export const Route = createFileRoute('/quick-panel')({
 });
 
 function QuickPanelRoute() {
-  return <Page headerSlot={<QuickPanelHeaderControls />} />;
+  return <Page chatSidebar={false} />;
 }

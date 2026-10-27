@@ -19,7 +19,10 @@
  */
 
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, type CardSpec } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
+import { createConverseCard } from '../operator/converse-card';
+import { mintConverseCardBinding } from '../operator/converse-chat-binding';
 import { openEscalation, resolveEscalation as resolveEscalationRecord } from '../coordination/escalations';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import {
@@ -28,118 +31,9 @@ import {
   openAgentQuestionEscalation,
 } from '../coordination/agent-question-gate';
 
-const MAX_OPTIONS = 6;
-const MAX_QUESTION_LEN = 500;
-const MAX_LABEL_LEN = 80;
-const MAX_HINT_LEN = 120;
-const MAX_ID_LEN = 32;
+import { askChoiceArgsSchema as argsSchema, normalizeParsedChoiceArgs } from '../../ask-choice-options';
+
 const MAX_ARGS_BYTES = 4 * 1024;
-
-const optionSchema = z.object({
-  id: z
-    .string()
-    .min(1)
-    .max(MAX_ID_LEN)
-    .regex(/^[a-zA-Z0-9_-]+$/, 'option.id must be [a-zA-Z0-9_-]+'),
-  label: z.string().min(1).max(MAX_LABEL_LEN),
-  hint: z.string().max(MAX_HINT_LEN).optional(),
-  style: z.enum(['default', 'primary', 'danger']).optional(),
-});
-
-const optionsArraySchema = z
-  .array(optionSchema, {
-    error:
-      'chat:ask_choice needs `options`: 1-6 clickable choices, each { id, label }. For an OPEN-ENDED question (describe / paste), use plain text instead.',
-  })
-  .min(
-    1,
-    'chat:ask_choice needs at least one option (each { id, label }) — provide 2-3 for a yes/no or pick-one decision.',
-  )
-  .max(MAX_OPTIONS, `chat:ask_choice accepts at most ${MAX_OPTIONS} options.`);
-
-const argsSchema = z.object({
-  // Caller-DX (watchdog P-006): actionable validation messages — an empty
-  // `options` array previously failed with a bare "Array must contain at least
-  // 1 element(s)" that gave the agent no idea what to supply.
-  question: z
-    .string({ error: 'chat:ask_choice needs a `question` — the prompt shown to the user.' })
-    .min(1, '`question` must be a non-empty prompt.')
-    .max(MAX_QUESTION_LEN),
-  options: z.preprocess(
-    // Models sometimes STRINGIFY the options array — `options: "[{…}]"` —
-    // observed live from the operator brain (operator_turns seq 11831,
-    // 2026-07-16): the first ask_choice call failed validation on exactly
-    // this and burned a full retry round-trip. It is an encoding slip, not a
-    // semantic error, so parse it; anything that isn't a JSON array falls
-    // through to the normal schema error.
-    (v) => {
-      if (typeof v === 'string') {
-        try {
-          const parsed: unknown = JSON.parse(v);
-          if (Array.isArray(parsed)) return parsed;
-        } catch {
-          /* fall through to the schema error */
-        }
-      }
-      return v;
-    },
-    z.union([
-      optionsArraySchema,
-      // The string form must ALSO be part of the schema TYPE, not only the
-      // preprocess: the calling harness validates the model's raw input
-      // against the ADVERTISED JSON schema before the server's zod ever
-      // runs, and the preprocess-only form advertises array-only — so the
-      // string slip was rejected client-side and the model reported the
-      // card tool as down (operator_turns seq 12076, 2026-07-17). At
-      // runtime the preprocess above has already parsed any valid
-      // JSON-array string, so this branch only catches — and clearly
-      // rejects — strings that are not a JSON array.
-      z
-        .string()
-        .refine(
-          (s) => {
-            try {
-              return Array.isArray(JSON.parse(s));
-            } catch {
-              return false;
-            }
-          },
-          'chat:ask_choice `options` given as a string must be a JSON array of { id, label } objects.',
-        ),
-    ]),
-  ),
-  /** Multi-select. Default false (radio: one pick commits). */
-  multi: z.boolean().optional(),
-  /** Show Skip affordance. Default true. */
-  allowDecline: z.boolean().optional(),
-  /**
-   * Single-select cards only (multi !== true). When true, voice users
-   * can answer this card by speaking the option label or id; the
-   * voice-card router resolves the card via /card-response. Default
-   * false: voice users hear fallbackText (announce-only) and must
-   * click on the chat surface. Plan §C.3 (default false / H3 review).
-   */
-  voiceAnswerable: z.boolean().optional(),
-  /**
-   * B-17/P-040 decision-context: when an AUTONOMOUS agent (bee) asks, declare WHAT
-   * the decision is about so the autonomy gate can route it (reversible + in-envelope
-   * + below-ceiling → the bee may self-decide; else → the owner Queue). Ignored for
-   * interactive callers and while the autonomy gate is disarmed (owner P-092 OFF).
-   */
-  decision: z
-    .object({
-      action: z
-        .string()
-        .max(120)
-        .optional()
-        .describe('Tool/verb or short slug of the action the decision is about (maps to an autonomy category, B-04).'),
-      riskTier: z.enum(['trivial', 'low', 'moderate', 'high', 'critical']).optional(),
-      authority: z.enum(['system', 'owner']).optional(),
-      reversibility: z.enum(['reversible', 'irreversible', 'unknown']).optional(),
-    })
-    .optional()
-    .describe('Decision-context for the autonomy gate (B-17/P-040) — only the cup self-answer path uses it; omit for ordinary human-facing questions.'),
-});
 
 export default defineTool({
   name: 'chat:ask_choice',
@@ -209,16 +103,7 @@ export default defineTool({
       };
     }
 
-    // The union's string branch exists for the ADVERTISED schema; any string
-    // that survives it is a valid JSON array (and in practice the preprocess
-    // has already parsed it), so this narrow never rejects at runtime.
-    const optionsArray = Array.isArray(args.options)
-      ? args.options
-      : optionsArraySchema.parse(JSON.parse(args.options));
-    const normalized = {
-      ...args,
-      options: optionsArray.map((o) => ({ ...o, id: o.id.toLowerCase() })),
-    };
+    const normalized = normalizeParsedChoiceArgs(args);
     const knownIds = normalized.options.map((o) => o.id) as [string, ...string[]];
     const idSchema = z.enum(knownIds);
     const responseSchema = normalized.multi
@@ -327,17 +212,33 @@ export default defineTool({
 
     let escalationP: Promise<{ msg_id: string } | null> = Promise.resolve(null);
     const wantsOnCard = intercept || durableMirror;
+    const parent = ctx.chatParent;
+    if (parent && (parent.workspaceId !== ctx.workspaceId || !ctx.runId || !ctx.dispatchCallId)) {
+      throw new Error('invalid-card-binding');
+    }
+    const card = parent ? createConverseCard({ sql: getOrgPg().sql, parent,
+      binding: { dispatchCallId: ctx.dispatchCallId!, childRunId: ctx.runId!,
+        credentialSha256: parent.credentialSha256 },
+      tool: { name: 'chat:ask_choice', callId: ctx.dispatchCallId!, input: normalized } }) : null;
+    const durableMeta = parent ? { cardProtocolVersion: 1 as const, cardConversationId: parent.conversationId } : {};
+    let converseCardBinding: string | null = null;
+    const notification: { listener: { refresh(): Promise<void>; stop(): void } | null } = { listener: null };
+    const notificationError = (error: unknown) => ctx.log(`Card notification recovery unavailable: ${error instanceof Error ? error.message : String(error)}`);
 
-    const response = await ctx.askUser({
+    const spec: CardSpec<typeof responseSchema> = {
       prompt: normalized.question,
       dataSchema: responseSchema,
       presentation,
       fallbackText,
       allowDecline: normalized.allowDecline ?? true,
       ...(interceptRouting ? { timeoutMs: interceptRouting.timeoutMs } : {}),
-      ...(wantsOnCard
+      ...(wantsOnCard || card
         ? {
             onCard: ({ correlationId, workspaceId }) => {
+              // The first post-LISTEN read can precede local publication.
+              // Re-read once the local waiter exists to close that gap.
+              if (notification.listener) void notification.listener.refresh().catch(notificationError);
+              if (!wantsOnCard) return;
               try {
                 if (intercept) {
                   escalationP = openAgentQuestionEscalation(
@@ -348,6 +249,7 @@ export default defineTool({
                       options: optionPairs,
                       cardCorrelationId: correlationId,
                       cardWorkspaceId: workspaceId,
+                      ...durableMeta,
                     },
                     interceptRouting!.rung,
                   ).catch(() => null);
@@ -356,7 +258,7 @@ export default defineTool({
                     severity: 'question',
                     summary: normalized.question,
                     options: optionPairs,
-                    meta: { cardCorrelationId: correlationId, cardWorkspaceId: workspaceId },
+                    meta: { cardCorrelationId: correlationId, cardWorkspaceId: workspaceId, ...durableMeta },
                   }).catch(() => null);
                 }
               } catch {
@@ -365,7 +267,24 @@ export default defineTool({
             },
           }
         : {}),
-    });
+    };
+    if (card && parent) {
+      const hooks = card.hooks(spec);
+      Object.assign(spec, { commitResponse: hooks.commitResponse,
+        beforeCard: async (info: Parameters<NonNullable<CardSpec['beforeCard']>>[0], signal: AbortSignal) => {
+          // Sign the exact dispatch receipt before publishing anything. The
+          // host mutation still rechecks current parent and child authority.
+          converseCardBinding = await mintConverseCardBinding({ parent, dispatchCallId: ctx.dispatchCallId!,
+            childRunId: ctx.runId!, correlationId: info.correlationId });
+          await hooks.beforeCard!(info, signal);
+          notification.listener = await card.listen(notificationError);
+        } });
+    }
+    const response = await (async () => {
+      try { return await ctx.askUser!(spec); }
+      finally { notification.listener?.stop(); }
+    })();
+    const bindingReceipt = converseCardBinding ? { converseCardBinding } : {};
 
     // Close the inbox copy once the card resolves. Idempotent: if it was the
     // INBOX that resolved the card (via coord:resolve), the escalation is
@@ -390,7 +309,7 @@ export default defineTool({
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ declined: true, reason: response.reason }),
+          text: JSON.stringify({ declined: true, reason: response.reason, ...bindingReceipt }),
         }],
       };
     }
@@ -398,7 +317,7 @@ export default defineTool({
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({ cancelled: true }),
+          text: JSON.stringify({ cancelled: true, ...bindingReceipt }),
         }],
       };
     }
@@ -415,6 +334,7 @@ export default defineTool({
           ok: true,
           picks,
           multi: normalized.multi ?? false,
+          ...bindingReceipt,
         }),
       }],
     };

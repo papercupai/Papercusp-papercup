@@ -29,7 +29,7 @@
 
 /** D-001 invariant 5 — CLAMP BEFORE SENDING. These bound the SERVER's query
  *  construction, so they are contract, not tuning. Do not "optimize" them. */
-import { editedPathsFor, incidentResultFor } from '../core.mjs';
+import { editedPathsFor, incidentResultFor, unwrapInvokedCall } from '../core.mjs';
 const TURN_START_PROMPT_CLAMP = 4000;
 const MID_TURN_MAX_CALLS = 12;
 const MID_TURN_FIELD_CLAMP = 400;
@@ -113,14 +113,16 @@ function buildToolCallDigest(event) {
   const digest = [];
   for (const result of results.slice(0, MID_TURN_MAX_CALLS)) {
     if (!result || typeof result !== 'object') continue;
+    // Classify the inner call of a `tools:invoke` wrapper, exactly as buildDigest does.
+    const { tool, toolInput } = unwrapInvokedCall(result.toolName, inputsById.get(result.toolCallId));
+    const incidentResult = incidentResultFor(tool, { content: result.content });
+    const editedPaths = editedPathsFor(tool, toolInput);
     digest.push({
-      tool: typeof result.toolName === 'string' ? result.toolName : '',
-      toolInput: clamp(inputsById.get(result.toolCallId), MID_TURN_FIELD_CLAMP),
+      tool: typeof tool === 'string' ? tool : '',
+      toolInput: clamp(toolInput, MID_TURN_FIELD_CLAMP),
       toolResponse: clamp(contentToText(result.content), MID_TURN_FIELD_CLAMP),
-      ...(incidentResultFor(result.toolName, { content: result.content })
-        ? { incidentResult: incidentResultFor(result.toolName, { content: result.content }) } : {}),
-      ...(editedPathsFor(result.toolName, inputsById.get(result.toolCallId)).length
-        ? { editedPaths: editedPathsFor(result.toolName, inputsById.get(result.toolCallId)) } : {}),
+      ...(incidentResult ? { incidentResult } : {}),
+      ...(editedPaths.length ? { editedPaths } : {}),
     });
   }
   return digest;

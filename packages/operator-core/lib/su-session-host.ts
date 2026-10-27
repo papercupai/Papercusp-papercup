@@ -13,6 +13,9 @@ import {
   SU_SESSION_SCHEMA,
   isSuSessionCommandType,
   isSuApprovalsMode,
+  isSuSessionExecutionKind,
+  isSuSessionBackend,
+  SU_SESSION_MESSAGE_ORIGINS,
   type SuApprovalsMode,
   type SuPlanItem,
   type SuSessionModelOption,
@@ -193,6 +196,9 @@ function identityMatches(expected: SuSessionIdentity, actual: SuSessionIdentity)
 
 function validateDescriptor<B extends SuSessionBackend>(descriptor: SuSessionDescriptor<B>): void {
   const identity = descriptor.identity;
+  if (descriptor.executionKind !== undefined && !isSuSessionExecutionKind(descriptor.executionKind)) {
+    throw new SuSessionHostError('invalid_descriptor', 'executionKind must be pty or programmatic');
+  }
   if (descriptor.role !== 'su') {
     throw new SuSessionHostError('invalid_descriptor', 'SU-session role must be su');
   }
@@ -240,6 +246,43 @@ function parseCommand<B extends SuSessionBackend>(input: unknown): SuSessionComm
       'invalid_command',
       'command requires a known type, commandId, issuedAt, and target identity',
     );
+  }
+  if (input.expectedRuntimeGeneration !== undefined
+    && (!Number.isSafeInteger(input.expectedRuntimeGeneration) || (input.expectedRuntimeGeneration as number) < 0)) {
+    throw new SuSessionHostError('invalid_command', 'expectedRuntimeGeneration must be a non-negative safe integer');
+  }
+  const origin = input.origin;
+  if (origin !== undefined && (!isRecord(origin)
+    || !(SU_SESSION_MESSAGE_ORIGINS as readonly unknown[]).includes(origin.kind)
+    || ['actorId', 'sourceId'].some(key => origin[key] !== undefined
+      && (typeof origin[key] !== 'string' || !(origin[key] as string).trim())))) {
+    throw new SuSessionHostError('invalid_command', 'origin requires a known kind and non-empty optional actorId/sourceId');
+  }
+  if (input.type === 'owner_turn' || input.type === 'queue' || input.type === 'steer') {
+    if (typeof input.turnId !== 'string' || !input.turnId.trim() || typeof input.content !== 'string') {
+      throw new SuSessionHostError('invalid_command', 'turn input requires turnId and text content');
+    }
+    if (input.input !== undefined && (!Array.isArray(input.input) || input.input.length === 0
+      || !input.input.every(part => isRecord(part) && (
+        part.type === 'text' ? typeof part.text === 'string' && Boolean(part.text.trim())
+          : part.type === 'image' ? typeof part.mediaType === 'string' && part.mediaType.startsWith('image/')
+            && typeof part.data === 'string' && Boolean(part.data.trim())
+            : part.type === 'file' && typeof part.uri === 'string' && Boolean(part.uri.trim())
+              && typeof part.mediaType === 'string' && Boolean(part.mediaType.trim())
+              && (part.name === undefined || typeof part.name === 'string')
+      )))) {
+      throw new SuSessionHostError('invalid_command', 'input must contain valid text, image or file parts');
+    }
+    if (!input.content.trim() && input.input === undefined) {
+      throw new SuSessionHostError('invalid_command', 'turn input requires non-empty text or rich input');
+    }
+    if (input.type === 'steer' && (typeof input.activeTurnId !== 'string' || !input.activeTurnId.trim())) {
+      throw new SuSessionHostError('invalid_command', 'steer requires the exact activeTurnId');
+    }
+  }
+  if (input.type === 'handoff' && (typeof input.provider !== 'string' || !isSuSessionBackend(input.provider)
+    || !isSuSessionExecutionKind(input.executionKind) || input.expectedRuntimeGeneration === undefined)) {
+    throw new SuSessionHostError('invalid_command', 'handoff requires provider, executionKind and expectedRuntimeGeneration');
   }
   return input as unknown as SuSessionCommand<B>;
 }
@@ -632,7 +675,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   }
 
   /**
-   * Production command door. Owner turns are committed with their exact text
+   * Production command door. Commands are committed with their exact payload
    * before an acceptance event or engine call can escape. A prior receipt from
    * another host is replayed, never re-executed, even if delivery is uncertain.
    */
@@ -641,17 +684,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     store: SuSessionCommandStore = pgSuSessionCommandStore(),
   ): Promise<SuSessionCommandDispatch<B>> {
     const command = parseCommand<B>(input);
-    if (command.type !== 'owner_turn') return this.startCommand(command);
-    if (typeof command.content !== 'string' || !command.content.trim() || !command.turnId) {
-      throw new SuSessionHostError('invalid_command', 'owner turn requires turnId and non-empty content');
+    if ('model' in command && command.model !== undefined && (typeof command.model !== 'string' || !command.model.trim())) {
+      throw new SuSessionHostError('invalid_command', 'turn model must be a non-empty model[:effort] spec');
     }
-    // P-026: an omitted model keeps the current one; a present one must be a spec.
-    if (command.model !== undefined && (typeof command.model !== 'string' || !command.model.trim())) {
-      throw new SuSessionHostError('invalid_command', 'owner turn model must be a non-empty model[:effort] spec');
-    }
-    // D-026: an omitted approvals mode keeps the current one.
-    if (command.approvals !== undefined && !isSuApprovalsMode(command.approvals)) {
-      throw new SuSessionHostError('invalid_command', 'owner turn approvals must be one of ask, auto-edit, read-only');
+    if ('approvals' in command && command.approvals !== undefined && !isSuApprovalsMode(command.approvals)) {
+      throw new SuSessionHostError('invalid_command', 'turn approvals must be one of ask, auto-edit, read-only');
     }
     const fingerprint = canonicalJson(command);
     const pending = this.durableCommands.get(command.commandId);
@@ -664,6 +701,12 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     if (!identityMatches(this.descriptorValue.identity, command.target)) {
       return this.rememberImmediateRefusal(command, fingerprint, {
         code: 'target_mismatch', message: 'command target does not match the attached durable SU session', retryable: false,
+      });
+    }
+    if (command.expectedRuntimeGeneration !== undefined
+      && command.expectedRuntimeGeneration !== this.descriptorValue.runtimeGeneration) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'runtime_generation_mismatch', message: 'the command targets a replaced runtime generation', retryable: false,
       });
     }
     if (!this.executeCommand || this.disposed || !this.runtimeReady() || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
@@ -767,11 +810,28 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     }
 
     const support = this.descriptorValue.capabilities.commands[command.type];
-    if (support.state === 'unsupported') {
+    if (command.expectedRuntimeGeneration !== undefined
+      && command.expectedRuntimeGeneration !== this.descriptorValue.runtimeGeneration) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'runtime_generation_mismatch', message: 'the command targets a replaced runtime generation', retryable: false,
+      });
+    }
+    if (!support || support.state === 'unsupported') {
       return this.rememberImmediateRefusal(command, fingerprint, {
         code: 'unsupported',
-        message: support.reason,
+        message: support?.reason ?? `the runtime does not advertise ${command.type} support`,
         retryable: false,
+      });
+    }
+    const inputs = this.descriptorValue.capabilities.input;
+    if (command.origin && !(inputs?.origins ?? ['owner']).includes(command.origin.kind)) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'unsupported_message_origin', message: `the runtime cannot preserve ${command.origin.kind} provenance`, retryable: false,
+      });
+    }
+    if ('input' in command && command.input?.some(part => !inputs?.parts.includes(part.type))) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'unsupported_input', message: 'the runtime cannot deliver one or more rich input parts', retryable: false,
       });
     }
     if (!this.executeCommand) {

@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   cacheVerifyArgs,
+  dependencySelectionArgs,
   installLockWaitReporter,
   lockfileDepFlagOnlyChanges,
   main,
@@ -482,13 +483,27 @@ test("manifest resolution includes local archives from other workspaces without 
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-for (const installed of ['incompatible', 'missing']) {
+for (const installed of ['incompatible', 'missing', 'lock-version-mismatch']) {
 test(`${installed} installed dependencies reserve the writer while existing readers finish`, { timeout: 25_000 }, async () => {
   const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
   const packageDir = join(fixture.repoRoot, "node_modules", "fixture-pkg");
-  if (installed === 'incompatible') {
+  if (installed === 'incompatible' || installed === 'lock-version-mismatch') {
     mkdirSync(packageDir, { recursive: true });
-    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version: "0.1.0" }));
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg",
+      version: installed === 'lock-version-mismatch' ? '1.2.2' : '0.1.0' }));
+  }
+  if (installed === 'lock-version-mismatch') {
+    const manifestPath = join(fixture.repoRoot, 'packages/operator-core/package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.dependencies = { 'fixture-pkg': '^1.2.0' };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const lockPath = join(fixture.repoRoot, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['packages/operator-core'].dependencies = manifest.dependencies;
+    lock.packages['node_modules/fixture-pkg'] = { version: '1.2.3' };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    // Installed1.2.2 satisfies its direct range. Only the existing exact-lock
+    // auditor can detect the repair need and prevent a new reader overtaking it.
   }
   const gate = join(fixture.tempRoot, "resolve-ready");
   const lockRootDir = fixture.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -1613,6 +1628,43 @@ test("npmChildEnv preserves an explicit caller install choice in offline-safe mo
   );
 });
 
+for (const scenario of ["NODE_ENV", "npm-config", "npmrc", "save-dev", "fresh-save-dev", "explicit-production"]) {
+  test(`development install protects dev tools: ${scenario}`, { timeout: 60_000 }, () => {
+    const root = mkdtempSync(join(tmpdir(), "install-safe-dev-selection-"));
+    const repoRoot = join(root, "repo"), toolRoot = join(root, "tool");
+    const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));
+    mkdirSync(toolRoot); mkdirSync(repoRoot);
+    writeFileSync(join(toolRoot, "package.json"), JSON.stringify({ name: "fixture-dev-tool", version: "1.0.0", main: "index.js" }));
+    writeFileSync(join(toolRoot, "index.js"), "module.exports = 41;\n");
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+      name: "dev-selection-fixture", version: "1.0.0", private: true,
+      ...(scenario === "fresh-save-dev" ? {} : { devDependencies: { "fixture-dev-tool": "file:../tool" } }),
+      scripts: { postinstall: `node -e "require('node:assert/strict').equal(require('fixture-dev-tool'),41)"` },
+    }));
+    mkdirSync(join(repoRoot, "node_modules"));
+    symlinkSync(toolRoot, join(repoRoot, "node_modules/fixture-dev-tool"), "junction");
+    if (scenario === "npmrc") writeFileSync(join(repoRoot, ".npmrc"), "omit=dev\n");
+    const production = scenario === "explicit-production";
+    const npmArgs = production ? ["--omit=dev", "--ignore-scripts"]
+      : scenario.endsWith("save-dev") ? ["--save-dev", "--save-exact", "file:../tool"] : [];
+    try {
+      const child = spawnSync(process.execPath, [cli, "--repo-root", repoRoot, "--", "install", "--offline", "--cache", join(root, "cache"), "--no-audit", "--no-fund", ...npmArgs], {
+        encoding: "utf8", timeout: 55_000, env: {
+          ...process.env, ...NPM_FIXTURE_CONFIG_RESET,
+          NODE_ENV: scenario === "NODE_ENV" || scenario.endsWith("save-dev") ? "production" : "test",
+          npm_config_omit: scenario === "npm-config" ? "dev" : undefined, NPM_CONFIG_OMIT: undefined,
+          npm_config_include: undefined, NPM_CONFIG_INCLUDE: undefined,
+          npm_config_production: undefined, NPM_CONFIG_PRODUCTION: undefined,
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "mutex"),
+          PAPERCUSP_SKIP_DEP_GENERATION: "1", PAPERCUSP_SKIP_DEP_VERIFY: "1",
+        },
+      });
+      assert.equal(child.status, 0, child.error?.stack ?? child.stdout + child.stderr);
+      assert.equal(existsSync(join(repoRoot, "node_modules/fixture-dev-tool/package.json")), !production);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
 test('dependency verification repairs nested dependency executable links before publishing', async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-nested-bin-'));
   const owner = join(repoRoot, 'node_modules/@scope/owner');
@@ -1760,6 +1812,58 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
     rmSync(repoRoot, { recursive: true, force: true });
   }
 });
+
+test("dependencySelectionArgs keeps every dev-selection form verbatim and nothing else", () => {
+  assert.deepEqual(
+    dependencySelectionArgs([
+      "install", "--include=dev", "--omit", "optional", "--production",
+      "--legacy-peer-deps", "--workspace=a", "--only=prod", "--also", "dev", "--no-production", "--dev",
+    ]),
+    ["--include=dev", "--omit", "optional", "--production", "--only=prod", "--also", "dev", "--no-production", "--dev"],
+  );
+  assert.deepEqual(dependencySelectionArgs(["install", "--legacy-peer-deps"]), []);
+});
+
+// WI-6554700010029990: the repair reify ran a bare `npm install --legacy-peer-deps`
+// under the caller's NODE_ENV=production env, so npm's default omit=dev deleted every
+// devDependency the main install had just restored.
+for (const [label, npmArgs, rootDevDependencies, expected] of [
+  ["carries the install's --include=dev", ["install", "--include=dev"], false,
+    ["install", "--legacy-peer-deps", "--include=dev"]],
+  ["keeps an explicit production selection", ["install", "--omit=dev"], true,
+    ["install", "--legacy-peer-deps", "--omit=dev"]],
+  ["includes dev for a dev checkout when no selection was passed", [], true,
+    ["install", "--legacy-peer-deps", "--include=dev"]],
+]) {
+  test(`verifyDepsExtracted repair ${label}`, async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-repair-dev-selection-"));
+    const workspace = join(repoRoot, "apps/operator");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+      workspaces: ["apps/operator"],
+      ...(rootDevDependencies ? { devDependencies: { "dev-tool": "^1" } } : {}),
+    }));
+    writeFileSync(join(workspace, "package.json"), JSON.stringify({ dependencies: { "was-missing": "^1" } }));
+    const calls = [];
+    try {
+      const status = await verifyDepsExtracted({
+        repoRoot,
+        npmArgs,
+        env: { PATH: "/bin", NODE_ENV: "production", PAPERCUSP_INSTALL_SAFE_ACTIVE: "1" },
+        runNpm: (args) => {
+          calls.push(args);
+          mkdirSync(join(repoRoot, "node_modules/was-missing"), { recursive: true });
+          return 0;
+        },
+        deps: { sleep: async () => {} },
+      });
+      assert.equal(status, 0);
+      assert.deepEqual(calls, [expected]);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 for (const inlinePrefix of [false, true]) {
   for (const installed of [false, true]) {
@@ -2346,6 +2450,79 @@ test("verifyNpmCacheExclusive reports verify's own failure instead of treating i
     }),
     /verify crashed/,
   );
+});
+
+test("retained-source readers protect every dependency donor through child completion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-retained-reader-"));
+  const donor = join(root, "donor");
+  const intermediate = join(root, "intermediate");
+  const reader = join(root, "reader");
+  const lockRootDir = join(root, "locks");
+  for (const path of [donor, intermediate, reader]) mkdirSync(join(path, ".git"), { recursive: true });
+  for (const [path, sourceRepoRoot] of [[reader, intermediate], [intermediate, donor]]) {
+    writeFileSync(join(path, ".git", "lint-as-committed-owner.json"), JSON.stringify({ sha: "a".repeat(40), sourceRepoRoot }));
+  }
+  const fsMutexUrl = new URL("./lib/fs-mutex.mjs", import.meta.url).href;
+  const acquired = [];
+  try {
+    const result = await runCommandUnderInstallMutex({
+      repoRoot: reader,
+      commandArgs: ["node", "fixture-reader.mjs"],
+      // An inherited lease for the clone alone must not bypass its donor.
+      env: { PAPERCUSP_INSTALL_MUTEX_HELD: repoLockName(reader) },
+      acquireReadMutex: (name, run, options) => {
+        acquired.push(name);
+        return withFsMutexRead(name, run, { ...options, lockRootDir });
+      },
+      runCommand: (_command, _args, options) => {
+        assert.equal(options.cwd, reader);
+        for (const path of [intermediate, donor]) {
+          assert.ok(options.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(",").includes(repoLockName(path)));
+          const writer = spawnSync(process.execPath, ["--input-type=module", "-e", `
+            import { withFsMutex } from ${JSON.stringify(fsMutexUrl)};
+            try {
+              await withFsMutex(${JSON.stringify(repoLockName(path))}, async () => {}, {
+                lockRootDir: ${JSON.stringify(lockRootDir)}, timeoutMs: 50, retryMs: 5,
+              });
+              process.exitCode = 9;
+            } catch (error) {
+              if (!String(error.message).includes('Timed out')) throw error;
+            }
+          `], { encoding: "utf8", env: { ...process.env, PAPERCUSP_INSTALL_MUTEX_HELD: "" } });
+          assert.equal(writer.status, 0, writer.stderr);
+        }
+        return { status: 17 };
+      },
+    });
+    assert.equal(result, 17);
+    assert.deepEqual(acquired.sort(), [repoLockName(intermediate), repoLockName(donor)].sort());
+    for (const path of [intermediate, donor]) {
+      await withFsMutex(repoLockName(path), async () => {}, { lockRootDir, timeoutMs: 100, retryMs: 5 });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("retained-source readers refuse cyclic or missing donor provenance before fork", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-retained-invalid-"));
+  mkdirSync(join(root, ".git"));
+  let childStarted = false;
+  try {
+    for (const marker of [{ sha: "a".repeat(40), sourceRepoRoot: root }, { sha: "a".repeat(40) }]) {
+      writeFileSync(join(root, ".git", "lint-as-committed-owner.json"), JSON.stringify(marker));
+      await assert.rejects(runCommandUnderInstallMutex({
+        repoRoot: root,
+        commandArgs: ["node", "fixture-reader.mjs"],
+        acquireReadMutex: async (_name, run) => run(),
+        runCommand: () => { childStarted = true; return { status: 0 }; },
+        env: {},
+      }), /dependency donor/);
+    }
+    assert.equal(childStarted, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("install reader preserves real child signals and ordinary exit codes", async () => {

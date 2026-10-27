@@ -11,11 +11,13 @@
  */
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -62,6 +64,146 @@ function seedDir(root: string, name: string, ageMs: number): string {
 }
 
 describe('session root caps', () => {
+  it('uses one live pin snapshot across real expiry during census, then expires it on the next run', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    writeFileSync(join(home, 'data'), Buffer.alloc(64 * 1024)); utimesSync(home, 1, 1);
+    const leases = join(parent, 'leases');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    const pin = createRetentionPin({ path: home, owner: 'fixture', reason: 'expiry snapshot boundary',
+      expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const pins = await import('./storage/retention-pins');
+    const originalRead = pins.readRetentionPinsAsync;
+    let expiry = 0, crossed = false;
+    const read = vi.spyOn(pins, 'readRetentionPinsAsync').mockImplementation(async options => {
+      expiry = (options?.nowMs ?? Date.now()) + 50;
+      const lease = join(leases, `lease-agent-pin-${pin.id}.tsv`);
+      writeFileSync(lease, readFileSync(lease, 'utf8').replace(/^expires_ns=.*$/m,
+        `expires_ns=${BigInt(expiry) * 1_000_000n}`));
+      return originalRead(options);
+    });
+    const census = await import('./storage/disk-consumer-census');
+    const originalInspect = census.inspectRetentionTrees;
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockImplementation(async (path, options) => {
+      if (!crossed && path === root) {
+        crossed = true;
+        await new Promise(done => setTimeout(done, Math.max(1, expiry - Date.now() + 1)));
+      }
+      return originalInspect(path, options);
+    });
+    try {
+      const options = { roots: [{ root, keyKind: 'owner' as const, label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false };
+      const kept = await runSessionDirGc(options);
+      expect(read).toHaveBeenCalledExactlyOnceWith({ nowMs: expect.any(Number) });
+      expect(crossed).toBe(true); expect(Date.now()).toBeGreaterThan(expiry);
+      expect(kept.removed).toEqual([]); expect(existsSync(home)).toBe(true);
+      expect(kept.caps![0]!.pinnedBytes).toBe(kept.caps![0]!.afterBytes);
+      expect(kept.errors).toEqual([]);
+      read.mockRestore(); inspect.mockRestore();
+      const expired = await runSessionDirGc(options);
+      expect(expired.removed).toEqual([home]); expect(existsSync(home)).toBe(false);
+      expect(expired.caps![0]).toMatchObject({ afterBytes: 0, pinnedBytes: 0 });
+      expect(expired.errors).toEqual([]);
+    } finally { read.mockRestore(); inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  it('keeps archive eligibility at the earlier lifecycle time when the pin snapshot is later', () => {
+    const root = tmpRoot();
+    const home = seedDir(root, 'not-yet-eligible', DEFAULT_RETENTION_MS - 1);
+    const result = sweepStaleSessionDirs({ protectedIdentity: empty,
+      candidates: [{ path: home, key: 'not-yet-eligible', keyKind: 'owner', mtimeMs: NOW - DEFAULT_RETENTION_MS + 1 }],
+      nowMs: NOW, pinNowMs: NOW + 2, retentionPins: [] });
+    expect(result.removed).toEqual([]);
+    expect(result.keptFresh).toBe(1);
+    expect(existsSync(home)).toBe(true);
+  });
+
+  it.each(['file', 'directory', 'shared inode', 'overlapping pins'])('charges only a live child pin allocation (%s), retaining the whole home', async (kind) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const evidence = join(home, 'evidence'); mkdirSync(evidence);
+    const data = join(evidence, 'data'); writeFileSync(data, Buffer.alloc(64 * 1024));
+    const bulk = join(home, 'bulk'); writeFileSync(bulk, Buffer.alloc(256 * 1024));
+    if (kind === 'shared inode') linkSync(data, join(home, 'alias'));
+    utimesSync(home, 1, 1);
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const target = kind === 'file' ? data : evidence;
+      createRetentionPin({ path: target, owner: 'fixture', reason: 'exact child scope',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      if (kind === 'overlapping pins') createRetentionPin({ path: data, owner: 'fixture', reason: 'nested evidence',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const pinnedBytes = statSync(data).blocks * 512 + (kind === 'file' ? 0 : statSync(evidence).blocks * 512);
+      const bytes = (statSync(home).blocks + statSync(evidence).blocks + statSync(data).blocks + statSync(bulk).blocks) * 512;
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([]);
+      expect(result.keptProtected).toBe(1);
+      expect(existsSync(data)).toBe(true); expect(existsSync(bulk)).toBe(true);
+      expect(result.caps![0]).toMatchObject({ afterBytes: bytes, pinnedBytes,
+        overByBytes: bytes - 1, pinnedOverageBytes: pinnedBytes - 1 });
+      expect(result.errors).toContainEqual({ path: root,
+        error: expect.stringContaining('session cap remains exceeded beyond live-pin overage') });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('ignores an expired child pin and fails closed on malformed pin metadata', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'expired', DEFAULT_RETENTION_MS * 3);
+    const data = join(home, 'data'); writeFileSync(data, Buffer.alloc(64 * 1024)); utimesSync(home, 1, 1);
+    const leases = join(parent, 'leases');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const pin = createRetentionPin({ path: data, owner: 'fixture', reason: 'expired child',
+        expiresAt: new Date(Date.now() - 60_000).toISOString() }, { nowMs: Date.now() - 120_000 });
+      const lease = join(leases, `lease-agent-pin-${pin.id}.tsv`);
+      const valid = readFileSync(lease, 'utf8');
+      writeFileSync(lease, valid.replace(/^tag=.*$/m, 'tag=agent-pin-malformed'));
+      await expect(runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false })).rejects.toThrow('retention pins unreadable');
+      expect(existsSync(data)).toBe(true);
+      writeFileSync(lease, valid);
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([home]);
+      expect(result.caps![0]).toMatchObject({ afterBytes: 0, pinnedBytes: 0, overByBytes: 0, pinnedOverageBytes: 0 });
+      expect(result.errors).toEqual([]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(['incomplete', 'disappeared'])('reports unknown usage when the exact pinned subtree is %s during measurement', async (mode) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const home = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const evidence = join(home, 'evidence'); mkdirSync(evidence);
+    writeFileSync(join(evidence, 'data'), Buffer.alloc(64 * 1024));
+    writeFileSync(join(home, 'bulk'), Buffer.alloc(256 * 1024)); utimesSync(home, 1, 1);
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    const census = await import('./storage/disk-consumer-census');
+    const original = census.inspectRetentionTrees;
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockImplementation(async (path, options) => {
+      if (path !== evidence) return original(path, options);
+      if (mode === 'disappeared') rmSync(evidence, { recursive: true });
+      return { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+        ...(mode === 'incomplete' ? { error: 'fixture pin census incomplete' } : {}) };
+    });
+    try {
+      createRetentionPin({ path: evidence, owner: 'fixture', reason: 'pin census control',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.removed).toEqual([]);
+      expect(existsSync(join(home, 'bulk'))).toBe(true);
+      expect(result.caps![0]!.beforeBytes).toBeNull();
+      expect(result.caps![0]!.error).toBeTruthy();
+      expect(result.errors).toContainEqual({ path: root, error: expect.stringContaining('session cap measurement incomplete') });
+    } finally { inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
   it.each(['foreign ownership boundary', 'filesystem boundary'])('reports unknown cap usage for a %s', async (reason) => {
     const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
     const census = await import('./storage/disk-consumer-census');
@@ -72,7 +214,8 @@ describe('session root caps', () => {
     try {
       const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture' }],
         protectedIdentity: empty, archiveGuard: false });
-      expect(result.caps![0]).toMatchObject({ beforeBytes: null, afterBytes: null, pinnedBytes: null, overByBytes: null });
+      expect(result.caps![0]).toMatchObject({ beforeBytes: null, afterBytes: null, pinnedBytes: null,
+        overByBytes: null, pinnedOverageBytes: null });
       expect(result.errors[0]!.error).toContain(reason);
       expect(inspect).toHaveBeenCalledWith(root, expect.objectContaining({ sudo: null }));
     } finally { inspect.mockRestore(); vi.unstubAllEnvs(); }
@@ -112,7 +255,9 @@ describe('session root caps', () => {
     try {
       const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
         protectedIdentity: { ownerIds: new Set(['live']), sessionKeys: new Set() }, archiveGuard: false, dryRun });
-      expect(result.errors).toEqual([]);
+      if (dryRun) expect(result.errors).toEqual([]);
+      else expect(result.errors).toContainEqual({ path: root,
+        error: expect.stringContaining('session cap remains exceeded beyond live-pin overage') });
       expect(result.removed).toEqual([old]);
       expect(existsSync(old)).toBe(dryRun);
       for (const path of [pinned, live, fresh, join(owner, 'data')]) expect(existsSync(path)).toBe(true);
@@ -122,8 +267,64 @@ describe('session root caps', () => {
       expect(cap.afterBytes).toBeLessThan(1024 * 1024);
       expect(cap.pinnedBytes).toBeGreaterThanOrEqual(64 * 1024);
       expect(cap.overByBytes).toBe(cap.afterBytes! - 1);
+      expect(cap.pinnedOverageBytes).toBe(cap.pinnedBytes! - 1);
+      expect(cap.overByBytes).toBeGreaterThan(cap.pinnedOverageBytes!);
       if (dryRun) expect(cap.afterBytes).toBe(cap.beforeBytes);
       else expect(cap.afterBytes).toBeLessThan(cap.beforeBytes!);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('accepts overage fully accounted for by a live pin after removing an eligible sibling', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const pinned = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const old = seedDir(root, 'old', DEFAULT_RETENTION_MS * 3);
+    for (const path of [pinned, old]) {
+      writeFileSync(join(path, 'data'), Buffer.alloc(64 * 1024));
+      utimesSync(path, 1, 1);
+    }
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      createRetentionPin({ path: pinned, owner: 'fixture', reason: 'cap exemption',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.errors).toEqual([]);
+      expect(result.removed).toEqual([old]);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(pinned)).toBe(true);
+      const cap = result.caps![0]!;
+      expect(cap.afterBytes).toBe(cap.pinnedBytes);
+      expect(cap.overByBytes).toBeGreaterThan(0);
+      expect(cap.pinnedOverageBytes).toBe(cap.overByBytes);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('counts a shared hardlink once across pinned and live homes', async () => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const pinned = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const live = seedDir(root, 'live', DEFAULT_RETENTION_MS * 3);
+    const data = join(pinned, 'data');
+    writeFileSync(data, Buffer.alloc(64 * 1024)); linkSync(data, join(live, 'data'));
+    for (const path of [pinned, live]) utimesSync(path, 1, 1);
+    const pinnedBytes = (statSync(pinned).blocks + statSync(data).blocks) * 512;
+    const allocatedBytes = pinnedBytes + statSync(live).blocks * 512;
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      createRetentionPin({ path: pinned, owner: 'fixture', reason: 'shared cap evidence',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() });
+      const result = await runSessionDirGc({
+        roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: allocatedBytes }],
+        protectedIdentity: { ownerIds: new Set(['live']), sessionKeys: new Set() }, archiveGuard: false,
+      });
+      expect(result.caps![0]!.afterBytes).toBe(allocatedBytes);
+      expect(result.caps![0]!.pinnedBytes).toBe(pinnedBytes);
+      expect(result.caps![0]!.overByBytes).toBe(0);
+      expect(result.errors).toEqual([]);
+      expect(result.removed).toEqual([]);
+      expect(existsSync(data)).toBe(true);
+      expect(existsSync(join(live, 'data'))).toBe(true);
     } finally { vi.unstubAllEnvs(); }
   });
 });

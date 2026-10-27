@@ -509,4 +509,45 @@ describe('readShadowStatement (P-003)', () => {
       await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 201`;
     }
   });
+
+  it('bills a recorded Claude message through canonical attribution without a native turn', async () => {
+    const ownerId = 'su-claude-message-reader', usageEventKey = 'e'.repeat(64);
+    const binding = { workspaceId: WS, ownerId, principalId: 'principal-shadow',
+      nativeSessionId: 'claude-message-native', nativeMessageId: 'msg-recorded-provider',
+      specificationRevision: SPEC_A, stateRevision: 'state-1', usageEventKeys: [usageEventKey] };
+    const provenance = { turnId: null, costBound: null, adapter: 'claude-iso-2',
+      sourceId: `message:${binding.nativeMessageId}`, providerResponseId: binding.nativeMessageId,
+      providerResponseIdSource: 'native-message-id' };
+    try {
+      await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+        (202,${WS},${ownerId},${binding.nativeSessionId},'2026-08-01T00:00:00Z',NULL,NULL,NULL)`;
+      await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+        VALUES (${WS},${ownerId},${ownerId},'principal-shadow','claude-message-logical',202,${binding.nativeSessionId},
+          'claude-message-initial',1,'applied','control',${SPEC_A},'state-1','[]'::jsonb,'2026-08-01T00:01:00Z')`;
+      await db.sql`INSERT INTO harness_shared.session_turns VALUES (${WS},'claude',${binding.nativeSessionId},${ownerId})`;
+      await db.sql`INSERT INTO harness_shared.agent_usage_samples
+        (id,workspace_id,session_id,ts,cost_usd,cost_source,usage_provenance,usage_event_key)
+        VALUES (202,${WS},${binding.nativeSessionId},${ms('2026-08-20T00:00:00Z')},0.000999,'provider',
+          ${JSON.stringify(provenance)}::text::jsonb,${usageEventKey})`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: true, billedInferenceMicros: 999n,
+        samples: [{ usageEventKey, sampleId: '202', activationEventId: expect.any(String), billedInferenceMicros: '999' }] });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, nativeMessageId: 'msg-foreign' }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      expect(await readIdentityTurnBilledCost(db.sql, { ...binding, principalId: 'foreign-payer' }))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples
+        SET usage_provenance = ${JSON.stringify({ ...provenance, turnId: 'fabricated-turn' })}::text::jsonb WHERE id = 202`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+      await db.sql`UPDATE harness_shared.agent_usage_samples
+        SET usage_provenance = ${JSON.stringify(provenance)}::text::jsonb, cost_source = 'estimated' WHERE id = 202`;
+      expect(await readIdentityTurnBilledCost(db.sql, binding)).toMatchObject({ ok: false, code: 'identity-usage-not-bill-grade' });
+    } finally {
+      await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = 202`;
+      await db.sql`DELETE FROM harness_shared.session_turns WHERE session_id = ${binding.nativeSessionId}`;
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${ownerId}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 202`;
+    }
+  });
 });

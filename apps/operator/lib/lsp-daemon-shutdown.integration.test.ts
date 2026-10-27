@@ -57,7 +57,8 @@ it.runIf(process.platform === 'linux')('drains default resources when its declar
       const server = runLspDaemonServer(undefined, undefined, createLspDaemonShutdown());
       await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
       startSidecarParentDeathWatch();
-      await lspQuery('definition', { file: ${JSON.stringify(file)}, rootPath: ${JSON.stringify(root)}, line1: 2, character: 13 });
+      const answer = await lspQuery('definition', { file: ${JSON.stringify(file)}, rootPath: ${JSON.stringify(root)}, line1: 2, character: 13 });
+      if (answer.error) throw new Error('pinned adapter query failed: ' + answer.error);
       const [client] = lspClientInventory();
       if (!client) throw new Error('pinned adapter failed to register a client');
       process.stdout.write('RESOURCES ' + JSON.stringify({dbPid: db.pid, taskId: client.taskId}) + '\\n');

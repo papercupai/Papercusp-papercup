@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   mkdirSync,
   mkdtempSync,
+  rmSync,
   readdirSync,
   readFileSync,
   statSync,
@@ -56,6 +57,29 @@ describe('emittedByteLength', () => {
 });
 
 describe('distAtomicWritesPlugin', () => {
+  it('preserves the complete in-memory output without writing HTML or touching retained asset mtimes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'daw-memory-'));
+    try {
+      mkdirSync(join(dir, 'assets'));
+      const file = join(dir, 'assets/chunk-ChpBd9eV.js');
+      writeFileSync(file, 'same-bytes');
+      const old = new Date(Date.now() - 3_600_000);
+      utimesSync(file, old, old);
+      const before = statSync(file).mtimeMs;
+      const plugin = distAtomicWritesPlugin();
+      (plugin.configResolved as (c: unknown) => void)({ root: dir, build: { outDir: '.', write: false } });
+      const bundle = {
+        'index.html': { fileName: 'index.html', type: 'asset', source: '<html>candidate</html>' },
+        'assets/chunk-ChpBd9eV.js': { fileName: 'assets/chunk-ChpBd9eV.js', type: 'chunk', code: 'same-bytes' },
+      };
+      (plugin.generateBundle as { handler: (o: unknown, b: unknown) => void }).handler({}, bundle);
+      (plugin.writeBundle as () => void)();
+      expect(Object.keys(bundle)).toHaveLength(2);
+      expect(statSync(file).mtimeMs).toBe(before);
+      expect(() => readFileSync(join(dir, 'index.html'))).toThrow();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   function makePlugin(outDir: string) {
     const plugin = distAtomicWritesPlugin();
     (plugin.configResolved as (c: unknown) => void)({

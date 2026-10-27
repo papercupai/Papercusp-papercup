@@ -20,6 +20,19 @@ describe('canonicalJson — deterministic (key-sorted) JSON', () => {
     );
   });
 
+  it('preserves parsed own prototype-looking keys at every depth without digest collisions', () => {
+    const first = JSON.parse('{"safe":1,"__proto__":{"value":"one"},"constructor":{"prototype":2}}');
+    const different = JSON.parse('{"safe":1,"__proto__":{"value":"two"},"constructor":{"prototype":2}}');
+    const reordered = JSON.parse('{"constructor":{"prototype":2},"__proto__":{"value":"one"},"safe":1}');
+    expect(canonicalJson(first)).not.toBe(canonicalJson(different));
+    expect(canonicalJson(first)).toBe(canonicalJson(reordered));
+    expect(JSON.parse(canonicalJson(first))).toEqual(first);
+    const nested = { objects: [first], outer: { nested: first } };
+    expect(JSON.parse(canonicalJson(nested))).toEqual(nested);
+    expect(Object.getPrototypeOf(first)).toBe(Object.prototype);
+    expect(Object.hasOwn(Object.prototype, 'value')).toBe(false);
+  });
+
   it('preserves array order (order is semantic for task/seed lists)', () => {
     expect(canonicalJson([3, 1, 2])).toBe('[3,1,2]');
   });

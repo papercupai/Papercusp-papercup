@@ -62,9 +62,21 @@ export async function withIsolatedIntegrationSourceObserver<T>(
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
+/** The model-request census is produced only by the managed-carry protocol. */
+export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {
+  return [
+    'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+    ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
+    'phases/prepare/bundle-restricted-hold-inputs.json',
+    'phases/prepare/hono-host.mjs.build-steps.jsonl',
+  ];
+}
+
 /** Cleanup logs must not displace a worker's original structured assertion. */
 export function isolatedWorkerFailureDetail(output: string): string {
-  const lines = output.split('\n');
+  // Full streams remain in worker.log. Connection phase clocks are useful for
+  // liveness, but must not displace the tool's actual refusal in this display.
+  const lines = output.split('\n').filter(line => !line.startsWith('ptool: connection trace '));
   const failures = lines.filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
   if (failures.length) return failures.map(line => line.slice(0, 4_000)).join('\n');
   const fatal = lines.findIndex(line => /^\w*Error(?: \[[^\]]+\])?:/.test(line.trim()));
@@ -199,8 +211,8 @@ export function isolatedWorkerOptions(executeMs: number, env: NodeJS.ProcessEnv 
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
   const listMs = testFileListTimeoutMs(env);
-  return isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
-    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS);
+  return { ...isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
+    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS), testFileExecutionFromStdout: true };
 }
 
 /** Retain original output before termination can interrupt the fixture. A
@@ -209,9 +221,15 @@ export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount:
  */
 export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
   timeoutMs?: number; phaseTimeouts?: WorkerDeadlines; killGraceMs?: number; drainGraceMs?: number;
+  /** Throttle observed progress relayed to the encompassing file watchdog. */
+  progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
+  /** Direct scripts/test-files.mjs children have router progress, not runtime IPC. */
+  testFileExecutionFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
+  assert.ok(options.progressIntervalMs === undefined ||
+    (Number.isFinite(options.progressIntervalMs) && options.progressIntervalMs >= 0), 'invalid progress interval');
   const deadlines = options.phaseTimeouts;
   for (const ms of [options.timeoutMs, ...Object.values(deadlines ?? {}), options.killGraceMs, options.drainGraceMs]) {
     assert.ok(ms === undefined || Number.isSafeInteger(ms) && ms > 0, 'deadlines must be positive safe integers');
@@ -252,9 +270,60 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     const cleanupStages = new Set<string>();
     const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
     let cleanupLine = '';
+    let progressLine = '';
+    let lastProgressAt = -Infinity;
+    let completedCases = 0;
+    const caseProgress = new Set<string>();
+    const relayProgress = (stage: string, force = false) => {
+      const at = Date.now();
+      if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
+      lastProgressAt = at;
+      // Only observed stage/case advances reach the parent. A repeated router
+      // heartbeat must not keep a hung inner case alive, and private output
+      // remains in worker.log rather than leaking through this progress rail.
+      process.stderr.write('ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: child.pid, phase, stage }) + '\n');
+    };
+    const relayTestProgress = (line: string) => {
+      // Collection uses TEST_FILE_LIST_PROGRESS; only the direct router's
+      // execution start can leave bootstrap. Never restart an active phase or
+      // revive execution after timeout/cleanup. This is a deadline signal, not
+      // private-runtime lifecycle or successful-test evidence.
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut && phase === 'bootstrap' &&
+          /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
+      if (line.startsWith('TEST_FILE_PROGRESS ')) {
+        const offset = line.indexOf(' lastOutputLine=');
+        if (offset < 0) return;
+        try { line = JSON.parse(line.slice(offset + 16))?.text ?? ''; }
+        catch { return; }
+      }
+      if (typeof line !== 'string') return;
+      const heartbeat = /^TEST_FILE_HEARTBEAT completedCases=(\d+)$/.exec(line);
+      if (heartbeat) {
+        const count = Number(heartbeat[1]);
+        if (Number.isSafeInteger(count) && count > completedCases) {
+          completedCases = count;
+          relayProgress('test-case-completed');
+        }
+      } else if (line.startsWith('TEST_FILE_CASE_TRACE ')) {
+        try {
+          const value = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
+          if (!['started', 'finished'].includes(value.event) || typeof value.file !== 'string' ||
+              typeof value.name !== 'string') return;
+          const key = JSON.stringify([value.event, value.file, value.name]);
+          if (!caseProgress.has(key) && caseProgress.size < 4096) {
+            caseProgress.add(key);
+            relayProgress('test-case-' + value.event);
+          }
+        } catch { /* malformed diagnostics are not progress */ }
+      }
+    };
     const capture = (chunk: string) => {
       output += chunk; writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
+      progressLine += chunk;
+      const progressLines = progressLine.split('\n');
+      progressLine = progressLines.pop()!.slice(-16_384);
+      for (const line of progressLines) relayTestProgress(line);
       if (options.cleanupFromStdout && deadlines) {
         cleanupLine += chunk;
         const lines = cleanupLine.split('\n');
@@ -277,6 +346,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       clearTimeout(timeout);
       progressWatchdog?.stop();
       phase = next;
+      relayProgress('phase-' + next, true);
       const ms = deadlines![next === 'bootstrap' ? 'bootstrapMs' : next === 'execute' ? 'executeMs' : 'teardownMs'];
       if (next === 'bootstrap' && deadlines!.bootstrapMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.bootstrapMaxMs,
@@ -298,6 +368,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           /^(initdb(?::sync)?|postmaster|database|migration:[\w.-]+|profile:[\w:-]+)$/.test(stage) && !bootStages.has(stage)) {
         bootStages.add(stage);
         progressWatchdog?.noteProgress();
+        relayProgress(stage);
       }
       // Repeated or out-of-order IPC cannot renew a phase's deadline.
       if (kind === 'isolated-runtime-start' && phase === 'bootstrap') armPhase('execute');
@@ -306,6 +377,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         if (typeof stage === 'string' && /^(start|profile-stop|pg-stop|pg-stopped|remove-private-state|complete)$/.test(stage) && !cleanupStages.has(stage)) {
           cleanupStages.add(stage);
           progressWatchdog?.noteProgress();
+          relayProgress(stage);
         }
         if (stage === 'pg-stop-observation' && Array.isArray((value as any).processes)) {
           for (const sample of (value as any).processes) {
@@ -317,7 +389,10 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
             // New identities establish baselines; PID reuse and a replayed old
             // sample cannot manufacture progress on an already observed lifetime.
             if (previous && next.writes >= previous.writes && next.bytes >= previous.bytes &&
-                (next.writes > previous.writes || next.bytes > previous.bytes)) progressWatchdog?.noteProgress();
+                (next.writes > previous.writes || next.bytes > previous.bytes)) {
+              progressWatchdog?.noteProgress();
+              relayProgress('pg-stop-io');
+            }
             if (!previous || next.writes >= previous.writes && next.bytes >= previous.bytes) cleanupIo.set(key, next);
           }
         }
@@ -446,6 +521,15 @@ export function observeIsolatedWorkerLifetime(child: ChildProcess, root: string,
 /** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
 export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
   const sourcePaths = [...new Set(paths)];
+  // Match fromTestRun calibration before observing the original lifetime. A
+  // side-effect test import is executable fixture input even when its cases
+  // are excluded by the selected test-name filter.
+  const { deriveFixtureSupportPaths } = await import('../lib/agent-tools/plans/bind-from-test-run');
+  for (const path of paths.filter(path => /\.(test|spec)\.[cm]?[jt]sx?$/.test(path))) {
+    for (const support of deriveFixtureSupportPaths(root, path)) {
+      if (!sourcePaths.includes(support)) sourcePaths.push(support);
+    }
+  }
   const launcher = 'scripts/with-test-pg.mjs';
   // The launcher owns teardown. Its extracted helper belongs to the same
   // source receipt even when an older caller only declares the launcher.
@@ -507,16 +591,43 @@ export async function retainIsolatedLifecycleBeforeSourceCheck(evidenceDir: stri
 }
 
 
+/** Reject an enclosing router deadline that cannot cover a declared proof run.
+ * This does not widen any child's deadline or count as execution evidence.
+ */
+export function assertIsolatedFileRunBudget(requiredMs: number, env: NodeJS.ProcessEnv = process.env) {
+  assert.ok(Number.isSafeInteger(requiredMs) && requiredMs > 0 && requiredMs <= MAX_TEST_FILE_RUN_TIMEOUT_MS,
+    'required proof file budget must fit the maintained router ceiling');
+  const availableMs = testFileRunTimeoutMs(env, 1);
+  assert.ok(availableMs >= requiredMs,
+    `Isolated proof requires PAPERCUSP_TEST_FILE_TIMEOUT_MS >= ${requiredMs}; enclosing router has ${availableMs}. ` +
+    'Refusing before proof source observation or private worker allocation.');
+}
+
+/** Keep the original receipt complete for calibrated fromTestRun evidence. */
+export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePaths: readonly string[]) {
+  return [...new Set([filePath,
+    'scripts/lib/isolated-runtime-start.mjs',
+    'scripts/with-test-pg.mjs',
+    'packages/operator-core/test/isolated-integration-proof.ts',
+    'packages/operator-core/test/private-http-workspace-preflight.ts',
+    ...sourcePaths,
+  ])].sort();
+}
+
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
+  /** Explicit encompassing allowance for multi-process proofs; validated before allocation. */
+  minimumFileRunTimeoutMs?: number;
   /** Required original receipts, relative to the run directory. Missing files fail retention. */
   retainedArtifacts?: readonly string[];
   prepare?: (evidenceDir: string) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
   requiredPreparation?: CommittedReaderObservationIdentity;
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
+  if (options.minimumFileRunTimeoutMs !== undefined)
+    assertIsolatedFileRunBudget(options.minimumFileRunTimeoutMs);
   const { root, filePath } = options;
-  const paths = [...new Set([filePath, 'scripts/lib/isolated-runtime-start.mjs', ...options.sourcePaths])].sort();
+  const paths = isolatedIntegrationProofSourcePaths(filePath, options.sourcePaths);
   let source: any;
   let lifecycle: any;
   let ended: any;

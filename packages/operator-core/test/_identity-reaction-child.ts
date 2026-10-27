@@ -244,7 +244,7 @@ if (mode === 'setup') {
   const report = registry.validateProviderInterface({
     capabilityClass, providerPackage: 'irx-test', providerVersion: '1.0.0',
     registryRevision: 'irx-registry-1', verbBindings,
-    lookup: (name) => ({ name, pluginName: 'irx-test', inputSchema, outputSchema }),
+    lookup: (name) => ({ name, pluginName: 'irx-test', providerVersion: '1.0.0', inputSchema, outputSchema }),
   });
   await registry.recordProviderConformance(sql, {
     workspaceId, classId: 'irx.tasks', classVersion: '1.0.0',

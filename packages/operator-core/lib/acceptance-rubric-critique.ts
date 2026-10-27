@@ -26,7 +26,9 @@ export function critiqueCoversRubric(request: string, rubric: Rubric, revision: 
   if (rubric.criteriaHash && request.includes(rubric.criteriaHash)) return true;
   // An explicit revision is usable only when no contradictory content hash was supplied.
   if (/criteriaHash\s*[:=]?\s*[`"']?\w+/i.test(request)) return false;
-  return revision != null && new RegExp(`\\b(?:rev(?:ision)?)[\\s:=#]+${revision}(?!\\d)`, 'i').test(request);
+  // Both "rev3" and "revision 3" name the same immutable revision. Keep the
+  // trailing word boundary so rev30 and rev3x cannot qualify as revision 3.
+  return revision != null && new RegExp(`\\b(?:rev(?:ision)?)[\\s:=#]*${revision}\\b`, 'i').test(request);
 }
 
 type CritiqueDeps = {

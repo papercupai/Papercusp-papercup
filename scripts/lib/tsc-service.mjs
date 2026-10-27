@@ -14,11 +14,156 @@
 // needs checked, how an API diagnostic is rendered in the CLI's own text format (so the gate's
 // existing parser reads service output unchanged), and the socket client.
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
+
+// Captured when this module loads: reading disk later cannot certify an old daemon
+// as running newly edited code. The server and caller must load the same protocol.
+// Resolve assets from this installation, including the maintained host bundle.
+// Metadata imports stay usable when assets are absent; certification fails closed.
+const serviceSourceSha256 = (() => {
+  // A sidecar assembled inside a checkout can have real builder sources three
+  // directories above it. Only the source module and maintained dist-host
+  // installation may certify those assets; other bundles remain metadata-only.
+  const location = new URL(import.meta.url).pathname;
+  const assets = location.endsWith('/scripts/lib/tsc-service.mjs')
+    ? [['./tsc-service.mjs', '../tsc-service/server.mjs']]
+    : /\/apps\/operator\/dist-host\/[^/]+\.mjs$/.test(location)
+      ? [['../../../scripts/lib/tsc-service.mjs', '../../../scripts/tsc-service/server.mjs']]
+      : [];
+  for (const [client, server] of assets) {
+    try { return createHash('sha256').update(readFileSync(new URL(client, import.meta.url)))
+      .update(readFileSync(new URL(server, import.meta.url))).digest('hex'); }
+    catch { /* Try only another installation-relative layout, never cwd. */ }
+  }
+  return null;
+})();
+// A packaged sidecar without service sources cannot certify this service. Do
+// not resolve an optional development compiler through the builder's parent
+// node_modules just to import metadata; the bundle closure guard forbids that.
+// Source assets can also exist without a usable optional compiler installation.
+// Keep resolution, reading and parsing inside the same metadata-only fallback.
+const nativeCompiler = (() => {
+  if (!serviceSourceSha256) return null;
+  try {
+    const packagePath = createRequire(import.meta.url).resolve('@typescript/native/package.json');
+    return { packagePath, metadata: JSON.parse(readFileSync(packagePath, 'utf8')) };
+  } catch { return null; }
+})();
+const nativePackagePath = nativeCompiler?.packagePath ?? null;
+const nativePackage = nativeCompiler?.metadata ?? null;
+const nativeVersion = nativePackage?.version ?? null;
+// Capture runtime JS and executable bytes before the daemon imports the API.
+// Version/path cannot distinguish an in-place compiler replacement.
+function measureCompilerArtifacts() {
+  if (!nativePackagePath || !nativePackage) return null;
+  try {
+    const hash = createHash('sha256');
+    const visit = (directory) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (/\.(?:js|cjs|mjs|json)$/.test(entry.name)) hash.update(relative(dirname(nativePackagePath), path))
+          .update('\0').update(readFileSync(path)).update('\0');
+      }
+    };
+    visit(dirname(nativePackagePath));
+    const base = nativePackage.name.split('/').pop();
+    const platformPackage = createRequire(nativePackagePath).resolve(`@typescript/${base}-${process.platform}-${process.arch}/package.json`);
+    const executable = join(dirname(platformPackage), 'lib', `${base === 'typescript' ? 'tsc' : 'tsgo'}${process.platform === 'win32' ? '.exe' : ''}`);
+    return hash.update(readFileSync(platformPackage)).update(readFileSync(executable)).digest('hex');
+  } catch { return null; }
+}
+const compilerArtifactsSha256 = measureCompilerArtifacts();
+
+/** A reset may spawn a new executable from disk. Refuse replacement until restart. */
+export function assertTscCompilerIdentityCurrent() {
+  if (!compilerArtifactsSha256 || measureCompilerArtifacts() !== compilerArtifactsSha256)
+    throw Object.assign(new Error('compiler artifacts changed since service/client load; restart required'),
+      { code: 'compiler-identity-changed' });
+}
+
+/** Reap the owned native child before a replacement API can be created.
+ * API.close() first disposes snapshots over RPC; a disposed connection can
+ * reject that step before Client.close() ever closes stdin. Native tsgo can
+ * remain blocked on stdin even after SIGTERM, so EOF and verified exit belong
+ * to this service, independently of snapshot cleanup.
+ * @param {any} api
+ * @param {{ graceMs?: number, killWaitMs?: number }} [options]
+ */
+export async function closeTscServiceCompiler(api, { graceMs = 1_000, killWaitMs = 5_000 } = {}) {
+  const child = api?.client?.process;
+  const isExited = () => !child || child.exitCode !== null || child.signalCode !== null;
+  let onExit;
+  const exited = isExited() ? Promise.resolve(true) : new Promise(resolve => {
+    onExit = () => resolve(true);
+    child.once('exit', onExit);
+  });
+  /** @param {number} ms */
+  const wait = async (ms) => {
+    if (isExited()) return true;
+    let timer;
+    try { return await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]); }
+    finally { clearTimeout(timer); }
+  };
+  try {
+    try { await api?.client?.close(); }
+    finally { child?.stdin?.end(); }
+  } catch {
+    // The native connection may already be disposed. Its process still must
+    // exit, and the handle captured above survives Client.close clearing it.
+  }
+  try {
+    if (!await wait(graceMs)) {
+      child.kill('SIGTERM');
+      if (!await wait(graceMs)) {
+        child.kill('SIGKILL');
+        if (!await wait(killWaitMs)) throw new Error('native compiler exit could not be verified; refusing replacement');
+      }
+    }
+    api?.clearSourceFileCache?.();
+  } finally {
+    if (onExit) child.removeListener('exit', onExit);
+  }
+}
+
+/** Coalesce one project's live callers without retaining several full programs.
+ * Keep other projects queued in arrival order; cancelled work must not load a program.
+ * @param {any[]} queue
+ */
+export function takeTscServiceProjectBatch(queue) {
+  const pending = queue.splice(0).filter(item => !item.cancelled);
+  const project = pending[0]?.request.project;
+  const batch = [];
+  for (const item of pending) {
+    if (item.request.project === project) batch.push(item);
+    else queue.push(item);
+  }
+  return batch;
+}
+
+/** Exact loaded service/compiler identity plus the requested root config and named inputs.
+ * Missing inputs remain explicit nulls; they never certify a successful focused check.
+ * @param {Record<string, any>} request
+ */
+export function tscServiceIdentity(request) {
+  if (!serviceSourceSha256 || !compilerArtifactsSha256 || !nativePackagePath)
+    throw Object.assign(new Error('service/compiler identity assets unavailable'), { code: 'service-identity-unavailable' });
+  const digest = (file) => {
+    try { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
+    catch { return null; }
+  };
+  const root = typeof request.root === 'string' ? resolve(request.root) : null;
+  const project = typeof request.project === 'string' ? resolve(request.project) : null;
+  return { root, project, scope: request.scope ?? 'dependencies', serviceSourceSha256, compilerVersion: nativeVersion,
+    compilerInstall: dirname(nativePackagePath), compilerArtifactsSha256, projectConfigSha256: project ? digest(project) : null,
+    namedSources: root && Array.isArray(request.files)
+      ? request.files.map(file => ({ path: file, sha256: typeof file === 'string' ? digest(resolve(root, file)) : null })) : [] };
+}
 
 /** Set to `0` to force the full CLI compile (the A/B control, and the escape hatch). */
 export const TSC_SERVICE_ENV = 'PAPERCUSP_TSC_SERVICE';
@@ -812,38 +957,83 @@ export function baselineWithinScope(baselineByFile, judged) {
  *   snapshotAgeMs: number,
  *   queuedMs: number,
  *   checkMs: number,
+ *   requestId?: string,
+ *   kind?: string,
+ *   identity?: object,
+ *   runtime?: { pid: number, startedAt: number },
  * } | { ok: false, reason: string, detail?: string }} TscServiceResponse
  */
 
 /**
- * One request over the socket: a JSON line out, a JSON line back.
+ * One request over the socket: correlated progress lines followed by one terminal result.
+ * Progress never extends the foreground deadline or becomes a successful check.
  *
- * @param {{ socketPath: string, request: Record<string, unknown>, timeoutMs?: number }} opts
+ * @param {{ socketPath: string, request: Record<string, unknown>, timeoutMs?: number, onProgress?: (response: any) => void }} opts
  * @returns {Promise<TscServiceResponse>}
  */
-export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS }) {
+export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE_TIMEOUT_MS, onProgress = () => {} }) {
+  try { assertTscCompilerIdentityCurrent(); } catch (error) { return Promise.reject(error); }
   const requestId = tscServiceRequestId(request.requestId);
+  const identity = request.identity ?? tscServiceIdentity(request);
   return new Promise((resolvePromise, rejectPromise) => {
     const socket = createConnection(socketPath);
     let buffer = '';
+    let settled = false;
     const fail = (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       socket.destroy();
-      rejectPromise(new Error(`${error.message} requestId=${requestId}`, { cause: error }));
+      rejectPromise(Object.assign(new Error(`${error.message} requestId=${requestId}`, { cause: error }),
+        { code: error.code ?? 'protocol-error' }));
     };
-    const timer = setTimeout(() => fail(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
+    const timer = setTimeout(() => fail(Object.assign(new Error(`no answer within ${timeoutMs} ms`),
+      { code: 'timed-out' })), resolveTscServiceTimeoutMs(timeoutMs));
     socket.setEncoding('utf8');
-    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, requestId })}\n`));
+    // Old v1 daemons reject v2 before refreshing a project. Sending v1 with new
+    // fields would let a stale daemon spend the whole timeout ignoring them.
+    socket.on('connect', () => socket.write(`${JSON.stringify({ ...request, v: 2, requestId, identity })}\n`));
     socket.on('data', (chunk) => {
+      if (settled) return;
       buffer += chunk;
-      const newline = buffer.indexOf('\n');
-      if (newline < 0) return;
-      clearTimeout(timer);
-      socket.end();
-      try {
-        resolvePromise(JSON.parse(buffer.slice(0, newline)));
-      } catch (error) {
-        rejectPromise(error);
+      if (buffer.length > 8 * 1024 * 1024) return fail(new Error('service response exceeds protocol limit'));
+      let newline;
+      while (!settled && (newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        try {
+          const response = JSON.parse(line);
+          if (response.requestId !== requestId || JSON.stringify(response.identity) !== JSON.stringify(identity)) {
+            // A correctly correlated refusal can carry a changed source/config
+            // identity. Retain the distinction from a reply for another request.
+            // Log field names, never source contents or the complete identity.
+            const changedIdentityFields = [...new Set([
+              ...Object.keys(identity), ...Object.keys(response.identity ?? {}),
+            ])].filter(key => JSON.stringify(identity[key]) !== JSON.stringify(response.identity?.[key]));
+            const quoted = value => JSON.stringify(typeof value === 'string' ? value.slice(0, 256) : null);
+            const detail = `expectedRequestId=${quoted(requestId)} actualRequestId=${quoted(response.requestId)}` +
+              ` changedIdentityFields=${JSON.stringify(changedIdentityFields.slice(0, 16).map(key => key.slice(0, 80)))}` +
+              ` responseKind=${quoted(response.kind)} serverReason=${quoted(response.reason)}` +
+              ` serverDetail=${quoted(response.detail)}`;
+            return fail(Object.assign(new Error(`service response identity mismatch: ${detail}`), { code: 'identity-mismatch' }));
+          }
+          if (response.kind === 'progress' && ['accepted', 'queued'].includes(response.phase)) {
+            onProgress(response);
+            continue;
+          }
+          if (response.kind !== 'result' || typeof response.ok !== 'boolean') return fail(new Error('invalid terminal service response'));
+          if (!Number.isSafeInteger(response.runtime?.pid) || response.runtime.pid < 1 ||
+              !Number.isFinite(response.runtime?.startedAt) || response.runtime.startedAt <= 0 ||
+              (response.ok && (typeof response.output !== 'string' || !Number.isSafeInteger(response.errorCount) ||
+                !Array.isArray(response.checked) || !response.checked.every(file => typeof file === 'string') ||
+                !Array.isArray(response.namedNotInProgram) || !response.counts))) {
+            return fail(new Error('incomplete terminal service result'));
+          }
+          settled = true;
+          clearTimeout(timer);
+          socket.end();
+          resolvePromise(response);
+        } catch (error) { fail(error); }
       }
     });
     socket.on('error', fail);
@@ -880,28 +1070,36 @@ export async function typecheckViaService({
   timeoutMs = TSC_SERVICE_TIMEOUT_MS,
   env = process.env,
 }) {
+  const unavailable = (reason, state = '') => {
+    if (env.PAPERCUSP_TSC_SERVICE_REQUIRED === '1') {
+      throw new Error(`TSC_SERVICE_REQUIRED: ${reason}; full compile fallback refused`);
+    }
+    log(`⚠ TSC_SERVICE ${reason} — running the full ${label} compile instead.${state ? ` state=${state}` : ''} resultOrigin=full-compile-required`);
+    return null;
+  };
   let socketPath = tscServiceSocketPath(env);
   const template = env[TSC_SERVICE_UNIT_TEMPLATE_ENV];
   if (template) {
     const located = tscServiceTemplateSocket({ template, root, env });
     if ('error' in located) {
-      log(`⚠ TSC_SERVICE unavailable (${located.error}) — running the full ${label} compile instead.`);
-      return null;
+      return unavailable(`unavailable (${located.error})`);
     }
     socketPath = located.socketPath;
   }
+  let response;
   try {
-    const response = await requestTscService({
+    response = await requestTscService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
       timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
+      onProgress: (response) => log(`TSC_SERVICE state=${response.phase} requestId=${response.requestId} resultOrigin=pending`),
     });
-    if (response.ok) return response;
-    log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);
   } catch (error) {
-    log(`⚠ TSC_SERVICE unreachable at ${socketPath} (${error instanceof Error ? error.message : String(error)}) — running the full ${label} compile instead.`);
+    const state = ['ENOENT', 'ECONNREFUSED'].includes(error?.code) ? 'unavailable' : error?.code ?? 'request-failed';
+    return unavailable(`request failed at ${socketPath} (${error instanceof Error ? error.message : String(error)})`, state);
   }
-  return null;
+  if (response.ok) return response;
+  return unavailable(`declined (${response.reason}${response.detail ? `: ${response.detail}` : ''})`, response.reason);
 }
 
 /**

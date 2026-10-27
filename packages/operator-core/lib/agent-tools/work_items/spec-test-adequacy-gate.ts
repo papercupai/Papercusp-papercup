@@ -37,6 +37,7 @@ import {
 import { evaluateMechanicalTestAdequacy } from '../plans/mechanical-test-adequacy';
 import type { RequirementClosureDeclaration } from '../../spec-conformance/closure-guard';
 import { resolveItemCloseContributions, type ContributionDeferralDeps, type DeferredContribution } from './item-close-contributions';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 export interface SpecAdequacyCompletionAttestation {
   classRef?: PlanClassRubricRef;
@@ -533,6 +534,8 @@ export async function specTestAdequacyCompletionGate(
     changedPaths?: readonly string[];
     workspaceId?: string;
     completion?: RequirementClosureDeclaration;
+    /** Share the dispatch tracker so a stalled read remains observable before settlement. */
+    phases?: Pick<NonNullable<UnifiedToolContext['phases']>, 'track'>;
   },
   deps: {
     listClauses?: typeof listSpecClauses;
@@ -551,6 +554,8 @@ export async function specTestAdequacyCompletionGate(
     contributionDeferral?: ContributionDeferralDeps;
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
+  const track = <T>(phase: string, work: () => Promise<T>): Promise<T> =>
+    input.phases ? input.phases.track(`completion:spec:${phase}`, work) : work();
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listEdges = deps.listEdges ?? listWorkItemSpecRevisionEdges;
   const listEvidence = deps.listEvidence ?? listSpecEvidence;
@@ -565,11 +570,11 @@ export async function specTestAdequacyCompletionGate(
   // read edges scoped to `stamp.planSlug`, so (i) a STANDALONE bug/change resolved
   // nothing at all and (ii) an edge into another plan's namespace was invisible. Both
   // are resolvable states now, which is the gap D-012 exists to close.
-  const contract = await resolveWorkItemBehaviorContract(input.workItem, {
+  const contract = await track('behavior-contract', () => resolveWorkItemBehaviorContract(input.workItem, {
     listEdges,
     listClauses,
     listPlanStatuses,
-  });
+  }));
   const stamp = planStampOf(input.workItem);
   const impactReport = advisoryImpactReport(contract);
   const withReport = <T extends object>(result: T): T & { impactReport?: string } =>
@@ -630,10 +635,11 @@ export async function specTestAdequacyCompletionGate(
     const subjectHarness = stamp?.harnessSlug ?? input.workItem.harness?.trim();
     if (!subjectHarness) return withReport({ ok: false, applicable: true, retryable: true, checked: [], reason: 'plan_class_unresolved: the subject harness is unavailable' });
     for (const planSlug of enforcedPlanSlugs) {
-      const resolution = await resolveEvaluatorClassRef(planSlug, subjectHarness, {
-        classRef: input.attestation.classRef,
+      const classRef = input.attestation.classRef;
+      const resolution = await track('evaluator-class', () => resolveEvaluatorClassRef(planSlug, subjectHarness, {
+        classRef,
         workItemIds: [input.workItem.id],
-      });
+      }));
       if (!resolution.ok || (input.attestation.classRef !== undefined && input.attestation.classRef !== resolution.classRef)) {
         return withReport({ ok: false, applicable: true, retryable: true, checked: [],
           reason: !resolution.ok ? resolution.message : `plan_class_mismatch: '${planSlug}' requires ${resolution.classRef}, not ${input.attestation.classRef}` });
@@ -656,10 +662,10 @@ export async function specTestAdequacyCompletionGate(
   let codeDeliverables = new Map<string, boolean>();
   if (deliverableHarness) {
     try {
-      codeDeliverables = await (deps.readCodeDeliverables ?? readClauseCodeDeliverables)({
+      codeDeliverables = await track('code-deliverables', () => (deps.readCodeDeliverables ?? readClauseCodeDeliverables)({
         harnessSlug: deliverableHarness,
         clauses,
-      });
+      }));
     } catch {
       codeDeliverables = new Map();
     }
@@ -784,24 +790,25 @@ export async function specTestAdequacyCompletionGate(
   // `evaluateSpecTestAdequacy` matches each row on `planSlug` AND `specId`, so two plans
   // sharing a spec id cannot satisfy each other's clause.
   const harnessSlug = stamp?.harnessSlug ?? input.workItem.harness?.trim() ?? undefined;
-  const evidence = await listEvidence({
+  const attestation = input.attestation;
+  const evidence = await track('evidence', () => listEvidence({
     harnessSlug,
     planSlugs: enforcedPlanSlugs,
     workItemIds: [input.workItem.id],
     specIds: relevant.map((clause) => clause.specId),
-    evidenceRefs: input.attestation.evidenceRefs,
-    specRevision: input.attestation.specRevision,
-    specFingerprint: input.attestation.specFingerprint,
-    replaySnapshot: input.attestation.replaySnapshot === true,
+    evidenceRefs: attestation.evidenceRefs,
+    specRevision: attestation.specRevision,
+    specFingerprint: attestation.specFingerprint,
+    replaySnapshot: attestation.replaySnapshot === true,
     // Same rail as the evaluator: a replayed snapshot is a caller-supplied tuple,
     // never server proof. Closing a work-item must not be able to buy a
     // 'server-measured' freshness verdict by passing replaySnapshot:true.
-    ...(input.attestation.replaySnapshot === true && input.attestation.current !== undefined
+    ...(attestation.replaySnapshot === true && attestation.current !== undefined
       ? { currentProvenance: 'replayed-snapshot' as const }
       : {}),
-    current: input.attestation.current,
+    current: attestation.current,
     limit: 1000,
-  });
+  }));
   if (evidence.length >= 1000) {
     return withReport({
       ok: false,
@@ -812,10 +819,10 @@ export async function specTestAdequacyCompletionGate(
     });
   }
 
-  const deferredContributions = await resolveItemCloseContributions({
+  const deferredContributions = await track('contributions', () => resolveItemCloseContributions({
     workItem: input.workItem, workspaceId: input.workspaceId ?? '', completion: input.completion,
     clauses: relevant, evidence, codeDeliverable: codeDeliverableOf,
-  }, deps.contributionDeferral);
+  }, deps.contributionDeferral));
   const clauseKey = (clause: SpecClauseRevision) => `${clause.planSlug}/${clause.specId}@${clause.revision}:${clause.contentHash}`;
   const deferredKeys = new Set(deferredContributions.map((entry) =>
     `${entry.projection.planSlug}/${entry.projection.specId}@${entry.projection.revision}:${entry.projection.contentHash}`));
@@ -838,10 +845,10 @@ export async function specTestAdequacyCompletionGate(
     // row A may not borrow adequacy from an unreviewed row/cohort B.
     const certifiedIds = certificates[0] && new Set(certificates[0].proofCohort.map(pin => pin.bindingId));
     const clauseEvidence = certifiedIds ? evidence.filter(row => row.id != null && certifiedIds.has(row.id)) : evidence;
-    const sourceBarTestRequirements = await resolvePinnedSourceBarTestRequirements(
+    const sourceBarTestRequirements = await track('source-bar', () => resolvePinnedSourceBarTestRequirements(
       clause.sourceBar,
       sourceBarRubricCache,
-    );
+    ));
     const label = `${clause.specId}@${clause.revision}`;
     const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence: clauseEvidence, sourceBarTestRequirements });
     if (mechanical.applicable) {
@@ -876,14 +883,18 @@ export async function specTestAdequacyCompletionGate(
       continue;
     }
     const subjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);
-    const cards = await listCards({
+    const cards = await track('scorecards', () => listCards({
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subjectRef,
       limit: 20,
-    });
+    }));
     if (!cards.some((card) => scorecardMatches(card, result, clauseEvidence))) {
       const failedAuditsForLabel: FailedGradingAudit[] = [];
+      const pendingAuditsForLabel: string[] = [];
       for (const card of cards) {
+        // A clause can retain audits of earlier evidence. Only the selected
+        // proof cohort can explain or unblock this completion attempt.
+        if (!scorecardProofCohortMatches(card, result, clauseEvidence)) continue;
         const needsIdentityReopen = gradingAuditNeedsIdentityReopen(card);
         if (
           (card.gradingAudit?.state === 'pending' || card.gradingAudit?.state === 'failed' || needsIdentityReopen) &&
@@ -893,6 +904,7 @@ export async function specTestAdequacyCompletionGate(
         ) {
           if (card.gradingAudit?.state === 'pending' || needsIdentityReopen) {
             pendingGradingAuditTargetIds.add(card.issueId);
+            pendingAuditsForLabel.push(card.issueId);
           } else {
             failedGradingAuditTargetIds.add(card.issueId);
             // WI-10002063 (1/2): carry the handle that actually reaches the findings.
@@ -923,15 +935,17 @@ export async function specTestAdequacyCompletionGate(
                     : `(no audit card recorded for graded card ${entry.issueId})`,
                 )
                 .join(', ')}`
-          : (() => {
-              const movedCohort = cards.some((card) =>
-                card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
-                !scorecardProofCohortMatches(card, result, clauseEvidence));
-              const detail = verdictChangeDetail(cards, result);
-              return movedCohort
-                ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
-                : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
-            })(),
+          : pendingAuditsForLabel.length
+            ? `${label}: current proof cohort is awaiting a settled independent grading audit: ${pendingAuditsForLabel.join(', ')}`
+            : (() => {
+                const movedCohort = cards.some((card) =>
+                  card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
+                  !scorecardProofCohortMatches(card, result, clauseEvidence));
+                const detail = verdictChangeDetail(cards, result);
+                return movedCohort
+                  ? `${label}: audited scorecard proof cohort differs from current bound evidence; certify the current cohort and settle its independent audit`
+                  : `${label}: no current terminal complete scorecard matches the exact evaluator verdicts${detail ? ` — ${detail}` : ''}`;
+              })(),
       );
       continue;
     }

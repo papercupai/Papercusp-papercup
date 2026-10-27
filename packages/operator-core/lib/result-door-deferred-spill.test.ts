@@ -789,7 +789,8 @@ describe('result-door deferred spill (WI-10004533)', () => {
       await writeStarted;
       await vi.advanceTimersByTimeAsync(30_000);
       expect(durablePersist).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(4_999);
+      // The primary spill wait is 30s; durable timeout recovery gets its own 20s bound.
+      await vi.advanceTimersByTimeAsync(19_999);
       expect(settled).toBe(false);
 
       await vi.advanceTimersByTimeAsync(1);

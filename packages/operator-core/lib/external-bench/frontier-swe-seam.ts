@@ -23,11 +23,12 @@ import { liveProcExec } from './grader/index';
 import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward } from './grader/frontier-swe-live';
 import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
 import { checkContainerEvidenceIntegrity, FRONTIER_SWE_PROTECTED_PATHS, type EvidenceIntegrity } from './evidence-integrity';
-import { CONTAINER_CODEX_BIN_PATH, resolveContainerCodexBinary } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, resolveContainerClaudeBinary, resolveContainerCodexBinary } from './container-exec-target';
 import { CONTAINER_BUSYBOX_PATH, CONTAINER_HOOK_SHIM_PATH, materializeHookShim, resolveStaticBusybox } from './codex-hook-bridge';
 import type { BenchEgress, TaskNetworkLease } from './bench-egress';
-import { codexHomesRoot, codexSqliteHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'node:fs';
+import { codexHomesRoot, codexSqliteHomesRoot, sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 /** The opaque environment handle for a FrontierSWE task — a live Docker container the arm operated. */
@@ -41,6 +42,8 @@ export interface FrontierSweEnvHandle {
    * at `binPath`.
    */
   inContainerCodex?: InContainerCodexMounts;
+  /** Isolated Claude config/transcript root and the exact binary qualified in this task image. */
+  inContainerClaude?: InContainerCodexMounts & { version: string; sha256: string };
   /**
    * The per-task `--internal` egress network the container is on (D-031), when the seam has an egress. Plain data:
    * the lease that releases it lives inside the seam, so the handle stays serializable.
@@ -72,6 +75,16 @@ export interface InContainerCodexConfig {
   hookShim?: string;
   /** The shim's interpreter, mounted read-only at {@link CONTAINER_BUSYBOX_PATH}. Default {@link resolveStaticBusybox}. */
   busybox?: string;
+}
+
+/** Explicit frozen native input; no selection or provider authority is implied. */
+export interface InContainerClaudeConfig {
+  homesRoot?: string;
+  claudeBinary?: string;
+  version: string;
+  sha256: string;
+  hostOwner?: { uid: number; gid: number };
+  versionProbeTimeoutMs?: number;
 }
 
 export interface FrontierSweSeamConfig {
@@ -122,6 +135,8 @@ export interface FrontierSweSeamConfig {
    * moves every relocated session dir back into its shared root, and removes the per-task dirs.
    */
   inContainerCodex?: true | InContainerCodexConfig;
+  /** Uses the existing egress and session relocation lifecycle. Mutually exclusive with Codex. */
+  inContainerClaude?: InContainerClaudeConfig;
 }
 
 /** The seam never reads host files through the grader — the reward is read out of a container. */
@@ -247,6 +262,26 @@ function mintPerTaskDir(root: string, instanceId: string): string {
   return mkdtempSync(join(dirname(root), `${basename(root)}.bench-${tag}-`));
 }
 
+function resolveInContainerClaudeConfig(c: InContainerClaudeConfig) {
+  const homesRoot = c.homesRoot ?? sessionClaudeRoot();
+  if (!isAbsolute(homesRoot) || homesRoot.includes(',')) throw new Error('FrontierSWE seam: Claude homesRoot must be an unambiguous absolute path');
+  if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(c.version) || !/^[a-f0-9]{64}$/.test(c.sha256)) {
+    throw new Error('FrontierSWE seam: Claude requires a frozen version and SHA256');
+  }
+  const binary = resolveContainerClaudeBinary({ binary: c.claudeBinary });
+  if (within(homesRoot, binary)) throw new Error('FrontierSWE seam: Claude binary must be outside its session root');
+  const verifyBinary = () => {
+    if (createHash('sha256').update(readFileSync(binary)).digest('hex') !== c.sha256) {
+      throw new Error('FrontierSWE seam: Claude binary differs from its frozen SHA256');
+    }
+  };
+  verifyBinary();
+  const timeoutMs = c.versionProbeTimeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error('FrontierSWE seam: invalid Claude version probe timeout');
+  return { roots: [homesRoot], binary, version: c.version, sha256: c.sha256, verifyBinary, timeoutMs,
+    hostOwner: { ...(c.hostOwner ?? { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }) } };
+}
+
 /** The `docker run` mount flags for an in-container Codex arm (exported for tests). */
 export function inContainerCodexMountArgs(m: InContainerCodexMounts, codexBinary: string, hook: { shim: string; busybox: string }): string[] {
   const args: string[] = [];
@@ -319,10 +354,14 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     throw new Error(`FrontierSWE seam: extraRunArgs may not set the network (${netOverride}) — the task's declared network_mode decides it`);
   }
   const exec = cfg.exec ?? liveProcExec;
+  if (cfg.inContainerClaude && cfg.inContainerCodex) throw new Error('FrontierSWE seam: select only one native CLI');
   const codex = cfg.inContainerCodex ? resolveInContainerCodexConfig(cfg.inContainerCodex) : null;
+  const claude = cfg.inContainerClaude ? resolveInContainerClaudeConfig({ ...cfg.inContainerClaude }) : null;
+  const native = codex ?? claude;
   // An in-container Codex reaches its model only through the egress, and a host-side loop must not get one.
   if (codex && !cfg.egress) throw new Error('FrontierSWE seam: inContainerCodex requires egress — the in-container Codex has no other route to its model');
-  if (cfg.egress && !codex) throw new Error('FrontierSWE seam: egress is only for an in-container Codex arm — a host-side model loop runs with --network none');
+  if (claude && !cfg.egress) throw new Error('FrontierSWE seam: inContainerClaude requires egress');
+  if (cfg.egress && !native) throw new Error('FrontierSWE seam: egress is only for an in-container Codex or Claude arm — a host-side model loop runs with --network none');
   /** Open per-task egress leases, by container id (the handle carries only the network name). */
   const leases = new Map<string, TaskNetworkLease>();
   const releaseLease = async (lease: TaskNetworkLease | undefined, instanceId: string) => {
@@ -349,6 +388,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
       const gpus = Number(task.graderMeta?.['gpus'] ?? 0);
       // Validate the declared mode BEFORE opening an egress lease, so a refusal cannot leak a network.
       frontierSweAgentNetworkArgs(task);
+      claude?.verifyBinary();
       const lease = cfg.egress ? await cfg.egress.openTaskNetwork(task.instanceId) : undefined;
       const runArgs = ['run', '-d', ...frontierSweAgentNetworkArgs(task, { egressNetwork: lease?.network })];
       if (gpus > 0) runArgs.push('--gpus', 'all');
@@ -363,12 +403,16 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
       // In-container Codex (D-026 / D-029): per-task dirs mounted over the shared roots at the same paths, plus the
       // musl Codex read-only. Minted only after every refusal above, and released again if `docker run` fails.
       let mounts: InContainerCodexMounts | undefined;
-      if (codex) {
+      if (native) {
         const roots: InContainerCodexMounts['roots'] = [];
         try {
-          for (const root of codex.roots) roots.push({ hostRoot: root, perTaskDir: mintPerTaskDir(root, task.instanceId) });
-          mounts = { binPath: CONTAINER_CODEX_BIN_PATH, roots, hostOwner: codex.hostOwner };
-          runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary, codex.hook));
+          for (const root of native.roots) roots.push({ hostRoot: root, perTaskDir: mintPerTaskDir(root, task.instanceId) });
+          mounts = { binPath: claude ? CONTAINER_CLAUDE_BIN_PATH : CONTAINER_CODEX_BIN_PATH, roots, hostOwner: native.hostOwner };
+          if (codex) runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary, codex.hook));
+          else {
+            runArgs.push('--mount', `type=bind,source=${roots[0].perTaskDir},target=${roots[0].hostRoot}`,
+              '--mount', `type=bind,source=${claude!.binary},target=${mounts.binPath},readonly`);
+          }
         } catch (e) {
           restoreRelocatedSessions(roots);
           await releaseLease(lease, task.instanceId);
@@ -392,11 +436,31 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
         throw new Error(`FrontierSWE clone: docker run failed for ${task.instanceId} (${image}) — exit ${r.code}: ${r.stderr.slice(0, 300)}`);
       }
       if (lease) leases.set(containerId, lease);
+      if (claude) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const probe = await Promise.race([
+            exec('docker', ['exec', '-w', '/app', containerId, 'env', '-i', 'HOME=/tmp', 'CLAUDE_CONFIG_DIR=/tmp/papercusp-claude-version', CONTAINER_CLAUDE_BIN_PATH, '--version']),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Claude version probe timed out')), claude.timeoutMs); }),
+          ]);
+          if (probe.code !== 0 || probe.stdout.trim() !== `${claude.version} (Claude Code)`) {
+            throw new Error(`Claude binary is incompatible with this task image or version pin (exit ${probe.code})`);
+          }
+          claude.verifyBinary();
+        } catch (error) {
+          try { await exec('docker', ['rm', '-f', containerId]); } finally {
+            leases.delete(containerId);
+            restoreRelocatedSessions(mounts!.roots);
+            await releaseLease(lease, task.instanceId);
+          }
+          throw error;
+        } finally { clearTimeout(timer); }
+      }
       return {
         containerId,
         image,
         instanceId: task.instanceId,
-        ...(mounts ? { inContainerCodex: mounts } : {}),
+        ...(mounts ? claude ? { inContainerClaude: { ...mounts, version: claude.version, sha256: claude.sha256 } } : { inContainerCodex: mounts } : {}),
         ...(lease ? { taskNetwork: lease.network } : {}),
       };
     },
@@ -444,7 +508,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
 
     async teardown(handle: FrontierSweEnvHandle): Promise<void> {
       // Never-throw: teardown is ALWAYS called (success / capability-fail / infra-fail) — must not leak a container.
-      const m = handle.inContainerCodex;
+      const m = handle.inContainerCodex ?? handle.inContainerClaude;
       if (m) {
         // The container may have written the mounted session files as root. Hand them back to the host user from
         // inside (as uid 0) BEFORE removing the container, so the host can move them and session-dir-gc can delete

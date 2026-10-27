@@ -71,6 +71,8 @@ beforeAll(async () => {
       template text,
       template_slug text,
       template_data jsonb,
+      verification_profile text,
+      verification_profile_source text,
       archived boolean NOT NULL DEFAULT false,
       items jsonb NOT NULL DEFAULT '[]'::jsonb,
       decisions jsonb NOT NULL DEFAULT '[]'::jsonb,

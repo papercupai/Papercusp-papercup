@@ -1,0 +1,1519 @@
+{
+  "schemaVersion": 1,
+  "kind": "R2-exact-proof-refresh",
+  "workItemId": "WI-10005889",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 3,
+  "sourceCommit": "8247d63b5b6c8281569a43b106670c3a2bbc2e0a",
+  "status": "mechanical test adequacy passes; native and parent acceptance remain open",
+  "priorFailingArtifact": {
+    "path": "docs/evidence/get-feedback-r2-adequacy-2026-10-23.json",
+    "sha256": "85c5eee20dc9ff76efea4dd16c5be811ae193db48023bd3b45da9b2e7df57ce0"
+  },
+  "cleanRuns": [
+    {
+      "id": 21802285,
+      "file": "apps/operator/lib/psu-launcher.test.ts",
+      "passed": 1209,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": 21802289,
+      "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": 21802288,
+      "file": "packages/operator-core/lib/session-port/service.test.ts",
+      "passed": 56,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "retainedCurrentStoreBinding": 65106,
+  "probe": {
+    "environment": {
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health"
+    },
+    "argv": [
+      "--file",
+      "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "--relocation",
+      "overlay",
+      "--mutate",
+      "s/(function isExactTrackedResumeTarget[^{]+\\{)/$1\\n  return true;/",
+      "--test",
+      "PROBE_SUBJECT={} node scripts/test-files.mjs packages/operator-core/lib/consult/consult-dispatch.test.ts -t \"refuses a source binding that contests the evidence attribution before launch\""
+    ],
+    "schemaVersion": 1,
+    "runnerSha256": "4f4bdd3d7827e907796366e604932092ccba3be547eb16bb5093034816962d0d",
+    "result": {
+      "guardExit": 1,
+      "copyBaselineLedger": "test_runs:21802351",
+      "mutantLedger": "test_runs:21802365",
+      "expected": "caught",
+      "relocation": "overlay",
+      "verdict": "caught",
+      "baselineLedger": "test_runs:21802328",
+      "baselineExit": 0,
+      "assertionEvidence": "test-file-assertion-failure",
+      "mutantParse": "ok",
+      "target": "copy-out"
+    },
+    "runnerPath": "scripts/mutation-probe.sh",
+    "runnerCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7"
+  },
+  "mutationDescriptor": {
+    "leg": "mutant",
+    "mode": "copy-out",
+    "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1187,6 +1187,7 @@\n  * persisted binding before any rank is launched.\n  */\n function isExactTrackedResumeTarget(target: Pick<ResumeTarget, 'ownerId' | 'sessionId' | 'ompThreadId' | 'agent' | 'binding'>): boolean {\n+  return true;\n   const nativeId = target.sessionId ?? (target.agent === 'omp' ? target.ompThreadId : null);\n   const boundNativeId = target.agent === 'omp'\n     ? target.binding?.ompThreadId ?? target.binding?.sessionId : target.binding?.sessionId;\n",
+    "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+    "testCommand": "PROBE_SUBJECT={} node scripts/test-files.mjs packages/operator-core/lib/consult/consult-dispatch.test.ts -t \"refuses a source binding that contests the evidence attribution before launch\"",
+    "againstCommit": null,
+    "schemaVersion": 1,
+    "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+    "mutateExpression": "s/(function isExactTrackedResumeTarget[^{]+\\{)/$1\\n  return true;/",
+    "probeInvocationId": "247ddfc3-d7af-4b35-9187-33520e9b5542",
+    "testCommandSha256": "5bb93d7d60f626ae47630b3bc0026bc886038dd85a57a93d3c0a629077d59b02",
+    "subjectAfterSha256": "e74e17cb564530dfacbe41c3a5b4ed157c7a91a26199d52846038750b54168e6",
+    "mutantDiffTruncated": false,
+    "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+  },
+  "mutationBaseline": {
+    "testRunId": 21802351,
+    "status": "pass",
+    "mutation": {
+      "leg": "copy-baseline",
+      "mode": "copy-out",
+      "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1187,6 +1187,7 @@\n  * persisted binding before any rank is launched.\n  */\n function isExactTrackedResumeTarget(target: Pick<ResumeTarget, 'ownerId' | 'sessionId' | 'ompThreadId' | 'agent' | 'binding'>): boolean {\n+  return true;\n   const nativeId = target.sessionId ?? (target.agent === 'omp' ? target.ompThreadId : null);\n   const boundNativeId = target.agent === 'omp'\n     ? target.binding?.ompThreadId ?? target.binding?.sessionId : target.binding?.sessionId;\n",
+      "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "testCommand": "PROBE_SUBJECT={} node scripts/test-files.mjs packages/operator-core/lib/consult/consult-dispatch.test.ts -t \"refuses a source binding that contests the evidence attribution before launch\"",
+      "againstCommit": null,
+      "schemaVersion": 1,
+      "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "mutateExpression": "s/(function isExactTrackedResumeTarget[^{]+\\{)/$1\\n  return true;/",
+      "probeInvocationId": "247ddfc3-d7af-4b35-9187-33520e9b5542",
+      "testCommandSha256": "5bb93d7d60f626ae47630b3bc0026bc886038dd85a57a93d3c0a629077d59b02",
+      "subjectAfterSha256": "e74e17cb564530dfacbe41c3a5b4ed157c7a91a26199d52846038750b54168e6",
+      "mutantDiffTruncated": false,
+      "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+    },
+    "passed": 2,
+    "failed": 0,
+    "skipped": 146,
+    "collectionFailed": false,
+    "passedCaseTitles": [
+      "dispatchConsultResponder \u2014 the fork leg > refuses a source binding that contests the evidence attribution before launch ({\"coordOwnerId\":\"su-other-owner\",\"sessionId\":\"sess-1\",\"startedAt\":\"2026-09-22T00:00:00Z\"})",
+      "dispatchConsultResponder \u2014 the fork leg > refuses a source binding that contests the evidence attribution before launch ({\"coordOwnerId\":\"su-expert\",\"sessionId\":\"different-native-session\",\"startedAt\":\"2026-09-22T00:00:00Z\"})"
+    ]
+  },
+  "mutantExecution": {
+    "status": "fail",
+    "passed": 0,
+    "failed": 2,
+    "skipped": 146,
+    "collectionFailed": false,
+    "testNamePattern": "refuses a source binding that contests the evidence attribution before launch",
+    "filePath": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+    "testLayer": "unit"
+  },
+  "declaredMeasuredCases": [
+    "dispatchConsultResponder \u2014 the fork leg > refuses a source binding that contests the evidence attribution before launch ({\"coordOwnerId\":\"su-other-owner\",\"sessionId\":\"sess-1\",\"startedAt\":\"2026-09-22T00:00:00Z\"})",
+    "dispatchConsultResponder \u2014 the fork leg > refuses a source binding that contests the evidence attribution before launch ({\"coordOwnerId\":\"su-expert\",\"sessionId\":\"different-native-session\",\"startedAt\":\"2026-09-22T00:00:00Z\"})"
+  ],
+  "caseScopeCorrection": "Both controls passed the exact two selected cases;146 other cases were unselected. hasLinkedMutationBaseline requires the selected case declaration to qualify a filtered calibration leg. Added canonical matching case names to binding65897; no rerun or test-result rewrite. Intermediate binding65893 did not carry this declaration.",
+  "independentMeasurements": [
+    {
+      "id": 65881,
+      "testRunId": 21802285,
+      "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+      "bindingFingerprint": "c6f709565a46ba55fff6e108f70b45f4bab21013c66463e98031d1cebb2e877e",
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      },
+      "serverMeasurement": {
+        "status": "measured",
+        "measuredDimensions": [
+          "source",
+          "test",
+          "fixture"
+        ],
+        "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+        "current": {
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "evidenceKind": "test",
+          "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:6db66c641dd3a59cdd136785733aab35055ecb076a0a2aef1a08e63a065a5c4c",
+          "testFingerprint": "sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a",
+          "fixtureFingerprint": "sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a"
+        }
+      },
+      "fingerprints": {
+        "sourceFingerprint": "sha256-file-set-v1:6db66c641dd3a59cdd136785733aab35055ecb076a0a2aef1a08e63a065a5c4c",
+        "testFingerprint": "sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a",
+        "fixtureFingerprint": "sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a",
+        "rubricFingerprint": null,
+        "environmentFingerprint": null
+      },
+      "measurementPin": {
+        "files": [
+          {
+            "path": "apps/operator/lib/mcp-proxy/budgets.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "00159976718185c38d56870d3b2b2b9a8e30a221b2c345baabe8848e6e39483a",
+            "headBlob": "f84b730b73480eaba053065f1cf7d7e227cbedc5",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/scripts/psu-launcher.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5791bfa9875b110216f1c730f83cfabccaf93874e4ddda773cd33cc0e932357c",
+            "headBlob": "99733f4f1bdfac3415eb0018ad5a6f80413e7604",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/scripts/psu-pty-host.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "eaea562f234c52b6fc11218769d0103846f09d81203c39453d710c88b0c82d25",
+            "headBlob": "4adf7aebe37369ac9b7a1f9f622d4729885c0a0e",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/scripts/ptool.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "db045be3e74aea6e90822242ea8ca1864b57789f605fce71cd4c62ec9b56ee57",
+            "headBlob": "81ec339f898a41ea1ccd548beba32aaef0e55d9e",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/scripts/tool-delivery.generated.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "4b46b1bcd1bada03817392ea6d18df4e89b3e91a10093916347e1db74b248c91",
+            "headBlob": "ec95a221697307839c8e3818df584caeff6e1d74",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b0efbb4596c39b76365182e3814b1aa4f4c6d14e527b80e6fa352588e477efe3",
+            "headBlob": "1b0a67870b2f58903cd14704f05559908150fd18",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/model-context-budget.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f51e986df2613c4ba9655a963616b3401f271f906c3950010da47d442b4f8916",
+            "headBlob": "a4e63831d891e3eb5e4d74136c77431c6bc68b33",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/lib/psu-launcher.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "9477b064d3e69796812451c31873b3cbedd3a66cbc737cd9d17ac3ca55253377",
+            "headBlob": "3c3017834b8c47d48080ec41e3ee0f054bb5962f",
+            "dimension": "test"
+          },
+          {
+            "path": "apps/operator/lib/psu-launcher.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "9477b064d3e69796812451c31873b3cbedd3a66cbc737cd9d17ac3ca55253377",
+            "headBlob": "3c3017834b8c47d48080ec41e3ee0f054bb5962f",
+            "dimension": "fixture"
+          }
+        ],
+        "repos": [
+          {
+            "head": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+            "repo": ".",
+            "gitlink": null
+          }
+        ],
+        "schemaVersion": 1
+      },
+      "measurementRecipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "sourcePaths": [
+          "apps/operator/lib/mcp-proxy/budgets.mjs",
+          "apps/operator/scripts/psu-launcher.mjs",
+          "apps/operator/scripts/psu-pty-host.mjs",
+          "apps/operator/scripts/ptool.mjs",
+          "apps/operator/scripts/tool-delivery.generated.mjs",
+          "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+          "packages/operator-core/lib/model-context-budget.mjs"
+        ],
+        "fixturePaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "receiptReadScope": {
+        "limit": 1,
+        "truncatedByLimit": true
+      },
+      "rawReceiptSha256": "41c6e02e2d7f8809d13b2066323d25bfb9340750f2ed1170d8394c1152a29f12"
+    },
+    {
+      "id": 65882,
+      "testRunId": 21802288,
+      "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+      "bindingFingerprint": "8ea0b3e8ee4edbff9f4173361cedf54fbc9ed1730899098c5b36f23ec8ffcbac",
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      },
+      "serverMeasurement": {
+        "status": "measured",
+        "measuredDimensions": [
+          "source",
+          "test",
+          "fixture"
+        ],
+        "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+        "current": {
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "evidenceKind": "test",
+          "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:66e1cb9b08f067fa61a9c5c5b1ffed0d876fdc7d275121c14e5e2bd3d95351f8",
+          "testFingerprint": "sha256-file-set-v1:c83c854e3b2fca4ac21cf82f5492fab8308eb98649c76220732c8b3566c0f406",
+          "fixtureFingerprint": "sha256-file-set-v1:c83c854e3b2fca4ac21cf82f5492fab8308eb98649c76220732c8b3566c0f406"
+        }
+      },
+      "fingerprints": {
+        "sourceFingerprint": "sha256-file-set-v1:66e1cb9b08f067fa61a9c5c5b1ffed0d876fdc7d275121c14e5e2bd3d95351f8",
+        "testFingerprint": "sha256-file-set-v1:c83c854e3b2fca4ac21cf82f5492fab8308eb98649c76220732c8b3566c0f406",
+        "fixtureFingerprint": "sha256-file-set-v1:c83c854e3b2fca4ac21cf82f5492fab8308eb98649c76220732c8b3566c0f406",
+        "rubricFingerprint": null,
+        "environmentFingerprint": null
+      },
+      "measurementPin": {
+        "files": [
+          {
+            "path": "packages/operator-core/lib/session-port/render.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "c9ecfcd72d8b829d5192b4ebb662040d55b4ce206474642e0e7605f6e0a3c52a",
+            "headBlob": "a81d9f03ed29bc140b944da684c6d5f90e2da2be",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "520e3b9fc2fe50aad16b394fd00afdff9f9873bca8dd2d065ce06c42594df2bb",
+            "headBlob": "3d5e75b5981c72d82ba7244b7b078342b0ed63aa",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "520e3b9fc2fe50aad16b394fd00afdff9f9873bca8dd2d065ce06c42594df2bb",
+            "headBlob": "3d5e75b5981c72d82ba7244b7b078342b0ed63aa",
+            "dimension": "fixture"
+          }
+        ],
+        "repos": [
+          {
+            "head": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+            "repo": ".",
+            "gitlink": null
+          }
+        ],
+        "schemaVersion": 1
+      },
+      "measurementRecipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/session-port/service.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/session-port/render.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/types.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/session-port/service.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "receiptReadScope": {
+        "limit": 1,
+        "truncatedByLimit": true
+      },
+      "rawReceiptSha256": "9f2bff98abb48144311872bc8ad312cd2db1df885c8ecd288be06a94ffbfd241"
+    },
+    {
+      "id": 65883,
+      "testRunId": 21802289,
+      "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "bindingFingerprint": "cbc018a34931aa965db78e6fc08aa30eb02318605409c2fdfefbc3aeb0c485f9",
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      },
+      "serverMeasurement": {
+        "status": "measured",
+        "measuredDimensions": [
+          "source",
+          "test"
+        ],
+        "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+        "current": {
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "evidenceKind": "test",
+          "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "sourceFingerprint": "sha256-file-set-v1:38ebdc7893a9e0c58faa9da42c7c764c749867c491927e4d911182d9d6b0df62",
+          "testFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf"
+        }
+      },
+      "fingerprints": {
+        "sourceFingerprint": "sha256-file-set-v1:38ebdc7893a9e0c58faa9da42c7c764c749867c491927e4d911182d9d6b0df62",
+        "testFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf",
+        "fixtureFingerprint": null,
+        "rubricFingerprint": null,
+        "environmentFingerprint": null
+      },
+      "measurementPin": {
+        "files": [
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ab895c9e10ee1e9ad33a13d0c17f6d36d25912b2ed0f79aae4a1d2d8e56fced5",
+            "headBlob": "96099fe6b6ee3a809030c0b34c094926e36e36f4",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/claude-resume-tool-references.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a0e7586eb2130cb3e4605f3277e9434187e6f91fa76014f3f03c110af8769906",
+            "headBlob": "9f9f5dfe4bae4124917e104543da25f712d33a8e",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/expert-model-allowlist.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1c2981ba5cf95b0b3984ac7a7bf8d2f7139a51056db19c0bf11cb104c7656596",
+            "headBlob": "1224b4b0a04c0ed652cd745280361b8d6a40291f",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "64faef427a9e9f1b79db2e32af3ce55e43fd32fb6b5e5e77313a48b74d54ddf5",
+            "headBlob": "90447bc6b93703f5893cc36ef87e345dc6239f22",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/selection-policies.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f699a9e28cc5802e1eb58154aa5da97a82ac6b12f17e2073b14084c6561ecc7b",
+            "headBlob": "b91321469e9ae5fd8e85841384e36e19a2798f06",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/testing/mock-org-pg.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "48f3f3fb153f260b75d439023fbcbc0ef7e2d0bbd2bf3ed50384f2ac4520c068",
+            "headBlob": "5d136388df0198478e05cf7679213b9936f1c48e",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          }
+        ],
+        "repos": [
+          {
+            "head": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+            "repo": ".",
+            "gitlink": null
+          }
+        ],
+        "schemaVersion": 1
+      },
+      "measurementRecipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/claude-resume-tool-references.mjs",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/expert-model-allowlist.ts",
+          "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+          "packages/operator-core/lib/consult/selection-policies.ts",
+          "packages/operator-core/lib/testing/mock-org-pg.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "receiptReadScope": {
+        "limit": 1,
+        "truncatedByLimit": true
+      },
+      "rawReceiptSha256": "1acfbc56da9cbc25696b09117260d8396b5fb18616a7d8c518864fff240f1b56"
+    },
+    {
+      "id": 65897,
+      "testRunId": 21802365,
+      "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+      "bindingFingerprint": "6a4b4b5f0d0cdeaab9f68d81509c12126f1810c0955253257c8486e40d2f6147",
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      },
+      "serverMeasurement": {
+        "status": "measured",
+        "measuredDimensions": [
+          "source",
+          "test",
+          "fixture"
+        ],
+        "measuredAtCommit": "a39150e6022901b28f2a67103885c97030eb2eee",
+        "current": {
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "evidenceKind": "mutation",
+          "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+          "sourceFingerprint": "sha256-file-set-v1:2ee1aa0091e9b2446a38341aa4686c48453c82ebc789566a7bda9124c764d809",
+          "testFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf",
+          "fixtureFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf"
+        }
+      },
+      "fingerprints": {
+        "sourceFingerprint": "sha256-file-set-v1:2ee1aa0091e9b2446a38341aa4686c48453c82ebc789566a7bda9124c764d809",
+        "testFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf",
+        "fixtureFingerprint": "sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf",
+        "rubricFingerprint": null,
+        "environmentFingerprint": null
+      },
+      "measurementPin": {
+        "files": [
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ],
+        "repos": [
+          {
+            "head": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+            "repo": ".",
+            "gitlink": null
+          }
+        ],
+        "schemaVersion": 1
+      },
+      "measurementRecipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/session-port/source.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "receiptReadScope": {
+        "limit": 1,
+        "truncatedByLimit": true
+      },
+      "rawReceiptSha256": "1ab9fbb8ac10cf0fadaae94f7c3b81b31c1da257c383b4f000208de6d3cddd3d"
+    }
+  ],
+  "receipts": {
+    "binding": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "derivedFromTestRun": {
+            "testRunId": 21802285,
+            "evidenceKind": "test",
+            "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+            "measurement": {
+              "schemaVersion": 1,
+              "kind": "repo-files",
+              "sourcePaths": [
+                "apps/operator/lib/mcp-proxy/budgets.mjs",
+                "apps/operator/scripts/psu-launcher.mjs",
+                "apps/operator/scripts/psu-pty-host.mjs",
+                "apps/operator/scripts/ptool.mjs",
+                "apps/operator/scripts/tool-delivery.generated.mjs",
+                "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+                "packages/operator-core/lib/model-context-budget.mjs"
+              ],
+              "testPaths": [
+                "apps/operator/lib/psu-launcher.test.ts"
+              ],
+              "fixturePaths": [
+                "apps/operator/lib/psu-launcher.test.ts"
+              ]
+            },
+            "harnessAttribution": "run"
+          },
+          "status": "created",
+          "id": 65881,
+          "workItemId": "WI-10005889",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "sourceValId": null,
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "bindingFingerprint": "c6f709565a46ba55fff6e108f70b45f4bab21013c66463e98031d1cebb2e877e"
+        },
+        {
+          "ok": true,
+          "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "derivedFromTestRun": {
+            "testRunId": 21802288,
+            "evidenceKind": "test",
+            "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+            "measurement": {
+              "schemaVersion": 1,
+              "kind": "repo-files",
+              "sourcePaths": [
+                "packages/operator-core/lib/session-port/render.ts",
+                "packages/operator-core/lib/session-port/service.ts",
+                "packages/operator-core/lib/session-port/types.ts"
+              ],
+              "testPaths": [
+                "packages/operator-core/lib/session-port/service.test.ts"
+              ],
+              "fixturePaths": [
+                "packages/operator-core/lib/session-port/service.test.ts"
+              ]
+            },
+            "harnessAttribution": "run"
+          },
+          "status": "created",
+          "id": 65882,
+          "workItemId": "WI-10005889",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "sourceValId": null,
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "bindingFingerprint": "8ea0b3e8ee4edbff9f4173361cedf54fbc9ed1730899098c5b36f23ec8ffcbac"
+        },
+        {
+          "ok": true,
+          "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "derivedFromTestRun": {
+            "testRunId": 21802289,
+            "evidenceKind": "test",
+            "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "measurement": {
+              "schemaVersion": 1,
+              "kind": "repo-files",
+              "sourcePaths": [
+                "packages/operator-core/lib/agent-launch-core.ts",
+                "packages/operator-core/lib/claude-resume-tool-references.mjs",
+                "packages/operator-core/lib/consult/consult-dispatch.ts",
+                "packages/operator-core/lib/consult/expert-model-allowlist.ts",
+                "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+                "packages/operator-core/lib/consult/selection-policies.ts",
+                "packages/operator-core/lib/testing/mock-org-pg.ts"
+              ],
+              "testPaths": [
+                "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+              ]
+            },
+            "harnessAttribution": "run"
+          },
+          "status": "created",
+          "id": 65883,
+          "workItemId": "WI-10005889",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "sourceValId": null,
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "bindingFingerprint": "cbc018a34931aa965db78e6fc08aa30eb02318605409c2fdfefbc3aeb0c485f9"
+        }
+      ],
+      "counts": {
+        "ok": 3,
+        "failed": 0
+      },
+      "advisories": [
+        {
+          "code": "acceptance_rubric_unvetted_before_proof",
+          "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "currentRevision": 9,
+          "vettingReason": "rejected-attestation",
+          "barSpecIds": [
+            "AUTO-BAR-R-2-P-002"
+          ],
+          "message": "Proof was recorded, but acceptance rubric 'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' is UNVETTED at revision 9 (rejected-attestation). You bound proof to 1 BAR clause before vetting: a vetting critique usually becomes a rubrics:amend, which re-revisions the clauses it touches, and proof bound to the old revision must then be re-bound. Cheap order: amend \u2192 vet \u2192 attest \u2192 bind \u2192 cards \u2192 grade. Vet the current revision first \u2014 consult:get_feedback (pass policy:'rubric-vetting' and no hand-typed count (selection is automatic; that key currently carries min 1 / max 2 responders)), fold the critique into one amendment, then attest with scorecards:emit against meta-acceptance-rubric \u2014 and bind the remaining proof after that. rubrics:get { rubricRef:'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' } shows the vetting verdict and which attestation failed.",
+          "nextVerb": {
+            "name": "rubrics:get",
+            "args": {
+              "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03"
+            }
+          }
+        },
+        {
+          "code": "adequacy_attestation_gap",
+          "message": "3 new binding(s) lack design attestations a live sibling row still carries; retracting that row (by hand or via supersedeAtRevision) drops them from the clause. Design attestations are never derived from a run. If they still hold for this test, re-bind with details.adequacy carrying them; otherwise the clause rates correct-layer / oracle-independence / fixture-calibration unknown once the carrying row is gone (EI-24903278232142036).",
+          "clauses": [
+            {
+              "bindingId": 65881,
+              "specId": "AUTO-BAR-R-2-P-002",
+              "specRevision": 3,
+              "missing": [
+                {
+                  "key": "coverageRungs",
+                  "carriedBy": [
+                    65111
+                  ]
+                }
+              ]
+            },
+            {
+              "bindingId": 65882,
+              "specId": "AUTO-BAR-R-2-P-002",
+              "specRevision": 3,
+              "missing": [
+                {
+                  "key": "coverageRungs",
+                  "carriedBy": [
+                    65108
+                  ]
+                }
+              ]
+            },
+            {
+              "bindingId": 65883,
+              "specId": "AUTO-BAR-R-2-P-002",
+              "specRevision": 3,
+              "missing": [
+                {
+                  "key": "targeted",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                },
+                {
+                  "key": "falsifiable",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                },
+                {
+                  "key": "pathReachable",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                },
+                {
+                  "key": "oracleIndependent",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                },
+                {
+                  "key": "fixtureCalibrated",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                },
+                {
+                  "key": "coverageRungs",
+                  "carriedBy": [
+                    38625,
+                    37836,
+                    45258
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "mutationBinding": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "derivedFromTestRun": {
+            "testRunId": 21802365,
+            "evidenceKind": "mutation",
+            "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+            "measurement": {
+              "schemaVersion": 1,
+              "kind": "repo-files",
+              "sourcePaths": [
+                "packages/operator-core/lib/consult/consult-dispatch.ts",
+                "packages/operator-core/lib/consult/native-consult.ts",
+                "packages/operator-core/lib/session-port/source.ts"
+              ],
+              "testPaths": [
+                "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+              ],
+              "fixturePaths": [
+                "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+              ]
+            },
+            "harnessAttribution": "run"
+          },
+          "status": "created",
+          "id": 65897,
+          "workItemId": "WI-10005889",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "sourceValId": null,
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "bindingFingerprint": "6a4b4b5f0d0cdeaab9f68d81509c12126f1810c0955253257c8486e40d2f6147",
+          "advisory": {
+            "code": "duplicate_live_test_run_bindings",
+            "testRunId": 21802365,
+            "bindingIds": [
+              65893
+            ],
+            "message": "Test run 21802365 is already live in binding(s) 65893 for mutation evidence 'test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c' on AUTO-BAR-R-2-P-002@3. This new binding remains live as well. If it replaces the earlier proof, re-bind with supersedeAtRevision:true; otherwise retract the stale binding(s) with plans:bind-spec-evidence retract."
+          }
+        }
+      ],
+      "counts": {
+        "ok": 1,
+        "failed": 0
+      },
+      "advisories": [
+        {
+          "code": "acceptance_rubric_unvetted_before_proof",
+          "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "currentRevision": 9,
+          "vettingReason": "rejected-attestation",
+          "barSpecIds": [
+            "AUTO-BAR-R-2-P-002"
+          ],
+          "message": "Proof was recorded, but acceptance rubric 'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' is UNVETTED at revision 9 (rejected-attestation). You bound proof to 1 BAR clause before vetting: a vetting critique usually becomes a rubrics:amend, which re-revisions the clauses it touches, and proof bound to the old revision must then be re-bound. Cheap order: amend \u2192 vet \u2192 attest \u2192 bind \u2192 cards \u2192 grade. Vet the current revision first \u2014 consult:get_feedback (pass policy:'rubric-vetting' and no hand-typed count (selection is automatic; that key currently carries min 1 / max 2 responders)), fold the critique into one amendment, then attest with scorecards:emit against meta-acceptance-rubric \u2014 and bind the remaining proof after that. rubrics:get { rubricRef:'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' } shows the vetting verdict and which attestation failed.",
+          "nextVerb": {
+            "name": "rubrics:get",
+            "args": {
+              "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03"
+            }
+          }
+        }
+      ]
+    },
+    "retirements": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "status": "retracted",
+          "bindingId": 65111,
+          "binding": {
+            "id": 65111,
+            "work_item_id": "WI-10005889",
+            "plan_slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+            "spec_id": "AUTO-BAR-R-2-P-002",
+            "spec_revision": 3,
+            "evidence_kind": "test",
+            "evidence_ref": "apps/operator/lib/psu-launcher.test.ts",
+            "retracted_at": "2026-10-23 00:33:52.196274-04",
+            "retracted_by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "retraction_reason": "Replaced by complete clean current launcher run21802285 binding65881, independently server-measured CURRENT on staging; original seven-source/inline-fixture recipe retained."
+          },
+          "cancelledAuditIssueIds": []
+        },
+        {
+          "ok": true,
+          "status": "retracted",
+          "bindingId": 65108,
+          "binding": {
+            "id": 65108,
+            "work_item_id": "WI-10005889",
+            "plan_slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+            "spec_id": "AUTO-BAR-R-2-P-002",
+            "spec_revision": 3,
+            "evidence_kind": "test",
+            "evidence_ref": "packages/operator-core/lib/session-port/service.test.ts",
+            "retracted_at": "2026-10-23 00:33:56.221365-04",
+            "retracted_by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "retraction_reason": "Replaced by complete clean current service run21802288 binding65882, independently server-measured CURRENT on staging; original three-source/inline-fixture recipe retained."
+          },
+          "cancelledAuditIssueIds": []
+        },
+        {
+          "ok": true,
+          "status": "retracted",
+          "bindingId": 50797,
+          "binding": {
+            "id": 50797,
+            "work_item_id": "WI-10005889",
+            "plan_slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+            "spec_id": "AUTO-BAR-R-2-P-002",
+            "spec_revision": 3,
+            "evidence_kind": "test",
+            "evidence_ref": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "retracted_at": "2026-10-23 00:34:00.268479-04",
+            "retracted_by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "retraction_reason": "Replaced by complete clean current dispatcher run21802289 binding65883, independently server-measured CURRENT on staging; original seven-source recipe retained."
+          },
+          "cancelledAuditIssueIds": []
+        },
+        {
+          "ok": true,
+          "status": "retracted",
+          "bindingId": 38681,
+          "binding": {
+            "id": 38681,
+            "work_item_id": "WI-10005889",
+            "plan_slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+            "spec_id": "AUTO-BAR-R-2-P-002",
+            "spec_revision": 3,
+            "evidence_kind": "mutation",
+            "evidence_ref": "test-run 21137208 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @b4cafebbb387",
+            "retracted_at": "2026-10-23 00:34:04.080265-04",
+            "retracted_by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "retraction_reason": "Replaced by current descriptor-linked source-attribution probe21802365 binding65893. Both measured controls pass2/0/146; mutant fails0/2/146. New row server-measured CURRENT and preserves falsifiable/calibration/unit-only coverage attestations. Old null-binding refusal intentionally changed under D-008; current equivalent retains foreign-owner/native-session guards."
+          },
+          "cancelledAuditIssueIds": []
+        },
+        {
+          "ok": true,
+          "status": "retracted",
+          "bindingId": 65892,
+          "binding": {
+            "id": 65892,
+            "work_item_id": "WI-10005889",
+            "plan_slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+            "spec_id": "AUTO-BAR-R-2-P-002",
+            "spec_revision": 3,
+            "evidence_kind": "mutation",
+            "evidence_ref": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+            "retracted_at": "2026-10-23 00:34:08.387864-04",
+            "retracted_by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "retraction_reason": "Same exact caught mutant21802365 is retained by binding65893 with the previously omitted falsifiable and unit coverage attestations, independently server-measured CURRENT. Retiring metadata-incomplete duplicate only; original probe records remain unchanged."
+          },
+          "cancelledAuditIssueIds": []
+        }
+      ],
+      "counts": {
+        "ok": 5,
+        "failed": 0
+      }
+    },
+    "afterPositiveRepair": {
+      "ok": true,
+      "evaluatorBuild": {
+        "sha": "811b4febec",
+        "version": "0.0.0"
+      },
+      "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "harnessSlug": "papercusp",
+      "classRef": "plan-class-feature-ship",
+      "declaredClassRef": "plan-class-feature-ship",
+      "classRefSource": "active-acceptance-rubric",
+      "rubricRef": "spec-test-adequacy",
+      "governing": true,
+      "includeDraft": false,
+      "excludedDraftCount": 0,
+      "excludedDraftSpecIds": [],
+      "excludedClauses": [],
+      "detail": "full",
+      "rows": [
+        {
+          "evaluationMode": "mechanical",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "planItemId": "P-002",
+          "verdict": "fail",
+          "wouldBlock": [
+            "mechanical-test-adequacy"
+          ],
+          "mechanicalProof": {
+            "applicable": true,
+            "verdict": "fail",
+            "requiredFiles": [
+              "apps/operator/lib/psu-launcher.test.ts",
+              "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "packages/operator-core/lib/session-port/service.test.ts",
+              "packages/operator-core/lib/session-port/store.integration.test.ts"
+            ],
+            "passingTestBindingIds": {
+              "apps/operator/lib/psu-launcher.test.ts": 65881,
+              "packages/operator-core/lib/consult/consult-dispatch.test.ts": 65883,
+              "packages/operator-core/lib/session-port/service.test.ts": 65882,
+              "packages/operator-core/lib/session-port/store.integration.test.ts": 65106
+            },
+            "caughtMutantBindingIds": [],
+            "gaps": [
+              "no bound mutant was caught with verified calibration linkage (bindings 65893); re-run scripts/mutation-probe.sh against a named test"
+            ]
+          },
+          "measurementEvidence": {
+            "status": "measured",
+            "selectedBindings": 18,
+            "measuredBindings": 18,
+            "unavailableBindings": [],
+            "withoutMeasurementBasis": [],
+            "bindings": [
+              {
+                "bindingId": 37830,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+              },
+              {
+                "bindingId": 37836,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+              },
+              {
+                "bindingId": 37985,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+              },
+              {
+                "bindingId": 38009,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+              },
+              {
+                "bindingId": 38597,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+              },
+              {
+                "bindingId": 38598,
+                "evidenceKind": "mutation",
+                "evidenceRef": "test-run 21136797 mutation-probe mutant fail packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts @fc8692c1b4fc",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+              },
+              {
+                "bindingId": 38625,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+              },
+              {
+                "bindingId": 38626,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+              },
+              {
+                "bindingId": 38680,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:ccf4c2b48b95889d0ba2eae99b245bef0606ab1f39048311c6044236f407da96"
+              },
+              {
+                "bindingId": 45194,
+                "evidenceKind": "test",
+                "evidenceRef": "test-run-group:3ce81757-1f16-4c77-b08e-569728bb6ffb:0",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:33816b8f4deeb09d46ee5c8ca6ae5fc3623867ead02eb0cdb11674d1e73b94a3"
+              },
+              {
+                "bindingId": 45258,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+              },
+              {
+                "bindingId": 45259,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:7931f58316b234a3bf257e286421de85f1184dfbd555ed9ee4c2351bbab94e77"
+              },
+              {
+                "bindingId": 50798,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:585ec02c4ae5158dc02cf1d681bdec28e25338f58d58128f5938970414500177"
+              },
+              {
+                "bindingId": 65106,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:6b4105e4491aedd98670e8e953fba6f4cba21e58001c1c4adeb8580c2837a512"
+              },
+              {
+                "bindingId": 65881,
+                "evidenceKind": "test",
+                "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:7b1c778f456115f8ba187817ad7c2bd8a1d1e7f1d46e724d61b410c3f4842f9a"
+              },
+              {
+                "bindingId": 65882,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:38e6b3158f491911c3a487ef41c68eedf174a95e1b1043a7e3c7999de28216c2"
+              },
+              {
+                "bindingId": 65883,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:29cab9f84265ea11ae565c008fac558b365314038684c359b7b3d423f80bf450"
+              },
+              {
+                "bindingId": 65893,
+                "evidenceKind": "mutation",
+                "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+                "status": "measured",
+                "measuredAtCommit": "48f2b0515d366f6f4069e30a30082a687621a5b7",
+                "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+              }
+            ]
+          }
+        }
+      ],
+      "count": 1,
+      "verdicts": {
+        "pass": 0,
+        "fail": 1,
+        "unknown": 0
+      },
+      "wouldBlock": [
+        {
+          "specId": "AUTO-BAR-R-2-P-002",
+          "revision": 3,
+          "criteria": [
+            "mechanical-test-adequacy"
+          ]
+        }
+      ],
+      "uncoveredWorkItemSelection": null
+    },
+    "passingEvaluation": {
+      "ok": true,
+      "evaluatorBuild": {
+        "sha": "811b4febec",
+        "version": "0.0.0"
+      },
+      "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "harnessSlug": "papercusp",
+      "classRef": "plan-class-feature-ship",
+      "declaredClassRef": "plan-class-feature-ship",
+      "classRefSource": "active-acceptance-rubric",
+      "rubricRef": "spec-test-adequacy",
+      "governing": true,
+      "includeDraft": false,
+      "excludedDraftCount": 0,
+      "excludedDraftSpecIds": [],
+      "excludedClauses": [],
+      "detail": "full",
+      "rows": [
+        {
+          "evaluationMode": "mechanical",
+          "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+          "specId": "AUTO-BAR-R-2-P-002",
+          "specRevision": 3,
+          "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+          "planItemId": "P-002",
+          "verdict": "pass",
+          "wouldBlock": [],
+          "mechanicalProof": {
+            "applicable": true,
+            "verdict": "pass",
+            "requiredFiles": [
+              "apps/operator/lib/psu-launcher.test.ts",
+              "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "packages/operator-core/lib/session-port/service.test.ts",
+              "packages/operator-core/lib/session-port/store.integration.test.ts"
+            ],
+            "passingTestBindingIds": {
+              "apps/operator/lib/psu-launcher.test.ts": 65881,
+              "packages/operator-core/lib/consult/consult-dispatch.test.ts": 65883,
+              "packages/operator-core/lib/session-port/service.test.ts": 65882,
+              "packages/operator-core/lib/session-port/store.integration.test.ts": 65106
+            },
+            "caughtMutantBindingIds": [
+              65897
+            ],
+            "gaps": []
+          },
+          "measurementEvidence": {
+            "status": "measured",
+            "selectedBindings": 19,
+            "measuredBindings": 19,
+            "unavailableBindings": [],
+            "withoutMeasurementBasis": [],
+            "bindings": [
+              {
+                "bindingId": 37830,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+              },
+              {
+                "bindingId": 37836,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+              },
+              {
+                "bindingId": 37985,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+              },
+              {
+                "bindingId": 38009,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+              },
+              {
+                "bindingId": 38597,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+              },
+              {
+                "bindingId": 38598,
+                "evidenceKind": "mutation",
+                "evidenceRef": "test-run 21136797 mutation-probe mutant fail packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts @fc8692c1b4fc",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+              },
+              {
+                "bindingId": 38625,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+              },
+              {
+                "bindingId": 38626,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+              },
+              {
+                "bindingId": 38680,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:ccf4c2b48b95889d0ba2eae99b245bef0606ab1f39048311c6044236f407da96"
+              },
+              {
+                "bindingId": 45194,
+                "evidenceKind": "test",
+                "evidenceRef": "test-run-group:3ce81757-1f16-4c77-b08e-569728bb6ffb:0",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:33816b8f4deeb09d46ee5c8ca6ae5fc3623867ead02eb0cdb11674d1e73b94a3"
+              },
+              {
+                "bindingId": 45258,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+              },
+              {
+                "bindingId": 45259,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:7931f58316b234a3bf257e286421de85f1184dfbd555ed9ee4c2351bbab94e77"
+              },
+              {
+                "bindingId": 50798,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:585ec02c4ae5158dc02cf1d681bdec28e25338f58d58128f5938970414500177"
+              },
+              {
+                "bindingId": 65106,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:6b4105e4491aedd98670e8e953fba6f4cba21e58001c1c4adeb8580c2837a512"
+              },
+              {
+                "bindingId": 65881,
+                "evidenceKind": "test",
+                "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:7b1c778f456115f8ba187817ad7c2bd8a1d1e7f1d46e724d61b410c3f4842f9a"
+              },
+              {
+                "bindingId": 65882,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:38e6b3158f491911c3a487ef41c68eedf174a95e1b1043a7e3c7999de28216c2"
+              },
+              {
+                "bindingId": 65883,
+                "evidenceKind": "test",
+                "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:29cab9f84265ea11ae565c008fac558b365314038684c359b7b3d423f80bf450"
+              },
+              {
+                "bindingId": 65893,
+                "evidenceKind": "mutation",
+                "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+              },
+              {
+                "bindingId": 65897,
+                "evidenceKind": "mutation",
+                "evidenceRef": "test-run 21802365 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @8247d63b5b6c",
+                "status": "measured",
+                "measuredAtCommit": "65e013bbc4837581071d42ce2897b0e15db9bdae",
+                "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+              }
+            ]
+          }
+        }
+      ],
+      "count": 1,
+      "verdicts": {
+        "pass": 1,
+        "fail": 0,
+        "unknown": 0
+      },
+      "wouldBlock": [],
+      "uncoveredWorkItemSelection": null
+    }
+  },
+  "scope": [
+    "Three complete clean committed unit suites; native launches are faked in these tests.",
+    "Passing R2 mechanical adequacy is separate from live native source-isolation acceptance, rubric vetting and final shipment.",
+    "Original e99 historical cohort and the later3/8 supplementary quality cohort are unchanged.",
+    "No product source or tests edited; mutation used contained copy-out overlay and verified original source integrity."
+  ]
+}

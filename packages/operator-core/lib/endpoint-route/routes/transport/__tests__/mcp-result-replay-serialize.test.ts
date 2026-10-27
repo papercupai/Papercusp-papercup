@@ -122,6 +122,31 @@ describe('serializeStoredMcpResult', () => {
     expect(parsed.isError).toBeUndefined();
     expect(parsed._meta?.requestId).toBe('r-123');
   });
+
+  it('round-trips an incomplete delivery receipt with its complete pre-door replay source', () => {
+    const replaySource: Omit<StoredMcpResult, 'replaySource'> = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ ok: true, clauses: [{ id: 'A', disposition: 'filed' }] }),
+      }],
+      structuredContent: { ok: true, clauses: [{ id: 'A', disposition: 'filed' }] },
+      _meta: { format: 'json' },
+    };
+    const result: StoredMcpResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          schemaVersion: 'papercusp.output-envelope/v1',
+          state: 'incomplete',
+          summary: { clauses: 1 },
+        }),
+      }],
+      _meta: { format: 'json' },
+      replaySource,
+    };
+
+    expect(roundTrip(result)).toEqual(result);
+  });
 });
 
 describe('normalizeStructuredReplayResult', () => {

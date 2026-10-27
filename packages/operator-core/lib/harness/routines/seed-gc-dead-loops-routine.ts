@@ -30,8 +30,7 @@
  *   - dry_run        (default false)
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed, routineSeedJanitorArguments } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { announceRoutineSeeded } from './seed-routine-announce';
 
@@ -41,59 +40,34 @@ const SLUG = process.env.GC_DEAD_LOOPS_ROUTINE_SLUG ?? operatorHomeHarnessSlug()
  *  large delete. Offset from gc-plan-runs (:12) so the two janitors do not contend. */
 const CRON = '0 18 0 * * *';
 
-function argNumber(flag: string): number | undefined {
-  const idx = process.argv.indexOf(flag);
-  if (idx === -1) return undefined;
-  const v = Number(process.argv[idx + 1]);
-  return Number.isFinite(v) && v > 0 ? v : undefined;
-}
-
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const dryRun = process.argv.includes('--dry-run');
-  const retentionDays = argNumber('--retention-days');
-  const maxPerRun = argNumber('--max-per-run');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'gc-dead-loops';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = {
-    cron: CRON,
-    ...(retentionDays ? { retention_days: retentionDays } : {}),
-    ...(maxPerRun ? { max_per_run: maxPerRun } : {}),
-    ...(dryRun ? { dry_run: true } : {}),
-  };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:gc-dead-loops', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
-      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-gc-dead-loops-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `daily sweep of dead loop-<ownerId> routine rows` +
-      (retentionDays ? `, retention_days=${retentionDays}` : '') +
-      (maxPerRun ? `, max_per_run=${maxPerRun}` : '') +
-      (dryRun ? ', dry_run=true' : '') +
-      '.',
-  );
-  announceRoutineSeeded(
-    'seed-gc-dead-loops-routine',
-    'packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts',
-  );
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-gc-dead-loops-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-gc-dead-loops-routine',
+  prepare: () => {
+    const { active, dryRun, windowValue: retentionDays, maxPerRun, triggerConfig } =
+      routineSeedJanitorArguments(CRON, '--retention-days', 'retention_days');
+    return {
+      installSlug: SLUG,
+      name: 'gc-dead-loops',
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: 'system:gc-dead-loops',
+      dryRun,
+      retentionDays,
+      maxPerRun,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, dryRun, retentionDays, maxPerRun, name, triggerConfig }) => {
+    console.log(
+        `[seed-gc-dead-loops-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `daily sweep of dead loop-<ownerId> routine rows` +
+          (retentionDays ? `, retention_days=${retentionDays}` : '') +
+          (maxPerRun ? `, max_per_run=${maxPerRun}` : '') +
+          (dryRun ? ', dry_run=true' : '') +
+          '.',
+      );
+    announceRoutineSeeded(
+        'seed-gc-dead-loops-routine',
+        'packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts',
+      );
+  },
+});

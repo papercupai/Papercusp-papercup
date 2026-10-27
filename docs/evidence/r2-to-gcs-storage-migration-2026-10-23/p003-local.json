@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "r2gcs-p003-local-v1",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "workItem": "WI-6554700010025562",
+  "recordedAt": "2026-10-24T04:56:42.906165+00:00",
+  "migrationAccepted": false,
+  "deploymentPerformed": false,
+  "sourceFiles": [
+    {
+      "path": "papercusp-desktop/bin/lib/release-storage.sh",
+      "sha256": "82087ac353fc8f1be6914a85486911320d4830e5da5c0647fa54c158c6fdd5e7"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+      "sha256": "872f6b4c568ee277f35b05853731a025af552c2d69d811830610a44f2b4ed96a"
+    },
+    {
+      "path": "papercusp-desktop/bin/upload-release.sh",
+      "sha256": "c2f485bbff52e3cdc1e95516c9148e5b58044004df76a3e47409902ebffe6388"
+    },
+    {
+      "path": "papercusp-desktop/bin/upload-mobile-release.sh",
+      "sha256": "83be2f260ecfa6395c8a017522cc81b3d562d042e22a35e27d68988e20b34a5c"
+    },
+    {
+      "path": "papercusp-desktop/bin/publish-release-history.sh",
+      "sha256": "8b6ef68d12d1c17821479c2c401883681c84c5666e7e0fc54e02a0f20ab28a17"
+    },
+    {
+      "path": "papercusp-desktop/bin/publish-release-instructions.sh",
+      "sha256": "9575db69fdd2f5e8963c49ad10c7d66bb7f155afc464cbff8cac5d92662465de"
+    },
+    {
+      "path": "papercusp-desktop/bin/recover-release.mjs",
+      "sha256": "09a51663609b0a8d5a097a7c95fc9c68d3ef5a7a43e93a2af4560878a5f9e8dd"
+    },
+    {
+      "path": "apps/tui/scripts/publish-release.sh",
+      "sha256": "f83355e5359497e2521d9676eccb4aeed94e723f35b7dce60b85795f50ab8d09"
+    },
+    {
+      "path": "apps/operator-public/src/env.ts",
+      "sha256": "a351d5c184e212e4347af06c2463a5b26baacb6bc2f020f0af5063d721679633"
+    },
+    {
+      "path": "apps/operator-public/src/routes/index.ts",
+      "sha256": "1b4157eaa2d024a3e455bc29ee4ad81ee301116bd5a9bedd0b4994a6658058b1"
+    },
+    {
+      "path": "apps/operator-public/src/routes/release-files.ts",
+      "sha256": "e2e31bcea07be443110b37af626d3cafc772e6298f2255984a8a65ea557ad1bf"
+    },
+    {
+      "path": "apps/operator-public/src/routes/release-files.test.ts",
+      "sha256": "43cec6660251cce28c5458870df6e3f8b74b560984a69cf7211082f27a2f47e1"
+    },
+    {
+      "path": "libs/test-config/src/execution-details.ts",
+      "sha256": "ef2db5313ebf221b472d2e79514a3f32d1780a5bdcf117dfaefbf005f653fc6f"
+    },
+    {
+      "path": "scripts/recover-release.test.ts",
+      "sha256": "601d1f86e6034bf49a74c130b45d60cfe751b61857b0f0b18836c2efe3a38e59"
+    },
+    {
+      "path": "papercusp-desktop/test/release-upload-content-skip.test.js",
+      "sha256": "415692e3ba466b8cff5f1a2d4a34b70bb09819e357a833dd4192015f66fba56b"
+    }
+  ],
+  "verification": [
+    {
+      "command": "bash papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+      "result": "20 PASS",
+      "scope": "hermetic gcloud contract: 404 vs unknown, generation conditions, byte identity, replay, lost response, retained collision, safe keys"
+    },
+    {
+      "command": "bash papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+      "result": "ALL PASS; exit 0",
+      "scope": "existing maintained release artifact handoff and retention suite"
+    },
+    {
+      "command": "npm run test:file -- scripts/recover-release.test.ts apps/operator-public/src/routes/release-files.test.ts",
+      "result": "2 files; 8 recovery + 9 HTTP tests passed; exit 0",
+      "scope": "real local Ed25519 signature verification; HTTP routes through GCS protocol adapter; local working-tree proof only"
+    },
+    {
+      "command": "npm run typecheck --workspace=@papercusp/cupboard-worker",
+      "result": "exit 0 after fixing stream type narrowing"
+    },
+    {
+      "command": "node --test --test-global-setup=test/monorepo-host-preflight.mjs test/release-upload-content-skip.test.js test/publish-project-history.test.js",
+      "cwd": "papercusp-desktop",
+      "result": "exit 0; \u2139 tests 18; \u2139 pass 18; \u2139 fail 0; \u2139 skipped 0",
+      "scope": "existing producer content-identity and public feed/history readback contracts; fixture moved from retired S3 calls to GCS generation-pinned exact-byte reads"
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/f9dd6-p003-storage-selftest-final.log",
+      "sha256": "e3fa91f3375c8d26facc07302bfde28b7f6f19cc3def1be64bb43a969faa6d91"
+    },
+    {
+      "path": "/tmp/f9dd6-p003-artifacts-selftest.log",
+      "sha256": "f1a234fa304485634135e98ddad895b46945c7eae42b485cf8c8b377d4c6cafd"
+    },
+    {
+      "path": "/tmp/f9dd6-p003-recovery-tests.log",
+      "sha256": "07ea4f934d885d17b7ebb46103a33608b90acf26ea890d91a377674ec577e904"
+    },
+    {
+      "path": "/tmp/f9dd6-p003-cupboard-typecheck2.log",
+      "sha256": "89c47b3ca52220cbf65577cd77e5854e3e3b513e4cebb0b43881193ff794464c"
+    },
+    {
+      "path": "/tmp/f9dd6-p003-producer-node-tests2.log",
+      "sha256": "c3eddb98c32746f288c20e5df6d616bb4a1dcc091237d7aa1c6d24328aad4988"
+    }
+  ],
+  "sourceMaps": [
+    {
+      "path": "/tmp/f9dd6-p003-recovery-executed.json",
+      "sha256": "0dc6d9530bfabf7d8831fbe10e3dfea15d0b40088a212ae21ab872c08b5229d6"
+    },
+    {
+      "path": "/tmp/f9dd6-p003-recovery-executed.1.json",
+      "sha256": "a2a234758be974bb3b66c2791a9aa43641c4f4cea871528e03ce5bbae5038976"
+    }
+  ],
+  "limitations": [
+    "Working tree recorded dirty. The first HTTP run substituted committed test-layer configuration in a Vitest child. These runs do not establish canonical current integration provenance or clause acceptance.",
+    "Recovery stages a signature-verified replacement; it does not claim a real installed application was upgraded.",
+    "RELEASE_PATH_PREFIX and release-storage.env have not been configured or deployed.",
+    "Original inaccessible R2 populations and original multipart outcome remain unknown and retained under WI-6554700010025592.",
+    "P002 retained three-object metadata adoption, P005 fence/cutover, and P006 independent exact acceptance remain open."
+  ],
+  "preserved": [
+    "Original admitted P544 signed bundle and release journal; no rebuild",
+    "Original R2 data and unknown multipart operation; no retry",
+    "Private GCS IAM; no anonymous bucket grant"
+  ],
+  "followUps": [
+    {
+      "id": "EI-26834658620646681",
+      "subject": "existing updater verifier does not verify claimed optional global signature",
+      "state": "filed; claim refused admission-pending; artifact byte signature remains checked"
+    },
+    {
+      "id": "EI-26833154505075318",
+      "subject": "existing AUTO loop has no guaranteed wake after last-fire-no-loop-turn",
+      "state": "filed by predecessor; claim refused pending duplicate screening"
+    }
+  ]
+}

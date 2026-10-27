@@ -19,10 +19,12 @@
  * per-test where a method shells out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, writeFile, readFile, rm, access, readdir } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile, readFile, rm, access, readdir } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('./password', () => ({ deriveRepoPassword: async () => 'test-password' }));
 
@@ -40,6 +42,7 @@ import { BACKUP_RETENTION_PIN, parseKopiaSnapshotJson } from './workspace-backup
 import { renameAtomic } from './hook';
 import { IGNORE_PATTERNS } from './policy';
 import { assertSafeBackupCadence } from './types';
+import { HOST_PG_DUMP_DIR_ENV } from './host-dump-coverage';
 import type { Sql } from 'postgres';
 
 function fakeHost() {

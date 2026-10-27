@@ -203,7 +203,7 @@ describe('capability provider execution attestation (real PG)', () => {
     const report = validateProviderInterface({
       capabilityClass, providerPackage: 'notes-tool', providerVersion: '1.0.0',
       registryRevision: 'registry-1', verbBindings,
-      lookup: (name) => ({ name, pluginName: 'notes-tool', inputSchema, outputSchema }),
+      lookup: (name) => ({ name, pluginName: 'notes-tool', providerVersion: '1.0.0', inputSchema, outputSchema }),
     });
     await recordProviderConformance(db.sql, {
       workspaceId, classId: capabilityClass.id, classVersion: version,

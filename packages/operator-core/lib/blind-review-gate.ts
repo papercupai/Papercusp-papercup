@@ -56,7 +56,7 @@ export interface BlindReviewGap {
 export interface RejectedBlindReview {
   reviewId: number;
   reviewer: string;
-  reason: 'read-plan-artifacts' | 'owner-or-implementer' | 'lineage-related';
+  reason: 'read-plan-artifacts' | 'owner-or-implementer' | 'lineage-related' | 'inconclusive' | 'invalid-completion';
   detail: string;
 }
 
@@ -102,6 +102,45 @@ interface ReviewRow {
   dispositions: Array<{ reviewId: number; gapId: string; itemId?: string; acceptedRiskDecisionId?: string }>;
   created_by: string;
   created_at: Date | string;
+  protocol_version: number;
+  outcome: BlindReviewOutcome | null;
+  summary: string | null;
+}
+
+export type BlindReviewOutcome = 'conclusive' | 'inconclusive';
+
+/** Only an explicit leading verdict is a summary marker; ordinary prose is not. */
+export function blindReviewSummaryOutcome(summary: unknown): BlindReviewOutcome | null {
+  if (typeof summary !== 'string') return null;
+  const marker = /^\s*(?:[#*>_`-]+\s*)*(INCONCLUSIVE|CONCLUSIVE)\b/i.exec(summary);
+  return marker ? marker[1].toLowerCase() as BlindReviewOutcome : null;
+}
+
+/** Versioned completed-post provenance, shared with recovery eligibility. */
+export function blindReviewCompletion(row: ReviewRow): 'conclusive' | 'inconclusive' | 'invalid-completion' {
+  if (row.protocol_version !== 1 && row.protocol_version !== 2) return 'invalid-completion';
+  const ids = new Set<string>();
+  if (!Number.isSafeInteger(Number(row.id)) || Number(row.id) <= 0 ||
+      !Number.isSafeInteger(row.activation_audit_seq) || row.activation_audit_seq <= 0 ||
+      typeof row.created_by !== 'string' || !row.created_by.trim() ||
+      row.created_at == null || !Number.isFinite(new Date(row.created_at).getTime()) ||
+      row.record_kind !== 'review' || !Array.isArray(row.gaps) ||
+      !Array.isArray(row.dispositions) || row.dispositions.length !== 0 ||
+      row.gaps.some((gap) => {
+        if (!gap || typeof gap.id !== 'string' || !/^G-\d+$/.test(gap.id) ||
+            ids.has(gap.id) || typeof gap.text !== 'string' || !gap.text.trim()) return true;
+        ids.add(gap.id);
+        return false;
+      })) return 'invalid-completion';
+  const marker = blindReviewSummaryOutcome(row.summary);
+  if (row.protocol_version === 1) {
+    // Only migration-tagged v1 receipts retain the old completed-post contract.
+    if (row.outcome !== null) return 'invalid-completion';
+    return marker === 'inconclusive' ? 'inconclusive' : 'conclusive';
+  }
+  if (row.outcome !== 'conclusive' && row.outcome !== 'inconclusive') return 'invalid-completion';
+  if (marker && marker !== row.outcome) return 'invalid-completion';
+  return row.outcome;
 }
 
 interface PlanFacts {
@@ -127,7 +166,8 @@ async function readPlanFacts(sql: Sql, workspaceId: string, planSlug: string, ha
      ORDER BY audit_seq DESC
      LIMIT 1`;
   const rows = await sql<ReviewRow[]>`
-    SELECT id, record_kind, activation_audit_seq, gaps, dispositions, created_by, created_at
+    SELECT id, record_kind, activation_audit_seq, gaps, dispositions, created_by, created_at,
+           protocol_version, outcome, summary
       FROM harness_shared.plan_blind_reviews
      WHERE workspace_id = ${workspaceId} AND plan_slug = ${planSlug}
      ORDER BY id`;
@@ -258,6 +298,12 @@ export async function evaluateBlindReviewGate(
         });
         continue;
       }
+      const completion = blindReviewCompletion(review);
+      if (completion !== 'conclusive') {
+        rejected.push({ reviewId, reviewer, reason: completion,
+          detail: `review #${reviewId} has ${completion} completion evidence` });
+        continue;
+      }
       accepted.push(review);
     }
   } catch (error) {
@@ -325,6 +371,8 @@ export type BlindReviewWriteRefusal =
   | 'review_not_found'
   | 'gap_not_found'
   | 'disposition_target_missing'
+  | 'invalid_outcome'
+  | 'outcome_conflict'
   | 'idempotency_conflict';
 
 export type BlindReviewWriteResult =
@@ -340,9 +388,17 @@ export async function recordBlindReview(
     gaps: ReadonlyArray<{ text: string }>;
     activationAuditSeq?: number;
     summary?: string;
+    outcome: BlindReviewOutcome;
   },
   deps: { sql?: Sql } = {},
 ): Promise<BlindReviewWriteResult> {
+  if (input.outcome !== 'conclusive' && input.outcome !== 'inconclusive') {
+    return { ok: false, code: 'invalid_outcome', message: 'A new review must explicitly state conclusive or inconclusive.' };
+  }
+  const marker = blindReviewSummaryOutcome(input.summary);
+  if (marker && marker !== input.outcome) {
+    return { ok: false, code: 'outcome_conflict', message: 'The explicit summary verdict contradicts the typed outcome.' };
+  }
   const sql = deps.sql ?? getOrgPg().sql;
   const facts = await readPlanFacts(sql, input.workspaceId, input.planSlug, input.harnessSlug);
   if (!facts) return { ok: false, code: 'plan_not_found', message: `no plan '${input.planSlug}'` };
@@ -361,10 +417,12 @@ export async function recordBlindReview(
   const idempotencyKey = `blind-review:v1:${createHash('sha256')
     .update(`${input.workspaceId}\u0000${input.planSlug}\u0000${anchor}\u0000${input.createdBy}`)
     .digest('hex')}`;
-  const samePost = (row: { activation_audit_seq: number | string; gaps: unknown }) =>
-    Number(row.activation_audit_seq) === anchor && JSON.stringify(row.gaps) === JSON.stringify(gaps);
-  const [existing] = await sql<Array<{ id: number | string; activation_audit_seq: number | string; gaps: unknown }>>`
-    SELECT id, activation_audit_seq, gaps
+  const samePost = (row: { activation_audit_seq: number | string; gaps: unknown; outcome: unknown; protocol_version: number }) =>
+    Number(row.activation_audit_seq) === anchor && JSON.stringify(row.gaps) === JSON.stringify(gaps) &&
+    row.protocol_version === 2 && row.outcome === input.outcome;
+  type PostRow = { id: number | string; activation_audit_seq: number | string; gaps: unknown; outcome: unknown; protocol_version: number };
+  const [existing] = await sql<PostRow[]>`
+    SELECT id, activation_audit_seq, gaps, outcome, protocol_version
       FROM harness_shared.plan_blind_reviews
      WHERE workspace_id = ${input.workspaceId}
        AND record_kind = 'review'
@@ -375,7 +433,7 @@ export async function recordBlindReview(
       return {
         ok: false,
         code: 'idempotency_conflict',
-        message: 'this reviewer session already posted different gaps for the current activation audit',
+        message: 'this reviewer session already posted different gaps or completion outcome for the current activation audit',
       };
     }
     return {
@@ -387,9 +445,9 @@ export async function recordBlindReview(
   }
   const [row] = await sql<Array<{ id: number | string }>>`
     INSERT INTO harness_shared.plan_blind_reviews
-      (workspace_id, harness_slug, plan_slug, record_kind, activation_audit_seq, gaps, summary, created_by, idempotency_key)
+      (workspace_id, harness_slug, plan_slug, record_kind, activation_audit_seq, gaps, summary, created_by, idempotency_key, protocol_version, outcome)
     VALUES (${input.workspaceId}, ${facts.plan.harness_slug}, ${input.planSlug}, 'review', ${anchor},
-            ${sql.json(gaps as never)}, ${input.summary ?? null}, ${input.createdBy}, ${idempotencyKey})
+            ${sql.json(gaps as never)}, ${input.summary ?? null}, ${input.createdBy}, ${idempotencyKey}, 2, ${input.outcome})
     ON CONFLICT (workspace_id, idempotency_key)
       WHERE record_kind = 'review' AND idempotency_key IS NOT NULL
       DO NOTHING
@@ -399,8 +457,8 @@ export async function recordBlindReview(
   // The unique index serializes simultaneous retries. A conflict means another
   // request won the insert between our first read and write; return that same
   // receipt only if it carries the identical activation anchor and gaps.
-  const [raced] = await sql<Array<{ id: number | string; activation_audit_seq: number | string; gaps: unknown }>>`
-    SELECT id, activation_audit_seq, gaps
+  const [raced] = await sql<PostRow[]>`
+    SELECT id, activation_audit_seq, gaps, outcome, protocol_version
       FROM harness_shared.plan_blind_reviews
      WHERE workspace_id = ${input.workspaceId}
        AND record_kind = 'review'

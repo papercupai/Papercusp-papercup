@@ -6,6 +6,11 @@ import { installDbDiagnosticCorrelationWiring } from '../../../agent-tools/db-di
 const resolveNamedQueryMock = vi.fn();
 const observeResolveMock = vi.fn();
 const serializeJsonResponseMock = vi.fn(async (value: unknown, _itemCount?: number) => JSON.stringify(value));
+const mergeMachineRowsMock = vi.fn(async (_req: Request, rows: unknown[]) => rows);
+
+vi.mock('../../../workspace-host/local-machine-operator-transport', () => ({
+  mergeLocalMachineControlRows: (req: Request, rows: unknown[]) => mergeMachineRowsMock(req, rows),
+}));
 
 vi.mock('../../../sync-resolver', () => ({
   resolveNamedQueryV2: (...args: unknown[]) => resolveNamedQueryMock(...args),
@@ -34,6 +39,18 @@ type RestRoute = {
 async function route(): Promise<RestRoute> {
   return (await import('./rest-query')).default as unknown as RestRoute;
 }
+
+it('includes saved-signin machine inventory in the existing control query response', async () => {
+  const local = { id: 'local-host', kind: 'workspace' };
+  const remote = { id: 'remote-host', kind: 'workspace' };
+  resolveNamedQueryMock.mockResolvedValueOnce([local]);
+  mergeMachineRowsMock.mockResolvedValueOnce([local, remote]);
+  const request = new Request('http://localhost:3170/api/zero-harness/rest-query?name=workspaceHosts.control');
+  const response = await (await route()).handler(request);
+  expect(response.status).toBe(200);
+  expect((await response.json()).rows).toEqual([local, remote]);
+  expect(mergeMachineRowsMock).toHaveBeenCalledWith(request, [local]);
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

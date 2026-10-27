@@ -37,10 +37,10 @@ describe('bounded work-item resume', () => {
       .toEqual({ status: 'oversized', text: null });
   });
 
-  it('blocks a stored action while the live item has a pending admission review or hold', () => {
+  it('blocks a stored action while the live item carries an admission hold (the self-select floor agrees)', () => {
     const saved = { ...checkpoint, checkpoint: renderCarryNote({ next: 'Close as resolved.' }) };
-    const pendingReview = build({
-      item: { ...item, payload: { ...item.payload, admissionReview: { state: 'pending' } } },
+    const heldWithReview = build({
+      item: { ...item, payload: { ...item.payload, admissionReview: { state: 'pending' }, admissionHold: { reason: 'deferred: twin EI-1 is claimed' } } },
       checkpoint: saved,
     });
     const admissionHold = build({
@@ -52,9 +52,22 @@ describe('bounded work-item resume', () => {
       checkpoint: saved,
     });
 
-    expect(pendingReview.nextAction).toMatchObject({ status: 'blocked', text: null, reason: expect.stringContaining('pending') });
+    expect(heldWithReview.nextAction).toMatchObject({ status: 'blocked', text: null, reason: expect.stringContaining('hold') });
     expect(admissionHold.nextAction).toMatchObject({ status: 'blocked', text: null, reason: expect.stringContaining('hold') });
     expect(reviewed.nextAction).toEqual({ status: 'available', text: 'Close as resolved.' });
+  });
+
+  it('keeps a fail-open row with only a pending post-hoc review actionable, with a caution (EI-26988974367709614)', () => {
+    const saved = { ...checkpoint, checkpoint: renderCarryNote({ next: 'Close as resolved.' }) };
+    const pendingReview = build({
+      item: { ...item, payload: { ...item.payload, admissionReview: { state: 'pending' }, admissionHold: false } },
+      checkpoint: saved,
+    });
+    expect(pendingReview.nextAction).toMatchObject({
+      status: 'available',
+      text: 'Close as resolved.',
+      admissionCaution: expect.stringContaining('post-hoc duplicate review'),
+    });
   });
 
   it.each(['append', 'refresh'])('uses the stored latest update, independent of %s history order', order => {

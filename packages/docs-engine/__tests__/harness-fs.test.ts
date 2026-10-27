@@ -1,10 +1,66 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { harnessFsAdapter } from '../src/adapters/harness-fs';
+import { genericFsAdapter } from '../src/adapters/generic-fs';
+import { DOC_FILE_IO_BATCH_SIZE } from '../src/adapters/file-batches';
+import type { DocSource } from '../src/types';
 
 let tmpDir: string;
+
+async function expectBoundedReads(root: string, createSource: () => DocSource): Promise<void> {
+  const pagesRoot = path.join(root, 'pages');
+  await fs.mkdir(pagesRoot, { recursive: true });
+  const names = Array.from({ length: 40 }, (_, i) => `page-${String(i).padStart(2, '0')}.md`);
+  await Promise.all(names.map((name) => fs.writeFile(path.join(pagesRoot, name), `# Title ${name}\n`)));
+  const expected = new Map(names.map((name) => [`pages/${name.replace(/\.md$/, '')}`, `Title ${name}`]));
+  const originalReadFile = fs.readFile.bind(fs);
+  let reads = 0;
+  let active = 0;
+  let peak = 0;
+  let releaseReads!: () => void;
+  let signalOverlap!: () => void;
+  const released = new Promise<void>((resolve) => { releaseReads = resolve; });
+  const overlap = new Promise<void>((resolve) => { signalOverlap = resolve; });
+  vi.spyOn(fs, 'readFile').mockImplementation(async (...args) => {
+    if (!String(args[0]).startsWith(root + path.sep)) {
+      return originalReadFile(...args as Parameters<typeof fs.readFile>);
+    }
+    reads += 1;
+    active += 1;
+    peak = Math.max(peak, active);
+    if (reads === 2) signalOverlap();
+    try {
+      await released;
+      return await originalReadFile(...args as Parameters<typeof fs.readFile>);
+    } finally {
+      active -= 1;
+    }
+  });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const listing = createSource().listPages();
+    const overlapped = await Promise.race([
+      overlap.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 1500); }),
+    ]);
+    releaseReads();
+    const pages = await listing;
+    const matched = pages.filter((page) => expected.has(page.slug));
+
+    expect(overlapped, 'a blocked file read must not serialize the corpus listing').toBe(true);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(DOC_FILE_IO_BATCH_SIZE);
+    expect(reads).toBe(names.length);
+    expect(new Map(matched.map((page) => [page.slug, page.title]))).toEqual(expected);
+  } finally {
+    if (timer) clearTimeout(timer);
+    releaseReads();
+    vi.restoreAllMocks();
+  }
+}
 
 beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-fs-test-'));
@@ -112,9 +168,23 @@ describe('harnessFsAdapter', () => {
   it('integrates with buildOutline', async () => {
     const { buildOutline } = await import('../src/outline');
     const adapter = harnessFsAdapter(tmpDir);
-    const out = await buildOutline(adapter);
+    const metadata: Record<string, unknown>[] = [];
+    const out = await buildOutline(adapter, { metadata: (event) => metadata.push(event) });
     expect(out.sectionCount).toBeGreaterThanOrEqual(2);
     const sec = out.sections.find((s) => s.slug === 'harness-state');
     expect(sec?.title).toBe('Harness state');
+    expect(metadata).toEqual(expect.arrayContaining([
+      expect.objectContaining({ docsListPagesTiming: expect.objectContaining({ component: 'harness-fs', phase: 'walk', state: 'completed' }) }),
+      expect.objectContaining({ docsListPagesTiming: expect.objectContaining({ component: 'harness-fs', phase: 'read-parse', state: 'completed' }) }),
+    ]));
+  });
+
+  it('bounds cold reads for harness and generic filesystem sources', async () => {
+    const harnessProject = path.join(tmpDir, 'bounded-harness-project');
+    const harnessDocs = path.join(harnessProject, 'docs');
+    await expectBoundedReads(harnessDocs, () => harnessFsAdapter(harnessProject, { docsRoot: harnessDocs, stateFiles: [] }));
+
+    const genericDocs = path.join(tmpDir, 'bounded-generic-docs');
+    await expectBoundedReads(genericDocs, () => genericFsAdapter(genericDocs));
   });
 });

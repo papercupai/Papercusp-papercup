@@ -7,6 +7,7 @@ import {
   HISTORY_7D_MAX_SAMPLES,
   HISTORY_7D_MIN_SPACING_MS,
   accountBurnAction,
+  accountGatewayBurnAction,
   accountBurnTransition,
   accountBurnVerdict,
   appendUtilization7dSample,
@@ -27,6 +28,7 @@ import {
   renderBurnVerdictLabel,
   type BurnSample,
 } from './burn-governor';
+import { accountLoadKey } from './account-failover';
 
 const T0 = 1_800_000_000_000; // fixed epoch base
 const MIN = 60_000;
@@ -571,6 +573,35 @@ describe('selectAccountForSpawn burn wiring', () => {
     expect(accountBurnAction(pool.accounts[0]!, SEL_NOW)).toBe('shed');
     const sel = selectAccountForSpawn(pool, SEL_NOW, { rng: () => 0 });
     expect(sel.accountId).toBe('ok');
+  });
+
+  // WI-6554700010029796: the gateway was handed the SPAWN action, so a pacing-projection shed scored
+  // Infinity in accountLoadKey and the gateway 429'd every request for a model only those accounts
+  // serve, while the provider returned zero 429s. The gateway form must keep serving on a projection.
+  it('GATEWAY: a pacing-projection shed ranks as throttle (finite, behind healthy peers) — it still refuses only the spawn pin', () => {
+    const pool = poolWith({ u0: 0.31, u1: 0.45, resetAt: T0 + 24 * HR });
+    const bad = pool.accounts[0]!;
+    expect(accountBurnVerdict(bad.rate, SEL_NOW).disposition).toBe('pacing-projection');
+    expect(accountBurnAction(bad, SEL_NOW)).toBe('shed');
+    expect(accountGatewayBurnAction(bad, SEL_NOW)).toBe('throttle');
+    const projected = accountLoadKey({ burnAction: accountGatewayBurnAction(bad, SEL_NOW) });
+    const healthy = accountLoadKey({ burnAction: accountGatewayBurnAction(pool.accounts[1]!, SEL_NOW) });
+    expect(Number.isFinite(projected)).toBe(true);
+    expect(projected).toBeGreaterThan(healthy);
+  });
+
+  it('GATEWAY: a measured-wall shed (7d utilization at the wall) stays out of the gateway race', () => {
+    const pool = poolWith({ u0: 0.98, u1: 1.0, resetAt: T0 + 24 * HR });
+    const walled = pool.accounts[0]!;
+    expect(accountBurnVerdict(walled.rate, SEL_NOW).disposition).toBe('measured-wall');
+    expect(accountGatewayBurnAction(walled, SEL_NOW)).toBe('shed');
+    expect(accountLoadKey({ burnAction: accountGatewayBurnAction(walled, SEL_NOW) })).toBe(Infinity);
+  });
+
+  it('GATEWAY: throttle and none pass through unchanged', () => {
+    const throttled = poolWith({ u0: 0.3, u1: 0.4, resetAt: T0 + 24 * HR });
+    expect(accountGatewayBurnAction(throttled.accounts[0]!, SEL_NOW)).toBe('throttle');
+    expect(accountGatewayBurnAction(throttled.accounts[1]!, SEL_NOW)).toBe('none');
   });
 
   it('a THROTTLE-trajectory account yields to a non-throttled peer (first-pass preference) despite better drain', () => {

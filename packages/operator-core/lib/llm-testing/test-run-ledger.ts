@@ -34,6 +34,7 @@ import { sharedUtilityPoolMax } from '../resource-profile';
 import { resolveGitContext } from '../testing-branch-resolve';
 import { resolveTestRunSource } from '../testing-run-source';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '../testing-worktree';
+import { toolDeliveryBlockLedgerIdentity, type ToolDeliveryCleanBlock } from '../tool-delivery-clean-runtime';
 
 export interface LlmScenarioLedgerRow {
   filePath: string;
@@ -106,6 +107,9 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
   const outputTailBase = `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
   const outputTail = status === 'pass' ? null
     : `${outputTailBase}${diagnosticTail ? `; ${diagnosticTail}` : ''}`.slice(0, 1200);
+  const runIds = report.runs.map(run => run.summary.runId);
+  const completeRunIds = runIds.length > 0 && runIds.every(id => typeof id === 'string' && id.length > 0)
+    && new Set(runIds).size === runIds.length;
 
   return {
     filePath: ledger.filePath,
@@ -124,6 +128,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       testNamePattern: null,
       scenarioId: report.scenarioId,
       testLayer: 'llm',
+      ...(completeRunIds ? { llmRunIds: runIds } : {}),
       // Scenarios are imported before their per-scenario snapshot. Reuse the
       // process boundary so proof binding also catches edits after those imports.
       runStartedAt: PROCESS_BOOT_TIME,
@@ -152,7 +157,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
  * `operator/S01-….ts`, `sn-S01-…` in `papercup/SN01-….ts`), and ONE file may define
  * many scenarios (`S33-goal-agenda.ts` builds `` `su-S33-agenda-${c}` ``). So the file
  * is found by CONTENT: the non-test source (target dir first, then the whole tree)
- * holding the id as a string literal, else the longest templated prefix of it. A tie
+ * holding the id as a string literal, else the longest template/concatenation prefix. A tie
  * or no match returns undefined — never a guessed path, because a wrong path
  * silently drops the ledger row or misattributes the evidence.
  */
@@ -196,14 +201,17 @@ function listScenarioSources(dir: string): string[] {
 }
 
 /**
- * Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends.
+ * Infinity for an exact quoted id; else the longest template or quoted-concatenation prefix.
  * A role-only prefix (one segment, e.g. `su-`, `sn-`) counts only when `allowRolePrefix`.
  */
 function idMatchScore(source: string, id: string, allowRolePrefix: boolean): number {
   for (const q of ["'", '"', '`']) if (source.includes(`${q}${id}${q}`)) return Number.POSITIVE_INFINITY;
   let best = 0;
-  for (const m of source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g)) {
-    const prefix = m[1]!;
+  const prefixes = [
+    ...Array.from(source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g), m => m[1]!),
+    ...Array.from(source.matchAll(/(['"])([A-Za-z0-9_-]+)\1\s*\+/g), m => m[2]!),
+  ];
+  for (const prefix of prefixes) {
     if (!prefix.includes('-') || !id.startsWith(prefix) || id.length <= prefix.length) continue;
     if (!allowRolePrefix && prefix.split('-').filter(Boolean).length < 2) continue;
     best = Math.max(best, prefix.length);
@@ -298,6 +306,7 @@ export async function recordLlmScenarioTestRun(
   report: RunReport,
   scenarioFilePath: string | undefined,
   before: LlmScenarioLedgerStart | null,
+  cleanBlock?: { experimentId: string; blockIndex: number; block: ToolDeliveryCleanBlock },
 ): Promise<number | null> {
   try {
     // The scenario's executed source owns this receipt. An inherited integration
@@ -326,6 +335,12 @@ export async function recordLlmScenarioTestRun(
       runtimeEnvironmentBeforeCaptureStatus: before?.runtime.status ?? 'not-configured',
       runtimeEnvironmentAfterCaptureStatus: runtimeAfter.status,
     });
+    if (cleanBlock) {
+      const { block, blockIndex, experimentId } = cleanBlock;
+      if (report.scenarioId !== block.scenario || JSON.stringify(report.runs.map(run => run.summary.runId)) !== JSON.stringify(block.runIds)
+          || report.runs.some(run => run.summary.variantId !== block.variantId)) throw new Error('Clean block differs from original scenario report.');
+      row.executionDetails.llmBlockCustody = toolDeliveryBlockLedgerIdentity(experimentId, blockIndex, block);
+    }
 
     // Same pool + options as ./storage, so the two writers share one connection budget.
     const sql = getLongLivedAdminPool('llm-testing-storage', { max: sharedUtilityPoolMax(), prepare: false });

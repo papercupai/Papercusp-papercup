@@ -257,7 +257,7 @@ describe('P-021 portable class contracts through the signed Cupboard release (re
     // Destination conformance runs against the destination's own live tool registry.
     const imported = (await getCapabilityClass(db.adminSql, WS, 'publisher.mail-send', '1.0.0'))!;
     const lookup = (name: string) => name === TOOL
-      ? { name, pluginName: 'publisher-mail', inputSchema: sendInput, outputSchema: sendOutput } : null;
+      ? { name, pluginName: 'publisher-mail', providerVersion: '1.0.0', inputSchema: sendInput, outputSchema: sendOutput } : null;
     const report = validateProviderInterface({
       capabilityClass: imported, providerPackage: 'publisher-mail', providerVersion: '1.0.0',
       registryRevision: 'dest-rev-1', verbBindings: { send: TOOL }, lookup,

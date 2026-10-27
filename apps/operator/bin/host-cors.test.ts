@@ -118,6 +118,7 @@ describe('apiCors middleware', () => {
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:3055');
     expect(res.headers.get('Access-Control-Allow-Credentials')).toBe('true');
     expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+    expect(res.headers.get('Access-Control-Allow-Headers')).toContain('x-papercusp-machine');
   });
 
   it('decorates a downstream response for an allowed non-preflight request', async () => {

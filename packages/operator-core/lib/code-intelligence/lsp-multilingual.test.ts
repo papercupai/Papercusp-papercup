@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { languageForFile, LSP_LANGUAGES, readinessStrategyFor, resolveProjectRoot,
-  resolveSymbolSearchScope, specForLanguage } from './lsp-adapter';
+  resolveSymbolSearchScope, specForLanguage, typescriptWorkspaceMemoryMb } from './lsp-adapter';
 import { resolveLspDaemonDispatchContext } from './lsp-daemon-protocol';
 import { initializeCapabilityObservations, LspUnsupportedIntentError, requireLspCapability } from './lsp-capability-matrix';
 import lspQueryTool from '../agent-tools/lsp/query';
@@ -13,6 +14,37 @@ const fixture = () => { const root = mkdtempSync(join(tmpdir(), 'lsp-languages-'
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('P-004 compiler language profiles', () => {
+  it('keeps TypeScript position requests in the anchored project despite an invalid sibling configuration', () => {
+    const root = fixture();
+    for (const name of ['first', 'second', 'unrelated']) {
+      const project = join(root, name);
+      mkdirSync(project);
+      writeFileSync(join(project, 'source.ts'), 'export const target = 1;\n');
+      writeFileSync(join(project, 'tsconfig.json'), JSON.stringify(name === 'unrelated'
+        ? { extends: 'missing-package/tsconfig' }
+        : { files: ['source.ts'], compilerOptions: { noLib: true } }));
+    }
+    const compiler = createRequire(import.meta.url).resolve('@typescript/old/lib/tsserver.js');
+    expect(() => typescriptWorkspaceMemoryMb(root, compiler)).toThrow('Cannot size TypeScript project');
+    for (const name of ['first', 'second']) {
+      const project = join(root, name), file = join(project, 'source.ts');
+      const position = resolveProjectRoot('typescript', file, root);
+      expect(position).toEqual({ root: project, error: null });
+      expect(resolveSymbolSearchScope('typescript', file, root).root).toBe(position.root);
+      expect(typescriptWorkspaceMemoryMb(position.root, compiler)).toBeGreaterThan(0);
+    }
+  });
+  it('retains inferred TypeScript projects and refuses files or symlinks outside the caller boundary', () => {
+    const root = fixture(), outside = fixture(), file = join(root, 'source.ts');
+    writeFileSync(file, 'export const target = 1;\n');
+    expect(resolveProjectRoot('typescript', file, root)).toEqual({ root, error: null });
+    const foreign = join(outside, 'source.ts');
+    writeFileSync(foreign, 'export const foreign = 1;\n');
+    const linked = join(root, 'linked.ts');
+    symlinkSync(foreign, linked);
+    for (const path of [foreign, linked])
+      expect(resolveProjectRoot('typescript', path, root).error).toMatch(/outside project boundary/);
+  });
   it.each([['a.js', 'typescript'], ['a.tsx', 'typescript'], ['a.rs', 'rust'],
     ['a.py', 'python'], ['a.pyi', 'python'], ['a.go', 'go'], ['a.cpp', null]])('routes %s to its own server', (file, language) => {
     expect(languageForFile(file)).toBe(language);

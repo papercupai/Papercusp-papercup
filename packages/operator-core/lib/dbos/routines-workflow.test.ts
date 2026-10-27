@@ -9,6 +9,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { LearningLoopHealthSweepReport } from '../harness/routines/learning-loop-health-sweep';
 import { ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from './routines-sweep-step-overrun';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { createInProcessPassRegistry, IN_PROCESS_PASS_STALE_MS } from './routine-tick-overlap-guard';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
@@ -152,6 +154,10 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
+import { claimDueRoutine } from '../harness/routines/claim';
+import { listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
+import { reconcileLoopRoutines } from '../harness/routines/reconcile-loop-routines';
+import { poolPressure } from './pool-pressure';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
@@ -199,6 +205,113 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+});
+
+describe('critical rebase remains available during a retained noncritical sweep', () => {
+  const noncritical = pinModuleState('@papercusp/operator-core.routines-sweep-pass-registry', createInProcessPassRegistry);
+  const critical = pinModuleState('@papercusp/operator-core.routines-critical-sweep-pass-registry', createInProcessPassRegistry);
+  const tick = (id: string) => {
+    (DBOS as { workflowID: string }).workflowID = id;
+    return state.scheduledSweepTick!();
+  };
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
+
+  beforeEach(() => {
+    noncritical.passes.clear();
+    critical.passes.clear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.poolShedFixture = true;
+    state.executeLoopRebaseOperation = true;
+  });
+  afterEach(() => {
+    noncritical.passes.clear();
+    critical.passes.clear();
+    (DBOS as { workflowID: string }).workflowID = 'test-routine-fire';
+    vi.restoreAllMocks();
+  });
+
+  it('runs rebase on later workflows while one noncritical pool probe remains held', async () => {
+    const held = deferred<'critical'>();
+    vi.mocked(poolPressure).mockImplementationOnce(() => held.promise);
+    const first = tick('held-noncritical');
+    try {
+      await vi.waitFor(() => expect(poolPressure).toHaveBeenCalledTimes(1));
+      await tick('later-rebase');
+      expect(reconcileLoopRoutines).toHaveBeenCalledTimes(2);
+      expect(poolPressure).toHaveBeenCalledTimes(1);
+      expect(noncritical.passes.has('held-noncritical')).toBe(true);
+    } finally {
+      held.resolve('critical');
+      await first;
+    }
+    await tick('after-noncritical-settlement');
+    expect(poolPressure).toHaveBeenCalledTimes(2);
+    expect(reconcileLoopRoutines).toHaveBeenCalledTimes(3);
+    expect(noncritical.passes.size).toBe(0);
+  });
+
+  it('excludes a second critical operation and all new noncritical work until rebase settles', async () => {
+    const held = deferred<void>();
+    const original = vi.mocked(reconcileLoopRoutines).getMockImplementation()!;
+    vi.mocked(reconcileLoopRoutines).mockImplementationOnce(async (...args) => {
+      await held.promise;
+      return original(...args);
+    });
+    const first = tick('held-critical');
+    try {
+      await vi.waitFor(() => expect(reconcileLoopRoutines).toHaveBeenCalledTimes(1));
+      await tick('excluded-critical');
+      expect(reconcileLoopRoutines).toHaveBeenCalledTimes(1);
+      expect(poolPressure).not.toHaveBeenCalled();
+    } finally {
+      held.resolve();
+      await first;
+    }
+    await tick('after-critical-settlement');
+    expect(reconcileLoopRoutines).toHaveBeenCalledTimes(2);
+    expect(poolPressure).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the critical lane after a rejected rebase operation is observed', async () => {
+    vi.mocked(reconcileLoopRoutines).mockRejectedValueOnce(new Error('critical fixture failure'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await tick('rejected-critical');
+    expect(warn).toHaveBeenCalledWith('[loop-reconcile] rebase pass failed: critical fixture failure');
+    await tick('after-critical-rejection');
+    expect(reconcileLoopRoutines).toHaveBeenCalledTimes(2);
+    expect(critical.passes.size).toBe(0);
+  });
+
+  it('releases the noncritical lane after a rejected pool probe is observed', async () => {
+    vi.mocked(poolPressure).mockRejectedValueOnce(new Error('noncritical fixture failure'));
+    await expect(tick('rejected-noncritical')).rejects.toThrow('noncritical fixture failure');
+    await tick('after-noncritical-rejection');
+    expect(poolPressure).toHaveBeenCalledTimes(2);
+    expect(reconcileLoopRoutines).toHaveBeenCalledTimes(2);
+    expect(noncritical.passes.size).toBe(0);
+  });
+
+  it.each(['critical', 'noncritical'] as const)('preserves the exact stale boundary of the %s lane', async lane => {
+    const registry = lane === 'critical' ? critical : noncritical;
+    const started = 1_790_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(started + IN_PROCESS_PASS_STALE_MS - 1);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registry.passes.set('stale-predecessor', started);
+    await tick('before-stale-boundary');
+    expect(registry.passes.has('stale-predecessor')).toBe(true);
+    expect(poolPressure).not.toHaveBeenCalled();
+    expect(reconcileLoopRoutines).toHaveBeenCalledTimes(lane === 'critical' ? 0 : 1);
+    clock.mockReturnValue(started + IN_PROCESS_PASS_STALE_MS);
+    await tick('at-stale-boundary');
+    expect(registry.passes.size).toBe(0);
+    expect(poolPressure).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('EVICTED') && String(line).includes('stale-predecessor'))).toBe(true);
+  });
 });
 
 describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (EI-224330)', () => {
@@ -671,11 +784,13 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
 });
 
 describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859486764076047)', () => {
-  it('runs loop-rebase before the critical-shed early return', () => {
+  it('runs loop-rebase before entering the pool-shed noncritical lane', () => {
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
-    const shedSection = source.split('// EI-11171 critical-routine floor (cont.):')[1] ?? '';
-    const branch = shedSection.match(/if \(poolCritical\) \{[\s\S]*?return;\n  \}/)?.[0] ?? '';
-    expect(branch).toContain('await runLoopRebaseSweep(sql, DBOS);');
+    const wrapper = source.split('async function routinesSweepTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepPassImpl')[0] ?? '';
+    const rebase = wrapper.indexOf('await runLoopRebaseSweep(getOrgPg().sql, timedSweepDbos)');
+    expect(rebase).toBeGreaterThan(-1);
+    expect(rebase).toBeLessThan(wrapper.indexOf('await routinesSweepPassImpl(timedSweepDbos)'));
+    expect(source).toContain('if (poolCritical) return;');
     expect(source).toContain('async function runLoopRebaseSweep');
   });
 });
@@ -705,6 +820,83 @@ describe('routinesTickImpl — probe evidence', () => {
       });
       expect(detail.shedCount).toBeGreaterThan(0);
       expect(state.recordPoolShedEvent).toHaveBeenCalledWith(expect.any(String), detail.shedCount);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * WI-6554700010030059: the EI-27084758447422793 starvation bound admitted a starved routine
+ * through the pool shed, but the dispatch epoch gives every non-critical queue zero credit under
+ * a critical probe, so the routine was HELD and never started. Measured 2026-10-27:
+ * precompute-derived-reads was logged "firing STARVED" on consecutive ticks while it stayed 50+
+ * min overdue. These run the real registered dispatch tick with an epoch that grants no credit.
+ */
+describe('routinesTickImpl — the starvation bound reaches the zero-credit hold (WI-6554700010030059)', () => {
+  const row = (id: string, targetRole: string, overdueMin: number): RoutineRow => ({
+    id,
+    name: id,
+    workspaceId: 'routine-probe-fixture',
+    installSlug: 'papercusp',
+    triggerKind: 'cron',
+    triggerConfig: { cron: '0 * * * * *' },
+    targetRole,
+    payloadTemplate: null,
+    concurrency: 'queue',
+    catchup: 'skip-old',
+    tier: 'durable',
+    active: true,
+    lastFiredAt: null,
+    nextFireAt: new Date(Date.now() - overdueMin * 60_000),
+    rescheduleIntervalSec: null,
+    targetOwnerId: null,
+  });
+  const startedIds = () =>
+    state.startWorkflow.mock.calls.map(([, options]) => {
+      const opts = options as { queueName: string; enqueueOptions: { deduplicationID: string } };
+      return `${opts.queueName}:${opts.enqueueOptions.deduplicationID}`;
+    });
+
+  it.each([
+    { pressure: 'critical' as const, label: 'critical probe (shed)' },
+    { pressure: 'ok' as const, label: 'healthy probe, window exhausted' },
+  ])('under a $label, starts exactly the oldest starved routine despite zero queue credit', async ({ pressure }) => {
+    state.poolShedFixture = true; // the epoch grants no queue credit at all
+    vi.mocked(poolPressure).mockResolvedValueOnce(pressure);
+    const starved = row('rt_starved', 'system:precompute-derived-reads', 51);
+    const alsoStarved = row('rt_also_starved', 'system:gate-watcher-tick', 42);
+    const fresh = row('rt_fresh', 'system:gate-watcher-tick', 2);
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([fresh, alsoStarved, starved]);
+    vi.mocked(claimDueRoutine).mockResolvedValueOnce(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      // Positive control: the tick reached the credit check for these routines.
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:rt_starved`]);
+      expect(vi.mocked(claimDueRoutine)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(claimDueRoutine).mock.calls[0]?.[1]).toMatchObject({ id: 'rt_starved' });
+      const lines = warn.mock.calls.map(([line]) => String(line));
+      expect(lines.some((line) => line.includes('starvation bound: starting rt_starved'))).toBe(true);
+      // The second starved routine and the fresh one do not start: the leak is one start per tick.
+      // Under a critical shed they are dropped by the shed filter before the credit check; under a
+      // healthy probe they reach it and are HELD for lack of credit.
+      expect(lines.some((line) => line.includes(`HELD ${ROUTINES_QUEUE} dispatch`))).toBe(pressure === 'ok');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('starts nothing past zero credit when no routine has been overdue for the bound', async () => {
+    state.poolShedFixture = true;
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([row('rt_fresh', 'system:gate-watcher-tick', 5)]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(state.startWorkflow).not.toHaveBeenCalled();
+      expect(vi.mocked(claimDueRoutine)).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
@@ -783,7 +975,7 @@ describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () =>
     expect(new Set(stepNames)).toEqual(new Set(['list-due-routines', 'routine-dispatch-feedback-epoch', 'claim-routine']));
   });
 
-  it('routinesSweepTick takes the in-process pass guard before running any sweep step (WI-6554700010019234)', () => {
+  it('routinesSweepTick guards and releases each lane before its sweep work', () => {
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
     const wrapper =
       source.split('async function routinesSweepTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepPassImpl')[0] ??
@@ -793,6 +985,8 @@ describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () =>
     const enter = wrapper.indexOf('tryEnterInProcessPass(');
     expect(enter).toBeGreaterThan(-1);
     expect(enter).toBeLessThan(wrapper.indexOf('await routinesSweepPassImpl(timedSweepDbos)'));
+    expect(enter).toBeLessThan(wrapper.indexOf('await runLoopRebaseSweep('));
+    expect(wrapper).toContain('exitInProcessPass(criticalSweepPassRegistry, passId)');
     // The entry is released in a finally, so a throwing pass cannot block every later pass.
     expect(wrapper).toMatch(/finally\s*\{\s*exitInProcessPass\(/);
     // No DBOS step may run before the guard decides.
@@ -924,6 +1118,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
           installSlug: 'papercusp',
           targetRole: 'su',
           routineName: 'loop-su-pinned',
+          provenance: null,
         },
       },
       { name: 'routine-fire-active-fence', output: true },
@@ -1048,6 +1243,17 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
 });
 
 describe('enqueueRoutineFire — on-demand durable dispatch', () => {
+  it('persists explicit census origin at both boundaries while legacy fires keep unknown origin', async () => {
+    const { registerSystemAction } = await import('../harness/routines/system-actions');
+    registerSystemAction('sql-read-census', async () => undefined);
+    const provenance = { version: 1 as const, origin: 'scheduler' as const,
+      scheduledAt: '2026-10-27T08:17:00Z', configHash: 'a'.repeat(64) };
+    await routineFireWorkflow('census-proof', 'workspace-1', 'home', 'system:sql-read-census', {}, null,
+      'census-proof', null, null, provenance);
+    expect(state.stepOutputs).toContainEqual({ name: 'routine-fire-start', output: expect.objectContaining({ provenance }) });
+    expect(state.stepOutputs).toContainEqual({ name: 'routine-fire-finish', output: expect.objectContaining({ provenance }) });
+  });
+
   const routine = {
     id: 'rt_home_git_sync',
     workspaceId: 'workspace-1',
@@ -1122,6 +1328,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      expect.objectContaining({ version: 1, origin: 'manual', scheduledAt: null }),
     );
     expect(state.startWorkflow).not.toHaveBeenCalled();
   });
@@ -1143,6 +1350,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      expect.objectContaining({ version: 1, origin: 'manual', scheduledAt: null }),
     );
   });
 

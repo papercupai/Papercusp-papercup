@@ -68,6 +68,8 @@ export const PURE_PROOF_CAPTURE_EST_MS_PER_FILE = 250;
 /** A slice running this many times its estimate (and at least the floor) is killed. */
 export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_FACTOR = 4;
 export const PURE_PROOF_CAPTURE_SLICE_TIMEOUT_MIN_MS = 3 * 60_000;
+/** WI-6554700010030061: a timed-out slice is re-queued as this many sub-slices. */
+export const PURE_PROOF_CAPTURE_TIMEOUT_SPLIT = 8;
 /** Proofs are only consumed from the gate's own run context (D-004 rule 1). */
 export const PURE_PROOF_CAPTURE_RUN_CONTEXT = "green-checkpoint";
 /** The only workspace with a pure lane (packages/operator-core `test:lane-pure`). */
@@ -191,6 +193,24 @@ export function decideNextSlice({
     return { go: false, reason: "next-fire" };
   }
   return { go: true, reason: null };
+}
+
+/**
+ * WI-6554700010030061: split a slice that timed out into at most `parts` contiguous sub-slices.
+ * Vitest reports a slice's results only when the run ends, so a single hung file used to discard
+ * every completed proof in its slice and end capture for the rest of the lane (measured on the
+ * frozen lineage: 249 of 250 files passed, 0 proofs written, remaining=4001). Re-running the
+ * sub-slices keeps the good files' proofs and narrows the hang to one file in a few rounds.
+ * @param {string[]} slice
+ * @param {number} [parts]
+ * @returns {string[][]}
+ */
+export function splitTimedOutSlice(slice, parts = PURE_PROOF_CAPTURE_TIMEOUT_SPLIT) {
+  if (slice.length <= 1) return [];
+  const size = Math.max(1, Math.ceil(slice.length / Math.max(2, parts)));
+  const out = [];
+  for (let i = 0; i < slice.length; i += size) out.push(slice.slice(i, i + size));
+  return out;
 }
 
 /** The vitest argv for one slice: an explicit file list, and an empty match is an ERROR. */
@@ -429,7 +449,8 @@ async function withClient(d, env, fn) {
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
- *   remaining: number, stoppedBy: string | null, evidence: { version: 1, runGroupId: string,
+ *   remaining: number, stoppedBy: string | null, timedOutSlices?: number, hung?: string[],
+ *   evidence: { version: 1, runGroupId: string,
  *   startedAtMs: number, completedAtMs: number, clean: boolean | null,
  *   proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }, lines: string[] }>}
  */
@@ -464,6 +485,9 @@ export async function runPureLaneProofCapture({
     isolatedFail: 0,
     remaining: 0,
     stoppedBy: null,
+    timedOutSlices: 0,
+    /** @type {string[]} repo-relative files that timed out ALONE (WI-6554700010030061) */
+    hung: [],
   };
   /** @type {{ version: 1, runGroupId: string, startedAtMs: number, completedAtMs: number,
    *   clean: boolean | null, proofs: Awaited<ReturnType<typeof loadCapturedProofRows>> | null }} */
@@ -526,6 +550,7 @@ export async function runPureLaneProofCapture({
         client,
         workspaceName: PURE_PROOF_CAPTURE_WORKSPACE.name,
         runContext: PURE_PROOF_CAPTURE_RUN_CONTEXT,
+        runnerIdentity,
         files: laneFiles,
       });
       passedInSuite = outcomes.passedInSuite;
@@ -576,10 +601,14 @@ export async function runPureLaneProofCapture({
   const startedAtMs = d.now();
   let msPerFile = PURE_PROOF_CAPTURE_EST_MS_PER_FILE;
   let tempDir = null;
-  let next = 0;
+  // WI-6554700010030061: a queue, not a cursor — a timed-out slice goes back on the front as
+  // sub-slices (splitTimedOutSlice) instead of ending the phase.
+  /** @type {string[][]} */
+  const queue = [];
+  for (let i = 0; i < plan.order.length; i += sliceSize) queue.push(plan.order.slice(i, i + sliceSize));
   try {
-    while (next < plan.order.length) {
-      const slice = plan.order.slice(next, next + sliceSize);
+    while (queue.length > 0) {
+      const slice = queue[0];
       const estimateMs = Math.ceil(slice.length * msPerFile);
       let nextFireAtMs = null;
       try {
@@ -600,6 +629,7 @@ export async function runPureLaneProofCapture({
         break;
       }
 
+      queue.shift();
       tempDir ??= d.makeTempDir();
       const resultFile = path.join(tempDir, `executed-map-result-${summary.slices + 1}.jsonl`);
       const wsRel = slice.map((f) => path.relative(wsAbsDir, path.join(root, f)).split(path.sep).join("/"));
@@ -615,8 +645,9 @@ export async function runPureLaneProofCapture({
       const durationMs = Math.max(0, d.now() - sliceStart);
       summary.slices += 1;
       summary.files += slice.length;
-      next += slice.length;
-      msPerFile = Math.max(msPerFile, durationMs / slice.length);
+      // A killed slice's duration is the timeout, not a per-file cost; it must not inflate the
+      // estimate that sizes every later slice's budget check and timeout.
+      if (!outcome.timedOut) msPerFile = Math.max(msPerFile, durationMs / slice.length);
 
       const label = `pure-proof-capture#${summary.slices}`;
       let read;
@@ -637,6 +668,10 @@ export async function runPureLaneProofCapture({
             client, sha, runGroupId, files: slice, sinceMs: sliceStart,
           }));
           const written = (read.results ?? []).reduce((n, r) => n + r.rows, 0);
+          // A killed slice that reported nothing and left no rows minted nothing: it neither adds
+          // proofs nor casts doubt on the ones other slices qualified. Rows from a killed slice
+          // still void the evidence below (they cannot be qualified against a report).
+          const mintedNothing = outcome.timedOut && named.length === 0 && (read.results ?? []).length === 0;
           const seen = new Set(evidence.proofs.map((p) => p.file));
           const qualified = !outcome.timedOut && !outcome.spawnError && !outcome.signal &&
             read.status === "reported" && read.malformed === 0 && read.results.length > 0 &&
@@ -649,7 +684,7 @@ export async function runPureLaneProofCapture({
                 p.runGroupId === runGroupId && p.runnerIdentity === runnerIdentity &&
                 Number.isSafeInteger(p.recordedAtMs) && p.recordedAtMs >= sliceStart && p.recordedAtMs <= d.now();
             });
-          evidence.proofs = qualified ? [...evidence.proofs, ...named] : null;
+          if (!mintedNothing) evidence.proofs = qualified ? [...evidence.proofs, ...named] : null;
         } catch {
           evidence.proofs = null;
         }
@@ -678,8 +713,16 @@ export async function runPureLaneProofCapture({
         break;
       }
       if (outcome.timedOut) {
-        summary.stoppedBy = "slice-timeout";
-        break;
+        summary.timedOutSlices += 1;
+        // The slice list is the only way to attribute a hang after the fact; the log keeps it.
+        emit(`_SLICE_TIMEOUT n=${summary.slices} files=${slice.join(",")}`);
+        const parts = splitTimedOutSlice(slice);
+        if (parts.length > 0) {
+          queue.unshift(...parts);
+        } else {
+          summary.hung.push(slice[0]);
+          emit(`_HUNG file=${slice[0]} sha=${sha.slice(0, 12)}`);
+        }
       }
     }
   } finally {
@@ -692,12 +735,13 @@ export async function runPureLaneProofCapture({
     }
   }
   summary.state = "done";
-  summary.remaining = plan.order.length - next;
+  summary.remaining = queue.reduce((n, s) => n + s.length, 0);
   summary.stoppedBy ??= "complete";
   emit(
     ` state=done sha=${sha.slice(0, 12)} slices=${summary.slices} files=${summary.files} rows=${summary.rows} ` +
       `retired=${summary.retired} failed=${summary.failed} isolatedFail=${summary.isolatedFail} ` +
-      `remaining=${summary.remaining} stoppedBy=${summary.stoppedBy}`,
+      `remaining=${summary.remaining} timedOutSlices=${summary.timedOutSlices} hung=${summary.hung.length} ` +
+      `stoppedBy=${summary.stoppedBy}`,
   );
   return finish();
 }

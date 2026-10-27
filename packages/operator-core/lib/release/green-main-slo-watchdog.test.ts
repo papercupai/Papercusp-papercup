@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttentionNotifyResult, ReplaySafeAttentionNotifyInput } from '../attention-notify';
-import type { SevereEventBroadcast } from '../severe-event-broadcast';
+import type { SevereEventBroadcast, SevereEventResolution } from '../severe-event-broadcast';
 import { ADMISSION_GIT_DATE_MS } from './admission-commit-date';
 import type { GreenMainSloQueue } from './green-main-slo';
 import { checkGreenMainSlo, fileRecurringNonVerdictReason, parseLastGreenAtMs, runGreenMainSloPass, type GreenMainSloPassDeps } from './green-main-slo-watchdog';
@@ -373,7 +373,7 @@ function railStore() {
     states.set(event.conditionKey!, { condition_key: event.conditionKey!, open: true, open_since: at, last_seen: at });
     return true;
   });
-  const resolve = vi.fn(async ({ conditionKey }: { conditionKey: string }) => {
+  const resolve = vi.fn(async ({ conditionKey }: SevereEventResolution) => {
     states.get(conditionKey)!.open = false;
     closed.push(conditionKey);
     return true;
@@ -636,5 +636,32 @@ describe('green-main SLO keyed lifecycle (original producer)', () => {
     expect(h.closed).toHaveLength(3);
     await h.run({ nowMs: NOW + HOUR, readQueue: async () => recovered });
     expect(h.opens).toHaveLength(3);
+  });
+
+  it('resolves candidate-scoped episodes when a valid later repair queue explicitly supersedes them', async () => {
+    const h = railStore();
+    const previous: GreenMainSloQueue = { candidate: 'candidate-a', phase: 'awaiting-fixer', openedAtMs: NOW - 10 * HOUR,
+      convergenceRounds: [
+        { round: 1, head: 'h1', failingCount: 3, atMs: NOW - 8 * HOUR },
+        { round: 2, head: 'h2', failingCount: 6, atMs: NOW - 4 * HOUR },
+      ],
+      admissions: [{ atMs: NOW - 6 * HOUR, actor: 'a', source: { ref: 'staging', sha: 's' },
+        fromRepairHead: 'h1', toRepairHead: 'h2', paths: ['x.ts'], unchanged: [], blobs: {} }],
+    };
+    await h.run({ readQueue: async () => previous });
+    expect(h.opens).toHaveLength(3);
+
+    const replacement: GreenMainSloQueue = {
+      candidate: 'candidate-b', phase: 'ready-to-test', openedAtMs: NOW + 30 * 60_000,
+    };
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => replacement });
+
+    expect(h.closed).toHaveLength(3);
+    const resolutions = h.resolve.mock.calls.map(([input]) => input);
+    expect(resolutions).toHaveLength(3);
+    expect(resolutions.every(({ summary }) => summary.includes('superseded') && summary.includes('candidate-b'))).toBe(true);
+    expect(resolutions.map(({ conditionKey }) =>
+      JSON.parse(decodeURIComponent(conditionKey.slice('alarm:green-main-slo:'.length)))[2]).sort())
+      .toEqual(['queue-idle', 'red-adding-admission', 'round-cycle-time']);
   });
 });

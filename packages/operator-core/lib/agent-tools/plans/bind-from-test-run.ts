@@ -164,27 +164,24 @@ export const testRunBindingSchema = z
     fromTestRun: z
       .number()
       .int()
-      .positive()
-      .describe('test_runs id. Derives evidenceKind, evidenceRef, testRunId, the repo-files measurement and run facts.'),
+      .positive(),
     evidenceKind: z.enum(['test', 'mutation', 'counterexample']).optional(),
     sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths
       .optional()
-      .describe("Override the derived subject files (default: the test file's relative imports plus a valid mutant subject path)."),
+      .describe("Overrides imports + mutant subject."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
     treeInstrumentKey: repoFilesEvidenceMeasurementSchema.shape.treeInstrumentKey.describe(
-      'For a whole-tree census test: the registered tree instrument the evaluator re-runs over the committed tree (e.g. provider-specific-census).',
+      'Committed census instrument.',
     ),
     fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
-      'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). When calibrated, direct first-party test-infrastructure imports are also included in fixturePaths; other fixture sources must be declared.',
+      'First bind: declare fixture paths/globs incl. inline fixtures; infrastructure is auto-included.',
     ),
-    fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs.describe(
-      'Alternative to fixturePaths for first-bind fixture calibration; the matched files are hashed for fixture currentness.',
-    ),
+    fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs,
     fixtureRootHarnessSlug: repoFilesEvidenceMeasurementSchema.shape.fixtureRootHarnessSlug,
     completedRuntime: repoFilesEvidenceMeasurementSchema.shape.completedRuntime,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
-      .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
+      .describe('Copy-out/cargo repo-relative test.'),
     details: z.record(z.string(), z.unknown()).optional(),
     reaimJustification: z
       .object({
@@ -194,7 +191,7 @@ export const testRunBindingSchema = z
       .strict()
       .optional()
       .describe(
-        'Required to bind a caught mutant when another probe invocation left a surviving mutant on the same test file at the same testFileSha256 (a re-aimed mutation). Name every such survivor test-run id plus why this catch is still sound; a survivor whose mutation equals the catch\'s own cannot be justified. Persisted on the binding as details.reaim.',
+        'Name all same-test-SHA survivors and justify catch; identical mutant refuses. Stored details.reaim.',
       ),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })

@@ -79,6 +79,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
+import { createPendingCarryFence } from './psu-carry-fence.mjs';
 import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
 
 /**
@@ -1807,8 +1808,8 @@ function kickoffModelActivityRow(agent, row) {
  *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
  *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
- *   home?: string, maxScanBytes?: number}} options
- * @returns {{available: boolean, started: boolean}} */
+ *   home?: string, maxScanBytes?: number, includeTerminalFailure?: boolean}} options
+ * @returns {{available: boolean, started: boolean, failure?: NativeExecutionFailure}} */
 export function nativeKickoffTurnActivityAfterMarker({
   agent,
   env = process.env,
@@ -1818,6 +1819,7 @@ export function nativeKickoffTurnActivityAfterMarker({
   anchor = null,
   home = homedir(),
   maxScanBytes = NATIVE_KICKOFF_SCAN_BYTES,
+  includeTerminalFailure = false,
 }) {
   const unavailable = { available: false, started: false };
   if (!['codex', 'claude', 'omp'].includes(agent) || !marker) return unavailable;
@@ -1851,6 +1853,8 @@ export function nativeKickoffTurnActivityAfterMarker({
         if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
           return unavailable;
         }
+        const failure = includeTerminalFailure ? nativeExecutionFromRows([row], { agent }).failure : null;
+        if (failure) return { available: true, started: false, failure };
         if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
       }
       anchor.scannedEndOffset = rest.nextOffset;
@@ -1876,6 +1880,8 @@ export function nativeKickoffTurnActivityAfterMarker({
         // Another owner/model turn cannot certify the accepted marker's turn.
         return unavailable;
       }
+      const failure = includeTerminalFailure ? nativeExecutionFromRows([row], { agent }).failure : null;
+      if (failure) return { available: true, started: false, failure };
       if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
     }
     if (anchor) anchor.scannedEndOffset = scan.nextOffset;
@@ -2027,7 +2033,16 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       if (failed) {
         const error = row.payload?.error;
         const text = String(typeof error === 'string' ? error : error?.message ?? '').slice(0, 2048);
-        const code = String(error?.codex_error_info ?? error?.code ?? row.payload?.type
+        // Codex also serializes error-info variants as externally tagged
+        // objects, e.g. { response_too_many_failed_attempts: { http_status_code: 429 } }.
+        // Keep the variant name; coercing the object loses it as [object Object].
+        const info = error?.codex_error_info;
+        const variants = info && typeof info === 'object' && !Array.isArray(info) ? Object.keys(info) : [];
+        const taggedCode = variants.length === 1 && /^[a-z][a-z0-9_]{0,119}$/.test(variants[0])
+          ? variants[0] : undefined;
+        const explicitCode = typeof info === 'string' ? info : taggedCode
+          ?? (typeof error?.code === 'string' || typeof error?.code === 'number' ? error.code : undefined);
+        const code = String(explicitCode ?? row.payload?.type
           ?? row.subtype ?? message?.stopReason ?? 'native_error').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
         const retryable = code === 'server_overloaded' || modelCapacityLineMatch(text) != null;
         failure = { code, retryable, retryAfterMs: retryable ? modelCapacityRetryAfterMs(text) : null, atMs: at };
@@ -3306,13 +3321,25 @@ function isLinuxCodexProcess(counters) {
     (counters.comm === 'codex' || counters.comm?.startsWith('codex-')));
 }
 
+function readLinuxProcessThreads(pid, readDir) {
+  try {
+    const tids = readDir(`/proc/${pid}/task`).map(String).filter((tid) => /^\d+$/.test(tid));
+    if (tids.length > 0) return { tids, threads: tids.length };
+  } catch {
+    // A process may exit during discovery; retain the main-thread fallback.
+  }
+  return { tids: [String(pid)], threads: null };
+}
+
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
- * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
- * few generations and accept a process whose kernel comm identifies Codex. */
+ * race-tolerant descendant index under each /proc/PID/task/TID/children;
+ * worker-thread forks need every TID, just like the diagnostic tree reader.
+ * Walk only a few generations and accept a kernel-identified Codex process. */
 export function resolveLinuxCodexStartupPid(rootPid, {
   readFile = readFileSync,
+  readDir = readdirSync,
   readCounters = readLinuxStartupCounters,
   maxDepth = 4,
 } = {}) {
@@ -3328,17 +3355,19 @@ export function resolveLinuxCodexStartupPid(rootPid, {
       return current.pid;
     }
     if (current.depth >= maxDepth) continue;
-    let children = '';
-    try {
-      children = readFile(`/proc/${current.pid}/task/${current.pid}/children`, 'utf8');
-    } catch {
-      continue;
-    }
-    for (const token of String(children).trim().split(/\s+/)) {
-      if (!token) continue;
-      const childPid = Number(token);
-      if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
-        queue.push({ pid: childPid, depth: current.depth + 1 });
+    for (const tid of readLinuxProcessThreads(current.pid, readDir).tids) {
+      let children = '';
+      try {
+        children = readFile(`/proc/${current.pid}/task/${tid}/children`, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const token of String(children).trim().split(/\s+/)) {
+        if (!token) continue;
+        const childPid = Number(token);
+        if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
+          queue.push({ pid: childPid, depth: current.depth + 1 });
+        }
       }
     }
   }
@@ -3624,17 +3653,7 @@ export function collectCodexStuckProcessTree(rootPid, {
     if (open < 0 || close < open) continue;
     const wchan = readProcText(readFile, `/proc/${current.pid}/wchan`)?.trim() ?? null;
     const cmdline = readProcText(readFile, `/proc/${current.pid}/cmdline`);
-    let threads = null;
-    let tids = [String(current.pid)];
-    try {
-      const listed = readDir(`/proc/${current.pid}/task`).map(String).filter((t) => /^\d+$/.test(t));
-      if (listed.length > 0) {
-        tids = listed;
-        threads = listed.length;
-      }
-    } catch {
-      // Fall back to the main thread's own child list.
-    }
+    const { tids, threads } = readLinuxProcessThreads(current.pid, readDir);
     procs.push({
       pid: current.pid,
       ppid: current.ppid,
@@ -3957,6 +3976,8 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_HOSTED_NATIVE_SLOT',
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
+  // Recorded role authority must survive the same-host adoption preflight.
+  'PAPERCUSP_AGENT_ROLE',
   'PAPERCUSP_ADV_SESSION_ID',
   // Keep the proven launcher actor through host-code adoption. Without it,
   // the successor advertises human-owned provenance and quota recovery refuses.
@@ -3972,6 +3993,9 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_PROFILE',
   // A successor must remain in the predecessor's explicit mutex domain.
   'PAPERCUSP_FS_MUTEX_LOCK_DIR',
+  // Bootstrap pins the shared ledger independently of the workspace home.
+  // Native hooks and server injectors must keep that same ledger after adoption.
+  'PAPERCUSP_TURN_PROVENANCE_DIR',
   'PAPERCUSP_FLEET_SLUG',
   'PAPERCUSP_FLEET_ROLE',
   // Codex's effective provider is selected from this marker when the successor
@@ -5454,9 +5478,14 @@ export function makeCarryRearmController({
   // every existing controller unit test unchanged; the real host wires
   // isCarryRespawnStale at construction (see carryRearm below).
   isStale = () => false,
+  // A wake `turn` is an inbox delivery guarded by turn provenance. Unlike a
+  // carry-respawn, an expired turn must settle before another safe-boundary
+  // wait because its final PTY write is no longer authorized.
+  getRearmExpiryReason = /** @type {(_msg: any) => string | null} */ ((_msg) => null),
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
+  isCancelled = (_msg) => false,
   // Production carry-respawns are admitted only when the effective per-owner
   // wake mode is explicitly `auto`. Null/throws fail closed and leave the carry
   // pending for a paced re-read; non-carry wake modes keep their own delivery
@@ -5526,7 +5555,16 @@ export function makeCarryRearmController({
   };
   const keyFor = (msg) => {
     const drillId = String(msg?.drillId || '');
-    return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
+    if (drillId) return drillId;
+    const mode = rearmModeOf(msg);
+    // A loop fire must keep its own text and provenance through the retry.
+    // Sharing turn mode with inbox wakes let the newest inbox payload replace
+    // a loop while settlement marked BOTH IDs delivered. Reuse the host's
+    // loop-instance coalescing key; successive fires of that loop still fold.
+    const routineId = String(msg?.routineId ?? '').trim();
+    return mode === 'turn' && routineId
+      ? `${NON_DRILL_REARM_KEY}:${turnCoalesceKey(msg.data, routineId)}`
+      : `${NON_DRILL_REARM_KEY}:${mode}`;
   };
   const settle = (key, outcome, messagesOverride = null) => {
     const messages = messagesOverride ?? [...(pendingMessages.get(key) ?? [])];
@@ -5570,9 +5608,14 @@ export function makeCarryRearmController({
      *  @param {string | null} [mode]
      */
     pendingCount(mode = null) {
-      if (mode == null) return pending.size + inFlight.size;
-      return [...pending].filter((key) => rearmModeOf(latest.get(key)) === mode).length +
-        [...inFlight].filter((msg) => rearmModeOf(msg) === mode).length;
+      // A newer child can supersede a carry while its idle/prompt gate is
+      // unresolved. That obsolete request must stop suppressing fresh wakes
+      // immediately; its detached retry still owns terminal settlement.
+      const counts = (msg) => !isCancelled(msg) &&
+        (rearmModeOf(msg) !== 'carry-respawn' || !isSuperseded(msg)) &&
+        (mode == null || rearmModeOf(msg) === mode);
+      return [...pending].filter((key) => counts(latest.get(key))).length +
+        [...inFlight].filter(counts).length;
     },
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg) {
@@ -5689,6 +5732,7 @@ export function makeCarryRearmController({
           reason: 'busy-gate-expired',
           capMs,
           ...(msg?.deliveryId ? { deliveryId: String(msg.deliveryId) } : {}),
+          ...(mode === 'turn' && msg?.routineId ? { routineId: msg.routineId } : {}),
         };
       // R-1 JOIN KEY. Every terminal row of a production re-arm names EVERY
       // delivery id it settles (a supersede folds later messages into the same
@@ -5724,17 +5768,31 @@ export function makeCarryRearmController({
         let attemptsMade = 0;
         let deferReason = 'busy-gate-expired';
         const dropSuperseded = (candidate) => {
-          if (!isSuperseded(candidate)) return false;
+          const reason = isCancelled(candidate) ? 'carry-fenced' : isSuperseded(candidate) ? 'superseded' : null;
+          if (!reason) return false;
           emitEvent(droppedKind, {
-            ...extra, ...dropDiagnostics(), rearmed: true, reason: 'superseded',
+            ...extra, ...dropDiagnostics(), rearmed: true, reason,
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
-          settle(key, { delivered: false, reason: 'superseded' });
+          settle(key, { delivered: false, reason });
+          return true;
+        };
+        const dropExpired = (candidate) => {
+          const reason = getRearmExpiryReason(candidate);
+          if (!reason) return false;
+          emitEvent(droppedKind, {
+            ...extra, ...dropDiagnostics(), rearmed: true, reason,
+            observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
+          });
+          settle(key, { delivered: false, reason });
           return true;
         };
         try {
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
+            if (disposed) return;
+            const beforeLock = latest.get(key) ?? msg;
+            if (dropSuperseded(beforeLock) || dropExpired(beforeLock)) return;
             const release = await acquireInject();
             if (disposed) {
               release();
@@ -5751,11 +5809,12 @@ export function makeCarryRearmController({
               if (disposed) return;
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
-              if (dropSuperseded(current)) return;
+              if (dropSuperseded(current) || dropExpired(current)) return;
               if (waitIdle) {
                 const idle = await waitIdle();
                 if (disposed) return;
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterIdle = latest.get(key) ?? current;
+                if (dropSuperseded(afterIdle) || dropExpired(afterIdle)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -5765,7 +5824,8 @@ export function makeCarryRearmController({
               if (hasPendingOwnerInput()) {
                 const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
                 if (disposed) return;
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterOwnerInput = latest.get(key) ?? current;
+                if (dropSuperseded(afterOwnerInput) || dropExpired(afterOwnerInput)) return;
                 if (clear?.deferred || hasPendingOwnerInput()) {
                   deferReason = clear?.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -5779,6 +5839,8 @@ export function makeCarryRearmController({
               let atPrompt = null;
               wakeModePauseReason = await carryWakeModePauseReason(current);
               if (disposed) return;
+              const beforePrompt = latest.get(key) ?? current;
+              if (dropSuperseded(beforePrompt) || dropExpired(beforePrompt)) return;
               if (wakeModePauseReason) deferReason = wakeModePauseReason;
               if (!wakeModePauseReason) {
                 atPrompt = await waitAtPrompt(capMs, current);
@@ -5787,7 +5849,8 @@ export function makeCarryRearmController({
                 if (typeof atPrompt?.verifier === 'string' && atPrompt.verifier) {
                   verifierReason = atPrompt.verifier;
                 }
-                if (dropSuperseded(latest.get(key) ?? current)) return;
+                const afterPrompt = latest.get(key) ?? current;
+                if (dropSuperseded(afterPrompt) || dropExpired(afterPrompt)) return;
                 // The owner may have started composing during the prompt wait.
                 if (hasPendingOwnerInput()) {
                   // Re-enter through the composer wait AND a fresh prompt check.
@@ -5802,6 +5865,7 @@ export function makeCarryRearmController({
                 }
                 wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
                 if (disposed) return;
+                if (dropExpired(latest.get(key) ?? current)) return;
                 if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
               if (!wakeModePauseReason) {
@@ -5816,6 +5880,7 @@ export function makeCarryRearmController({
                 // reading a stale `current` here would cut in the older carry
                 // even though a fresher one had already arrived.
                 const deliver = latest.get(key) ?? current;
+                if (dropExpired(deliver)) return;
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
@@ -5861,6 +5926,9 @@ export function makeCarryRearmController({
                     ...extra,
                     rearmed: true,
                     reason: outcome.delivered ? 'delivered' : String(outcome.reason ?? 'undelivered'),
+                    deliveredDeliveryId: deliver.deliveryId ?? null,
+                    deliveredRoutineId: deliver.routineId ?? null,
+                    deliveredFireNumber: deliver.fireNumber ?? null,
                     observedMaxQuietMs,
                     attempts: attemptsMade,
                     ...terminalIds(),
@@ -7131,7 +7199,152 @@ export function decodeQuotaRecovery(o) {
   // P-004: the same recycle recovers a dead codex login ('auth'). The cause is
   // diagnostic only; anything unrecognised is the original quota recovery.
   const cause = q.cause === 'auth' ? 'auth' : 'quota';
-  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause } };
+  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause,
+    ...(q.defaultToAuto !== undefined ? { defaultToAuto: q.defaultToAuto } : {}) } };
+}
+
+/** Input/custody state for one identity handoff in this managed host. This
+ * prerequisite deliberately advertises no capability: the launcher must wire
+ * native response observation and clean target bootstrap before enabling it.
+ *
+ * `freeze` fences NEW input/lifecycle effects, not the currently executing
+ * tool. Stopping that native process here would prevent it receiving its own
+ * tool result. `begin` is the only replacement boundary: it requires the exact
+ * persisted result and a later successful completion from that same child.
+ * Neither an application socket ACK nor observedAt (a reader clock) is proof.
+ * @param {{identity:()=>any, canFreeze:()=>boolean, now?:()=>number}} ports
+ */
+export function makeIdentityAssumeFence({ identity, canFreeze, now = Date.now }) {
+  let lease = null;
+  const completed = new Map();
+  const hash = (v) => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+  const text = (v) => typeof v === 'string' && v.length > 0 && v.length <= 4096;
+  const pin = (value) => value && {
+    ownerId: value.ownerId, workspaceId: value.workspaceId,
+    nativeSessionId: value.nativeSessionId, nativePid: value.nativePid,
+    hostId: value.hostId, attachmentId: value.attachmentId,
+    childGeneration: value.childGeneration,
+  };
+  const validPin = (v) => v && ['ownerId', 'workspaceId', 'nativeSessionId', 'hostId', 'attachmentId'].every(k => text(v[k])) &&
+    Number.isSafeInteger(v.nativePid) && v.nativePid > 0 && Number.isSafeInteger(v.childGeneration) && v.childGeneration > 0;
+  const same = (a, b) => validPin(a) && validPin(b) && JSON.stringify(pin(a)) === JSON.stringify(pin(b));
+  const requestKey = (r) => r ? JSON.stringify([r.transitionKey, r.preparationHash, r.recoveryRef, r.recoveryHash,
+    r.expiresAt, pin(r.caller)]) : null;
+  const valid = (r) => r && typeof r.transitionKey === 'string' && /^session-assume:[a-f0-9]{64}$/.test(r.transitionKey) &&
+    hash(r.preparationHash) && text(r.recoveryRef) && hash(r.recoveryHash) && validPin(r.caller) &&
+    Number.isSafeInteger(r.expiresAt) && r.expiresAt > now() && r.expiresAt - now() <= 120_000;
+  const current = () => { try { return identity(); } catch { return null; } };
+  const matches = (r) => lease && valid(r) && requestKey(r) === lease.key && same(lease.request.caller, current());
+  const refusal = (reason) => ({ ok: false, reason });
+  return {
+    freeze(request) {
+      if (!valid(request) || !same(request.caller, current())) return refusal('assume-stale-caller');
+      if (completed.has(request.transitionKey)) return refusal('assume-replayed-transition');
+      if (lease) return matches(request) ? { ok: true, phase: lease.phase } : refusal('assume-fence-held');
+      try { if (!canFreeze()) return refusal('assume-input-busy'); }
+      catch { return refusal('assume-input-busy'); }
+      lease = { key: requestKey(request), request: structuredClone(request), phase: 'frozen', queuedAt: null };
+      return { ok: true, phase: 'frozen' };
+    },
+    queue(request) {
+      if (!matches(request)) return refusal('assume-fence-mismatch');
+      if (lease.phase === 'frozen') { lease.phase = 'queued'; lease.queuedAt = now(); }
+      return { ok: true, phase: lease.phase };
+    },
+    begin(request, proof) {
+      if (!matches(request) || lease.phase !== 'queued') return refusal('assume-fence-mismatch');
+      const result = proof?.response;
+      const execution = proof?.execution;
+      // Proof is produced by the native transcript reader, never a public tool
+      // argument. Require the exact result, not merely some completed tool id.
+      if (!result || !same(result.caller, lease.request.caller) ||
+          result.transitionKey !== request.transitionKey || result.preparationHash !== request.preparationHash ||
+          result.state !== 'handoff-accepted' || result.durable !== true ||
+          !Number.isFinite(result.atMs) || result.atMs < lease.queuedAt || result.atMs > now() ||
+          !execution || !same(execution.caller, lease.request.caller) || execution.phase !== 'settled' ||
+          execution.pendingTools !== 0 || !Number.isFinite(execution.lastProgressAt) ||
+          execution.lastProgressAt < result.atMs || execution.lastProgressAt > now()) {
+        return refusal('assume-response-not-observed');
+      }
+      // Set before handing control to asynchronous cleanup/bootstrap. An error
+      // after this point is indeterminate, never permission to thaw or retry.
+      lease.phase = 'starting';
+      return { ok: true, phase: 'starting', request: structuredClone(lease.request) };
+    },
+    thaw(request) {
+      // An ACK can be lost after the exact fence was released. Repeating only
+      // that release is safe while the same native caller still owns the host;
+      // freeze/queue/begin remain permanently closed to this transition.
+      if (!lease && request && same(request.caller, current()) &&
+          completed.get(request.transitionKey) === requestKey(request))
+        return { ok: true, phase: 'released' };
+      if (!lease || !same(lease.request.caller, current()) || requestKey(request) !== lease.key)
+        return refusal('assume-fence-mismatch');
+      if (lease.phase === 'starting') return refusal('assume-replacement-started');
+      completed.set(lease.request.transitionKey, lease.key);
+      lease = null;
+      return { ok: true, phase: 'released' };
+    },
+    // Expiry never automatically releases input. The durable caller recovery
+    // path must thaw with the original pins; otherwise delayed messages can
+    // revive a caller after an unacknowledged replacement.
+    blocksInput() { return lease !== null; },
+    state() { return lease ? { phase: lease.phase, expired: now() >= lease.request.expiresAt } : null; },
+  };
+}
+
+/** Find a matching receipt ONLY in a native tool-result row. The caller must
+ * supply rows from readIsolatedNativeTranscriptRows for the exact pinned
+ * native id, then independently reread the durable receipt/custody at launch.
+ * Caller/assistant prose, PTY paint and a socket ACK cannot satisfy this probe.
+ * @param {any[]} rows
+ * @param {{agent:string, request:any, sinceMs:number, nowMs?:number}} options
+ */
+export function identityAssumeResponseFromRows(rows, { agent, request, sinceMs, nowMs = Date.now() }) {
+  if (!request || !Number.isFinite(sinceMs) || !Number.isFinite(nowMs) || sinceMs > nowMs) return null;
+  const callerMatches = (caller) => caller && ['ownerId', 'workspaceId', 'nativeSessionId', 'nativePid',
+    'hostId', 'attachmentId'].every(k => caller[k] === request.caller?.[k]) && caller.backend === agent;
+  const findReceipt = (value, depth = 0) => {
+    if (depth > 8 || value == null) return null;
+    if (typeof value === 'string') {
+      if (value.length > MAX_CONTROL_PAYLOAD_BYTES) return null;
+      try { return findReceipt(JSON.parse(value), depth + 1); } catch { return null; }
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) { const found = findReceipt(item, depth + 1); if (found) return found; }
+      return null;
+    }
+    if (typeof value !== 'object' || value.isError === true) return null;
+    if (value.transitionKey === request.transitionKey && value.preparationFingerprint === request.preparationHash &&
+        value.state === 'handoff-accepted' && value.durable === true && callerMatches(value.preparation?.caller) &&
+        value.recovery?.checkpointRef === request.recoveryRef && value.recovery?.checkpointSha256 === request.recoveryHash) return value;
+    // Traverse transport wrappers only. Context/prose/error fields are never
+    // searched for a string that merely resembles a successful receipt.
+    // Codex code-mode persists custom tool output as Responses input_text
+    // blocks around the MCP result. These remain native tool-result rows;
+    // images, error blocks and ordinary messages are not receipt evidence.
+    if (value.isError === true || value.type && !['text', 'input_text'].includes(value.type)) return null;
+    for (const key of ['result', 'receipt', 'summary', 'content', 'text']) {
+      if (!Object.hasOwn(value, key)) continue;
+      const found = findReceipt(value[key], depth + 1); if (found) return found;
+    }
+    return null;
+  };
+  for (const row of rows) {
+    const atMs = Date.parse(row?.timestamp);
+    if (!Number.isFinite(atMs) || atMs < sinceMs || atMs > nowMs) continue;
+    let outputs = [];
+    if (agent === 'codex' && row.type === 'response_item' &&
+        ['function_call_output', 'custom_tool_call_output'].includes(row.payload?.type)) outputs = [row.payload.output];
+    if (agent === 'claude' && row.type === 'user' && Array.isArray(row.message?.content))
+      outputs = row.message.content.filter(b => b.type === 'tool_result' && b.is_error !== true).map(b => b.content);
+    if (agent === 'omp' && row.type === 'message' && row.message?.role === 'toolResult' && row.message.isError !== true)
+      outputs = [row.message.content];
+    if (outputs.some(value => findReceipt(value))) return { caller: structuredClone(request.caller),
+      transitionKey: request.transitionKey, preparationHash: request.preparationHash,
+      state: 'handoff-accepted', durable: true, atMs };
+  }
+  return null;
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
@@ -7151,9 +7364,11 @@ export function decodeControl(payload) {
         o.mode === 'reset' ||
         o.mode === 'recycle' ||
         o.mode === 'carry-respawn' ||
+        o.mode === 'carry-fence' ||
         o.mode === 'compact' ||
         o.mode === 'shutdown' ||
         o.mode === 'hooks-observe' ||
+        o.mode === 'identity-assume' ||
         o.mode === 'mcp-reconnect')
     ) {
       // SHUTDOWN (WI-6638): wind this session down and EXIT. psu is `exec`'d
@@ -7184,6 +7399,13 @@ export function decodeControl(payload) {
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
         };
+      if (o.mode === 'identity-assume') return {
+        mode: 'identity-assume', data: '', gated: false,
+        ownerId: o.ownerId, action: o.action, request: o.request,
+      };
+      if (o.mode === 'carry-fence') return {
+        mode: 'carry-fence', data: '', gated: false, ownerId: o.ownerId, request: o.request,
+      };
       if (o.mode === 'hooks-observe') return {
         mode: 'hooks-observe', data: '', gated: true,
         observationVersion: o.observationVersion,
@@ -7240,6 +7462,12 @@ export function decodeControl(payload) {
           mode: 'carry-respawn',
           data: String(o.data ?? ''),
           systemPromptAddendum: String(o.systemPromptAddendum ?? ''),
+          ...('carryNonce' in o ? {
+            carryNonce: o.carryNonce, workspaceId: o.workspaceId,
+            expectedAdvSessionId: o.expectedAdvSessionId, expectedNativeSessionId: o.expectedNativeSessionId,
+            expectedHostStartedAt: o.expectedHostStartedAt, expectedChildGeneration: o.expectedChildGeneration,
+            expectedHostCodeVersion: o.expectedHostCodeVersion,
+          } : {}),
           ...(typeof o.sourceTranscriptPath === 'string' && o.sourceTranscriptPath
             ? { sourceTranscriptPath: o.sourceTranscriptPath.slice(0, 4096) } : {}),
           // P-020 drill correlation is additive on the v1 envelope. An ordinary
@@ -10558,6 +10786,91 @@ export function resetWritesForAgent(decoded, agent, env = process.env, opts = {}
   return steps;
 }
 
+/** A Claude transcript is `<native-session-id>.jsonl`; anything else is not an id. */
+const CLAUDE_TRANSCRIPT_NATIVE_ID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/** The native session id a Claude transcript path names, or null. Pure — exported for tests. */
+export function claudeNativeIdFromTranscriptRef(nativeRef) {
+  if (typeof nativeRef !== 'string' || !nativeRef) return null;
+  return CLAUDE_TRANSCRIPT_NATIVE_ID.exec(basename(nativeRef))?.[1] ?? null;
+}
+
+/** Outcomes where a re-anchor was attempted and did not land; everything else that is
+ *  not ok is a benign skip (unsupported-agent, no-carry-marker, superseded-child). */
+export const REANCHOR_FAILURE_REASONS = new Set(['native-ref-not-found', 'native-id-unparseable', 'report-threw']);
+
+/** EI-26957152622357153 / EI-27033376159376450: an in-place RESET-CONTEXT `/clear`
+ *  rotates Claude's native session id inside the SAME child process, so none of the
+ *  respawn paths (recycle / carry-respawn / host adoption) ever re-anchors
+ *  adv_sessions to it. Every owner-by-native-session consumer — the PreToolUse lock
+ *  hook, mcp-call's foreign-session guard, the loop turn-start stamp's
+ *  indexedLoopLaunchBinding — then reads the session's own turns as foreign
+ *  (`superuser_foreign_native_session`, `lastLoopTurnAt: null`).
+ *
+ *  After a verified reset, find the transcript holding THIS reset's carry-turn
+ *  marker (the exact marker behind the submit-time fence — never "the newest
+ *  file"), take the rotated id from its file name, and hand it to the same
+ *  `onRespawn` report a recycle uses (the launcher's is durable: it resolves with
+ *  the first attempt's verdict and keeps retrying in the background). A bare clear
+ *  has no carry marker, so it is skipped and says so. Codex resets are routed
+ *  through recycle, which reports on its own. Every outcome is recorded via
+ *  `appendEvent`. Never throws. Exported with injectables for tests. */
+export async function reanchorAfterContextReset({
+  agent,
+  marker,
+  findNativeRef,
+  onRespawn,
+  isCurrent = () => true,
+  timeoutMs = 60_000,
+  pollMs = 500,
+  appendEvent = () => {},
+}) {
+  const finish = (result) => {
+    try {
+      // A benign skip (nothing to re-anchor, or another path owns the report) and a
+      // failed re-anchor (the session stays bound to its pre-reset id) are different
+      // health signals, so they are different kinds (WI-6554700010030030).
+      appendEvent(result.ok ? 'reset-reanchor-reported'
+        : REANCHOR_FAILURE_REASONS.has(result.reason) ? 'reset-reanchor-failed' : 'reset-reanchor-skipped', result);
+    } catch {
+      /* a diagnostic write must never change the re-anchor verdict */
+    }
+    return result;
+  };
+  if (String(agent || '').trim().toLowerCase() !== 'claude') {
+    return finish({ ok: false, nativeId: null, reason: 'unsupported-agent' });
+  }
+  if (!marker) return finish({ ok: false, nativeId: null, reason: 'no-carry-marker' });
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let nativeRef = null;
+  while (isCurrent()) {
+    try {
+      nativeRef = findNativeRef();
+    } catch {
+      nativeRef = null;
+    }
+    if (nativeRef || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  }
+  if (!isCurrent()) return finish({ ok: false, nativeId: null, reason: 'superseded-child' });
+  const nativeId = claudeNativeIdFromTranscriptRef(nativeRef);
+  if (!nativeId) {
+    return finish({ ok: false, nativeId: null, reason: nativeRef ? 'native-id-unparseable' : 'native-ref-not-found' });
+  }
+  let firstAttemptConfirmed = false;
+  try {
+    firstAttemptConfirmed = (await onRespawn(nativeId)) === true;
+  } catch (error) {
+    return finish({
+      ok: false, nativeId, reason: 'report-threw', detail: String(error?.message ?? error).slice(0, 200),
+    });
+  }
+  return finish({
+    ok: true, nativeId, firstAttemptConfirmed,
+    reason: firstAttemptConfirmed ? 'reanchor-confirmed' : 'reanchor-retrying',
+  });
+}
+
 /**
  * The OSC recolor bytes for a fleet-bound session, from the PAPERCUSP_FLEET_BG /
  * PAPERCUSP_FLEET_FG / PAPERCUSP_FLEET_CURSOR env vars bootstrap-su resolves from
@@ -10870,7 +11183,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
- * @param {()=>any} [o.onSpawn] lifecycle callback invoked immediately after
+ * @param {(startup?: {ptyPid: number})=>any} [o.onSpawn] lifecycle callback invoked immediately after
  *   the initial pty.spawn succeeds; this is concrete resume-finalization evidence.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
@@ -10897,6 +11210,9 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
+ * @param {{attachmentId?:string, verify:(request:any)=>Promise<boolean>, prepare:(request:any)=>Promise<any>}|null} [o.identityAssume]
+ *   Trusted launcher port: verify durable preparation/custody; prepare only
+ *   parent-bound clean target orders (never launch). Absent until fully wired.
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
  *   injectable dead-operator-pin heal, run before each in-place respawn
@@ -10953,6 +11269,7 @@ export function hostThroughPty(o) {
     // null ⇒ adoption is unavailable and every respawn takes the in-process path,
     // which is the pre-WI-38292 behaviour exactly.
     onReexec = null,
+    identityAssume = null,
     // WI-38292: injectable staleness probe, same role as parentPidFn above. The
     // real one compares this module's load-time hash against the file on disk, so
     // a test running the module it is testing can NEVER observe staleness without
@@ -11274,7 +11591,7 @@ export function hostThroughPty(o) {
     agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
   });
   try {
-    const acknowledgement = onSpawn();
+    const acknowledgement = onSpawn({ ptyPid: child.pid });
     void Promise.resolve(acknowledgement).catch((error) => {
       appendHostEvent(ownerId, 'resume-finalization-report-failed', hostErrorEvidence(error));
       writeTerminalDiagnostic(
@@ -11293,6 +11610,9 @@ export function hostThroughPty(o) {
   // (created before the teardown Promise) can close over them; they stay no-ops
   // until assigned, and a recycle cannot arrive before the socket is listening.
   let recycling = false;
+  let explicitQuotaRecoveryWindowAt = 0;
+  let explicitQuotaRecoveryAttempts = 0;
+  let liveAccountRoutingMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? null;
   // WI-6638 SHUTDOWN state: set once a shutdown is accepted, so a duplicate/retried
   // request is an idempotent ok instead of a second kill. Unlike `recycling` this is
   // terminal — nothing clears it, because the host is on its way out.
@@ -11300,11 +11620,19 @@ export function hostThroughPty(o) {
   // WI-10004943 (d): set by cleanup() once the host has torn down, so a kickoff
   // HELD for a Codex frame (minutes) stops waiting instead of polling a dead host.
   let hostCleanedUp = false;
+  let identityAssumeFence = null;
+  let identityAssumeTimer = null;
+  let identityAssumeRequest = null;
+  let identityAssumeChecking = false;
+  let completeIdentityAssume = null;
   // EI-18665672258948707: the moment (Date.now()) THIS host last successfully
   // spawned a fresh child via recycleChild — the supersession clock a queued
   // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
   // 0 = never respawned yet, so nothing can be superseded.
   let lastRespawnAtMs = 0;
+  // The request delivering this child still owns its carry priority. Only
+  // other requests predating that cut are superseded by its timestamp.
+  let lastRespawnCarryRequest = null;
   let wireChildData = () => {};
   let wireChildExit = () => {};
   let recycleChild = async () => {};
@@ -11555,9 +11883,13 @@ export function hostThroughPty(o) {
     // host never adopts newer host code (shouldAdoptHostCode, D-008), so a host
     // loaded before that fix lacks the cap and scripts/mcp-reconnect.mjs sends the
     // agent to the carry-respawn rung instead of queueing a reconnect that no-ops.
-    caps: ['carry-respawn', 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    // EI-27053660657887116: advertise the pending-carry fence ONLY when this host can
+    // name its native session id. The fence identity requires it, and only codex wires
+    // resolveRespawnNativeId; a Claude host that advertised the cap refused every
+    // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
+    caps: ['carry-respawn', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
-      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
+      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -11578,6 +11910,28 @@ export function hostThroughPty(o) {
     // "unknown version", never to "up to date".
     hostCodeVersion: LOADED_HOST_CODE_VERSION,
   };
+  const identityAssumeSupported = typeof identityAssume?.verify === 'function' &&
+    typeof identityAssume?.prepare === 'function' && typeof onReexec === 'function' && reexecExitCodeFrom(env) != null;
+  if (identityAssumeSupported) {
+    baseMeta.identityAssume = { version: 1, hostId: identityAssume.hostId || randomBytes(24).toString('hex'),
+      attachmentId: identityAssume.attachmentId || randomBytes(24).toString('hex') };
+    identityAssumeFence = makeIdentityAssumeFence({
+      identity: () => ({ ownerId, workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
+        nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId), nativePid: child.pid,
+        ...baseMeta.identityAssume, childGeneration }),
+      canFreeze: () => !hostCleanedUp && !shuttingDown && !recycling && !parked &&
+        !identityAssumeChecking && !machineTurnActive && !hooksObservationActive && !hooksObservationInputHeld &&
+        !ownerComposerGate.hasPending() && carryRearm.pendingCount() === 0 &&
+        nativeStartPending.size === 0 && (!launchKickoff || childPromptReady),
+    });
+  }
+  const pendingCarryFence = createPendingCarryFence({
+    identity: () => ({ ownerId, workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE || 'default',
+      advSessionId: baseMeta.advSessionId, nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+      hostStartedAt: baseMeta.startedAt, childGeneration, hostCodeVersion: baseMeta.hostCodeVersion }),
+    canFence: () => !hostCleanedUp && !shuttingDown && !recycling && !parked &&
+      !parkPromise && !unparkPromise && !identityAssumeChecking && !identityAssumeFence?.blocksInput(),
+  });
   // WI-6554700010013215: discovery persistence is off the PTY host's event
   // loop. The old synchronous writeFileSync+renameSync path was observed in
   // D-state inside __start_renaming, stopping keystrokes and PTY output while
@@ -11607,18 +11961,25 @@ export function hostThroughPty(o) {
           if (!bridgeTty) {
             const diagnostic = `[psu] native-turn-failed agent=${env.PAPERCUSP_AGENT} code=${execution.failure.code}`
               + ` retryable=${execution.failure.retryable} retryAfterMs=${execution.failure.retryAfterMs ?? 'unknown'}\n`;
-            terminalOutput.write(diagnostic);
-            normalizedLog?.push(diagnostic);
+            // WI-6554700010030184: start the receipt on its own line, like every
+            // other [psu] host line. A TUI positions its cursor instead of writing
+            // newlines, so once ANSI is stripped an unprefixed receipt joins the
+            // previous redraw ("2 warnings · f2 to view [psu] …") and the
+            // grading-audit terminal detector's line-anchored match never fires.
+            terminalOutput.write(`\r\n${diagnostic}`);
+            normalizedLog?.push(`\n${diagnostic}`);
             normalizedLog?.flush();
           }
         }
       }
       metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
+        accountRoutingMode: liveAccountRoutingMode,
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           childGeneration,
         } : {}),
+        ...(identityAssumeSupported ? { childGeneration, identityAssumeState: identityAssumeFence.state() } : {}),
         execution,
       }));
     } catch {
@@ -13665,8 +14026,28 @@ export function hostThroughPty(o) {
       marker: pending.marker, sinceMs: pending.submittedAtMs });
     if (pending.submissionOnly) return { available: true, started: Boolean(nativeRef) };
     return nativeRef ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
-      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
+      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor, includeTerminalFailure: true })
       : { available: false, started: false };
+  };
+  // EI-26957152622357153: a verified in-place reset rotated Claude's native id
+  // without a respawn. Re-anchor it off the delivery path (never delays the ACK).
+  const scheduleResetReanchor = (marker, submittedAtMs, target) => {
+    // WI-6554700010030031: the SAME child keeps presenting the id it was launched
+    // with (MCP header + inherited PAPERCUSP_NATIVE_SESSION_ID, immutable in a
+    // running process). Capture it now, from the argv that child was spawned with,
+    // so the operator keeps it as an accepted alias of the rotated id.
+    const childLaunchSessionId = nativeSessionIdFromLaunchArgs(liveChildArgs ?? []);
+    void reanchorAfterContextReset({
+      agent: env.PAPERCUSP_AGENT,
+      marker,
+      findNativeRef: () => findNativeTranscriptMarker({
+        agent: env.PAPERCUSP_AGENT, env, marker, sinceMs: submittedAtMs,
+      }),
+      onRespawn: (nativeId) => onRespawn(nativeId, childLaunchSessionId ? { childLaunchSessionId } : undefined),
+      isCurrent: () => child === target,
+      timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_RESET_REANCHOR_TIMEOUT_MS, 60_000),
+      appendEvent: (kind, payload) => appendHostEvent(ownerId, kind, { childGeneration, ...payload }),
+    }).catch(() => {});
   };
   const reconcileNativeStartPending = ({ supersededOnly = false } = {}) => {
     for (const [id, pending] of nativeStartPending) {
@@ -13674,10 +14055,28 @@ export function hostThroughPty(o) {
         deliveryDedup.markSuperseded(id);
         nativeStartPending.delete(id);
         appendHostEvent(ownerId, 'native-turn-start-superseded', { deliveryId: id, childGeneration });
-      } else if (!supersededOnly && nativeStartProof(pending).started) {
-        deliveryDedup.markCompleted(id);
-        nativeStartPending.delete(id);
-        appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+      } else if (!supersededOnly) {
+        const proof = nativeStartProof(pending);
+        if (proof.started) {
+          deliveryDedup.markCompleted(id);
+          nativeStartPending.delete(id);
+          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+        } else if (proof.failure) {
+          // EI-26773717003971934: a submitted turn can abort before a start
+          // receipt. Bind its terminal row to this exact marker AND the current
+          // child/submit fence; another turn's failure must never free this gate.
+          const execution = currentNativeExecution();
+          if (pending.childGeneration !== childGeneration || execution.phase !== 'failed' ||
+              execution.failure?.atMs !== proof.failure.atMs || proof.failure.atMs < pending.submittedAtMs ||
+              execution.receivedAtMs !== pending.submittedAtMs || nativeExecutionBlocksInjection(execution) ||
+              Number(execution.pendingGateTools) > 0 || machineTurnActive || ownerStopRequested ||
+              ownerComposerGate.hasPending() || Number(activity.snapshot().lastInputAt ?? 0) > pending.submittedAtMs) continue;
+          if (pending.submissionRecovery) pending.submissionRecovery.stopped = true;
+          const retiredDeliveryIds = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
+          appendHostEvent(ownerId, 'native-turn-start-failed', {
+            deliveryId: id, retiredDeliveryIds, childGeneration, failure: proof.failure,
+          });
+        }
       }
     }
     return nativeStartPending.size > 0;
@@ -13832,7 +14231,7 @@ export function hostThroughPty(o) {
   // for its whole lifetime (D-006), so it needs no owner-keyed map, only a
   // loop-instance-keyed (routineId) one.
   const staleFireGuard = makeStaleFireGuard();
-  const rejectWakeProvenance = (message, phase) => {
+  const wakeProvenanceRejection = (message) => {
     const freshness = checkWakeProvenanceAge(message);
     if (!freshness.checked || !freshness.expired) return null;
     const reason = message?.provenanceTimestampInvalid || freshness.ageMs == null
@@ -13840,6 +14239,12 @@ export function hostThroughPty(o) {
       : freshness.ageMs < 0
         ? 'future-timestamp'
         : 'expired';
+    return { freshness, reason, rejection: `provenance-${reason}` };
+  };
+  const rejectWakeProvenance = (message, phase) => {
+    const rejection = wakeProvenanceRejection(message);
+    if (!rejection) return null;
+    const { freshness, reason } = rejection;
     appendHostEvent(ownerId, 'wake-provenance-rejected', {
       phase,
       reason,
@@ -13852,7 +14257,7 @@ export function hostThroughPty(o) {
       ageMs: freshness.ageMs,
       maxAgeMs: WAKE_PROVENANCE_MAX_AGE_MS,
     });
-    return 'provenance-' + reason;
+    return rejection.rejection;
   };
   // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
   // drills. The retry window defaults to 2× the live-inject cap (a busy turn
@@ -14001,6 +14406,7 @@ export function hostThroughPty(o) {
         });
       }
       return recycleChild(message?.data, {
+        carryRequest: message,
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
         sourceTranscriptPath: message?.sourceTranscriptPath ?? null,
         drillId,
@@ -14013,6 +14419,7 @@ export function hostThroughPty(o) {
     },
     onSettlement: (messages, outcome) => {
       for (const message of messages) {
+        pendingCarryFence.end(message);
         const deliveryId = message?.deliveryId;
         if (!deliveryId) continue;
         if (outcome?.delivered) {
@@ -14032,8 +14439,17 @@ export function hostThroughPty(o) {
     // too, and must retire their pending wake suppression without another cut.
     isStale: (msg) =>
       isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs }),
+    // A turn wake is a single inbox delivery and must not outlive its signed
+    // provenance. Carry-respawn has a different MUST-DELIVER contract and is
+    // deliberately excluded from this expiry callback.
+    getRearmExpiryReason: (msg) => {
+      if (msg?.mode !== 'turn') return null;
+      return wakeProvenanceRejection(msg)?.rejection ?? null;
+    },
     isSuperseded: (msg) =>
+      msg !== lastRespawnCarryRequest &&
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
+    isCancelled: (msg) => pendingCarryFence.isFenced(msg),
   });
 
   // ── Process-free parking (psu-process-free-parking-2026-10-06 P-017) ───────
@@ -14190,6 +14606,7 @@ export function hostThroughPty(o) {
     writeMeta();
   };
   const parkChild = async (verdict) => {
+    if (identityAssumeFence?.blocksInput()) return false;
     const minted = mintResumeForPark();
     if (!minted) return false;
     const resume = { ...minted, parkedGeneration: childGeneration };
@@ -14640,6 +15057,96 @@ export function hostThroughPty(o) {
         });
         return { ok: false, reason: 'unsupported-control-envelope' };
       }
+      if (msg.mode === 'identity-assume') {
+        if (!identityAssumeSupported || !identityAssumeFence) return { ok: false, reason: 'assume-unsupported-host' };
+        if (msg.ownerId !== ownerId || !['freeze', 'thaw', 'queue'].includes(msg.action))
+          return { ok: false, reason: 'assume-invalid-request' };
+        if (injectMutex.pendingCount() > 0) return { ok: false, reason: 'assume-input-busy' };
+        const release = await injectMutex.acquire();
+        const ownerEpoch = ownerInputGeneration;
+        try {
+          // The launcher checks the exact durable preparation and pause/lease,
+          // not a public caller-supplied grant. Recheck after every await.
+          if (!await identityAssume.verify(msg.request, msg.action) || ownerEpoch !== ownerInputGeneration)
+            return { ok: false, reason: 'assume-custody-unverified' };
+          const result = msg.action === 'freeze' ? identityAssumeFence.freeze(msg.request)
+            : msg.action === 'queue' ? identityAssumeFence.queue(msg.request) : identityAssumeFence.thaw(msg.request);
+          if (!result.ok) return result;
+          if (msg.action === 'queue' && !identityAssumeRequest) {
+            identityAssumeRequest = structuredClone(msg.request);
+            const queuedAt = Date.now();
+            identityAssumeTimer = setInterval(async () => {
+              if (identityAssumeChecking || !identityAssumeRequest || hostCleanedUp) return;
+              if (Date.now() >= identityAssumeRequest.expiresAt) {
+                clearInterval(identityAssumeTimer); identityAssumeTimer = null;
+                appendHostEvent(ownerId, 'identity-assume-response-expired', { transitionKey: identityAssumeRequest.transitionKey });
+                return; // Leave the durable pause/fence for exact recovery.
+              }
+              identityAssumeChecking = true;
+              const request = identityAssumeRequest;
+              try {
+                const nativeId = currentNativeSessionId(child.pid, resolveRespawnNativeId);
+                if (nativeId !== request.caller.nativeSessionId) return;
+                const path = newestNativeTranscriptPath(env.PAPERCUSP_AGENT, env, homedir(), nativeId);
+                const rows = path && readIsolatedNativeTranscriptRows({ agent: env.PAPERCUSP_AGENT, env, transcriptPath: path });
+                const nowMs = Date.now();
+                const response = rows && identityAssumeResponseFromRows(rows, { agent: env.PAPERCUSP_AGENT,
+                  request, sinceMs: queuedAt, nowMs });
+                if (!response) return;
+                const execution = nativeExecutionFromRows(rows, { agent: env.PAPERCUSP_AGENT, receivedAtMs: queuedAt, nowMs });
+                if (execution.phase !== 'settled' || !await identityAssume.verify(request)) return;
+                const orders = await identityAssume.prepare(request);
+                if (!orders || orders.code !== reexecExitCodeFrom(env) || orders.handoffPath !== handoffPathFor(ownerId)) {
+                  clearInterval(identityAssumeTimer); identityAssumeTimer = null;
+                  appendHostEvent(ownerId, 'identity-assume-orders-refused', { transitionKey: request.transitionKey });
+                  return;
+                }
+                // A thaw may complete while preparing orders. No later request
+                // can freeze while this check is in flight, so discarding these
+                // parent-bound orders cannot erase a newer transition's file.
+                const valid = identityAssumeRequest === request && await identityAssume.verify(request);
+                const freshRows = readIsolatedNativeTranscriptRows({ agent: env.PAPERCUSP_AGENT, env, transcriptPath: path });
+                const freshExecution = freshRows && nativeExecutionFromRows(freshRows,
+                  { agent: env.PAPERCUSP_AGENT, receivedAtMs: queuedAt, nowMs: Date.now() });
+                if (!valid || !freshExecution) {
+                  try { unlinkSync(orders.handoffPath); } catch { /* no stale target launch */ }
+                  clearInterval(identityAssumeTimer); identityAssumeTimer = null;
+                  return;
+                }
+                const result = identityAssumeFence.begin(request, { response,
+                  execution: { ...freshExecution, caller: { ...response.caller, nativePid: child.pid,
+                    nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId), childGeneration } } });
+                if (!result.ok) {
+                  try { unlinkSync(orders.handoffPath); } catch { /* no stale orders may be adopted */ }
+                  return;
+                }
+                clearInterval(identityAssumeTimer); identityAssumeTimer = null;
+                appendHostEvent(ownerId, 'identity-assume-response-observed', { transitionKey: request.transitionKey,
+                  childPid: child.pid, resultAtMs: response.atMs, completedAtMs: freshExecution.lastProgressAt });
+                completeIdentityAssume?.(orders);
+              } catch {
+                // A failed preparation may already have written its orders.
+                // Keep the caller fenced for explicit reconciliation; repeating
+                // a side effect every timer tick is not acknowledgement.
+                clearInterval(identityAssumeTimer); identityAssumeTimer = null;
+                appendHostEvent(ownerId, 'identity-assume-boundary-unavailable', { transitionKey: request.transitionKey });
+              } finally { identityAssumeChecking = false; }
+            }, 100);
+            identityAssumeTimer.unref?.();
+          }
+          if (msg.action === 'thaw') {
+            if (identityAssumeTimer) clearInterval(identityAssumeTimer);
+            identityAssumeTimer = null; identityAssumeRequest = null;
+            const pending = queuedOwnerInput; queuedOwnerInput = [];
+            for (const input of pending) forwardOwnerInput(input);
+          }
+          writeMeta();
+          return result;
+        } catch { return { ok: false, reason: 'assume-custody-unverified' }; }
+        finally { release(); }
+      }
+      if (identityAssumeFence?.blocksInput() && !['osc', 'delivery-cancel'].includes(msg.mode))
+        return { ok: false, reason: 'assume-caller-paused' };
       // WI-6554700010017571 / EI-26565736281520734: an untagged lifecycle
       // carry-note (reset, recycle or carry-respawn; see LIFECYCLE_CARRY_MODES)
       // gets a verified host-control envelope before any gate can defer or
@@ -14786,6 +15293,12 @@ export function hostThroughPty(o) {
         });
         return { ok: false, reason: refusalReason };
       }
+      if (msg.mode === 'carry-fence') {
+        const receipt = msg.ownerId === ownerId && msg.request?.ownerId === ownerId
+          ? pendingCarryFence.fence(msg.request) : { ok: false, reason: 'carry-fence-owner-mismatch' };
+        appendHostEvent(ownerId, receipt.ok ? 'pending-carry-fenced' : 'pending-carry-fence-refused', receipt);
+        return receipt;
+      }
       if (msg.mode === 'delivery-cancel') {
         if (!msg.ownerId || msg.ownerId !== ownerId || !msg.deliveryId) {
           appendHostEvent(ownerId, 'delivery-cancellation-refused', {
@@ -14883,7 +15396,11 @@ export function hostThroughPty(o) {
           msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
         const refreshedPendingTurn =
           pendingLoopKey != null
-            ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
+            // The busy cap can hand the same delivery from the coalescer to
+            // native rearm. Refresh whichever queue still owns its payload;
+            // refreshPendingMessage refuses an older superseded delivery ID.
+            ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata) ||
+              carryRearm.refreshPendingMessage(msg)
             : false;
         const refreshedPendingCarryRespawn =
           duplicateState === 'pending' && msg.mode === 'carry-respawn' && !msg.drillId
@@ -15033,6 +15550,16 @@ export function hostThroughPty(o) {
       // makeCarryRearmController). Cleared exactly once, whichever way this
       // attempt concludes, via the runGatedDelivery().finally() below.
       if (msg.mode === 'carry-respawn') {
+        const refusal = pendingCarryFence.admit(msg);
+        if (refusal) {
+          // EI-27053660657887116: a refused carry used to leave NO host event, so the
+          // only trace of a fleet-wide refusal was a caller's generic socket error.
+          appendHostEvent(ownerId, 'respawn-carry-refused', {
+            reason: refusal,
+            bound: msg.carryNonce !== undefined,
+          });
+          return { ok: false, reason: refusal };
+        }
         carryRearm.beginFirstAttempt(msg);
       }
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
@@ -15104,6 +15631,10 @@ export function hostThroughPty(o) {
       // line. Ungated raw/osc bypass it — a force-interrupt byte must land
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
+      if (identityAssumeFence?.blocksInput()) {
+        releaseInject?.();
+        return { ok: false, reason: 'assume-caller-paused' };
+      }
       const deferForOwnerInput = (reason) => {
         const pendingLength = ownerComposerGate.pendingLength();
         const extra = {
@@ -15488,6 +16019,7 @@ export function hostThroughPty(o) {
           // promise settles permanently deduped failed carries and made a
           // transient argv/spawn/native-proof failure look successful.
           const recycleResult = await recycleChild(msg.data, {
+            carryRequest: msg.mode === 'carry-respawn' ? msg : null,
             systemPromptAddendum:
               msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
             sourceTranscriptPath: msg.sourceTranscriptPath ?? null,
@@ -15762,7 +16294,7 @@ export function hostThroughPty(o) {
               return { ok: false, reason: 'native-turn-start-unavailable' };
             }
             const target = child;
-            const pending = { child: target, marker, submittedAtMs: turnWriteStartedAt,
+            const pending = { child: target, childGeneration, marker, submittedAtMs: turnWriteStartedAt,
               submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite),
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);
@@ -15774,6 +16306,7 @@ export function hostThroughPty(o) {
             });
             if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
             nativeStartPending.delete(deliver.deliveryId);
+            if (msg.mode === 'reset') scheduleResetReanchor(marker, turnWriteStartedAt, target);
             return { ok: true, reason: 'delivered' };
           }
           // The socket already ACKed acceptance before this detached pipeline.
@@ -15798,6 +16331,7 @@ export function hostThroughPty(o) {
             return { ok: false, reason: nativeProofAvailable ? 'native-turn-start-unverified' : failure };
           }
           for (const id of coalescedDeliveryIds) nativeStartPending.delete(id);
+          if (msg.mode === 'reset') scheduleResetReanchor(marker, turnWriteStartedAt, child);
         }
         return { ok: true, reason: 'delivered' };
       } catch (err) {
@@ -15902,6 +16436,7 @@ export function hostThroughPty(o) {
           // before this can fire, so pendingCount() never dips to 0 mid-transfer.
           if (msg.mode === 'carry-respawn') {
             carryRearm.endFirstAttempt(msg);
+            if (!carryRearm.isPendingMessage(msg)) pendingCarryFence.end(msg);
           }
         });
       // The host has accepted the request for processing, but has not yet
@@ -16357,6 +16892,7 @@ export function hostThroughPty(o) {
   /** Owner bytes → the child (or the post-submit queue while a machine turn
    *  owns the line). Shared by the live bridge and the parked-input replay. */
   function forwardOwnerInput(input) {
+    if (identityAssumeFence?.blocksInput()) { queuedOwnerInput.push(input); return; }
     if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
     const text = input.toString('utf8');
     if (hooksObservationInputHeld) {
@@ -16433,11 +16969,14 @@ export function hostThroughPty(o) {
      *  `{ code, go }` — never a bare boolean: the successor's marching orders are
      *  already on disk by the time this is set, and `go` is what actually leaves. */
     let reexecRequested = null;
+    const exitedChildren = new WeakSet();
     const cleanup = (code, signal = null) => {
       hooksObservationRecovery?.close();
       if (cleaned) return;
       cleaned = true;
       hostCleanedUp = true;
+      if (identityAssumeTimer) clearInterval(identityAssumeTimer);
+      identityAssumeTimer = null;
       // Stop accepting snapshots immediately. Finish the one atomic write in
       // flight before removing the key, so it cannot resurrect a dead host.
       const metadataClosed = metadataWriter.close();
@@ -16456,6 +16995,19 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'carry-rearm-cleanup-failed', hostErrorEvidence(error));
       }
       const endedSignal = signal ?? teardownSignal;
+      // Subscribe before sending the kill: signalling a process is not an
+      // observed exit. Natural exits have already crossed wireChildExit below.
+      const departingChild = child;
+      const childExit = exitedChildren.has(departingChild) ? Promise.resolve(true) : new Promise((resolve) => {
+        let subscription;
+        const finish = (observed) => {
+          clearTimeout(timer);
+          subscription?.dispose?.();
+          resolve(observed);
+        };
+        const timer = setTimeout(() => finish(false), RECYCLE_FORCE_KILL_WAIT_MS);
+        subscription = departingChild.onExit(() => finish(true));
+      });
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
       killPtyProcessTree(child, 'SIGKILL');
@@ -16607,6 +17159,14 @@ export function hostThroughPty(o) {
         }
       };
       const finishExit = async () => {
+        // Ordinary shutdown must wait too: done/onExit are consumed as a
+        // custody boundary by embedding callers. Identity replacement also
+        // requires the existing exact-PID absence check before spawning.
+        const childExited = await childExit;
+        const callerExited = childExited && (reexecRequested?.callerExit ? await reexecRequested.callerExit : true);
+        if (!childExited) {
+          appendHostEvent(ownerId, 'pty-child-exit-unverified', { childPid: departingChild.pid });
+        }
         await metadataClosed;
         releaseDiscovery();
         const [screenDrained, diagnosticsDrained] = await Promise.all([
@@ -16628,14 +17188,20 @@ export function hostThroughPty(o) {
         // BEFORE the successor asserts them (host:2739 — a second host on a live
         // discovery key strands the first).
         if (reexecRequested) {
+          if (!callerExited) {
+            appendHostEvent(ownerId, 'identity-assume-caller-exit-unverified', { childPid: child.pid });
+            resolve(1);
+            return; // Keep durable receipt/pause; never adopt uncertain orders.
+          }
           resolve(reexecRequested.code);
           reexecRequested.go();
           return;
         }
         // `resolve` keeps its numeric contract for embedding callers; the signal rides
         // the onExit channel, which is the one that reaches the adv_sessions record.
-        resolve(code ?? 0);
-        onExit(code ?? 0, endedSignal);
+        const confirmedCode = childExited ? (code ?? 0) : 1;
+        resolve(confirmedCode);
+        onExit(confirmedCode, endedSignal);
       };
       if (managedKickoff && !managedKickoffDisposition) {
         void acknowledgeManagedKickoff({
@@ -16652,6 +17218,21 @@ export function hostThroughPty(o) {
       } else {
         finishExit();
       }
+    };
+    completeIdentityAssume = (orders) => {
+      const departingChild = child;
+      const callerExit = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), RECYCLE_FORCE_KILL_WAIT_MS);
+        departingChild.onExit(() => {
+          clearTimeout(timer);
+          try { process.kill(departingChild.pid, 0); resolve(false); }
+          catch (error) { resolve(error?.code === 'ESRCH'); }
+        });
+      });
+      reexecRequested = { code: orders.code,
+        callerExit,
+        go: () => onReexec({ ...orders, mode: 'identity-assume' }) };
+      cleanup(0);
     };
     terminateTerminalOutput = () => cleanup(1, 'SIGHUP');
     if (terminalOutputError) terminateTerminalOutput();
@@ -16712,6 +17293,7 @@ export function hostThroughPty(o) {
     wireChildExit = () => {
       const thisChild = child;
       thisChild.onExit(({ exitCode, signal }) => {
+        exitedChildren.add(thisChild);
         if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
         if (child !== thisChild) return; // a superseded child that died late — ignore
         // WI-10006574: a resumed CLI dying before its prompt is a failed resume —
@@ -16760,20 +17342,43 @@ export function hostThroughPty(o) {
         sessionClass = '',
         quotaRecovery = null,
         carryProofRetryCount = 0,
+        carryRequest = null,
         // WI-10004943: spawn a fresh child on the launch argv and return without
         // a first prompt; the launch closure re-delivers its own kickoff.
         freshChildOnly = false,
       } = {},
     ) => {
+      if (identityAssumeFence?.blocksInput()) return { ok: false, reason: 'assume-caller-paused' };
       const resumeQuotaConversation = quotaRecovery?.cause !== 'auth' && Boolean(quotaRecovery) &&
         env.PAPERCUSP_AGENT === 'codex' && typeof mintQuotaResumeArgs === 'function';
       const recoveryChild = child;
       const recoveryOwnerInputGeneration = ownerInputGeneration;
+      const reroute = quotaRecovery?.defaultToAuto;
+      const routeBeforeRecovery = {
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: env.PAPERCUSP_ACCOUNT_ROUTING_MODE,
+        PAPERCUSP_CODEX_GATEWAY: env.PAPERCUSP_CODEX_GATEWAY,
+        PAPERCUSP_ACCOUNT_ID: env.PAPERCUSP_ACCOUNT_ID,
+      };
+      const rerouteBoundary = () => reroute !== undefined &&
+        (!reroute || quotaRecovery.cause !== 'quota' || !resumeQuotaConversation ||
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE !== 'default' ||
+          reroute.hostStartedAt !== baseMeta.startedAt || reroute.childGeneration !== childGeneration ||
+          reroute.nativeSessionId !== currentNativeSessionId(child.pid, resolveRespawnNativeId) ||
+          !quotaBlockDetector.isBlocked() ||
+          reroute.quotaBlockedSinceMs !== quotaBlockDetector.snapshot().quotaBlockedSinceMs ||
+          !Number.isFinite(reroute.expiresAtMs) || Date.now() > reroute.expiresAtMs ||
+          reroute.expiresAtMs > quotaRecovery.startedAtMs + 30_000);
       const quotaOwnerBoundary = () => resumeQuotaConversation &&
         (child !== recoveryChild || ownerInputGeneration !== recoveryOwnerInputGeneration ||
           ownerComposerGate.hasPending() || ownerStopRequested ||
           nativeExecutionBlocksInjection(currentNativeExecution()));
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
+        if (reroute !== undefined && !delivered && child === recoveryChild) {
+          for (const [key, value] of Object.entries(routeBeforeRecovery)) {
+            if (value === undefined) delete env[key];
+            else env[key] = value;
+          }
+        }
         if (quotaRecovery) {
           appendHostEvent(
             ownerId,
@@ -16791,7 +17396,22 @@ export function hostThroughPty(o) {
         return { delivered, reason };
       };
       if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
+      if (rerouteBoundary()) return settleQuotaRecovery(false, 'stale-quota-reroute');
       if (quotaOwnerBoundary()) return settleQuotaRecovery(false, 'owner-input-or-native-work');
+      // Synchronous linearization point before any preparation, host adoption,
+      // home mutation or child replacement. Fencing after this point refuses.
+      if (carryRequest) {
+        const refusal = pendingCarryFence.begin(carryRequest);
+        if (refusal) return settleQuotaRecovery(false, refusal);
+      }
+      if (reroute !== undefined) {
+        if (Date.now() - explicitQuotaRecoveryWindowAt >= 3_600_000) {
+          explicitQuotaRecoveryWindowAt = Date.now();
+          explicitQuotaRecoveryAttempts = 0;
+        }
+        if (explicitQuotaRecoveryAttempts >= 2) return settleQuotaRecovery(false, 'quota-reroute-exhausted');
+        explicitQuotaRecoveryAttempts++;
+      }
       recycling = true;
       // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
       // carry-respawn (no drillId) completely invisible in the per-owner event log
@@ -16919,6 +17539,10 @@ export function hostThroughPty(o) {
           recycling = false;
           return settleQuotaRecovery(false, 'codex-auto-route-unavailable');
         }
+        if (rerouteBoundary() || quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
+        }
         env.PAPERCUSP_ACCOUNT_ROUTING_MODE = 'auto';
         env.PAPERCUSP_CODEX_GATEWAY = '1';
         delete env.PAPERCUSP_ACCOUNT_ID;
@@ -17019,6 +17643,16 @@ export function hostThroughPty(o) {
               recycling = false;
               appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable',
                 ...(homeEnsureFailure ? { homeEnsureFailure } : {}) });
+              // The hook already reported QUEUED. A post-ACK preparation
+              // failure must also reach the terminal; the host ledger alone
+              // leaves the owner expecting a successor that cannot start.
+              const status = Number.isInteger(homeEnsureFailure?.status)
+                ? ` (HTTP ${homeEnsureFailure.status})` : '';
+              writeTerminalDiagnostic(
+                `psu-pty-host: ${respawnMode} NOT completed for ${ownerId}: ` +
+                `Codex home preparation failed${status}. The current session is intact; ` +
+                'the operator repair must succeed before the managed carry can finish.\n',
+              );
               return settleQuotaRecovery(false, 'codex-route-unavailable');
             }
           }
@@ -17410,6 +18044,7 @@ export function hostThroughPty(o) {
           /* keep the old pin — the respawn itself matters more */
         }
         child = spawnChild(recycleArgs);
+        liveAccountRoutingMode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? null;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
         });
@@ -17486,6 +18121,9 @@ export function hostThroughPty(o) {
         // gate-waiting or pending a carryRearm retry, whose receivedAtMs predates
         // this instant, is recognized as superseded the next time it is checked.
         lastRespawnAtMs = Date.now();
+        // Native-proof retries belong to the same carry. They intentionally
+        // do not re-admit its already-committed fence against the new child.
+        if (carryProofRetryCount === 0) lastRespawnCarryRequest = carryRequest;
       } catch (e) {
         // The failed successor never ran: give the surviving host env back exactly
         // as it was (a no-op when the successor switches were already set).

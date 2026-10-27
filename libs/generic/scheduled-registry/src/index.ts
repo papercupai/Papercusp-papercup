@@ -115,6 +115,8 @@ export interface ManagedTimerOptions {
    * opt in; injected timer backends (the normal deterministic test seam) remain active.
    */
   allowInTest?: boolean;
+  /** Override the five-interval hang threshold; always retain the five-minute floor. */
+  hungTickThresholdMs?: number;
 }
 
 /** The public, listable view of one armed timer. */
@@ -218,9 +220,29 @@ export interface ScheduledRegistryConfig {
   /** category-aware shed gate for `shed: true` timers; defaults to never-shed. */
   shouldShed?: (name: string) => boolean;
   log?: (msg: string) => void;
+  /** Host-owned alarm delivery. The registry itself never imports a durable executor. */
+  onHungTick?: (episode: ManagedTickEpisode) => void | Promise<void>;
+  onHungTickSettled?: (episode: ManagedTickEpisode) => void | Promise<void>;
 }
 
-type ResolvedConfig = Required<ScheduledRegistryConfig>;
+export interface ManagedTickEpisode {
+  id: number;
+  timerName: string;
+  timerKey: string;
+  startedAt: number;
+  heldMs: number;
+  thresholdMs: number;
+}
+
+type ResolvedConfig = Required<Omit<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled'>> &
+  Pick<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled'>;
+
+export function managedTickThresholdMs(intervalMs: number, customThresholdMs?: number): number {
+  return Math.max(
+    Number.isFinite(customThresholdMs) && customThresholdMs! > 0 ? customThresholdMs! : 5 * intervalMs,
+    300_000,
+  );
+}
 
 function defaults(): ResolvedConfig {
   return {
@@ -286,6 +308,7 @@ interface RegistryState {
   registry: Map<string, InternalRecord>;
   instanceCounter: number;
   resolved: ResolvedConfig;
+  episodeCounter: number;
 }
 
 /**
@@ -314,6 +337,7 @@ const state: RegistryState = pinModuleState<RegistryState>(STATE_KEY, () => ({
   registry: new Map<string, InternalRecord>(),
   instanceCounter: 0,
   resolved: defaults(),
+  episodeCounter: 0,
 }));
 
 /**
@@ -341,6 +365,7 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
 }
 
 function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTimerOptions, rec: InternalRecord): () => void {
+  let activeHang: { watcher: ManagedHandle; finish: () => void } | undefined;
   // Record a fire. fires + lastFireAt count every ATTEMPT (including throws); only lastError differs.
   const settle = (err?: unknown): void => {
     if (err === undefined) {
@@ -350,6 +375,9 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
       state.resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
     }
     const settledAt = state.resolved.now();
+    activeHang?.watcher.stop();
+    activeHang?.finish();
+    activeHang = undefined;
     if (rec.episodeSkips >= LONG_TICK_REPORT_MIN_SKIPS && rec.entry.runningSince !== null) {
       // Close the episode the skip log opened, with the measured duration, so a long tick has a
       // definite end in the log instead of just going quiet.
@@ -397,6 +425,41 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
       return;
     }
     if (result && typeof (result as Promise<void>).then === 'function') {
+      const onHung = state.resolved.onHungTick;
+      const onSettled = state.resolved.onHungTickSettled;
+      if (onHung) {
+        const episode: ManagedTickEpisode = {
+          id: (state.episodeCounter = (state.episodeCounter ?? 0) + 1),
+          timerName: name,
+          timerKey: rec.key,
+          startedAt: rec.entry.runningSince!,
+          heldMs: 0,
+          thresholdMs: managedTickThresholdMs(rec.entry.intervalMs, opts.hungTickThresholdMs),
+        };
+        let announced = false;
+        // Serialize resolution AFTER delivery, even when the tick settles during an async raise.
+        let delivery = Promise.resolve();
+        const deliver = (hook: () => void | Promise<void>): void => {
+          delivery = delivery.then(hook).catch((err: unknown) => {
+            state.resolved.log(`${name} hung-tick alarm delivery failed: ${String(err)}`);
+          });
+        };
+        const watcher = managedSetInterval('managed-tick-watch', Math.min(rec.entry.intervalMs, 60_000), () => {
+          const heldMs = state.resolved.now() - episode.startedAt;
+          if (announced || heldMs <= episode.thresholdMs) return;
+          announced = true;
+          deliver(() => onHung({ ...episode, heldMs }));
+        }, {
+          category: 'watchdog', classification: 'timeout-reaper', instanced: true,
+          phase: 'arm', allowInTest: opts.allowInTest,
+        });
+        activeHang = { watcher, finish: () => {
+          if (announced && onSettled) {
+            const ended = { ...episode, heldMs: state.resolved.now() - episode.startedAt };
+            deliver(() => onSettled(ended));
+          }
+        } };
+      }
       void Promise.resolve(result).then(
         () => settle(undefined),
         (e: unknown) => settle(e),
@@ -542,6 +605,26 @@ export function managedSetInterval(
   }
   registry.set(key, rec);
   return { stop: () => stopManaged(key) };
+}
+
+/** Reuse the registry's replacement and async overlap guard for recurring sweeps.
+ * Callers retain their public start signature, cadence, classification and log.
+ */
+export function createManagedSweepStarter(definition: {
+  name: string;
+  intervalMs: number;
+  options: ManagedTimerOptions;
+  onError: (error: unknown) => void;
+}): (run: () => Promise<unknown>, intervalMs?: number) => void {
+  return (run, intervalMs = definition.intervalMs) => {
+    managedSetInterval(definition.name, intervalMs, async () => {
+      try {
+        await run();
+      } catch (error) {
+        definition.onError(error);
+      }
+    }, definition.options);
+  };
 }
 
 /** Stop + deregister one timer by name. Returns whether it existed. Idempotent. */

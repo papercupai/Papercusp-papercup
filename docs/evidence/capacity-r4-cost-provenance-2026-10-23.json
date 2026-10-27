@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "capacity-provenance-custody-pointer-v1",
+  "recordedAt": "2026-10-23T16:00:58.591Z",
+  "workItem": "WI-6554700010023077",
+  "custodyWorkItem": "EI-26916143924070538",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "requirement": "R-4",
+  "scope": "Historical P012 source recovery plus current pure arithmetic reproduction. No new provider operation, workload/test rerun, customer price activation, current-source adequacy certification or shipment.",
+  "qualification": "supporting-evidence-only",
+  "archive": {
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/evidence/EI-26916143924070538/fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e",
+    "manifest": {
+      "name": "manifest.json",
+      "sha256": "fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e"
+    },
+    "original": {
+      "name": "originals/capacity-r4-cost-provenance-2026-10-23.json",
+      "sourcePath": "docs/evidence/capacity-r4-cost-provenance-2026-10-23.json",
+      "sha256": "65dfece1c7bc488ad2d1c853fb12ddd45afb2de50f6abe0bc99a9a39406233d1",
+      "byteLength": 38214
+    }
+  },
+  "readerAccess": {
+    "validation": "Resolve archive.root relative to the operating account home directory. Verify the manifest SHA-256 before selecting files[].path equal to archive.original.sourcePath. Read that original artifact and verify both byte length and SHA-256 against the manifest and this pointer. Parse the original JSON only after verification.",
+    "relatedProof": "Historical source paths inside an original remain unchanged. If a source path names another custody pointer in this set, resolve that pointer and verify its original bytes before comparing the historical source digest.",
+    "preservation": "The archived original is byte-identical to the historical source record. This portable pointer contains no replacement measurements or rewritten proof."
+  },
+  "claims": {
+    "newExecution": false,
+    "currentSourceAdequacy": false,
+    "operationalAcceptance": false,
+    "shipment": false
+  },
+  "unresolved": [
+    "Every modeled all-in total remains unknown without evidence-backed retained storage, provisioned performance, backup, object storage, network, control plane, warm capacity and inference costs.",
+    "Original /tmp/cost-model-0602.txt is absent at recovery. This artifact reproduces current arithmetic and does not replace that missing original output receipt.",
+    "P532 saving is attributed to D-052 and conditional on sidecar idle exit; its raw VM source is not independently requalified here.",
+    "Underlying R1 capacity records still lack qualified historical writer identity/direct OOM counter receipts.",
+    "Original terminal narrative's earlier target interpretation and bare-tsc next-lever claim are not adopted. Current target comes from code/D-003; D-040's correction limits the bare-tsc inference.",
+    "R4 current-revision live-plane binding, independent adequacy and complete customer-pricing evidence are not claimed."
+  ]
+}

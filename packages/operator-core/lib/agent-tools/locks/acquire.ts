@@ -80,6 +80,8 @@ import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 import { withPgRetry } from '../../pg-transient-retry';
 import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
+import { getOrgPg } from '@papercusp/db-org';
+import { startAttributionNudge, type NudgeSql } from './attribution-nudge';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. It must cover the longest
@@ -247,6 +249,13 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
+    // P-010 (code-intel-delivery-and-outcomes-2026-10-26, SPEC-P-010): start the "holds
+    // no work item" read now so it overlaps the grant; every grant below carries it.
+    const attributionNudgeP = startAttributionNudge({
+      ownerId,
+      resolveWorkspaceId: () => resolveAgentIdentity(ctx).workspaceId,
+      resolveSql: () => getOrgPg().sql as unknown as NudgeSql,
+    });
     const explicitCoordinationDomain = args.coordination_domain !== undefined;
     let coordinationDomain: string;
     try {
@@ -563,6 +572,7 @@ export default defineTool({
         shaToken,
         first.newly_held,
         missingRepoPathWarning(paths, coordinationDomain),
+        await attributionNudgeP,
       );
     }
 
@@ -624,6 +634,7 @@ export default defineTool({
           undefined,
           undefined,
           missingRepoPathWarning(paths, coordinationDomain),
+          await attributionNudgeP,
         );
       }
 
@@ -770,6 +781,7 @@ export default defineTool({
           undefined,
           undefined,
           missingRepoPathWarning(paths, coordinationDomain),
+          await attributionNudgeP,
         );
       }
 
@@ -852,6 +864,7 @@ export default defineTool({
             undefined,
             undefined,
             missingRepoPathWarning(status.paths ?? paths, coordinationDomain),
+            await attributionNudgeP,
           );
         }
       } catch (err: unknown) {
@@ -925,6 +938,7 @@ export default defineTool({
               undefined,
               undefined,
               missingRepoPathWarning(status.paths ?? paths, coordinationDomain),
+              await attributionNudgeP,
             );
           }
           if (
@@ -1006,6 +1020,7 @@ export default defineTool({
           undefined,
           undefined,
           missingRepoPathWarning(finalBusy.held, coordinationDomain),
+          await attributionNudgeP,
         );
       }
 
@@ -1085,6 +1100,8 @@ function ok(
   shaToken?: ShaTokenGrant,
   newlyHeld?: string[],
   pathWarning?: string,
+  // P-010: present when the owner holds no non-terminal work item (attribution-nudge.ts).
+  attributionNudge?: string,
 ) {
   return jsonResult({
     ok: true,
@@ -1101,6 +1118,7 @@ function ok(
       ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
       : {}),
     ...(pathWarning ? { path_warning: pathWarning } : {}),
+    ...(attributionNudge ? { attribution_nudge: attributionNudge } : {}),
   });
 }
 

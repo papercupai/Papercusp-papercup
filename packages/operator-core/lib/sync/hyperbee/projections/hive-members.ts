@@ -194,19 +194,25 @@ async function writeToPg(
        ${row.binding_status},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, pot_home_slug, github_user_id) DO UPDATE SET
-      github_username     = EXCLUDED.github_username,
-      device_attestations = EXCLUDED.device_attestations,
-      revoked_pubkeys     = EXCLUDED.revoked_pubkeys,
-      binding_status      = EXCLUDED.binding_status,
-      author_pubkey       = EXCLUDED.author_pubkey,
-      origin              = EXCLUDED.origin,
-      fed_ts              = EXCLUDED.fed_ts,
-      fed_hlc             = EXCLUDED.fed_hlc
-    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
-    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
-    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
-    -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+      -- Sets retain every authenticated contribution even when its clock is older.
+      device_attestations = COALESCE((SELECT jsonb_agg(DISTINCT value ORDER BY value)
+        FROM jsonb_array_elements(COALESCE(harness_shared.pot_members.device_attestations, '[]'::jsonb)
+          || EXCLUDED.device_attestations)), '[]'::jsonb),
+      revoked_pubkeys = ARRAY(SELECT DISTINCT value
+        FROM unnest(COALESCE(harness_shared.pot_members.revoked_pubkeys, '{}'::text[])
+          || EXCLUDED.revoked_pubkeys) AS revoked(value) ORDER BY value),
+      github_username = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.github_username ELSE harness_shared.pot_members.github_username END,
+      binding_status = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.binding_status ELSE harness_shared.pot_members.binding_status END,
+      author_pubkey = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.author_pubkey ELSE harness_shared.pot_members.author_pubkey END,
+      origin = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.origin ELSE harness_shared.pot_members.origin END,
+      fed_ts = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.fed_ts ELSE harness_shared.pot_members.fed_ts END,
+      fed_hlc = CASE WHEN harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_members.fed_hlc, harness_shared.pot_members.fed_ts)
+        THEN EXCLUDED.fed_hlc ELSE harness_shared.pot_members.fed_hlc END
   `;
   // WI-259 P-003 fast-path invalidation (the onMemberApplied hook): a member join /
   // device-change may change the hive's member DEVICE set, so drop the P-002 guard's
@@ -357,6 +363,7 @@ export function buildHiveMembersProjection(
 ): TableProjection<HiveMemberRow> {
   return {
     tableTag: 'hive-members',
+    mergeRule: 'set-union',
     // EI-117: CDC-captured table (mig 189 custom capture) — own-log ops are replays.
     skipOwnOps: true,
     composeKey,

@@ -259,6 +259,7 @@ export interface ClaimTimeEnrichmentDelivery {
 }
 
 export interface ClaimTimeEnrichmentOpts {
+  reuse?: import('./code-intelligence/task-brief').ClaimBriefReuseIdentity;
   /** The claimed work-item, when the surface has one. */
   workItem?: ClaimTimeEnrichmentSubject | null;
   /** Explicit plan pointer — `plan_items:claim` knows these from its own args. */
@@ -509,7 +510,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       }),
       runLeg('taskBrief', wi, async workItem => {
         const m = await import('./code-intelligence/task-brief');
-        return m.getClaimTimeTaskBrief({ workItem, harness, workspaceId });
+        return m.getClaimTimeTaskBrief({ workItem, harness, workspaceId, reuse: opts.reuse });
       }),
     ]);
 

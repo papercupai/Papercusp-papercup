@@ -24,6 +24,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { observationLaneExclusionSql } from '../work-items';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 /** One raw needs-human work-item row, as the attention mapper consumes it. */
 export interface NeedsHumanWorkItemRow {
   feature_id: string;
@@ -111,7 +112,7 @@ export async function readNeedsHumanWorkItems(opts?: {
        AND (
          status = 'needs-human'
          OR (
-           item_kind IN ('bug', 'change', 'task')
+           item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' = 'true'
          )
        )

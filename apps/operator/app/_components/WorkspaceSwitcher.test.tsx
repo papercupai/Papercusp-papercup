@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { listWorkspaces } from '@papercusp/operator-core/lib/workspaces-tauri';
 
 const { reg, wsApi, dialogs, toastSpies } = vi.hoisted(() => ({
   reg: {
@@ -45,7 +46,8 @@ vi.mock('@papercusp/operator-core/lib/workspaces-tauri', () => ({
 }));
 
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
-  getBrowserWorkspaceId: () => 'ws-a',
+  getBrowserWorkspaceId: () => window.__PAPERCUSP_WS__ ?? 'ws-a',
+  getBrowserMachineId: () => 'local',
   resolveActiveWorkspaceId: (
     r: { current: string; workspaces: { id: string }[] },
     windowWsId: string,
@@ -85,6 +87,7 @@ async function renderAndOpen() {
 }
 
 beforeEach(() => {
+  delete window.__PAPERCUSP_WS__;
   reg.value = {
     current: 'ws-a',
     workspaces: [
@@ -102,9 +105,30 @@ beforeEach(() => {
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); delete window.__PAPERCUSP_WS__; });
 
 describe('<WorkspaceSwitcher />', () => {
+  it('binds requests to the authorized workspace when the previous machine workspace is absent', async () => {
+    window.__PAPERCUSP_WS__ = 'ws-a';
+    reg.value = { current: 'ws-b', workspaces: [{ id: 'ws-b', name: 'Bravo' }] };
+    const update = vi.fn();
+    render(<WorkspaceSwitcher />, { wrapper: withNuqsTestingAdapter({
+      searchParams: '?ws=ws-a&desktopHost=machine-b', onUrlUpdate: update,
+    }) });
+    await screen.findByRole('button', { name: /switch or manage workspaces/i });
+    await waitFor(() => expect(window.__PAPERCUSP_WS__).toBe('ws-b'));
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls.at(-1)![0].searchParams.get('ws')).toBe('ws-b');
+  });
+
+  it('keeps the current workspace identity when machine discovery is refused', async () => {
+    window.__PAPERCUSP_WS__ = 'ws-a';
+    vi.mocked(listWorkspaces).mockRejectedValueOnce(new Error('machine offline'));
+    render(<WorkspaceSwitcher />, { wrapper: withNuqsTestingAdapter({ searchParams: '?desktopHost=machine-b' }) });
+    await waitFor(() => expect(toastSpies.error).toHaveBeenCalledWith('workspaces: machine offline'));
+    expect(window.__PAPERCUSP_WS__).toBe('ws-a');
+  });
+
   it('renders nothing while the registry is still loading', () => {
     const { container } = render(<WorkspaceSwitcher />, {
       wrapper: withNuqsTestingAdapter({ searchParams: '' }),

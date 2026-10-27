@@ -76,7 +76,7 @@ export const RELATED_FILTER_LIST_ENV = "PC_TEST_FILTER_LIST";
 
 // Expand only local npm aliases and && sequencing. Keep the command order and
 // each alias lifecycle; other shell syntax is deliberately left unsupported.
-function expandSelectionCommands(scripts, script, seen = new Set()) {
+export function expandSelectionCommands(scripts, script, seen = new Set()) {
   if (seen.has(script) || typeof scripts[script] !== 'string') throw new Error('invalid-local-script-chain');
   const next = new Set([...seen, script]);
   const expand = command => {
@@ -135,9 +135,9 @@ function lifecycleSelection(task, step, root, wsRoot) {
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
- * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean, enumerateSpecifications?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver, syncAstro = false } = {}) {
+export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver, syncAstro = false, enumerateSpecifications = false } = {}) {
   const unenumerated = [];
   const requests = [];
   const selected = [];
@@ -171,7 +171,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
             lifecycleSelection(task, step, root, wsRoot)],
             unenumerated: [{ reason: 'unexecuted-lifecycle-command' }] };
           const leaf = enumerateAffectedTaskSelection([{ ...t, script: step.script,
-            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro });
+            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro, enumerateSpecifications });
           return { ...step, files: leaf.files, commandObligations: leaf.commandObligations,
             unenumerated: leaf.unenumerated, discovery: leaf.tasks };
         });
@@ -179,7 +179,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
           (step.commandObligations ?? []).map(obligation => ({ ...obligation, step: index })));
         entries.push({ ...task, runner: 'command-chain', steps: prepared,
           files: [...new Set(prepared.flatMap(step => step.files))].sort(), commandObligations });
-        const stepFiles = prepared.flatMap(step => step.files);
+        const stepFiles = prepared.flatMap(step =>
+          step.discovery?.[0]?.runner === 'astro-check' ? [] : step.files);
         if (new Set(stepFiles).size !== stepFiles.length)
           unenumerated.push({ task: id, reason: 'overlapping-chain-file-population', command });
         for (const [index, step] of prepared.entries()) for (const residue of step.unenumerated)
@@ -271,10 +272,11 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       continue;
     }
     const env = Object.fromEntries(envWords.map(word => [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]));
-    if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
+    if (Array.isArray(t.relatedFiles) && (t.relatedFiles.length > 0 || t.qualificationSelection))
       env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
-    selected.push(task);
-    requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true, env });
+    selected.push({ ...task, runner: 'vitest' });
+    requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true,
+      ...(enumerateSpecifications ? { enumerateSpecifications: true } : {}), env });
   }
   const resolveRequests = runResolver ?? (requests => {
     const output = execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
@@ -328,7 +330,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       ...(task.runner === 'astro-check' ? { sync: result.sync, commandObligations: [{
         ...task.commandObligations[0], inputs: result.inputs, discovery: result,
       }] } : {}),
-      ...(result.projects ? { projects: result.projects } : {}) });
+      ...(result.projects ? { projects: result.projects } : {}),
+      ...(result.selectedSpecifications ? { selectedSpecifications: result.selectedSpecifications } : {}) });
     if (task.runner === 'astro-check')
       unenumerated.push({ task: task.id, reason: 'unexecuted-command-obligations', command: task.command });
   }
@@ -828,26 +831,35 @@ export function packageExportTargets(pkg, subpath) {
  * workspace package specifier that maps to no existing file, which is a graph hole.
  *
  * @param {string} spec
- * @param {Map<string, WorkspacePackage>} packagesByName
+ * @param {Map<string, WorkspacePackage[]>} packagesByName
  * @param {Array<Array<[string, string, boolean]>>} aliasLists
  * @param {(p: string) => boolean} exists
- * @returns {{ kind: 'external' } | { kind: 'workspace', targets: string[] } | { kind: 'unresolvable' }}
+ * @returns {{ kind: 'external' } | { kind: 'workspace', targets: string[], unresolvable?: boolean } | { kind: 'unresolvable' }}
  */
 function resolveWorkspaceBare(spec, packagesByName, aliasLists, exists) {
   const parsed = splitPackageSpecifier(spec);
-  const pkg = parsed ? packagesByName.get(parsed.name) : undefined;
-  if (!parsed || !pkg) return { kind: "external" };
-  const bases = packageExportTargets(pkg, parsed.subpath);
+  const packages = parsed ? packagesByName.get(parsed.name) : undefined;
+  if (!parsed || !packages) return { kind: "external" };
+  const aliasBases = [];
   for (const entries of aliasLists) {
     const aliased = matchTsconfigPath(entries, spec);
-    if (aliased !== null) bases.push(path.resolve(aliased));
+    if (aliased !== null) aliasBases.push(path.resolve(aliased));
   }
   const targets = new Set();
-  for (const base of bases) {
-    const hit = candidatesFor(base).find(exists);
-    if (hit) targets.add(hit);
+  let unresolvable = false;
+  // Independent pinned repositories can contain the same package name. Keep every
+  // possible target, and retain a hole in any candidate even if another resolves.
+  for (const pkg of packages) {
+    let resolved = false;
+    for (const base of [...packageExportTargets(pkg, parsed.subpath), ...aliasBases]) {
+      const hit = candidatesFor(base).find(exists);
+      if (hit) { targets.add(hit); resolved = true; }
+    }
+    if (!resolved) unresolvable = true;
   }
-  return targets.size > 0 ? { kind: "workspace", targets: [...targets] } : { kind: "unresolvable" };
+  return targets.size > 0
+    ? { kind: "workspace", targets: [...targets], ...(unresolvable ? { unresolvable: true } : {}) }
+    : { kind: "unresolvable" };
 }
 
 /**
@@ -1080,7 +1092,38 @@ export function buildIndex({
   const root = path.resolve(rootDir);
   const insideRoot = (file) => file === root || file.startsWith(root + path.sep);
   const packages = crossRoot ? crossRoot.packages : [];
-  const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  /** @type {Map<string, WorkspacePackage[]>} */
+  const packagesByName = new Map();
+  /** @type {Map<string, WorkspacePackage>} */
+  const packagesByDir = new Map();
+  for (const pkg of packages) {
+    const candidates = packagesByName.get(pkg.name) ?? [];
+    candidates.push(pkg);
+    packagesByName.set(pkg.name, candidates);
+    // Equal directory prefixes retain the first package, just like owningPackage.
+    const dir = pkg.dir;
+    if (!packagesByDir.has(dir)) packagesByDir.set(dir, pkg);
+  }
+  /** @type {Map<string, WorkspacePackage | null>} */
+  const ownersByDir = new Map();
+  const ownerOf = (file) => {
+    const walked = [];
+    let dir = path.dirname(file);
+    let owner = null;
+    for (;;) {
+      if (ownersByDir.has(dir)) { owner = ownersByDir.get(dir); break; }
+      const candidate = packagesByDir.get(dir);
+      if (candidate) { owner = candidate; break; }
+      walked.push(dir);
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    // Walk from the importer towards the root: the first directory wins, so
+    // nested packages keep their own aliases without scanning every package.
+    for (const visited of walked) ownersByDir.set(visited, owner);
+    return owner;
+  };
   const aliasesFor =
     crossRoot?.aliasesFor ??
     ((dir) =>
@@ -1093,14 +1136,23 @@ export function buildIndex({
       }));
   /** @type {Map<string, Array<[string, string, boolean]>>} */
   const aliasesByDir = new Map();
+  /** @type {Map<string, Array<[string, string, boolean]>>} */
+  const aliasesByFile = new Map();
   /** The alias tuples a file's own imports resolve through: the indexed workspace's for an
    *  in-root file, else its owning package's ([] when no package owns it). */
   const aliasEntriesFor = (file) => {
     if (insideRoot(file)) return aliasEntries;
-    const owner = owningPackage(packages, file);
-    if (!owner) return [];
-    if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));
-    return aliasesByDir.get(owner.dir);
+    const cached = aliasesByFile.get(file);
+    if (cached !== undefined) return cached;
+    // Package ownership and aliases are fixed for this index, including misses.
+    const owner = ownerOf(file);
+    let entries = [];
+    if (owner) {
+      if (!aliasesByDir.has(owner.dir)) aliasesByDir.set(owner.dir, aliasTuples(aliasesFor(owner.dir)));
+      entries = aliasesByDir.get(owner.dir);
+    }
+    aliasesByFile.set(file, entries);
+    return entries;
   };
 
   /** @returns {{ targets: string[], unresolvable?: boolean }} */
@@ -1115,7 +1167,7 @@ export function buildIndex({
       const r = resolveWorkspaceBare(spec, packagesByName, lists, exists);
       if (r.kind === "external") return { targets: [] };
       if (r.kind === "unresolvable") return { targets: [], unresolvable: true };
-      return { targets: r.targets };
+      return { targets: r.targets, ...(r.unresolvable ? { unresolvable: true } : {}) };
     }
     let base;
     if (kind === "relative") {

@@ -15,12 +15,13 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { Sql } from 'postgres';
 import { lstat, unlink } from 'node:fs/promises';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
-import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
+import { emitTaskTerminalEvent, type TaskTerminalEventEmitter, type TaskTerminalEventInput } from './task-terminal-events';
 import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
 import { nudgeOnNewLoop } from '../verification-attempts/loop-gate';
 import { cleanupEndedVerifierDirectories } from '../verifier-source';
@@ -340,6 +341,8 @@ export interface CloseTaskInput {
 export interface CloseTaskEffects {
   /** Reuse managedSpawn's tracer to distinguish awaited terminal-close phases. */
   stage?: (name: string) => void;
+  /** Receipt for an accepted terminal UPDATE, before best-effort event delivery. */
+  onTerminalPersisted?: () => void;
   /** Cleanup must succeed before the terminal row loses its retry path. */
   cleanupVerifierDirectories?: typeof cleanupEndedVerifierDirectories;
   /** Test seam; production uses the awaited-event bridge. */
@@ -349,6 +352,9 @@ export interface CloseTaskEffects {
   /** Test seam; production nudges the launcher when an attempt trips the loop rule. */
   nudgeLoop?: typeof nudgeOnNewLoop;
 }
+
+/** Preserve per-task close diagnostics when a reconciler closes a batch. */
+export type CloseTaskEffectsForTask = (taskId: string) => CloseTaskEffects;
 
 function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
   if (terminal.execMainStatus == null) return fallback;
@@ -378,6 +384,7 @@ export function classifyTerminalClose(
   const memoryMaxBytes = captured.memoryMaxBytes ?? row?.memoryMaxBytes ?? null;
   const terminal: TaskTerminalProvenance = {
     ...captured,
+    invocationId: captured.invocationId ?? row?.terminalProvenance?.invocationId ?? null,
     scopeUnit: row?.scopeUnit ?? captured.scopeUnit,
     cgroupPath: captured.cgroupPath ?? row?.cgroupPath ?? null,
     memoryMaxBytes,
@@ -403,13 +410,22 @@ export function classifyTerminalClose(
           : 'oom-kill-unattributed';
   } else if (result === 'timeout') {
     state = 'timed_out';
-    exitReason = 'timeout';
+    // Result=timeout can coexist with a successful main process (for example,
+    // when remaining PostgreSQL descendants exceed TimeoutStopSec). Preserve
+    // both observations without inferring the timeout phase: a RuntimeMaxSec
+    // signal handler can also return zero. An observed caller deadline stays
+    // authoritative even when the payload handles its signal successfully.
+    exitReason = input.state === 'timed_out' ? input.exitReason ?? 'timeout'
+      : terminal.execMainCode === 1 && terminal.execMainStatus === 0
+        ? 'service-timeout-main-exit-0' : 'timeout';
   } else if (result === 'signal' || result === 'core-dump') {
     state = 'killed';
     exitReason ??= result;
   } else if (result === 'exit-code') {
     state = 'exited';
     exitReason ??= 'exit-code';
+  } else if (state === 'ended_unobserved' && terminal.execMainCode === 1 && terminal.execMainStatus != null) {
+    state = 'exited';
   }
 
   return {
@@ -422,9 +438,8 @@ export function classifyTerminalClose(
 
 /**
  * Terminal close. Idempotent by construction — the WHERE excludes rows that
- * already ended, so a race between the child's `exit` event and the reconciler's
- * strand verdict resolves to whichever landed first instead of overwriting a real
- * exit code with a guess.
+ * already observed an exit. A later definitive exit can upgrade an unobserved
+ * close, with snapshot guards repeated atomically in SQL so racing evidence wins.
  */
 export async function closeTask(
   taskId: string,
@@ -446,6 +461,14 @@ export async function closeTask(
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
+  const recovering = Boolean(existing?.endedAt && existing.state === 'ended_unobserved' && existing.exitCode == null
+    && ['exited', 'killed', 'timed_out'].includes(classified.state) && classified.exitCode != null);
+  const terminal = input.terminalProvenance;
+  if (recovering && terminal && (
+    ['active', 'activating', 'reloading', 'deactivating'].includes(terminal.activeState ?? '') ||
+    (existing?.terminalProvenance?.invocationId != null && terminal.invocationId != null &&
+      existing.terminalProvenance.invocationId !== terminal.invocationId)
+  )) return false;
   if (existing && !existing.endedAt) {
     effects.stage?.('task-close-cleanup');
     await (effects.cleanupVerifierDirectories ?? cleanupEndedVerifierDirectories)(existing);
@@ -479,23 +502,31 @@ export async function closeTask(
                THEN ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint
              ELSE GREATEST(peak_memory_bytes, ${classified.terminalProvenance?.peakMemoryBytes ?? null}::bigint)
            END,
-           detail = CASE
+           detail = (CASE
              WHEN ${terminalJson}::text IS NULL THEN detail
              ELSE detail || jsonb_build_object(
                'terminalProvenance', ${terminalJson}::text::jsonb
              )
-           END,
-           ended_at = now(),
+           END) || jsonb_build_object(
+             'terminalEventPending', true,
+             'terminalEventRevision', COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) + 1
+           ),
+           ended_at = COALESCE(ended_at, now()),
            last_seen_at = now(),
            updated_at = now()
      WHERE task_id = ${taskId}
-       AND ended_at IS NULL
+       AND (ended_at IS NULL OR (
+         ${recovering} AND state = 'ended_unobserved' AND exit_code IS NULL
+         AND scope_unit IS NOT DISTINCT FROM ${existing?.scopeUnit ?? null}
+         AND detail #>> '{terminalProvenance,invocationId}' IS NOT DISTINCT FROM ${existing?.terminalProvenance?.invocationId ?? null}
+       ))
     RETURNING task_id, workspace_id, harness_slug, class, launched_by,
               work_item_id, log_path, argv, started_at, ended_at
   `;
   effects.stage?.('task-close-update-complete');
   const closed = rows[0];
   if (!closed) return false;
+  effects.onTerminalPersisted?.();
   // expensive-verification-loops P-001: a slow work-item attempt gets its outcome and
   // failure fingerprint stamped on the row. Fail-soft and fire-and-forget; it returns
   // before any I/O for a row with no work item or under the slow threshold.
@@ -525,7 +556,7 @@ export async function closeTask(
     );
   }
   effects.stage?.('task-close-event');
-  await (effects.emitTerminal ?? emitTaskTerminalEvent)({
+  await deliverTaskTerminalEvent({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
     harnessSlug: closed.harness_slug,
@@ -534,9 +565,93 @@ export async function closeTask(
     state: classified.state,
     exitCode: classified.exitCode ?? null,
     exitReason: classified.exitReason ?? null,
-  });
+  }, inject, effects.emitTerminal);
   effects.stage?.('task-close-event-complete');
   return true;
+}
+
+/** A terminal UPDATE is durable even when its event bridge is unavailable. */
+async function deliverTaskTerminalEvent(
+  event: TaskTerminalEventInput,
+  inject?: Sql,
+  emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
+): Promise<boolean> {
+  try {
+    const sql = sqlOf(inject);
+    // Recovery's candidate list (and closeTask's UPDATE receipt) can already be
+    // stale. Read the latest outbox value without holding a connection over emit.
+    const [current] = await sql`
+      SELECT task_id, workspace_id, harness_slug, class, launched_by, state,
+             exit_code, exit_reason,
+             COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) AS revision
+        FROM harness_shared.task_ledger
+       WHERE task_id = ${event.taskId} AND workspace_id = ${event.workspaceId}
+         AND ended_at IS NOT NULL
+         AND state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+         AND detail -> 'terminalEventPending' IS DISTINCT FROM 'false'::jsonb
+    `;
+    if (!current) return false;
+    event = {
+      taskId: current.task_id, workspaceId: current.workspace_id,
+      harnessSlug: current.harness_slug, taskClass: current.class,
+      launchedBy: current.launched_by, state: current.state,
+      exitCode: current.exit_code, exitReason: current.exit_reason,
+      revision: Number(current.revision),
+    };
+    if (await emit(event) === false) return false;
+    // An unobserved close can be upgraded while this emit is in flight. Never
+    // acknowledge that newer tuple with an older delivery's receipt.
+    await sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = detail || jsonb_build_object('terminalEventPending', false)
+       WHERE task_id = ${event.taskId} AND ended_at IS NOT NULL
+         AND state = ${event.state}
+         AND exit_code IS NOT DISTINCT FROM ${event.exitCode}
+         AND exit_reason IS NOT DISTINCT FROM ${event.exitReason}
+         AND COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) = ${event.revision!}
+    `;
+    return true;
+  } catch (error) {
+    console.warn(`[task-manager] terminal event pending for ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+/** Bounded restart recovery, called by the existing task reconciler. Delivery is
+ * at least once if the process dies after emitting but before acknowledging it.
+ * Legacy terminal rows with no latch are included so existing lost exits recover. */
+export async function recoverPendingTaskTerminalEvents(
+  workspaceId?: string,
+  inject?: Sql,
+  emit: TaskTerminalEventEmitter = emitTaskTerminalEvent,
+): Promise<number> {
+  const sql = sqlOf(inject);
+  const rows = await sql`
+    SELECT t.task_id, t.workspace_id, t.harness_slug, t.class, t.launched_by,
+           t.state, t.exit_code, t.exit_reason
+      FROM harness_shared.task_ledger t
+     WHERE t.workspace_id = ${workspaceId ?? activeWorkspaceId()}
+       AND t.ended_at IS NOT NULL
+       AND t.state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+       AND (t.detail -> 'terminalEventPending' = 'true'::jsonb OR (
+         NOT (t.detail ? 'terminalEventPending') AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.event_key_fires f
+            WHERE f.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+              AND f.event_key = 'task:terminal:' || t.task_id
+         )
+       ))
+     ORDER BY t.ended_at, t.task_id
+     LIMIT 100
+  `;
+  let delivered = 0;
+  for (const row of rows) {
+    if (await deliverTaskTerminalEvent({
+      taskId: row.task_id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+      taskClass: row.class, launchedBy: row.launched_by, state: row.state,
+      exitCode: row.exit_code, exitReason: row.exit_reason,
+    }, inject, emit)) delivered++;
+  }
+  return delivered;
 }
 
 export type PersistFailedTaskUnitTerminalOutcome =
@@ -775,10 +890,11 @@ export async function touchAlive(
 export async function markStranded(
   verdicts: readonly { taskId: string; reason: string }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
-    if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject)) n++;
+    if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject, effectsForTask?.(v.taskId))) n++;
   }
   return n;
 }
@@ -796,6 +912,7 @@ export async function markEndedUnobserved(
     terminalProvenance?: TaskTerminalProvenance | null;
   }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
@@ -808,6 +925,7 @@ export async function markEndedUnobserved(
           terminalProvenance: v.terminalProvenance,
         },
         inject,
+        effectsForTask?.(v.taskId),
       )
     ) {
       n++;
@@ -834,6 +952,7 @@ export async function markRecoveredFromJobLog(
     terminalProvenance?: TaskTerminalProvenance | null;
   }[],
   inject?: Sql,
+  effectsForTask?: CloseTaskEffectsForTask,
 ): Promise<number> {
   let n = 0;
   for (const v of verdicts) {
@@ -847,6 +966,7 @@ export async function markRecoveredFromJobLog(
           terminalProvenance: v.terminalProvenance,
         },
         inject,
+        effectsForTask?.(v.taskId),
       )
     ) {
       n++;
@@ -1073,6 +1193,11 @@ export async function bindAgentSessionTaskToLatestNativeSession(taskId: string, 
 /** Every row in a state that asserts a live OS process — the reconciler's input. */
 export async function listLiveTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
   return listTasks({ workspaceId, states: ['pending', 'running'], limit: 2000 }, inject);
+}
+
+/** Lost watchers may leave an unobserved close before their durable exit arrives. */
+export async function listReconcileTasks(workspaceId?: string, inject?: Sql): Promise<TaskRow[]> {
+  return listTasks({ workspaceId, states: ['pending', 'running', 'ended_unobserved'], includeEnded: true, limit: 2000 }, inject);
 }
 
 /**
@@ -1820,6 +1945,12 @@ export async function clearVanishedUnaccounted(
  * the provider's billing export settles. Deleting the row a week after the PUBLISH
  * process ended erased every one of those receipts, with nothing to rebuild them from.
  */
+/** Keep operator E2E task rows aligned with the routine's per-run log window. */
+export const OPERATOR_E2E_TASK_RETENTION_RUNS = 14;
+export const OPERATOR_E2E_TASK_CLASS = 'test-run';
+export const OPERATOR_E2E_TASK_LAUNCHED_BY = 'system:operator-e2e-isolated';
+export const OPERATOR_E2E_TASK_SUBSYSTEM = 'operator-e2e';
+
 export async function gcTerminalTasks(
   olderThanHours = 168,
   opts: { workspaceId?: string } = {},
@@ -1831,8 +1962,34 @@ export async function gcTerminalTasks(
     DELETE FROM harness_shared.task_ledger
      WHERE workspace_id = ${ws}
        AND ended_at IS NOT NULL
-       AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
        AND NOT (detail ? 'release')
+       AND (
+         (
+           class = ${OPERATOR_E2E_TASK_CLASS}
+           AND launched_by = ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+           AND detail->>'subsystem' = ${OPERATOR_E2E_TASK_SUBSYSTEM}
+           AND task_id NOT IN (
+             SELECT task_id
+               FROM harness_shared.task_ledger
+              WHERE workspace_id = ${ws}
+                AND ended_at IS NOT NULL
+                AND class = ${OPERATOR_E2E_TASK_CLASS}
+                AND launched_by = ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+                AND detail->>'subsystem' = ${OPERATOR_E2E_TASK_SUBSYSTEM}
+                AND NOT (detail ? 'release')
+              ORDER BY started_at DESC, task_id DESC
+              LIMIT ${OPERATOR_E2E_TASK_RETENTION_RUNS}
+           )
+         )
+         OR (
+           (
+             class <> ${OPERATOR_E2E_TASK_CLASS}
+             OR launched_by <> ${OPERATOR_E2E_TASK_LAUNCHED_BY}
+             OR detail->>'subsystem' IS DISTINCT FROM ${OPERATOR_E2E_TASK_SUBSYSTEM}
+           )
+           AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
+         )
+       )
     RETURNING task_id, log_path
   `;
 

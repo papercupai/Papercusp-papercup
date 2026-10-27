@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10005889",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "commitSha": "8649830c5080cdcd341320b0ab65a77980e197bb",
+  "reason": "Named source drift: adv-sessions exact cleanup binding fields; contract method-review policy input and core archive floor; committed runner fixture drift. Both test files are unchanged from the prior proofs.",
+  "runGroup": "gf-p002-integration-refresh-20261025-1792964807428",
+  "driver": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=8649830c5080cdcd341320b0ab65a77980e197bb -- <both test paths>",
+  "reporterSink": "Explicit resolveScriptPgUrl().url outside private test PG; credentials not retained.",
+  "state": "/tmp/gf-p002-integration-refresh-20261025.state.json",
+  "log": "/tmp/gf-p002-integration-refresh-20261025.log",
+  "exit": 0,
+  "proof": [
+    {"testRunId": 22068488, "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts", "passed": 9, "failed": 0, "skipped": 0, "dirty": false, "collectionFailed": false, "oldBinding": 70148, "replacement": 70594, "oldRun": 22017375, "caseTriplesEqual": true, "missingDeclaredCases": [], "recipeEqual": true, "adequacyEqual": true, "independentCurrentness": "current"},
+    {"testRunId": 22068487, "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts", "passed": 33, "failed": 0, "skipped": 0, "dirty": false, "collectionFailed": false, "oldBinding": 70065, "replacement": 70595, "oldRun": 22006045, "caseTriplesEqual": true, "recipeEqual": true, "adequacyEqual": true, "independentCurrentness": "current"}
+  ],
+  "ordering": "Verified clean canonical runs and complete old/new case triples; bound replacements; independently measured currentness and recipe/adequacy equality; then withdrew exact stale predecessors.",
+  "limits": "Controlled source/fixture proof. Original native28326/28545 and retained69704/69782 remain. Actor, lease ABA, custody, cohort, independent acceptance and shipment remain open. Reporter EI-26900834772734276 remains unresolved. Core integration69875 and backend mutants need separate justified refreshes.",
+  "loopDiagnosis": {
+    "workItemId": "EI-26984631684161013",
+    "rootCause": "Exact delivery982752 was degraded by the release API's old wakepump after an accepted pending host receipt; the release bundle lacks the already committed loop and hostCommitPending guards.",
+    "journal": "2026-10-25T20:27:38.588Z papercusp-dev-api.service: wake982752 exhausted8 parked attempts and degraded to inbox; accepted-before-turn-start-proof pending receipt.",
+    "releaseBundleSha256": "07b8c64a1f4ad9965ce0780f001ebf981a84e5843a0660b13f9b8a1bd382a95f",
+    "backgroundBundleSha256": "9c74522ff2e386bd85ab38e2557f30817311ee6c123397017b5926f81c3b9609",
+    "existingGuard": "EI-25947345466684593; engine.ts/engine.test.ts; committed7f7332c2d29ed988468e9a1e65be4cecd23ecc47; prior canonical21244994 passed123, local dirty disclosed.",
+    "handoff": "coord-send-45e483f1e76862e5e0379377d092d55b39dcc89fa1bc3619a95df8535c9a812c sent once to live gateholder su-d75c7a09-06a2-488d-820c-37426f22637f/WI-10006055; LIVE_GATE_OPS stopped in this session.",
+    "limitation": "No qualified loop-origin turn observed. Latest983149 also inbox8/nullproof, but its exact executing unit was not measured. No duplicate guard, rearm, cold retune, or manual turn-proof stamp."
+  }
+}

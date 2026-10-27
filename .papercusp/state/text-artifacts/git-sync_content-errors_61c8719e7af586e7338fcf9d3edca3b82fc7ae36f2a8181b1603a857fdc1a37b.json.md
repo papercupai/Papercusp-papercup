@@ -1,0 +1,7 @@
+---
+rel_path: "git-sync/content-errors/61c8719e7af586e7338fcf9d3edca3b82fc7ae36f2a8181b1603a857fdc1a37b.json"
+updated_at: 1792901305790
+_body: "content"
+---
+
+{"schemaVersion":1,"workspaceId":"papercusp-workspace","harness":"papercusp","files":[{"scope":"superproject","file":"packages/operator-core/lib/bash-substitution/sql-intent-fingerprint.test.ts","detectorKey":"secrets","error":"credential-shaped content would enter git history (1 finding(s) at line 62 [secret-assignment]). This file is EXCLUDED from the commit and left on disk — fix it in place, do not retry the write. If this is a credential STAND-IN for a test, replace it with a low-entropy, role-named constant (the in-tree convention is NEVER_EMIT_MARKER = 'never-emit-me'; six social adapter suites use it with zero incidents) — the conformance check is a plain substring search, so a realistic-looking value buys nothing. Only if the file must genuinely carry credential shapes as fixtures, register the exact path: pot_git:secrets_exemptions { action:'add', path:'packages/operator-core/lib/bash-substitution/sql-intent-fingerprint.test.ts', reason:'<why this is a false positive>' }. Detail: refusing to publish — 1 secret(s): packages/operator-core/lib/bash-substitution/sql-intent-fingerprint.test.ts:62 [secret-assignment] sk-a…56 (35 chars)","fixerRole":"content-fixer","contentHash":"e9dd2e799778fc517e351c7a2b25ee34ee812d3132dd22363ec11b7e0f357531","detectorResultHash":"cb9421b9c7d85ce80372bfd460433e6ed359e460b8236a139f5e186418711a41"}]}

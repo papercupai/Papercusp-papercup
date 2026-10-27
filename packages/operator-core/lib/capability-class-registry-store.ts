@@ -398,6 +398,8 @@ export async function listCapabilityClasses(
 export interface ProviderToolContract {
   name: string;
   pluginName: string;
+  /** Measured from the loaded registry entry; absent metadata fails closed. */
+  providerVersion?: string | null;
   inputSchema: JsonObject;
   outputSchema: JsonObject | null;
 }
@@ -440,6 +442,11 @@ export function validateProviderInterface(input: {
     if (toolName && !actual) problems.push('tool is not present in the live projected-tool registry');
     if (actual && actual.pluginName !== input.providerPackage) {
       problems.push(`tool is owned by ${actual.pluginName}, not provider package ${input.providerPackage}`);
+    }
+    if (actual && !actual.providerVersion) {
+      problems.push('loaded provider version is unavailable');
+    } else if (actual && actual.providerVersion !== input.providerVersion) {
+      problems.push(`loaded provider version ${actual.providerVersion} differs from requested ${input.providerVersion}`);
     }
     const expected = input.capabilityClass.interfaceVerbs[verb]!;
     if (actual && canonicalJson(actual.inputSchema) !== canonicalJson(expected.inputSchema)) {

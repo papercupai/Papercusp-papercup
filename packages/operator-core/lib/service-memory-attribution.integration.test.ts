@@ -2341,7 +2341,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             const seen = new Map();
             child.stdout?.setEncoding('utf8');
             child.stderr?.setEncoding('utf8');
-            for (const stream of [child.stdout, child.stderr]) stream?.on('data', (text: string) => {
+            for (const stream of [child.stdout, child.stderr]) stream?.on('data', (text) => {
               tail = (tail + text).slice(-2000);
               if (stream === child.stderr) startup += text;
             });
@@ -2717,7 +2717,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         report.pid = host.pid;
         host.stdout?.setEncoding('utf8');
         host.stderr?.setEncoding('utf8');
-        for (const stream of [host.stdout, host.stderr]) stream?.on('data', (text: string) => {
+        for (const stream of [host.stdout, host.stderr]) stream?.on('data', (text) => {
           errors = (errors + text).slice(-3000);
           if (stream === host.stderr) {
             startup = (startup + text).slice(-32768);

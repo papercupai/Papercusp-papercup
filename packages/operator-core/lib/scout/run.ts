@@ -449,26 +449,6 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
     admissionPressure: admissionPressure ?? null,
     recentTicksNewestFirst: preflightTicks,
   });
-  if (preflight.skip) {
-    if (deps.recordGovernor) {
-      await deps.recordGovernor({
-        workspaceId: input.workspaceId,
-        harnessSlug: input.installSlug,
-        perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
-        fired: null,
-      });
-    }
-    await note({
-      status: 'gated',
-      gate: GENERATION_PREFLIGHT_GATE,
-      detail: {
-        ...preflight.detail,
-        ...(admissionPressure ? { admissionThrottle: admissionPressure } : {}),
-      },
-    });
-    return { fired: false, reason: GENERATION_PREFLIGHT_GATE };
-  }
-
   let governedBudget = cfg.budget;
   if (admissionPressure?.maxIdeators != null) {
     const resolved = resolveScoutBudget(cfg.budget);
@@ -477,17 +457,42 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
       maxIdeators: Math.min(resolved.maxIdeators, admissionPressure.maxIdeators),
     };
   }
-  const governedTickDeps =
-    admissionPressure && tickDeps.recordTick
-      ? {
-          ...tickDeps,
-          recordTick: (record: ScoutTickRecord) =>
-            tickDeps.recordTick!({
-              ...record,
-              detail: { ...(record.detail ?? {}), admissionThrottle: admissionPressure },
-            }),
-        }
-      : tickDeps;
+  // P-003 gates PAID generation, not the digest read. A zero cost cap makes
+  // runScoutCycle build and stamp its corpus, then stop before the first LLM call.
+  // Keeping this inside runScoutTick also preserves the cadence/fire gates.
+  if (preflight.skip) {
+    governedBudget = { ...resolveScoutBudget(governedBudget), maxCostUsd: 0 };
+  }
+
+  const preflightDetail = preflight.skip ? preflight.detail : undefined;
+  const governedTickDeps = tickDeps.recordTick
+    ? {
+        ...tickDeps,
+        recordTick: (record: ScoutTickRecord) => {
+          const generationSkippedCycle = Boolean(preflightDetail) && record.status === 'ran';
+          return tickDeps.recordTick!({
+            ...record,
+            ...(generationSkippedCycle ? { status: 'gated' as const, gate: GENERATION_PREFLIGHT_GATE } : {}),
+            detail: {
+              ...(record.detail ?? {}),
+              ...(admissionPressure ? { admissionThrottle: admissionPressure } : {}),
+              ...(generationSkippedCycle && preflightDetail
+                ? {
+                    ...preflightDetail,
+                    paidGenerationSkipped: true,
+                    readOnlyCycleRan: true,
+                    budgetProvenance: {
+                      schemaVersion: 1,
+                      supplied: cfg.budget ?? null,
+                      resolved: resolveScoutBudget(governedBudget),
+                    },
+                  }
+                : {}),
+            },
+          });
+        },
+      }
+    : tickDeps;
 
   const result = await runScoutTick(governedTickDeps, {
     ...(cfg.cadence ? { cadence: cfg.cadence } : {}),
@@ -506,13 +511,13 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
       harnessSlug: input.installSlug,
       perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
       fired:
-        result.fired && result.costUsd != null
+        result.fired && result.costUsd != null && !(preflight.skip && result.costUsd === 0)
           ? { costUsd: result.costUsd, ...(result.cycleId ? { cycleId: result.cycleId } : {}) }
           : null,
     });
   }
 
-  return result;
+  return preflight.skip && result.fired ? { ...result, reason: GENERATION_PREFLIGHT_GATE } : result;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {

@@ -221,9 +221,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .min(1)
         .max(50)
         .describe(
-          'Vitest files or maintained Portal browser Playwright specs that must pass for this criterion (repo-root-relative preferred; ' +
-            'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
-            'tree at propose time; actually RUN at grading time.',
+          'Must-pass Vitest or maintained Portal Playwright files. Prefer repo-relative paths; unambiguous workspace-relative paths work. Validated on proposal, run on grading.',
         ),
       testName: z
         .string()
@@ -232,16 +230,13 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .max(500)
         .optional()
         .describe(
-          'optional test-case filter: a describe/it title path, or a complete suffix of one at a " > " ' +
-            'boundary. Requires exactly one file. At grading time it is resolved against the per-case ' +
-            'results ledger; a filter matching zero recorded cases refuses the emit instead of passing.',
+          'One-file case filter: full describe/it title path or complete suffix at a " > " boundary. Static declarations are checked before proposal/activation; computed names remain subject to recorded-case resolution at grading. Zero matches refuse emit.',
         ),
       cases: z.array(z.object({
         file: z.string().trim().min(1),
         testName: z.string().trim().min(1).max(500),
       }).strict()).min(1).max(200).optional().describe(
-        'Named cases required across the listed files. Every selector must resolve to executed cases, ' +
-        'and every file must have a selector. Mutually exclusive with the single-file testName shorthand.',
+        'Required executed cases: select every listed file and no others. Names use full titles or complete hierarchy suffixes, checked against static declarations before activation and recorded cases at grading. Exclusive with testName.',
       ),
     })
     .strict()
@@ -276,14 +271,14 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .min(1)
         .max(500)
         .describe(
-          'repo-root-relative Cargo.toml manifest for the native test crate; validated to resolve against the live tree at propose time',
+          'Repo-relative native crate Cargo.toml; validated against the tree on proposal.',
         ),
       sourceFiles: z
         .array(z.string().min(1).max(500))
         .min(1)
         .max(50)
         .describe(
-          'repo-root-relative Rust/source files whose crate-level Cargo verdict is attributed to this criterion; Cargo does not expose per-test source attribution',
+          'Repo-relative sources attributed the crate verdict; Cargo has no per-test source attribution.',
         ),
       test: z
         .string()
@@ -297,13 +292,13 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('instrument'),
       experimentId: z.string().trim().min(1).max(200).optional().describe(
-        'Optional preregistered experiment identity interpreted by the instrument. Omitted preserves its historical default; unknown identities fail closed.',
+        'Preregistered experiment identity. Omission keeps the historical default; unknown ids fail closed.',
       ),
       instrumentKey: z
         .string()
         .min(1)
         .describe(
-          "stable machine-readable instrument binding (the generalized form of the criterion-level instrumentKey field); 'none' means explicitly manual",
+          "Stable instrument binding; 'none' is explicitly manual.",
         ),
       expect: z
         .object({
@@ -313,10 +308,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .strict()
         .optional()
         .describe(
-          "the criterion's threshold on the instrument's reading, in the instrument's own unit " +
-            "(e.g. { op:'lt', value:10 } for PSI cpu some avg10 below 10%). With it, a measured " +
-            "reading records pass/fail in the results ledger and scorecards:emit { fromLedger:true } " +
-            'rates the criterion from that row; without it the reading is recorded but a grader rates it.',
+          'Threshold in instrument units. Records ledger pass/fail for scorecards:emit {fromLedger:true}; without a threshold, a grader rates the recorded reading.',
         ),
       ratingBands: z
         .array(rubricRatingBandSchema)
@@ -324,9 +316,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .max(8)
         .optional()
         .describe(
-          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current expect fails. ' +
-            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the same measured value. ' +
-            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
+          'Intermediate scale ratings after expect fails, best-to-worst. Predicates use the same reading; omit best/worst/unknown levels. No match means worst.',
         ),
     })
     .strict()
@@ -342,9 +332,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .unknown()
         .optional()
         .describe(
-          'an existing typed ContinuityProbe ({ kind:"tool"|"state-cell", schemaRevision, expect, ... }). ' +
-            'The rubric template keeps this field dependency-light; the proposal and scorecard write paths ' +
-            'validate the live projected-tool/state-cell contract before persisting or executing it.',
+          'Typed ContinuityProbe {kind:"tool"|"state-cell",schemaRevision,expect,...}; proposal/scorecard writers validate the live contract before storage or execution.',
         ),
       all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
         .describe('ALL of these independently validated read-only probes must pass; mutually exclusive with probe.'),
@@ -355,9 +343,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .max(32)
         .optional()
         .describe(
-          "unit of the scalar each probe reads at its predicate path (e.g. 'ms', 'pct', 'cores', 'MB/s'). " +
-            'Recorded on every results-ledger row this check writes, so a reading can be compared with a ' +
-            'baseline or an earlier run; a row with a different unit no longer describes the check. Omitted = unitless.',
+          'Scalar unit at the predicate path (ms, pct, cores, MB/s); recorded on each ledger row. Compare only matching units. Omitted means unitless.',
         ),
       ratingBands: z
         .array(rubricRatingBandSchema)
@@ -365,9 +351,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .max(8)
         .optional()
         .describe(
-          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current probe predicate fails. ' +
-            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the scalar recorded by this check. ' +
-            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
+          'Intermediate scale ratings after the probe predicate fails, best-to-worst. Predicates use its recorded scalar; omit best/worst/unknown. No match means worst.',
         ),
     })
     .strict()
@@ -392,23 +376,23 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             .max(50)
             .optional()
             .describe(
-              'implementing-file substrings; a surface is in scope if ANY matches (matched as one SQL union, never summed per file)',
+              'Implementing-file substrings: ANY match includes a surface; one SQL union, never per-file sums.',
             ),
           planTouched: z
             .literal(true)
             .optional()
             .describe(
-              "resolve sourceFiles at grading time from the subject plan's completed work-items (their completion-evidence filesChanged) — the reverse map from 'what this plan changed' to 'the surfaces those files implement'. Mutually exclusive with an explicit sourceFiles.",
+              "Derive sources on grading from the subject plan's completed work-items' filesChanged. Exclusive with sourceFiles.",
             ),
         })
         .strict()
         .describe(
-          'which censused surfaces this criterion is about. An EMPTY scope means the whole harness census — legitimate, and still refused if it resolves to zero surfaces.',
+          'Census scope; empty means the whole harness. Zero resolved surfaces refuse grading.',
         ),
       floor: z
         .enum(['l1', 'l2', 'l3', 'l4'])
         .describe(
-          "the depth rung every in-scope surface must meet (the census's own vocabulary: l1 executed, l2 conformant, l3 intent-tested, l4 hardened). Judged by the meets_lN flag, never depth >= N — the rungs are not nested.",
+          'Required rung: l1 executed, l2 conformant, l3 intent-tested, l4 hardened. Uses meets_lN, never depth >= N; rungs are not nested.',
         ),
     })
     .strict(),
@@ -418,7 +402,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
     })
     .strict()
     .describe(
-      "argless: asserts every requirement the subject plan's activation audit dispositioned covered/repaired reached a plan item the completion audit verifies with a code/test citation. The subject plan is the scope. Judged fresh at grading time; refuses when the plan has NO realizing mappings rather than passing vacuously.",
+      "Argless: fresh grading checks each covered/repaired activation-audit requirement reaches an item completion-verified with a code/test citation. Scope is the subject plan; zero realizing mappings refuse grading.",
     ),
 ]);
 

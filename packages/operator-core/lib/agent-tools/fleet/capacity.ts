@@ -22,12 +22,38 @@ import {
   egressIdentityOf,
   type AccountPoolAvailability,
   type AccountBindingTerms,
+  type AccountPlanReading,
   type EdgeThrottleSnapshotEntry,
 } from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { AccountProvider } from '../../deployment/account-pool';
 import type { AccountStatusRow, ProviderPoolVerdict } from '../../deployment/account-pool-store';
-import { deriveCapacityVerdict } from '../../fleet/capacity-verdict';
+import { deriveCapacityVerdict, type GatewayOutcomeTerms } from '../../fleet/capacity-verdict';
+import { summarizeGatewayProviderOutcomes } from '../../inference-gateway/gateway-request-outcome-store';
+
+/** The refusal window the capacity verdict reads. Short enough to clear soon after a fix. */
+const GATEWAY_OUTCOME_WINDOW_MINUTES = 15;
+
+/** Read the gateway outcome leg; a failed read is UNMEASURED (`null`), never zero refusals. */
+async function readGatewayOutcomeTerms(provider: AccountProvider): Promise<GatewayOutcomeTerms | null> {
+  try {
+    const nowMs = Date.now();
+    const s = await summarizeGatewayProviderOutcomes({
+      provider,
+      fromMs: nowMs - GATEWAY_OUTCOME_WINDOW_MINUTES * 60_000,
+      nowMs,
+    });
+    return {
+      windowMinutes: GATEWAY_OUTCOME_WINDOW_MINUTES,
+      refused: s.refused,
+      served: s.served,
+      refusedOwners: s.refusedOwners,
+      topRefusedOwner: s.topRefusedOwner,
+    };
+  } catch {
+    return null;
+  }
+}
 import { advSessionsByCoordOwner } from '../../adv-sessions';
 import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
 import { resolveAgentIdentity, deriveFleetMembership, type AgentIdentity } from '../coordination/identity';
@@ -300,6 +326,15 @@ export async function readProviderAvailability(
     }
     for (const [id, v] of nextSnapshot) lastEdgeThrottleSnapshot.set(`${snapshotPrefix}${id}`, v);
 
+    // WI-6554700010029550: the tier explains capacity the counts cannot (a Pro→Plus downgrade walls
+    // sooner with no other change). Every account of the provider, override-excluded included —
+    // the tier is a fact about the account, not about whether we may route to it.
+    const accountPlans = rows.map((r): AccountPlanReading => ({
+      id: r.id,
+      planType: r.rate.planType ?? null,
+      planObservedAt: r.rate.planObservedAt ?? null,
+    }));
+
     return {
       provider,
       total: rows.length,
@@ -374,6 +409,7 @@ export async function readProviderAvailability(
       // no other change. Both conditions mean the same thing to a caller: this row's available/usageWalled
       // verdict rests on data that is not a live measurement, so both belong in the one caveat.
       blindCount: rows.filter((r) => r.lastProbeFailedAt != null || r.readingStatus !== 'fresh').length,
+      ...(accountPlans.some((p) => p.planType != null) ? { accountPlans } : {}),
     };
   } catch {
     return undefined;
@@ -460,6 +496,17 @@ async function readCapacityForProvider(
         sustainedlyLimitedAccounts: accountAvailability.sustainedlyLimitedCount ?? null,
         overrideExcludedAccounts: accountAvailability.overrideExcludedCount ?? null,
         blindAccounts: accountAvailability.blindCount ?? null,
+        // WI-6554700010029550: per-account subscription tier, so a low-headroom read shows WHICH
+        // accounts are on a smaller plan. Absent for a provider that reports no tier.
+        ...(accountAvailability.accountPlans
+          ? {
+              plans: accountAvailability.accountPlans.map((p) => ({
+                id: p.id,
+                planType: p.planType,
+                observedAt: p.planObservedAt != null ? new Date(p.planObservedAt).toISOString() : null,
+              })),
+            }
+          : {}),
       }
     : null;
   // P-004 — THE CANONICAL VERDICT. `poolExhausted`/`verdict` above say THAT the lane is
@@ -476,6 +523,9 @@ async function readCapacityForProvider(
       dispatchBudget: report.dispatchBudget,
       inFlight: report.inFlight,
     },
+    // WI-6554700010029776: what the gateway DID in the last window. Without this leg the
+    // verdict read "measured green" while the gateway shed hundreds of requests an hour.
+    outcomes: await readGatewayOutcomeTerms(provider),
   });
   // The gateway headroom read is provider-wide; its health count is for a
   // representative model. Echoing a requested model cannot establish that
@@ -547,7 +597,7 @@ export default defineTool({
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',
     chaining: 'fleet:capacity { fleet: "my-fleet", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
     returns:
-      "⚠ READ `capacityVerdict` FIRST — it is the ONE canonical answer to \"are we at capacity\", and it is the only field here that says WHICH TERM binds. Everything else (poolExhausted, verdict, dispatchBudget, accountPool) says THAT the lane is stuck or gives you one leg of it; none says what to DO. `capacityVerdict` = { provider, atCapacity, binding, evidence[], reason, unknown[] }, also readable as the state cell `capacity.verdict` (state:read { cell:'capacity.verdict', as:'<provider>' }) so you can re-read or subscribe to it instead of transcribing a number that moves.\n\n`binding` is the remedy, and the four values are NOT interchangeable: 'usage-wall' = a PROVIDER wall, hold and wait for a reset (raising admission or changing pacing cannot help); 'admission-concurrency' = OUR OWN door at zero spare slots while accounts can serve, so raise the window or let in-flight work drain — do NOT wait for a provider reset and do NOT escalate; 'pacing-policy' = this system pacing ITSELF off a burn PROJECTION, nothing is walled and NO reset is coming, so waiting is the wrong move (accept the burn or change the policy); 'none' = no measured blocker.\n\n⚠ `atCapacity: false` is NOT \"we are fine\" whenever `capacityUnknown` is non-empty — it then means \"no MEASURED blocker\", which includes \"we could not measure\". An unreachable gateway and an all-stale pool both land here, and both are UNKNOWN rather than clear. Equally, `binding` can name a wall while `atCapacity` is false: that is a pool measurably walled on its fresh rows with some rows still stale — treat it as probably-walled and refresh with accounts:probe-capacity, not as clear.\n\n`evidence[]` entries are writer-stamped ({ signal, value, writer, means }), so a number you distrust leads straight to the code that produced it. `binding` is never 'host' — neither leg measures the box; read the `host.memoryPressure` cell for that.",
+      "⚠ READ `capacityVerdict` FIRST — it is the ONE canonical answer to \"are we at capacity\", and it is the only field here that says WHICH TERM binds. Everything else (poolExhausted, verdict, dispatchBudget, accountPool) says THAT the lane is stuck or gives you one leg of it; none says what to DO. `capacityVerdict` = { provider, atCapacity, binding, evidence[], reason, unknown[] }, also readable as the state cell `capacity.verdict` (state:read { cell:'capacity.verdict', as:'<provider>' }) so you can re-read or subscribe to it instead of transcribing a number that moves.\n\n`binding` is the remedy, and the four values are NOT interchangeable: 'usage-wall' = a PROVIDER wall, hold and wait for a reset (raising admission or changing pacing cannot help); 'admission-concurrency' = OUR OWN door at zero spare slots while accounts can serve, so raise the window or let in-flight work drain — do NOT wait for a provider reset and do NOT escalate; 'pacing-policy' = this system pacing ITSELF off a burn PROJECTION, nothing is walled and NO reset is coming, so waiting is the wrong move (accept the burn or change the policy); 'gateway-shed' = no point-in-time blocker, but the gateway refused requests in the last 15m (reason names the caller when concentrated); 'none' = no measured blocker.\n\n⚠ `atCapacity: false` is NOT \"we are fine\" whenever `capacityUnknown` is non-empty — it then means \"no MEASURED blocker\", which includes \"we could not measure\". An unreachable gateway and an all-stale pool both land here, and both are UNKNOWN rather than clear. Equally, `binding` can name a wall while `atCapacity` is false: that is a pool measurably walled on its fresh rows with some rows still stale — treat it as probably-walled and refresh with accounts:probe-capacity, not as clear.\n\n`evidence[]` entries are writer-stamped ({ signal, value, writer, means }), so a number you distrust leads straight to the code that produced it. `binding` is never 'host' — neither leg measures the box; read the `host.memoryPressure` cell for that.",
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -566,7 +616,7 @@ export default defineTool({
     .object({
       provider: z.string().nullable().optional(),
       atCapacity: z.boolean().optional(),
-      binding: z.enum(['usage-wall', 'admission-concurrency', 'pacing-policy', 'none']).optional(),
+      binding: z.enum(['usage-wall', 'admission-concurrency', 'pacing-policy', 'gateway-shed', 'none']).optional(),
       evidence: z.array(z.unknown()).optional(),
       reason: z.string().optional(),
       unknown: z.array(z.unknown()).optional(),

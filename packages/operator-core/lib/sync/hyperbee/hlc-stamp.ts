@@ -12,20 +12,28 @@
  *
  *   - `stampOpHlc(op)` — the SEND seam. `handle.append` (`boot.ts`) calls it on
  *     every write funneled to the own log, so every LWW-federated op carries a
- *     causal order key. (Claims use the raw `ownLog.append` and are append-only
- *     distinct-key — they never LWW — so they correctly skip this.)
+ *     causal order key. Decoded own-log append methods enforce the same seam,
+ *     including serialized claim events and held append batches.
  *   - `observeRemoteHlc(hlc)` — the RECV seam. The apply path (`projection.ts`
  *     `applyOpVia`) calls it for every applied REMOTE op, advancing this
  *     process's clock past the remote causal frontier so a subsequent local
  *     write is stamped strictly-greater — the cross-machine happens-before that
  *     makes the order causal rather than skew-dependent.
  *
- * Both are additive + back-compat: an op without an `hlc` (pre-P-010 history,
- * the claim path) falls back to `ts` in `lwwPick`, so the field rolls out with
- * no flag day.
+ * Legacy envelopes remain representable by historical fold utilities. New
+ * producers stamp every table operation; remote apply requires a canonical HLC.
  */
 
 import { encodeHlc, decodeHlc, processHlc, type HlcClock } from '@papercusp/locks-core';
+
+/** decodeHlc is deliberately forgiving; network ordering requires canonical bytes. */
+export function isValidOpHlc(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{15}:\d{5}(?::[0-9a-f]{16})?$/.test(value)) return false;
+  const decoded = decodeHlc(value);
+  return Number.isSafeInteger(decoded.ms) && decoded.ms >= 0
+    && Number.isSafeInteger(decoded.count) && decoded.count >= 0 && decoded.count <= 0xffff
+    && encodeHlc(decoded) === value;
+}
 
 /**
  * SEND seam: stamp a federated write with a causal HLC order key. A pre-set
@@ -43,7 +51,10 @@ export function stampOpHlc<T extends { hlc?: string; ts?: number }>(
   op: T,
   clock: HlcClock = processHlc(),
 ): T & { hlc: string } {
-  if (op.hlc) return op as T & { hlc: string };
+  if (op.hlc != null && op.hlc !== '') {
+    if (!isValidOpHlc(op.hlc)) throw new Error('Invalid preset operation HLC');
+    return op as T & { hlc: string };
+  }
   // Seed the HLC's physical component from the op's OWN recorded `ts` (the
   // write/capture time), NOT the wall clock at stamp time. The op is stamped at
   // DRAIN, which can be later than — and in a different order than — the writes,

@@ -125,7 +125,12 @@ async function seedMigrationReservations(filenames: readonly string[]): Promise<
 // A file-wide beforeEach/afterEach keeps this hermetic for every test here,
 // including ones that never mention "cooldown" at all.
 const hermeticCooldownFiles: string[] = [];
-beforeEach(() => {
+beforeEach(async () => {
+  // Each case owns a disposable reservation/history namespace. Earlier native
+  // backup cases use the same numeric range as the cooldown cases; retaining
+  // their rows makes a valid fixture fail reservation admission instead of
+  // exercising cooldown or the intended migration failure.
+  await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations, harness_shared.migration_reservations');
   const p = join(tmpdir(), `a1-boot-cooldown-default-${randomBytes(4).toString('hex')}.json`);
   hermeticCooldownFiles.push(p);
   process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = p;
@@ -1026,6 +1031,9 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
       '961-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad2 (id int);',
     });
     await seedMigrationReservations(['961-broken.sql', '962-good.sql']);
+    const reserved = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.migration_reservations WHERE num IN (961, 962) ORDER BY num`;
+    expect(reserved.map((row) => row.filename)).toEqual(['961-broken.sql', '962-good.sql']);
     h.bootSqlDir = dir;
     const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
     expect(first!.failed.map((f) => f.file)).toEqual(['961-broken.sql']);

@@ -48,6 +48,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { harnessRoot } from '@papercusp/harness/paths';
@@ -323,6 +324,28 @@ function shouldBypassCache(): boolean {
 export const CHAT_ROLE_DOCUMENT_KINDS = ['persona', 'converse', 'tools'] as const;
 export type ChatRoleDocumentKind = (typeof CHAT_ROLE_DOCUMENT_KINDS)[number];
 
+/** Public first-use refusal: never expose resolver candidates or prompt bytes. */
+export class RolePromptUnavailableError extends Error {
+  readonly code = 'ROLE_PROMPT_UNAVAILABLE';
+  readonly remedy = 'Install the workspace-host content bundle from Cupboard using the existing content bootstrap, then retry.';
+  constructor(readonly role: string, readonly document: string) {
+    super(`ROLE_PROMPT_UNAVAILABLE: ${role}.${document} is unavailable. Install the workspace-host content bundle from Cupboard using the existing content bootstrap, then retry.`);
+    this.name = 'RolePromptUnavailableError';
+  }
+}
+
+export function rolePromptUnavailableDetails(error: unknown) {
+  // Streaming dispatch preserves the message, not the Error subclass. Accept
+  // only our complete canonical refusal, never arbitrary resolver diagnostics.
+  const message = error && typeof error === 'object' && 'message' in error ? error.message : null;
+  if (typeof message !== 'string') return null;
+  const match = /^ROLE_PROMPT_UNAVAILABLE: ([a-z][a-z0-9-]*)\.(persona|converse|workspace-persona) is unavailable\./.exec(message);
+  if (!match) return null;
+  const known = new RolePromptUnavailableError(match[1], match[2]);
+  if (known.message !== message) return null;
+  return { code: known.code, role: known.role, document: known.document, message: known.message, remedy: known.remedy };
+}
+
 /**
  * How a chat-surface role's documents are resolved — the SAME shape the spawn tier
  * resolves `blueprints/<id>/prompts/<role>.md` with (`PromptResolveContext`), minus
@@ -426,26 +449,22 @@ export function loadChatRoleDocument(
 ): ChatRoleDocumentHit | null {
   const key = roleDocumentCacheKey(role, kind, ctx);
   if (!shouldBypassCache() && roleDocumentCache.has(key)) {
-    return roleDocumentCache.get(key)!;
+    const cached = roleDocumentCache.get(key);
+    if (cached && existsSync(cached.path)) return cached;
   }
   const hit = resolveChatRoleDocument(role, kind, ctx);
-  roleDocumentCache.set(key, hit);
+  // Content is installed after the runtime. An earlier miss must not survive
+  // that install; blank content must recover after replacement as well. A
+  // deleted cached document must likewise become unavailable.
+  if (hit?.text.trim()) roleDocumentCache.set(key, hit);
+  else roleDocumentCache.delete(key);
   return hit;
-}
-
-function describeMiss(role: Role, kind: ChatRoleDocumentKind, ctx?: ChatRoleResolveContext): string {
-  const file = chatRoleDocumentFilePath(role, kind);
-  const chain = promptCandidates(chatRoleResolveContext(ctx), `${role}.${kind}`);
-  return `${role}.${kind}.md not found at ${file} (nor at any of the prompt-chain candidates: ${chain.join(', ')})`;
 }
 
 export function loadRolePersona(role: Role, ctx?: ChatRoleResolveContext): string {
   const hit = loadChatRoleDocument(role, 'persona', ctx);
-  if (!hit) {
-    throw new Error(
-      `prompt-assembly: ${describeMiss(role, 'persona', ctx)}. ` +
-      `Every role must have a persona.md.`,
-    );
+  if (!hit?.text.trim()) {
+    throw new RolePromptUnavailableError(role, 'persona');
   }
   return hit.text;
 }
@@ -496,13 +515,42 @@ export function loadRoleModePersona(role: Role, mode: string, identityRoots?: re
 
 export function loadRoleConverse(role: Role, ctx?: ChatRoleResolveContext): string {
   const hit = loadChatRoleDocument(role, 'converse', ctx);
-  if (!hit) {
-    throw new Error(
-      `prompt-assembly: ${describeMiss(role, 'converse', ctx)}. ` +
-      `Required for chat-mode roles.`,
-    );
+  if (!hit?.text.trim()) {
+    throw new RolePromptUnavailableError(role, 'converse');
   }
   return hit.text;
+}
+
+/**
+ * Final-image metadata, not an installed-use verdict. Enumerate the existing
+ * chat document population through its own resolver. Missing required inputs
+ * certify an explicit refusal, not an available capability or packaging error.
+ * Spawn/identity stacks keep their separate, operation-selected contract.
+ */
+export function verifyRolePromptAssets(ctx?: ChatRoleResolveContext) {
+  const documents = PROMPT_ROLES.flatMap(role => CHAT_ROLE_DOCUMENT_KINDS.map(document => {
+    const required = document !== 'tools';
+    const resolved = resolveChatRoleDocument(role, document, ctx);
+    const hit = required && !resolved?.text.trim() ? null : resolved;
+    let refusalVerified = false;
+    if (!hit && required) {
+      try {
+        if (document === 'persona') loadRolePersona(role, ctx);
+        else loadRoleConverse(role, ctx);
+      } catch (error) {
+        if (!(error instanceof RolePromptUnavailableError) || error.role !== role || error.document !== document) throw error;
+        refusalVerified = true;
+      }
+      if (!refusalVerified) throw new Error('PROMPT_ASSET_CONTRACT_INVALID: missing required input did not refuse');
+    }
+    return {
+      role, document, required,
+      disposition: hit ? 'available' : required ? 'unavailable' : 'optional-absent',
+      sha256: hit ? createHash('sha256').update(hit.text).digest('hex') : null,
+      refusalVerified,
+    };
+  }));
+  return { schemaVersion: 'role-prompt-assets/v1', roles: [...PROMPT_ROLES], documents, installedUseVerified: false, candidateAccepted: false };
 }
 
 /**

@@ -13,6 +13,7 @@
  * normalized to the canonical `owners` selector the same way.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const mocks = vi.hoisted(() => ({
   resolvePresenceScope: vi.fn(),
@@ -57,8 +58,10 @@ describe('coord:presence ownerIds compatibility alias', () => {
   });
 
   it('normalizes ownerIds to the canonical owners selector before scope and snapshot reads', async () => {
+    // WI-6554700010029664: the fold runs in the schema's preprocess (dispatch parses before
+    // the handler), so drive the handler with the PARSED args, exactly as dispatch does.
     await presenceTool.handler(
-      { ownerIds: ['su-a', 'su-b'] } as never,
+      presenceTool.args.parse({ ownerIds: ['su-a', 'su-b'] }) as never,
       { workspaceId: 'test-workspace', harnessSlug: 'papercusp', isSuperuser: true } as never,
     );
 
@@ -88,5 +91,25 @@ describe('coord:presence ownerIds schema validation', () => {
     expect(presenceTool.args.safeParse({ ownerIds: Array.from({ length: 51 }, (_, i) => `su-${i}`) }).success).toBe(
       false,
     );
+  });
+
+  it('folds ownerId/ownerIds into owner/owners and does not advertise them (WI-6554700010029664)', () => {
+    expect(presenceTool.args.parse({ ownerId: 'su-a' })).toEqual({ owner: 'su-a' });
+    expect(presenceTool.args.parse({ ownerIds: ['su-a'] })).toEqual({ owners: ['su-a'] });
+    // The canonical selector is untouched; an absent alias is a no-op.
+    expect(presenceTool.args.parse({ owner: 'su-a' })).toEqual({ owner: 'su-a' });
+    // "pass one, not both" still names the alias path the caller used.
+    const both = presenceTool.args.safeParse({ owner: 'su-a', ownerId: 'su-b' });
+    expect(both.success).toBe(false);
+    expect(both.error?.issues[0]?.path).toEqual(['ownerId']);
+    // ownerId combined with owners is still refused once folded into owner.
+    expect(presenceTool.args.safeParse({ ownerId: 'su-a', owners: ['su-b'] }).success).toBe(false);
+    const advertised = Object.keys(
+      (z.toJSONSchema(presenceTool.args, { io: 'input' }) as { properties?: object }).properties ?? {},
+    );
+    expect(advertised).toContain('owner');
+    expect(advertised).toContain('owners');
+    expect(advertised).not.toContain('ownerId');
+    expect(advertised).not.toContain('ownerIds');
   });
 });

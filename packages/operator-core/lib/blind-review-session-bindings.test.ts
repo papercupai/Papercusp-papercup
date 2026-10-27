@@ -14,8 +14,11 @@ const sqlMock = vi.hoisted(() => {
   return mock;
 });
 const readConfinementMock = vi.hoisted(() => vi.fn());
+const retireRuntimeMock = vi.hoisted(() => vi.fn(async (_input: unknown, _deps: unknown) => ({ cutoff: 0, released: 0, pending: 0 })));
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: vi.fn() }));
+vi.mock('./blind-review-runtime-recovery', () => ({ retireRuntimeNamespacesForBinding: retireRuntimeMock }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({
   readSessionConfinement: (...args: unknown[]) => readConfinementMock(...args),
 }));
@@ -30,6 +33,32 @@ import {
   verifyBlindReviewSessionBinding,
 } from './blind-review-session-bindings';
 import type { SessionToolConfinement } from './capability-envelope/session-confinement';
+import { resolve } from 'node:path';
+import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
+import { BLIND_REVIEWER_BACKENDS } from './blind-reviewer-mint';
+
+describe('replacement binding ledger protocol', () => {
+  const fixture = () => replacementFixture(resolve(__dirname, '../../..'), 'packages/operator-core/lib/blind-review-session-bindings.test.ts');
+  it('cross-activation-replay: refuses a current activation that changed after brief creation', async () => {
+    const f = fixture(); f.state.activation = 6;
+    expect(await f.run()).toMatchObject({ ok: false, error: 'activation_audit_mismatch' });
+    expect(f.launch).not.toHaveBeenCalled();
+    f.state.activation = 5;
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { activationAuditSeq: 5 } });
+  });
+  it('replacement-history and append-only-attempts: preserves material and prior request identity across failures and retries', async () => {
+    const f = fixture(); const material = structuredClone(f.state.material);
+    // A definite failure is every backend rung refusing before spawn (EI-27127088253419654).
+    for (const _rung of BLIND_REVIEWER_BACKENDS) {
+      f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    }
+    await f.run(); const previous = structuredClone(f.state.attempts[0]);
+    await f.run({ requestKey: 'retry-2' });
+    expect(f.state.attempts[0]).toEqual(previous);
+    expect(f.state.attempts.map(a => [a.attempt_seq, a.request_key])).toEqual([[1, 'request-1'], [2, 'retry-2']]);
+    expect(f.state.material).toEqual(material);
+  });
+});
 
 const CONFINEMENT: SessionToolConfinement = {
   denyTools: [],
@@ -75,7 +104,7 @@ function configureSql() {
         model_spec: modelSpec, confinement_snapshot: confinement });
       return [state.binding];
     }
-    if (query.includes('from harness_shared.plan_blind_review_sessions')) {
+    if (query.trimStart().startsWith('select') && query.includes('from harness_shared.plan_blind_review_sessions')) {
       const workspaceIndex = values[1] === 'ws-1' ? 1 : 2;
       const workspaceId = values[workspaceIndex];
       if (!state.binding || state.binding.workspace_id !== workspaceId) return [];
@@ -127,6 +156,7 @@ function configureSql() {
 }
 
 beforeEach(() => {
+  retireRuntimeMock.mockClear();
   state.adv = {
     id: 42,
     workspace_id: 'ws-1',
@@ -176,6 +206,21 @@ describe('typed blind-review session bindings', () => {
     expect(await createBlindReviewSessionBinding(input)).toMatchObject({ ok: false, code: 'confinement_mismatch' });
   });
 
+  it('binds a reviewer launched on every backend-ladder rung and refuses an agent off the ladder', async () => {
+    // EI-27127088253419654: the launch ladder widened to Opus-first while this check still
+    // pinned `agent === 'codex'`, so every Opus reviewer launched and was then refused here.
+    for (const backend of BLIND_REVIEWER_BACKENDS) {
+      state.binding = null;
+      state.adv = { ...state.adv, agent: backend.agent,
+        launch_spec: { launchedBy: BLIND_GAP_REVIEW_ACTOR, model: backend.model ?? null } };
+      expect(await createBlindReviewSessionBinding(input), backend.agent).toMatchObject({ ok: true,
+        binding: { modelSpec: backend.model ?? null } });
+    }
+    state.binding = null;
+    state.adv = { ...state.adv, agent: 'omp', launch_spec: { launchedBy: BLIND_GAP_REVIEW_ACTOR, model: null } };
+    expect(await createBlindReviewSessionBinding(input)).toMatchObject({ ok: false, code: 'launch_profile_mismatch' });
+  });
+
   it('returns the same binding for an idempotent insert and verifies the current ADV/profile snapshot', async () => {
     const first = await createBlindReviewSessionBinding(input);
     if (!first.ok) throw new Error(first.message);
@@ -205,6 +250,10 @@ describe('typed blind-review session bindings', () => {
       activationAuditSeq: 4, reviewerOwnerId: 'su-reviewer', reviewId: 91 })).toBe(true);
     expect(await recordBlindReviewSessionPost({ workspaceId: 'ws-1', planSlug: 'reviewed-plan',
       activationAuditSeq: 4, reviewerOwnerId: 'su-reviewer', reviewId: 92 })).toBe(false);
+    expect(retireRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(retireRuntimeMock).toHaveBeenCalledWith({ workspaceId: 'ws-1',
+      bindingId: lease.binding.id, reason: 'review-posted' }, { sql: sqlMock });
+    expect(sqlMock.mock.invocationCallOrder.some(order => order < retireRuntimeMock.mock.invocationCallOrder[0]!)).toBe(true);
     const posted = await findBlindReviewSessionBinding({ workspaceId: 'ws-1', planSlug: 'reviewed-plan', activationAuditSeq: 4 });
     expect(posted).toMatchObject({ status: 'posted', reviewId: 91, resumeLeaseId: null });
     expect(await releaseBlindReviewSessionResume(lease.binding.id, lease.leaseId)).toBe(false);

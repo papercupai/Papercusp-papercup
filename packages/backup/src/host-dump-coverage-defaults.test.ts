@@ -66,4 +66,12 @@ describe('papercusp-db-backup.sh ↔ host-dump-coverage.ts', () => {
       expect(script).toContain(field);
     }
   });
+
+  it('writes a dump-start timestamp and cluster identity for each completed artifact', () => {
+    expect(script).toContain('artifactReceipts');
+    expect(script).toContain('dumpStartEpoch');
+    expect(script).toContain('systemIdentifier');
+    expect(script).toContain('artifact_receipts_json() {');
+    expect(script).toMatch(/ARTIFACT_DUMP_START_EPOCHS\["\$label"\]="\$dump_started_epoch"/);
+  });
 });

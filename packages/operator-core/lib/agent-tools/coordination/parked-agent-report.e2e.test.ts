@@ -48,7 +48,8 @@ function reportViolations(read: ReportRead, id: string, expectedDigest: string, 
   if (!read.ok || matches.length !== 1 || !matches[0]?.ok || !matches[0]?.report) return ['missing-report'];
   const report = matches[0].report;
   if (report.report_id !== id) errors.push('foreign-report');
-  if (report.visibility !== 'owner') errors.push('wrong-visibility');
+  // Migration 1580 publicized this frozen edition under directives #2316/#2319.
+  if (report.visibility !== 'workspace') errors.push('wrong-visibility');
   if (report.path !== `/reports?sel=${id}`) errors.push('wrong-deep-link');
   if (digest(report.body_md) !== expectedDigest) errors.push('body-not-complete');
   const rows = report.body_md.split('\n').filter(line => line.startsWith('| su-'))
@@ -62,7 +63,7 @@ function fixture(): { read: ReportRead; id: string; hash: string; owners: string
   const id = 'rpt_control';
   const body = '# Measured parking causes\n\n| su-a | resume-candidate | unconfirmed |\n| su-b | owner-stop | preserved |\n';
   return { id, hash: digest(body), owners: ['su-a', 'su-b'], read: { ok: true, results: [{
-    ok: true, id, report: { report_id: id, visibility: 'owner', path: `/reports?sel=${id}`, body_md: body },
+    ok: true, id, report: { report_id: id, visibility: 'workspace', path: `/reports?sel=${id}`, body_md: body },
   }] } };
 }
 
@@ -109,7 +110,7 @@ describe('R-3 report readback controls', () => {
   });
   it('rejects changed visibility or the wrong GUI target', () => {
     const f = fixture();
-    f.read.results[0]!.report!.visibility = 'workspace';
+    f.read.results[0]!.report!.visibility = 'owner';
     f.read.results[0]!.report!.path = '/reports?sel=rpt_other';
     expect(reportViolations(f.read, f.id, f.hash, f.owners)).toEqual(['wrong-deep-link', 'wrong-visibility']);
   });

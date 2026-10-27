@@ -24,6 +24,8 @@
  * are the identity vetting, grading and proof were recorded against. This is a read overlay.
  */
 
+import type { Rubric } from './rubrics';
+
 /** A structured criterion check, as persisted on a rubric criterion. */
 export interface LiveRequirementCheck {
   kind: string;
@@ -221,6 +223,40 @@ export interface LiveAcceptanceViewDeps {
 export type LiveAcceptanceViewStatus =
   | { source: 'live-plan'; subjectPlan: string; subjectPlanVersion: number | null; live: string[]; changed: string[]; kept: LiveRequirementOverlay<unknown>['kept'] }
   | { source: 'stored-rubric'; reason: 'not-a-plan-acceptance-rubric' | 'subject-plan-unreadable' | 'requirements-unparseable'; detail?: string };
+
+/** Current readers and check runners must use the same verification paths, while
+ * retaining the stored rubric identity. Explicit revision reads never call this. */
+export async function resolveLiveAcceptanceRubric(
+  rubric: Rubric,
+  workspaceId?: string | null,
+  deps?: LiveAcceptanceViewDeps,
+): Promise<{ rubric: Rubric; status: LiveAcceptanceViewStatus }> {
+  if (rubric.kind !== 'acceptance' || !rubric.subjectPlan) {
+    return { rubric, status: { source: 'stored-rubric', reason: 'not-a-plan-acceptance-rubric' } };
+  }
+  const { parseRequirementBars } = await import('./acceptance-bar-seed');
+  const live = await readLiveAcceptanceCriteria(rubric, deps ?? {
+    readSubjectPlanContent: async ({ planSlug, harnessSlug }) => {
+      const { getPlanRow } = await import('./agent-tools/plans/source');
+      const row = await getPlanRow(planSlug, {
+        ...(harnessSlug ? { harnessSlug } : {}),
+        ...(workspaceId && workspaceId !== '*' ? { workspaceId } : {}),
+      });
+      return row ? { content: row.content, version: row.version } : null;
+    },
+    parseRequirementBars: (content) => {
+      const parsed = parseRequirementBars(content);
+      return parsed.ok
+        ? { ok: true, bars: parsed.bars.map((bar) => ({ barKey: bar.barKey, ...(bar.criterion ? { criterion: bar.criterion } : {}) })) }
+        : { ok: false, problems: parsed.problems };
+    },
+  });
+  return {
+    rubric: live.status.source === 'live-plan' && live.status.changed.length > 0
+      ? { ...rubric, criteria: live.criteria } : rubric,
+    status: live.status,
+  };
+}
 
 /**
  * The acceptance READ: stored criteria with verification fields from the subject plan's live

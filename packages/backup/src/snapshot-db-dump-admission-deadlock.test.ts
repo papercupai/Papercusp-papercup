@@ -15,10 +15,12 @@
  * KNOWN-good dump is never persisted as UNKNOWN in the first place.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import type { Sql } from 'postgres';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('./password', () => ({ deriveRepoPassword: async () => 'test-password' }));
 
@@ -28,6 +30,7 @@ import {
   WorkspaceBackup,
 } from './index';
 import { isCompletedPreDestructiveSnapshotReceipt } from './snapshot-admission';
+import { HOST_PG_DUMP_DIR_ENV } from './host-dump-coverage';
 
 let root: string;
 
@@ -80,6 +83,24 @@ async function runSnapshot(backup: WorkspaceBackup): Promise<void> {
     JSON.stringify({ id: 'kopia-artifact', stats: { addedSize: 17, totalSize: 6_948_207_239 } }),
   );
   await backup.snapshot('pre_destructive');
+}
+
+async function waitForCondition(predicate: () => boolean | Promise<boolean>, description: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${description}`);
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function receiptUpdate(queries: Array<{ text: string; values: unknown[] }>) {
@@ -152,5 +173,129 @@ describe('pre-destructive receipt vs. migration admission', () => {
     expect(receiptUpdate(queries)?.text).toContain("status      = 'failed'");
     expect(receiptUpdate(queries)?.values).toEqual(expect.arrayContaining([false]));
     expect((backup as any).kopia).not.toHaveBeenCalled();
+  });
+
+  it('releases the migration lock before waiting on the real Kopia flock, then reacquires before pg_dump', async () => {
+    const binDir = join(root, 'bin');
+    const lockPath = join(root, 'kopia.lock');
+    const hostReady = join(root, 'host-flock-ready');
+    const migrationReleased = join(root, 'workspace-migration-released');
+    const hostMigrationAcquired = join(root, 'host-migration-acquired');
+    const releaseHost = join(root, 'release-host-flock');
+    const dumpStarted = join(root, 'pg-dump-started');
+    const pgDumpStub = join(binDir, 'pg_dump');
+    const guard = fileURLToPath(new URL('../../../apps/operator/scripts/systemd/kopia-backup-guard.sh', import.meta.url));
+    const envKeys = ['PATH', 'KOPIA_BACKUP_GUARD_BIN', 'KOPIA_BACKUP_LOCK_PATH', HOST_PG_DUMP_DIR_ENV, 'PG_DUMP_STARTED'] as const;
+    const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+    const order: string[] = [];
+    let resolveHostMigrationReleased!: () => void;
+    const hostMigrationReleased = new Promise<void>((resolve) => { resolveHostMigrationReleased = resolve; });
+    let snapshot: Promise<unknown> | undefined;
+    let holder: ReturnType<typeof spawn> | undefined;
+    let hostClosed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
+    const restoreEnv = () => {
+      for (const [key, value] of previousEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    };
+
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(lockPath, '');
+      await writeFile(pgDumpStub, '#!/usr/bin/env bash\nset -euo pipefail\n: > "$PG_DUMP_STARTED"\nhead -c 16384 /dev/urandom\n');
+      await chmod(pgDumpStub, 0o755);
+      process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ''}`;
+      process.env.KOPIA_BACKUP_GUARD_BIN = guard;
+      process.env.KOPIA_BACKUP_LOCK_PATH = lockPath;
+      process.env[HOST_PG_DUMP_DIR_ENV] = join(root, 'host-dump');
+      process.env.PG_DUMP_STARTED = dumpStarted;
+
+      holder = spawn('flock', [
+        '-x', lockPath, 'bash', '-c',
+        'touch "$HOST_READY"; while [ ! -e "$WORKSPACE_RELEASED" ]; do sleep 0.01; done; touch "$HOST_MIGRATION_ACQUIRED"; while [ ! -e "$RELEASE_HOST" ]; do sleep 0.01; done',
+      ], {
+        env: {
+          ...process.env,
+          HOST_READY: hostReady,
+          WORKSPACE_RELEASED: migrationReleased,
+          HOST_MIGRATION_ACQUIRED: hostMigrationAcquired,
+          RELEASE_HOST: releaseHost,
+        },
+        stdio: 'ignore',
+      });
+      hostClosed = new Promise((resolve) => {
+        holder!.once('close', (code, signal) => resolve({ code, signal }));
+      });
+
+      const sql = ((strings: TemplateStringsArray) => {
+        const query = strings.join('?');
+        if (query.includes('INSERT INTO harness_shared.backup_snapshots')) return Promise.resolve([{ id: 75750 }]);
+        return Promise.resolve([]);
+      }) as unknown as Sql;
+      configureBackup({
+        getSql: () => sql,
+        workspacesRoot: () => root,
+        ensureSchema: async () => {},
+        getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+        acquireMigrationLock: async () => {
+          order.push('migration-lock-reacquire-start');
+          await hostMigrationReleased;
+          order.push('migration-lock-reacquired');
+          return { release: async () => { order.push('snapshot-migration-lock-release'); } };
+        },
+      });
+      const backup = new WorkspaceBackup({ workspaceId: 'ws-lock-order', workspaceRoot: root });
+      vi.spyOn(backup, 'ensureRepo').mockResolvedValue(undefined);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(backup as any, 'assertSelfExclusionPolicy').mockResolvedValue(undefined);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(backup as any, 'kopia').mockResolvedValue(
+        JSON.stringify({ id: 'kopia-artifact', stats: { addedSize: 17, totalSize: 6_948_207_239 } }),
+      );
+
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      await waitForCondition(() => fileExists(hostReady), 'host flock');
+      snapshot = backup.snapshot('manual', undefined, {
+        migrationLock: {
+          release: async () => {
+            order.push('scheduler-migration-lock-released');
+            await writeFile(migrationReleased, 'released');
+          },
+        },
+      });
+
+      await waitForCondition(() => stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join('').includes('result=waiting reason=lock'), 'guard waiting on flock');
+      await waitForCondition(() => fileExists(hostMigrationAcquired), 'host migration lock');
+      order.push('host-migration-lock-acquired');
+      expect(await fileExists(dumpStarted)).toBe(false);
+
+      await writeFile(releaseHost, 'release');
+      const closed = await hostClosed!;
+      expect(closed).toMatchObject({ code: 0 });
+      order.push('host-flock-released');
+      resolveHostMigrationReleased();
+
+      await waitForCondition(() => fileExists(dumpStarted), 'workspace pg_dump');
+      order.push('pg_dump-started');
+      await expect(snapshot).resolves.toMatchObject({ dbDumpOk: true });
+      expect(order).toContain('scheduler-migration-lock-released');
+      expect(order).toContain('host-flock-released');
+      expect(order).toContain('migration-lock-reacquired');
+      expect(order.indexOf('scheduler-migration-lock-released')).toBeLessThan(order.indexOf('host-migration-lock-acquired'));
+      expect(order.indexOf('host-flock-released')).toBeLessThan(order.indexOf('migration-lock-reacquired'));
+      expect(order.indexOf('migration-lock-reacquired')).toBeLessThan(order.indexOf('pg_dump-started'));
+      expect(order).toContain('snapshot-migration-lock-release');
+    } finally {
+      await writeFile(migrationReleased, 'released').catch(() => {});
+      await writeFile(releaseHost, 'release').catch(() => {});
+      resolveHostMigrationReleased();
+      if (holder && holder.exitCode === null && holder.signalCode === null) {
+        await Promise.race([hostClosed!, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+        if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+      }
+      if (snapshot) await Promise.race([snapshot.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+      restoreEnv();
+    }
   });
 });

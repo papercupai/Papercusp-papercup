@@ -28,6 +28,7 @@ import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../work
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 import { requirePrincipal } from '../../../auth/require-principal';
+import sessionResumeRoutes from './bootstrap-su-resume';
 export { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 // WI-42439: the single source for which `--account=` spellings bypass the gateway.
 import { isGatewayFreeAccount } from '../../../agent-config-constants';
@@ -36,14 +37,9 @@ import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
   endedRecordedOwnerIds,
-  acquireAdvSessionResume,
-  finalizeAdvSessionResume,
   getAdvSession,
-  isAdvSessionLocalLivenessEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
-  claimAdvSessionResume,
-  releaseAdvSessionResume,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
@@ -84,7 +80,8 @@ import {
   releaseAgentLaunchClaim,
   type LaunchMode,
 } from '../../../agent-launch-core';
-import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
+// Keep this prompt-only formatter out of mode:set's persistence and admin graph.
+import { renderModeInstructionsFact } from '../../../agent-tools/mode/instructions-fact';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { writeSuCodexHomeAsync } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
@@ -101,7 +98,6 @@ import {
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { sessionAllowsAmbientContext } from '../../../capability-envelope/session-confinement-port';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
-import { parseLaunchCompactionLimitArgv } from '../../../compaction-usage';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
 import {
@@ -118,9 +114,10 @@ import {
 } from '../../../session-brief';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
-import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
+import { parseLaunchCompactionLimitArgv, resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 import type { ModeRow } from '../../../modes/store';
+import { completeTrackedCodexFork, resolveTrackedCodexForkSource, type NativeForkLineage, type TrackedCodexForkSource } from '../../../su-session-tracked-codex-fork';
 
 
 /**
@@ -133,22 +130,37 @@ export async function bindKnownAgentSessionTasks(input: {
   workspaceId: string;
   coordOwnerId: string;
   sessionId: string | null;
+  initialTaskId?: string;
   source: 'bootstrap' | 'session-port' | 'respawn';
 }): Promise<string[]> {
   if (!input.sessionId) return [];
-  try {
-    return await bindLiveAgentSessionTasksToNativeSession({
-      workspaceId: input.workspaceId,
-      coordOwnerId: input.coordOwnerId,
-      sessionId: input.sessionId,
-    });
-  } catch (error) {
+  const bound = new Set<string>();
+  const base = {
+    workspaceId: input.workspaceId,
+    coordOwnerId: input.coordOwnerId,
+    sessionId: input.sessionId,
+  };
+  const logFailure = (error: unknown): void => {
     const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     console.warn(
       `[bootstrap-su] ${input.source} task/session bind failed for ${input.coordOwnerId.slice(0, 120)}: ${detail}`,
     );
-    return [];
+  };
+  if (input.initialTaskId) {
+    try {
+      for (const taskId of await bindLiveAgentSessionTasksToNativeSession({ ...base, initialTaskId: input.initialTaskId })) {
+        bound.add(taskId);
+      }
+    } catch (error) {
+      logFailure(error);
+    }
   }
+  try {
+    for (const taskId of await bindLiveAgentSessionTasksToNativeSession(base)) bound.add(taskId);
+  } catch (error) {
+    logFailure(error);
+  }
+  return [...bound];
 }
 
 export interface BootstrapSuResult {
@@ -161,6 +173,8 @@ export interface BootstrapSuResult {
    *  session is resumable + recognizable by id. claude → a forced UUID
    *  (`claude --session-id`); omp/codex → null (they don't take a forced id). */
   nativeSessionId: string | null;
+  /** Persisted on the child's launch spec before a tracked native fork succeeds. */
+  nativeFork?: NativeForkLineage;
   agent: SuAgent;
   /** Effective server-selected model, after identity defaults and launch overrides. */
   model?: string | null;
@@ -1599,6 +1613,7 @@ export const bootstrapSu = defineTool({
 
     let body: {
       agent?: string;
+      native_fork_source?: TrackedCodexForkSource;
       workspace?: string | null;
       harness_slug?: string | null;
       plan_slug?: string | null;
@@ -1680,6 +1695,8 @@ export const bootstrapSu = defineTool({
       /** Explicit windowless/unattended posture. Older launcher builds are
        *  recognized from launch_argv's exact --headless discriminator. */
       headless?: boolean | null;
+      /** Exact owner-stamped task row created by spawnHeadless for this CLI. */
+      agent_task_id?: string | null;
       /** launch-path-argv-reconstruction (WI-1343): the literal `psu …` argv the
        *  launcher built, recorded on adv_sessions.launch_argv so a killed batch is
        *  reconstructible. Validated + capped server-side (normalizeLaunchArgv);
@@ -1738,7 +1755,21 @@ export const bootstrapSu = defineTool({
         400,
       );
     }
+    if (body.agent_task_id != null && (
+      body.headless !== true || typeof body.agent_task_id !== 'string' || !/^[0-9a-z]{19}$/.test(body.agent_task_id)
+    )) {
+      return jsonRes({ status: 'error', error: 'agent_task_id requires a valid headless task id' }, 400);
+    }
     const agent: SuAgent = body.agent;
+    if (body.native_fork_source !== undefined && (agent !== 'codex'
+      || !body.native_fork_source || !Number.isSafeInteger(body.native_fork_source.advSessionId)
+      || body.native_fork_source.advSessionId <= 0
+      || typeof body.native_fork_source.nativeSessionId !== 'string'
+      || !NATIVE_SESSION_ID_RE.test(body.native_fork_source.nativeSessionId)
+      || body.session_port_token !== undefined || body.session_port_protocol !== undefined
+      || body.session_port_transform_version !== undefined)) {
+      return jsonRes({ status: 'error', code: 'invalid_native_fork_source', error: 'Native fork requires one tracked Codex parent and cannot be combined with a session port' }, 400);
+    }
     const requestOriginUrl = new URL(req.url);
     let launchMcpBaseUrl = requestOriginUrl.origin;
     const rawMcpBaseUrl = body.mcp_base_url;
@@ -2279,6 +2310,12 @@ export const bootstrapSu = defineTool({
     }
 
     try {
+    if (body.native_fork_source) {
+      try { await resolveTrackedCodexForkSource(body.native_fork_source, workspace, cwd); }
+      catch (error) {
+        return jsonRes({ status: 'error', code: 'native_fork_source_mismatch', error: String(error) }, 409);
+      }
+    }
     // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
     // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
     // and the lock hooks read the same var, so a session's interactive calls
@@ -2646,6 +2683,7 @@ export const bootstrapSu = defineTool({
         workspaceId: workspace,
         coordOwnerId: sid,
         sessionId: nativeSessionId,
+        initialTaskId: body.agent_task_id ?? undefined,
         source: 'bootstrap',
       });
     }
@@ -3165,6 +3203,7 @@ export const bootstrapSu = defineTool({
           // WI-3280: park the playbook so the SessionStart recovery hook can
           // re-deliver it if claude's self-re-exec drops the launch argv.
           recovery: { playbookPath: promptFile || null, nativeSessionId },
+          agentTaskId: body.agent_task_id ?? undefined,
           // EI-16574: pre-trust this launch's cwd so a brand-new project
           // directory (e.g. a fresh pot:create_from_repo clone, headless
           // fleet member) can't wedge forever on an external-CLAUDE.md-
@@ -3239,6 +3278,7 @@ export const bootstrapSu = defineTool({
         workspaceId: workspace,
         coordOwnerId: sid,
         sessionId: nativeSessionId,
+        initialTaskId: body.agent_task_id ?? undefined,
         source: 'session-port',
       });
         const summary = sessionPortContext.row.metadata.summary as SessionPortContractSummary;
@@ -3310,6 +3350,7 @@ export const bootstrapSu = defineTool({
     {
       const launchSpecRecord: SuLaunchSpecRecord = {
         v: 1,
+        turnProvenanceDir: envelope.env.PAPERCUSP_TURN_PROVENANCE_DIR,
         ...(codexSqliteHome ? { codexSqliteHome } : {}),
         agent,
         workspaceId: workspace,
@@ -3325,6 +3366,7 @@ export const bootstrapSu = defineTool({
         drainMode,
         loopArmed,
         headless,
+          agentTaskId: body.agent_task_id ?? undefined,
         fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
         stack: spec.stack,
         ...(body.selected_identity_revision && body.stack?.length === 1
@@ -3474,6 +3516,9 @@ export const bootstrapSu = defineTool({
           }
         : null,
     };
+    if (body.native_fork_source) {
+      Object.assign(result, await completeTrackedCodexFork(result, body.native_fork_source));
+    }
     if (sessionPortContext && sessionId != null) {
       const store = await import('../../../session-port/store');
       await store.recordSessionPortBootstrapReceipt({
@@ -3851,237 +3896,6 @@ const optionsForSessionEnded = defineTool({
 });
 
 /**
- * POST /api/agent-mcp/console/bootstrap-su/session-resumed
- *   { advSessionId, resumeClaimKey? }
- *
- * The psu launcher's atomic RESUME acquisition. A keyed caller receives an
- * explicit short-lived reservation; acquisition preserves terminal evidence and
- * therefore does not assert that a child exists. The caller must finalize that
- * reservation from concrete spawn evidence, or release it on setup failure.
- * Legacy no-key callers retain the historical one-step claim during rollout.
- *
- * The keyed response is typed (`acquired` + `status` and lease metadata) and also
- * keeps the historical `reactivated` field for compatibility. In either shape,
- * false means "the right to resume was not acquired — do not spawn".
- */
-const sessionResumed = defineTool({
-  method: 'POST',
-  path: '/agent-mcp/console/bootstrap-su/session-resumed',
-  auth: 'loopback',
-  async handler(req) {
-    const denied = await gatePrincipal(req.headers);
-    if (denied) return denied;
-    let advSessionId: number | null = null;
-    let resumeClaimKey: string | null = null;
-    let localLivenessEvidence: unknown = undefined;
-    let allowRetired = false;
-    try {
-      const body = (await req.json()) as {
-        advSessionId?: unknown;
-        resumeClaimKey?: unknown;
-        localLivenessEvidence?: unknown;
-        allowRetired?: unknown;
-      };
-      if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
-        return jsonRes({ error: 'allowRetired must be boolean' }, 400);
-      }
-      allowRetired = body.allowRetired === true;
-      if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
-        advSessionId = body.advSessionId;
-      }
-      if (body.resumeClaimKey != null) {
-        if (typeof body.resumeClaimKey !== 'string') {
-          return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
-        }
-        resumeClaimKey = body.resumeClaimKey.trim();
-        if (!resumeClaimKey || resumeClaimKey.length > 200) {
-          return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
-        }
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'localLivenessEvidence')) {
-        if (!isAdvSessionLocalLivenessEvidence(body.localLivenessEvidence)) {
-          return jsonRes({
-            error:
-              "localLivenessEvidence must be { version: 1, kind: 'no-live-codex-writer' | 'no-live-claude-process' | 'no-live-omp-process' }",
-          }, 400);
-        }
-        localLivenessEvidence = body.localLivenessEvidence;
-      }
-    } catch {
-      /* fall through to the 400 */
-    }
-    if (advSessionId == null || advSessionId <= 0) {
-      return jsonRes({ error: 'advSessionId required' }, 400);
-    }
-    try {
-      if (resumeClaimKey) {
-        const reservation = localLivenessEvidence === undefined && !allowRetired
-          ? await acquireAdvSessionResume(advSessionId, resumeClaimKey)
-          : await acquireAdvSessionResume(
-            advSessionId,
-            resumeClaimKey,
-            undefined,
-            undefined,
-            localLivenessEvidence,
-            allowRetired,
-          );
-        return jsonRes({ ok: true, ...reservation, reactivated: reservation.acquired });
-      }
-      const claimed = await claimAdvSessionResume(advSessionId, null);
-      return jsonRes({ ok: true, reactivated: claimed === true,
-        ...(claimed === 'retired' ? { status: 'retired' } : {}) });
-    } catch (err) {
-      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
-    }
-  },
-});
-
-async function parseResumeTransitionBody(
-  req: Request,
-): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[]; allowRetired?: boolean } | Response> {
-  let advSessionId: number | null = null;
-  let resumeClaimKey: string | null = null;
-  let launchArgv: string[] | undefined;
-  let allowRetired: boolean | undefined;
-  try {
-    const body = (await req.json()) as {
-      advSessionId?: unknown;
-      resumeClaimKey?: unknown;
-      launchArgv?: unknown;
-      allowRetired?: unknown;
-    };
-    if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
-      return jsonRes({ error: 'allowRetired must be boolean' }, 400);
-    }
-    if (body.allowRetired === true) allowRetired = true;
-    if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
-      advSessionId = body.advSessionId;
-    }
-    if (typeof body.resumeClaimKey === 'string') {
-      const candidate = body.resumeClaimKey.trim();
-      if (candidate && candidate.length <= 200) resumeClaimKey = candidate;
-    }
-    if (body.launchArgv !== undefined) {
-      if (
-        !Array.isArray(body.launchArgv) ||
-        body.launchArgv.length === 0 ||
-        body.launchArgv.length > 256 ||
-        !body.launchArgv.every(
-          (arg): arg is string =>
-            typeof arg === 'string' && arg.length > 0 && arg.length <= 4096,
-        )
-      ) {
-        return jsonRes(
-          {
-            error:
-              'launchArgv must be a non-empty array of strings (at most 256 entries, each at most 4096 characters)',
-          },
-          400,
-        );
-      }
-      launchArgv = body.launchArgv;
-    }
-  } catch {
-    /* return the shared validation response below */
-  }
-  if (advSessionId == null || advSessionId <= 0) {
-    return jsonRes({ error: 'advSessionId required' }, 400);
-  }
-  if (!resumeClaimKey) {
-    return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
-  }
-  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}),
-    ...(allowRetired ? { allowRetired } : {}) };
-}
-
-/** Finalize a keyed resume reservation from concrete child/host spawn evidence. */
-const sessionResumeFinalized = defineTool({
-  method: 'POST',
-  path: '/agent-mcp/console/bootstrap-su/session-resume-finalized',
-  auth: 'loopback',
-  async handler(req) {
-    const denied = await gatePrincipal(req.headers);
-    if (denied) return denied;
-    const parsed = await parseResumeTransitionBody(req);
-    if (parsed instanceof Response) return parsed;
-    try {
-      const finalized = await finalizeAdvSessionResume(
-        parsed.advSessionId,
-        parsed.resumeClaimKey,
-        parsed.launchArgv,
-        parsed.allowRetired,
-      );
-      if (finalized) {
-        try {
-          const session = await getAdvSession(parsed.advSessionId);
-          if (session?.coordOwnerId) {
-            const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
-            await armInboxWake({ ownerId: session.coordOwnerId });
-          } else {
-            process.stderr.write(
-              `[bootstrap-su] resumed inbox-wake arm skipped: no coord owner for adv session ${parsed.advSessionId}\n`,
-            );
-          }
-        } catch (err) {
-          process.stderr.write(
-            `[bootstrap-su] resumed inbox-wake arm failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`,
-          );
-        }
-      }
-      return jsonRes({ ok: true, finalized, resumeClaimKey: parsed.resumeClaimKey });
-    } catch (err) {
-      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
-    }
-  },
-});
-
-const optionsForSessionResumeFinalized = defineTool({
-  method: 'OPTIONS',
-  path: '/agent-mcp/console/bootstrap-su/session-resume-finalized',
-  auth: 'public',
-  handler() {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  },
-});
-
-/** Release a keyed reservation after setup/pre-spawn failure without asserting liveness. */
-const sessionResumeReleased = defineTool({
-  method: 'POST',
-  path: '/agent-mcp/console/bootstrap-su/session-resume-released',
-  auth: 'loopback',
-  async handler(req) {
-    const denied = await gatePrincipal(req.headers);
-    if (denied) return denied;
-    const parsed = await parseResumeTransitionBody(req);
-    if (parsed instanceof Response) return parsed;
-    try {
-      const released = await releaseAdvSessionResume(parsed.advSessionId, parsed.resumeClaimKey);
-      return jsonRes({ ok: true, released, resumeClaimKey: parsed.resumeClaimKey });
-    } catch (err) {
-      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
-    }
-  },
-});
-
-const optionsForSessionResumeReleased = defineTool({
-  method: 'OPTIONS',
-  path: '/agent-mcp/console/bootstrap-su/session-resume-released',
-  auth: 'public',
-  handler() {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  },
-});
-
-const optionsForSessionResumed = defineTool({
-  method: 'OPTIONS',
-  path: '/agent-mcp/console/bootstrap-su/session-resumed',
-  auth: 'public',
-  handler() {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  },
-});
-
-/**
  * POST /api/agent-mcp/console/bootstrap-su/session-respawned
  *   { advSessionId?, coordOwnerId?, sessionId }
  *
@@ -4112,12 +3926,20 @@ const sessionRespawned = defineTool({
     let advSessionId: number | null = null;
     let coordOwnerId: string | null = null;
     let sessionId: string | null = null;
+    // WI-6554700010030031: present only on an in-place context-reset report — the
+    // launch id of the SAME child, kept as an accepted alias of the rotated id.
+    let childLaunchSessionId: string | null = null;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         coordOwnerId?: unknown;
         sessionId?: unknown;
+        childLaunchSessionId?: unknown;
       };
+      if (typeof body.childLaunchSessionId === 'string'
+        && NATIVE_SESSION_ID_RE.test(body.childLaunchSessionId.trim())) {
+        childLaunchSessionId = body.childLaunchSessionId.trim();
+      }
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -4140,7 +3962,7 @@ const sessionRespawned = defineTool({
       let reanchored = false;
       let owner: string | null = null;
       if (advSessionId != null && advSessionId > 0) {
-        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId));
+        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId, { childLaunchSessionId }));
       }
       // Owner-keyed fallback is reserved for legacy reports that genuinely carry
       // no adv id. A supplied id that touches no row is NOT permission to choose
@@ -4287,12 +4109,7 @@ export default [
   optionsForHeartbeat,
   sessionEnded,
   optionsForSessionEnded,
-  sessionResumed,
-  optionsForSessionResumed,
-  sessionResumeFinalized,
-  optionsForSessionResumeFinalized,
-  sessionResumeReleased,
-  optionsForSessionResumeReleased,
+  ...sessionResumeRoutes,
   sessionRespawned,
   optionsForSessionRespawned,
 ];

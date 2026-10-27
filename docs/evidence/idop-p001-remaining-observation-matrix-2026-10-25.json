@@ -1,0 +1,2167 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-remaining-observation-matrix",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "driverWorkItem": "WI-6554700010020777",
+  "capturedAt": "2026-10-25T17:52:10.805Z",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "purpose": "Join retained bounded evidence to the unchanged historical baseline and make the remaining observation requirements explicit without promoting fixture passes to historical acceptance.",
+  "canonicalSpecs": [
+    {
+      "id": "P-001-BASELINE-CENSUS",
+      "revision": 3,
+      "hash": "aedda400a80e5f23a214ac6969bb171e8abcc5d0df4b860e420dd79821e77dc7"
+    },
+    {
+      "id": "SPEC-P-001-PROMPT",
+      "revision": 1,
+      "hash": "1a1f7b2ec4b5af42450664659c14673a0987d0dafc12f06a8f2a7491cb35c621"
+    },
+    {
+      "id": "SPEC-P-001-VAULT",
+      "revision": 2,
+      "hash": "755ad970436aa9ccdfe42e295504aecf9e1c5598130caa28fab017a6ce0393b3"
+    }
+  ],
+  "sourceArtifacts": {
+    "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json": "ea8dc6ef579f21648f66ec95e1df0aa9334eb0a4fd191e53a4d630243a6036cb",
+    "docs/evidence/idop-p001-observation-matrix-2026-10-23.json": "9348d8cf3756cf8e0e063a5981f3728c552452bd1908ae2d33428450dcb33df5",
+    "docs/evidence/idop-p001-baseline-2026-10-22.json": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "docs/evidence/idop-p001-vault-committed-fixtures-2026-10-24.json": "b711acc1dfa75c8a94dcc70694af271eac7685b2918e037c0be1fa501cd7d861",
+    "docs/evidence/idop-p001-wake-role-recovery-2026-10-24.json": "4d0d547e5f8bd52e42aaabbdadb7b9c35e7cbb850d6be76f5445f8faf77cc16f",
+    "docs/evidence/idop-p001-scoper-role-observation-2026-10-24.json": "2172912c23d92eab773c7ec4802b8e499b94525f6fcf105c7848956d587880b5",
+    "docs/evidence/idop-p001-current-argument-scope-2026-10-24.json": "2d51322686f4df54e4629a82122a0b6341bcfed5c95fc51e933237f5208077ae",
+    "docs/evidence/idop-p001-access-override-fixtures-2026-10-23.json": "55e0f7432c5caf4290d6bbdb5e85b6db8326c37f21d541209756c538137f9d21"
+  },
+  "populationControls": {
+    "kernelRoleCount": 54,
+    "frozenBuiltinIdentityCount": 29,
+    "requiredWornVariations": 6,
+    "totalDistinctEntries": 89,
+    "unique": true,
+    "kernelRoleSource": {
+      "path": "packages/agent-mcp/src/role-config.ts#AGENT_ROLES",
+      "sha256": "c1707e860788e33af09f5f23aa798cd9a61a61024c4b81d5e0ea99122e31edce"
+    },
+    "identitySource": "docs/evidence/idop-p001-baseline-2026-10-22.json#population.builtInIdentities",
+    "variationSource": "docs/evidence/idop-p001-observation-matrix-2026-10-23.json#population.wornSuVariations.required",
+    "variationScope": "Six named variations carried by the prior matrix only; this count does not establish an exhaustive legal mode-combination/fleet cross-product census.",
+    "legalStackCrossProduct": "OPEN: the six named variations are a retained minimum, not an exhaustive legal mode/fleet combination census.",
+    "sourceStability": "The current role registry has the same SHA256 as the independently enumerated frozen source. This does not replace authentic native catalog observations."
+  },
+  "population": [
+    {
+      "entry": "role:scoper",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/0",
+      "additionalEvidence": [
+        "docs/evidence/idop-p001-scoper-role-observation-2026-10-24.json",
+        "docs/evidence/idop-p001-wake-role-recovery-2026-10-24.json#actualCaller"
+      ],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:architect",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/1",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:worker",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/2",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:validator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/3",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/4",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:debugger",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/5",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:documenter",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/6",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:curator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/7",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:operator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "fifteen exact frozen invocation receipts, separately reconciled below; these do not replace a complete role/argument census",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/8",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:oracle",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/9",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:cup",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/10",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:mug",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/11",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:planner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/12",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:orchestrator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/13",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:promote",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/14",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:security-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "historical advertised role catalog only",
+      "launchReceipt": {
+        "advSessionId": 49805,
+        "ownerId": "su-aed3855d-6698-420c-8f67-98a46a62bfe2",
+        "nativeSessionId": "01a1651d-5ead-7112-80bc-ba24050302f2",
+        "launchAt": "2026-10-22T19:36:26.990Z",
+        "capturedAt": "2026-10-22T20:34:27.763Z",
+        "catalogSha256": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+        "count": 239
+      },
+      "receiptRef": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/role=security-reviewer",
+      "currentIntrospection": "historical signed-route introspection refused; preserved separately in coverage audit",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/15",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:infra-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "historical advertised role catalog only",
+      "launchReceipt": {
+        "advSessionId": 49806,
+        "ownerId": "su-e5f36f51-c7d4-419a-8b9b-357d9e02e1ce",
+        "nativeSessionId": "01a1651d-5d92-7050-b64b-1dd4e5d60119",
+        "launchAt": "2026-10-22T19:36:26.877Z",
+        "capturedAt": "2026-10-22T20:34:27.865Z",
+        "catalogSha256": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+        "count": 239
+      },
+      "receiptRef": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/role=infra-reviewer",
+      "currentIntrospection": "historical signed-route introspection refused; preserved separately in coverage audit",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/16",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:crosscheck",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/17",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:ui-qa",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/18",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:auditor",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/19",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:merge-resolver",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/20",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:content-fixer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/21",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:release-manager",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/22",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:release-fixer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/23",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:doc-steward",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/24",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:papercup",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/25",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:papercup-deep",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/26",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:kettle",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/27",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:researcher",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/28",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:research-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/29",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:searcher",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/30",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:discoverer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/31",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:finding-verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/32",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:findings-synthesizer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/33",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:synthesizer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/34",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:review-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/35",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:dimension-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/36",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/37",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:migration-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/38",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:migration-verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/39",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:transformer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/40",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:gym-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/41",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:judge",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/42",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:task-generator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/43",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:variant-runner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/44",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:proposer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/45",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:scanner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/46",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/47",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:committer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/48",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:tester",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/49",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:test-writer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/50",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:monitor",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/51",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:blender",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/52",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "role:foreign-session",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/53",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:blueprint-operation-worker",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen tool-refused sample",
+      "sample": {
+        "ownerId": "su-31c2b870-5080-4406-8a7d-c960f9e54aaa",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T16:21:09.975Z",
+        "toolInvocationId": 43036688,
+        "refusal": "agent_tools:list returned role-not-allowed"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/54",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:judge-acceptance",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49614,
+        "ownerId": "su-f9320b8d-e34e-4680-8c95-8c5fca7e15ce",
+        "nativeSessionId": "01a16463-8479-7193-891e-a65deb499ea9",
+        "launchAt": "2026-10-22T16:13:26.953Z",
+        "capturedAt": "2026-10-22T20:48:19.478Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-acceptance",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/55",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:judge-domain",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49608,
+        "ownerId": "su-c3c0b1e6-c190-4abd-b543-801e26292824",
+        "nativeSessionId": "01a16461-be2d-70b1-b111-119b5ad7cebf",
+        "launchAt": "2026-10-22T16:11:31.188Z",
+        "capturedAt": "2026-10-22T20:48:15.029Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-domain",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/56",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:judge-ensemble",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49625,
+        "ownerId": "su-c7e6e19c-c281-4e6f-b106-ea2f72a81255",
+        "nativeSessionId": "01a16464-8aef-7382-89de-9cda5ea357e5",
+        "launchAt": "2026-10-22T16:14:35.381Z",
+        "capturedAt": "2026-10-22T20:48:15.595Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-ensemble",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/57",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:judge-grading-integrity",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49609,
+        "ownerId": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+        "nativeSessionId": "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+        "launchAt": "2026-10-22T16:11:31.077Z",
+        "capturedAt": "2026-10-22T20:48:09.401Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-grading-integrity",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/58",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:judge-gym",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49616,
+        "ownerId": "su-7403dff7-ecd1-4549-a0ad-f7ab2b882f83",
+        "nativeSessionId": "01a16463-8337-7521-ad8c-e5af96e5f09d",
+        "launchAt": "2026-10-22T16:13:26.494Z",
+        "capturedAt": "2026-10-22T20:48:08.458Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-gym",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/59",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:operator.audience-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49615,
+        "ownerId": "su-8b79e88e-4682-4e23-81f0-f48e8c470473",
+        "nativeSessionId": "01a16463-84c3-7d03-978e-7303d77fbb9c",
+        "launchAt": "2026-10-22T16:13:27.258Z",
+        "capturedAt": "2026-10-22T20:48:10.708Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=operator.audience-engineer",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/60",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:operator.audience-novice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49633,
+        "ownerId": "su-d22cfeff-524c-4558-8aa1-de07236b4ff5",
+        "nativeSessionId": "01a16464-d7b9-7e12-80e3-a996bcf668cd",
+        "launchAt": "2026-10-22T16:14:53.595Z",
+        "capturedAt": "2026-10-22T20:48:17.332Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=operator.audience-novice",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/61",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:papercup.audience-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49611,
+        "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+        "nativeSessionId": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+        "launchAt": "2026-10-22T16:11:31.135Z",
+        "capturedAt": "2026-10-22T20:48:13.314Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=papercup.audience-engineer",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/62",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:papercup.audience-novice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49627,
+        "ownerId": "su-10052bd8-7413-4fba-96e2-c7d78ffb5f57",
+        "nativeSessionId": "01a16464-8e7c-7bb2-8ab3-f1ecf388cd86",
+        "launchAt": "2026-10-22T16:14:35.840Z",
+        "capturedAt": "2026-10-22T20:48:07.662Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=papercup.audience-novice",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/63",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:papercusp-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/64",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:research-steward",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49610,
+        "ownerId": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+        "nativeSessionId": "01a16461-bf1a-7622-b133-f81d3d8e3304",
+        "launchAt": "2026-10-22T16:11:31.131Z",
+        "capturedAt": "2026-10-22T20:48:14.087Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=research-steward",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/65",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:scout.lens-analogical",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-analogical is missing practice document"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/66",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:scout.lens-constraint-removal",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-constraint-removal is missing practice document"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/67",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:scout.lens-first-principles",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-first-principles is missing practice document"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/68",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:scout.lens-reframing",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-reframing is missing practice document"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/69",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/70",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su-collaborator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/71",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.fleet-leader",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "separate historical leader tools/list receipt",
+      "receiptRef": "docs/evidence/idop-p001-leader-tool-receipt-2026-10-22.json",
+      "nativeSessionId": "01a16547-09a0-7d80-a629-7e084c820db2",
+      "catalogCount": 1020,
+      "wornQualification": "previously qualified source/applied posture evidence is preserved in the original receipt; this continuation does not regrade it",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/72",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.fleet-member",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49684,
+        "ownerId": "su-e4e3f3ec-081e-418a-8476-90c04028b92d",
+        "nativeSessionId": "01a16482-4946-7192-ae5e-ddfd93bcd549",
+        "launchAt": "2026-10-22T16:47:03.693Z",
+        "capturedAt": "2026-10-22T20:48:18.424Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.fleet-member",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence.",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/73",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-audit",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/74",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-auto",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen observed sample",
+      "sample": {
+        "ownerId": "su-7a61b3ed-841b-4d7c-b177-f87c76073391",
+        "nativeSessionId": "01a16441-1bb3-7882-8c8f-69bfe2cddb16",
+        "observedAt": "2026-10-22T15:35:51.100747Z",
+        "activationEventId": 87801
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/75",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-drain",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49629,
+        "ownerId": "su-97533b6c-b337-4f3f-a764-bb6879c9509c",
+        "nativeSessionId": "01a16464-8cb4-72b2-8ea7-aeaf0656cee8",
+        "launchAt": "2026-10-22T16:14:35.194Z",
+        "capturedAt": "2026-10-22T20:48:11.677Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-drain",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence.",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/76",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-goal",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49632,
+        "ownerId": "su-d1800dfa-4da2-45b3-86fd-09f1e3120db9",
+        "nativeSessionId": "01a16464-8a9a-7ab2-89ac-89d9634e0705",
+        "launchAt": "2026-10-22T16:14:34.540Z",
+        "capturedAt": "2026-10-22T20:48:16.136Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-goal",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence.",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/77",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-grade",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49631,
+        "ownerId": "su-9b64fd17-7089-4b81-9302-d3539c800255",
+        "nativeSessionId": "01a16464-a13f-7b03-9004-e069c62172a5",
+        "launchAt": "2026-10-22T16:14:39.770Z",
+        "capturedAt": "2026-10-22T20:48:12.586Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-grade",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence.",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/78",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-ideate",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/79",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.mode-test",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen observed sample",
+      "sample": {
+        "ownerId": "su-af12cd24-704d-4594-9ddd-ee73dd556571",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T16:21:13.139Z",
+        "toolInvocationId": 43036704
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/80",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.practice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success",
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/81",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "identity:su.specialist-planner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 500: composition compiler prompt-missing specialist:su.planner"
+      },
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/82",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:base su",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/83",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:AUTO",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/84",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:AUTO + AUDIT",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/85",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:AUTO + AUDIT + IDEATE",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/86",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:fleet leader",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/87",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    },
+    {
+      "entry": "worn-stack:fleet member",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true,
+      "frozenEvidenceRef": "docs/evidence/idop-p001-population-reconciliation-2026-10-23.json#population/88",
+      "additionalEvidence": [],
+      "remaining": [
+        "complete-source-bound-native-catalog",
+        "exact-schema-and-annotation-partition",
+        "effective-handler-argument-scopes"
+      ]
+    }
+  ],
+  "scoperSupplement": {
+    "historicalSample": {
+      "sourceSession": {
+        "nativeSessionId": "01a16c8c-027c-7830-ac0c-d65261dddb36",
+        "coordOwnerId": "su-72c0b278-2103-44c1-b614-92c72f4e91a5",
+        "registeredSessionId": "51319",
+        "roleFromEnvironment": "scoper",
+        "roleFromCurrentCallerCatalog": "scoper",
+        "principalFromActualRefusals": "system:scoper",
+        "catalogIsSuperuser": false,
+        "harnessFromEnvironment": "papercusp",
+        "operatorUrlFromEnvironment": "http://127.0.0.1:9071",
+        "nativeOriginator": "codex-tui",
+        "nativeCliVersion": "0.163.0",
+        "nativeStartedAt": "2026-10-24T06:14:37.596Z"
+      },
+      "observedAt": "2026-10-24T06:27:05.660382+00:00",
+      "nativeSchemas": {
+        "representation": "Verbatim advertised exec tool declaration text from native ALL_TOOLS metadata; no conversion to raw MCP JSONSchema",
+        "distinctAdvertisedTools": 155,
+        "chunks": [
+          {
+            "index": 0,
+            "path": "native-schema-0.json",
+            "nativeLine": 128,
+            "bytes": 50551,
+            "sha256": "32e9c254d5fe8607339e5e01372078fc0c24d5d193c27faf2a2f51be232a9785",
+            "tools": 27
+          },
+          {
+            "index": 1,
+            "path": "native-schema-1.json",
+            "nativeLine": 136,
+            "bytes": 52044,
+            "sha256": "7539185a48e4ef3695b125b0a41b7353e0f769537b0244dfb5a32a50b9dc546d",
+            "tools": 41
+          },
+          {
+            "index": 2,
+            "path": "native-schema-2.json",
+            "nativeLine": 136,
+            "bytes": 52063,
+            "sha256": "dd276d5494c82f76afd50753724e1c637f592be61c49bb008715e7e18b12d076",
+            "tools": 28
+          },
+          {
+            "index": 3,
+            "path": "native-schema-3.json",
+            "nativeLine": 146,
+            "bytes": 51589,
+            "sha256": "1a3476ab4a0fcdbf9727cfdf16565990315366a1364e48dda440ff30d44ecb8c",
+            "tools": 26
+          },
+          {
+            "index": 4,
+            "path": "native-schema-4.json",
+            "nativeLine": 140,
+            "bytes": 51489,
+            "sha256": "5f040188afefb2809d382c3126609c018c43511ce32cd18f73b1aea6436cc8d9",
+            "tools": 25
+          },
+          {
+            "index": 5,
+            "path": "native-schema-5.json",
+            "nativeLine": 128,
+            "bytes": 11278,
+            "sha256": "a579f98c90bcecbdaebf3fc14e7d1236556bad75debbd01a9fdedf14703dffc3",
+            "tools": 8
+          }
+        ]
+      },
+      "permissionCoverage": {
+        "method": "Normal tools:invoke -> agent_tools:list; no asRole/asPrincipal overrides",
+        "broadResponseCount": 500,
+        "allowedResponseCount": 26,
+        "completePartition": false,
+        "limitation": "Broad catalog, work_items group and allowed-only responses were structurally truncated; _projection.cursor.reason=spill-write-failed. Narrow complete annotations retained for agent_tools:list, artifacts load/save/append/delete, work_items get/list/checkpoint. Counts are response counts, not a verified total registry population.",
+        "ownWorkItemProbes": "Not attempted: current-caller annotations deny work_items:get/list (missing work_items:read).",
+        "checkpointAndArtifactPersistence": "Not attempted via denied tools: current-caller annotations deny work_items:checkpoint (missing work_items:write) and artifacts:save (missing artifacts:write). Native transcript is the permitted checkpoint/source receipt."
+      },
+      "controlTuple": {
+        "authoritativeRead": "unavailable: coord:orient, mode:get and state:read refused missing coord:read",
+        "promptOnlySnapshot": {
+          "exec": "confirm-before-execution",
+          "mission": "execute-owner-directed-scope",
+          "ideation": "direct-improvements-only"
+        },
+        "controlGeneration": null
+      },
+      "actualRefusals": [
+        {
+          "tool": "coord:orient",
+          "exact": "missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: coord:orient)",
+          "nativeInvocationId": "call_bb27f214c79a4514be87e2769cae3b18"
+        },
+        {
+          "tool": "facts:list",
+          "exact": "missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: facts:list)",
+          "nativeInvocationId": "call_bb27f214c79a4514be87e2769cae3b18"
+        },
+        {
+          "tool": "mode:get",
+          "exact": "handler_error: missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: mode:get)",
+          "nativeInvocationId": "call_70ef3a8b1425431fb9898fc62bf36072"
+        },
+        {
+          "tool": "state:read",
+          "exact": "handler_error: missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: state:read)",
+          "nativeInvocationId": "call_881d205c57e64a4aa043133bbf099b46"
+        }
+      ]
+    },
+    "normalRestrictedCallerRecovery": {
+      "ownerId": "su-72c0b278-2103-44c1-b614-92c72f4e91a5",
+      "advSessionId": 51319,
+      "nativeSessionId": "01a16c98-4cb1-7ad2-8f99-3c2113dcbe0e",
+      "status": "VERIFIED: one normal native caller probe; full acceptance remains open",
+      "probe": "Canonical tagTurnForInjection nonce389f2a938e9ed200 was ledger-written, accepted by the verified original host and read back from the exact native transcript with VERIFIED AGENT-ORIGIN provenance.",
+      "terminalResult": "2026-10-24T21:50:41.876Z: usage_limit_exceeded, duration305469ms, no assistant message or caller probe result.",
+      "terminalEvent": {
+        "offset": 1248693,
+        "bytes": 510,
+        "sha256": "4caeff41d4195ef7454c1286f5ba571c2b7983139476a56cd257501fcd9a5c3e"
+      },
+      "recovery": "Supported idle shutdown with force:false and exact host binding returned sent. Subsequent read verified no host, free original native writer and recorded ended_at. Exact non-fork account:auto resume verified the same native identity. A real assistant turn and the following native tool call prove pickup separately from the launch receipt.",
+      "normalNativeCall": {
+        "callId": "call_faa9469769bb4f63aca50ec94c1ecaba",
+        "at": "2026-10-24T22:00:10.581Z",
+        "offset": 1291700,
+        "bytes": 628,
+        "sha256": "b82337726e8058acc56627a6bed3c65f4098da33d8aba795bb1c8c0f0eeba3b8",
+        "wrapper": "mcp__papercusp__tools_invoke",
+        "target": "agent_tools:list",
+        "args": {
+          "filter": "agent_tools",
+          "limit": 1
+        },
+        "authorityOverrides": false,
+        "sdkFallback": false
+      },
+      "normalNativeResult": {
+        "at": "2026-10-24T22:00:11.961Z",
+        "offset": 1294483,
+        "bytes": 3105,
+        "sha256": "ffe45e8b778b1273dd290c7b4779843f9c5db84b35eebf0a9c2fe201440047a8",
+        "parentDigestMatched": true,
+        "callerRole": "scoper",
+        "isSuperuser": false
+      },
+      "gatewayConfig": {
+        "provider": "papercusp-codex-gateway",
+        "baseUrl": "http://127.0.0.1:8788/v1",
+        "accountPinPresent": false,
+        "actualPoolAccountSelection": "not measured"
+      },
+      "placementFollowup": "EI-26899826966868939: ordinary resume unexpectedly selected visible placement when headless was omitted. Filed and assigned to the parent. After the bounded probe stopped, the exact host refused the supported idle shutdown as not-agent-launched. That guard was preserved. The subsequent exact non-fork headless request refused the live source before opening any process. Original headless placement restoration remains blocked; the visible host remains."
+    },
+    "limits": [
+      "Advertisement is distinct from effective authorization. Raw MCP JSONSchema and top-level wrapper schemas were not independently extracted.",
+      "Full current-caller permission partition, authoritative control tuple/generation and effective own-item scope probes remain unmeasured.",
+      "This preserves the actual bounded sample and does not close P001 or replace the original frozen baseline.",
+      "No extra measurement or implementation agent, role impersonation, policy/grant/mode change or personal/vault payload access occurred."
+    ],
+    "acceptance": "OPEN: normal non-SU caller recovery is bounded evidence; it is not the complete role census."
+  },
+  "argumentEvidence": {
+    "historicalPopulationStatus": "OPEN",
+    "requiredPerEntry": [
+      "actual source session and observation timestamp",
+      "complete tool-name/schema equality",
+      "complete annotation partition",
+      "real handler or boundary argument observations"
+    ],
+    "currentCallerSupplement": {
+      "artifact": "docs/evidence/idop-p001-current-argument-scope-2026-10-24.json",
+      "callerTuple": {
+        "workspace": "papercusp-workspace",
+        "harness": "papercusp",
+        "route": "http://127.0.0.1:3170",
+        "transport": "MCP Streamable HTTP through installed ptool CLI",
+        "authorization": "existing configured superuser credential; no credential/grant or mode changes",
+        "roleQualification": "owner identity separately verified; no role simulation counted as launched-role coverage"
+      },
+      "observations": [
+        {
+          "case": "positive",
+          "tool": "work_items:get",
+          "request": {
+            "id": "WI-6554700010017386",
+            "harness": "papercusp",
+            "threadLimit": 0,
+            "projection": {
+              "pick": [
+                "results[].id",
+                "results[].workItem.id",
+                "results[].workItem.harness",
+                "results[].workItem.assignee",
+                "results[].workItem.state"
+              ]
+            }
+          },
+          "observedNativeExitCode": 0,
+          "observationTime": {
+            "connectionStartedAt": "2026-10-24T00:26:40.680Z",
+            "qualification": "exact handler settle timestamp not retained"
+          },
+          "response": {
+            "results": [
+              {
+                "id": "WI-6554700010017386",
+                "workItem": {
+                  "id": "WI-6554700010017386",
+                  "harness": "papercusp",
+                  "assignee": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+                  "state": "open"
+                }
+              }
+            ],
+            "receipt": [
+              {
+                "id": "WI-6554700010017386",
+                "delivered": true
+              }
+            ],
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "requested": 1,
+              "receiptComplete": true
+            }
+          },
+          "cliErrorText": null,
+          "stdoutSha256": "336d36117a5ccdc5603daff76a9ec8a0fdcdf2e3433b409bfebc15e238dfef80",
+          "stderrSha256": "9cfc428360aaf49b23fbe6424896c6acff068bfe0ffb145f68fd4e816a8c78a6",
+          "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/positive.stderr.gz",
+          "stderrArchiveSha256": "009dd9160102363248430cd4c0ece74fe345a2ce1219d01ae4bc64e91e4deb34",
+          "traceIds": [
+            "2d5b657b-13e3-4db6-8b82-d9c840b71789"
+          ],
+          "observedRoutes": [
+            "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+          ],
+          "verification": "PASS"
+        },
+        {
+          "case": "all-scope",
+          "tool": "work_items:get",
+          "request": {
+            "id": "WI-6554700010017386",
+            "harness": "all",
+            "threadLimit": 0
+          },
+          "observedNativeExitCode": 1,
+          "observationTime": {
+            "connectionStartedAt": "2026-10-24T00:26:40.617Z",
+            "qualification": "exact handler settle timestamp not retained"
+          },
+          "response": null,
+          "cliErrorText": "harness_forbidden: harness:'all' is the unscoped global escape; this session is scoped to workspace \"papercusp-workspace\". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.\n",
+          "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderrSha256": "9b70a74ac076b514d370831fb423bd4d90eba2252c5aed9ddfd67fd83c8c87f7",
+          "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/all-scope.stderr.gz",
+          "stderrArchiveSha256": "ac0c2c5829791a0bd411326b4cbbe1156ca8c2110158f8b4c8710efdca80c938",
+          "traceIds": [
+            "2d608639-481a-4a24-96a2-18d427bcdf95"
+          ],
+          "observedRoutes": [
+            "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+          ],
+          "verification": "PASS"
+        },
+        {
+          "case": "unknown-scope",
+          "tool": "work_items:get",
+          "request": {
+            "id": "WI-6554700010017386",
+            "harness": "idop-census-unregistered-20261024",
+            "threadLimit": 0
+          },
+          "observedNativeExitCode": 1,
+          "observationTime": {
+            "connectionStartedAt": "2026-10-24T00:26:40.640Z",
+            "qualification": "exact handler settle timestamp not retained"
+          },
+          "response": null,
+          "cliErrorText": "harness_forbidden: harness \"idop-census-unregistered-20261024\" is outside this session's hive \"papercusp\". For an ID-based work_items:get read, retry with the caller's harness \"papercusp\"; do not copy a returned row's canonical harness into this argument. Note: a WI-/F- (feature-family) id genuinely IS scoped to its owning harness, so this retry will NOT resolve a row that belongs to a different one — there is currently no cross-hive escape for a feature-family id from a hive-confined session.\n",
+          "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderrSha256": "20205ce2920c91ad0793555cbbf937f4c52eaeb4db770127db80fbb51703814f",
+          "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/unknown-scope.stderr.gz",
+          "stderrArchiveSha256": "65b096e6414af7f7cc156500adbd230069b3284867570ca9c6254a906a14ff73",
+          "traceIds": [
+            "13a6f756-7714-45d4-a646-dd36cf5dffe0"
+          ],
+          "observedRoutes": [
+            "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+          ],
+          "verification": "PASS"
+        },
+        {
+          "case": "checkpoint-cap",
+          "tool": "work_items:get",
+          "request": {
+            "id": "WI-6554700010017386",
+            "harness": "papercusp",
+            "checkpointOnly": true,
+            "offset": 0,
+            "limit": 999999
+          },
+          "observedNativeExitCode": 0,
+          "observationTime": {
+            "connectionStartedAt": "2026-10-24T00:26:40.665Z",
+            "qualification": "exact handler settle timestamp not retained"
+          },
+          "response": {
+            "ok": true,
+            "results": [
+              {
+                "ok": true,
+                "id": "WI-6554700010017386",
+                "checkpointPage": {
+                  "offset": 0,
+                  "limit": 768,
+                  "totalChars": 14133,
+                  "returnedChars": 768,
+                  "nextOffset": 768,
+                  "text": "## Did\nFull previous checkpoint31889chars/hash7864710a2736 archived VERBATIM as thread-post1201815; readbackExact=true. Follow that archive for earlier baseline, source/activation evidence, fixtures and every prior archive pointer. D036/v71 accepts bounded installed source/stdout receipt/normal ORIENTATION ACK under existing D035. Shared installer10files/readback+7syntaxPASS, source85behavior/26isolatedinstaller historical proof unchanged. Realnative01a16ab5 record335/b05dd35a maps exact962bytepayload1512f044 to tokenbc52f4a5. Native-consumer.json/e6ce08a5 frozen. Next ordinary native cursor committed equals entire frozen pending minus__deliveryToken, no differing keys. normal-ack.json/3697452bcd23b0ec87dad46d7479047935650c43f4cd58904797f198506fe4e8 readback",
+                  "limitClamped": {
+                    "requested": 999999,
+                    "applied": 768
+                  }
+                },
+                "checkpointAgeMs": 2182469,
+                "checkpointUpdatedAtMs": 1792799424853,
+                "checkpointContentHash": "819c6caeb8a3"
+              }
+            ],
+            "counts": {
+              "ok": 1,
+              "failed": 0
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 0,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 449,
+              "baseReadMaxMs": 284,
+              "enrichmentMaxMs": 165,
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-6554700010017386",
+                "delivered": true
+              }
+            ],
+            "_shapeNote": {
+              "checkpointOnly": true,
+              "next": "Follow checkpointPage.nextOffset; restart from offset 0 if checkpointContentHash changes."
+            }
+          },
+          "cliErrorText": null,
+          "stdoutSha256": "42bf5cee49043776ad0f5e15f6d5b74bc73ed652848087e81607c34ab7c02c28",
+          "stderrSha256": "464821c06ee3ed2b2bbe7a52298183268cd31d65bdecd32de589840d3e91a519",
+          "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/checkpoint-cap.stderr.gz",
+          "stderrArchiveSha256": "940ce3a26221a6908852c523fa5f42c8502028486f3899ae2cee14ecd245fc53",
+          "traceIds": [
+            "6c0de823-cf31-4559-9c83-3f0366a01f2e"
+          ],
+          "observedRoutes": [
+            "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+          ],
+          "verification": "PASS"
+        },
+        {
+          "case": "resume-conflict",
+          "tool": "work_items:get",
+          "request": {
+            "id": "WI-6554700010017386",
+            "harness": "papercusp",
+            "resume": true,
+            "checkpointOnly": true
+          },
+          "observedNativeExitCode": 1,
+          "observationTime": {
+            "connectionStartedAt": "2026-10-24T00:26:40.658Z",
+            "qualification": "exact handler settle timestamp not retained"
+          },
+          "response": null,
+          "cliErrorText": "invalid_input: invalid_args: checkpointOnly is a standalone one-item read; omit other enrichment switches — accepted args: id, attachments, ids, harness, detail, checksOnly, checkpointOnly, offset, limit, resume, operationalBrief, priorAttemptRefs, threadLimit\n",
+          "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderrSha256": "88ad6d2f1518a9f3d3b2d5e4c811ca088e56449360c1c30fd60a8a65ad7c18f6",
+          "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/resume-conflict.stderr.gz",
+          "stderrArchiveSha256": "aef8f1644d2628e952620cbc68d234321a18dacf781a284b470433cdd29ed759",
+          "traceIds": [
+            "be6ca003-edbc-4db6-8ee1-37ef9c13a8a0"
+          ],
+          "observedRoutes": [
+            "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+          ],
+          "verification": "PASS"
+        }
+      ],
+      "limits": [
+        "Only work_items:get for the current scoped caller tuple was observed; full role/identity/legal-stack/argument acceptance remains OPEN.",
+        "Supplemental MCP tools/list is not the original native launch catalog.",
+        "Exact ptool refusal text retained; raw protocol/HTTP response bodies and exact handler settle timestamps not retained.",
+        "Pipeline output is partial; only retained runtime containment fields are used. No release/gate-verdict claim.",
+        "Source hashes are at readback, not an immutable executed import closure.",
+        "No product configuration, real personal data/settings, grant, attestation, mode or fleet membership writes exercised.",
+        "Original18/22/23/rawHTTP and genuine pending source answer349651 qualifications remain.",
+        "P001 historical four-setting baseline, P024 independent acceptance, activation audit through revision73 and shipment remain open."
+      ]
+    },
+    "overrideFixtures": {
+      "artifact": "docs/evidence/idop-p001-access-override-fixtures-2026-10-23.json",
+      "scope": "41 current-source fixture cases retained as local evidence; no newly inferred committed or historical acceptance."
+    },
+    "unmeasuredOverridePopulation": [
+      "PAPERCUSP_SU_* launch environment",
+      "legacy superuser query parameter",
+      "authenticated principal kind",
+      "role envelope",
+      "mode registry",
+      "fleet posture"
+    ],
+    "rule": "Advertised JSONSchema, allowed=true, activation or a recovered transport is not effective per-argument authorization."
+  },
+  "vaultQualification": {
+    "sourceCommit": "caf08cec136c9822b21b0c60856bf6863f97bf3d",
+    "nativeProcessSessionId": 57455,
+    "exitCode": 0,
+    "testRunId": 22046534,
+    "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-caf08cec13-M5r1og",
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "startedAt": "2026-10-25T17:47:01.463Z",
+    "finishedAt": "2026-10-25T17:47:03.276Z",
+    "executionDetails": {
+      "root": "/tmp/pcv/papercusp-lint-as-committed-caf08cec13-M5r1og",
+      "failed": 0,
+      "passed": 10,
+      "skipped": 0,
+      "filePath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "commitSha": "caf08cec136c9822b21b0c60856bf6863f97bf3d",
+      "testLayer": "integration",
+      "runGroupId": null,
+      "harnessSlug": "papercusp",
+      "workspaceId": "papercusp-workspace",
+      "runStartedAt": "2026-10-25T17:46:34.620Z",
+      "mutationPhase": null,
+      "schemaVersion": 1,
+      "worktreeDirty": false,
+      "testNamePattern": null,
+      "collectionFailed": false,
+      "passedCaseTitles": [
+        "P-001 current-source grant terms > 'no expiry' is enforced for a non-coding control",
+        "P-001 current-source grant terms > 'future expiry' is enforced for a non-coding control",
+        "P-001 current-source grant terms > 'past expiry' is enforced for a non-coding control",
+        "P-001 current-source grant terms > revocation removes a previously live control grant",
+        "P-001 current-source grant terms > repeated control checks use the standing grant and still refuse an ungranted scope",
+        "P-001 current-source grant terms > a non-expiring su grant does not bypass the current coding-role refusal",
+        "P-001 current-source automatic recall > resolves su from fixture presence and emits no block or search despite its grant",
+        "P-001 current-source after-read and transcript seams > unlabelled synthetic delivery creates no hold",
+        "P-001 current-source after-read and transcript seams > restricted synthetic delivery registers a su hold before a recipient check",
+        "P-001 current-source after-read and transcript seams > the current transcript seam exempts the recorder while withholding from a peer"
+      ],
+      "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+      "runtimeEnvironmentBeforeCaptureStatus": "not-configured"
+    },
+    "childSubstituted": 0,
+    "filesRequested": 1,
+    "filesExecuted": 1,
+    "filesMatched": 1,
+    "command": "node scripts/with-test-pg.mjs -- npm run lint:as-committed -- test:file --any --ref=caf08cec136c9822b21b0c60856bf6863f97bf3d --keep -- packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+    "receiptContract": "The maintained lint:as-committed wrapper creates its own per-run receipt file and removes it after test:file validates durable insertion. The separately requested parent receipt path is not produced. The archived readback is the durable ledger proof.",
+    "evidenceSink": "Explicit reporter-only PAPERCUSP_TEST_RUNS_DB_URL resolved through resolveTestRunsPgUrl before private database creation; connection string withheld.",
+    "archive": {
+      "path": "~/.papercusp/evidence/idop-p001-vault-qualification-20261025-v1",
+      "files": [
+        {
+          "path": "ledger-readback.json",
+          "bytes": 4017,
+          "sha256": "f045e821d558f0bc33f66e7e1100cf9d6269751e72c7bb3e8475061de37ffe63"
+        },
+        {
+          "path": "integration.log.gz",
+          "bytes": 59555,
+          "sha256": "da3721571fc7f59dddb59033161638ff2b86eff1acca85e52f2d6b4c8ccaa257"
+        }
+      ]
+    },
+    "sourceHashes": {
+      "packages/operator-core/lib/personal-vault/authorization.ts": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "packages/operator-core/lib/personal-vault/coding-roles.ts": "4430a71a2047860187ed245a83c0b04f736b4e931bb0ff5ba0833bbfb35c223a",
+      "packages/operator-core/lib/personal-vault/ambient.ts": "bf98999206cea5bbde387b4bccadfe3837a2284f241e984b1a19b6203df6fd17",
+      "packages/operator-core/lib/personal-vault/disclosure-ledger.ts": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "packages/operator-core/lib/personal-vault/transcript-exclusion.ts": "c3ff4be3de5a90603c041dba4e7782f761447a5bda13dc8e2e7b3fbf27335ff7",
+      "packages/operator-core/lib/personal-vault/store.ts": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df"
+    },
+    "sourceReadback": "All seven canonical files matched the retained caf08cec committed snapshot and the earlier fixture-source hashes byte for byte.",
+    "scope": "Ten current-source synthetic integration cases. This does not reconstruct Avi's historical four-setting vault state or independently accept SPEC-P-001-VAULT@2."
+  },
+  "vaultRows": [
+    {
+      "setting": "grant terms",
+      "source": [
+        "authorization.ts:authorizePersonalAccess",
+        "store.ts:createPersonalGrant/revokePersonalGrant"
+      ],
+      "independentProbe": "Compare no-expiry/future-expiry/expired/revoked and repeated mail checks on a non-coding control; reject calendar; resolve su from fixture presence and observe refusal despite a non-expiring su grant.",
+      "scopeLimit": "Control grant behavior is not su all-effects/no-per-use authority. Coding-role refusal prevents such a conclusion.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: current-source committed synthetic fixture run22046534; historical baseline acceptance remains OPEN.",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed in fixture: live no-expiry/future grants authorize the non-coding control; expired/revoked grants refuse; repeat checks succeed only in mail scope; su refuses coding_agent_denied despite a non-expiring grant.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log",
+        "test-run:22046534"
+      ],
+      "currentFixtureEvidenceRef": "vaultQualification",
+      "historicalStatus": "UNKNOWN: not reconstructed by current fixtures",
+      "remaining": "Source-authenticated historical observations for this setting in Avi's frozen su workspace."
+    },
+    {
+      "setting": "automatic recall",
+      "source": [
+        "ambient.ts:resolvePersonalAmbientToolContext/collectPersonalAmbientResults"
+      ],
+      "independentProbe": "Real fixture presence resolves su; actual authorizer denies; expect no recall bytes and no embed/search/disclosure call despite a synthetic su grant.",
+      "scopeLimit": "Production helper path with a migrated fixture, not a delivered normal turn-start or Avi personal data.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: current-source committed synthetic fixture run22046534; historical baseline acceptance remains OPEN.",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed in fixture: presence-derived su yields null with zero embed/search/disclose calls despite a grant.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log",
+        "test-run:22046534"
+      ],
+      "currentFixtureEvidenceRef": "vaultQualification",
+      "historicalStatus": "UNKNOWN: not reconstructed by current fixtures",
+      "remaining": "Source-authenticated historical observations for this setting in Avi's frozen su workspace."
+    },
+    {
+      "setting": "after-read holds",
+      "source": [
+        "disclosure-ledger.ts:discloseDocuments/assertDisclosurePermits"
+      ],
+      "independentProbe": "Compare no-rule/unlabelled delivery with sender-only delivery for a su-shaped owner. Assert ledger row before recipient checks; permit sender and refuse outsider.",
+      "scopeLimit": "Independent injected delivery seam; does not assert the denied su read path can acquire that document.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: current-source committed synthetic fixture run22046534; historical baseline acceptance remains OPEN.",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed at independent delivery seam: no rules yield zero ledger rows and unrestricted recipient check; sender-only delivery records one su disclosure then refuses outsider and permits sender.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log",
+        "test-run:22046534"
+      ],
+      "currentFixtureEvidenceRef": "vaultQualification",
+      "historicalStatus": "UNKNOWN: not reconstructed by current fixtures",
+      "remaining": "Source-authenticated historical observations for this setting in Avi's frozen su workspace."
+    },
+    {
+      "setting": "transcript visibility",
+      "source": [
+        "transcript-exclusion.ts:loadTranscriptExclusion/withholds"
+      ],
+      "independentProbe": "Use the same real disclosure-window timestamp; compare recording identity and another reader. Expect existing self exemption and peer withholding.",
+      "scopeLimit": "Helper observation; full sessions:read/search population is covered separately by existing transcript-exclusion integration suite. This documents legacy behavior, not D-020 compliance.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: current-source committed synthetic fixture run22046534; historical baseline acceptance remains OPEN.",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed at independent helper seam: current recorder exemption allows own stamp and peer gets disclosure-window refusal.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log",
+        "test-run:22046534"
+      ],
+      "currentFixtureEvidenceRef": "vaultQualification",
+      "historicalStatus": "UNKNOWN: not reconstructed by current fixtures",
+      "remaining": "Source-authenticated historical observations for this setting in Avi's frozen su workspace."
+    }
+  ],
+  "sourceStabilityReadback": {
+    "packages/operator-core/lib/personal-vault/authorization.ts": {
+      "previous": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "current": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/coding-roles.ts": {
+      "previous": "4430a71a2047860187ed245a83c0b04f736b4e931bb0ff5ba0833bbfb35c223a",
+      "current": "4430a71a2047860187ed245a83c0b04f736b4e931bb0ff5ba0833bbfb35c223a",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/ambient.ts": {
+      "previous": "bf98999206cea5bbde387b4bccadfe3837a2284f241e984b1a19b6203df6fd17",
+      "current": "bf98999206cea5bbde387b4bccadfe3837a2284f241e984b1a19b6203df6fd17",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/disclosure-ledger.ts": {
+      "previous": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "current": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/transcript-exclusion.ts": {
+      "previous": "c3ff4be3de5a90603c041dba4e7782f761447a5bda13dc8e2e7b3fbf27335ff7",
+      "current": "c3ff4be3de5a90603c041dba4e7782f761447a5bda13dc8e2e7b3fbf27335ff7",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/store.ts": {
+      "previous": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "current": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "match": true
+    },
+    "packages/agent-mcp/src/role-config.ts": {
+      "previous": "c1707e860788e33af09f5f23aa798cd9a61a61024c4b81d5e0ea99122e31edce",
+      "current": "c1707e860788e33af09f5f23aa798cd9a61a61024c4b81d5e0ea99122e31edce",
+      "match": true
+    },
+    "packages/operator-core/lib/known-roles.ts": {
+      "previous": "5bcab2b257b071a2dda2a0a72900497e33827eca1d659b493ee3bc9a79218606",
+      "current": "5bcab2b257b071a2dda2a0a72900497e33827eca1d659b493ee3bc9a79218606",
+      "match": true
+    },
+    "packages/operator-core/lib/role-registry.ts": {
+      "previous": "336c54895438c72d80d9aa340e5fac6b94245ce0cdf8ca77d73c5bbac66d5a63",
+      "current": "336c54895438c72d80d9aa340e5fac6b94245ce0cdf8ca77d73c5bbac66d5a63",
+      "match": true
+    },
+    "packages/operator-core/lib/agent-tools/agent_tools/list.ts": {
+      "previous": "d980ea65a594dc7dabf2686b2b8ef42eb7cbebabec2434e183cf232eaaa90978",
+      "current": "d980ea65a594dc7dabf2686b2b8ef42eb7cbebabec2434e183cf232eaaa90978",
+      "match": true
+    },
+    "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts": {
+      "previous": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df",
+      "current": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df",
+      "match": true
+    }
+  },
+  "holds": {
+    "sourceAuthentication": {
+      "workItem": "EI-26698597499949499",
+      "conversation": "conv-mvjy4dsp-0000-a44413cc2aeb4f568e412f6d1f81d163",
+      "awaitId": 349651,
+      "status": "Preserve existing genuine-answer gate and its registered owner; no fabricated answer or duplicate owner ask."
+    },
+    "admission": "Preserve current registered caller/mode/role admission; no credential, grant or rule widening.",
+    "custody": "Preserve outside-lineage independent review and original native source custody.",
+    "release": "Activation audit through current plan revision, P001/P024 canonical acceptance, three implementation milestones and verified shipment remain open.",
+    "liveGateOps": "No live gate operation or monitoring was performed by this matrix preparation."
+  },
+  "nextActions": [
+    {
+      "id": "population",
+      "action": "Recover authentic source-bound catalogs and full argument scope evidence for the explicit entries, retaining missing/launch-refused samples. Derive and register the additional legal stack population before making an exhaustive claim."
+    },
+    {
+      "id": "vault",
+      "action": "Bind the clean current fixture support separately from historical four-setting observations. Leave the historical clause unaccepted until authenticated source evidence satisfies it."
+    },
+    {
+      "id": "canonical",
+      "action": "Read current canonical evidence bindings and evaluator diagnostics, attach this matrix as bounded support, then request the required independent acceptance only for claims actually supported."
+    },
+    {
+      "id": "sequence",
+      "action": "Continue the approved direct/self implementation sequence and required activation/source gate after the remaining independent preparation; do not close or release the broad driver for a local slice."
+    }
+  ],
+  "limits": [
+    "Original baseline and prior supplements remain unchanged.",
+    "No new observer, mode/ACK cycle, personal content, credential/grant/rule mutation, runtime restart, manual git operation or release action was used.",
+    "No role, identity or worn-stack population entry is accepted by this matrix.",
+    "No historical-vault or complete-handler-population claim follows from the ten fixture cases."
+  ]
+}

@@ -8,20 +8,42 @@
  * nothing, that a dead creator changes nothing about recovery, and that one
  * unreadable plan does not stop the sweep covering the ones behind it.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTANCE_GRADING_SWEEP_MAX_SCAN_PER_TICK,
   acceptanceGradingEscalationBody,
   acceptanceGradingStallConditionKey,
   runAcceptanceGradingSweep,
   type AcceptanceGradingSweepDeps,
+  type AcceptanceGradingSweepEvent,
   type ObservedPlanRow,
 } from './acceptance-grading-sweep-run';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60_000;
+afterEach(() => vi.useRealTimers());
+
+it('bounds a never-settling observation and rotates past the attempted row on the next tick', async () => {
+  vi.useFakeTimers();
+  const gate = vi.fn(() => new Promise<{ satisfied: boolean }>(() => {}));
+  const world = fakeDeps([row('slow', 5), row('later', 5)], { evaluateGate: gate });
+  const pending = runAcceptanceGradingSweep(world.deps, { timeBudgetMs: 100 });
+  await vi.advanceTimersByTimeAsync(100);
+  const result = await pending;
+  expect(result.budgetExhausted).toBe(true);
+  expect(result.scanned).toBe(1);
+  expect(result.nextCursor?.planSlug).toBe('slow');
+  expect(result.dispatched).toEqual([]);
+  const visited: string[] = [];
+  const next = fakeDeps([row('slow', 5), row('later', 5)], {
+    evaluateGate: async slug => { visited.push(slug); return { satisfied: true }; },
+  });
+  await runAcceptanceGradingSweep(next.deps, { after: result.nextCursor });
+  expect(visited).toEqual(['later', 'slow']);
+});
 
 const row = (slug: string, gradeableHoursAgo: number): ObservedPlanRow => ({
+  workspaceId: 'ws',
   planSlug: slug,
   harnessSlug: 'papercusp',
   rubricRef: `acceptance-${slug}`,
@@ -32,7 +54,10 @@ const row = (slug: string, gradeableHoursAgo: number): ObservedPlanRow => ({
 function fakeDeps(rows: ObservedPlanRow[], over: Partial<AcceptanceGradingSweepDeps> = {}) {
   const minted = new Map<string, string>();
   const deps: AcceptanceGradingSweepDeps = {
-    listCandidates: async (limit) => rows.slice(0, limit),
+    listCandidates: async (limit, after) => {
+      const cursor = after ? rows.findIndex(r => r.planSlug === after.planSlug && r.workspaceId === after.workspaceId && r.harnessSlug === after.harnessSlug) : -1;
+      return (cursor < 0 ? rows : [...rows.slice(cursor + 1), ...rows.slice(0, cursor + 1)]).slice(0, limit);
+    },
     evaluateGate: async () => ({ satisfied: false, code: 'acceptance_ungraded' }),
     observeGrader: async () => ({ live: false, lastDispatchMs: null }),
     escalationExists: async (slug) => minted.has(slug),
@@ -213,6 +238,22 @@ describe('R5 — one tick is bounded', () => {
     expect(out.scanCapped).toBe(false);
   });
 
+  it('eventually observes the entire population beyond the first page and wraps', async () => {
+    const population = many(250);
+    const visited: string[] = [];
+    const { deps } = fakeDeps(population, {
+      evaluateGate: async slug => { visited.push(slug); return { satisfied: true }; },
+    });
+    let after: ObservedPlanRow | null = null;
+    for (let tick = 0; tick < 3; tick++) {
+      const out = await runAcceptanceGradingSweep(deps, { maxScanPerTick: 100, after });
+      expect(out.scanned).toBe(100);
+      after = out.nextCursor;
+    }
+    expect(new Set(visited)).toEqual(new Set(population.map(r => r.planSlug)));
+    expect(visited.slice(250)).toEqual(population.slice(0, 50).map(r => r.planSlug));
+  });
+
   it('a zero scan budget observes nothing and asks the database for nothing', async () => {
     const listCandidates = vi.fn(async () => []);
     const { deps } = fakeDeps([], { listCandidates });
@@ -228,8 +269,36 @@ describe('R5 — one tick is bounded', () => {
 });
 
 describe('partial failure never strands the plans behind it', () => {
+  it('identifies a pending gate without releasing the tick or dispatching another grader', async () => {
+    let finishGate!: (value: { satisfied: boolean; code: string }) => void;
+    let now = NOW;
+    const events: AcceptanceGradingSweepEvent[] = [];
+    const dispatchGrader = vi.fn(async () => ({ ok: true }));
+    const { deps } = fakeDeps([row('waiting', 5)], {
+      evaluateGate: () => new Promise(resolve => { finishGate = resolve; }),
+      dispatchGrader,
+      now: () => now,
+      onEvent: event => events.push(event),
+    });
+    const running = runAcceptanceGradingSweep(deps);
+    await vi.waitFor(() => expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'waiting', operation: 'grader', outcome: 'completed', durationMs: 0,
+    }));
+    expect(events).toContainEqual({ kind: 'observe-started', planSlug: 'waiting', operation: 'gate' });
+    expect(events.some(event => event.kind === 'observe-settled' && event.operation === 'gate')).toBe(false);
+    expect(dispatchGrader).not.toHaveBeenCalled();
+    now += 90_000;
+    finishGate({ satisfied: false, code: 'acceptance_ungraded' });
+    expect((await running).dispatched).toEqual(['waiting']);
+    expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'waiting', operation: 'gate', outcome: 'completed', durationMs: 90_000,
+    });
+  });
+
   it('one unreadable plan is recorded and the rest still recover', async () => {
+    const events: AcceptanceGradingSweepEvent[] = [];
     const { deps } = fakeDeps([row('bad', 5), row('good', 6)], {
+      onEvent: event => events.push(event),
       evaluateGate: async (slug) => {
         if (slug === 'bad') throw new Error('gate read blew up');
         return { satisfied: false, code: 'acceptance_ungraded' };
@@ -238,6 +307,9 @@ describe('partial failure never strands the plans behind it', () => {
     const out = await runAcceptanceGradingSweep(deps);
     expect(out.dispatched).toEqual(['good']);
     expect(out.failures).toEqual([{ planSlug: 'bad', stage: 'observe', error: 'gate read blew up' }]);
+    expect(events).toContainEqual({
+      kind: 'observe-settled', planSlug: 'bad', operation: 'gate', outcome: 'failed', durationMs: 0,
+    });
   });
 
   it('a failed dispatch is recorded, not swallowed, and not counted as success', async () => {

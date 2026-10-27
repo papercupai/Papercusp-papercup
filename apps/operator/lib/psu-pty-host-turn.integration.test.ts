@@ -20,13 +20,14 @@
  * (pid + perf-now + suffix) keep it from ever colliding with the live fleet, and
  * each test asserts its socket+meta are removed on child exit.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Script } from 'node:vm';
 import { applyCodexGatewayRoute } from '../scripts/psu-launcher.mjs';
 import {
   findNativeTranscriptMarker,
@@ -36,6 +37,7 @@ import {
   metaPathFor,
   eventLogPathForOwner,
   nativeLatestExecution,
+  nativeLatestTurnCompleted,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
 } from '../scripts/psu-pty-host.mjs';
@@ -98,9 +100,16 @@ function uniqueOwner(suffix: string): string {
 function hostTestDiagnostics(ownerId: string, captured: () => string): string {
   const log = eventLogPathForOwner(ownerId);
   const events = existsSync(log)
-    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-12).map((line) => JSON.parse(line))
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-6).map((line) => {
+      const row = JSON.parse(line);
+      return { ts: row.ts, kind: row.kind,
+        reason: typeof row.reason === 'string' ? row.reason.slice(0, 80) : row.reason,
+        phase: row.phase };
+    })
     : [];
-  return JSON.stringify({ output: captured().slice(-2000), events });
+  // The reporter bounds assertion messages. Put protocol evidence first so a
+  // repainting child cannot fill the message and hide the refusal that matters.
+  return JSON.stringify({ log, events, output: captured().slice(-256) });
 }
 
 it('serializes a resumed launch kickoff before a concurrent wake', async () => {
@@ -175,6 +184,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     mkdirSync(projects, { recursive: true });
     const transcript = join(projects, 'native.jsonl');
     const releaseBusy = join(root, 'release-busy');
+    const stdinTrace = join(root, 'input.trace');
     const ownerId = uniqueOwner(`SUBMIT-${scenario}`);
     const sock = socketPathFor(ownerId);
     const log = eventLogPathForOwner(ownerId);
@@ -184,16 +194,26 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
     const rearmed = scenario.startsWith('rearmed-');
     const replaced = scenario.includes('replaced');
     const { io, captured } = fakeIo();
+    const startedAt = Date.now();
+    const outputTimeline: Array<{ ms: number; text: string }> = [];
+    const milestones: Array<{ ms: number; phase: string; confirmation?: unknown }> = [];
+    const writeOutput = io.stdout.write;
+    io.stdout.write = (chunk: Buffer | string) => {
+      outputTimeline.push({ ms: Date.now() - startedAt, text: chunk.toString().slice(0, 100) });
+      writeOutput(chunk);
+    };
     const childCode = [
       "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
-      "let line='',crs=0;process.stdout.write('READY\\n');",
+      "const trace=(kind,data)=>fs.appendFileSync(process.env.TEST_INPUT_TRACE,JSON.stringify({atMs:Date.now(),kind,data})+'\\n');",
+      "const emit=data=>{trace('output',data);process.stdout.write(data);};",
+      "let line='',crs=0;emit('READY\\n');",
       rearmed ? "const busy=setInterval(()=>{if(fs.existsSync(process.env.TEST_BUSY_RELEASE))clearInterval(busy);else process.stdout.write('BUSY\\n');},15);" : '',
-      "process.stdin.on('data',data=>{for(const c of data){",
+      "process.stdin.on('data',data=>{trace('input',data);for(const c of data){",
       "if(c==='\\x04'){process.exit(0);return;}",
-      "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
+      "if(c!=='\\r'){line+=c;continue;}crs++;emit('REPAINT:'+crs+'\\n');",
       "if(process.env.TEST_ACCEPT==='retry'&&crs===2){",
       "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:line}})+'\\n');",
-      "process.stdout.write('NATIVE_ACCEPTED\\n');line='';}}});",
+      "emit('NATIVE_ACCEPTED\\n');line='';}}});",
       'setTimeout(()=>process.exit(0),18000);',
     ].join('');
     const freshCode = [
@@ -202,12 +222,9 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       "if(c==='\\x04'){process.exit(0);return;}if(c==='\\r'){process.stdout.write('FRESH_SUBMIT:'+line+'\\n');line='';}else{line+=c;}}});",
       'setTimeout(()=>process.exit(0),12000);',
     ].join('');
-    const done = hostThroughPty({
-      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
-      bridgeTty: false, onExit: () => {},
-      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+    const fixtureEnv = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
         CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
-        TEST_BUSY_RELEASE: releaseBusy,
+        TEST_BUSY_RELEASE: releaseBusy, TEST_INPUT_TRACE: stdinTrace,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: rearmed ? '100' : '3000',
         PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
@@ -215,7 +232,11 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
-      }),
+      });
+    new Script(childCode);
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {}, env: fixtureEnv,
       mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
     });
     const events = () => existsSync(log)
@@ -223,6 +244,7 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       : [];
     try {
       expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      milestones.push({ ms: Date.now() - startedAt, phase: 'ready-observed' });
       if (rearmed) {
         expect(await waitForOutput(captured, 'BUSY', CHILD_START_OUTPUT_TIMEOUT_MS),
           hostTestDiagnostics(ownerId, captured)).toBe(true);
@@ -233,7 +255,10 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       const envelope = { mode: 'turn' as const, ownerId, data, deliveryId };
       // Acceptance remains immediate even though the real submit pipeline is
       // pending. The child's first Enter only repaints its unchanged composer.
-      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      milestones.push({ ms: Date.now() - startedAt, phase: 'inject-started' });
+      const firstConfirmation = await injectIntoHostWithConfirmation(sock, envelope);
+      milestones.push({ ms: Date.now() - startedAt, phase: 'inject-returned', confirmation: firstConfirmation });
+      expect(firstConfirmation).toMatchObject({ ok: true, reason: 'accepted' });
       if (rearmed) {
         await vi.waitFor(() => {
           expect(events(), hostTestDiagnostics(ownerId, captured))
@@ -287,6 +312,18 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
       expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
       expect(existsSync(sock)).toBe(true);
     } finally {
+      const stdinTimeline = existsSync(stdinTrace)
+        ? readFileSync(stdinTrace, 'utf8').split('\n').filter(Boolean).map(line => {
+          const row = JSON.parse(line);
+          return { ms: row.atMs - startedAt, kind: row.kind, data: row.data };
+        })
+        : [];
+      console.info('TAGGED_WAKE_OBSERVATION', JSON.stringify({ scenario, milestones,
+        observedAtMs: Date.now() - startedAt, stdinTimeline, outputTimeline: outputTimeline.slice(-60),
+        events: events().slice(-12),
+        nativeCompleted: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
+        nativeExecution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
+      }));
       await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
       await done;
       rmSync(root, { recursive: true, force: true });
@@ -302,6 +339,7 @@ it('preserves the classified Codex home failure when refusing carry before stopp
   const sock = socketPathFor(ownerId);
   const log = eventLogPathForOwner(ownerId);
   const { io, captured } = fakeIo();
+  const diagnostic = vi.spyOn(process.stderr, 'write');
   let mints = 0;
   const failure = { stage: 'response', reason: 'http-error', status: 503 };
   const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
@@ -328,11 +366,15 @@ it('preserves the classified Codex home failure when refusing carry before stopp
       reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
     expect(mints).toBe(0);
     expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+    expect(diagnostic.mock.calls.some(([value]) => String(value).includes(
+      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed (HTTP 503)`,
+    ))).toBe(true);
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: 'still here' });
     expect(await waitForOutput(captured, 'ORIGINAL-ALIVE')).toBe(true);
   } finally {
     await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
     await done;
+    diagnostic.mockRestore();
     rmSync(root, { recursive: true, force: true });
     rmSync(log, { force: true });
   }
@@ -752,7 +794,7 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           expect(turns).toHaveLength(1);
           expect(JSON.parse(turns[0]).payload.content[0].text).toContain(marker);
         } else {
-          expect(terminal?.kind).toBe('respawn-carry-dropped');
+          expect(terminal?.kind, hostTestDiagnostics(ownerId, captured)).toBe('respawn-carry-dropped');
           expect(existsSync(nativePath)).toBe(false);
           if (scenario === 'owner-input') expect(terminal?.reason).toBe('fresh-child-owner-input');
         }
@@ -856,7 +898,7 @@ it(
         }
         await sleep(20);
       }
-      expect(events).toContain('"kind":"respawn-rearm-queued"');
+      expect(events, hostTestDiagnostics(ownerId, captured)).toContain('"kind":"respawn-rearm-queued"');
 
       expect(await injectIntoHostWithConfirmation(sock, {
         ...envelope,
@@ -1902,7 +1944,7 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable', 'explicit', 'explicit-generation', 'explicit-native', 'explicit-episode', 'explicit-expired', 'explicit-owner-edit'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
   const originalNativeId = '12345678-1234-1234-1234-123456789abc';
@@ -1913,11 +1955,12 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
   const automatic = repair.startsWith('automatic');
-  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
+  const explicit = repair.startsWith('explicit');
+  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic || explicit ? bridgedIo() : fakeIo();
   const { io, captured } = fixture;
   const operationId = String(9_000_000 + Math.floor(performance.now()));
   const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
-  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic;
+  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic || explicit;
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
@@ -1977,7 +2020,7 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
       if (repair === 'unavailable' || repair === 'automatic-unavailable' ||
           (repair === 'automatic-transient' && routeRepairs === 1)) return null;
       if (repair === 'repaired' || preservesConversation) applyCodexGatewayRoute(codexHome, { mode: 'auto', ownerId });
-      if (repair === 'owner-edit' && 'type' in fixture) fixture.type('unfinished owner input');
+      if ((repair === 'owner-edit' || repair === 'explicit-owner-edit') && 'type' in fixture) fixture.type('unfinished owner input');
       return { ok: true };
     },
     mintRecycleArgs: (a: string[]) => {
@@ -2017,6 +2060,46 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
       await sleep(20);
     }
     expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked).toBe(true);
+
+    if (explicit) {
+      const host = findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)!;
+      expect(host.caps).toContain('quota-recovery-reroute');
+      expect(routeRepairs).toBe(0); // default never switches automatically
+      const startedAtMs = Date.now();
+      const accepted = await injectIntoHostWithConfirmation(sock, {
+        mode: 'recycle', data: '', ownerId, deliveryId: operationId,
+        quotaRecovery: { operationId, ownerId, startedAtMs, cause: 'quota', defaultToAuto: {
+          hostStartedAt: host.startedAt,
+          childGeneration: host.childGeneration! + (repair === 'explicit-generation' ? 1 : 0),
+          nativeSessionId: repair === 'explicit-native' ? 'different-native' : originalNativeId,
+          quotaBlockedSinceMs: host.quotaBlockedSinceMs! + (repair === 'explicit-episode' ? 1 : 0),
+          expiresAtMs: repair === 'explicit-expired' ? startedAtMs - 1 : startedAtMs + 30_000,
+        } },
+      });
+      expect(accepted.ok).toBe(true);
+      const deadline = Date.now() + 8_000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < deadline) {
+        events = readFileSync(eventPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        if (events.some(event => ['quota-recovery-resumed', 'quota-recovery-dropped'].includes(String(event.kind)))) break;
+        await sleep(20);
+      }
+      expect(captured()).not.toContain('RECOVERED-TURN'); // never replay a queued/owner prompt
+      if (repair === 'explicit') {
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'quota-recovery-resumed', nativeId: originalNativeId }));
+        expect(await waitForOutput(captured, 'RECYCLED-ROUTE:auto:true', 5_000)).toBe(true);
+        expect(recycleMints).toBe(1);
+        expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.accountRoutingMode).toBe('auto');
+      } else {
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'quota-recovery-dropped',
+          reason: repair === 'explicit-owner-edit' ? 'owner-input-or-native-work' : 'stale-quota-reroute' }));
+        expect(recycleMints).toBe(0);
+        expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.accountRoutingMode).toBe('default');
+        expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+      }
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.ownerId).toBe(ownerId);
+      return;
+    }
 
     const startedAtMs = Date.now();
     const accepted = await injectIntoHostWithConfirmation(sock, {
@@ -2231,22 +2314,72 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
 
 /** A child that models a MID-TURN agent: a worker thread writes a '.' to stdout
  *  every `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then
- *  goes QUIET (back at its prompt). Keeping the emitter off the agent's main
- *  event loop prevents a delayed timer from creating a false output-quiet window
- *  while the fixture is meant to stay busy. It also echoes 'ECHO:<line>' per
+ *  goes QUIET (back at its prompt). Write to the inherited PTY descriptor:
+ *  worker process.stdout forwards through the agent's main event loop and stops
+ *  delivering while that loop is blocked, creating a false quiet window.
+ *  It also echoes 'ECHO:<line>' per
  *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
  *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
-function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number): string {
+function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string, pausePath?: string): string {
+  const pauseCondition = pausePath ? `&&!fs.existsSync(${JSON.stringify(pausePath)})` : '';
+  const emitterCode = releasePath
+    ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)})${pauseCondition})fs.writeSync(1,'.');},${intervalMs});`
+    : `const fs=require('node:fs');setInterval(()=>fs.writeSync(1,'.'),${intervalMs});`;
+  // Negative assertions own their busy window. A fixed child timer can expire
+  // before a delayed parent observes readiness and reaches the assertion.
+  const releaseCode = releasePath
+    ? `const fs=require('node:fs');const releasePoll=setInterval(()=>{if(fs.existsSync(${JSON.stringify(releasePath)})){clearInterval(releasePoll);void emitter.terminate();setTimeout(()=>process.exit(0),${ttlMs});}},${intervalMs});`
+    : `setTimeout(()=>{void emitter.terminate();},${busyMs});setTimeout(()=>process.exit(0),${ttlMs});`;
   return (
     "const {Worker}=require('node:worker_threads');" +
-    `const emitter=new Worker(${JSON.stringify(`setInterval(()=>process.stdout.write('.'),${intervalMs})`)},{eval:true});` +
-    `setTimeout(()=>{void emitter.terminate();},${busyMs});` +
+    `const emitter=new Worker(${JSON.stringify(emitterCode)},{eval:true});` +
+    releaseCode +
     "process.on('exit',()=>{void emitter.terminate();});" +
     "process.stdin.setEncoding('utf8');let b='';" +
-    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-    `setTimeout(()=>process.exit(0),${ttlMs});`
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});"
   );
 }
+
+it('the busy fixture keeps emitting while its agent main thread is blocked', async () => {
+  const ownerId = uniqueOwner('BUSY-WORKER-FORWARDING');
+  const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+  const unblockMain = join(PSU_PTY_DIR, `${ownerId}.unblock`);
+  const { captured, io } = fakeIo();
+  const blockCode =
+    "const blockFs=require('node:fs');process.stdin.on('data',d=>{if(d.includes('BLOCK\\n')){" +
+    "blockFs.writeSync(1,'MAIN-BLOCKED\\n');" +
+    `while(!blockFs.existsSync(${JSON.stringify(unblockMain)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);` +
+    "blockFs.writeSync(1,'MAIN-RESUMED\\n');}});";
+  const childCode = busyThenIdleChildCode(900, 50, 1000, releaseBusy) + blockCode;
+  // Fail before launch if a generated control cannot execute at all.
+  new Script(childCode);
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', childCode],
+    cwd: '/tmp',
+    env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId },
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  onTestFinished(async () => {
+    writeFileSync(unblockMain, 'release\n');
+    writeFileSync(releaseBusy, 'release\n');
+    expect(await done).toBe(0);
+  });
+  expect(await waitForHost(ownerId)).not.toBeNull();
+  expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+  expect(await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: 'BLOCK\n' })).toBe(true);
+  // Require the emitted line, not a token in Node's printed syntax-error source.
+  expect(await waitForOutput(captured, 'MAIN-BLOCKED\r\n'), hostTestDiagnostics(ownerId, captured)).toBe(true);
+  const blockedOutputStart = captured().length;
+  // A worker's process.stdout is forwarded through its parent's event loop.
+  // The fixture promises busy output even while that event loop cannot run.
+  expect(await waitForOutput(() => captured().slice(blockedOutputStart), '.', 1000),
+    hostTestDiagnostics(ownerId, captured)).toBe(true);
+  expect(captured()).not.toContain('MAIN-RESUMED');
+}, 20_000);
 
 /** A RAW-mode child that announces 'READY', then emits 'SUBMIT:<buffer>' on each
  *  CR. Raw mode is the load-bearing part for a keystroke test: the pty's
@@ -2738,6 +2871,75 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'refreshes a same-ID loop checkpoint after the busy gate hands delivery to native rearm',
+    async () => {
+      const ownerId = uniqueOwner('LOOP-REARM-REFRESH');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', busyThenIdleChildCode(500, 50, 6_000, releaseBusy)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_095,
+        io,
+        bridgeTty: true,
+        onExit: () => {},
+      });
+      const envelope = {
+        mode: 'turn' as const,
+        ownerId,
+        deliveryId: 'loop-rearm-refresh',
+        routineId: 'rt-loop-rearm-refresh',
+        fireNumber: 26,
+      };
+      try {
+        expect(await waitForHost(ownerId)).not.toBeNull();
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+        expect(await injectIntoHostWithConfirmation(sock, {
+          ...envelope, data: 'STALE rearmed checkpoint',
+        })).toMatchObject({ ok: true, reason: 'accepted' });
+
+        // Hold the child busy until the socket's first waiter has actually
+        // handed off. This distinguishes rearm refresh from coalescer refresh.
+        await vi.waitFor(() => {
+          const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          expect(events, hostTestDiagnostics(ownerId, captured)).toContain('"kind":"wake-rearm-queued"');
+        }, { timeout: 3_000 });
+        expect(await injectIntoHostWithConfirmation(sock, {
+          ...envelope, data: 'FRESH rearmed checkpoint',
+        })).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+        writeFileSync(releaseBusy, 'release\n');
+
+        expect(await waitForOutput(captured, 'ECHO:FRESH rearmed checkpoint', 3_000),
+          hostTestDiagnostics(ownerId, captured)).toBe(true);
+        expect(captured()).not.toContain('ECHO:STALE rearmed checkpoint');
+        expect((captured().match(/ECHO:FRESH rearmed checkpoint/g) ?? []).length).toBe(1);
+      } finally {
+        writeFileSync(releaseBusy, 'release\n');
+        await done;
+        rmSync(releaseBusy, { force: true });
+      }
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'keeps a folded delivery ID retryable when its parent waiter defers at the busy cap (F03)',
     async () => {
       const busyMs = 1_500;
@@ -3213,6 +3415,7 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // gates; we never type, so the HUMAN idle gate is instantly satisfied and the
       // AGENT-busy gate is the only thing holding the inject.
       const ownerId = uniqueOwner('MIDTURN');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = bridgedIo();
@@ -3220,8 +3423,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
-        args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+        // Stay busy until the parent completes its negative assertion.
+        args: ['-e', busyThenIdleChildCode(900, 50, 4000, releaseBusy)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3241,6 +3444,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
+      onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+
        // host up; child still busy emitting
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
@@ -3257,10 +3462,11 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'midturn-wake' });
       expect(ok).toBe(true);
 
-      // Still within the busy window (child emits until ~900ms) → the turn is HELD,
+      // The parent has not released the busy window: the turn must be HELD,
       // never written into the busy TUI. No ECHO of the wake line yet.
       await sleep(350);
       expect(captured()).not.toContain('ECHO:midturn-wake');
+      writeFileSync(releaseBusy, 'release\n');
 
       // After the agent goes quiet (≥900ms) + the 200ms output-quiet window, the
       // gate releases and the turn is CR-submitted — a CLEAN re-invoke once the
@@ -3272,9 +3478,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // the gate writes and the echo round-trips — against a 350+900ms wall
       // clock. Under fleet load that margin is gone. Polling asserts the SAME
       // thing (the turn DOES land once the agent is quiet) without pinning WHEN.
-      // The negative check above stays a fixed sleep on purpose: it proves the
-      // turn is HELD during the busy window, and a slow box only makes that
-      // direction more likely to hold, never less.
+      // The explicit release above keeps the negative check independent of
+      // how long the parent took to reach it.
       expect(await waitForOutput(captured, 'ECHO:midturn-wake', 6000)).toBe(true);
 
       const code = await done;
@@ -3295,13 +3500,14 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // becomes the waiter, later same-key arrivals FOLD into it (newest text
       // wins), and exactly ONE annotated turn lands.
       const ownerId = uniqueOwner('COALESCE');
+      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
       const { captured, io } = bridgedIo();
 
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        // Busy (emitting '.') for 900ms, then quiet; self-exits at 5000ms.
-        args: ['-e', busyThenIdleChildCode(900, 50, 5000)],
+        // Keep every same-source wake inside one parent-owned busy window.
+        args: ['-e', busyThenIdleChildCode(900, 50, 5000, releaseBusy)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3321,6 +3527,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
+      onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
       // EI-7662: only inject once the child has GENUINELY started emitting.
@@ -3336,7 +3544,8 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         expect(ok).toBe(true);
       }
 
-      // After the busy window (~900ms) + quiet gate (200ms), ONE delivery lands.
+      writeFileSync(releaseBusy, 'release\n');
+      // After the explicit release + quiet gate, ONE delivery lands.
       // WI-785151: anchor on the delivery being OBSERVED rather than on a flat
       // 1600ms. The settle AFTER the anchor is what gives a (wrongly) duplicated
       // delivery time to show up, so the "exactly one" assertion below keeps its
@@ -3440,7 +3649,6 @@ describe(
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
-
         const childCode =
           "process.stdout.write('BOOT:'+process.pid+'\\n');" +
           "process.stdin.setEncoding('utf8');let b='';" +
@@ -3519,34 +3727,61 @@ describe(
         // carry) must not land into a still-generating TUI — it would corrupt the
         // busy turn AND drop whatever that turn hadn't yet committed.
         const ownerId = uniqueOwner('RESET-MIDTURN');
+        const root = mkdtempSync(join(tmpdir(), 'pty-reset-native-'));
+        const project = join(root, 'projects', 'fixture');
+        mkdirSync(project, { recursive: true });
+        const transcript = join(project, 'native.jsonl');
+        const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+        const pauseBusy = join(PSU_PTY_DIR, `${ownerId}.pause`);
         const sock = socketPathFor(ownerId);
         const meta = metaPathFor(ownerId);
         const { captured, io } = fakeIo(); // bridgeTty:false — the exact gap closed
+        const fixtureEnv = {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          CLAUDE_CONFIG_DIR: root,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '200',
+        };
+        const startedAt = Date.now();
+        const outputTimeline: Array<{ ms: number; text: string }> = [];
+        const writeOutput = io.stdout.write;
+        io.stdout.write = (data: Buffer | string) => {
+          outputTimeline.push({ ms: Date.now() - startedAt, text: data.toString().slice(0, 100) });
+          writeOutput(data);
+        };
+        const nativeObservation = () => ({
+          completed: nativeLatestTurnCompleted({ agent: 'claude', env: fixtureEnv, completedAtOrAfterMs: startedAt }),
+          execution: nativeLatestExecution({ agent: 'claude', env: fixtureEnv, receivedAtMs: startedAt }),
+        });
+        let injectAtMs: number | null = null;
+        let nativeBeforeInject: ReturnType<typeof nativeObservation> | null = null;
+        let injectionConfirmation: Awaited<ReturnType<typeof injectIntoHostWithConfirmation>> | null = null;
+        const fixtureDiagnostics = () => JSON.stringify({
+          protocol: JSON.parse(hostTestDiagnostics(ownerId, captured)),
+          injectAtMs, observedAtMs: Date.now() - startedAt, injectionConfirmation,
+          nativeBeforeInject, nativeAtObservation: nativeObservation(), outputTimeline,
+        });
 
         let exitCode: number | null = null;
         const done = hostThroughPty({
           command: execPath,
-          // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
+          // Stay busy until the parent has checked predecessor protection.
           // Keep a persona flag so Claude follows the in-place clear path;
           // without it coldResetModeForAgent correctly selects hard recycle.
           args: [
             '-e',
-            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000),
+            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000, releaseBusy, pauseBusy),
             '--',
             '--system-prompt-file',
             'fixture.md',
           ],
           cwd: '/tmp',
-          env: {
-            ...hermeticEnv(),
-            PAPERCUSP_AGENT: 'claude',
-            PAPERCUSP_SID: ownerId,
-            TERM: 'xterm-256color',
-            PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
-            PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the agent DOES go quiet
-            PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
-            PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS: '200',
-          },
+          env: fixtureEnv,
           ownerId,
           io,
           bridgeTty: false,
@@ -3555,18 +3790,50 @@ describe(
           },
         });
 
-        await waitForHost(ownerId);
+        onTestFinished(async () => {
+          console.info('RESET_BOUNDARY_OBSERVATION', fixtureDiagnostics());
+          writeFileSync(releaseBusy, 'release\n');
+          await done;
+          rmSync(root, { recursive: true, force: true });
+        });
+
+        expect(await waitForHost(ownerId), fixtureDiagnostics()).not.toBeNull();
         expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
         expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
-        const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
-        expect(ok).toBe(true);
+        // Regression control: a delayed parent must still own the busy window,
+        // even after the former 900 ms timer would have expired.
+        await sleep(1100);
+        expect(existsSync(releaseBusy), hostTestDiagnostics(ownerId, captured)).toBe(false);
+        // A logical turn may keep working without producing a PTY frame.
+        // Hold its release barrier closed while deliberately pausing redraws.
+        writeFileSync(pauseBusy, 'pause\n');
+        // The private release file is not a native execution signal. Supply
+        // the backend's actual running/settled records so the fixture models
+        // an in-flight turn even when its output stream is quiet.
+        const runningRow = JSON.stringify({ type: 'assistant', uuid: `${ownerId}-running`,
+          timestamp: new Date().toISOString(),
+          message: { role: 'assistant', stop_reason: null,
+            content: [{ type: 'text', text: 'working' }] } }) + '\n';
+        writeFileSync(transcript, runningRow);
+        expect(nativeObservation().execution, fixtureDiagnostics()).toMatchObject({ phase: 'running' });
+        injectAtMs = Date.now() - startedAt;
+        nativeBeforeInject = nativeObservation();
+        injectionConfirmation = await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'midturn-reset-carry' });
+        expect(injectionConfirmation.ok, fixtureDiagnostics()).toBe(true);
 
-        // Still within the busy window: the /clear + carry must be HELD — nothing
+        // Before explicit release, the /clear + carry must be HELD — nothing
         // written into the busy child yet.
         await sleep(400);
-        expect(captured()).not.toContain('ECHO:midturn-reset-carry');
-        expect(captured()).not.toContain('midturn-reset-carry');
+        const heldDiagnostics = fixtureDiagnostics();
+        expect(existsSync(releaseBusy), heldDiagnostics).toBe(false);
+        expect(captured(), heldDiagnostics).not.toContain('ECHO:/clear');
+        expect(captured(), heldDiagnostics).not.toContain('ECHO:midturn-reset-carry');
+        expect(captured(), heldDiagnostics).not.toContain('midturn-reset-carry');
+        writeFileSync(transcript, runningRow + JSON.stringify({ type: 'assistant',
+          uuid: `${ownerId}-settled`, timestamp: new Date().toISOString(),
+          message: { role: 'assistant', stop_reason: 'end_turn', content: [] } }) + '\n');
+        writeFileSync(releaseBusy, 'release\n');
 
         // After the agent goes quiet (≥900ms) + the output-quiet window, the gate
         // releases: /clear submits, settles, then the carry lands.
@@ -3575,9 +3842,8 @@ describe(
         // measurably flaked — a positive assertion whose budget is the slack
         // left over after two load-sensitive windows (busy ≥900ms + the 200ms
         // output-quiet gate) — so it is the same bug whether or not it has been
-        // observed failing yet. The negative check above stays a fixed sleep on
-        // purpose: it proves the carry is HELD while the child is busy, and a
-        // slow box only makes that direction more likely to hold.
+        // observed failing yet. The explicit release also protects the negative
+        // assertion from a delayed readiness observation or parent callback.
         expect(await waitForOutput(captured, 'ECHO:midturn-reset-carry', 6000)).toBe(true);
         expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
 

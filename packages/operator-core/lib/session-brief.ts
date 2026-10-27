@@ -96,6 +96,9 @@ export interface SessionBriefLifecycle {
   released?: SessionBriefReleaseMarker;
   poisoned?: SessionBriefPoisonMarker;
   shutdown?: SessionBriefShutdownMarker;
+  /** Presence is a reversible wake fence. Malformed markers also fence: only
+   * the takeover adapter may authenticate and remove its exact generation. */
+  assumeCaller?: unknown;
 }
 
 export interface SessionBriefRecord {
@@ -142,6 +145,9 @@ function parsePendingCarryRespawn(value: unknown, nowMs: number): PendingCarryRe
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   const row = parsed as Record<string, unknown>;
+  if ('fenced' in row) return null;
+  if ('fencedNonces' in row && (!row.fencedNonces || typeof row.fencedNonces !== 'object' ||
+    Array.isArray(row.fencedNonces) || (typeof row.nonce === 'string' && Object.hasOwn(row.fencedNonces, row.nonce)))) return null;
   if (
     typeof row.nonce !== 'string' || !row.nonce.trim() ||
     typeof row.createdAtMs !== 'number' || !Number.isSafeInteger(row.createdAtMs) ||
@@ -186,8 +192,21 @@ export async function savePendingCarryRespawn(
       (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
     VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(slot)}::text::jsonb, now(), now())
     ON CONFLICT (owner_id) DO UPDATE SET
-      pending_carry_respawn = EXCLUDED.pending_carry_respawn,
+      pending_carry_respawn = EXCLUDED.pending_carry_respawn || jsonb_build_object(
+        'fencedNonces', COALESCE(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces', '{}'::jsonb)),
       updated_at = now()
+    WHERE harness_shared.session_briefs.workspace_id = EXCLUDED.workspace_id
+      AND (NOT COALESCE(harness_shared.session_briefs.pending_carry_respawn ? 'fencedNonces', false)
+        OR jsonb_typeof(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces') = 'object')
+      AND (NOT COALESCE(harness_shared.session_briefs.pending_carry_respawn ? 'fenced', false)
+        OR (harness_shared.session_briefs.pending_carry_respawn->'fenced' = 'true'::jsonb
+          AND jsonb_typeof(harness_shared.session_briefs.pending_carry_respawn->'nonce') = 'string'
+          AND length(harness_shared.session_briefs.pending_carry_respawn->>'nonce') > 0
+          AND jsonb_typeof(harness_shared.session_briefs.pending_carry_respawn->'fenceId') = 'string'
+          AND length(harness_shared.session_briefs.pending_carry_respawn->>'fenceId') > 0))
+      AND NOT (COALESCE(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces', '{}'::jsonb) ? ${slot.nonce})
+      AND NOT (COALESCE(harness_shared.session_briefs.pending_carry_respawn ? 'fenced', false)
+        AND harness_shared.session_briefs.pending_carry_respawn->>'nonce' = ${slot.nonce})
     RETURNING pending_carry_respawn
   `;
   return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
@@ -203,12 +222,57 @@ export async function clearPendingCarryRespawn(
   const sql = options.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ owner_id: string }>>`
     UPDATE harness_shared.session_briefs
-       SET pending_carry_respawn = NULL, updated_at = now()
+       SET pending_carry_respawn = CASE WHEN pending_carry_respawn ? 'fencedNonces'
+         THEN jsonb_build_object('fencedNonces', pending_carry_respawn->'fencedNonces') ELSE NULL END,
+         updated_at = now()
      WHERE owner_id = ${ownerId}
        AND pending_carry_respawn->>'nonce' = ${nonce}
+       AND NOT (pending_carry_respawn ? 'fenced')
+       AND (NOT (pending_carry_respawn ? 'fencedNonces') OR
+         (jsonb_typeof(pending_carry_respawn->'fencedNonces') = 'object'
+          AND NOT (pending_carry_respawn->'fencedNonces' ? ${nonce})))
     RETURNING owner_id
   `;
   return rows.length > 0;
+}
+
+/** Metadata only: never disclose the retained prompt while preparing a fence. */
+export async function readPendingCarryFenceTarget(
+  ownerId: string, workspaceId: string, options: PendingCarryRespawnSqlOptions = {},
+): Promise<{ nonce: string; fenceId: string | null } | null> {
+  const sql = options.sql ?? getOrgPg().sql;
+  const [row] = await sql<Array<{ nonce: string | null; fence_id: string | null }>>`
+    SELECT pending_carry_respawn->>'nonce' AS nonce,
+           pending_carry_respawn->>'fenceId' AS fence_id
+      FROM harness_shared.session_briefs
+     WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+  `;
+  return row?.nonce ? { nonce: row.nonce, fenceId: row.fence_id } : null;
+}
+
+/** Keep an exact-nonce tombstone, rather than NULL: a failed bootstrap must not
+ * restore this cancelled payload. A genuinely new nonce may replace the slot. */
+export async function fencePendingCarryRespawnSlot(
+  ownerId: string, workspaceId: string, nonce: string, fenceId: string,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<boolean> {
+  if (![ownerId, workspaceId, nonce, fenceId].every(value => value.trim())) return false;
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ owner_id: string }>>`
+    UPDATE harness_shared.session_briefs
+       SET pending_carry_respawn = jsonb_build_object(
+         'nonce', ${nonce}::text, 'fenceId', ${fenceId}::text, 'fenced', true,
+         'fencedNonces', COALESCE(pending_carry_respawn->'fencedNonces', '{}'::jsonb) ||
+           jsonb_build_object(${nonce}::text, ${fenceId}::text)), updated_at = now()
+     WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+       AND pending_carry_respawn->>'nonce' = ${nonce}
+       AND (NOT (pending_carry_respawn ? 'fencedNonces') OR
+         jsonb_typeof(pending_carry_respawn->'fencedNonces') = 'object')
+       AND (NOT (pending_carry_respawn ? 'fenced') OR
+         (pending_carry_respawn->>'fenced' = 'true' AND pending_carry_respawn->>'fenceId' = ${fenceId}))
+    RETURNING owner_id
+  `;
+  return rows.length === 1;
 }
 
 /**
@@ -231,10 +295,17 @@ export async function consumePendingCarryRespawn(
         FROM harness_shared.session_briefs
        WHERE owner_id = ${ownerId}
          AND pending_carry_respawn IS NOT NULL
+         AND NOT (pending_carry_respawn ? 'fenced')
+         AND pending_carry_respawn ? 'nonce'
+         AND (NOT (pending_carry_respawn ? 'fencedNonces') OR
+           (jsonb_typeof(pending_carry_respawn->'fencedNonces') = 'object' AND
+            NOT (pending_carry_respawn->'fencedNonces' ? (pending_carry_respawn->>'nonce'))))
        FOR UPDATE
     )
     UPDATE harness_shared.session_briefs AS brief
-       SET pending_carry_respawn = NULL, updated_at = now()
+       SET pending_carry_respawn = CASE WHEN pending.pending_carry_respawn ? 'fencedNonces'
+         THEN jsonb_build_object('fencedNonces', pending.pending_carry_respawn->'fencedNonces') ELSE NULL END,
+         updated_at = now()
       FROM pending
      WHERE brief.owner_id = pending.owner_id
     RETURNING pending.pending_carry_respawn
@@ -258,11 +329,16 @@ export async function restorePendingCarryRespawn(
       (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
     VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(valid)}::text::jsonb, now(), now())
     ON CONFLICT (owner_id) DO UPDATE SET
-      pending_carry_respawn = COALESCE(
-        harness_shared.session_briefs.pending_carry_respawn,
-        EXCLUDED.pending_carry_respawn
-      ),
+      pending_carry_respawn = CASE WHEN harness_shared.session_briefs.pending_carry_respawn IS NULL
+        OR NOT (harness_shared.session_briefs.pending_carry_respawn ? 'nonce') THEN
+          EXCLUDED.pending_carry_respawn || jsonb_build_object('fencedNonces',
+            COALESCE(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces', '{}'::jsonb))
+        ELSE harness_shared.session_briefs.pending_carry_respawn END,
       updated_at = now()
+    WHERE harness_shared.session_briefs.workspace_id = EXCLUDED.workspace_id
+      AND (NOT COALESCE(harness_shared.session_briefs.pending_carry_respawn ? 'fencedNonces', false)
+        OR jsonb_typeof(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces') = 'object')
+      AND NOT (COALESCE(harness_shared.session_briefs.pending_carry_respawn->'fencedNonces', '{}'::jsonb) ? ${valid.nonce})
     RETURNING pending_carry_respawn
   `;
   return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs)?.nonce === valid.nonce;
@@ -427,6 +503,9 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   const poisoned = (lifecycle as { poisoned?: unknown }).poisoned;
   const shutdown = (lifecycle as { shutdown?: unknown }).shutdown;
   const result: SessionBriefLifecycle = {};
+  if (Object.prototype.hasOwnProperty.call(lifecycle, 'assumeCaller')) {
+    result.assumeCaller = (lifecycle as { assumeCaller: unknown }).assumeCaller;
+  }
   if (shutdown && typeof shutdown === 'object' && !Array.isArray(shutdown)) {
     const marker = shutdown as Partial<SessionBriefShutdownMarker>;
     if (
@@ -515,7 +594,9 @@ function lifecycleWriteReadByConsumer(
  * design: a temporary brief-store outage must not turn every ordinary wake
  * into a permanent drop; each marker is durable when the store is available.
  */
-export async function getSessionBriefLifecycle(ownerId: string): Promise<SessionBriefLifecycle | null> {
+export async function getSessionBriefLifecycle(
+  ownerId: string, options: { failClosed?: boolean } = {},
+): Promise<SessionBriefLifecycle | null> {
   try {
     if (!ownerId) return null;
     const rows = await getOrgPg().sql`
@@ -524,8 +605,17 @@ export async function getSessionBriefLifecycle(ownerId: string): Promise<Session
        WHERE owner_id = ${ownerId}
        LIMIT 1
     `;
-    return parseSessionBriefLifecycle((rows[0] as Record<string, unknown> | undefined)?.control_state);
-  } catch {
+    const controlState = (rows[0] as Record<string, unknown> | undefined)?.control_state;
+    if (options.failClosed && controlState != null) {
+      if (typeof controlState !== 'object' || Array.isArray(controlState)) throw new Error('session-control-invalid');
+      const lifecycle = (controlState as Record<string, unknown>).lifecycle;
+      if (lifecycle != null && (typeof lifecycle !== 'object' || Array.isArray(lifecycle))) {
+        throw new Error('session-lifecycle-invalid');
+      }
+    }
+    return parseSessionBriefLifecycle(controlState);
+  } catch (error) {
+    if (options.failClosed) throw error;
     return null;
   }
 }

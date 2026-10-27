@@ -6,7 +6,7 @@ describe('task terminal awaited events', () => {
     const emit = vi.fn(async () => ({ ok: true }));
     expect(taskTerminalEventKey('tsk-123')).toBe('task:terminal:tsk-123');
 
-    await emitTaskTerminalEvent(
+    const delivered = await emitTaskTerminalEvent(
       {
         taskId: 'tsk-123',
         workspaceId: 'workspace-a',
@@ -19,6 +19,7 @@ describe('task terminal awaited events', () => {
       },
       { emit },
     );
+    expect(delivered).toBe(true);
     expect(emit).toHaveBeenCalledOnce();
     expect(emit).toHaveBeenCalledWith({
       key: 'task:terminal:tsk-123',
@@ -77,5 +78,12 @@ describe('task terminal awaited events', () => {
       { emit: async () => { throw new Error('wake backend down'); }, warn },
     );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('wake backend down'));
+  });
+
+  it('retains pending intent when the engine succeeds without a durable latch', async () => {
+    await expect(emitTaskTerminalEvent({
+      taskId: 'tsk-latch-failed', workspaceId: 'workspace-a', harnessSlug: null,
+      taskClass: 'bash-job', launchedBy: 'su-a', state: 'exited', exitCode: 0, exitReason: null,
+    }, { emit: async () => ({ ok: true, latchRecorded: false }) })).resolves.toBe(false);
   });
 });

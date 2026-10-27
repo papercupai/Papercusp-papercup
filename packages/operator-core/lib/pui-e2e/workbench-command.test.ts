@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
-import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, preserveWorkbenchSessionLog, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
 import type { captureProcessSnapshot } from './process-snapshot';
 
 describe('PUI workbench control commands', () => {
@@ -87,6 +87,28 @@ describe('PUI workbench control commands', () => {
       expect(captured.sessionLog).toMatchObject({ observed: true, exists: true, truncated: true, bytes: 70_014 });
       expect((captured.sessionLog.text as string).length).toBe(65_536);
       expect(captured.sessionLog.text).toMatch(/shutdown-tail$/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('preserves the exact private Zellij log after its fixture directory is removed', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-session-log-'));
+    const fixture = path.join(root, 'fixture');
+    const diagnostics = path.join(root, 'diagnostics');
+    const logPath = path.join(fixture, 'tmp', 'zellij.log');
+    const bytes = Buffer.from('private zellij session log\nfull shutdown tail\n');
+    mkdirSync(path.dirname(logPath), { recursive: true });
+    writeFileSync(logPath, bytes);
+    try {
+      const preserved = preserveWorkbenchSessionLog(logPath, diagnostics, 'pui-chat-42');
+      expect(preserved).toMatchObject({
+        sourcePath: logPath,
+        path: path.join(diagnostics, 'pui-chat-42-zellij.log'),
+        observed: true,
+        exists: true,
+        bytes: bytes.length,
+      });
+      rmSync(fixture, { recursive: true, force: true });
+      expect(readFileSync(preserved.path)).toEqual(bytes);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

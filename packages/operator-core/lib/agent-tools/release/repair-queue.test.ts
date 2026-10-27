@@ -9,6 +9,8 @@ import { checkpointPidIdentity } from '../../release/checkpoint-qualification-tr
 import { AdmissionOffthreadTimeoutError } from '../../release/admission-offthread';
 import { ADMISSION_PRECHECK_MAX_FILES, precheckPopulation } from '../../release/admission-fix-precheck';
 import {
+  admissionPrecheckMeasurementIdentity,
+  ADMISSION_TEST_ENVIRONMENT,
   runAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from '../../release/admission-fix-precheck-managed';
@@ -38,6 +40,7 @@ const queue = {
   admissionPrecheck: {
     schemaVersion: 1 as const,
     operationId: 'repair-precheck-fixture',
+    testEnvironment: ADMISSION_TEST_ENVIRONMENT,
     status: 'passed' as const,
     candidate: 'a'.repeat(40),
     repairHead: 'c'.repeat(40),
@@ -389,12 +392,14 @@ beforeEach(() => {
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
-  mocks.write.mockResolvedValue(undefined);
+  let persisted = queue as FrozenCandidateRepairQueue;
+  mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
   mocks.transition.mockImplementation(async (_target, transition) => {
-    const fresh = (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue;
+    const fresh = persisted;
+    persisted = await transition(fresh);
     return {
       status: 'written',
-      queue: await transition(fresh),
+      queue: persisted,
       fresh,
       retries: 0,
     };
@@ -1388,8 +1393,9 @@ describe('release:repair-queue', () => {
           root: '/repo', commit: NEW_HEAD, signature: queue.signature, admittedPaths: ['component'],
         });
         if (size > ADMISSION_PRECHECK_MAX_FILES) {
-          expect((result as { note: string }).note).toContain('REFUSED (population-over-bound)');
-          expect((result as { note: string }).note).toContain('skipPrecheck:true + precheckReason');
+          expect((result as { note: string }).note).toContain('resumable groups');
+          expect(result.executionGroupSize).toBe(40);
+          expect(result.executionGroups).toBe(6);
         } else {
           expect((result as { note: string }).note).not.toContain('population-over-bound');
         }
@@ -1400,7 +1406,7 @@ describe('release:repair-queue', () => {
       },
     );
 
-    it('WI-6554700010019443 refuses a population above the bound before launching any pre-check', async () => {
+    it('measures the complete population above the execution bound in bounded groups before publication', async () => {
       mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithoutPrecheck() });
       mocks.hunkExact.mockReturnValue(hunkExactOf(['component']));
       mocks.admit.mockReturnValue(admissionOf(false, ['component']));
@@ -1408,20 +1414,193 @@ describe('release:repair-queue', () => {
       mocks.population.mockImplementation((input) => ({ ok: true,
         population: precheckPopulation({ ...input, affectedTestFiles: oversized }) }));
       const result = body(await tool.handler({ op: 'admit', paths: ['component'], confirm: true } as never, { role: 'su' } as never));
-      expect(result).toMatchObject({
-        refused: true,
-        admitted: false,
-        reason: 'admission-precheck-unavailable',
-        cause: 'population-over-bound',
-        populationSize: ADMISSION_PRECHECK_MAX_FILES + 1,
-        populationBound: ADMISSION_PRECHECK_MAX_FILES,
-        builtCommit: NEW_HEAD,
-      });
-      expect((result as { detail: string }).detail).toContain('skipPrecheck:true + precheckReason');
-      expect(mocks.precheckFactory).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ admitted: false, pending: true, verdict: 'precheck-running' });
+      expect(result.precheckOperation.files).toEqual(oversized);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({ status: 'passed',
+        completedCount: oversized.length, verdict: { ok: true, ran: true } });
+      expect(settled.admissionPrecheck.measurement!.results.map(result => result.path)).toEqual(oversized);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledTimes(1);
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    const wideFixture = () => {
+      const files = ['lib/red.test.ts', ...Array.from({ length: 80 }, (_, i) => `lib/guard-${i}.test.ts`)];
+      const radius = { status: 'measured' as const, reason: 'ok', guarded: files.slice(1), reportOnly: [],
+        legs: Object.fromEntries(files.map(file => [file, '@t/core'])) };
+      const operation = { ...queue.admissionPrecheck, sourceCommit: 'e'.repeat(40), builtTree: 'f'.repeat(40), files, radius };
+      const measurement = { schemaVersion: 1 as const, identity: admissionPrecheckMeasurementIdentity(operation, queue.signature),
+        results: files.map(path => ({ path, status: 'pass' as const })) };
+      return { files, radius, operation, measurement };
+    };
+    const wideDoor = (fixture: ReturnType<typeof wideFixture>) => {
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => admissionOf(!input.dryRun));
+      mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input, radius: fixture.radius }) }));
+    };
+
+    it.each(['partial', 'new-red', 'unmeasured', 'duplicate', 'foreign'] as const)('refuses a stored passing marker with %s aggregate evidence', async (kind) => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const results = fixture.measurement.results.map(result => ({ ...result, status: result.status as 'pass' | 'fail' | 'unmeasured' }));
+      if (kind === 'partial') results.pop();
+      // The door's own per-file validation is the only refusal for these two: the evaluator keys
+      // results by path (last reading wins), so a conflicting duplicate would launder a red into a
+      // pass, and a row outside the measured population would be silently ignored.
+      else if (kind === 'duplicate') { results[1]!.status = 'fail'; results.push({ ...results[1]!, status: 'pass' }); }
+      else if (kind === 'foreign') results.push({ path: 'lib/not-in-population.test.ts', status: 'pass' });
+      else results[1]!.status = kind === 'new-red' ? 'fail' : 'unmeasured';
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: { ...fixture.measurement, results } } } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false, refused: true });
+      expect(dryRuns()).toEqual([true]);
       expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
-      expect(mocks.transition).not.toHaveBeenCalled();
-      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('publishes a complete passing aggregate only with the fresh queue identity', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: fixture.measurement } } });
+      const args = { op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs - 1 };
+      expect(body(await tool.handler(args as never, { role: 'su' } as never))).toMatchObject({
+        admitted: false, refused: true, reason: 'exact_queue_identity_mismatch' });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      const result = body(await tool.handler({ ...args, expectedUpdatedAtMs: queue.updatedAtMs } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
+    it('adopts a passed measured aggregate read back with Postgres jsonb key order (EI-27114233692780034)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      // routines.metadata is jsonb: object keys come back ordered by length, then bytes.
+      const jsonbKeyOrder = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(jsonbKeyOrder);
+        if (value === null || typeof value !== 'object') return value;
+        const keys = Object.keys(value).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+        return Object.fromEntries(keys.map(key => [key, jsonbKeyOrder((value as Record<string, unknown>)[key])]));
+      };
+      const stored = jsonbKeyOrder(JSON.parse(JSON.stringify({ ...fixture.operation,
+        measurement: fixture.measurement }))) as FrozenCandidateRepairQueue['admissionPrecheck'] & { radius: unknown };
+      // Non-vacuous: the read-back really is a different serialization of the same radius.
+      expect(JSON.stringify(stored.radius)).not.toBe(JSON.stringify(fixture.radius));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: stored } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead,
+        expectedUpdatedAtMs: queue.updatedAtMs } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
+    // WI-6554700010030176: git-sync advanced staging between the pre-check and the confirm, so
+    // the path admission resolves a NEW source sha, but the built tree is byte-identical.
+    const stagingMovedAdmission = (published: boolean) => {
+      const outcome = admissionOf(published);
+      return { ...outcome, entry: { ...outcome.entry, source: { ref: 'staging', sha: '9'.repeat(40) } } };
+    };
+    const confirmArgs = {
+      op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+      expectedCandidate: queue.candidate, expectedRepairHead: queue.repairHead, expectedUpdatedAtMs: queue.updatedAtMs,
+    };
+
+    it('adopts a passed measured aggregate after staging advanced when the built tree is identical (WI-6554700010030176)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => stagingMovedAdmission(!input.dryRun));
+      // Non-vacuous: the stored measurement really was taken from a different source commit.
+      expect(fixture.operation.sourceCommit).not.toBe('9'.repeat(40));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...fixture.operation, measurement: fixture.measurement } } });
+      const result = body(await tool.handler(confirmArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: true, precheck: { ran: true } });
+      expect(mocks.startPrecheckWorker).not.toHaveBeenCalled();
+      expect(dryRuns()).toEqual([true, false]);
+    });
+
+    it('still re-measures after staging advanced when the built tree differs (WI-6554700010030176)', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      mocks.admit.mockImplementation((input: { dryRun: boolean }) => stagingMovedAdmission(!input.dryRun));
+      const otherTree = { ...fixture.operation, builtTree: '1'.repeat(40) };
+      const measurement = { ...fixture.measurement, identity: admissionPrecheckMeasurementIdentity(otherTree, queue.signature) };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue,
+        admissionPrecheck: { ...otherTree, measurement } } });
+      const result = body(await tool.handler(confirmArgs as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false });
+      expect(dryRuns()).not.toContain(false);
+    });
+
+    it('resumes a dead managed task on the same immutable operation and retains a completed red', async () => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const completed = fixture.measurement.results.slice(0, 40).map(result => ({ ...result,
+        status: (result.path === fixture.files[1] ? 'fail' : 'pass') as 'pass' | 'fail' }));
+      let persisted: FrozenCandidateRepairQueue = { ...queue, admissionPrecheck: { ...fixture.operation,
+        status: 'running', verdict: undefined, runnerTaskId: 'dead-task', expiresAtMs: Date.now() + 60_000,
+        completedCount: completed.length, measurement: { ...fixture.measurement, results: completed } } };
+      mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
+      mocks.write.mockImplementation(async (_target, next) => { persisted = next; });
+      mocks.transition.mockImplementation(async (_target, update) => {
+        persisted = update(persisted); return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
+      });
+      mocks.getTask.mockImplementation(async taskId => ({ state: taskId === 'dead-task' ? 'failed' : 'running', confined: true }));
+      // The retained red reproduces at the built commit (EI-27083585698781986 confirmation re-run).
+      const runner = vi.fn(async ({ commit, files }: { commit: string; files: string[] }) => ({ ran: true as const,
+        commit, results: files.map(path => ({ path,
+          status: (commit === fixture.operation.builtCommit && path === fixture.files[1] ? 'fail' : 'pass') as 'pass' | 'fail' })) }));
+      mocks.precheckFactory.mockReturnValue(runner);
+      const started = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(started.precheckOperation).toMatchObject({ operationId: fixture.operation.operationId,
+        builtCommit: fixture.operation.builtCommit, measurement: { results: completed } });
+      expect(started.precheckOperation.runnerTaskId).not.toBe('dead-task');
+      await drainDetached();
+      const atBuilt = runner.mock.calls.filter(([run]) => run.commit === fixture.operation.builtCommit);
+      // The resume measures only the pending files; the retained red is reached ONLY by the
+      // labelled confirmation re-run, never re-measured into the aggregate.
+      expect(atBuilt.flatMap(([run]) => run.files)).toEqual([...fixture.files.slice(40), fixture.files[1]]);
+      expect(atBuilt.at(-1)![0].files).toEqual([fixture.files[1]]);
+      // measured-wide-repair-admission-2026-10-24#D-004: the retained red is paired with ONE
+      // previous-head measurement (it passed there), so imports-red rests on a measured baseline.
+      const atPrevious = runner.mock.calls.filter(([run]) => run.commit !== fixture.operation.builtCommit);
+      expect(atPrevious.map(([run]) => [run.commit, run.files])).toEqual([[fixture.operation.repairHead, [fixture.files[1]]]]);
+      expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: fixture.files.length,
+        verdict: { ok: false, code: 'admission-imports-red' } });
+      expect(persisted.admissionPrecheck!.measurement!.previousHead).toMatchObject({ commit: fixture.operation.repairHead,
+        results: [{ path: fixture.files[1], status: 'pass' }] });
+      expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe('fail');
+      expect(dryRuns()).toEqual([true]);
+    });
+
+    it.each(['source', 'partition', 'signature'] as const)('never resumes durable rows after %s identity changes', async (kind) => {
+      const fixture = wideFixture();
+      wideDoor(fixture);
+      const previous = { ...fixture.operation, status: 'failed' as const,
+        verdict: { ok: false as const, ran: false as const, code: 'admission-precheck-unavailable' as const,
+          reason: 'runner-failed' as const, detail: 'interrupted', population: precheckPopulation({ signature: [], admittedPaths: fixture.files }) },
+        measurement: { ...fixture.measurement, results: fixture.measurement.results.slice(0, 40) } };
+      const current = { ...queue, admissionPrecheck: previous };
+      if (kind === 'source') {
+        // The old measurement remains self-consistent; the newly proved source changed the
+        // admitted CONTENT (a different built tree). A source-sha move alone over a
+        // byte-identical tree is reused instead (WI-6554700010030176, tests above).
+        mocks.admit.mockImplementation((input: { dryRun: boolean }) => ({ ...admissionOf(!input.dryRun),
+          tree: '1'.repeat(40),
+          entry: { ...admissionOf(false).entry, source: { ref: 'staging', sha: '9'.repeat(40) } } }));
+      } else if (kind === 'partition') {
+        mocks.population.mockImplementation(input => ({ ok: true, population: precheckPopulation({ ...input,
+          radius: { ...fixture.radius, guarded: fixture.files.slice(2), reportOnly: [fixture.files[1]!] } }) }));
+      } else current.signature = [{ kind: 'workspace-task', id: 'another::test', recipe: 'test' }] as never;
+      mocks.readState.mockResolvedValue({ status: 'value', queue: current });
+      mocks.startPrecheckWorker.mockResolvedValue({ confined: true });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ admitted: false, pending: true });
+      expect(result.precheckOperation.operationId).not.toBe(previous.operationId);
+      expect(result.precheckOperation.measurement).toBeUndefined();
+      expect(result.precheckOperation.completedCount).toBe(0);
       expect(dryRuns()).toEqual([true]);
     });
 
@@ -1446,7 +1625,7 @@ describe('release:repair-queue', () => {
         | Promise<{ queue: typeof queue }>
         | undefined;
       if (!transitionResult) throw new Error('expected detached pre-check settlement');
-      return (await transitionResult).queue;
+      return (await transitionResult).queue as typeof queue & FrozenCandidateRepairQueue;
     };
 
     it('settles a dead host-generation runner as failed on get instead of advertising a live pre-check', async () => {
@@ -2072,6 +2251,19 @@ describe('release:repair-queue', () => {
       body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));
       expect(dryRuns()).toEqual([true]);
       expect(mocks.precheckFactory).not.toHaveBeenCalled();
+    });
+
+    it('starts fresh rather than accepting evidence from the legacy shared-PG environment', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false));
+      mocks.readState.mockResolvedValue({ status: 'value', queue: {
+        ...queue, admissionPrecheck: { ...queue.admissionPrecheck, testEnvironment: undefined },
+      } });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true,
+        retryPrecheck: true } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ pending: true, admitted: false,
+        precheckOperation: { testEnvironment: ADMISSION_TEST_ENVIRONMENT, status: 'running' } });
+      expect(result.precheckOperation.operationId).not.toBe(queue.admissionPrecheck.operationId);
+      expect(result.precheckOperation.measurement).toBeUndefined();
     });
 
     // EI-23408302754355167: the `skipPrecheck` + `precheckReason` opt-out was the ONE arm of the
@@ -2784,6 +2976,86 @@ describe('release:repair-queue', () => {
         }
       },
     );
+
+    it.each([false, true])('replays a reviewed series before one admission, confirm=%s', async (confirm) => {
+      const second = { commit: '2'.repeat(40), parent: patch.commit, sha256: '3'.repeat(64) };
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: true, sourceCommit: HX_SOURCE, tree: 'b'.repeat(40), patch: second });
+      mocks.admit.mockReturnValue(admissionOf(confirm));
+      const { patchCommit: _single, ...base } = patchArgs;
+      const args = { ...base, patchCommits: [patch.commit, second.commit], confirm };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      const result = body(await tool.handler(args as never, ctx));
+      expect(result).toMatchObject({ ok: true, admitted: confirm, mode: 'committed-patch', patch: second, patches: [patch, second] });
+      expect(mocks.committedPatch.mock.calls.map(([input]) => [input.patchCommit, input.repairHead])).toEqual([
+        [patch.commit, queue.repairHead], [second.commit, ALT_HEAD],
+      ]);
+      expect(mocks.admissionGit).toHaveBeenCalledWith(
+        ['merge-base', '--is-ancestor', patch.commit, second.commit], expect.objectContaining({ cwd: '/repo' }),
+      );
+      expect(mocks.admit.mock.calls.every(([input]) => input.source.ref === HX_SOURCE)).toBe(true);
+      if (confirm) {
+        expect((mocks.write.mock.calls[0]![1] as Written).admissions[0]).toMatchObject({ patch: second, patches: [patch, second] });
+        expect(JSON.parse(mocks.audit.mock.calls[0]![1][5])).toMatchObject({ patches: [patch, second] });
+      } else expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('rejects conflicting, duplicate or empty series sources before building', async () => {
+      const { patchCommit: _single, ...base } = patchArgs;
+      for (const extra of [
+        { patchCommits: [] },
+        { patchCommits: [patch.commit, patch.commit] },
+        { patchCommits: [patch.commit], patchCommit: patch.commit },
+        { patchCommits: [patch.commit], wholeBlob: true },
+        { patchCommits: [patch.commit], reason: undefined },
+      ]) {
+        const args = { ...base, ...extra };
+        expect(tool.args.safeParse(args).success).toBe(false);
+        expect(body(await tool.handler(args as never, ctx))).toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+      }
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('measures the completed series through R6 before any publication', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: undefined } });
+      mocks.startPrecheckWorker.mockResolvedValue({ taskId: 'series-precheck', confined: true });
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: true, sourceCommit: HX_SOURCE, tree: 'b'.repeat(40),
+          patch: { ...patch, commit: '2'.repeat(40) } });
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const { patchCommit: _single, ...base } = patchArgs;
+      const result = body(await tool.handler({ ...base, patchCommits: [patch.commit, '2'.repeat(40)], confirm: true } as never, ctx));
+      expect(result).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
+      expect(mocks.admit.mock.calls.every(([input]) => input.dryRun === true && input.source.ref === HX_SOURCE)).toBe(true);
+      expect(mocks.startPrecheckWorker).toHaveBeenCalledOnce();
+      expect(mocks.audit).not.toHaveBeenCalled();
+      expect((mocks.write.mock.calls[0]![1] as FrozenCandidateRepairQueue).admissions ?? []).toEqual([]);
+    });
+
+    it('refuses a series in reverse ancestry before replaying either commit', async () => {
+      mocks.admissionGit.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+      const { patchCommit: _single, ...base } = patchArgs;
+      expect(body(await tool.handler({ ...base, patchCommits: [patch.commit, patch.parent], confirm: true } as never, ctx)))
+        .toMatchObject({ ok: false, reason: 'invalid-patch-source' });
+      expect(mocks.committedPatch).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('never admits an intermediate source when a later committed delta conflicts', async () => {
+      mocks.committedPatch
+        .mockReturnValueOnce({ ok: true, sourceCommit: ALT_HEAD, tree: 'a'.repeat(40), patch })
+        .mockReturnValueOnce({ ok: false, code: 'patch-conflict', detail: 'dependent delta conflicts', exits: [] });
+      const { patchCommit: _single, ...base } = patchArgs;
+      expect(body(await tool.handler({ ...base, patchCommits: [patch.commit, '2'.repeat(40)], confirm: true } as never, ctx)))
+        .toMatchObject({ ok: false, reason: 'patch-conflict' });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
 
     it('committed patch refusal and stale queue never publish or write', async () => {
       mocks.committedPatch.mockReturnValue({

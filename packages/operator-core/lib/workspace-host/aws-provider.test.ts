@@ -777,6 +777,37 @@ describe('AWS root device mapping follows the AMI (WI-10006800)', () => {
 });
 
 describe('AWS workspace-host provider planning', () => {
+  it('refuses canary admission before planning unless the client verifies its independent deadline', async () => {
+    const { provider, client } = providerAndClient();
+    await expect(provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: desired() },
+      { ...context(), canaryRunId: 'trial-run', canaryTeardownDeadlineAt: '2026-08-22T09:00:00.000Z' }))
+      .rejects.toThrow(/independently verified provider deadline/);
+    expect(client.createVolumeCalls).toEqual([]);
+  });
+
+  it('refuses caller-authored finite deadline settings in desired provider data', async () => {
+    const { provider } = providerAndClient();
+    for (const key of ['canaryRunId', 'canaryTeardownDeadlineAt', 'canaryDeadline', 'awsCanaryDeadline']) {
+      const spec = desired(); spec.provider = { ...spec.provider, [key]: 'spoofed' };
+      await expect(provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: spec }, context()))
+        .rejects.toThrow(/validated controller admission/);
+    }
+  });
+
+  it('rechecks the deadline immediately before a creating step, after an earlier successful plan', async () => {
+    const { client } = providerAndClient();
+    let allowed = true;
+    const guarded = Object.assign(client, { assertCanaryAdmission: async () => {
+      if (!allowed) throw new Error('finite deadline no longer sleeping');
+    } });
+    const provider = createAwsWorkspaceHostProvider({ client: guarded, now: () => NOW });
+    const plan = await provider.plan({ action: 'provision', operationId: 'finite', idempotencyKey: 'finite', desired: desired() }, context());
+    allowed = false;
+    await expect(provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: [] }, context()))
+      .rejects.toThrow(/no longer sleeping/);
+    expect(client.createVolumeCalls).toEqual([]);
+  });
+
   it('builds deterministic RunInstances and encrypted EBS inputs with a stable 64-character ClientToken', async () => {
     const { provider } = providerAndClient();
     const request = {

@@ -2477,9 +2477,9 @@ const NATIVE_CLIENT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read
  * Literal workspace predicates bound to the relation they actually reference.
  *
  * Matched against RAW sql for the same reason as the claimability advisory: the interesting
- * token IS the string literal, which the stripper erases. Only equality-shaped operators are
- * collected — a `workspace_id <> 'default'` is a deliberate exclusion, not the habit this
- * catches.
+ * token IS the string literal, which the stripper erases. Only literal equality or complete
+ * string-literal membership lists are collected — a `workspace_id <> 'default'` is a deliberate
+ * exclusion, not the habit this catches.
  */
 function workspaceIdPredicatesByRelation(rawSql: string): Array<{ table: string; values: string[] }> {
   const masked = sqlLiteralAndCommentRanges(rawSql);
@@ -2514,7 +2514,8 @@ function workspaceIdPredicatesByRelation(rawSql: string): Array<{ table: string;
   // column in a multi-relation statement needs schema/query-scope resolution we do not
   // have here. Stay silent rather than assign that predicate to an arbitrary corpus table.
   const hasCommaFrom = /\bfrom\b(?:(?!\b(?:where|join|group|order|limit|having)\b)[\s\S])*,/i.test(code);
-  const re = /\b(?:([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\.\s*)?workspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'((?:''|[^'])*)'/gi;
+  const simpleLiteralList = /^\s*'(?:''|[^'])*'(?:\s*,\s*'(?:''|[^'])*')*\s*$/;
+  const re = /\b(?:([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\.\s*)?workspace_id\b\s*(?:=\s*('(?:''|[^'])*')|\bin\b\s*\(\s*([^)]*)\s*\)|=\s*any\s*\(\s*array\s*\[\s*([^\]]*)\s*\](?:\s*::\s*[A-Za-z_][A-Za-z0-9_$]*(?:\s*\[\s*\])?)?\s*\))/gi;
   for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
     if (isMasked(m.index)) continue;
     const clauses = [...code.slice(0, m.index).matchAll(/\b(select|from|join|where|on|having|group|order|limit|union)\b/gi)];
@@ -2525,7 +2526,12 @@ function workspaceIdPredicatesByRelation(rawSql: string): Array<{ table: string;
       ? references.filter((r) => r.qualifiers.includes(qualifier))
       : references.length === 1 && !hasCommaFrom ? references : [];
     // Reused aliases across nested queries are ambiguous to this analyzer, too.
-    if (candidates.length === 1) candidates[0].values.push(m[2].replaceAll("''", "'"));
+    const rawValues = m[2] ?? (simpleLiteralList.test(m[3] ?? '') ? m[3] : null) ??
+      (simpleLiteralList.test(m[4] ?? '') ? m[4] : null);
+    if (candidates.length !== 1 || rawValues === null) continue;
+    candidates[0].values.push(
+      ...[...rawValues.matchAll(/'((?:''|[^'])*)'/g)].map((literal) => literal[1]!.replaceAll("''", "'")),
+    );
   }
   return references.filter((r) => r.values.length && CORPUS_NAMESPACED_TABLES.has(bareTableName(r.table)));
 }

@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../operator-conversations', () => ({
+  OperatorTurnIdentityConflict: class extends Error {},
   getOrCreateActiveConversation: vi.fn(),
   getConversationById: vi.fn(),
   appendTurn: vi.fn(),
@@ -25,6 +26,7 @@ import {
   getConversationById,
   appendTurn,
   listTurnsRecent,
+  OperatorTurnIdentityConflict,
 } from '../../../operator-conversations';
 import { notifySyncInvalidate } from '../../../sync-sse';
 
@@ -58,6 +60,28 @@ function postReq(body: unknown): Request {
 }
 
 describe('POST /operator/conversations/:id/turns', () => {
+  it('P010 forwards a stable turn identity and refuses malformed identities before writing', async () => {
+    const turnId = '2df6bb78-575f-4989-8257-d2c973fa7477';
+    expect((await post.handler(postReq({ role: 'assistant', text: 'reply', turnId }), {
+      params: { id: 'conv-explicit' },
+    })).status).toBe(200);
+    expect(append.mock.calls[0][0]).toMatchObject({ turnId, conversationId: 'conv-explicit' });
+    append.mockClear();
+    expect((await post.handler(postReq({ role: 'assistant', text: 'reply', turnId: 'invalid' }), {
+      params: { id: 'conv-explicit' },
+    })).status).toBe(400);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('P010 refuses a competing identity payload without acknowledging a turn', async () => {
+    append.mockRejectedValueOnce(new OperatorTurnIdentityConflict());
+    const response = await post.handler(postReq({ role: 'assistant', text: 'changed',
+      turnId: '2df6bb78-575f-4989-8257-d2c973fa7477' }), { params: { id: 'conv-explicit' } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'turn identity conflict' });
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it("resolves the literal 'active' server-side and returns the real conversationId", async () => {
     const res = await post.handler(postReq({ role: 'user', text: 'hi', source: 'voice_stt' }), {
       params: { id: 'active' },

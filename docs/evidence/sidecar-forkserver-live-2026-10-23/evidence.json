@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Live sidecar forks are delegated to its forkserver",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "docs/evidence/sidecar-forkserver-live-probe.py"
+  ],
+  "startedAt": "2026-10-23T07:11:00.882117+00:00",
+  "finishedAt": "2026-10-23T07:11:06.367671+00:00",
+  "exitCode": 0,
+  "summary": "Three-second live bg-host trace with forkserver activity and marked git-sync child CPU/I/O progress overlapping the trace.",
+  "assertions": [
+    {
+      "id": "stable-live-runtime",
+      "passed": true,
+      "evidence": "bg-host MainPID before=2846810, after=2846810; sidecar=2872228."
+    },
+    {
+      "id": "trace-instrument-available",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"traceLineCount\": 338, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}, {\"label\": \"forkserver\", \"traceLineCount\": 88, \"instrumentErrors\": [], \"unmeasuredCallCount\": 0}]"
+    },
+    {
+      "id": "forkserver-positive-control",
+      "passed": true,
+      "evidence": "[{\"label\": \"sidecar\", \"pid\": 2872228, \"forkCallCount\": 0}, {\"label\": \"forkserver\", \"pid\": 2885434, \"forkCallCount\": 12}]"
+    },
+    {
+      "id": "git-sync-overlap-progress",
+      "passed": true,
+      "evidence": "{\"before\": {\"pid\": 1809306, \"parentPid\": 2885434, \"startTicks\": \"152843742\", \"atWindowSeconds\": 0.6351140751503408, \"marker\": \"PAPERCUSP_GIT_SYNC_PUSH=1\", \"cpuTicks\": 0, \"rchar\": 1692, \"wchar\": 1, \"syscr\": 5, \"syscw\": 1}, \"after\": {\"pid\": 1809306, \"parentPid\": 2885434, \"startTicks\": \"152843742\", \"atWindowSeconds\": 0.6465605781413615, \"marker\": \"PAPERCUSP_GIT_SYNC_PUSH=1\", \"cpuTicks\": 3, \"rchar\": 17796, \"wchar\": 1, \"syscr\": 48, \"syscw\": 1}}"
+    },
+    {
+      "id": "sidecar-no-child-forks",
+      "passed": true,
+      "evidence": "sidecar=2872228, windowSeconds=3.000040, forkCalls=0, forkSeconds=0."
+    },
+    {
+      "id": "sidecar-fork-and-read-budget",
+      "passed": true,
+      "evidence": "All read time conservatively bounds exec-wait reads: forkSeconds=0, readSeconds=0.013965, windowSeconds=3.000040; sum/window must be below0.05."
+    }
+  ],
+  "traces": [
+    {
+      "label": "sidecar",
+      "pid": 2872228,
+      "startTicks": "152541618",
+      "forkCallCount": 0,
+      "forkSeconds": 0,
+      "readSeconds": 0.013965,
+      "unmeasuredCallCount": 0,
+      "traceLineCount": 338,
+      "instrumentErrors": [],
+      "coverage": {
+        "attachedThroughWindow": true,
+        "aliveAtWindowEnd": true,
+        "tracerIdentityAtStart": "1808530:152843677",
+        "tracerIdentityAtEnd": "1808530:152843677",
+        "exitCode": -2,
+        "stopRequested": true
+      },
+      "rawEvidence": "docs/evidence/sidecar-forkserver-live-2026-10-23/sidecar.strace",
+      "rawSha256": "72d22fdaa37794a79a3fcb2d1f10a2ee834ad3a1c99eccc547edac96e8fca5b8",
+      "originalRawEvidence": "/tmp/sidecar-forkserver-live-sxc_nbth/sidecar.strace"
+    },
+    {
+      "label": "forkserver",
+      "pid": 2885434,
+      "startTicks": "152542625",
+      "forkCallCount": 12,
+      "forkSeconds": 0.056451,
+      "readSeconds": 0.09128,
+      "unmeasuredCallCount": 0,
+      "traceLineCount": 88,
+      "instrumentErrors": [],
+      "coverage": {
+        "attachedThroughWindow": true,
+        "aliveAtWindowEnd": true,
+        "tracerIdentityAtStart": "1808529:152843677",
+        "tracerIdentityAtEnd": "1808529:152843677",
+        "exitCode": -2,
+        "stopRequested": true
+      },
+      "rawEvidence": "docs/evidence/sidecar-forkserver-live-2026-10-23/forkserver.strace",
+      "rawSha256": "840abbc05fde3f3b0bd67082a1429529c221c0afc00b5e35bdac81ed93dc5f84",
+      "originalRawEvidence": "/tmp/sidecar-forkserver-live-sxc_nbth/forkserver.strace"
+    }
+  ],
+  "windowSeconds": 3.000039911130443,
+  "traceAttachedBeforeWindow": true,
+  "gitSyncWitness": {
+    "before": {
+      "pid": 1809306,
+      "parentPid": 2885434,
+      "startTicks": "152843742",
+      "atWindowSeconds": 0.6351140751503408,
+      "marker": "PAPERCUSP_GIT_SYNC_PUSH=1",
+      "cpuTicks": 0,
+      "rchar": 1692,
+      "wchar": 1,
+      "syscr": 5,
+      "syscw": 1
+    },
+    "after": {
+      "pid": 1809306,
+      "parentPid": 2885434,
+      "startTicks": "152843742",
+      "atWindowSeconds": 0.6465605781413615,
+      "marker": "PAPERCUSP_GIT_SYNC_PUSH=1",
+      "cpuTicks": 3,
+      "rchar": 17796,
+      "wchar": 1,
+      "syscr": 48,
+      "syscw": 1
+    }
+  },
+  "sidecarBlockedPercent": 0.4654938072053134,
+  "runtime": {
+    "bgHostPid": 2846810,
+    "sidecarPid": 2872228,
+    "forkserverPids": [
+      2885434
+    ]
+  },
+  "limitations": [
+    "Fork-related syscall counts include failed clone3 attempts, not only created children.",
+    "Every sidecar read duration is counted as an upper bound on exec-wait reads; unrelated reads can make this check fail conservatively.",
+    "This checks fork plus read blocking, not total event-loop or admission latency.",
+    "Compare admission distributions only at similar sidecar ages."
+  ]
+}

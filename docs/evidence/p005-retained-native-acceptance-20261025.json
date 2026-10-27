@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P005 retained normal GUI native identity and candidate publication refusal",
+  "framework": "playwright",
+  "command": [
+    "node",
+    "node_modules/@playwright/test/cli.js",
+    "test",
+    "--config",
+    "apps/operator/playwright.config.mts",
+    "apps/operator/e2e/desktop-interface-coexistence.spec.ts",
+    "--workers=1"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-25T04:03:31.828Z",
+  "finishedAt": "2026-10-25T04:05:13.929Z",
+  "summary": "Records the already-completed maintained Playwright native coexistence run21965702; no replay. Exact retained GUI launches from extracted artifact with legacy packaged SPA; explicit portal candidate is refused by ordinary guarded entrypoints. Private package-byte identity only; public publication and installed product-pair/portal parity remain separate.",
+  "assertions": [
+    {
+      "id": "normal packaged GUI launches with the measured legacy SPA identity",
+      "passed": true,
+      "evidence": "Original clean test_run21965702; apps/operator/e2e/desktop-interface-coexistence.spec.ts @ b9f4040330a80b9cb1d6df0bc75a1d9649204693; complete per-stage result and ledger readback retained under artifactRoot."
+    },
+    {
+      "id": "explicit portal candidate cannot enter ordinary build or publication paths",
+      "passed": true,
+      "evidence": "Original clean test_run21965702; apps/operator/e2e/desktop-interface-coexistence.spec.ts @ b9f4040330a80b9cb1d6df0bc75a1d9649204693; complete per-stage result and ledger readback retained under artifactRoot."
+    }
+  ],
+  "artifactRoot": "/mnt/data/cargo-target/.papercusp-evidence/p005-retained-native-20261025",
+  "runtimeArtifacts": [
+    {
+      "path": "final-artifacts-retry1/deb/Papercusp GUI_0.0.26_amd64.deb",
+      "sha256": "72e01eb9142926c0cacdc20ace296523b6419ed5cd2a293e74334e2ddddcc78a",
+      "bytes": 51324472
+    },
+    {
+      "path": "appimage-distribution-repair-v3/Papercusp_GUI_0.0.26_amd64.AppImage",
+      "sha256": "2daaa5e43b99b6679791aa71628150b3f234a8092b600e0004a50b63541fea8e",
+      "bytes": 155482616
+    }
+  ],
+  "originalExecution": {
+    "testRunId": 21965702,
+    "runGroupId": "p005-coexistence-harness-v2-e2e-1792901011827",
+    "commitSha": "b9f4040330a80b9cb1d6df0bc75a1d9649204693",
+    "desktopCommit": "96ff0d4663b13b724dc022dd6d7a1b02dd911855",
+    "testPath": "apps/operator/e2e/desktop-interface-coexistence.spec.ts",
+    "sourceSha256": {
+      "papercusp-desktop/bin/linux-fresh-install-e2e.sh": "555ba5b548221b94f1df0da05905df2272bad5eddf1d33cd5400618d9d23fc5b",
+      "papercusp-desktop/test/verification-script-verdict-guard.test.js": "f5c3189417a96a7ddd1bcc1f71cce3db2d44c363a1da0eeeb6107bfff0d52bdd",
+      "apps/operator/e2e/desktop-interface-coexistence.spec.ts": "3e49775fc054ba8deef671c1c03c5097a4499a0934003b71dc4fd02708611610"
+    },
+    "runtimeEnvironmentCapture": "not-configured; no historical process witness is reconstructed"
+  },
+  "retainedMeasurements": [
+    {
+      "path": "coexistence-harness-repair-committed-v2-result.json",
+      "sha256": "71979adcec1e157cef82477240819b32ce3cfd0febc14153339e067f5f80fdc4",
+      "scope": "Completed actual maintained native E2E; command, exact verifier source and separate private artifact lineage."
+    },
+    {
+      "path": "coexistence-harness-repair-committed-v2-ledger.json",
+      "sha256": "cf3616c4f15bea800364206d1a368e5e1acff1ec9515b01a3bcb3885d848a7f6",
+      "scope": "Canonical existing test_run21965702, two passing cases; no skips, clean source."
+    },
+    {
+      "path": "post-parent-final-qualification.json",
+      "sha256": "c15b0c6d98c6ad89a4338f50647cfc3dde6a258d3388a0951624d0661256a793",
+      "scope": "Previously completed original signed native bank/source custody; not re-executed."
+    },
+    {
+      "path": "linux-fresh-install/receipt.json",
+      "sha256": "228de9ff378e4242c656960ac6dde7b0ad180ff5633bbd2310c8c1179c94d5b5",
+      "scope": "Previously completed private candidate GUI+Server Linux install; retained9/9 check and clean shutdown; not re-executed."
+    },
+    {
+      "path": "linux-candidate-upgrade-rollback.json",
+      "sha256": "d30ff28a0fc24302dea1608e2b7aba325ad98080738bb6e68b72a7379869ab80",
+      "scope": "Previously completed Linux upgrade/exact rollback; heldport21696; not re-executed."
+    },
+    {
+      "path": "appimage-distribution-repair-v3/payload-equivalence.json",
+      "sha256": "92503a93eda3b2a9c1c96d426e9de3a1f0032fc40c751631815e779b2df42967",
+      "scope": "Previously measured full3307-path original/private repack equivalence; no changes."
+    }
+  ],
+  "signatureScope": {
+    "guiDeb": "Original retained signed bank bytes; qualification linked above.",
+    "guiAppImage": "Unsigned private repack; original signed bank remains unchanged. This receipt grants no public release eligibility."
+  },
+  "limits": {
+    "publicPublicationVerified": false,
+    "installedProductPairVerifiedByThisRun": false,
+    "portalParityVerified": false,
+    "runtimeProcessEnvironmentWitnessCaptured": false,
+    "privateRepackedAppImageReleaseQualified": false,
+    "publicWrites": false
+  }
+}

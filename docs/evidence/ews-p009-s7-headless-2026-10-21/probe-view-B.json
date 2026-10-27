@@ -1,0 +1,34 @@
+{
+ "href": "/adv?tab=harnesses&slug=papercusp&scope=self&welcome=0&sel=WI-6554700010014198",
+ "canvas": true,
+ "legendText": "blocks (arrow points to the blocked item)blocker already done \u2014 gates nothingbroken \u2014 blocker resolves to no itemitem blocked on an event (its own event or gate blocker)holder waits on an event (an agent\u2019s await for an item it holds)stale wait \u2014 its agent\u2019s session ended, or the await expiredevent being waited on (dashed when every wait on it is stale)placeholder for that missing blockercame from a planitem state: done \u00b7 active \u00b7 blocked \u00b7 open",
+ "nodeCount": 3,
+ "eventNodeCount": 1,
+ "edges": {
+  "holderAwait": 0,
+  "itemBlocker": 2,
+  "stale": 0,
+  "holderAwaitDrawnAsBlocker": 0,
+  "blockerDrawnAsHolderAwait": 0,
+  "blocks": 0
+ },
+ "samples": {
+  "provingDone": [],
+  "broad": [],
+  "stale": [],
+  "subject": [
+   "WI-6554700010014198 \u2014 Verify the existing current-rubric rescore checks, complete ledger coverage and project regression tests (R-1, R-4); rebuild only if eviden\u2026 (depth 0, blocked)"
+  ],
+  "labels": [
+   "Event acceptance-bar-amendment:preview-f51a6bd6-7ff7-47d1-98cd-cb9a8247c819 \u2014 event \u00b7 2 waits \u00b7 uncatalogued key",
+   "WI-6554700010014180 \u2014 Prepare and verify the assigned daily app-performance rescore plan (depth 0, blocked)",
+   "WI-6554700010014198 \u2014 Verify the existing current-rubric rescore checks, complete ledger coverage and project regression tests (R-1, R-4); rebuild only if eviden\u2026 (depth 0, blocked)"
+  ],
+  "subjectHolderKey": []
+ },
+ "labelCounts": {
+  "proving": 0,
+  "broad": 0,
+  "stale": 0
+ }
+}

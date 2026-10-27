@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -38,7 +39,10 @@ verb="$1 $2"; shift 2
 case "$verb" in
   "compute ssh") for a in "$@"; do case "$a" in --command=*) HOME="$FAKE_VM_HOME" bash -c "\${a#--command=}" || exit $?;; esac; done ;;
   "compute scp") srcs=(); for a in "$@"; do case "$a" in --*) ;; *) srcs+=("$a");; esac; done
-    dest="\${srcs[-1]#*:}"; unset 'srcs[-1]'; cp "\${srcs[@]}" "$FAKE_VM_HOME/$dest" ;;
+    dest="\${srcs[-1]#*:}"; unset 'srcs[-1]'; cp "\${srcs[@]}" "$FAKE_VM_HOME/$dest" || exit $?
+    if [ -n "\${FAKE_CORRUPT_DRIVER:-}" ] && [ "$dest" = capacity/scripts/agent-capacity/ ]; then
+      echo corrupted >> "$FAKE_VM_HOME/$dest/driver.ts"
+    fi ;;
 esac
 `,
     );
@@ -95,6 +99,33 @@ esac
     expect(r.status).toBe(2);
     expect(r.stdout).toMatch(/STAGE_ERROR packages\/operator-core\/lib\/child-output\.ts imports \.\/util\/other - not a leaf module/);
     expect(existsSync(gcloudLog())).toBe(false);
+  });
+
+  it('retains exact transferred writer hashes and verifies them on the VM', () => {
+    const vm = path.join(root, 'vmhome');
+    mkdirSync(vm);
+    const r = run({ FAKE_VM_HOME: vm });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const manifest = readFileSync(path.join(vm, 'capacity/stage-writers.sha256'), 'utf8');
+    for (const rel of ['scripts/agent-capacity/driver.ts', 'scripts/agent-capacity/vm/sample.py', 'scripts/agent-capacity/corpus/tasks.json']) {
+      const sha = createHash('sha256').update(readFileSync(path.join(root, rel))).digest('hex');
+      expect(manifest).toContain(`${sha}  ${rel}\n`);
+    }
+    const moduleSha = createHash('sha256').update(readFileSync(path.join(root, 'packages/operator-core/lib/child-output.ts'))).digest('hex');
+    expect(manifest).toContain(`${moduleSha}  scripts/node_modules/@papercusp/operator-core/lib/child-output.ts\n`);
+    expect(manifest).not.toContain('driver.test.ts');
+    const manifestSha = createHash('sha256').update(manifest).digest('hex');
+    expect(r.stdout).toContain(`STAGE_WRITERS vm=cap-x manifestSha256=${manifestSha}`);
+    expect(readFileSync(gcloudLog(), 'utf8')).toContain('sha256sum -c stage-writers.sha256');
+  });
+
+  it('refuses STAGE_OK when transferred writer bytes differ from the local manifest', () => {
+    const vm = path.join(root, 'vmhome');
+    mkdirSync(vm);
+    const r = run({ FAKE_VM_HOME: vm, FAKE_CORRUPT_DRIVER: '1' });
+    expect(r.status).toBe(5);
+    expect(r.stdout).toContain('STAGE_ERROR writer verification');
+    expect(r.stdout).not.toContain('STAGE_OK');
   });
 
   it('refuses an import whose module does not exist, and a missing corpus tasks.json', () => {

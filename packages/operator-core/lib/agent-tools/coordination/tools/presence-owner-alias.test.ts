@@ -65,8 +65,10 @@ describe('coord:presence ownerId compatibility alias', () => {
   });
 
   it('normalizes ownerId to the canonical owner selector before scope and snapshot reads', async () => {
+    // WI-6554700010029664: the fold runs in the schema's preprocess; drive the handler with
+    // the PARSED args, exactly as dispatch does.
     await presenceTool.handler(
-      { ownerId: 'su-target' } as never,
+      presenceTool.args.parse({ ownerId: 'su-target' }) as never,
       { workspaceId: 'test-workspace', harnessSlug: 'papercusp', isSuperuser: true } as never,
     );
 

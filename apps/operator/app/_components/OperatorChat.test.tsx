@@ -140,6 +140,20 @@ afterEach(() => {
 });
 
 describe("OperatorChat (operator sidebar chat wrapper)", () => {
+  it("preserves canonical result references and passes the host authorization boundary to the shared renderer", () => {
+    const result = { id: "report-one", kind: "report", title: "Result", sources: [{ ref: "report:r-1" }] };
+    const resultContext = { authorizationKey: "caller:conversation:revision1", host: {
+      resolve: vi.fn(), activate: vi.fn(),
+    } };
+    render(<OperatorChat {...baseProps({ resultContext, messages: [
+      { id: "saved-result-turn", seq: 104, role: "assistant", content: "", results: [result] },
+    ] })} />);
+    expect(lastProps.resultContext).toBe(resultContext);
+    expect(lastProps.chat.turns).toMatchObject([{ id: "saved-result-turn", seq: 104, results: [result] }]);
+    expect(resultContext.host.resolve).not.toHaveBeenCalled();
+    expect(resultContext.host.activate).not.toHaveBeenCalled();
+  });
+
   it("loads host bubble tokens without requiring a session-popup ancestor", () => {
     render(<OperatorChat {...baseProps()} />);
     expect(lastProps.className).toBe("op-chat-shared");

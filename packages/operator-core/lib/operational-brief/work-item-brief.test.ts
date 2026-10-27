@@ -114,11 +114,15 @@ describe('projectWorkItemOperationalBrief', () => {
   });
 
   it('marks blockers unknown — not empty — when the payload was not read', () => {
-    const r = row({ workItem: { state: 'blocked' } });
+    const r = row({});
     delete (r.workItem as Record<string, unknown>).payload;
     const brief = projectWorkItemOperationalBrief(r, { linksRead: false });
     expect(brief.blockers.status).toBe('unknown');
     expect(brief.unknowns).toContain('blockers');
+    expect(brief.nextAction).toEqual({
+      status: 'unknown',
+      reason: 'blocker and plan eligibility are unknown: the work-item payload is not in this read, so set_blocker records are unmeasured',
+    });
   });
 
   it('shows a missing checkpoint on an unclaimed item and derives the claim action', () => {
@@ -130,6 +134,34 @@ describe('projectWorkItemOperationalBrief', () => {
     const text = [renderOperationalBrief(brief), ...renderWorkItemFactLines(brief)].join('\n');
     expect(text).toContain('claim: unclaimed');
     expect(text).toContain('checkpoint: absent');
+  });
+
+  it('does not derive a claim action when state or plan eligibility blocks it', () => {
+    const blockedState = projectWorkItemOperationalBrief(row({ workItem: { state: 'blocked' } }), { linksRead: false });
+    expect(blockedState.nextAction).toEqual({
+      status: 'unknown',
+      reason: 'the work-item state is blocked; resolve its blocker before claiming',
+    });
+
+    const blockedPlan = projectWorkItemOperationalBrief(
+      row({
+        extra: {
+          planItemBlocked: { planSlug: 'a-plan', itemId: 'P-9', effectiveStatus: 'blocked', reason: 'blocked by P-8' },
+        },
+      }),
+      { linksRead: false },
+    );
+    expect(blockedPlan.blockers).toMatchObject({
+      status: 'known',
+      value: ['plan item a-plan#P-9 is blocked (blocked by P-8)'],
+    });
+    expect(blockedPlan.nextAction).toEqual({
+      status: 'unknown',
+      reason: 'active blockers are present; resolve them before claiming',
+    });
+
+    const inFlight = projectWorkItemOperationalBrief(row({ workItem: { state: 'wip' } }), { linksRead: false });
+    expect(inFlight.nextAction).toEqual({ status: 'unknown', reason: 'work-item state wip is not claimable' });
   });
 
   it('does not invent a next action for a claimed item with no checkpoint', () => {

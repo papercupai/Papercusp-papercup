@@ -77,7 +77,9 @@ const itemSpec = z.object({
   plan: z.string().min(1).describe('plan slug'),
   item: z.string().min(1).describe('plan-item id (P-NNN)'),
   harness: z.string().max(120).optional().describe('per-item harness (else the batch `harness` default)'),
-  kind: KIND.optional().describe("work_item kind to mint (default 'task')"),
+  kind: KIND.optional().describe(
+    "Explicit work_item kind override. When omitted, derive from the plan verification profile and item deliverable (code → change; non-code → task). Explicit task is refused for a code-deliverable item.",
+  ),
   title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title'),
   brief: softText(LIMITS.BRIEF).optional().describe(`per-lane situational overlay persisted on the work-item's payload.brief. Auto-truncated to ${LIMITS.BRIEF} chars if longer.`),
   intent: hardText(LIMITS.SHORT_TITLE).optional().describe('one line on what you are doing'),
@@ -164,7 +166,7 @@ export default defineTool({
       plan: z.string().min(1).optional().describe('plan slug (use with `item` / `itemIds`)'),
       item: z.string().min(1).optional().describe('single-convert shorthand: the plan-item id (P-NNN)'),
       kind: KIND.optional().describe(
-        "work_item kind to mint (default 'task' — the generic execution record; pick feature/bug/… when the item warrants a pipeline-shaped unit); the inline item / every id in `itemIds`",
+        "Optional work_item kind override. When omitted, derive from the plan verification profile and item deliverable (code → change; non-code → task). Explicit task is refused for code deliverables. Applies to the inline item / every id in `itemIds`",
       ),
       title: hardText(LIMITS.SHORT_TITLE).optional().describe('override the work-item title (default: the plan-item text); the inline item / itemIds'),
       brief: softText(LIMITS.BRIEF)

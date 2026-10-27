@@ -1,0 +1,407 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-owner-runtime-qualification",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "status": "Partial; source falsifiability and L4 qualified; full source clause, native acceptance and shipment remain open.",
+  "runtime": {
+    "class": "operator-api",
+    "runtime": "staging-operator",
+    "endpoint": "http://127.0.0.1:3170",
+    "observedBuildSha": "6794b3ea21",
+    "containment": "dev:pipeline_position confirmed the serving owner runtime contains the committed spec-test-adequacy change before qualification. No runtime restart or publication operation was performed."
+  },
+  "sourceFalsifierQualification": {
+    "specId": "GF-P002-source",
+    "revision": 1,
+    "fingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+    "mutationBinding": 66895,
+    "passingBaselineBindings": [
+      66893,
+      66894
+    ],
+    "runs": [
+      21822750,
+      21822784,
+      21822811
+    ],
+    "newProbeRuns": [],
+    "falsifiability": {
+      "rating": "pass",
+      "evidence": "A bound mutation or counterexample targets get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07) itself, which declares no structured falsifier.requiredScenarios list; its canonical test file is separately bound as a successful current test for this clause. Bound evidence: id=66895, kind=mutation, ref=\"test-run 21822811 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @d9e349cba2a0\", lineage=durable, lineageReason=\"durable testRunId\", currentness=current, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:f4aac96b19c4e6ae9936fc9f5c8c0f41ebeca27e2ada544c1bf953236c0f2808\", testFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", fixtureFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff35"
+    },
+    "proofFloor": {
+      "rating": "pass",
+      "evidence": "The get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07) L4 risk floor is met via clause-bound mutation/counterexample evidence with a passing baseline case. Bound evidence: id=66895, kind=mutation, ref=\"test-run 21822811 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @d9e349cba2a0\", lineage=durable, lineageReason=\"durable testRunId\", currentness=current, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:f4aac96b19c4e6ae9936fc9f5c8c0f41ebeca27e2ada544c1bf953236c0f2808\", testFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", fixtureFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", testRunId=21822811, testRunLedgerExecution={\"status\":\"fail\",\"p"
+    },
+    "meaning": "The same already-measured exact named cases and descriptor-linked controls now qualify on the containing owner evaluator. No spec revision, sourceBar, floor, scenario association, production code or test expectation changed."
+  },
+  "launcherRefresh": {
+    "cause": "Exact prior source measurements moved for psu-pty-host.mjs and tool-delivery.generated.mjs; no already-current dispatcher/service/store/probe was replayed.",
+    "sourceCommit": "181ee2c9bc809168a0b18bcde4d21f0cd534a732",
+    "testRunId": 21828145,
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --any --ref=181ee2c9bc809168a0b18bcde4d21f0cd534a732 -- apps/operator/lib/psu-launcher.test.ts",
+    "result": {
+      "passed": 1209,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "exitCode": 0,
+      "childSubstituted": 0
+    },
+    "namedCaseQualification": {
+      "oldBinding": 66842,
+      "oldCases": 538,
+      "canonicalPerCaseRows": 1209,
+      "truncated": false,
+      "matched": 538,
+      "missing": 0,
+      "method": "Exact case_key membership against harness_shared.test_case_runs for run21828145 joined to workspace papercusp-workspace/harness papercusp.",
+      "testBytesSha256": "9477b064d3e69796812451c31873b3cbedd3a66cbc737cd9d17ac3ca55253377",
+      "testBytesSameAtOriginalAndNewCommits": true
+    },
+    "sourceCensus": [
+      {
+        "path": "apps/operator/lib/mcp-proxy/budgets.mjs",
+        "sha256": "00159976718185c38d56870d3b2b2b9a8e30a221b2c345baabe8848e6e39483a",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "sha256": "5791bfa9875b110216f1c730f83cfabccaf93874e4ddda773cd33cc0e932357c",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "apps/operator/scripts/psu-pty-host.mjs",
+        "sha256": "7e4686fc70c53ff5e6bc16f3b0ee031ea60d2cf4473de47f74340e9db0c103fc",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "apps/operator/scripts/ptool.mjs",
+        "sha256": "8d42679c691fe69f854b2f712ddcba691f1bf525ef3d634ab3e0b8dcc09c6217",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "apps/operator/scripts/tool-delivery.generated.mjs",
+        "sha256": "4069504393f8e8167cd3db260b2e038a44f6598fb621167b7760c9b5fa69d622",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+        "sha256": "b0efbb4596c39b76365182e3814b1aa4f4c6d14e527b80e6fa352588e477efe3",
+        "canonicalBytesMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/model-context-budget.mjs",
+        "sha256": "f51e986df2613c4ba9655a963616b3401f271f906c3950010da47d442b4f8916",
+        "canonicalBytesMatch": true
+      }
+    ],
+    "sameRecipes": true,
+    "allPriorAdequacyAttestationsPreserved": true,
+    "newBindings": [
+      {
+        "id": 67056,
+        "specId": "GF-P002-source",
+        "run": 21828145,
+        "bindingFingerprint": "1e3dc73dc5e7403199d95a7ddf62eabcb43c31b806b2b22cbd07891c620bf1bb"
+      },
+      {
+        "id": 67057,
+        "specId": "AUTO-BAR-R-2-P-002",
+        "run": 21828145,
+        "bindingFingerprint": "931f63a40f5f82ca05372b6a759e75f06c3f84b33357d74c9e968cf4e870db2c"
+      }
+    ],
+    "independentCurrentness": [
+      {
+        "id": 67057,
+        "spec": "AUTO-BAR-R-2-P-002",
+        "currentness": {
+          "overall": "current",
+          "dimensions": {
+            "spec": "current",
+            "source": "current",
+            "test": "current",
+            "fixture": "current",
+            "rubric": "not-applicable",
+            "environment": "not-applicable",
+            "coverageEvidence": "not-applicable",
+            "testRun": "current"
+          },
+          "staleReasons": [],
+          "unknownReasons": [],
+          "comparisonSupplied": true,
+          "provenance": "server-measured"
+        },
+        "caseCount": 0,
+        "testRunId": 21828145,
+        "measurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator/lib/psu-launcher.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator/lib/mcp-proxy/budgets.mjs",
+            "apps/operator/scripts/psu-launcher.mjs",
+            "apps/operator/scripts/psu-pty-host.mjs",
+            "apps/operator/scripts/ptool.mjs",
+            "apps/operator/scripts/tool-delivery.generated.mjs",
+            "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+            "packages/operator-core/lib/model-context-budget.mjs"
+          ],
+          "fixturePaths": [
+            "apps/operator/lib/psu-launcher.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 67056,
+        "spec": "GF-P002-source",
+        "currentness": {
+          "overall": "current",
+          "dimensions": {
+            "spec": "current",
+            "source": "current",
+            "test": "current",
+            "fixture": "current",
+            "rubric": "not-applicable",
+            "environment": "not-applicable",
+            "coverageEvidence": "not-applicable",
+            "testRun": "current"
+          },
+          "staleReasons": [],
+          "unknownReasons": [],
+          "comparisonSupplied": true,
+          "provenance": "server-measured"
+        },
+        "caseCount": 538,
+        "testRunId": 21828145,
+        "measurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator/lib/psu-launcher.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator/lib/mcp-proxy/budgets.mjs",
+            "apps/operator/scripts/psu-launcher.mjs",
+            "apps/operator/scripts/psu-pty-host.mjs",
+            "apps/operator/scripts/ptool.mjs",
+            "apps/operator/scripts/tool-delivery.generated.mjs",
+            "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+            "packages/operator-core/lib/model-context-budget.mjs"
+          ],
+          "fixturePaths": [
+            "apps/operator/lib/psu-launcher.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      }
+    ],
+    "retiredAfterQualification": [
+      {
+        "id": 66762,
+        "status": "retracted",
+        "reason": "Replaced only after independent server-current qualification of exact BAR launcher replacement67057 from clean21828145. Same source/test/fixture recipe and design attestations; no broader/native evidence is retired."
+      },
+      {
+        "id": 66842,
+        "status": "retracted",
+        "reason": "Replaced only after independent server-current qualification of exact GF launcher replacement67056 from clean21828145. Same source/test/fixture recipe and all538 prior named cases verified PASS in1209-case ledger. Scope unchanged; no native disclosure retired."
+      }
+    ],
+    "retirementScope": "Only exact old launcher equivalents66762/66842. No historical operational/native/source-isolation mutation or disclosed gap was retired."
+  },
+  "governingAssessment": {
+    "selection": "Both exact current P002 clauses; unfiltered by evidenceRef or work-item.",
+    "rows": [
+      {
+        "specId": "AUTO-BAR-R-2-P-002",
+        "verdict": "pass",
+        "mode": "mechanical",
+        "floor": null,
+        "blocks": [],
+        "mechanicalProof": {
+          "applicable": true,
+          "verdict": "pass",
+          "requiredFiles": [
+            "apps/operator/lib/psu-launcher.test.ts",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "packages/operator-core/lib/session-port/service.test.ts",
+            "packages/operator-core/lib/session-port/store.integration.test.ts"
+          ],
+          "passingTestBindingIds": {
+            "apps/operator/lib/psu-launcher.test.ts": 67057,
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts": 66761,
+            "packages/operator-core/lib/session-port/service.test.ts": 65882,
+            "packages/operator-core/lib/session-port/store.integration.test.ts": 66768
+          },
+          "caughtMutantBindingIds": [
+            65897
+          ],
+          "gaps": []
+        },
+        "dragging": null,
+        "ratings": null
+      },
+      {
+        "specId": "GF-P002-source",
+        "verdict": "fail",
+        "mode": "judgment",
+        "floor": "l4",
+        "blocks": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "mechanicalProof": null,
+        "dragging": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28264,
+            28816,
+            28817,
+            28820,
+            38683,
+            45213,
+            45214,
+            66894,
+            66895
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28264,
+            28326,
+            28545,
+            28816,
+            28817,
+            28820,
+            38683,
+            45213,
+            45214,
+            45261
+          ],
+          "disclosed-gap": [
+            28820,
+            38682,
+            38683,
+            45261
+          ]
+        },
+        "ratings": {
+          "traceability": {
+            "rating": "unknown",
+            "evidence": "Evidence lineage is not anchored to a durable rerunnable record for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07). Bound evidence: id=28326, kind=operational, ref=\"thread-post:1161438\", lineage=unknown, lineageReason=\"no durable rerun anchor\", currentness=stale, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:56a26595b4bbaf5611f7ec9987d88c2f83e60c505deda3f7bb2309069e4e11f4\", measurementPin={\"repos\":[{\"repo\":\".\",\"head\":\"746af82e1d35057cc63aef75a6eead6e55abaa35\",\"gitlink\":null}],\"files\":[{\"repositoryPath\":\".\",\"path\":\"apps/operator/scripts/psu-launcher.mjs\"},{\"repositoryPath\":\".\",\"path\":\"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts\"},{\"repositoryPath\":\".\",\"path\":\"packages/operator-core/lib/session-port/native-adapter.ts\"},{\"repositoryPath\":\".\",\"path\""
+          },
+          "fixture-calibration": {
+            "rating": "unknown",
+            "evidence": "A fixture is required or used, but no fixture fingerprint or calibration evidence is bound for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07). Bound evidence: id=28205, kind=mutation, ref=\"test-run 20882516 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @f6b756c67387\", lineage=durable, lineageReason=\"durable testRunId\", currentness=stale, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:c7714eb26b6f6f4f8ef5b67170759536a830224201c27ed336d7f5f64952994b\", testFingerprint=\"sha256-file-set-v1:0fc58da1bafba3b6a49a378d3bfbcf54a7b94a66de2fab4be1448a0836996711\", testRunId=20882516, testRunLedgerExecution={\"status\":\"fail\",\"passed\":94,\"failed\":16,\"skipped\":0,\"collectionFailed\":false,\"testLayer\":\"unit\",\"passedCaseTitleCount\":64,\"passedCaseTi"
+          },
+          "falsifiability": {
+            "rating": "pass",
+            "evidence": "A bound mutation or counterexample targets get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07) itself, which declares no structured falsifier.requiredScenarios list; its canonical test file is separately bound as a successful current test for this clause. Bound evidence: id=66895, kind=mutation, ref=\"test-run 21822811 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @d9e349cba2a0\", lineage=durable, lineageReason=\"durable testRunId\", currentness=current, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:f4aac96b19c4e6ae9936fc9f5c8c0f41ebeca27e2ada544c1bf953236c0f2808\", testFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", fixtureFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff35"
+          },
+          "correct-layer": {
+            "rating": "pass",
+            "evidence": "Every required layer reaches the claimed path for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07): integration, unit. Bound evidence: id=67056, kind=test, ref=\"apps/operator/lib/psu-launcher.test.ts\", lineage=durable, lineageReason=\"durable testRunId\", currentness=current, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:07c8c251e60983c38e7bbf304f7e960ab5b6c309e3d2e4c036a289c5cf3ef464\", testFingerprint=\"sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a\", fixtureFingerprint=\"sha256-file-set-v1:8095c3ca4c194de0933f8465d3f7c8063607fbcfa910e65210e80d263dede21a\", testRunId=21828145, testRunLedgerExecution={\"status\":\"pass\",\"passed\":1209,\"failed\":0,\"skipped\":0,\"collectionFailed\":false,\"testLayer\":\"unit\",\"passedCaseTitleCount\":1207,\"passedCaseT"
+          },
+          "oracle-independence": {
+            "rating": "pass",
+            "evidence": "A bound proof explicitly uses an implementation-independent oracle for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07). Bound evidence: id=28243, kind=fixture, ref=\"test-run:20882292 PG evidence-span fixture calibration f6b756\", lineage=durable, lineageReason=\"durable testRunId\", currentness=stale, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:404d353023dc2225657fcc2cc7be6821985eb8178c6efb0339eb2bb645394206\", testFingerprint=\"sha256-file-set-v1:99144a7534fb437526fa3c1c430f9f58d68cd47928194672272bd9ba7df291b1\", fixtureFingerprint=\"sha256-file-set-v1:404d353023dc2225657fcc2cc7be6821985eb8178c6efb0339eb2bb645394206\", testRunId=20882292, testRunLedgerExecution={\"status\":\"pass\",\"passed\":15,\"failed\":0,\"skipped\":0,\"collectionFailed\":false,\"testLayer\":\"integration\",\"passedCa"
+          },
+          "execution-integrity": {
+            "rating": "unknown",
+            "evidence": "Executable binding(s) attest execution details but have no durable ledger reference for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07); author-attested booleans cannot establish execution-integrity. Bound evidence: id=28326, kind=operational, ref=\"thread-post:1161438\", lineage=unknown, lineageReason=\"no durable rerun anchor\", currentness=stale, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:56a26595b4bbaf5611f7ec9987d88c2f83e60c505deda3f7bb2309069e4e11f4\", measurementPin={\"repos\":[{\"repo\":\".\",\"head\":\"746af82e1d35057cc63aef75a6eead6e55abaa35\",\"gitlink\":null}],\"files\":[{\"repositoryPath\":\".\",\"path\":\"apps/operator/scripts/psu-launcher.mjs\"},{\"repositoryPath\":\".\",\"path\":\"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts\"},{\"repositoryPath\":\".\",\"path\":\"packa"
+          },
+          "freshness": {
+            "rating": "fail",
+            "evidence": "Stale binding(s) invalidate freshness for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07). Bound evidence: id=28243, kind=fixture, ref=\"test-run:20882292 PG evidence-span fixture calibration f6b756\", lineage=durable, lineageReason=\"durable testRunId\", currentness=stale, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:404d353023dc2225657fcc2cc7be6821985eb8178c6efb0339eb2bb645394206\", testFingerprint=\"sha256-file-set-v1:99144a7534fb437526fa3c1c430f9f58d68cd47928194672272bd9ba7df291b1\", fixtureFingerprint=\"sha256-file-set-v1:404d353023dc2225657fcc2cc7be6821985eb8178c6efb0339eb2bb645394206\", testRunId=20882292, testRunLedgerExecution={\"status\":\"pass\",\"passed\":15,\"failed\":0,\"skipped\":0,\"collectionFailed\":false,\"testLayer\":\"integration\",\"passedCaseTitleCount\":15}, testRunLed"
+          },
+          "plan-class-risk-floor": {
+            "rating": "pass",
+            "evidence": "The get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07) L4 risk floor is met via clause-bound mutation/counterexample evidence with a passing baseline case. Bound evidence: id=66895, kind=mutation, ref=\"test-run 21822811 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @d9e349cba2a0\", lineage=durable, lineageReason=\"durable testRunId\", currentness=current, currentnessProvenance=server-measured, sourceFingerprint=\"sha256-file-set-v1:f4aac96b19c4e6ae9936fc9f5c8c0f41ebeca27e2ada544c1bf953236c0f2808\", testFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", fixtureFingerprint=\"sha256-file-set-v1:8e45a1a0dccf31bd1e70c6c3a3ff3541a74fb24ea7d496dc79360780601105bf\", testRunId=21822811, testRunLedgerExecution={\"status\":\"fail\",\"p"
+          },
+          "disclosed-gap": {
+            "rating": "fail",
+            "evidence": "Bound proof for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07) records an author-disclosed gap, so it cannot be read as a machine PASS. Disclosed: The maintained real-PG public request/source-preflight integration uses controlled native launch dependencies; physical source/backend matrix and native actor/isolation acceptance remain open. | Three exact selected assertions ran; 119 other collected cases were unselected. Native launches are fakes. | Runner reports mutantParse unchecked and withheld structured mutation descriptor for old deployed reader. Whole worker-Vite graph may remain unknown. | Native launch and startup verification are controlled fakes; this tree integration does not establish physical native delivery or live source immutability. | Complete worker-Vite graph remains UNKNOWN for"
+          }
+        }
+      }
+    ],
+    "result": "BAR test requirement PASS; separate GF-P002-source FAIL on five remaining criteria. This is not item closure or independent plan acceptance."
+  },
+  "nativeAcceptance": {
+    "rubricRevision": 9,
+    "criteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+    "R2": "Full current method read: maintained source/adapter directions and live/dead matrix, exact selected transcript, independent answering identity and source before/after fingerprints. Universal actor/lease ABA/filesystem noninterference is not inferred.",
+    "P006Blocker": "Current work_items:get reports blocked-by P-002 only. P004 remains done/committed.",
+    "R6": "Full current method read: exact three native matrix cells, native kickoff and substantive post receipts, partitioned failures/unavailable/residuals, deterministic eight-thread sample. Existing original/supplementary sample shortfalls remain; no new cohort or quota consultations were created.",
+    "limitations": "CLI-authored reply chains remain CLI; no new native MCP per-call or exhaustive source lease-actor history was produced. Existing EI-26733731037199530 remains open."
+  },
+  "preservedReferences": [
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+      "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+      "unchanged": true
+    },
+    {
+      "path": "docs/evidence/get-feedback-p002-source-falsifier-2026-10-23.json",
+      "sha256": "c9f497fb853bf9baf7fc91e9028d771a5693c7f3e3400ffd20fe41a1c512be1a",
+      "unchanged": true
+    },
+    {
+      "path": "docs/evidence/get-feedback-p002-clause-refresh-2026-10-23.json",
+      "sha256": "789c96073125e6d893d6dd136cbd052eaa6f03b204941b151188eda2b7549354",
+      "unchanged": true
+    },
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json",
+      "sha256": "b96f027381e54a92c0a3c0c73d72d64f0c38ff84f089f82659552106a7aba7a4",
+      "role": "Referenced bounded historical native proof; not modified by this unit."
+    },
+    {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-actors-2026-10-23.json",
+      "sha256": "a8090077f2f569f43fdee628b13b47d1d83415fa7fe6a830c68a3c5e1b7201a2",
+      "role": "Referenced bounded historical native proof; not modified by this unit."
+    }
+  ],
+  "remaining": [
+    "Traceability and execution-integrity for old operational bindings28326/28545 need durable measured anchors with original source/runtime identities retained.",
+    "Fixture calibration and freshness still include historical evidence gaps. Current source falsifier proof does not silently replace these distinct claims.",
+    "Native/source-actor disclosures remain bound; original and supplementary cohort shortfalls, independent acceptance, original R5 defect and exact final shipment remain open."
+  ],
+  "reproduction": {
+    "tool": "plans:evaluate-spec-test-adequacy",
+    "endpoint": "http://127.0.0.1:3170",
+    "args": {
+      "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "harness": "papercusp",
+      "classRef": "plan-class-feature-ship",
+      "specIds": [
+        "GF-P002-source",
+        "AUTO-BAR-R-2-P-002"
+      ],
+      "detail": "full"
+    },
+    "caution": "A future read measures its actual serving build and named file bytes. A changed verdict must retain this dated measured result as history."
+  }
+}

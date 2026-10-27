@@ -96,6 +96,7 @@ import {
 } from './bg-host-quiesce-guard';
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { hostIdentity } from '../../serving-host-identity';
 import { probeHttpReachable, type HttpProbeResult } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
 import { readBundleStaleMarkerAt, type BundleStaleness } from '../../bundle-staleness';
@@ -1630,6 +1631,7 @@ export default defineTool({
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
     const cfg = RESTART_TARGETS[target];
+    const runRestart = async () => {
     // ⚠ This IS a raw `systemctl --user restart` — the coordination this tool adds
     // (drain + coalesce + audit + cooldown) is real, but it is ALL lock-shaped: the
     // drain acquires exclusive(<target>-server), i.e. it drains AGENTS USING the
@@ -3001,6 +3003,42 @@ export default defineTool({
       reason: `resource_${outcome.reason}`,
       resource: cfg.resource,
       holders: outcome.holders.map(holderJson),
+    });
+    };
+
+    // A different service's restart can outlive this API's next refresh. Keep
+    // the serving API alive through its drain and terminal receipt using the
+    // same shared-resource guard as certification and scorecard repair. Taking
+    // this lease for a self-restart would block its own exclusive target drain.
+    const servingHost = hostIdentity();
+    const servingResource = servingHost === 'port-3170' ? 'staging-server'
+      : servingHost === 'port-3070' ? 'dev-server' : null;
+    if (args.confirm !== true || servingResource === null || servingResource === cfg.resource) {
+      return runRestart();
+    }
+    const { ownerId, ownerLabel } = readIdentity(ctx);
+    const servingLease = await guardResource(
+      {
+        coordinationDomain: resourceLockDomain(servingResource),
+        ownerId,
+        ownerLabel,
+        coordIdentity: resolveAgentIdentity(ctx),
+        resource: servingResource,
+        mode: 'shared',
+        ttlSec: MAX_DRAIN_SEC + 90,
+        reason: `dev:restart ${target} keeps its serving API alive through the terminal receipt`,
+      },
+      runRestart,
+    );
+    if (servingLease.acquired) return servingLease.result;
+    return json({
+      ok: false,
+      target,
+      restarted: false,
+      drained: false,
+      reason: `request_host_${servingLease.reason}`,
+      resource: servingResource,
+      holders: servingLease.holders.map(holderJson),
     });
   },
 });

@@ -2,7 +2,8 @@
 import { createHash } from 'node:crypto';
 import { getPosthogConfigWithSource } from './posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
-import { deliverCloudTelemetry, type CloudTelemetryContext } from './cloud-telemetry';
+import { cloudTelemetryIdentity, deliverCloudTelemetry, type CloudTelemetryContext } from './cloud-telemetry';
+import { cloudTelemetryConsentSchema } from './telemetry-kinds';
 
 /** Existing capture ingress is separate from the flag/admin API. A healthy
  * project listing cannot prove that events can enter the ingestion pipeline. */
@@ -67,8 +68,7 @@ const CLOUD_MONITORING_DASHBOARD_TAG = 'papercusp-cloud-monitoring-v1';
 /** Materialize maintained definitions in the already configured project. Query
  * support is checked before any write. Only our tagged dashboard is updated;
  * a name collision, incomplete catalog or unavailable query fails explicitly. */
-export async function ensureCloudMonitoringDashboard(environment: CloudTelemetryContext['environment']) {
-  const views = cloudMonitoringDashboardViews(environment);
+async function configuredPosthogProject() {
   const config = getPosthogConfigWithSource().config;
   if (!config?.personalApiKey) throw new Error('posthog_dashboard_credentials_unavailable');
   const origin = new URL(config.host).origin;
@@ -76,7 +76,8 @@ export async function ensureCloudMonitoringDashboard(environment: CloudTelemetry
     const url = new URL(path, origin);
     if (url.origin !== origin) throw new Error('posthog_dashboard_foreign_origin');
     const response = await fetch(url, { method, headers: { authorization: `Bearer ${config.personalApiKey}`,
-      'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000) });
+      'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
+      redirect: 'error', signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`posthog_dashboard_api_status_${response.status}`);
     return response.json();
   };
@@ -95,6 +96,103 @@ export async function ensureCloudMonitoringDashboard(environment: CloudTelemetry
   if (projects.length !== 1 || !Number.isSafeInteger(projects[0]!.id)) throw new Error('posthog_dashboard_project_unverified');
   const projectId: number = projects[0]!.id;
   const root = `/api/projects/${projectId}`;
+  return { projectId, root, origin, request, catalog };
+}
+
+export type CloudProductUsageObservation = { status: 'unknown'; reason: string } | {
+  status: 'observed'; windowStart: string; windowEnd: string; evidenceRef: string;
+  /** Deduplicated event/operation observations, not counts of users or workspaces. */
+  observations: number; portalSessionObservations: number; readyProvisioningObservations: number; featureAdoptionObservations: number;
+};
+
+export interface CloudProductUsageFailure {
+  stage: 'project-selection' | 'usage-query' | 'consent-recheck';
+  category: 'configuration' | 'authentication' | 'timeout' | 'transport' | 'response' | 'unavailable';
+}
+
+/** Never retain arbitrary exception text: a vendor response or fetch error can
+ * contain credentials, query selectors or customer data. */
+function usageFailureCategory(error: unknown): CloudProductUsageFailure['category'] {
+  if (error instanceof Error) {
+    if (error.message === 'posthog_dashboard_credentials_unavailable') return 'configuration';
+    if (/^posthog_dashboard_api_status_(401|403)$/.test(error.message)) return 'authentication';
+    if (/^posthog_dashboard_(api_status_\d{3}|catalog_unavailable|catalog_incomplete|project_unverified|foreign_origin)$/.test(error.message) ||
+        error instanceof SyntaxError) return 'response';
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') return 'timeout';
+    if (error instanceof TypeError) return 'transport';
+  }
+  return 'unavailable';
+}
+
+/** Read original consented portal metadata, never customer-runtime diagnostics.
+ * This observes metadata for one verified hosted identity; PostHog source flags
+ * alone do not attest canonical provisioning outcomes. It does not bind a CRM
+ * lead or calculate fit/usage scores. The supplied consent reader must use that
+ * principal's existing tenant-scoped preference transaction. */
+export async function readCloudProductUsage(input: {
+  context: Pick<CloudTelemetryContext, 'principal' | 'environment'>;
+  windowStart: string; windowEnd: string;
+  readConsent: () => Promise<unknown>;
+  /** Trusted host diagnostics only. Fixed vocabulary; no exception messages,
+   * URLs, query text, credentials or customer identifiers are passed. */
+  onUnavailable?: (failure: CloudProductUsageFailure) => void;
+}): Promise<CloudProductUsageObservation> {
+  let identity: ReturnType<typeof cloudTelemetryIdentity>;
+  try { identity = cloudTelemetryIdentity(input.context); }
+  catch { return { status: 'unknown', reason: 'identity_unavailable' }; }
+  const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end || end - start > 30 * 86_400_000) {
+    return { status: 'unknown', reason: 'invalid_window' };
+  }
+  let consent: ReturnType<typeof cloudTelemetryConsentSchema.parse>;
+  try { consent = cloudTelemetryConsentSchema.parse(await input.readConsent()); }
+  catch { return { status: 'unknown', reason: 'consent_unavailable' }; }
+  if (!consent.analytics.enabled || !consent.analytics.since) return { status: 'unknown', reason: 'consent_disabled' };
+  const effectiveStart = Math.max(start, Date.parse(consent.analytics.since));
+  if (effectiveStart >= end) return { status: 'unknown', reason: 'outside_consent_epoch' };
+  const windowStart = new Date(effectiveStart).toISOString(), windowEnd = new Date(end).toISOString();
+  // Every interpolated selector is generated from a verified identity, an enum
+  // or an ISO timestamp. No caller-authored SQL or attribution enters the query.
+  const query = `SELECT uniqExact(concat(event, ':', properties.operation_id)) AS observations, ` +
+    `uniqExactIf(properties.operation_id, event = 'cloud_portal_session') AS portalSessionObservations, ` +
+    `uniqExactIf(properties.operation_id, event = 'cloud_workspace_provisioning' AND properties.phase = 'ready' AND properties.source = 'control-plane') AS readyProvisioningObservations, ` +
+    `uniqExactIf(properties.operation_id, event = 'cloud_feature_adoption') AS featureAdoptionObservations ` +
+    `FROM events WHERE distinct_id = '${identity.distinctId}' AND properties.organization_id = '${identity.organizationId}' ` +
+    `AND properties.environment = '${input.context.environment}' AND properties.synthetic = false ` +
+    `AND properties.source IN ('portal', 'control-plane') AND properties.operation_id IS NOT NULL AND properties.operation_id != '' ` +
+    `AND (event IN ('cloud_portal_session', 'cloud_feature_adoption') OR (event = 'cloud_workspace_provisioning' AND properties.phase = 'ready' AND properties.source = 'control-plane')) ` +
+    `AND timestamp >= toDateTime('${windowStart}') AND timestamp < toDateTime('${windowEnd}')`;
+  let stage: CloudProductUsageFailure['stage'] = 'project-selection';
+  try {
+    const { projectId, root, request } = await configuredPosthogProject();
+    stage = 'usage-query';
+    const result = await request(`${root}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
+    const columns = ['observations', 'portalSessionObservations', 'readyProvisioningObservations', 'featureAdoptionObservations'];
+    if (JSON.stringify(result.columns) !== JSON.stringify(columns) || !Array.isArray(result.results) || result.results.length !== 1 ||
+        !Array.isArray(result.results[0]) || result.results[0].length !== 4 || result.hasMore === true || result.has_more === true ||
+        result.results[0].some((n: unknown) => !Number.isSafeInteger(n) || (n as number) < 0)) {
+      return { status: 'unknown', reason: 'usage_response_invalid' };
+    }
+    const [observations, portalSessionObservations, readyProvisioningObservations, featureAdoptionObservations] = result.results[0] as [number, number, number, number];
+    if (observations !== portalSessionObservations + readyProvisioningObservations + featureAdoptionObservations) return { status: 'unknown', reason: 'usage_response_invalid' };
+    // Recheck revocation/epoch after the network read, before returning data.
+    stage = 'consent-recheck';
+    const current = cloudTelemetryConsentSchema.parse(await input.readConsent());
+    if (!current.analytics.enabled || current.analytics.since !== consent.analytics.since) return { status: 'unknown', reason: 'consent_changed' };
+    if (observations === 0) return { status: 'unknown', reason: 'no_observations' };
+    return { status: 'observed', windowStart, windowEnd, observations, portalSessionObservations, readyProvisioningObservations, featureAdoptionObservations,
+      evidenceRef: `posthog:${projectId}:hogql:${createHash('sha256').update(query).digest('hex')}` };
+  } catch (error) {
+    // An observer cannot turn an unavailable measurement into a thrown task or
+    // an invented reading, even if its own logging transport is unavailable.
+    try { input.onUnavailable?.({ stage, category: usageFailureCategory(error) }); } catch {}
+    return { status: 'unknown', reason: 'usage_query_unavailable' };
+  }
+}
+
+export async function ensureCloudMonitoringDashboard(environment: CloudTelemetryContext['environment']) {
+  const views = cloudMonitoringDashboardViews(environment);
+  const { projectId, root, origin, request, catalog } = await configuredPosthogProject();
   for (const view of views) await request(`${root}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query: view.query } });
   const name = `Papercusp cloud monitoring — ${environment}`;
   const matches = (await catalog(`${root}/dashboards/?limit=100`)).filter(dashboard => dashboard.name === name);

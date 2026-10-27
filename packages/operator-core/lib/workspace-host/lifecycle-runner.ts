@@ -8,6 +8,8 @@ import {
   workspaceHostActionInvalidatesInitialization,
   workspaceHostProviderRetryClass,
   workspaceHostRecoveryAction,
+  isWorkspaceHostCanaryIdentityLabelKey,
+  workspaceHostCanaryIdentityAudit,
   type WorkspaceHostApplyResult,
   type WorkspaceHostControllerAuthority,
   type WorkspaceHostDomainState,
@@ -949,6 +951,22 @@ export async function runWorkspaceHostLifecycle(
   const controllerAuthority =
     input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
   const store = controllerStore(baseStore, controllerAuthority, operationId);
+  const awsCanary = target.target === 'aws' && Object.keys(target.desired.labels ?? {})
+    .some(isWorkspaceHostCanaryIdentityLabelKey);
+  const originalCanary = awsCanary ? target.originalCanaryAdmission : undefined;
+  if (awsCanary) {
+    if (!originalCanary || originalCanary.workspaceId !== workspaceId ||
+        !Number.isFinite(Date.parse(originalCanary.teardownDeadlineAt))) {
+      throw new WorkspaceHostProvisioningRequestError(['original AWS canary admission is missing or invalid']);
+    }
+    const audit = workspaceHostCanaryIdentityAudit(target.desired.labels, originalCanary);
+    if (audit.missing.length || audit.mismatched.length ||
+        (input.canary && (input.canary.runId !== originalCanary.runId ||
+          input.canary.workspaceId !== originalCanary.workspaceId ||
+          input.canary.teardownDeadlineAt !== originalCanary.teardownDeadlineAt))) {
+      throw new WorkspaceHostProvisioningRequestError(['AWS lifecycle cannot replace the original canary identity or deadline']);
+    }
+  }
 
   if (input.action === 'restore') {
     if (!input.desired) throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
@@ -1007,8 +1025,9 @@ export async function runWorkspaceHostLifecycle(
     ...(target.hostedCustomerWorkspaceId ? { durableTenantIdentity:
       workspaceHostDurableTenantIdentity(workspaceId, target.hostedCustomerWorkspaceId) } : {}),
     ...(storageAdmission?.allocation ? { durableStorageAllocation: { ...storageAdmission.allocation } } : {}),
-    ...(input.action === 'restore' && input.canary
-      ? { canaryTeardownDeadlineAt: input.canary.teardownDeadlineAt } : {}),
+    ...(originalCanary ? { canaryTeardownDeadlineAt: originalCanary.teardownDeadlineAt,
+      canaryRunId: originalCanary.runId } : input.action === 'restore' && input.canary
+      ? { canaryTeardownDeadlineAt: input.canary.teardownDeadlineAt, canaryRunId: input.canary.runId } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

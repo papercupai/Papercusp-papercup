@@ -695,6 +695,7 @@ describe('P-012 terminal provenance writer', () => {
       state: 'killed',
       exitCode: 137,
       exitReason: 'oom-kill',
+      revision: 1,
     });
 
     const [stored] = await db.sql`
@@ -780,6 +781,105 @@ describe('P-012 terminal provenance writer', () => {
       }),
     ).resolves.toBe(false);
     expect((await store.getTask(row.taskId))?.state).toBe('running');
+  });
+
+  it('upgrades an unobserved close from delayed exit evidence without changing ended_at', async () => {
+    const row = await liveTask('lateexit');
+    const effects = { emitTerminal: vi.fn(async () => {}) };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved' }, undefined, effects);
+    const endedAt = (await store.getTask(row.taskId))!.endedAt;
+    expect((await store.listReconcileTasks(WS)).map((r) => r.taskId)).toContain(row.taskId);
+    const emitTerminal = vi.fn(async () => {
+      expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 0, endedAt });
+    });
+    const input = { state: 'ended_unobserved' as const, terminalProvenance: terminal(row.scopeUnit!, {
+      activeState: 'inactive', serviceResult: 'success', execMainCode: 1, execMainStatus: 0,
+    }) };
+    expect(await store.closeTask(row.taskId, input, undefined, { emitTerminal })).toBe(true);
+    expect(await store.closeTask(row.taskId, input, undefined, { emitTerminal })).toBe(false);
+    expect(emitTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a known invocation when delayed terminal evidence omits its identity', async () => {
+    const row = await liveTask('missinginvocation');
+    const effects = { emitTerminal: vi.fn(async () => {}), onTerminalPersisted: vi.fn() };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved', terminalProvenance: terminal(row.scopeUnit!, {
+      invocationId: 'retained-invocation', activeState: 'inactive', serviceResult: null,
+      execMainCode: null, execMainStatus: null,
+    }) }, undefined, effects);
+    const endedAt = (await store.getTask(row.taskId))!.endedAt;
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0,
+      terminalProvenance: terminal(row.scopeUnit!, { invocationId: null, activeState: 'inactive',
+        serviceResult: 'success', execMainCode: 1, execMainStatus: 0 }) }, undefined, effects)).toBe(true);
+    expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 0, endedAt,
+      terminalProvenance: { invocationId: 'retained-invocation' } });
+    expect(effects.onTerminalPersisted).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['unobserved', 'runner-log'])('receipts only accepted terminal writes in a mixed %s batch', async (path) => {
+    const tasks = await Promise.all(['acceptedreceipt', 'refusedreceipt'].map((id) => liveTask(id)));
+    const receipts: string[] = [];
+    const effects = (taskId: string) => ({ emitTerminal: vi.fn(async () => {}),
+      onTerminalPersisted: () => receipts.push(taskId) });
+    const verdicts = tasks.map((row, index) => ({ taskId: row.taskId, state: 'exited' as const,
+      exitCode: 2, reason: 'released', terminalProvenance: terminal(index ? 'pc-wrong.service' : row.scopeUnit!) }));
+    expect(await (path === 'unobserved'
+      ? store.markEndedUnobserved(verdicts, undefined, effects)
+      : store.markRecoveredFromJobLog(verdicts, undefined, effects))).toBe(1);
+    expect(receipts).toEqual([tasks[0].taskId]);
+    expect((await store.getTask(tasks[1].taskId))?.state).toBe('running');
+  });
+
+  it('preserves observed exits and rejects active or mismatched recovery evidence', async () => {
+    const row = await liveTask('latecontrols');
+    const effects = { emitTerminal: vi.fn(async () => {}) };
+    await store.closeTask(row.taskId, { state: 'ended_unobserved', terminalProvenance: terminal(row.scopeUnit!, {
+      invocationId: 'original', activeState: 'inactive', serviceResult: null, execMainCode: null, execMainStatus: null,
+    }) }, undefined, effects);
+    for (const change of [{ scopeUnit: 'pc-other.service' }, { invocationId: 'other' },
+      ...['active', 'activating', 'reloading', 'deactivating'].map((activeState) => ({ activeState }))]) {
+      expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0,
+        terminalProvenance: terminal(row.scopeUnit!, { invocationId: 'original', serviceResult: 'success',
+          execMainCode: 1, execMainStatus: 0, activeState: 'inactive', ...change }) }, undefined, effects)).toBe(false);
+    }
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 4 }, undefined, effects)).toBe(true);
+    expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0 }, undefined, effects)).toBe(false);
+    expect(await store.getTask(row.taskId)).toMatchObject({ state: 'exited', exitCode: 4 });
+  });
+
+  it('does not receipt or emit a SQL-refused racing close after the recovery read', async () => {
+    for (const change of ['observed', 'scope', 'invocation']) {
+      const row = await liveTask(`racing${change}`);
+      await store.closeTask(row.taskId, { state: 'ended_unobserved' }, undefined, { emitTerminal: async () => {} });
+      const [before] = await db.sql`SELECT detail -> 'terminalEventRevision' AS revision,
+        detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${row.taskId}`;
+      let closeUpdates = 0;
+      const effects: CloseTaskEffects = { emitTerminal: vi.fn(async () => {}), onTerminalPersisted: vi.fn(), stage: (stage) => {
+        if (stage === 'task-close-update') updates.push(change === 'observed'
+          ? db.sql`UPDATE harness_shared.task_ledger SET state = 'exited', exit_code = 9 WHERE task_id = ${row.taskId}`
+          : change === 'scope'
+            ? db.sql`UPDATE harness_shared.task_ledger SET scope_unit = 'pc-replaced.service' WHERE task_id = ${row.taskId}`
+            : db.sql`UPDATE harness_shared.task_ledger SET detail = detail || '{"terminalProvenance":{"invocationId":"new"}}'::jsonb WHERE task_id = ${row.taskId}`);
+      } };
+      // An injected SQL boundary models another connection winning between read and UPDATE.
+      const updates: PromiseLike<unknown>[] = [];
+      const sql = ((parts: TemplateStringsArray, ...values: unknown[]) => {
+        const query = parts.join('?');
+        if (query.includes('UPDATE harness_shared.task_ledger')) return (async () => {
+          closeUpdates++;
+          await Promise.all(updates);
+          return db.sql(parts, ...values as never[]);
+        })();
+        return db.sql(parts, ...values as never[]);
+      }) as typeof db.sql;
+      expect(await store.closeTask(row.taskId, { state: 'exited', exitCode: 0 }, sql, effects)).toBe(false);
+      expect(closeUpdates).toBe(1);
+      expect(effects.onTerminalPersisted).not.toHaveBeenCalled();
+      expect(effects.emitTerminal).not.toHaveBeenCalled();
+      expect(await db.sql`SELECT detail -> 'terminalEventRevision' AS revision,
+        detail -> 'terminalEventPending' AS pending FROM harness_shared.task_ledger WHERE task_id = ${row.taskId}`)
+        .toEqual([before]);
+    }
   });
 });
 
@@ -969,18 +1069,26 @@ describe('gcTerminalTasks retention', () => {
     taskId: string,
     endedHoursAgo: number,
     detail: Record<string, unknown>,
-    options: { taskClass?: string; logPath?: string | null } = {},
+    options: { taskClass?: string; launchedBy?: string; logPath?: string | null; startedHoursAgo?: number } = {},
   ) {
     await db.sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
         launched_by, confined, state, ended_at, log_path, detail
       ) VALUES (
-        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb, 'test', false, 'exited',
+        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb,
+        ${options.launchedBy ?? 'test'}, false, 'exited',
         now() - make_interval(hours => ${endedHoursAgo}::int), ${options.logPath ?? null},
         ${db.sql.json(detail as postgres.JSONValue)}
       )
     `;
+    if (options.startedHoursAgo !== undefined) {
+      await db.sql`
+        UPDATE harness_shared.task_ledger
+           SET started_at = now() - make_interval(hours => ${options.startedHoursAgo}::int)
+         WHERE workspace_id = ${WS} AND task_id = ${taskId}
+      `;
+    }
   }
 
   it('never deletes a release journal, however long ago its process exited', async () => {
@@ -992,6 +1100,74 @@ describe('gcTerminalTasks retention', () => {
     await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
     const rows = await db.sql`SELECT task_id FROM harness_shared.task_ledger ORDER BY task_id`;
     expect(rows.map((row) => row.task_id)).toEqual(['old-release', 'young-plain']);
+  });
+
+  it('retains the latest operator E2E task rows to match the per-run log window', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'operator-e2e-task-retention-'));
+    const oldestLog = join(stateDir, 'operator-e2e-oldest.log');
+    const latestLog = join(stateDir, 'operator-e2e-latest.log');
+    writeFileSync(oldestLog, 'old E2E output\n', 'utf8');
+    writeFileSync(latestLog, 'retained E2E output\n', 'utf8');
+
+    try {
+      const runIds = Array.from(
+        { length: store.OPERATOR_E2E_TASK_RETENTION_RUNS + 1 },
+        (_, index) => `operator-e2e-run-${String(index + 1).padStart(2, '0')}`,
+      );
+      for (const [index, taskId] of runIds.entries()) {
+        const endedHoursAgo = 200 + runIds.length - index - 1;
+        await insertTerminal(
+          taskId,
+          endedHoursAgo,
+          { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM, runGroup: `operator-e2e-nightly:fire-${index}` },
+          {
+            taskClass: store.OPERATOR_E2E_TASK_CLASS,
+            launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+            logPath: index === 0 ? oldestLog : index === runIds.length - 1 ? latestLog : null,
+            startedHoursAgo: endedHoursAgo + 1,
+          },
+        );
+      }
+
+      // Similar metadata outside the exact class/launcher/subsystem fence must
+      // continue to use the ordinary age policy.
+      await insertTerminal('wrong-launcher-e2e', 400, { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM }, {
+        taskClass: store.OPERATOR_E2E_TASK_CLASS,
+      });
+      await insertTerminal('wrong-class-e2e', 400, { subsystem: store.OPERATOR_E2E_TASK_SUBSYSTEM }, {
+        taskClass: 'other',
+        launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+      });
+      await insertTerminal('wrong-subsystem-e2e', 400, { subsystem: 'other' }, {
+        taskClass: store.OPERATOR_E2E_TASK_CLASS,
+        launchedBy: store.OPERATOR_E2E_TASK_LAUNCHED_BY,
+      });
+
+      await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(4);
+
+      const retained = await db.sql`
+        SELECT task_id
+          FROM harness_shared.task_ledger
+         WHERE workspace_id = ${WS}
+           AND class = ${store.OPERATOR_E2E_TASK_CLASS}
+           AND launched_by = ${store.OPERATOR_E2E_TASK_LAUNCHED_BY}
+           AND detail->>'subsystem' = ${store.OPERATOR_E2E_TASK_SUBSYSTEM}
+         ORDER BY started_at DESC, task_id DESC
+      `;
+      expect(retained.map((row) => row.task_id)).toEqual(runIds.slice(1).reverse());
+      expect(await store.getTask(runIds[0])).toBeNull();
+      expect(await store.getTask('wrong-launcher-e2e')).toBeNull();
+      expect(await store.getTask('wrong-class-e2e')).toBeNull();
+      expect(await store.getTask('wrong-subsystem-e2e')).toBeNull();
+      expect(existsSync(oldestLog)).toBe(false);
+      expect(await store.getTask(runIds[runIds.length - 1])).toMatchObject({
+        logPath: latestLog,
+        class: store.OPERATOR_E2E_TASK_CLASS,
+      });
+      expect(existsSync(latestLog)).toBe(true);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps terminal logs reattachable until expiry, then retires only deleted-row logs', async () => {

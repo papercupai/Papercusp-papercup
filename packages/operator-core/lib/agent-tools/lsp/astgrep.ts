@@ -13,6 +13,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { semgrepTaint } from '../../code-intelligence/semgrep-taint-facade';
+import { agentAntipatterns } from '../../code-intelligence/agent-antipatterns';
 import {
   AST_GREP_LANGUAGES,
   astGrepFacade,
@@ -39,8 +40,10 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z
-      .enum(['search', 'rewrite_preview', 'syntax_index', 'taint'])
-      .describe('search lists matches; rewrite_preview reports replacements; syntax_index emits inferred declarations; taint evaluates declared local data flow separately using Semgrep OSS. All are read-only.'),
+      .enum(['search', 'rewrite_preview', 'syntax_index', 'taint', 'agent_antipatterns'])
+      .describe('search lists matches; rewrite_preview reports replacements; syntax_index emits inferred declarations; taint evaluates declared local data flow using Semgrep OSS; agent_antipatterns compares before/source with the maintained advisory rule pack. All are read-only.'),
+    before: z.string().max(100_000).optional().describe('agent_antipatterns: exact before source; omitted means unknown, so new skips/timeout increases cannot be inferred.'),
+    source: z.string().max(100_000).optional().describe('agent_antipatterns: exact after source. Returns advisory syntax candidates and source hashes.'),
     pattern: z
       .string()
       .min(1)
@@ -73,6 +76,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const root = args.rootPath ?? resolveAgentWorkspaceRoot(ctx);
+    if (args.op === 'agent_antipatterns') {
+      if (args.source === undefined || !['ts', 'tsx'].includes(args.language)) throw new Error('agent_antipatterns requires source and ts/tsx language');
+      return { data: await agentAntipatterns(args.before ?? null, args.source, args.language as 'ts' | 'tsx') };
+    }
     if (args.op === 'taint') return { data: await semgrepTaint({ language: args.language, paths: args.paths,
       rootPath: root, patterns: args.taint, limit: args.limit }) };
     if (args.op === 'syntax_index') return { data: await astGrepSyntaxIndex({ language: args.language, paths: args.paths, rootPath: root, limit: args.limit }) };

@@ -6,7 +6,7 @@ function claim(over: Partial<FeatureClaimRow> = {}): FeatureClaimRow {
     harness_slug: 'sheets',
     feature_id: 'F-001',
     seq: 7,
-    claimer_pubkey: 'abc'.repeat(20),
+    claimer_pubkey: 'a'.repeat(64),
     claimer_github_user_id: 12345,
     claimed_at: 1700000000000,
     outcome: 'won',
@@ -16,8 +16,8 @@ function claim(over: Partial<FeatureClaimRow> = {}): FeatureClaimRow {
 }
 
 describe('feature_claims projection', () => {
-  it('composeKey concatenates feature_id and seq', () => {
-    expect(_testing.composeKey(claim())).toBe('F-001/7');
+  it('composeKey qualifies a per-log sequence with its original author', () => {
+    expect(_testing.composeKey(claim())).toBe(`F-001/${'a'.repeat(64)}/7`);
   });
 
   it('decodeValue accepts valid row, rejects malformed', () => {
@@ -25,6 +25,8 @@ describe('feature_claims projection', () => {
     expect(_testing.decodeValue({})).toBeNull();
     expect(_testing.decodeValue(null)).toBeNull();
     expect(_testing.decodeValue({ ...claim(), seq: -1 })).toBeNull();
+    expect(_testing.decodeValue({ ...claim(), seq: Number.MAX_SAFE_INTEGER + 1 })).toBeNull();
+    expect(_testing.decodeValue({ ...claim(), claimer_pubkey: 'not-a-core-key' })).toBeNull();
     expect(_testing.decodeValue({ ...claim(), feature_id: 42 })).toBeNull();
   });
 

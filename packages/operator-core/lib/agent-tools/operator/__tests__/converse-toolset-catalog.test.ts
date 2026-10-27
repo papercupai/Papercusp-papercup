@@ -12,8 +12,8 @@ import {
 import { CLAUDE_TOOL_DELIVERY } from '../../../../../../apps/operator/scripts/tool-delivery.generated.mjs';
 import { capabilityToolNames, OWNED_LOOP_TOOL_SELECTION } from '../../../agent-loop/capability-toolset';
 import { applyCompactTier } from '../../../endpoint-route/routes/transport/tool-allowlist';
-import { MIN_PLAUSIBLE_CATALOG_SIZE } from '../../tool-guidance-budget';
-import { AGENT_MCP_TOOL_PREFIX, buildConverseMcpMount, selectConverseTools } from '../converse-toolset';
+import { MIN_PLAUSIBLE_CATALOG_SIZE, selectedInputSchemaBudget } from '../../tool-guidance-budget';
+import { AGENT_MCP_TOOL_PREFIX, buildConverseMcpMount, compactConverseSchemasForAdmission, selectConverseTools } from '../converse-toolset';
 
 interface Definition {
   name: string;
@@ -61,6 +61,10 @@ describe('Papercup tool surface — registered catalog (P-001)', () => {
       expect(unknown, `${surface.label} advertises tools absent from the registered catalog`).toEqual([]);
       const listings = names.map((name) => definitions.get(name)!);
       const compact = applyCompactTier(listings, new Set(names), compactInputSchema, summaryGuidanceDescription);
+      const compactAdmissionSchemas = compactConverseSchemasForAdmission(listings);
+      const schemaBudget = selectedInputSchemaBudget(compactAdmissionSchemas);
+      expect(schemaBudget.overBudget, `${surface.label} compact schemas exceed the aggregate admission budget`).toBe(false);
+      expect(compactAdmissionSchemas.map((tool) => tool.inputSchema)).toEqual(compact.map((tool) => tool.inputSchema));
       const projectedBytes = compact.reduce((sum, tool) => sum + Buffer.byteLength(JSON.stringify({
         name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
       })), 0);
@@ -73,12 +77,14 @@ describe('Papercup tool surface — registered catalog (P-001)', () => {
       });
       expect(mount).not.toBeNull();
       expect(new URL(mount!.url).searchParams.get('tools')?.split(',')).toEqual(names);
+      expect(new URL(mount!.url).searchParams.get('tools_compact')?.split(',')).toEqual(names);
       if (surface.hostTrust === 'public' || surface.agentRunsAsCustomer) {
         expect(new URL(mount!.url).searchParams.has('superuser')).toBe(false);
         expect(mount!.bearer).toBe('fixture-customer');
       }
       return {
         surface: surface.label, tools: names.length,
+        schemaBytes: schemaBudget.totalBytes,
         fullBytes: listings.reduce((sum, tool) => sum + Buffer.byteLength(JSON.stringify({
           name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
         })), 0),

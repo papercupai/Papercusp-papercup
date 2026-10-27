@@ -58,9 +58,9 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * unit-tested without PG or a filesystem; the sweep + gather wrap it with real fs
  * + PG reads. Server-only.
  */
-import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { pinProtectsPath, readRetentionPins, readRetentionPinsAsync, type RetentionPin } from './storage/retention-pins';
 import { AGENT_ROOT_MAX_BYTES } from './storage/retention-policy';
@@ -327,7 +327,7 @@ export interface SessionDirGcResult {
   skipped?: 'degraded-protected-set';
   caps?: Array<{
     root: string; maxBytes: number; beforeBytes: number | null; afterBytes: number | null;
-    pinnedBytes: number | null; overByBytes: number | null; error?: string;
+    pinnedBytes: number | null; overByBytes: number | null; pinnedOverageBytes: number | null; error?: string;
   }>;
 }
 
@@ -351,6 +351,8 @@ export function sweepStaleSessionDirs(opts: {
   unarchivedPaths?: ReadonlySet<string>;
   /** Production supplies a snapshot read under the storage:pin mutex. */
   retentionPins?: readonly RetentionPin[];
+  /** Time of that final pin snapshot; lifecycle/archive eligibility keeps nowMs. */
+  pinNowMs?: number;
   /** Full last-write evidence from the bounded native census, when available. */
   newestWrites?: ReadonlyMap<string, number>;
 }): SessionDirGcResult {
@@ -367,7 +369,8 @@ export function sweepStaleSessionDirs(opts: {
   });
   const removed: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
-  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: opts.nowMs });
+  const pinNowMs = opts.pinNowMs ?? opts.nowMs;
+  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: pinNowMs });
   if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
   let keptPinned = 0;
   // Pressure must never make a newer collectible session precede an older one.
@@ -376,7 +379,7 @@ export function sweepStaleSessionDirs(opts: {
     (opts.newestWrites?.get(a.path) ?? a.mtimeMs) - (opts.newestWrites?.get(b.path) ?? b.mtimeMs) || a.path.localeCompare(b.path))) {
     let physical = c.path;
     try { physical = realpathSync(c.path); } catch { /* A missing candidate cannot have a physical alias. */ }
-    if (pinProtectsPath(c.path, read.pins, opts.nowMs) || pinProtectsPath(physical, read.pins, opts.nowMs)) {
+    if (pinProtectsPath(c.path, read.pins, pinNowMs) || pinProtectsPath(physical, read.pins, pinNowMs)) {
       keptPinned++;
       continue;
     }
@@ -621,9 +624,10 @@ export async function runSessionDirGc(
   }
 
   return withFsMutex('papercusp-disk-retention', async () => {
-    const read = await readRetentionPinsAsync();
+    const pinNowMs = Date.now();
+    const read = await readRetentionPinsAsync({ nowMs: pinNowMs });
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-    const { inspectRetentionTrees } = await import('./storage/disk-consumer-census');
+    const { inspectRetentionTrees, RetentionAllocationCounter } = await import('./storage/disk-consumer-census');
     const newestWrites = new Map<string, number>();
     const measure = async (root: SessionDirRoot) => {
       try {
@@ -637,20 +641,66 @@ export async function runSessionDirGc(
         // own blocks, never the owner's targets. Size-only accounting uses the
         // collector's own uid; foreign or mounted subtrees cannot be counted as
         // an empty/complete tree, or justify privileged session deletion.
-        const census = await inspectRetentionTrees(physical, { retainAfterMs: 0,
-          includeRecent: true, sudo: null, timeoutMs: 5_000 });
-        if (census.error) throw new Error(census.error);
-        const partial = census.retained.find((entry) => ['foreign ownership boundary', 'filesystem boundary'].includes(entry.reason));
-        if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
-        const entries = [...census.entries, ...census.retained.flatMap((entry) => entry.entry ? [entry.entry] : [])];
-        let bytes = 0, pinnedBytes = 0;
+        const deadline = Date.now() + 5_000;
+        const inspect = async (path: string) => {
+          if (Date.now() >= deadline) throw new Error('session allocation census budget exhausted');
+          const census = await inspectRetentionTrees(path, { retainAfterMs: 0,
+            includeRecent: true, sudo: null, timeoutMs: Math.max(1, deadline - Date.now()) });
+          if (census.error) throw new Error(census.error);
+          const partial = census.retained.find((entry) => !entry.entry ||
+            ['foreign ownership boundary', 'filesystem boundary'].includes(entry.reason));
+          if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
+          return [...census.entries, ...census.retained.map(entry => entry.entry!)];
+        };
+        const entries = await inspect(physical);
+        const addEntries = (counter: InstanceType<typeof RetentionAllocationCounter>, selected: typeof entries) => {
+          for (const entry of selected) {
+            // Each entry already deduplicates its own hardlinks. Replay shared
+            // allocations through the existing counter across home boundaries.
+            const shared = entry.hardlinks ?? [];
+            const exclusiveBytes = entry.bytes - shared.reduce((total, link) => total + link.bytes, 0);
+            if (!Number.isSafeInteger(exclusiveBytes) || exclusiveBytes < 0) throw new Error('invalid session allocation census');
+            counter.bytes += exclusiveBytes;
+            for (const link of shared) counter.add(link.paths[0]!, {
+              dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2,
+            }, true);
+          }
+        };
         for (const entry of entries) {
-          bytes += entry.bytes;
           const logical = join(resolve(root.root), basename(entry.path));
           newestWrites.set(logical, entry.newestWriteMs);
-          if (pinProtectsPath(logical, read.pins, nowMs) || pinProtectsPath(entry.path, read.pins, nowMs)) pinnedBytes += entry.bytes;
         }
-        return { bytes, pinnedBytes };
+        const all = new RetentionAllocationCounter(); addEntries(all, entries);
+        // A child pin prevents deleting its atomic home. Only its exact
+        // subtree/inode union qualifies for pinned overage, not sibling bulk.
+        const contains = (outer: string, inner: string) => outer === inner || inner.startsWith(outer === sep ? sep : outer + sep);
+        const logical = resolve(root.root);
+        const pinPaths = [...new Set(read.pins.flatMap(pin => pin.paths).map(path => resolve(path)).flatMap(path =>
+            contains(path, physical) || contains(path, logical) ? [physical] :
+              contains(physical, path) ? [path] : contains(logical, path) ? [join(physical, relative(logical, path))] : []))]
+          .sort((a, b) => a.length - b.length || a.localeCompare(b));
+        const pinned = new RetentionAllocationCounter();
+        const rootStat = lstatSync(physical);
+        for (const [index, path] of pinPaths.entries()) {
+          if (pinPaths.slice(0, index).some(parent => contains(parent, path))) continue;
+          if (path === physical) { pinned.bytes = all.bytes; break; }
+          let st: ReturnType<typeof lstatSync>;
+          try { st = lstatSync(path); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; else continue; }
+          if (st.dev !== rootStat.dev) throw new Error(`filesystem boundary: ${path}`);
+          if (process.getuid && st.uid !== process.getuid()) throw new Error(`foreign ownership boundary: ${path}`);
+          if (realpathSync(path) !== path) throw new Error(`noncanonical session pin scope: ${path}`);
+          pinned.add(path, st, st.isFile());
+          if (st.isDirectory()) addEntries(pinned, await inspect(path));
+          const confirm = lstatSync(path);
+          if (confirm.dev !== st.dev || confirm.ino !== st.ino || confirm.ctimeMs !== st.ctimeMs) {
+            throw new Error(`session pin allocation changed during census: ${path}`);
+          }
+        }
+        if (!Number.isSafeInteger(all.bytes) || !Number.isSafeInteger(pinned.bytes) || pinned.bytes > all.bytes) {
+          throw new Error('inconsistent session/pin allocation census');
+        }
+        return { bytes: all.bytes, pinnedBytes: pinned.bytes };
       } catch (error) { return { bytes: null, pinnedBytes: null, error: String(error) }; }
     };
     const before = [];
@@ -664,6 +714,7 @@ export async function runSessionDirGc(
       dryRun: opts.dryRun,
       unarchivedPaths,
       retentionPins: read.pins,
+      pinNowMs,
       newestWrites,
     });
     result.caps = [];
@@ -673,11 +724,19 @@ export async function runSessionDirGc(
       const after = await measure(root);
       const maxBytes = root.maxBytes ?? AGENT_ROOT_MAX_BYTES;
       const error = before[index]!.error ?? after.error;
+      const overByBytes = after.bytes === null ? null : Math.max(0, after.bytes - maxBytes);
+      const pinnedOverageBytes = after.pinnedBytes === null ? null : Math.max(0, after.pinnedBytes - maxBytes);
       result.caps.push({ root: root.root, maxBytes, beforeBytes: before[index]!.bytes,
         afterBytes: after.bytes, pinnedBytes: after.pinnedBytes,
-        overByBytes: after.bytes === null ? null : Math.max(0, after.bytes - maxBytes),
+        overByBytes, pinnedOverageBytes,
         ...(error ? { error } : {}) });
       if (error) result.errors.push({ path: root.root, error: `session cap measurement incomplete: ${error}` });
+      // Live/fresh/unarchived homes stay protected. Their excess is not the
+      // live-pin exception, and a preview does not claim to have enforced caps.
+      else if (!opts.dryRun && overByBytes !== null && pinnedOverageBytes !== null && overByBytes > pinnedOverageBytes) {
+        result.errors.push({ path: root.root,
+          error: `session cap remains exceeded beyond live-pin overage: ${overByBytes} byte(s) over cap, ${pinnedOverageBytes} accounted for by live pins` });
+      }
     }
     return result;
   });

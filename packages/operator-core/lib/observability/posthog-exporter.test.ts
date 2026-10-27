@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TracerProvider, InMemorySpanExporter, SimpleSpanProcessor, type ReadableSpan } from '@opentelemetry/sdk-trace';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { PosthogSpanExporter, spanCaptureEvents, type TraceDeliveryConfig } from './posthog-exporter';
 
 function span(error = false, model = true): ReadableSpan {
@@ -21,6 +21,21 @@ const config: TraceDeliveryConfig = { allowed: true, host: 'http://127.0.0.1:123
 const exportSpans = (exporter: PosthogSpanExporter, spans: ReadableSpan[]) => new Promise<{ code: number }>(resolve => exporter.export(spans, resolve));
 
 describe('safe PostHog OpenTelemetry delivery', () => {
+  it('aborts a stalled capture with the exact two-second transport deadline', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const send = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
+      const signal = init!.signal!;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    const exporter = new PosthogSpanExporter(async () => config, send);
+    try {
+      expect((await exportSpans(exporter, [span()])).code).not.toBe(0);
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(2_000);
+      expect(send.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+      expect(exporter.health()).toMatchObject({ failedSpans: 1, exportedSpans: 0 });
+    } finally { timeout.mockRestore(); }
+  });
+
   it('excludes observations in the grant millisecond and admits the following millisecond', async () => {
     const consentSince = 1_700_000_000_000;
     const timed = (milliseconds: number) => Object.create(span(), { startTime: { value: [Math.floor(milliseconds / 1000), Math.round(milliseconds % 1000 * 1e6)] } }) as ReadableSpan;
@@ -70,6 +85,17 @@ describe('safe PostHog OpenTelemetry delivery', () => {
     expect(events[0]!.properties).toMatchObject({ $ai_trace_id: s.spanContext().traceId, $ai_span_id: s.spanContext().spanId, $ai_input_tokens: 10, 'papercusp.call_id': 'call-1' });
     expect(JSON.stringify(events)).not.toContain('SECRET');
     expect(events[0]!.uuid).toBe(spanCaptureEvents(s, 'install')[0]!.uuid);
+  });
+  it('distinguishes instrumented HTTP clients from arbitrary intermediate spans without exporting URLs', () => {
+    const out = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: out })] });
+    for (const name of ['test', '@opentelemetry/instrumentation-http', '@opentelemetry/instrumentation-undici']) {
+      provider.getTracer(name).startSpan('SECRET URL', { kind: SpanKind.CLIENT,
+        attributes: { 'url.full': 'https://SECRET.example.test/private', 'papercusp.http_client': true } }).end();
+    }
+    const events = out.getFinishedSpans().flatMap(s => spanCaptureEvents(s, 'install'));
+    expect(events.map(e => e.properties['papercusp.http_client'])).toEqual([false, true, true]);
+    expect(JSON.stringify(events)).not.toContain('SECRET');
   });
   it('rechecks consent and excludes spans captured before the current opt-in', async () => {
     let allowed = false;

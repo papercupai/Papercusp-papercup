@@ -40,6 +40,9 @@ const issues = await import('./issues-engineer');
 interface PlanNode {
   'Node Type': string;
   'Index Name'?: string;
+  'Actual Loops'?: number;
+  Filter?: string;
+  'Join Filter'?: string;
   Plans?: PlanNode[];
 }
 
@@ -155,5 +158,44 @@ describe('issue-family list query plan (P-004)', () => {
 
     expect(rows).toHaveLength(ISSUE_ROWS);
     expect(query).not.toMatch(/ORDER BY created_at DESC/);
+  });
+
+  it('evaluates a server-side identity filter once before hydrating matching issue rows', async () => {
+    captured.length = 0;
+    const excludedWords = '(p2p|shared-hive|federation|replication|swarm|hyperbee|relay)';
+    const identities = traced`
+      SELECT wi.feature_id
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS}
+         AND wi.harness_slug = ${`operator:${WS}`}
+         AND wi.item_kind = 'bug'
+         AND NOT COALESCE(
+           wi.title::text ~* ${`(^|[^A-Za-z0-9])${excludedWords}([^A-Za-z0-9]|$)`}
+           OR wi.summary::text ~* ${`(^|[^A-Za-z0-9])${excludedWords}([^A-Za-z0-9]|$)`},
+           false
+         )`;
+    const rows = await issues.listAllIssuesForFileExport({
+      kind: 'bug',
+      issueIds: identities,
+      includeBody: false,
+      includePayload: false,
+    });
+    expect(rows).toHaveLength(Math.floor(ISSUE_ROWS / 3));
+
+    const query = captured.find((entry) => /FROM harness_shared\.engineer_issues/.test(entry.query));
+    expect(query, 'complete issue read sent no statement over engineer_issues').toBeDefined();
+    const explained = await db.sql.unsafe(
+      `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query!.query}`,
+      query!.params as never[],
+    );
+    const plan = (explained[0] as Record<string, unknown>)['QUERY PLAN'] as { Plan: PlanNode }[];
+    const nodes = flatten(plan[0]!.Plan);
+    const predicateNodes = nodes.filter((node) =>
+      `${node.Filter ?? ''} ${node['Join Filter'] ?? ''}`.includes('~*'));
+    expect(predicateNodes, 'the plan must expose the claim-spec word predicate').not.toHaveLength(0);
+    expect(
+      Math.max(...predicateNodes.map((node) => node['Actual Loops'] ?? Number.POSITIVE_INFINITY)),
+      'word predicates must be evaluated in the bounded identity scan, not once per hydrated row',
+    ).toBeLessThanOrEqual(8);
   });
 });

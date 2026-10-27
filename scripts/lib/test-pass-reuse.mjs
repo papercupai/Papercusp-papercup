@@ -61,9 +61,10 @@ export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT = 1_000_000;
 
 /**
  * The runner identity a selector compares proofs against: the proof format plus the
- * `process.version process.platform process.arch` of the node the task will spawn.
+ * complete runtime fingerprint of the interpreter the task will spawn. Legacy
+ * version strings cannot equal the fingerprint measured by current consumers.
  *
- * @param {string | null | undefined} nodeIdentity
+ * @param {string | null | undefined} nodeIdentity complete runtime fingerprint
  * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
@@ -98,6 +99,34 @@ export function judgedTreeProofFormat(root, readFile = (f) => readFileSync(f, "u
   }
   const m = /\bREUSE_PROOF_FORMAT\s*=\s*['"](proof-v\d+)['"]/.exec(String(body));
   return m ? m[1] : null;
+}
+
+/**
+ * WI-6554700010029685: the runner-identity SCHEME the judged tree's recorder writes, read from the same
+ * recorder source as judgedTreeProofFormat.
+ *
+ * The selector runs from the gate's code, but proofs on a frozen repair lineage were written by THAT
+ * lineage's recorder. Before the runtime fingerprint (scripts/lib/runtime-compatibility.mjs, d314d294ad)
+ * the recorder wrote `<format> <process.version> <process.platform> <process.arch>`, and its skip-list
+ * consumer accepts only that string. A selector measuring the runtime fingerprint loads none of those
+ * proofs: repair head 327e4d1d of frozen candidate 8c03b5dc logged `rows=0` (or `no-runner-identity`)
+ * on every targeted task, so each repair round re-ran ~5,900 files.
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {"runtime-fingerprint" | "node-version" | null} null when the recorder is missing or its identity
+ *   cannot be classified; callers then keep the runtime-fingerprint measurement (the pre-fix behaviour).
+ */
+export function judgedTreeRunnerIdentityScheme(root, readFile = (f) => readFileSync(f, "utf8")) {
+  let body;
+  try {
+    body = String(readFile(path.join(root, RECORDER_PROOF_FORMAT_FILE)));
+  } catch {
+    return null;
+  }
+  if (/\bruntimeProofFingerprint\b/.test(body)) return "runtime-fingerprint";
+  if (/\$\{process\.version\}\s+\$\{process\.platform\}\s+\$\{process\.arch\}/.test(body)) return "node-version";
+  return null;
 }
 
 /**
@@ -532,10 +561,12 @@ function invalidates(rel, o) {
  * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
  *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
  *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
- * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit"> }}
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit">, exclusions: Array<{ file: string, reason: string, recordedSha: string | null, judgedSha: string, evidence?: Record<string, unknown> }> }}
  *        `watch` = files the rule would have skipped but that RUN this time (the audit sample).
  *        If one of them fails, reuse could have hidden that red: reuseSoundnessAlarms turns it
  *        into an alarm.
+ *        `exclusions` (WI-6554700010026699) = one record per candidate NOT reused, keeping the
+ *        cause the exclusive counter alone discarded; per reason its count equals that counter.
  */
 export function selectReusablePasses({
   candidates,
@@ -589,7 +620,24 @@ export function selectReusablePasses({
   const skip = [];
   /** @type {Map<string, "audit">} */
   const watch = new Map();
-  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, inertWorkspace: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
+  /**
+   * WI-6554700010026699: one record per candidate that was NOT reused, carrying the cause the
+   * matching exclusive counter in `summary` used to discard. Per reason, the record count equals
+   * that counter, and `candidates === reused + exclusions.length`.
+   * @type {Array<{ file: string, reason: string, recordedSha: string | null, judgedSha: string, evidence?: Record<string, unknown> }>}
+   */
+  const exclusions = [];
+  const exclude = (file, reason, p, evidence = undefined) => {
+    summary[reason] += 1;
+    exclusions.push({
+      file,
+      reason,
+      recordedSha: p && typeof p.recordedSha === "string" ? p.recordedSha : null,
+      judgedSha,
+      ...(evidence === undefined ? {} : { evidence }),
+    });
+  };
+  /** @type {Map<string, { drift: Set<string> | null, global: boolean, globalPath: string | null, inert: Set<string>, inertWorkspace: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
   const driftCache = new Map();
   const askInert = (rel, sha) => {
     if (!inertGlobalChange) return false;
@@ -612,6 +660,8 @@ export function selectReusablePasses({
         }
       }
       let global = false;
+      /** @type {string | null} the first global drift path: the globalInput exclusion's cause. */
+      let globalPath = null;
       let narrowed = false;
       let tsconfigNarrowed = false;
       const inert = new Set();
@@ -635,11 +685,12 @@ export function selectReusablePasses({
           if (askInert(rel, sha)) inert.add(rel);
           else {
             global = true;
+            globalPath = rel;
             break;
           }
         }
       }
-      driftCache.set(sha, { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed });
+      driftCache.set(sha, { drift, global, globalPath, inert, inertWorkspace, narrowed, tsconfigNarrowed });
     }
     return driftCache.get(sha);
   };
@@ -647,45 +698,52 @@ export function selectReusablePasses({
     summary.candidates += 1;
     const p = proofs.get(file);
     if (!p || typeof p.recordedSha !== "string" || !Array.isArray(p.executedModules)) {
-      summary.noProof += 1;
+      const missing = !p ? "proof" : typeof p.recordedSha !== "string" ? "recordedSha" : "executedModules";
+      exclude(file, "noProof", p, { missing });
       continue;
     }
     if (!p.executedModules.includes(file)) {
-      summary.noProof += 1; // not a run of THIS file
+      exclude(file, "noProof", p, { missing: "thisFile" }); // not a run of THIS file
       continue;
     }
     if (p.runContext !== runContext) {
-      summary.otherContext += 1;
+      exclude(file, "otherContext", p, { recorded: p.runContext ?? null, expected: runContext });
       continue;
     }
     if (p.runnerIdentity !== runnerIdentity) {
-      summary.otherRunner += 1;
+      exclude(file, "otherRunner", p, { recorded: p.runnerIdentity ?? null, expected: runnerIdentity });
       continue;
     }
     if (p.inputsCaptured !== true) {
-      summary.notCaptured += 1;
+      exclude(file, "notCaptured", p);
       continue;
     }
     if (Array.isArray(p.opaqueReasons) && p.opaqueReasons.length > 0) {
-      summary.opaque += 1;
+      exclude(file, "opaque", p, { opaqueReasons: [...p.opaqueReasons] });
       continue;
     }
-    const { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
+    const { drift, global, globalPath, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
-      summary.unknownDrift += 1;
+      // The cause is the recorded/judged SHA pair the drift could not be computed between.
+      exclude(file, "unknownDrift", p);
       continue;
     }
-    if (legacyFormat && [...drift].some((rel) => rel === file || !LEGACY_PROOF_SAFE_DRIFT_RE.test(rel))) {
-      summary.legacyFormatDrift += 1;
-      continue;
+    if (legacyFormat) {
+      const legacyPath = [...drift].find((rel) => rel === file || !LEGACY_PROOF_SAFE_DRIFT_RE.test(rel));
+      if (legacyPath !== undefined) {
+        exclude(file, "legacyFormatDrift", p, { path: legacyPath });
+        continue;
+      }
     }
     if (global) {
-      summary.globalInput += 1;
+      exclude(file, "globalInput", p, { path: globalPath });
       continue;
     }
     if (narrowed && p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) {
       // D-004 guard: a capped record may be missing the worker-side file that changed.
-      summary.opaque += 1;
+      exclude(file, "opaque", p, {
+        importCap: { executedModules: p.executedModules.length, limit: EXECUTED_SOURCE_MAP_IMPORT_LIMIT },
+      });
       continue;
     }
     if (inert.size > inertWorkspace.size) summary.inertGlobal += 1;
@@ -705,7 +763,8 @@ export function selectReusablePasses({
         d = path.posix.dirname(d);
       }
     }
-    let changed = false;
+    /** @type {string | null} the first invalidating drift path: the inputChanged exclusion's cause. */
+    let changed = null;
     const check = {
       inputs,
       readDirs,
@@ -742,19 +801,19 @@ export function selectReusablePasses({
         continue;
       }
       if (invalidates(rel, check)) {
-        changed = true;
+        changed = rel;
         break;
       }
     }
-    if (changed) {
-      summary.inputChanged += 1;
+    if (changed !== null) {
+      exclude(file, "inputChanged", p, { path: changed });
       continue;
     }
     if (tsconfigNarrowed || check.unreadTsconfigHit) summary.tsconfigNarrowed += 1;
     if (check.inertWorkspaceHit) summary.inertWorkspaceConfig += 1;
     if (schemaHit) summary.schemaNarrowed += 1;
     if (auditRate > 0 && auditDraw(file, judgedSha) < auditRate) {
-      summary.audited += 1;
+      exclude(file, "audited", p, { auditRate });
       watch.set(file, "audit");
       continue;
     }
@@ -762,7 +821,7 @@ export function selectReusablePasses({
     skip.push(file);
   }
   skip.sort();
-  return { skip, summary, watch };
+  return { skip, summary, watch, exclusions };
 }
 
 /**
@@ -1053,4 +1112,37 @@ export function formatTestReuseLine(wsName, summary, extra = "", runtime = undef
     `${extra}` +
     (runtime === undefined ? "" : ` runtime=${encodeURIComponent(JSON.stringify(runtime))}`)
   );
+}
+
+/** WI-6554700010026699 (R-4): at most this many exclusion records per task reach stdout. */
+export const REUSE_EXCLUSION_SAMPLE_PER_TASK = 5;
+
+/**
+ * WI-6554700010026699 (R-3/R-4): the lines that retain one task's exclusion records.
+ *
+ * `records` holds one `TEST_PASS_REUSE_EXCLUSION <json>` line per excluded candidate. They go to
+ * the retained affected-tests journal only, because a task can exclude thousands of files.
+ * `sample` is one `TEST_PASS_REUSE_EXCLUSIONS <json>` line for stdout: the task's total, its first
+ * `sampleSize` records, and the journal path plus run group that hold the full set. A task with
+ * zero exclusions still prints its sample (`total: 0`), so the report can tell "none excluded"
+ * from a runner that predates the records (no sample line at all = not measured).
+ *
+ * @param {string} wsName
+ * @param {Array<{ file: string, reason: string, recordedSha: string | null, judgedSha: string, evidence?: Record<string, unknown> }>} exclusions
+ * @param {{ runGroupId: string | null, journal: string | null, sampleSize?: number }} where
+ * @returns {{ records: string[], sample: string }}
+ */
+export function formatReuseExclusionLines(wsName, exclusions, { runGroupId, journal, sampleSize = REUSE_EXCLUSION_SAMPLE_PER_TASK }) {
+  const records = exclusions.map(
+    (e) => `TEST_PASS_REUSE_EXCLUSION ${JSON.stringify({ version: 1, ws: wsName, ...e, runGroupId })}`,
+  );
+  const sample = `TEST_PASS_REUSE_EXCLUSIONS ${JSON.stringify({
+    version: 1,
+    ws: wsName,
+    total: exclusions.length,
+    examples: exclusions.slice(0, Math.max(0, sampleSize)),
+    journal,
+    runGroupId,
+  })}`;
+  return { records, sample };
 }

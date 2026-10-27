@@ -22,6 +22,7 @@ import { validatePhysicalDrillEvidence } from '@papercusp/operator-core/lib/sync
 import { evidenceVerdict } from './p2p-candidate-evidence';
 import { deriveDrillJourneyEvidence } from './p521-drill-journey-evidence';
 import { deriveSeatJourneyEvidence } from './p202-seat-journey-evidence';
+import type { P521LocalPrecheck, P521PrecheckSubject } from './p2p-candidate-manifest';
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -60,6 +61,10 @@ function main(): number {
 
   const debPath = one('deb')!;
   const actualDebSha256 = sha256(readFileSync(debPath));
+  const prechecksPath = one('local-prechecks') ?? process.env.P521_LOCAL_PRECHECKS_FILE;
+  const prechecks = prechecksPath ? JSON.parse(readFileSync(prechecksPath, 'utf8')) as {
+    precheckSubject?: P521PrecheckSubject; localPrechecks?: P521LocalPrecheck[];
+  } : {};
   const docs: Array<{ journey: string; fileName: string; doc: Record<string, unknown> }> = [];
   let validation: ReturnType<typeof validatePhysicalDrillEvidence> | null = null;
 
@@ -79,6 +84,8 @@ function main(): number {
         release: one('release')!,
         artifact: basename(debPath),
         actualDebSha256,
+        precheckSubject: prechecks.precheckSubject,
+        localPrechecks: prechecks.localPrechecks,
         expectedDebSha256: one('expected-deb-sha256')!,
         observer: one('observer')!,
         command: args.get('command') ?? [`hive-git-physical-scenario.sh run ${String((drill as { runId?: unknown }).runId ?? '?')}`],
@@ -91,8 +98,7 @@ function main(): number {
   const transcriptPath = one('p202-transcript');
   if (transcriptPath) {
     const transcriptBytes = readFileSync(transcriptPath);
-    docs.push(
-      deriveSeatJourneyEvidence({
+    const seat = deriveSeatJourneyEvidence({
         transcript: transcriptBytes.toString('utf8'),
         transcriptPath: relative(process.cwd(), transcriptPath),
         transcriptSha256: sha256(transcriptBytes),
@@ -105,8 +111,10 @@ function main(): number {
         command: ['papercusp-desktop/bin/vm-rig/p202-workdist.sh --i-accept-live-spawn'],
         workItem: one('work-item'),
         startedAt: one('p202-started-at'),
-      }),
-    );
+      });
+    seat.doc.precheckSubject = prechecks.precheckSubject;
+    seat.doc.localPrechecks = prechecks.localPrechecks?.filter((receipt) => receipt.journey === seat.journey);
+    docs.push(seat);
   }
 
   const outDir = one('out-dir') ?? 'docs/evidence';

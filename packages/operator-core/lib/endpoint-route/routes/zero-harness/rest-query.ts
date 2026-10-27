@@ -89,7 +89,10 @@ export default defineTool({
           { status: 400 },
         );
       }
-      const rows = v2;
+      const rows = name === 'workspaceHosts.control'
+        ? await (await import('../../../workspace-host/local-machine-operator-transport'))
+          .mergeLocalMachineControlRows(req, v2)
+        : v2;
       recordNamedQueryResponse('resolvedRows', rows);
       if (req.signal.aborted) {
         return new Response(null, { status: 499 });

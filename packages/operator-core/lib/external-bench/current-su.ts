@@ -16,7 +16,7 @@ import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from '../runtime-vintage';
-import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { currentBenchmarkProtocolSchema, currentBenchProviderAgent, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { createNativeGymGatewayController, startNativeGymGateway, type NativeGymProviderAuthorization } from '../gym/proposer';
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
@@ -24,7 +24,7 @@ import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '.
 import type { LearningReservationResourceBudget, LearningSpendReservationCensus } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { CredentialResolver } from '../inference-gateway/credential-store';
-import type { ClosedCodexSessionUsage } from '../session-transcript-resolvers';
+import type { ClosedClaudeSessionUsage, ClosedCodexSessionUsage } from '../session-transcript-resolvers';
 import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
 import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
@@ -35,16 +35,32 @@ import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 
 interface NativeCostParticipant {
-  taskId: string; ownerId: string; codexHome: string; terminal: boolean;
+  taskId: string; ownerId: string; terminal: boolean;
+  agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string;
   startedAtMs?: number | null; endedAtMs?: number | null;
+}
+type ClosedNativeSessionUsage = ClosedCodexSessionUsage | ClosedClaudeSessionUsage;
+type NativeSourceUsage = Extract<ClosedNativeSessionUsage, { ok: true }>;
+function nativeCostHome(participant: NativeCostParticipant): string {
+  return participant.agent === 'claude'
+    ? !participant.codexHome && participant.claudeConfigDir?.trim() || ''
+    : (!participant.agent || participant.agent === 'codex') && !participant.claudeConfigDir && participant.codexHome?.trim() || '';
 }
 export interface CurrentBenchAccountingBinding {
   readonly workspaceId: string; readonly loopId: string; readonly runId: string;
   readonly preregHash: string; readonly assignmentId: string;
 }
+export interface CurrentBenchTaskRequestCensus {
+  readonly binding: Readonly<CurrentBenchAccountingBinding>;
+  readonly populationSha256: string;
+  readonly requests: readonly Readonly<{
+    reservationId: string; bodySha256: string;
+  } & ({ agent?: never; nativeSessionId: string; nativeTurnId: string; nativeMessageId?: never } |
+    { agent: 'claude'; nativeSessionId?: never; nativeTurnId?: never; nativeMessageId?: string })>[];
+}
 interface NativeAccountingSource {
   participant: NativeCostParticipant; nativeSessionId: string;
-  usage: Extract<ClosedCodexSessionUsage, { ok: true }>;
+  usage: NativeSourceUsage;
   billed?: NativeBillPopulation;
 }
 interface NativeBillPopulation {
@@ -71,16 +87,26 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
         canonicalJson(before.reservations) !== canonicalJson(after.reservations) ||
         !population.participants.length || population.participants.some(p => !p.terminal) || !population.sources.length) return false;
     const expected = new Map<string, string[]>(), keys = new Set<string>(), sessions = new Set<string>();
-    const signature = (session: string, turn: string, model: string, input: number, output: number, read: number, write: number) =>
-      canonicalJson([session, turn, model, input, output, read, write]);
+    const messageSessions = new Map<string, string>();
+    const signature = (agent: 'codex' | 'claude', session: string, request: string, model: string,
+      input: number, output: number, read: number, write: number) =>
+      canonicalJson([agent, session, request, model, input, output, read, write]);
     for (const source of population.sources) {
       if (!population.participants.some(p => canonicalJson(p) === canonicalJson(source.participant)) ||
-          sessions.has(source.nativeSessionId) || !source.usage.ok || !/^[a-f0-9]{64}$/.test(source.usage.sourceSha256)) return false;
+          !nativeCostHome(source.participant) || !source.nativeSessionId || sessions.has(source.nativeSessionId) ||
+          !source.usage.ok || !/^[a-f0-9]{64}$/.test(source.usage.sourceSha256)) return false;
+      const claude = source.participant.agent === 'claude';
+      if (claude !== ('nativeMessageIds' in source.usage)) return false;
       sessions.add(source.nativeSessionId);
       for (const event of source.usage.events) {
-        if (!event.turnId || event.inputTotalTokens == null || keys.has(event.usageEventKey)) return false;
+        const request = claude ? event.providerResponseId : event.turnId;
+        if (!request || event.inputTotalTokens == null || keys.has(event.usageEventKey)) return false;
+        if (claude) {
+          if (event.turnId || event.sourceId !== `message:${request}` || messageSessions.has(request)) return false;
+          messageSessions.set(request, source.nativeSessionId);
+        }
         keys.add(event.usageEventKey);
-        const key = signature(source.nativeSessionId, event.turnId, event.model, event.inputTotalTokens,
+        const key = signature(claude ? 'claude' : 'codex', source.nativeSessionId, request, event.model, event.inputTotalTokens,
           event.usage.outputTokens, event.usage.cacheReadTokens, event.usage.cacheCreationTokens);
         expected.set(key, [...(expected.get(key) ?? []), event.usageEventKey]);
       }
@@ -95,7 +121,7 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
       if (attempt.armId !== binding.assignmentId) {
         // Other frozen assignments share this loop, but cannot borrow a native
         // request belonging to this assignment's host-owned source census.
-        if (sessions.has(attempt.nativeSessionId)) return false;
+        if (sessions.has(attempt.nativeSessionId) || messageSessions.has(note?.nativeGatewayAttemptResult?.providerCompletion?.responseId)) return false;
         continue;
       }
       const result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
@@ -106,17 +132,23 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
             row.status !== 'cancelled' || row.usedUsd !== 0) return false;
         continue;
       }
-      if (result.outcome !== 'response-completed' || !result.nativeSessionId || !result.nativeTurnId ||
-          !sessions.has(result.nativeSessionId) || result.responseStatus < 200 || result.responseStatus >= 300 ||
+      if (result.outcome !== 'response-completed' || result.responseStatus < 200 || result.responseStatus >= 300 ||
           !/^[a-f0-9]{64}$/.test(result.responseSha256) || !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 ||
-          !['bearer-http', 'oauth-http'].includes(result.transport)) return false;
+          !['bearer-http', 'oauth-http', 'anthropic-http'].includes(result.transport)) return false;
       const provider = result.providerCompletion, u = provider.usage;
       if (!provider.responseId || responses.has(provider.responseId) || u.inputTokenBasis !== 'inclusive' ||
           ![u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens].every(n =>
             typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) ||
           u.cacheReadTokens! + u.cacheCreationTokens! > u.inputTokens) return false;
       responses.add(provider.responseId);
-      const key = signature(result.nativeSessionId, result.nativeTurnId, provider.model,
+      const claude = result.transport === 'anthropic-http';
+      const session = claude ? messageSessions.get(provider.responseId) : result.nativeSessionId;
+      const request = claude ? provider.responseId : result.nativeTurnId;
+      // Anthropic's message id is measured from the response and closed source.
+      // Its transport carries no caller-supplied native session or turn identity.
+      if (!session || !request || !sessions.has(session) || claude &&
+          (result.nativeSessionId !== undefined || result.nativeTurnId !== undefined)) return false;
+      const key = signature(claude ? 'claude' : 'codex', session, request, provider.model,
         u.inputTokens, u.outputTokens, u.cacheReadTokens!, u.cacheCreationTokens!);
       const matches = expected.get(key);
       // Token equality cannot distinguish two native requests with the same
@@ -130,8 +162,8 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
 
 export interface CurrentBenchNativeCostReaderPorts {
   readParticipants(): Promise<NativeCostParticipant[]>;
-  readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }>;
-  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<NativeBillPopulation>;
+  readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedNativeSessionUsage }[] }>;
+  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: NativeSourceUsage): Promise<NativeBillPopulation>;
   /** Full source-bound gateway attempt reconciliation is separate from a native
    * transcript census. Omission keeps efficiency claims closed. */
   readAttemptAccountingComplete?(population: NativeAccountingPopulation): Promise<boolean>;
@@ -140,6 +172,8 @@ export interface CurrentBenchNativeCostReaderPorts {
 export interface CurrentBenchNativeSessionCost {
   nativeSessionId: string; sourceSha256: string; sourceComplete: boolean;
   usageEventKeys: string[]; nativeTurnIds: string[];
+  /** Claude request identities are provider messages, never synthetic turns. */
+  agent?: 'claude'; nativeMessageIds?: string[];
   /** Uncached input; cache tokens remain separate, as in BenchRunCost. */
   tokensIn: number; tokensOut: number; tokensCacheRead: number; tokensCacheWrite: number; turns: number;
   normalizedCostUsd: number; billedKnownSubtotalUsd: number | null; billedCostUsd: number | null;
@@ -176,8 +210,13 @@ export function requireCurrentBenchNativeRunCost(input: unknown): CurrentBenchNa
           !Array.isArray(s.usageEventKeys) || !s.usageEventKeys.length ||
           s.usageEventKeys.some(key => typeof key !== 'string' || !key || events.has(key)) ||
           new Set(s.usageEventKeys).size !== s.usageEventKeys.length || !Array.isArray(s.nativeTurnIds) ||
-          !s.nativeTurnIds.length || s.nativeTurnIds.some(id => typeof id !== 'string' || !id) ||
-          new Set(s.nativeTurnIds).size !== s.nativeTurnIds.length || s.turns !== s.nativeTurnIds.length ||
+          (s.agent === 'claude' ? s.nativeTurnIds.length !== 0 || !Array.isArray(s.nativeMessageIds) ||
+            !s.nativeMessageIds.length || s.nativeMessageIds.some(id => typeof id !== 'string' || !id) ||
+            new Set(s.nativeMessageIds).size !== s.nativeMessageIds.length || s.turns !== s.nativeMessageIds.length ||
+            s.usageEventKeys.length !== s.nativeMessageIds.length
+          : s.agent !== undefined || s.nativeMessageIds !== undefined || !s.nativeTurnIds.length ||
+            s.nativeTurnIds.some(id => typeof id !== 'string' || !id) ||
+            new Set(s.nativeTurnIds).size !== s.nativeTurnIds.length || s.turns !== s.nativeTurnIds.length) ||
           ![s.tokensIn, s.tokensOut, s.tokensCacheRead, s.tokensCacheWrite, s.turns].every(count) ||
           !money(s.normalizedCostUsd) || !money(s.billedCostUsd) || s.billedCostUsd !== s.billedKnownSubtotalUsd) throw invalid();
       ids.add(s.nativeSessionId); for (const key of s.usageEventKeys) events.add(key);
@@ -210,6 +249,54 @@ export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRun
   return structuredClone(added[0]);
 }
 
+/** A fresh session may add only its own requests. Earlier reservations must
+ * remain present and retain their native identity, including incomplete sends.
+ * Ledger settlement may change between reads; request identity may not. */
+export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestCensus,
+  after: CurrentBenchTaskRequestCensus, nativeSessionId: string): { modelCalls: number; reservationIds: string[] } {
+  const invalid = () => new Error('Fresh native session request census is foreign, reused or non-monotone.');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
+      canonicalJson(before.binding) !== canonicalJson(after.binding) ||
+      [...before.requests, ...after.requests].some(row => row.agent === 'claude')) throw invalid();
+  const previous = new Map(before.requests.map(row => [row.reservationId, row]));
+  const current = new Map(after.requests.map(row => [row.reservationId, row]));
+  if (previous.size !== before.requests.length || current.size !== after.requests.length ||
+      before.requests.some(row => row.nativeSessionId === nativeSessionId ||
+        canonicalJson(current.get(row.reservationId) ?? null) !== canonicalJson(row))) throw invalid();
+  const added = after.requests.filter(row => !previous.has(row.reservationId));
+  if (added.some(row => row.nativeSessionId !== nativeSessionId)) throw invalid();
+  return { modelCalls: added.length, reservationIds: added.map(row => row.reservationId).sort() };
+}
+
+/** Pair one closed source receipt with exactly its new assignment requests.
+ * Returns uncached/cache tokens and normalized/billed dollars separately.
+ * An empty initial source snapshot is accepted only with an empty request census.
+ * This receipt measures usage; it does not issue a remaining session allowance.
+ */
+export function currentBenchSessionUsageDelta(input: {
+  before: CurrentBenchTaskRequestCensus; after: CurrentBenchTaskRequestCensus;
+  beforeCost: CurrentBenchNativeRunCost | null; afterCost: CurrentBenchNativeRunCost; nativeSessionId: string;
+}) {
+  const { before, after, beforeCost, afterCost, nativeSessionId } = input;
+  const invalid = () => new Error('Fresh native session usage differs from its complete assignment request census.');
+  const delta = currentBenchSessionRequestDelta(before, after, nativeSessionId);
+  const source = currentBenchNativeSessionCostDelta(beforeCost, afterCost, nativeSessionId);
+  const matches = (census: CurrentBenchTaskRequestCensus, cost: CurrentBenchNativeRunCost | null) => {
+    if (!cost) return census.requests.length === 0;
+    if (cost.armMeta.nativeCostAccounting.preregHash !== census.binding.preregHash) return false;
+    const sources = cost.armMeta.nativeCostAccounting.sources;
+    const ids = new Set(sources.map(s => s.nativeSessionId));
+    if (census.requests.some(row => row.agent === 'claude' || !ids.has(row.nativeSessionId))) return false;
+    return sources.every(s => {
+      const rows = census.requests.filter(row => row.nativeSessionId === s.nativeSessionId);
+      const turns = [...new Set(rows.map(row => row.nativeTurnId))].sort();
+      return rows.length === s.usageEventKeys.length && canonicalJson(turns) === canonicalJson([...s.nativeTurnIds].sort());
+    });
+  };
+  if (!matches(before, beforeCost) || !matches(after, afterCost)) throw invalid();
+  return { ...source, ...delta };
+}
+
 /** Reuses native source proofs and frozen pricing. Actual provider cost stays
  * separately labelled; neither SQL estimates nor the normalized sum are bills. */
 export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProtocol, ports: CurrentBenchNativeCostReaderPorts): () => Promise<CurrentBenchNativeRunCost> {
@@ -224,19 +311,20 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     const accountingSources: NativeAccountingSource[] = [];
     let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
     for (const participant of participants) {
-      const binding = canonicalJson([participant.taskId, participant.ownerId, participant.codexHome]);
-      if (!participant.taskId || !participant.ownerId || !participant.codexHome || bindings.has(binding)) {
+      const home = nativeCostHome(participant), homeKey = canonicalJson([participant.agent ?? 'codex', home]);
+      const binding = canonicalJson([participant.taskId, participant.ownerId, homeKey]);
+      if (!participant.taskId || !participant.ownerId || !home || bindings.has(binding)) {
         complete = false; missingSources++; continue;
       }
       ids.add(participant.taskId); bindings.add(binding);
       if (!participant.terminal) complete = false;
       // Recovery tasks can share one exact host home; its full source census is
       // charged once rather than once per task-ledger row.
-      if (homes.has(participant.codexHome)) {
-        if (homes.get(participant.codexHome) !== participant.ownerId) { complete = false; missingSources++; }
+      if (homes.has(homeKey)) {
+        if (homes.get(homeKey) !== participant.ownerId) { complete = false; missingSources++; }
         continue;
       }
-      homes.set(participant.codexHome, participant.ownerId);
+      homes.set(homeKey, participant.ownerId);
       const runtime = await io.readRuntime(participant).catch(() => ({ complete: false, sessions: [] }));
       if (!runtime.complete || !runtime.sessions.length) complete = false;
       if (!runtime.sessions.length) missingSources++;
@@ -245,6 +333,9 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         nativeSessions.add(source.nativeSessionId);
         if (!source.usage.ok) { missingSources++; complete = false; if (!source.usage.knownSubtotal) continue; }
         const usage = source.usage.ok ? source.usage : source.usage.knownSubtotal!;
+        if ((participant.agent === 'claude') !== ('nativeMessageIds' in usage)) {
+          missingSources++; complete = false; continue;
+        }
         if (usage.events.some(event => eventKeys.has(event.usageEventKey)) ||
             new Set(usage.events.map(event => event.usageEventKey)).size !== usage.events.length) {
           missingSources++; complete = false; continue;
@@ -255,10 +346,12 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
           for (const event of usage.events) priced += priceRun({ tokensIn: event.usage.inputTokens, tokensOut: event.usage.outputTokens,
             tokensCacheRead: event.usage.cacheReadTokens, tokensCacheWrite: event.usage.cacheCreationTokens }, event.model, table);
         } catch { missingSources++; complete = false; continue; }
-        const session = { nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256,
+        const requests = 'nativeMessageIds' in usage ? usage.nativeMessageIds : usage.nativeTurnIds;
+        const session: CurrentBenchNativeSessionCost = { nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256,
           sourceComplete: source.usage.ok, usageEventKeys: usage.events.map(event => event.usageEventKey),
-          nativeTurnIds: [...usage.nativeTurnIds], tokensIn: 0, tokensOut: 0, tokensCacheRead: 0,
-          tokensCacheWrite: 0, turns: usage.nativeTurnIds.length, normalizedCostUsd: priced,
+          ...('nativeMessageIds' in usage ? { agent: 'claude' as const, nativeMessageIds: [...requests], nativeTurnIds: [] }
+            : { nativeTurnIds: [...requests] }), tokensIn: 0, tokensOut: 0, tokensCacheRead: 0,
+          tokensCacheWrite: 0, turns: requests.length, normalizedCostUsd: priced,
           billedKnownSubtotalUsd: null as number | null, billedCostUsd: null as number | null };
         for (const event of usage.events) {
           eventKeys.add(event.usageEventKey); result.tokensIn += event.usage.inputTokens; result.tokensOut += event.usage.outputTokens;
@@ -266,7 +359,7 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
           session.tokensIn += event.usage.inputTokens; session.tokensOut += event.usage.outputTokens;
           session.tokensCacheRead += event.usage.cacheReadTokens; session.tokensCacheWrite += event.usage.cacheCreationTokens;
         }
-        result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
+        result.turns += requests.length; result.costUsd += priced;
         sources.push(session);
         const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
         if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage,
@@ -331,7 +424,7 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
   const io: CurrentBenchNativeCostReaderPorts = {
     async readParticipants() {
       const { resolveDb } = await import('./reproducibility/db');
-      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb({ ...db, workspaceId });
       const rows = await sql<{ task_id: string; state: string; owner_id: string | null; adv_id: number | null; agent: string | null;
         started_at: Date | string; ended_at: Date | string | null }[]>`
@@ -347,23 +440,28 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
           LEFT JOIN harness_shared.adv_sessions a ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
          WHERE t.class = 'agent-session' ORDER BY t.task_id, a.id LIMIT 1001`;
       return rows.map(row => ({ taskId: row.task_id, ownerId: row.owner_id ?? '',
-        codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '',
+        ...(row.agent === 'claude' && row.owner_id && row.adv_id != null
+          ? { agent: 'claude' as const, claudeConfigDir: sessionClaudeConfigDir(row.owner_id) }
+          : { codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '' }),
         terminal: ['exited', 'killed', 'timed_out'].includes(row.state),
         startedAtMs: new Date(row.started_at).getTime(), endedAtMs: row.ended_at == null ? null : new Date(row.ended_at).getTime() }));
     },
     async readRuntime(participant) {
       const { resolveDb } = await import('./reproducibility/db');
-      const { readClosedCodexRuntimeUsage } = await import('../session-transcript-resolvers');
+      const { readClosedCodexRuntimeUsage, readClosedClaudeRuntimeUsage } = await import('../session-transcript-resolvers');
       const { sql } = resolveDb({ ...db, workspaceId });
-      return readClosedCodexRuntimeUsage(sql, { workspaceId, codexHome: participant.codexHome });
+      return participant.agent === 'claude'
+        ? readClosedClaudeRuntimeUsage(sql, { workspaceId, claudeConfigDir: nativeCostHome(participant) })
+        : readClosedCodexRuntimeUsage(sql, { workspaceId, codexHome: nativeCostHome(participant) });
     },
     async readBilled(participant, nativeSessionId, usage) {
       const { resolveDb } = await import('./reproducibility/db');
       const { readIdentityTurnBilledCost } = await import('../cupboard/shadow-metering-reader');
       const { sql } = resolveDb({ ...db, workspaceId });
-      const rows = await sql<{ usage_event_key: string; native_turn_id: string | null; session_id: string | null;
+      const rows = await sql<{ usage_event_key: string; native_turn_id: string | null; native_message_id: string | null; session_id: string | null;
         owner_id: string | null; principal_id: string | null; specification_revision: string | null; state_revision: string | null }[]>`
-        SELECT u.usage_event_key, u.usage_provenance->>'turnId' AS native_turn_id, a.session_id,
+        SELECT u.usage_event_key, u.usage_provenance->>'turnId' AS native_turn_id,
+          u.usage_provenance->>'providerResponseId' AS native_message_id, a.session_id,
           a.identity_owner_id AS owner_id, a.identity_principal_id AS principal_id,
           a.identity_specification_revision AS specification_revision, a.identity_state_revision AS state_revision
         FROM harness_shared.agent_usage_samples u JOIN harness_shared.agent_usage_samples_identity_attribution a
@@ -371,10 +469,12 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         WHERE u.workspace_id = ${workspaceId} AND u.usage_event_key = ANY(${[...usage.usageEventKeys]}::text[])`;
       let complete = rows.length === usage.usageEventKeys.length, knownSubtotalUsd = 0;
       const samples: NonNullable<NativeBillPopulation['samples']>[number][] = [];
-      for (const nativeTurnId of usage.nativeTurnIds) {
-        const expected = usage.events.filter(event => event.turnId === nativeTurnId).map(event => event.usageEventKey).sort();
+      const claude = 'nativeMessageIds' in usage;
+      for (const requestId of claude ? usage.nativeMessageIds : usage.nativeTurnIds) {
+        const expected = usage.events.filter(event => (claude ? event.providerResponseId : event.turnId) === requestId)
+          .map(event => event.usageEventKey).sort();
         if (!expected.length) continue;
-        const group = rows.filter(row => row.native_turn_id === nativeTurnId), first = group[0];
+        const group = rows.filter(row => (claude ? row.native_message_id : row.native_turn_id) === requestId), first = group[0];
         if (!first?.principal_id || !first.specification_revision || !first.state_revision ||
             canonicalJson(group.map(row => row.usage_event_key).sort()) !== canonicalJson(expected) ||
             group.some(row => row.session_id !== nativeSessionId || row.owner_id !== participant.ownerId ||
@@ -384,9 +484,11 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         // The full native source supplies this event population; the second
         // runtime read below brackets it before settlement. A partial source
         // may retain its earlier closed subtotal but cannot enter settlement.
-        const cost = await readIdentityTurnBilledCost(sql, { workspaceId, ownerId: participant.ownerId,
-          nativeSessionId, nativeTurnId, principalId: first.principal_id, specificationRevision: first.specification_revision,
-          stateRevision: first.state_revision, usageEventKeys: expected });
+        const identity = { workspaceId, ownerId: participant.ownerId, nativeSessionId,
+          principalId: first.principal_id, specificationRevision: first.specification_revision,
+          stateRevision: first.state_revision, usageEventKeys: expected };
+        const cost = claude ? await readIdentityTurnBilledCost(sql, { ...identity, nativeMessageId: requestId })
+          : await readIdentityTurnBilledCost(sql, { ...identity, nativeTurnId: requestId });
         if (!cost.ok || cost.billedInferenceMicros > BigInt(Number.MAX_SAFE_INTEGER)) { complete = false; continue; }
         knownSubtotalUsd += Number(cost.billedInferenceMicros) / 1_000_000;
         samples.push(...cost.samples);
@@ -403,10 +505,11 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
       // Re-read every host runtime while the reservation population is bracketed.
       // A changed carry file, new request or failed native frontier invalidates
       // an earlier token snapshot even when task identities remain unchanged.
-      for (const home of new Set(population.participants.map(p => p.codexHome))) {
-        const participant = population.participants.find(p => p.codexHome === home)!;
+      const homeKey = (p: NativeCostParticipant) => canonicalJson([p.agent ?? 'codex', nativeCostHome(p)]);
+      for (const home of new Set(population.participants.map(homeKey))) {
+        const participant = population.participants.find(p => homeKey(p) === home)!;
         const current = await io.readRuntime(participant);
-        const expected = population.sources.filter(s => s.participant.codexHome === home)
+        const expected = population.sources.filter(s => homeKey(s.participant) === home)
           .map(s => [s.nativeSessionId, s.usage.sourceSha256]).sort();
         if (!current.complete || current.sessions.some(s => !s.usage.ok) ||
             canonicalJson(current.sessions.map(s => [s.nativeSessionId, s.usage.ok ? s.usage.sourceSha256 : null]).sort()) !==
@@ -432,9 +535,14 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         const note = JSON.parse(row.note!), result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
         if (note.nativeGatewayAttempt.armId !== binding.assignmentId || result?.outcome === 'send-refused') continue;
         if (result?.outcome !== 'response-completed') return false;
-        const source = population.sources.find(source => source.nativeSessionId === result.nativeSessionId);
+        const claude = result.transport === 'anthropic-http';
+        const source = population.sources.find(source => claude
+          ? source.participant.agent === 'claude' && 'nativeMessageIds' in source.usage &&
+            source.usage.nativeMessageIds.includes(result.providerCompletion.responseId)
+          : source.participant.agent !== 'claude' && source.nativeSessionId === result.nativeSessionId);
         const u = result.providerCompletion.usage;
-        const event = source?.usage.events.find(event => event.turnId === result.nativeTurnId &&
+        const event = source?.usage.events.find(event => (claude
+          ? event.providerResponseId === result.providerCompletion.responseId : event.turnId === result.nativeTurnId) &&
           event.model === result.providerCompletion.model && event.inputTotalTokens === u.inputTokens &&
           event.usage.outputTokens === u.outputTokens && event.usage.cacheReadTokens === u.cacheReadTokens &&
           event.usage.cacheCreationTokens === u.cacheCreationTokens);
@@ -443,7 +551,8 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
         bills.delete(event!.usageEventKey);
         const usedUsd = Number(BigInt(bill.sample.billedInferenceMicros!)) / 1_000_000;
         const proof = { ...bill.sample, billedInferenceMicros: bill.sample.billedInferenceMicros!,
-          nativeSessionId: source.nativeSessionId, nativeTurnId: result.nativeTurnId!, sourceSha256: source.usage.sourceSha256 };
+          nativeSessionId: source.nativeSessionId, ...(claude ? { nativeMessageId: result.providerCompletion.responseId }
+            : { nativeTurnId: result.nativeTurnId! }), sourceSha256: source.usage.sourceSha256 };
         if (row.status !== 'open' && (row.status !== 'settled' || row.usedUsd !== usedUsd ||
             canonicalJson(note.nativeGatewaySettlement) !== canonicalJson(proof))) return false;
         settlements.push({ row, usedUsd, proof });
@@ -701,6 +810,117 @@ export function currentBenchOpenAiInputReader(input: { model: string; inputToken
   } };
 }
 
+const anthropicMessagesTarget = 'https://api.anthropic.com/v1/messages';
+const anthropicModelsTarget = 'https://api.anthropic.com/v1/models/';
+const anthropicInputVersion = '2023-06-01';
+
+/** Reserve the complete provider-enforced window, never a token-count estimate.
+ * Aliases, OAuth and context-changing betas are excluded. ModelInfo documents
+ * max_input_tokens/max_tokens in the maintained provider SDK:
+ * https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/resources/models.ts */
+export function currentBenchAnthropicInputContract(model: string, inputTokens: number, outputTokens: number): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(model) ||
+      ![inputTokens, outputTokens].every(value => Number.isSafeInteger(value) && value > 0)) {
+    throw new Error('Invalid Anthropic input contract.');
+  }
+  return createHash('sha256').update(canonicalJson({ version: 1, kind: 'provider-model-limit',
+    model, inputTokens, outputTokens, target: anthropicMessagesTarget, modelTarget: anthropicModelsTarget + model,
+    anthropicVersion: anthropicInputVersion, anthropicBeta: null, credentialHeader: 'x-api-key',
+    input: 'self-contained-text-and-local-tools', aliases: 'refused', hostedTools: 'refused' })).digest('hex');
+}
+
+function selfContainedAnthropicInput(body: Record<string, unknown>): boolean {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const keys = (value: Record<string, unknown>, allowed: string[]) => Object.keys(value).every(key => allowed.includes(key));
+  const cache = (value: unknown) => value === undefined || object(value) && value.type === 'ephemeral' &&
+    (value.ttl === undefined || value.ttl === '5m' || value.ttl === '1h') && keys(value, ['type', 'ttl']);
+  const text = (value: unknown) => object(value) && value.type === 'text' && typeof value.text === 'string' &&
+    cache(value.cache_control) && keys(value, ['type', 'text', 'cache_control']);
+  const textContent = (value: unknown) => typeof value === 'string' || Array.isArray(value) && value.every(text);
+  if (!keys(body, ['model', 'messages', 'system', 'tools', 'tool_choice', 'max_tokens', 'metadata', 'stream',
+    'temperature', 'top_p', 'top_k', 'stop_sequences', 'output_config', 'thinking', 'cache_control']) ||
+      !cache(body.cache_control) || body.system !== undefined && !textContent(body.system) ||
+      body.metadata !== undefined && (!object(body.metadata) || !keys(body.metadata, ['user_id']) ||
+        typeof body.metadata.user_id !== 'string') ||
+      body.output_config !== undefined && (!object(body.output_config) || !keys(body.output_config, ['effort'])) ||
+      body.thinking !== undefined && (!object(body.thinking) || !keys(body.thinking, ['type', 'budget_tokens']) ||
+        !['enabled', 'disabled', 'adaptive'].includes(String(body.thinking.type)))) return false;
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || !body.tools.every(tool => object(tool) &&
+      (tool.type === undefined || tool.type === 'custom') && typeof tool.name === 'string' && !!tool.name.trim() &&
+      object(tool.input_schema) && tool.input_schema.type === 'object' && cache(tool.cache_control) &&
+      keys(tool, ['type', 'name', 'description', 'input_schema', 'cache_control', 'strict'])))) return false;
+  if (body.tool_choice !== undefined && (!object(body.tool_choice) ||
+      !['auto', 'any', 'none', 'tool'].includes(String(body.tool_choice.type)) ||
+      !keys(body.tool_choice, ['type', 'name', 'disable_parallel_tool_use']))) return false;
+  return Array.isArray(body.messages) && body.messages.length > 0 && body.messages.every(message =>
+    object(message) && keys(message, ['role', 'content']) && ['user', 'assistant'].includes(String(message.role)) &&
+    (textContent(message.content) || Array.isArray(message.content) && message.content.every(part => object(part) &&
+      (text(part) || part.type === 'tool_use' && typeof part.id === 'string' && typeof part.name === 'string' &&
+        object(part.input) && cache(part.cache_control) && keys(part, ['type', 'id', 'name', 'input', 'cache_control']) ||
+      part.type === 'tool_result' && typeof part.tool_use_id === 'string' && textContent(part.content) &&
+        cache(part.cache_control) && keys(part, ['type', 'tool_use_id', 'content', 'is_error', 'cache_control']) ||
+      part.type === 'thinking' && typeof part.thinking === 'string' && typeof part.signature === 'string' &&
+        keys(part, ['type', 'thinking', 'signature']) ||
+      part.type === 'redacted_thinking' && typeof part.data === 'string' && keys(part, ['type', 'data'])))));
+}
+
+/** Read fresh model limits with the final selected API key. Exact model ID,
+ * version and credential are required; aliases and all beta headers refuse.
+ * This metadata read never issues a generation or an estimated count request. */
+export function currentBenchAnthropicInputReader(input: { model: string; inputTokens: number; outputTokens: number },
+  ports: { fetch: typeof globalThis.fetch } = { fetch: globalThis.fetch },
+): { read: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
+  revoke: () => void } {
+  const { model, inputTokens, outputTokens } = input, send = ports.fetch;
+  const sourceSha256 = currentBenchAnthropicInputContract(model, inputTokens, outputTokens);
+  let live = true;
+  return { revoke() { live = false; }, async read(value, credential) {
+    const attempt = Object.freeze({ ...value }), secret = credential.secret;
+    try {
+      const body = JSON.parse(attempt.body);
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+          attempt.transport !== 'anthropic-http' || attempt.target !== anthropicMessagesTarget ||
+          attempt.credentialHeader !== 'x-api-key' || !secret ||
+          attempt.credentialSha256 !== createHash('sha256').update(secret).digest('hex') ||
+          attempt.anthropicVersion !== anthropicInputVersion || attempt.anthropicBeta !== null ||
+          attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
+          body.model !== model || !Number.isSafeInteger(body.max_tokens) || body.max_tokens <= 0 ||
+          body.max_tokens > outputTokens || !selfContainedAnthropicInput(body)) return null;
+      const response = await send(anthropicModelsTarget + model, { method: 'GET', redirect: 'error',
+        headers: { 'x-api-key': secret, 'anthropic-version': anthropicInputVersion, accept: 'application/json' },
+        signal: AbortSignal.any([attempt.signal, AbortSignal.timeout(3000)]) });
+      if (response.status !== 200 || !response.body) { await response.body?.cancel(); return null; }
+      const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 16_384) { await reader.cancel(); return null; }
+          chunks.push(chunk.value);
+        }
+      } finally { reader.releaseLock(); }
+      const responseBytes = Buffer.concat(chunks), measured = JSON.parse(responseBytes.toString('utf8'));
+      if (!live || attempt.signal.aborted || measured.type !== 'model' || measured.id !== model ||
+          measured.max_input_tokens !== inputTokens || measured.max_tokens !== outputTokens) return null;
+      const validUntilMonotonicMs = processMonotonicClock.now() + 5000;
+      const requestId = response.headers.get('request-id');
+      return { model, inputTokens, sourceSha256, validUntilMonotonicMs,
+        evidence: Object.freeze({ kind: 'provider-model-limit', sourceSha256, bodySha256: attempt.bodySha256,
+          responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+          requestId: requestId !== null && /^[a-zA-Z0-9_-]{1,128}$/.test(requestId) ? requestId : null,
+          model, inputTokens, outputTokens, anthropicVersion: anthropicInputVersion }),
+        validateAuthorization() {
+          if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
+            throw new Error('Anthropic benchmark input authority expired or revoked.');
+          }
+        } };
+    } catch { return null; }
+  } };
+}
+
 /** Subscription admission (D-023). There is no provider count and no output
  * field, so the bound is the frozen provider-intrinsic contract. It only accepts
  * the final ChatGPT backend body, and only when max_output_tokens is absent, so
@@ -785,6 +1005,7 @@ export function createNativeProviderAuthenticator(input: {
   policy: Pick<CurrentBenchmarkProtocol['arms'][number],
     'agent' | 'account' | 'model' | 'effort' | 'payer'> & {
       generationBudget: { maxUsd: number; maxTokens?: number };
+      runtime?: Pick<CurrentBenchmarkProtocol['arms'][number]['runtime'], 'proximus'>;
     };
   rate: FrozenBenchRate;
   readNativeInputCeiling?: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
@@ -800,11 +1021,16 @@ export function createNativeProviderAuthenticator(input: {
     throw new Error('Native provider authentication requires a pinned policy and frozen price rate.');
   }
   const payer = currentBenchArmPayer(arm), subscription = payer === 'subscription';
-  const route = arm.agent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
+  const providerAgent = currentBenchProviderAgent(arm);
+  if (arm.agent === 'proximus' && subscription) throw new Error('Proximus supports only the API-key payer.');
+  const route = providerAgent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
     : currentBenchCodexRoute(payer);
-  const contract = arm.agent === 'codex' ? currentBenchRateContract(payer, rate) : null;
+  const contract = providerAgent === 'codex' ? currentBenchRateContract(payer, rate) :
+    !subscription && rate.inputTokenCeiling !== undefined && rate.outputTokenCeiling !== undefined
+    ? currentBenchAnthropicInputContract(arm.model, rate.inputTokenCeiling, rate.outputTokenCeiling) : null;
   const providerReader = input.readNativeInputCeiling !== undefined || contract === null ||
-    rate.inputTokenCeilingSourceSha256 !== contract ? null : subscription
+    rate.inputTokenCeilingSourceSha256 !== contract ? null : providerAgent === 'claude'
+    ? currentBenchAnthropicInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! }) : subscription
     ? currentBenchCodexSubscriptionInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling!, outputTokens: rate.outputTokenCeiling! })
     : currentBenchOpenAiInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling! });
   const readNativeInputCeiling = input.readNativeInputCeiling ?? providerReader?.read;
@@ -893,6 +1119,9 @@ export interface CurrentBenchProviderCaptureRecovery {
 export function currentBenchWorkloadProviderInputCapture(options: {
   accountingBinding: CurrentBenchAccountingBinding; captureRoot: string; candidateCheckoutRoot: string;
   model: string; effort: string; accountId: string; maxRequests: number; maxBytes: number;
+  /** Anthropic requests have no native turn identity before the response.
+   * Omission preserves existing Codex allocation hashes and receipts. */
+  agent?: 'claude';
   /** D-023 subscription route. Omission is the API-key route, so existing
    * allocations keep their configuration hash. */
   payer?: 'subscription';
@@ -909,9 +1138,12 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     !digest(binding.preregHash) || !binding.assignmentId.startsWith('bench-assignment:') ||
     !Number.isSafeInteger(frozen.maxRequests) || frozen.maxRequests < 1 || frozen.maxRequests > 10_000 ||
     !Number.isSafeInteger(frozen.maxBytes) || frozen.maxBytes < 1 || frozen.maxBytes > 16 * 1024 * 1024 ||
-    frozen.payer !== undefined && frozen.payer !== 'subscription')
+    frozen.payer !== undefined && frozen.payer !== 'subscription' ||
+    frozen.agent !== undefined && frozen.agent !== 'claude' || frozen.agent === 'claude' && frozen.payer !== undefined)
     throw new Error('Provider input capture requires an exact private assignment and bounded allocation.');
-  const route = currentBenchCodexRoute(frozen.payer ?? 'api-key');
+  const claude = frozen.agent === 'claude';
+  const route = claude ? { transport: 'anthropic-http', target: anthropicMessagesTarget, credentialHeader: 'x-api-key' }
+    : currentBenchCodexRoute(frozen.payer ?? 'api-key');
   resolveBenchWorkspace(binding.workspaceId);
   if (readOnly && !recovery) throw new Error('Read-only provider capture requires retained host recovery pins.');
   const root = lstatSync(frozen.captureRoot, { bigint: true });
@@ -948,8 +1180,24 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     throw new Error('Provider input capture recovery differs from its private host allocation.');
   type Capture = Readonly<{ schemaVersion: 1; accountingBinding: CurrentBenchAccountingBinding;
     reservationId: string; bodyRef: string; bodyPath: string; bodySha256: string;
-    nativeSessionId: string; nativeTurnId: string; model: string; effort: string; accountId: string;
-    payer?: 'subscription' }>;
+    model: string; effort: string; accountId: string; payer?: 'subscription' } &
+    ({ agent?: never; nativeSessionId: string; nativeTurnId: string; anthropicVersion?: never; anthropicBeta?: never } |
+      { agent: 'claude'; nativeSessionId?: never; nativeTurnId?: never; anthropicVersion: string; anthropicBeta: null })>;
+  const matchesNativeInput = (body: unknown, session: unknown, turn: unknown) => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    const request = body as Record<string, unknown>;
+    if (request.model !== frozen.model) return false;
+    const config = claude ? request.output_config : request.reasoning;
+    if (!config || typeof config !== 'object' || Array.isArray(config) ||
+        (config as Record<string, unknown>).effort !== frozen.effort) return false;
+    if (claude) return session === undefined && turn === undefined &&
+      typeof request.max_tokens === 'number' && Number.isSafeInteger(request.max_tokens) && request.max_tokens > 0 &&
+      selfContainedAnthropicInput(request);
+    const correlation = readGatewayNativeCorrelation(request);
+    return uuid(session) && uuid(turn) &&
+      correlation.status === 'observed' && correlation.turnId === turn && correlation.threadId === session &&
+      (correlation.sessionId ?? correlation.threadId) === session;
+  };
   const published = new Map(recovery?.captures.map(pin => [pin.reservationId, pin.receiptSha256]) ?? []);
   const paths = (id: string) => ({ body: `${namespace}/${id}/body.json`, receipt: `${namespace}/${id}/receipt.json` });
   const allocationCensus = () => {
@@ -972,24 +1220,23 @@ export function currentBenchWorkloadProviderInputCapture(options: {
     async captureProviderInput(attempt: Readonly<GatewayCarryTrialAttempt>): Promise<void> {
       if (readOnly) throw new Error('Read-only provider capture cannot allocate or forward a request.');
       if (allocationCensus() >= frozen.maxRequests || attempt.signal.aborted ||
-          !uuid(attempt.attemptId) || !uuid(attempt.nativeSessionId) || !uuid(attempt.nativeTurnId) ||
+          !uuid(attempt.attemptId) ||
           attempt.manifestSha256 !== binding.preregHash || attempt.armId !== binding.assignmentId ||
           attempt.accountId !== frozen.accountId || attempt.transport !== route.transport ||
           attempt.target !== route.target || attempt.credentialHeader !== route.credentialHeader ||
-          !digest(attempt.credentialSha256) || typeof attempt.body !== 'string')
+          !digest(attempt.credentialSha256) || typeof attempt.body !== 'string' || claude &&
+          (attempt.anthropicVersion !== anthropicInputVersion || attempt.anthropicBeta !== null))
         throw new Error('Provider input capture refused a foreign, cancelled or exhausted request.');
       const bytes = Buffer.from(attempt.body), hash = createHash('sha256').update(bytes).digest('hex');
-      const body = JSON.parse(attempt.body), correlation = readGatewayNativeCorrelation(body);
+      const body = JSON.parse(attempt.body);
       if (!bytes.length || bytes.length > frozen.maxBytes || bytes.toString('utf8') !== attempt.body ||
-          hash !== attempt.bodySha256 || body.model !== frozen.model || body.reasoning?.effort !== frozen.effort ||
-          correlation.status !== 'observed' || correlation.turnId !== attempt.nativeTurnId ||
-          correlation.threadId !== attempt.nativeSessionId ||
-          (correlation.sessionId ?? correlation.threadId) !== attempt.nativeSessionId)
+          hash !== attempt.bodySha256 || !matchesNativeInput(body, attempt.nativeSessionId, attempt.nativeTurnId))
         throw new Error('Provider input capture refused mismatched request bytes or native identity.');
       const path = paths(attempt.attemptId);
       const receipt: Capture = { schemaVersion: 1, accountingBinding: { ...binding }, reservationId: attempt.attemptId,
         bodyRef: `${namespace}:${attempt.attemptId}#body`, bodyPath: path.body, bodySha256: hash,
-        nativeSessionId: attempt.nativeSessionId, nativeTurnId: attempt.nativeTurnId,
+        ...(claude ? { agent: 'claude' as const, anthropicVersion: anthropicInputVersion, anthropicBeta: null }
+          : { nativeSessionId: attempt.nativeSessionId!, nativeTurnId: attempt.nativeTurnId! }),
         model: frozen.model, effort: frozen.effort, accountId: frozen.accountId,
         ...(frozen.payer ? { payer: frozen.payer } : {}) };
       const encoded = canonicalJson(receipt);
@@ -1021,15 +1268,13 @@ export function currentBenchWorkloadProviderInputCapture(options: {
         if (receipt.schemaVersion !== 1 || canonicalJson(receipt.accountingBinding) !== canonicalJson(binding) ||
             receipt.reservationId !== reservationId || receipt.bodyPath !== path.body ||
             receipt.bodyRef !== `${namespace}:${reservationId}#body` || !digest(receipt.bodySha256) ||
-            !uuid(receipt.nativeSessionId) || !uuid(receipt.nativeTurnId) || receipt.model !== frozen.model ||
-            receipt.effort !== frozen.effort || receipt.accountId !== frozen.accountId) return null;
+            receipt.model !== frozen.model || receipt.effort !== frozen.effort || receipt.accountId !== frozen.accountId ||
+            receipt.payer !== frozen.payer || (receipt.agent === 'claude') !== claude || claude &&
+            (receipt.anthropicVersion !== anthropicInputVersion || receipt.anthropicBeta !== null)) return null;
         const body = readContainedBenchmarkFile(frozen.captureRoot, path.body, frozen.maxBytes);
         if (createHash('sha256').update(body).digest('hex') !== receipt.bodySha256 || !unchanged()) return null;
-        const request = JSON.parse(body.toString('utf8')), correlation = readGatewayNativeCorrelation(request);
-        if (request.model !== receipt.model || request.reasoning?.effort !== receipt.effort ||
-            correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
-            correlation.threadId !== receipt.nativeSessionId ||
-            (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId) return null;
+        const request = JSON.parse(body.toString('utf8'));
+        if (!matchesNativeInput(request, receipt.nativeSessionId, receipt.nativeTurnId)) return null;
         return Object.freeze({ ...receipt, accountingBinding: Object.freeze({ ...receipt.accountingBinding }) });
       } catch { return null; }
     },
@@ -1057,6 +1302,27 @@ export interface CurrentBenchHostGateway {
    * Issuance proves scope/lifetime, not matched-cost measurement. */
   issueSessionBudget(budget: GenerationBudget, beforeCost?: CurrentBenchNativeRunCost | null): CurrentBenchSessionBudget;
   stop(): Promise<void>;
+}
+/** An official host reference has no Codex session/home or native-launch grant. */
+export interface CurrentBenchHostReferenceGateway {
+  readonly agent: 'proximus';
+  readonly gateway: Readonly<ScopedInferenceGateway>;
+  readonly accountingBinding: CurrentBenchAccountingBinding;
+  stop(): Promise<void>;
+}
+const currentBenchHostReferences = new WeakMap<CurrentBenchHostReferenceGateway, {
+  protocol: string; assignmentId: string; active(): boolean;
+}>();
+
+/** Copied fields/URLs never substitute for the controller's live host grant. */
+export function requireCurrentBenchHostReferenceGateway(receipt: CurrentBenchHostReferenceGateway,
+  protocol: CurrentBenchmarkProtocol, execution: { armId: string; taskId: string; seed: number }) {
+  const issued = currentBenchHostReferences.get(receipt);
+  if (!issued?.active() || issued.protocol !== canonicalJson(currentBenchmarkProtocolSchema.parse(protocol)) ||
+      issued.assignmentId !== currentBenchAssignmentId(protocol.runId, execution.armId, execution.taskId, execution.seed)) {
+    throw new Error('Proximus requires its live controller-issued host gateway and exact frozen assignment.');
+  }
+  return receipt;
 }
 export interface CurrentBenchSessionBudget {
   readonly index: number;
@@ -1100,6 +1366,7 @@ export function currentBenchGatewayController(input: {
 }, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & {
   readonly accountingBinding: CurrentBenchAccountingBinding;
   startNativeGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostGateway>;
+  startHostGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostReferenceGateway>;
 } {
   const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
   const arm = protocol.arms.find(arm => arm.id === input.armId);
@@ -1137,6 +1404,7 @@ export function currentBenchGatewayController(input: {
     throw new Error('Benchmark per-request output ceiling exceeds its frozen allowance or is invalid.');
   }
   const codexRoute = currentBenchCodexRoute(payer);
+  const providerAgent = currentBenchProviderAgent(arm);
   const controller = createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
     ...(subscription ? {} : { outputTokenLimit }),
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
@@ -1149,8 +1417,8 @@ export function currentBenchGatewayController(input: {
         const output = request.transport === 'anthropic-http' ? body.max_tokens : subscription
           ? (body.max_output_tokens === undefined ? outputTokenLimit : undefined) : body.max_output_tokens;
         const effort = request.transport === 'anthropic-http' ? body.output_config?.effort : body.reasoning?.effort;
-        if ((arm.agent === 'codex') !== (request.transport !== 'anthropic-http') ||
-            arm.agent === 'codex' && request.transport !== codexRoute.transport ||
+        if ((providerAgent === 'codex') !== (request.transport !== 'anthropic-http') ||
+            providerAgent === 'codex' && request.transport !== codexRoute.transport ||
             !['auto', 'default'].includes(arm.account) && request.accountId !== arm.account ||
             body.model !== arm.model || effort !== arm.effort ||
             !Number.isSafeInteger(output) || output <= 0 || output > outputTokenLimit ||
@@ -1179,10 +1447,37 @@ export function currentBenchGatewayController(input: {
   let live = true, starting = false;
   const revoke = () => { live = false; controller.revoke(); };
   return { ...controller, accountingBinding, revoke,
+    async startHostGateway(log = () => {}, start) {
+      if (!live || starting || arm.agent !== 'proximus')
+        throw new Error('Benchmark host reference gateway is revoked, already started or unsupported.');
+      starting = true;
+      let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
+      try {
+        // Same authenticated final-provider reservations and response ledger;
+        // this path grants no psu/native launch, session budget or home access.
+        service = await startNativeGymGateway(controller.gateway, workspaceId, log, start);
+        if (!live) throw new Error('Benchmark host reference gateway was revoked during startup.');
+        let stopped = false, stopping: Promise<void> | undefined;
+        const receipt: CurrentBenchHostReferenceGateway = Object.freeze({ agent: 'proximus' as const,
+          gateway: snapshotScopedInferenceGateway(service.transport.statelessGateway), accountingBinding,
+          stop() {
+            stopped = true; revoke();
+            return stopping ??= Promise.resolve().then(() => service!.stop());
+          } });
+        currentBenchHostReferences.set(receipt, { protocol: canonicalJson(protocol), assignmentId,
+          active: () => live && !stopped });
+        return receipt;
+      } catch (error) {
+        revoke();
+        await service?.stop();
+        throw error;
+      }
+    },
     async startNativeGateway(log = () => {}, start) {
-      // The maintained scoped native launcher currently supports only fresh
-      // Codex sessions. Refuse unsupported clients before binding a listener.
-      if (!live || starting || arm.agent !== 'codex') throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
+      // Claude uses the maintained isolated stock runner. Its treatment route
+      // is not supported by the su launcher; refuse it before any listener.
+      if (!live || starting || arm.agent !== 'codex' && !(arm.id === 'baseline' && arm.agent === 'claude'))
+        throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
       starting = true;
       let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
       try {
@@ -1258,7 +1553,9 @@ export interface CurrentBenchIdentity {
 export interface CurrentBenchIdentityObservation {
   worker: {
     taskId: string; workspaceId: string; ownerId: string; nativeSessionId: string;
+    agent?: 'codex' | 'claude';
     codexHome?: string;
+    claudeConfigDir?: string;
     runtimeRevision: string; sourceRevision: string; evidenceRef: string;
   };
   nativeTranscript: string;
@@ -1269,10 +1566,11 @@ export interface CurrentBenchIdentityObservation {
  * authority. A bounded gateway ring establishes a particular request identity,
  * never complete all-attempt usage or a historical runtime census. */
 export interface CurrentBenchObservationReaderPorts {
-  readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string; codexHome: string } | null>;
+  readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string;
+    agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string } | null>;
   readRuntimes(): Promise<RuntimeVintageRow[]>;
   measureRuntimes(rows: RuntimeVintageRow[], units: string[]): string | null;
-  readTranscript(nativeSessionId: string, codexHome: string): Promise<string | null>;
+  readTranscript(nativeSessionId: string, home: string, agent?: 'codex' | 'claude'): Promise<string | null>;
   readGateway(ownerId: string): Promise<{ owner: string; process: { pid: number; identity: string | null; startedAt: number };
     stageTelemetry: { ownerId: string; recent: GatewayRequestTimeline[] } } | null>;
 }
@@ -1314,8 +1612,15 @@ export function currentBenchObservationReader(
   return async task => {
     try {
       if (host && !issuedHere() || task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
-      const binding = await io.readBinding(task);
+      const enrolled = await io.readBinding(task);
+      // Copy the enrollment before IO: neither an in-place mutation nor a
+      // later carry/rebinding may redirect the proof to another native home.
+      const binding = enrolled && { ...enrolled };
       if (!binding || binding.nativeSessionId !== task.sessionId || binding.ownerId !== task.detail.coordOwnerId) return null;
+      const agent = binding.agent ?? 'codex';
+      const home = agent === 'claude' ? binding.claudeConfigDir : binding.codexHome;
+      if (!['codex', 'claude'].includes(agent) || !home?.trim() ||
+          (agent === 'claude' ? !!binding.codexHome : !!binding.claudeConfigDir)) return null;
       const rows = await io.readRuntimes();
       const units = host ? [opts.workerUnit] : [opts.workerUnit, opts.gatewayUnit];
       const environment = io.measureRuntimes(rows, units), runtimeRevision = io.measureRuntimes(rows, [opts.workerUnit]);
@@ -1328,7 +1633,8 @@ export function currentBenchObservationReader(
           (host ? worker.pid !== process.pid : gateway.extra.port !== gatewayPort) ||
           typeof gateway.extra.kernelProcessIdentity !== 'string') return null;
       const [nativeTranscript, report] = await Promise.all([
-        io.readTranscript(binding.nativeSessionId, binding.codexHome), io.readGateway(binding.ownerId),
+        agent === 'claude' ? io.readTranscript(binding.nativeSessionId, home, agent) : io.readTranscript(binding.nativeSessionId, home),
+        io.readGateway(binding.ownerId),
       ]);
       if (!nativeTranscript || !report || report.owner !== binding.ownerId || report.stageTelemetry.ownerId !== binding.ownerId ||
           report.process.pid !== gateway.pid || report.process.identity !== gateway.extra.kernelProcessIdentity ||
@@ -1336,17 +1642,28 @@ export function currentBenchObservationReader(
       const bootAt = Date.parse(worker.reportedAt);
       const taskAt = Date.parse(task.startedAt ?? '');
       if (!Number.isFinite(bootAt) || !Number.isFinite(taskAt)) return null;
-      const candidates = report.stageTelemetry.recent.filter(row => row.nativeCorrelation.status === 'observed' &&
-        row.nativeCorrelation.threadId === binding.nativeSessionId && row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt));
-      const timeline = candidates.sort((a, b) => b.finalizedAt - a.finalizedAt)[0];
-      if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment || host && !issuedHere()) return null;
-      const observation: CurrentBenchIdentityObservation = {
-        worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
-          nativeSessionId: binding.nativeSessionId, codexHome: binding.codexHome, runtimeRevision, sourceRevision: worker.treeSha,
-          evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
-        nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
-      };
-      return currentBenchIdentityFromObservation(task, observation) ? observation : null;
+      const candidates = report.stageTelemetry.recent.filter(row =>
+        row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt) &&
+        (agent === 'claude' || row.nativeCorrelation.status === 'observed' && row.nativeCorrelation.threadId === binding.nativeSessionId))
+        .sort((a, b) => b.finalizedAt - a.finalizedAt);
+      // Claude supplies its exact provider message id in native bytes, rather
+      // than Codex's request headers. Unrelated newer traffic cannot select a
+      // foreign session or hide this session's independently measured request.
+      let observation: CurrentBenchIdentityObservation | null = null;
+      for (const timeline of candidates) {
+        const candidate: CurrentBenchIdentityObservation = {
+          worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
+            nativeSessionId: binding.nativeSessionId, agent,
+            ...(agent === 'claude' ? { claudeConfigDir: home } : { codexHome: home }),
+            runtimeRevision, sourceRevision: worker.treeSha,
+            evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
+          nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
+        };
+        if (currentBenchIdentityFromObservation(task, candidate)) { observation = candidate; break; }
+      }
+      if (!observation || io.measureRuntimes(await io.readRuntimes(), units) !== environment ||
+          canonicalJson(await io.readBinding(task)) !== canonicalJson(binding) || host && !issuedHere()) return null;
+      return observation;
     } catch { return null; }
   };
 }
@@ -1365,19 +1682,27 @@ export function liveCurrentBenchObservationReaderPorts(
   return {
     readBinding: async task => {
       const { resolveDb } = await import('./reproducibility/db');
-      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb(scope);
-      const rows = await sql<{ id: number; coord_owner_id: string; session_id: string }[]>`
-        SELECT a.id, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
+      const rows = await sql<{ id: number | string; agent: string; coord_owner_id: string; session_id: string }[]>`
+        SELECT a.id, a.agent, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
         JOIN harness_shared.task_ledger t ON t.workspace_id = a.workspace_id
           AND t.session_id = a.session_id AND t.detail->>'coordOwnerId' = a.coord_owner_id
         WHERE t.task_id = ${task.taskId} AND t.workspace_id = ${scope.workspaceId}
-          AND a.agent = 'codex' AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
+          AND a.agent IN ('codex', 'claude') AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
           AND a.session_id = ${task.sessionId ?? null}
         ORDER BY a.started_at DESC LIMIT 2
       `;
       if (rows.length !== 1) return null;
-      return { ownerId: rows[0].coord_owner_id, nativeSessionId: rows[0].session_id, codexHome: codexHomeForSessionKey(rows[0].id) };
+      const row = rows[0];
+      // adv_sessions.id is BIGSERIAL: postgres.js preserves int8 as decimal
+      // text. Validate before conversion so the native-home key stays exact.
+      const sessionKey = typeof row.id === 'string' && /^[1-9]\d*$/.test(row.id) ? Number(row.id) : row.id;
+      if (typeof sessionKey !== 'number' || !Number.isSafeInteger(sessionKey) || sessionKey < 1 || !row.coord_owner_id ||
+          row.coord_owner_id !== task.detail.coordOwnerId || row.session_id !== task.sessionId) return null;
+      const common = { ownerId: row.coord_owner_id, nativeSessionId: row.session_id };
+      if (row.agent === 'claude') return { ...common, agent: 'claude', claudeConfigDir: sessionClaudeConfigDir(row.coord_owner_id) };
+      return row.agent === 'codex' ? { ...common, codexHome: codexHomeForSessionKey(sessionKey) } : null;
     },
     readRuntimes: async () => {
       const { listRuntimeVintage } = await import('../runtime-vintage');
@@ -1385,28 +1710,40 @@ export function liveCurrentBenchObservationReaderPorts(
     },
     // Keep the existing kernel-pin measurement synchronous for before/after proof.
     measureRuntimes: (rows, units) => measureRuntimeVintageEnvironment(rows, units),
-    readTranscript: async (nativeSessionId, codexHome) => {
-      const [{ promises: fs, constants }, path, { findCodexRolloutPathByUuid }] = await Promise.all([
-        import('node:fs'), import('node:path'), import('../session-transcript-resolvers'),
-      ]);
-      const file = await findCodexRolloutPathByUuid(nativeSessionId, { homeOverride: codexHome });
-      if (!file) return null;
-      const root = await fs.realpath(path.join(codexHome, 'sessions')), realFile = await fs.realpath(file);
-      const relative = path.relative(root, realFile);
-      if (file !== realFile || !relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) return null;
-      const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    readTranscript: async (nativeSessionId, home, agent = 'codex') => {
       try {
-        const before = await handle.stat();
-        if (!before.isFile() || before.size <= 0 || before.size > 8_388_608) return null;
-        const bytes = Buffer.alloc(before.size); let offset = 0;
-        while (offset < bytes.length) {
-          const read = await handle.read(bytes, offset, bytes.length - offset, offset);
-          if (!read.bytesRead) return null; offset += read.bytesRead;
-        }
-        const after = await handle.stat(), text = bytes.toString('utf8');
-        return before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
-          Buffer.from(text, 'utf8').equals(bytes) ? text : null;
-      } finally { await handle.close(); }
+        if (!home.trim() || !['codex', 'claude'].includes(agent) ||
+            !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(nativeSessionId)) return null;
+        const [{ promises: fs, constants }, path, { findCodexRolloutPathByUuid }, { findSessionTranscript }] = await Promise.all([
+          import('node:fs'), import('node:path'), import('../session-transcript-resolvers'), import('../claude-sessions'),
+        ]);
+        const directory = agent === 'claude' ? 'projects' : 'sessions';
+        const realHome = await fs.realpath(home), root = path.join(realHome, directory);
+        const file = agent === 'claude'
+          ? await findSessionTranscript(nativeSessionId, { roots: [root] })
+          : await findCodexRolloutPathByUuid(nativeSessionId, { homeOverride: realHome });
+        if (!file) return null;
+        // Resolve the allocated home itself (the container relocates it), but
+        // never follow a project, directory or file link beneath that root.
+        const relative = path.relative(root, file), realFile = await fs.realpath(file);
+        if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative) ||
+            realFile !== path.join(root, relative)) return null;
+        const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const before = await handle.stat();
+          if (!before.isFile() || before.size <= 0 || before.size > 8_388_608) return null;
+          const bytes = Buffer.alloc(before.size); let offset = 0;
+          while (offset < bytes.length) {
+            const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+            if (!read.bytesRead) return null; offset += read.bytesRead;
+          }
+          const after = await fs.lstat(file), text = bytes.toString('utf8');
+          return after.isFile() && before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+            before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
+            await fs.realpath(home) === realHome && await fs.realpath(file) === realFile &&
+            Buffer.from(text, 'utf8').equals(bytes) ? text : null;
+        } finally { await handle.close(); }
+      } catch { return null; }
     },
     readGateway: async ownerId => {
       if (issuedGateway && !issuedHere()) return null;
@@ -1431,19 +1768,25 @@ export function currentBenchIdentityFromObservation(
   const row = gateway.timeline;
   const provider = row.providerIdentity;
   const correlation = row.nativeCorrelation;
+  const agent = worker.agent ?? 'codex';
   const revision = (value: string) => /^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(value);
   if (task.taskId !== worker.taskId || task.workspaceId !== worker.workspaceId || !worker.ownerId ||
       !worker.nativeSessionId || !worker.evidenceRef || !gateway.processRef ||
       !revision(worker.runtimeRevision) || !revision(worker.sourceRevision) ||
-      row.ownerId !== worker.ownerId || row.provider !== 'codex' || row.protocol !== 'openai-responses' ||
+      !['codex', 'claude'].includes(agent) || row.ownerId !== worker.ownerId || row.provider !== agent ||
+      row.protocol !== (agent === 'claude' ? 'anthropic-messages' : 'openai-responses') ||
       row.outcome !== 'ok' || row.finalStatus !== 200 || !provider ||
-      correlation.status !== 'observed' || correlation.threadId !== worker.nativeSessionId ||
-      correlation.sessionId !== null && correlation.sessionId !== worker.nativeSessionId ||
-      !correlation.turnId || !Number.isSafeInteger(row.requestId) || row.requestId < 1) return null;
+      !Number.isSafeInteger(row.requestId) || row.requestId < 1) return null;
+  if (agent === 'codex' && (correlation.status !== 'observed' || correlation.threadId !== worker.nativeSessionId ||
+      correlation.sessionId !== null && correlation.sessionId !== worker.nativeSessionId || !correlation.turnId)) return null;
+  if (agent === 'claude' && (!worker.claudeConfigDir?.trim() || worker.codexHome ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(worker.nativeSessionId) ||
+      !['unobserved', 'missing', 'invalid'].includes(correlation.status))) return null;
   const fullHash = (value: typeof row.cache.tools) => value && value.bytes > 0 &&
     value.bytes === value.hashedBytes && /^[a-f0-9]{64}$/.test(value.sha256) ? value.sha256 : null;
   const promptHash = fullHash(row.cache.instructions), toolsHash = fullHash(row.cache.tools);
   const template = row.cache.nativeInstructionTemplate;
+  if (agent === 'claude' && template) return null;
   const promptTemplateHash = template?.version === 'codex-native-template-v1' ? fullHash(template.fingerprint) : null;
   if (template?.skillsRootHash != null && (!worker.codexHome ||
       template.skillsRootHash !== hash(`${worker.codexHome}/skills/.system`))) return null;
@@ -1454,26 +1797,44 @@ export function currentBenchIdentityFromObservation(
   // No lossy transcript adapter: its session header/version and exact turn are
   // observations which portable conversation renderers intentionally discard.
   if (Buffer.byteLength(observation.nativeTranscript) > 8_388_608) return null;
-  let records: Array<{ type?: string; payload?: Record<string, unknown> }>;
+  let records: Array<{ type?: string; payload?: Record<string, unknown>; sessionId?: string; session_id?: string;
+    version?: string; perTurnEffort?: string; isApiErrorMessage?: boolean; isSidechain?: boolean;
+    message?: { id?: string; model?: string } }>;
   try {
     records = observation.nativeTranscript.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
     if (records.some(record => !record || typeof record !== 'object' || Array.isArray(record))) return null;
   } catch { return null; }
-  const headers = records.filter(record => record.type === 'session_meta');
-  const version = headers[0]?.payload?.cli_version;
-  if (!headers.length || typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$/.test(version) ||
-      headers.some(record => record.payload?.id !== worker.nativeSessionId || record.payload?.cli_version !== version)) return null;
-  const turns = records.filter(record => record.type === 'turn_context' && record.payload?.turn_id === correlation.turnId);
-  if (!turns.length || turns.some(record => record.payload?.model !== row.model ||
-      record.payload?.effort !== row.forwardedEffort)) return null;
+  let version: unknown, nativeRef: string;
+  if (agent === 'claude') {
+    // Claude has no Codex turn-context header. The host-owned native source
+    // records the actual provider message alongside its session, CLI version
+    // and effort. Reconcile that exact message; aliases/request order cannot
+    // substitute for the gateway's independently observed provider response.
+    const messages = records.filter(record => record.type === 'assistant' && record.message?.id === provider.responseId);
+    version = messages[0]?.version;
+    if (!messages.length || records.some(record =>
+        record.sessionId !== undefined && record.sessionId !== worker.nativeSessionId ||
+        record.session_id !== undefined && record.session_id !== worker.nativeSessionId) ||
+        messages.some(record => record.sessionId !== worker.nativeSessionId || record.isApiErrorMessage || record.isSidechain ||
+          record.version !== version || record.perTurnEffort !== row.forwardedEffort || record.message?.model !== provider.model)) return null;
+    nativeRef = `claude:${worker.nativeSessionId}#message:${provider.responseId}`;
+  } else {
+    const headers = records.filter(record => record.type === 'session_meta');
+    version = headers[0]?.payload?.cli_version;
+    if (!headers.length || headers.some(record => record.payload?.id !== worker.nativeSessionId || record.payload?.cli_version !== version)) return null;
+    const turns = records.filter(record => record.type === 'turn_context' && record.payload?.turn_id === correlation.turnId);
+    if (!turns.length || turns.some(record => record.payload?.model !== row.model || record.payload?.effort !== row.forwardedEffort)) return null;
+    nativeRef = `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`;
+  }
+  if (typeof version !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*$/.test(version)) return null;
   return {
     measuredBy: 'runtime-observation', runtimeRevision: worker.runtimeRevision, sourceRevision: worker.sourceRevision,
     model: provider.model, effort: provider.effort ?? row.forwardedEffort,
     effortSource: provider.effort ? 'provider-response' : 'forwarded-request',
-    clientVersion: `codex/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
+    clientVersion: `${agent}/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
     nativeSessionId: worker.nativeSessionId, providerResponseId: provider.responseId,
     observedAt: new Date(row.finalizedAt).toISOString(),
-    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`, `provider:${provider.responseId}`],
+    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, nativeRef, `provider:${provider.responseId}`],
   };
 }
 export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
@@ -1527,6 +1888,7 @@ export interface CurrentStockBenchPorts extends Omit<CurrentSuBenchPorts, 'launc
   launchNative(input: { handle: BenchHarnessHandle; task: BenchTask; context: BenchmarkContextReceipt }): Promise<unknown>;
 }
 export const CURRENT_STOCK_CODEX_BLUEPRINT = 'native-codex';
+export const CURRENT_STOCK_CLAUDE_BLUEPRINT = 'native-claude';
 /** Validate the controller-issued object, its live lifetime and frozen scope. */
 export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
@@ -1536,16 +1898,17 @@ export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBench
   if (!gateway || !host || !host.active() || !accounting ||
       canonicalJson(accounting) !== canonicalJson(host.binding) || accounting.workspaceId !== opts.workspaceId ||
       accounting.runId !== opts.runId || accounting.preregHash !== opts.preregistration.preregHash ||
-      accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed) ||
-      canonicalJson(opts.preregistration.config) !== host.protocol) {
+      accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed)) {
     throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
   }
+  if (canonicalJson(opts.preregistration.config) !== host.protocol)
+    throw new Error('Current benchmark launch requires the exact frozen protocol bound to its host-owned gateway.');
   return host;
 }
 function sessionHandle(handle: BenchHarnessHandle): string {
   return canonicalJson([handle.slug, handle.featureId, handle.worktreePath]);
 }
-function requireSessionBudget(observations: CurrentSuBenchObservations,
+function requireSessionBudget(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding' | 'sessionBudget'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
   const host = requireCurrentBenchHostBinding(observations, opts), session = host.session;
   if (!session || session.receipt !== observations.sessionBudget || session.phase === 'retired' ||
@@ -1555,7 +1918,7 @@ function requireSessionBudget(observations: CurrentSuBenchObservations,
 }
 /** Consume once before enrollment/process creation. Rechecking the host route
  * alone cannot authorize another native session with the same allowance. */
-export function beginCurrentBenchNativeSession(observations: CurrentSuBenchObservations,
+export function beginCurrentBenchNativeSession(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding' | 'sessionBudget'>,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
   handle: BenchHarnessHandle): () => void {
   const host = requireCurrentBenchHostBinding(observations, opts);
@@ -1663,7 +2026,8 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'current-su');
 }
 export function currentStockBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts, opts: CurrentSuBenchOptions) {
-  if (opts.armId !== 'baseline' || opts.agent !== 'codex') throw new Error('Stock benchmark requires the frozen native Codex baseline.');
+  if (opts.armId !== 'baseline' || !['codex', 'claude'].includes(opts.agent))
+    throw new Error('Stock benchmark requires the frozen supported native baseline.');
   return currentBenchHarnessDriver(lifecycle, ports, opts, 'stock-native');
 }
 function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts | CurrentStockBenchPorts,
@@ -1674,7 +2038,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
   const ops: BenchHarnessOps = {
     ...lifecycle,
     async createHarness(input) {
-      if (input.blueprintId !== (kind === 'stock-native' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT))
+      const blueprint = opts.agent === 'claude' ? CURRENT_STOCK_CLAUDE_BLUEPRINT : CURRENT_STOCK_CODEX_BLUEPRINT;
+      if (input.blueprintId !== (kind === 'stock-native' ? blueprint : FULL_SPINE_BLUEPRINT))
         throw new Error(kind === 'stock-native' ? 'Stock native driver refuses a different execution blueprint.' : 'Current su driver refuses a retired treatment blueprint.');
       return lifecycle.createHarness(input);
     },
@@ -1708,7 +2073,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           topology: allowance?.topology ?? (kind === 'stock-native' ? 'stock-native-reference' : undefined) });
         if (allowance?.sessionBudget) record.sessionBudget = allowance.sessionBudget;
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
-        const { promptHashMode = 'exact-request-v1', ...runtimePins } = frozenArm.runtime;
+        const { promptHashMode = 'exact-request-v1', proximus: hostReference, ...runtimePins } = frozenArm.runtime;
+        if (hostReference) throw new Error('Proximus requires its host reference driver, not the native CLI driver.');
         const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };
         const protocol = await ports.verifyPreregistration();
         record.preregistration = protocol;
@@ -2398,13 +2764,31 @@ export function currentBenchWorkloadHandoffReader(options: DbScope & {
   };
 }
 
+type CurrentBenchWorkloadNativeReceipt = {
+  nativeSessionId: string;
+} & ({ agent?: 'codex'; codexHome: string; nativeTurnId: string;
+  claudeConfigDir?: never; nativeMessageId?: never; messageRecordIndex?: never } |
+  { agent: 'claude'; claudeConfigDir: string; nativeMessageId: string; messageRecordIndex: number;
+    sourceSha256: string; codexHome?: never; nativeTurnId?: never });
+
+/** Backend identity is exclusive even for untyped host allocations. */
+function validWorkloadNativeReceipt(row: CurrentBenchWorkloadNativeReceipt): boolean {
+  const present = (value: unknown) => typeof value === 'string' && !!value.trim();
+  return present(row.nativeSessionId) && (row.agent === 'claude'
+    ? present(row.claudeConfigDir) && present(row.nativeMessageId) && /^[a-f0-9]{64}$/.test(row.sourceSha256) &&
+      Number.isSafeInteger(row.messageRecordIndex) && row.messageRecordIndex >= 0 &&
+      row.codexHome === undefined && row.nativeTurnId === undefined
+    : (row.agent === undefined || row.agent === 'codex') && present(row.codexHome) && present(row.nativeTurnId) &&
+      row.claudeConfigDir === undefined && row.nativeMessageId === undefined && row.messageRecordIndex === undefined);
+}
+
 /** Resolve a host-selected text block from the exact private native task.
  * Native input recording is distinct from provider consumption; a provider
  * send proof must be composed separately when the workload requires it. */
 export function currentBenchWorkloadContextReader(options: DbScope & {
   workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string; notBefore: string;
-  receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
-    codexHome: string; nativeSessionId: string; nativeTurnId: string; recordIndex: number; contentIndex: number;
+  receipts: Array<CurrentBenchWorkloadNativeReceipt & { receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+    recordIndex: number; contentIndex: number;
     contextId: string; consumer: string; index: number }>;
 }): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
   const { sql: suppliedSql, ...allocation } = options;
@@ -2413,8 +2797,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
   const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
   if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) ||
       !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
-      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
-        row.nativeSessionId, row.nativeTurnId, row.contextId, row.consumer].every(present) ||
+      frozen.receipts.some(row => !validWorkloadNativeReceipt(row) ||
+        ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.contextId, row.consumer].every(present) ||
         ![row.index, row.recordIndex, row.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) ||
       new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
       new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
@@ -2423,7 +2807,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
   return async (ref, binding) => {
     const receipt = allowed.get(ref);
     if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
-    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnInput }] = await Promise.all([
+    const [{ resolveDb }, { codexHomeForSessionKey, sessionClaudeConfigDir },
+      { readClosedCodexTurnInput, readClosedClaudeMessageInput }] = await Promise.all([
       import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
     ]);
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
@@ -2434,23 +2819,31 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
        WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
          AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
          AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
-         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = ${receipt.agent ?? 'codex'}
          AND EXISTS (SELECT 1 FROM harness_shared.work_items item
                       WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
                         AND item.feature_id = ${receipt.subjectId})
     `;
-    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
-    const observed = await readClosedCodexTurnInput(sql, { workspaceId, codexHome: receipt.codexHome,
-      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
-      recordIndex: receipt.recordIndex, contentIndex: receipt.contentIndex });
+    if (rows.length !== 1 || (receipt.agent === 'claude'
+      ? sessionClaudeConfigDir(receipt.ownerId) !== receipt.claudeConfigDir
+      : codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome)) return null;
+    const observed = receipt.agent === 'claude'
+      ? await readClosedClaudeMessageInput(sql, { ...receipt, workspaceId })
+      : await readClosedCodexTurnInput(sql, { workspaceId, codexHome: receipt.codexHome,
+        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+        recordIndex: receipt.recordIndex, contentIndex: receipt.contentIndex });
     if (!observed) return null;
     const at = Date.parse(observed.at), row = rows[0];
     const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
-    if (!times.every(Number.isFinite) || at < start || at < times[0] || at > times[1] || at < times[2]) return null;
+    if (!times.every(Number.isFinite) || at < start || at < times[0] || at > times[1] || at < times[2] ||
+        'completedAt' in observed && Date.parse(observed.completedAt) > times[1]) return null;
     return [{ index: receipt.index, kind: 'input', role: receipt.consumer, at: observed.at, content: observed.text,
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref, contextId: receipt.contextId,
         nativeInputSource: { basis: 'closed-native-recorded-input', nativeSessionId: observed.nativeSessionId,
-          nativeTurnId: observed.nativeTurnId, recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
+          ...('nativeMessageId' in observed ? { agent: 'claude', nativeMessageId: observed.nativeMessageId,
+            messageRecordIndex: observed.messageRecordIndex, completedAt: observed.completedAt, recordUuid: observed.recordUuid }
+            : { nativeTurnId: observed.nativeTurnId }),
+          recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
           sourceSha256: observed.sourceSha256 } } }];
   };
 }
@@ -2460,8 +2853,8 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
  * recorded result into a platform transition or a provider-consumption claim. */
 export function currentBenchWorkloadToolResultReader(options:
   Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
-    receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
-      codexHome: string; nativeSessionId: string; nativeTurnId: string; callRecordIndex: number; resultRecordIndex: number;
+    receipts: Array<CurrentBenchWorkloadNativeReceipt & { receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+      callRecordIndex: number; resultRecordIndex: number; callContentIndex?: number; resultContentIndex?: number;
       callId: string; toolName: string; sourceSha256: string; argumentsSha256: string; outputSha256: string; index: number;
       /** Host-selected settled dispatch, including an inner target of a native wrapper.
        * The dispatcher callId is transient; the verified MCP native fingerprints
@@ -2477,8 +2870,11 @@ export function currentBenchWorkloadToolResultReader(options:
   const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
   if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) || !digest(frozen.trialBindingHash) ||
       !Number.isFinite(start) || !frozen.receipts.length || frozen.receipts.some(row =>
-        ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
-          row.nativeSessionId, row.nativeTurnId, row.callId, row.toolName].every(present) ||
+        !validWorkloadNativeReceipt(row) || ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label,
+          row.callId, row.toolName].every(present) ||
+        row.agent === 'claude' && (row.dispatch !== undefined ||
+          ![row.callContentIndex, row.resultContentIndex].every(n => Number.isSafeInteger(n) && n! >= 0)) ||
+        row.agent !== 'claude' && (row.callContentIndex !== undefined || row.resultContentIndex !== undefined) ||
         ![row.sourceSha256, row.argumentsSha256, row.outputSha256].every(digest) ||
         ![row.index, row.callRecordIndex, row.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
         row.callRecordIndex >= row.resultRecordIndex || (row.dispatch !== undefined && (
@@ -2494,7 +2890,8 @@ export function currentBenchWorkloadToolResultReader(options:
   return async (ref, binding) => {
     const receipt = allowed.get(ref);
     if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
-    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnToolResult }] = await Promise.all([
+    const [{ resolveDb }, { codexHomeForSessionKey, sessionClaudeConfigDir },
+      { readClosedCodexTurnToolResult, readClosedClaudeMessageToolResult }] = await Promise.all([
       import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
     ]);
     const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
@@ -2505,20 +2902,26 @@ export function currentBenchWorkloadToolResultReader(options:
        WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
          AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
          AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
-         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = ${receipt.agent ?? 'codex'}
          AND EXISTS (SELECT 1 FROM harness_shared.work_items item
                       WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
                         AND item.feature_id = ${receipt.subjectId})
     `;
-    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
-    const observed = await readClosedCodexTurnToolResult(sql, { workspaceId, codexHome: receipt.codexHome,
-      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
-      callRecordIndex: receipt.callRecordIndex, resultRecordIndex: receipt.resultRecordIndex });
+    if (rows.length !== 1 || (receipt.agent === 'claude'
+      ? sessionClaudeConfigDir(receipt.ownerId) !== receipt.claudeConfigDir
+      : codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome)) return null;
+    const observed = receipt.agent === 'claude'
+      ? await readClosedClaudeMessageToolResult(sql, { ...receipt, workspaceId,
+        callContentIndex: receipt.callContentIndex!, resultContentIndex: receipt.resultContentIndex! })
+      : await readClosedCodexTurnToolResult(sql, { workspaceId, codexHome: receipt.codexHome,
+        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+        callRecordIndex: receipt.callRecordIndex, resultRecordIndex: receipt.resultRecordIndex });
     if (!observed) return null;
     const content = typeof observed.output === 'string' ? observed.output : canonicalJson(observed.output);
     const calledAt = Date.parse(observed.calledAt), at = Date.parse(observed.at), row = rows[0];
     const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
     if (!times.every(Number.isFinite) || calledAt < start || calledAt < times[0] || calledAt < times[2] || at > times[1] ||
+        'completedAt' in observed && Date.parse(observed.completedAt) > times[1] ||
         observed.callId !== receipt.callId || observed.name !== receipt.toolName || observed.sourceSha256 !== receipt.sourceSha256 ||
         createHash('sha256').update(observed.arguments).digest('hex') !== receipt.argumentsSha256 ||
         createHash('sha256').update(content).digest('hex') !== receipt.outputSha256) return null;
@@ -2567,8 +2970,13 @@ export function currentBenchWorkloadToolResultReader(options:
       metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
         ...(platformInvocationSource ? { platformInvocationSource } : {}),
         nativeToolSource: { basis: 'closed-native-recorded-tool-result', nativeSessionId: observed.nativeSessionId,
-          nativeTurnId: observed.nativeTurnId, callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
-          callId: observed.callId, callType: observed.callType, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',
+          ...('nativeMessageId' in observed ? { agent: 'claude', nativeMessageId: observed.nativeMessageId,
+            messageRecordIndex: observed.messageRecordIndex, completedAt: observed.completedAt, callType: 'tool_use',
+            callContentIndex: observed.callContentIndex, resultContentIndex: observed.resultContentIndex,
+            callRecordUuid: observed.callRecordUuid, resultRecordUuid: observed.resultRecordUuid, callMessageId: observed.callMessageId }
+            : { nativeTurnId: observed.nativeTurnId, callType: observed.callType }),
+          callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
+          callId: observed.callId, outputKind: typeof observed.output === 'string' ? 'text' : 'blocks',
           sourceSha256: observed.sourceSha256, arguments: observed.arguments,
           argumentsSha256: receipt.argumentsSha256, outputSha256: receipt.outputSha256,
           calledAt: observed.calledAt, isError: observed.isError } } }];
@@ -2603,13 +3011,16 @@ export function currentBenchWorkloadProviderInputReader(options:
   const uuid = (value: string) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
   if (!host || host.workspaceId !== frozen.workspaceId || host.runId !== frozen.runId ||
       !present(host.loopId) || !digest(host.preregHash) || !host.assignmentId?.startsWith('bench-assignment:') ||
-      frozen.receipts.some(row => !uuid(row.reservationId) || !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId) ||
+      frozen.receipts.some(row => !validWorkloadNativeReceipt(row) || !uuid(row.reservationId) ||
+        (row.agent === 'claude' ? frozen.payer !== undefined || row.settledAt === undefined
+          : !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId)) ||
         !digest(row.reservationNoteSha256) || row.settledAt !== undefined && !Number.isFinite(Date.parse(row.settledAt)) ||
         ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
         !Number.isSafeInteger(row.inputIndex) || row.inputIndex < 0 ||
         row.nativeSource !== undefined && !['input', 'tool-result'].includes(row.nativeSource) ||
         row.nativeSource === 'tool-result' && ![row.contextId, row.consumer].every(present) ||
-        row.nativeSource !== 'tool-result' && (!Number.isSafeInteger(row.textIndex) || row.textIndex! < 0)) ||
+        (row.agent === 'claude' || row.nativeSource !== 'tool-result') &&
+          (!Number.isSafeInteger(row.textIndex) || row.textIndex! < 0)) ||
       new Set(frozen.receipts.map(row => row.reservationId)).size !== frozen.receipts.length)
     throw new Error('Workload provider input reader requires unique exact requests and a private accounting binding.');
   const inputReceipts = frozen.receipts.filter(row => row.nativeSource !== 'tool-result');
@@ -2641,7 +3052,7 @@ export function currentBenchWorkloadProviderInputReader(options:
          AND r.arm_id = ${host.assignmentId} AND r.attempt_kind = 'evaluation'
          AND r.status IN ('open', 'settled')
     `;
-    const row = rows[0], observed = inputs[0];
+    const row = rows[0], observed = inputs[0], claude = receipt.agent === 'claude';
     const input = receipt.nativeSource === 'tool-result' ? { ...observed, kind: 'input' as const,
       role: receipt.consumer, metadata: { ...observed.metadata, contextId: receipt.contextId } } : observed;
     if (rows.length !== 1 || typeof row.note !== 'string' ||
@@ -2650,14 +3061,19 @@ export function currentBenchWorkloadProviderInputReader(options:
         createHash('sha256').update(row.note).digest('hex') !== receipt.reservationNoteSha256 ||
         !(row.created_at instanceof Date) || !(row.ended_at instanceof Date) ||
         row.created_at.getTime() < Date.parse(input.at!) || row.created_at > row.ended_at) return null;
+    const nativeSource = observed.metadata?.[receipt.nativeSource === 'tool-result' ? 'nativeToolSource' : 'nativeInputSource'] as
+      Record<string, unknown> | undefined;
+    if (claude && (!nativeSource || typeof nativeSource.completedAt !== 'string' ||
+        !Number.isFinite(Date.parse(nativeSource.completedAt)) || row.created_at.getTime() > Date.parse(nativeSource.completedAt))) return null;
     try {
       const note = JSON.parse(row.note), attempt = note.nativeGatewayAttempt, result = note.nativeGatewayAttemptResult;
       const bodyText = Buffer.from(bytes).toString('utf8');
       if (!Buffer.from(bodyText).equals(Buffer.from(bytes))) return null;
       const body = JSON.parse(bodyText), bodySha256 = createHash('sha256').update(bytes).digest('hex');
       const identity = { attemptId: receipt.reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
-        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
-        bodySha256, ...currentBenchCodexRoute(frozen.payer ?? 'api-key') };
+        nativeSessionId: claude ? undefined : receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
+        bodySha256, ...(claude ? { transport: 'anthropic-http', target: anthropicMessagesTarget, credentialHeader: 'x-api-key',
+          anthropicVersion: anthropicInputVersion, anthropicBeta: null } : currentBenchCodexRoute(frozen.payer ?? 'api-key')) };
       if (!attempt || !result || Object.entries(identity).some(([key, value]) => attempt[key] !== value || result[key] !== value) ||
           !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
           !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== receipt.reservationId ||
@@ -2666,35 +3082,63 @@ export function currentBenchWorkloadProviderInputReader(options:
           result.costUsdMeasurementMissing !== true || !present(result.providerCompletion?.responseId) ||
           result.providerCompletion.model !== receipt.model ||
           result.providerCompletion.providerEffort !== null && result.providerCompletion.providerEffort !== receipt.effort ||
-          body.model !== receipt.model || body.reasoning?.effort !== receipt.effort || !selfContainedOpenAiInput(body)) return null;
-      const correlation = readGatewayNativeCorrelation(body);
-      if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
-          (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
-          correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
-      const message = body.input[receipt.inputIndex];
-      if (receipt.nativeSource === 'tool-result') {
-        const source = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
-        const outputs = body.input.filter((item: Record<string, unknown>) =>
-          ['function_call_output', 'custom_tool_call_output'].includes(String(item?.type)) && item.call_id === receipt.callId);
-        const calls = body.input.map((item: Record<string, unknown>, index: number) => ({ item, index })).filter(
-          (row: { item: Record<string, unknown> }) => ['function_call', 'custom_tool_call'].includes(String(row.item?.type)) && row.item.call_id === receipt.callId);
-        const call = calls[0];
-        if (!source || source.outputKind !== 'text' || outputs.length !== 1 || calls.length !== 1 ||
-            call.index >= receipt.inputIndex || call.item.type !== source.callType ||
-            `${call.item.namespace ? call.item.namespace + '.' : ''}${call.item.name}` !== receipt.toolName ||
-            (call.item.type === 'function_call' ? call.item.arguments : call.item.input) !== source.arguments ||
-            message?.type !== (source.callType === 'function_call' ? 'function_call_output' : 'custom_tool_call_output') ||
-            message.call_id !== receipt.callId || typeof message.output !== 'string' || message.output !== input.content) return null;
+          body.model !== receipt.model) return null;
+      if (claude) {
+        if (result.providerCompletion.responseId !== receipt.nativeMessageId || body.output_config?.effort !== receipt.effort ||
+            !Number.isSafeInteger(body.max_tokens) || body.max_tokens <= 0 || !selfContainedAnthropicInput(body)) return null;
+        const message = body.messages[receipt.inputIndex];
+        if (receipt.nativeSource === 'tool-result') {
+          const source = nativeSource!;
+          const blocks = body.messages.flatMap((item: Record<string, unknown>, messageIndex: number) =>
+            Array.isArray(item.content) ? item.content.map((block: Record<string, unknown>, contentIndex: number) =>
+              ({ block, role: item.role, messageIndex, contentIndex })) : []);
+          type Block = { block: Record<string, unknown>; role: unknown; messageIndex: number; contentIndex: number };
+          const calls = blocks.filter((item: Block) => item.block.type === 'tool_use' && item.block.id === receipt.callId);
+          const results = blocks.filter((item: Block) => item.block.type === 'tool_result' && item.block.tool_use_id === receipt.callId);
+          const call: Block = calls[0], output: Block = results[0];
+          if (calls.length !== 1 || results.length !== 1 || call.role !== 'assistant' || output.role !== 'user' ||
+              call.messageIndex >= output.messageIndex || output.messageIndex !== receipt.inputIndex ||
+              output.contentIndex !== receipt.textIndex || source.callType !== 'tool_use' ||
+              call.block.name !== receipt.toolName || canonicalJson(call.block.input) !== canonicalJson(JSON.parse(source.arguments as string)) ||
+              (output.block.is_error ?? null) !== source.isError ||
+              (source.outputKind === 'text' ? typeof output.block.content !== 'string' || output.block.content !== input.content
+                : source.outputKind !== 'blocks' || !Array.isArray(output.block.content) || canonicalJson(output.block.content) !== input.content)) return null;
+        } else {
+          const block = typeof message?.content === 'string' && receipt.textIndex === 0
+            ? { type: 'text', text: message.content } : message?.content?.[receipt.textIndex!];
+          if (message?.role !== 'user' || block?.type !== 'text' || block.text !== input.content) return null;
+        }
       } else {
-        const block = message?.content?.[receipt.textIndex!];
-        if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
-            !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+        if (body.reasoning?.effort !== receipt.effort || !selfContainedOpenAiInput(body)) return null;
+        const correlation = readGatewayNativeCorrelation(body);
+        if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
+            (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
+            correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
+        const message = body.input[receipt.inputIndex];
+        if (receipt.nativeSource === 'tool-result') {
+          const source = observed.metadata?.nativeToolSource as Record<string, unknown> | undefined;
+          const outputs = body.input.filter((item: Record<string, unknown>) =>
+            ['function_call_output', 'custom_tool_call_output'].includes(String(item?.type)) && item.call_id === receipt.callId);
+          const calls = body.input.map((item: Record<string, unknown>, index: number) => ({ item, index })).filter(
+            (row: { item: Record<string, unknown> }) => ['function_call', 'custom_tool_call'].includes(String(row.item?.type)) && row.item.call_id === receipt.callId);
+          const call = calls[0];
+          if (!source || source.outputKind !== 'text' || outputs.length !== 1 || calls.length !== 1 ||
+              call.index >= receipt.inputIndex || call.item.type !== source.callType ||
+              `${call.item.namespace ? call.item.namespace + '.' : ''}${call.item.name}` !== receipt.toolName ||
+              (call.item.type === 'function_call' ? call.item.arguments : call.item.input) !== source.arguments ||
+              message?.type !== (source.callType === 'function_call' ? 'function_call_output' : 'custom_tool_call_output') ||
+              message.call_id !== receipt.callId || typeof message.output !== 'string' || message.output !== input.content) return null;
+        } else {
+          const block = message?.content?.[receipt.textIndex!];
+          if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
+              !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+        }
       }
       return [{ ...input, metadata: { ...input.metadata,
         providerInputSource: { basis: 'completed-provider-request-input', reservationId: receipt.reservationId,
           reservationNoteSha256: receipt.reservationNoteSha256, bodyRef: receipt.bodyRef, bodySha256,
           inputIndex: receipt.inputIndex, ...(receipt.nativeSource === 'tool-result' ? { callId: receipt.callId } : { textIndex: receipt.textIndex }),
-          accountId: receipt.accountId,
+          accountId: receipt.accountId, ...(claude ? { agent: 'claude', anthropicVersion: anthropicInputVersion, anthropicBeta: null } : {}),
           responseId: result.providerCompletion.responseId, responseSha256: result.responseSha256 } } }];
     } catch { return null; }
   };

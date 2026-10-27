@@ -20,6 +20,8 @@
 #
 # Usage:
 #   apps/operator/bin/bundle-host.sh [entry] [outfile] [development|release]
+#   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --binding-preflight-only
+#   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --publish-qualified-output-only
 #     entry    default bin/hono-host.ts   (relative to apps/operator)
 #     outfile  default dist-host/hono-host.mjs
 #     profile  default development (source comments); release compacts whitespace
@@ -89,6 +91,35 @@ REPO_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd -P)"
 # runs under the committed-source loader, which reads its whole module before executing, unlike
 # bash. The sourced bundle-host-common.sh stays beside this script, frozen with it.
 HELPER_DIR="$OPERATOR_DIR/bin"
+
+# Bind an explicit caller-owned BG attempt before loaders, npm/cache acquisition,
+# logs or output writes. Its independently supplied digest nominates ORIGINAL
+# authority; neither observed compiler argv nor an inherited context can do so.
+if [[ "${1:-}" == --bg-transaction ]]; then
+  # Both modes stay inside the caller-owned generation. Publishing a qualified
+  # output receipt does not select a service pointer or activate a runtime.
+  if [[ "$#" != 7 || ( "${7:-}" != --binding-preflight-only && "${7:-}" != --publish-qualified-output-only ) ]]; then
+    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> (--binding-preflight-only|--publish-qualified-output-only)' >&2
+    exit 78
+  fi
+  if [[ -n "${NODE_OPTIONS:-}" || -n "${NODE_PATH:-}" ]]; then
+    echo 'BG recipe ambient Node resolution is forbidden' >&2
+    exit 78
+  fi
+  if [[ "$7" == --publish-qualified-output-only ]]; then
+    node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-run \
+      --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
+      --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT"
+    exit $?
+  fi
+  BUNDLE_HOST_BG_BUILD_CONTEXT="$(node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-begin \
+    --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
+    --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT")" || exit 78
+  readonly BUNDLE_HOST_BG_BUILD_CONTEXT
+  export BUNDLE_HOST_BG_BUILD_CONTEXT
+  printf 'BG_BUILD_BINDING_PASS %s\n' "$BUNDLE_HOST_BG_BUILD_CONTEXT"
+  exit 0
+fi
 
 # WI-10005802 (D-012): every node helper this script runs BEFORE the restricted-hold gate judges
 # the build (the install-mutex re-entry, the freshness proof, the probe-window gate, the bundle
@@ -335,26 +366,7 @@ done <<< "$VIEM_ALIAS_OUTPUT"
 # bundle (EI-21647996938145436).
 # A verifier export has no .git directory and may live inside another checkout.
 # Reuse its source receipt and archive validator; never borrow a parent's HEAD.
-if [[ -f "$REPO_ROOT/.verifier-source.json" ]]; then
-  SOURCE_SHA="$("${COMMITTED_NODE[@]}" --input-type=module - "$REPO_ROOT" <<'NODE'
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-const root = process.argv[2];
-const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
-const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT || join(root, '.verifier-source.json'), 'utf8'));
-verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
-process.stdout.write(receipt.sourceCommit.slice(0, 12));
-NODE
-  )"
-elif [[ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]]; then
-  echo 'bundle-host.sh: pinned source receipt requires its archive marker' >&2
-  exit 78
-elif [[ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)" == "$REPO_ROOT" ]]; then
-  SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
-else
-  SOURCE_SHA=""
-fi
+SOURCE_SHA="$(bundle_host_source_sha "$REPO_ROOT" "${COMMITTED_NODE[@]}")" || exit $?
 BUNDLED_SOURCE_SHA_DEFINE=()
 if [[ -n "$SOURCE_SHA" ]]; then
   BUNDLED_SOURCE_SHA_DEFINE=(
@@ -941,15 +953,19 @@ if [[ "$GATE_PENDING" == "1" ]] && ! restricted_hold_gate; then
 fi
 
 # Stamp only after the bundle AND every runtime sibling/asset has published.
-# The helper refuses a dirty tree, a changed HEAD, a missing output, or an
-# incoherent dist-host tree. A stamp failure never makes an otherwise-good
-# build fail; it merely forces ExecStartPre to rebuild normally.
-if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
+# The operator artifact is needed at boot even when freshness reuse is off
+# (the background-host default). Reuse itself remains opt-in above. The helper
+# checks the source captured before compilation and refuses dirty/moved inputs,
+# missing compiler provenance, or an incoherent output tree. Failure preserves
+# the availability build while leaving its artifact identity unqualified.
+if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ||
+      "$OUTFILE" == "$REPO_ROOT/apps/operator/dist-host/hono-host.mjs" ]]; then
   if fresh_head="$("${COMMITTED_NODE[@]}" "$FRESHNESS_HELPER" stamp \
       --repo-root "$REPO_ROOT" \
       --entry "$ENTRY" \
       --outfile "$OUTFILE" \
-      --manifest "$FRESH_MARKER")"; then
+      --manifest "$FRESH_MARKER" \
+      --source-sha "$SOURCE_SHA")"; then
     echo "✓ stamped proof-bound host bundle freshness at ${fresh_head:0:10}"
   else
     rm -f "$FRESH_MARKER"

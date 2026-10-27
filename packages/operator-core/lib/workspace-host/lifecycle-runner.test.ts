@@ -274,6 +274,47 @@ function productHarness(
 }
 
 describe('runWorkspaceHostLifecycle', () => {
+  it('recovers the original AWS run and deadline from stored admission for a later lifecycle', async () => {
+    const { provider: base, planProvider, apply } = providerHarness();
+    const provider = { ...base, target: 'aws' as const };
+    const { store } = storeHarness();
+    const target = (await store.readTarget('workspace-1', 'host-1'))!;
+    const original = { operationId: 'original-provision', workspaceId: 'workspace-1', runId: 'aws-original',
+      teardownDeadlineAt: '2026-10-23T06:00:00.000Z' };
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target, target: 'aws',
+      desired: { ...desired, target: 'aws', labels: workspaceHostCanaryIdentityLabels(original) },
+      originalCanaryAdmission: original });
+    planProvider.mockRejectedValueOnce(new Error('stop at verified provider boundary'));
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), connection: { ...connection, target: 'aws' } }))
+      .rejects.toThrow('stop at verified provider boundary');
+    expect(planProvider).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      canaryRunId: original.runId, canaryTeardownDeadlineAt: original.teardownDeadlineAt }));
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing-origin', 'foreign-workspace', 'changed-labels', 'invalid-deadline', 'caller-renewal'])
+  ('refuses AWS lifecycle %s before provider planning or mutation', async scenario => {
+    const { provider: base, planProvider, apply } = providerHarness();
+    const provider = { ...base, target: 'aws' as const };
+    const { store } = storeHarness();
+    const target = (await store.readTarget('workspace-1', 'host-1'))!;
+    const original = { operationId: 'original-provision', workspaceId: 'workspace-1', runId: 'aws-original',
+      teardownDeadlineAt: '2026-10-23T06:00:00.000Z' };
+    const labels = workspaceHostCanaryIdentityLabels(original);
+    if (scenario === 'foreign-workspace') original.workspaceId = 'foreign';
+    if (scenario === 'changed-labels') original.runId = 'renewed';
+    if (scenario === 'invalid-deadline') original.teardownDeadlineAt = 'invalid';
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target, target: 'aws',
+      desired: { ...desired, target: 'aws', labels },
+      originalCanaryAdmission: scenario === 'missing-origin' ? null : original });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), connection: { ...connection, target: 'aws' },
+      ...(scenario === 'caller-renewal' ? { canary: { ...original,
+        teardownDeadlineAt: '2026-10-24T06:00:00.000Z' } as WorkspaceHostCanaryAdmission } : {}) }))
+      .rejects.toThrow(/original AWS canary|cannot replace the original/);
+    expect(planProvider).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled();
+    expect(store.beginOperation).not.toHaveBeenCalled();
+  });
+
   it.each(['replacement-labels', 'source-labels'] as const)(
     'refuses an unadmitted canary restore detected from %s before any provider access', async (labelLocation) => {
       const { store } = storeHarness();

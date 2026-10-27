@@ -59,6 +59,7 @@ function ctx(): never {
     harnessSlug: HARNESS,
     runId: 'plans-item-type-escape',
     role: 'su',
+    principal: { kind: 'agent', slug: 'test:plans-item-type-escape', workspaceId: WS },
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
     requestedFormat: 'json',

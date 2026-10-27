@@ -126,6 +126,14 @@ const ALLOWLIST: Record<string, Classification> = {
   'agent_facts.scope_ref': { status: 'covered', surface: 'owner-facts' },
 
   // --- EXEMPT: deliberately not re-keyed ---
+  'code_intel_research_trails.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1561 stores optional caller-session research history. research-trail.ts persistResearchBatch ' +
+      'and readResearchTrail key it by workspace, stable owner and harness, retain subjects for seven days, ' +
+      'and never use it as a current-holder claim or presence-tied reaper. A different session may start ' +
+      'a fresh trail; rebinding would mix its research history with the original session context.',
+  },
   'code_intel_pushes.owner_id': {
     status: 'exempt',
     reason:

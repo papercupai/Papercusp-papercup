@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkpointLogDirFromEnv } from '@papercusp/operator-core/lib/release/checkpoint-log-dir';
 import {
   releaseConfig,
   describeIntegrationRoot,
@@ -73,6 +74,14 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     expect(cfg.backgroundSystemdUnit).toBe('papercusp-bg-host.service');
     expect(cfg.greenCmd).toBe('npm run test:related');
     expect(cfg.greenCheckpointCapacityMode).toBe('shared');
+  });
+
+  it('shares checkpoint log directory resolution with operator-core readers', () => {
+    expect(releaseConfig().checkpointLogDir).toBe(checkpointLogDirFromEnv());
+
+    process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = '/tmp/checkpoint-logs-fixture';
+    expect(releaseConfig().checkpointLogDir).toBe(checkpointLogDirFromEnv());
+    expect(releaseConfig({ checkpointLogDir: '' }).checkpointLogDir).toBe('');
   });
 
   it('keeps the background-unit override, including an explicit empty disable value', () => {

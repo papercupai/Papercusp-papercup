@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
+  accessSync,
+  constants,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -7,12 +10,13 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { staticImportClosure } from "./related-tests.mjs";
+import { captureRuntimeProofIdentity, validRuntimeProofIdentity } from "./runtime-compatibility.mjs";
 
 export const PASSING_TASK_VERDICT_CACHE_VERSION = 2;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION =
-  "affected-passing-task-verdict-v7";
+  "affected-passing-task-verdict-v8";
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS = 32;
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -387,9 +391,13 @@ export function readPassingTaskVerdictCache(path) {
 }
 
 /** Read one task verdict from the immutable candidate proof group that produced it. */
-export function passingTaskVerdictCacheEntry(cache, cacheGroup, taskKey) {
+export function passingTaskVerdictCacheEntry(cache, cacheGroup, taskKey, identity = null) {
   if (typeof cacheGroup !== "string" || cacheGroup.trim() === "") return undefined;
-  return cache?.groups?.[cacheGroup]?.entries?.[taskKey];
+  const entry = cache?.groups?.[cacheGroup]?.entries?.[taskKey];
+  if (identity) return entry?.runtimeVariants?.[identity.components.runtime] ?? entry;
+  if (!entry) return entry;
+  const { runtimeVariants: _variants, ...latest } = entry;
+  return latest;
 }
 
 /** Write via same-directory rename so a reader observes the old complete file or the new one. */
@@ -837,7 +845,7 @@ export const PASSING_TASK_SHARED_MODULE_INPUTS = Object.freeze([
  * represented by the lockfiles above. Any graph hole or untracked runtime module fails closed and
  * makes every ordinary task execute; a broken proof must never be interpreted as an empty proof.
  */
-export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
+export function passingTaskVerdictSharedInputProvenance({ root, trackedScan, fs }) {
   if (!trackedScan || trackedScan.files.length === 0) {
     return {
       ok: false,
@@ -848,6 +856,7 @@ export function passingTaskVerdictSharedInputProvenance({ root, trackedScan }) {
   const graph = staticImportClosure({
     rootDir: root,
     entryFiles: PASSING_TASK_SHARED_MODULE_INPUTS.map((file) => resolve(root, file)),
+    ...(fs ? { fs } : {}),
   });
   if (!graph.ok) {
     return {
@@ -919,6 +928,7 @@ export function passingTaskVerdictDependencyProvenance({
   repoWideTaskKeys,
   sharedInputProvenance = null,
   digestCache = new Map(),
+  hashFiles = hashDependencyFileSet,
 }) {
   if (script === "test:integration" || script === "test:el-suite") {
     return {
@@ -948,8 +958,26 @@ export function passingTaskVerdictDependencyProvenance({
     }
   }
   const sortedClosureDirs = [...closureDirs].sort();
+  const enumeratedClosureDirs = new Set();
+  const workspaceFiles = new Set();
+  // Visit each tracked path's directory prefixes once. Comparing every path
+  // with every transitive workspace blocked the serving event loop on broad
+  // closures; a prefix lookup preserves exact path boundaries without that
+  // product of the tracked-file and workspace populations.
+  for (const file of trackedScan.files) {
+    let prefix = file;
+    for (;;) {
+      if (closureDirs.has(prefix)) {
+        enumeratedClosureDirs.add(prefix);
+        workspaceFiles.add(file);
+      }
+      const slash = prefix.lastIndexOf("/");
+      if (slash < 0) break;
+      prefix = prefix.slice(0, slash);
+    }
+  }
   for (const dir of sortedClosureDirs) {
-    if (!trackedScan.files.some((file) => pathInsideDir(file, dir))) {
+    if (!enumeratedClosureDirs.has(dir)) {
       return {
         ok: false,
         reason: `provenance-incomplete:workspace-not-enumerated:${dir}`,
@@ -995,9 +1023,9 @@ export function passingTaskVerdictDependencyProvenance({
     ? trackedScan.files
     : trackedScan.files.filter((file) =>
         sharedSemanticFiles.has(file) ||
-        sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
+        workspaceFiles.has(file),
       );
-  const semantic = hashDependencyFileSet({
+  const semantic = hashFiles({
     root,
     files: semanticFiles,
     unavailable,
@@ -1008,7 +1036,7 @@ export function passingTaskVerdictDependencyProvenance({
   const execution =
     executionFiles.length === 0
       ? null
-      : hashDependencyFileSet({
+      : hashFiles({
           root,
           files: executionFiles,
           digestCache,
@@ -1017,7 +1045,7 @@ export function passingTaskVerdictDependencyProvenance({
 
   // Preserve the former aggregate shape for callers that have not adopted the split. New cache
   // identity code must use `semantic`, so execution-only runner changes no longer invalidate it.
-  const legacy = hashDependencyFileSet({
+  const legacy = hashFiles({
     root,
     files: [...semanticFiles, ...executionFiles],
     unavailable,
@@ -1054,6 +1082,55 @@ export function shouldStorePassingTaskVerdict({
   );
 }
 
+/** Missing identity is never a wildcard, including old Node-compatible Bun version strings. */
+export function validPassingTaskRuntimeIdentity(runtime) {
+  return validRuntimeProofIdentity(runtime);
+}
+
+/**
+ * Measure the interpreter a task will launch, not the affected-tests parent's interpreter.
+ * The existing immutable dependency-generation publisher owns the marker and validates custody;
+ * this reader only binds its bytes into cache identity. An ordinary mutable/unpublished install
+ * has no usable generation and runs the task without reusing a verdict.
+ */
+export function capturePassingTaskRuntimeIdentity({ root, cwd = root, environment, executable = "node" }) {
+  return captureRuntimeProofIdentity({ root, cwd, environment, executable });
+}
+
+/**
+ * npm prepends each workspace ancestor's .bin to PATH (@npmcli/run-script/set-path.js).
+ * Only a plain Vitest launch with the Node shebang has one known test interpreter. Composite
+ * scripts, lifecycle hooks and unrecognized launchers run fresh until their actual runtime
+ * topology has a measured binding; stamping npm's own Node identity would mislabel their proof.
+ */
+export function captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText, environment,
+  preScript, postScript }) {
+  if (preScript || postScript || process.platform === "win32"
+      || !/^vitest\s+run(?:\s+[^'"`$;&|<>()\r\n]+)*$/.test(scriptText ?? "")) return null;
+  try {
+    const bins = [];
+    for (let current = resolve(workspaceRoot); ; current = dirname(current)) {
+      bins.push(join(current, "node_modules/.bin"));
+      if (dirname(current) === current) break;
+    }
+    const pathKeys = Object.keys(environment).filter((key) => /^path$/i.test(key));
+    const search = [...bins, ...pathKeys.flatMap((key) => (environment[key] ?? "").split(delimiter))];
+    const vitest = search.map((dir) => join(dir, "vitest")).find((file) => {
+      try {
+        accessSync(file, constants.X_OK);
+        return lstatSync(file).isFile() || lstatSync(file).isSymbolicLink();
+      } catch { return false; }
+    });
+    if (!vitest || !/^#!\/usr\/bin\/env node\r?\n/.test(readFileSync(vitest, "utf8"))) return null;
+    const childEnvironment = { ...environment };
+    for (const key of pathKeys.length ? pathKeys : ["PATH"]) childEnvironment[key] = search.join(delimiter);
+    return capturePassingTaskRuntimeIdentity({ root, cwd: workspaceRoot,
+      environment: childEnvironment, executable: "node" });
+  } catch {
+    return null;
+  }
+}
+
 export function buildPassingTaskVerdictIdentity({
   taskKey,
   command,
@@ -1061,8 +1138,12 @@ export function buildPassingTaskVerdictIdentity({
   environment,
   gateConfig,
   dependencyHash,
+  runtimeIdentity,
   implementationVersion = PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION,
 }) {
+  if (!validPassingTaskRuntimeIdentity(runtimeIdentity)
+      || typeof dependencyHash !== "string" || dependencyHash.trim() === ""
+      || !command || environment == null || gateConfig == null) return null;
   // Explicit immutable clones relocate the same command to fresh checkout paths.
   // Normalize only whole absolute path operands inside that checkout; external
   // tools, embedded options, script text and selection digests remain exact.
@@ -1081,6 +1162,7 @@ export function buildPassingTaskVerdictIdentity({
       }
     : command;
   const components = {
+    runtime: sha256(stableJson(runtimeIdentity)),
     command: sha256(stableJson(identityCommand)),
     environment: sha256(stableJson(environment)),
     gateConfig: sha256(stableJson(gateConfig)),
@@ -1095,6 +1177,7 @@ export function buildPassingTaskVerdictIdentity({
 }
 
 const COMPONENT_REASON_ORDER = [
+  ["runtime", "runtime-identity-changed"],
   ["implementation", "implementation-version-changed"],
   ["command", "command-changed"],
   ["environment", "environment-changed"],
@@ -1152,14 +1235,24 @@ export function mergePassingTaskVerdictUpdates(
       ? cache
       : emptyPassingTaskVerdictCache();
   }
+  const entries = { ...(cache?.groups?.[cacheGroup]?.entries ?? {}) };
+  for (const [task, update] of Object.entries(updates)) {
+    const previous = entries[task];
+    const { runtimeVariants: _variants, ...prior } = previous ?? {};
+    entries[task] = {
+      ...update,
+      runtimeVariants: {
+        ...(previous?.runtimeVariants ?? {}),
+        ...(prior.components?.runtime ? { [prior.components.runtime]: prior } : {}),
+        ...(update.components?.runtime ? { [update.components.runtime]: update } : {}),
+      },
+    };
+  }
   const groups = {
     ...(cache?.groups ?? {}),
     [cacheGroup]: {
       updatedAt,
-      entries: {
-        ...(cache?.groups?.[cacheGroup]?.entries ?? {}),
-        ...updates,
-      },
+      entries,
     },
   };
   // The MAX_GROUPS cap is an LRU designed for per-RUN groups, which are disposable by

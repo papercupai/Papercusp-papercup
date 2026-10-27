@@ -6,29 +6,10 @@
  * provider can keep its message shape without keeping that renderer alive.
  */
 
-export interface ChatToolCall {
-  /** Display name of the tool the model called. */
-  name: string;
-  /** Tool input — rendered as a short chip by the surface, if it renders one. */
-  input?: unknown;
-  /**
-   * For interactive tools (e.g. chat:ask_choice), the user's response.
-   * When set, the surface should render the answered state.
-   * Persisted into operator_turns.tools jsonb (migration 015).
-   *
-   * Always an array of picks (length 1 for single-select cards,
-   * length ≥1 for multi-select). Pre-alpha unified shape — no
-   * legacy {option_id, label} variant.
-   */
-  answered?: {
-    picks: Array<{ option_id: string; label: string }>;
-    /** True when the user used the card's Skip affordance. */
-    declined?: boolean;
-    at: number;
-  };
-}
+import type { ChatResultBlock, ChatTurnToolCall, ReportBlock } from '@papercusp/chat-protocol';
 
-import type { ReportBlock } from '@papercusp/chat-protocol';
+/** Persist the shared tool identity along with its input and answered state. */
+export type ChatToolCall = ChatTurnToolCall;
 
 /**
  * Owner-safe identity for one raw session turn.
@@ -68,6 +49,8 @@ export interface ChatMessage {
   content: string;
   /** Optional tool calls to render above the content (chat:ask_choice uses this). */
   tools?: ChatToolCall[];
+  /** Validated v1 result references; the renderer rechecks current host access. */
+  results?: ChatResultBlock[];
   /**
    * Structured status CARD for this message (deterministic-status-cards-2026-07-17
    * P-003). Set ONLY for the curator-operator's `source:'system'` status turns —

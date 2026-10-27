@@ -9,6 +9,7 @@ import {
   resolveSavedFleetLaunchSpec,
   savedFleetLaunchSpecFromLegacyRecord,
   savedFleetLaunchSpecFromConfig,
+  savedOriginalMemberLaunchSpec,
 } from './saved-launch-spec';
 
 const target: FleetHeadcountTarget = {
@@ -112,6 +113,30 @@ const incompleteLegacyRecord: AdvSessionLaunchRecord = {
 };
 
 describe('saved fleet launch spec resolver (agent-launch-unification P-043)', () => {
+  describe('D019 original member provenance', () => {
+    const binding = { advSessionId: 71, ownerId: 'su-original', sessionId: 'native-original' };
+    const receipt = { v: 1, ...binding, ...legacyRecord };
+    const record = { ...legacyRecord, launchArgv: ['psu', '--account=auto'],
+      launchSpec: { ...(legacyRecord.launchSpec as object), originalMemberLaunch: receipt } };
+
+    it('restores original default/model/effort/placement/carry from the immutable receipt, not current auto argv', () => {
+      const result = savedOriginalMemberLaunchSpec(record, binding, 'ws-test', 'byoc');
+      expect(result).toMatchObject({ ok: true, config: {
+        agent: 'codex', account: 'default', model: 'gpt-5.6-sol', effort: 'xhigh',
+        headless: true, carry: 'warm',
+      } });
+    });
+
+    it.each(['advSessionId', 'ownerId', 'sessionId'] as const)('refuses a changed original %s', (field) => {
+      const changed = { ...record, launchSpec: { originalMemberLaunch: { ...receipt, [field]: 'changed' } } };
+      expect(savedOriginalMemberLaunchSpec(changed, binding, 'ws-test', 'byoc').ok).toBe(false);
+    });
+
+    it('refuses missing original provenance instead of trusting a current owner launch', () => {
+      expect(savedOriginalMemberLaunchSpec(legacyRecord, binding, 'ws-test', 'byoc').ok).toBe(false);
+    });
+  });
+
   it('materializes the canonical command-neutral spec and defaults saved visibility to headless', () => {
     expect(savedFleetLaunchSpecFromConfig({ ...target.config, headless: undefined })).toMatchObject({
       plan: 'byoc-plan',

@@ -198,9 +198,12 @@ ingest_stopped_sweep_outputs() {
 
 trap cleanup_kopia_pid EXIT
 
+# Preserve producer failures through later logging and successful source groups.
+# Keep attempting independent snapshots so one failed source does not hide another.
+rc=0
 {
   echo "=== $(date -Iseconds) run start ==="
-  "$HOME/.config/kopia/hooks/pre-snapshot.sh"
+  "$HOME/.config/kopia/hooks/pre-snapshot.sh" || rc=$?
   # ── BATCHED INVOCATION (2026-08-07, fan/thermal investigation) ──────────────
   # Was: one `kopia snapshot create` per source inside a while-read loop — 13
   # separate kopia processes every cycle. Measured on this host, a kopia
@@ -257,12 +260,20 @@ trap cleanup_kopia_pid EXIT
     "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
   )
   COLD_FILTER="$(printf '%s\n' "${COLD_SOURCES[@]}")"
-  mapfile -t DISCOVERED < <(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null \
+  # A process substitution hides the discovery producer's exit status from
+  # mapfile. Capture it separately; an empty successful listing remains valid.
+  DISCOVERED=()
+  if listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null); then
+    mapfile -t DISCOVERED < <(printf '%s\n' "$listing" \
       | awk -F'@' '/^[a-zA-Z]/' \
       | grep -oE ':/[^ ]+' \
       | sed 's/^://' \
       | sort -u \
       | grep -vxF "$COLD_FILTER")
+  else
+    rc=$?
+    echo "ERROR: Kopia source discovery failed (rc=$rc); attempting required sources only"
+  fi
   # ── ORDER: a source that has NEVER been snapshotted goes FIRST ──────────────
   # Membership alone is not coverage. This sweep runs one `kopia snapshot
   # create` at --parallel=1, so sources are visited IN ORDER, and the backup
@@ -356,15 +367,16 @@ trap cleanup_kopia_pid EXIT
         # Required-source coverage must commit promptly, but full auto-maintenance
         # can hold the shared guard for tens of minutes before the remaining sweep.
         # Defer it to the tail invocation so the same run can cover both tiers.
-        run_kopia_snapshot --no-auto-maintenance "${PRIORITY[@]}" 2>&1 | tail -5
+        run_kopia_snapshot --no-auto-maintenance "${PRIORITY[@]}" 2>&1 | tail -5 || rc=$?
       else
-        run_kopia_snapshot "${PRIORITY[@]}" 2>&1 | tail -5
+        run_kopia_snapshot "${PRIORITY[@]}" 2>&1 | tail -5 || rc=$?
       fi
     fi
     if [ "${#TAIL[@]}" -gt 0 ]; then
       echo "snapshotting ${#TAIL[@]} sources in ONE kopia invocation"
-      run_kopia_snapshot "${TAIL[@]}" 2>&1 | tail -5
+      run_kopia_snapshot "${TAIL[@]}" 2>&1 | tail -5 || rc=$?
     fi
   fi
-  echo "=== $(date -Iseconds) run end ==="
+  echo "=== $(date -Iseconds) run end (rc=$rc) ==="
 } >> "$LOG_DIR/snapshot-all.log" 2>&1
+exit "$rc"

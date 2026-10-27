@@ -354,7 +354,7 @@ export async function propagatePlanScopeWrite(
 /** Sentinel for the BAR-readiness banner in a plan's `## Now`. One per plan, replaced in place. */
 export const BAR_READINESS_NOW_MARK = '⚠ BAR READINESS BLOCKED';
 
-export type BarReadinessWriteCause = 'item-dropped' | 'decision-added';
+export type BarReadinessWriteCause = 'item-dropped' | 'decision-added' | 'rubric-amended';
 
 export interface BarReadinessReading {
   /** `null` = NOT MEASURED (the read failed). Never treated as ready, never erases a banner. */
@@ -381,9 +381,13 @@ function barReadinessBanner(reading: BarReadinessReading, cause: BarReadinessWri
   const repair = reading.nextRepair
     ? ` Next repair: ${reading.nextRepair.action}${reading.nextRepair.barKey ? ` (${reading.nextRepair.barKey})` : ''}.`
     : '';
+  const causeLabel = cause === 'rubric-amended' ? 'acceptance BAR amendment' : cause;
+  const provenance = cause === 'rubric-amended'
+    ? '(re-evaluated after the accepted BAR amendment)'
+    : '(re-evaluated in the same write by the scope-write cascade, P-030/P-031)';
   return (
-    `${BAR_READINESS_NOW_MARK} (${iso}, after ${cause}): ${reading.codes.join(', ')}.${repair} ` +
-    `(re-evaluated in the same write by the scope-write cascade, P-030/P-031)`
+    `${BAR_READINESS_NOW_MARK} (${iso}, after ${causeLabel}): ${reading.codes.join(', ')}.${repair} ` +
+    provenance
   );
 }
 
@@ -391,7 +395,8 @@ function barReadinessBanner(reading: BarReadinessReading, cause: BarReadinessWri
  * Return the plan body with its BAR-readiness banner brought up to date, or `null` when there
  * is nothing to write. Pure. Blocked + codes → stamp or replace the one banner at the top of
  * the State; ready / not-applicable → remove a stale banner; not measured → never touch it.
- * Everything else in the Now (the author's State/Next, other cascade banners) survives verbatim.
+ * Everything else in the Now (the author's State/Next, other cascade banners) survives verbatim;
+ * a generated Next is refreshed only when it matches this banner's prior repair action.
  */
 export function stampBarReadinessNowBlock(
   body: string,
@@ -427,6 +432,10 @@ export function barReadinessNowUpdate(
     .map((p) => p.trim())
     .filter(Boolean);
   const existing = paragraphs.find(isBarReadinessParagraph) ?? null;
+  // A previously generated Next is identifiable because its source banner repeats the
+  // exact action. Refresh or clear that machine-derived advice with the new verdict, while
+  // preserving a different author-written Next verbatim.
+  const nextWasReadinessDerived = Boolean(existing && now.next && existing.includes(`Next repair: ${now.next}`));
   const rest = paragraphs.filter((p) => !isBarReadinessParagraph(p));
 
   const blocked = reading.state === 'blocked' && reading.codes.length > 0;
@@ -439,7 +448,9 @@ export function barReadinessNowUpdate(
     if (existing === null) return null;
     state = rest.join('\n\n') || '—';
   }
-  const next = now.next || (blocked && reading.nextRepair ? reading.nextRepair.action : '—');
+  const next = nextWasReadinessDerived
+    ? (blocked && reading.nextRepair ? reading.nextRepair.action : '—')
+    : now.next || (blocked && reading.nextRepair ? reading.nextRepair.action : '—');
   return { state, next };
 }
 

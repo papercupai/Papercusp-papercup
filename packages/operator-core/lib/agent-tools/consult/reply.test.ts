@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolResult } from '@papercusp/tooldef';
 import consultReplyTool from './reply';
-import { isConfirmedDeadConsultResponder } from './reply';
+import { isConfirmedDeadConsultResponder, measureConsultFollowupReach } from './reply';
 import { consultReplyCore } from '../../consult/consult-verbs-core';
 import { validateDecisionReviewStance } from '../../consult/decision-review';
 
@@ -10,6 +10,19 @@ const result = (payload: unknown) => ({
 }) as unknown as ToolResult;
 
 describe('consult follow-up confirmed-dead classifier', () => {
+  it.each([0, 1])('measures the exact answering identity after queued wake count %i', async (woke) => {
+    const endedSessions = new Map([['responder-1', '2026-10-25T00:01:25Z']]);
+    const readLiveness = vi.fn(async () => ({ report: { degraded: false, confirmedDead: [] }, endedSessions }));
+    await expect(measureConsultFollowupReach('responder-1', async () => ({ woke }), readLiveness))
+      .resolves.toEqual({ woke, confirmedDead: true });
+    expect(readLiveness).toHaveBeenCalledOnce();
+    await expect(measureConsultFollowupReach('responder-2', async () => ({ woke }), readLiveness))
+      .resolves.toEqual({ woke, confirmedDead: false });
+    await expect(measureConsultFollowupReach('responder-1', async () => ({ woke }), async () => ({
+      report: { degraded: false, confirmedDead: [], live: ['responder-1'] }, endedSessions,
+    }))).resolves.toEqual({ woke, confirmedDead: false });
+  });
+
   it('requires an explicit confirmed-dead result for the exact responder', () => {
     expect(isConfirmedDeadConsultResponder({ degraded: false, confirmedDead: ['responder-1'] }, 'responder-1')).toBe(true);
     expect(isConfirmedDeadConsultResponder({ degraded: false, idle: ['responder-1'] } as never, 'responder-1')).toBe(false);

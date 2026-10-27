@@ -3743,6 +3743,34 @@ describe('applyResultDoor', () => {
       expect(body._projection.next).toContain("Re-call coord:orient with payloadTier:'full'");
     });
 
+    it('keeps complete explicit projections inline with the upstream partial warning', () => {
+      const text = JSON.stringify({
+        selected: { value: 'complete-selected-value' },
+        unrelated: { _partial: true, _omitted: 1, value: 'partial-unselected-value' },
+      });
+      const parsed = parseProjection({ pick: ['selected.value'] });
+      if (!parsed.ok) throw new Error(parsed.error);
+
+      const projected = applyResultProjection(
+        { content: [{ type: 'text' as const, text }], _meta: { payloadProjection } },
+        parsed.spec,
+        { toolName: 'reports:get', effect: 'read' },
+      );
+      const doored = applyResultDoor(projected, {
+        toolName: 'reports:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const emittedText = doored.content
+        .map((item) => item.type === 'text' ? item.text : '')
+        .join('\n');
+
+      expect(emittedText).toContain('complete-selected-value');
+      expect(emittedText).not.toContain('partial-unselected-value');
+      expect(emittedText).toContain('ALREADY TRUNCATED');
+      expect(emittedText).toContain('⚠');
+    });
+
     it(
       'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
         '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +

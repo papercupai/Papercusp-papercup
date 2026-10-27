@@ -337,8 +337,9 @@ describe('native provider authority uses real exact benchmark reservations', () 
     return { controller, request, result, loopId, authority };
   }
 
-  it('retains exact provider body evidence across connection restart without settling unknown dollars', async () => {
-    const f = await nativeFixture(), a = f.controller(), sent = f.request();
+  it.each(['legacy', 'request-bound'] as const)('retains exact provider body evidence across connection restart without settling unknown dollars (%s)', async mode => {
+    const f = await nativeFixture(), a = f.controller(), sent = { ...f.request(),
+      ...(mode === 'request-bound' ? { gatewayRequestId: `${randomUUID()}:1` } : {}) };
     try {
       const receipt = await a.gateway.carryTrial.authorizeAttempt(sent);
       const { body: _body, signal: _signal, ...identity } = sent;
@@ -362,6 +363,7 @@ describe('native provider authority uses real exact benchmark reservations', () 
         const row = after.census.reservations[0]!;
         expect(row.status).toBe('open'); expect(row.settledAt).toBeNull();
         expect(after.positions.unsettledUsd).toBe(3);
+        expect(JSON.parse(row.note!).nativeGatewayAttempt.gatewayRequestId).toBe(sent.gatewayRequestId);
         expect(JSON.parse(row.note!).nativeGatewayAttemptResult).toEqual(complete);
         expect(row.note).not.toMatch(/PRIVATE_SECRET|configured-alias|costUsd"/);
         expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id, result: complete })).toEqual({ ok: true });
@@ -369,6 +371,15 @@ describe('native provider authority uses real exact benchmark reservations', () 
         expect(identical.census?.status === 'complete' && identical.census.populationSha256).toBe(after.census.populationSha256);
         expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id,
           result: { ...complete, credentialSha256: 'f'.repeat(64) } })).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+        for (const gatewayRequestId of [undefined, `${randomUUID()}:2`]) {
+          if (gatewayRequestId === sent.gatewayRequestId) continue;
+          expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id,
+            result: { ...complete, gatewayRequestId } })).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+        }
+        for (const gatewayRequestId of ['', 'caller-selected', `${randomUUID()}:0`]) {
+          expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id,
+            result: { ...complete, gatewayRequestId } })).toMatchObject({ ok: false, reason: 'invalid-result' });
+        }
         expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id, result: headers }))
           .toMatchObject({ ok: false, reason: 'transition-refused' });
       } finally { await fresh.end(); }

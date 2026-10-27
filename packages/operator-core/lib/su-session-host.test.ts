@@ -93,7 +93,12 @@ function command(type: SuSessionCommand<'claude'>['type'], commandId = `command-
   };
   switch (type) {
     case 'owner_turn':
+    case 'queue':
       return { ...base, type, turnId: 'turn-1', content: 'Continue.' };
+    case 'steer':
+      return { ...base, type, turnId: 'steer-1', activeTurnId: 'turn-1', content: 'Change direction.' };
+    case 'handoff':
+      return { ...base, type, provider: 'claude', executionKind: 'programmatic', expectedRuntimeGeneration: 1 };
     case 'interrupt':
       return { ...base, type, reason: 'owner interrupt' };
     case 'resume':
@@ -110,6 +115,62 @@ function command(type: SuSessionCommand<'claude'>['type'], commandId = `command-
 function eventTypes(host: SuSessionHost<'claude'>): string[] {
   return host.recent.map(({ event }) => event.type);
 }
+
+describe('SU execution command contract (P-002)', () => {
+  it('preserves rich queue input and coordination provenance without rewriting it as an owner turn', async () => {
+    const execute = vi.fn(async (_command: SuSessionCommand<'claude'>) => ({ status: 'completed' as const }));
+    const snapshot = descriptor();
+    snapshot.lifecycle = 'ready';
+    snapshot.capabilities = { ...capabilities, version: 2,
+      commands: { ...capabilities.commands, queue: supported },
+      input: { parts: ['image', 'file', 'text'], origins: ['owner', 'coordination'] } };
+    const host = new SuSessionHost({ descriptor: snapshot, executeCommand: execute });
+    const queued = { ...command('queue'), origin: { kind: 'coordination', actorId: 'su-peer', sourceId: 'msg-1' },
+      input: [{ type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+        { type: 'file', uri: 'attachment:1', mediaType: 'text/plain' }] };
+    expect(await host.startCommand(queued).terminal).toMatchObject({ status: 'completed' });
+    expect(execute.mock.calls[0][0]).toEqual(queued);
+  });
+
+  it('refuses absent extended capabilities, unsupported parts and origins before calling an old executor', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    expect(await host.startCommand(command('queue')).terminal).toMatchObject({ refusal: { code: 'unsupported' } });
+    expect(await host.startCommand({ ...command('owner_turn', 'image'), input: [
+      { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' },
+    ] }).terminal).toMatchObject({ refusal: { code: 'unsupported_input' } });
+    expect(await host.startCommand({ ...command('owner_turn', 'coord'), origin: { kind: 'coordination' } }).terminal)
+      .toMatchObject({ refusal: { code: 'unsupported_message_origin' } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed rich input, provenance, steer and handoff payloads before reservation', async () => {
+    const reserve = vi.fn();
+    const host = new SuSessionHost({ descriptor: descriptor() });
+    for (const invalid of [
+      { ...command('owner_turn'), input: [] },
+      { ...command('owner_turn'), input: [{ type: 'unknown' }] },
+      { ...command('owner_turn'), origin: { kind: 'external' } },
+      { ...command('owner_turn'), expectedRuntimeGeneration: -1 },
+      { ...command('steer'), activeTurnId: '' },
+      { ...command('handoff'), executionKind: 'unknown' },
+      { ...command('handoff'), expectedRuntimeGeneration: undefined },
+    ]) {
+      await expect(host.acceptCommand(invalid, { reserve, finish: vi.fn() })).rejects.toMatchObject({ code: 'invalid_command' });
+    }
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('fences a command targeting a replaced generation without executing it', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    expect(await host.startCommand({ ...command('interrupt'), expectedRuntimeGeneration: 0 }).terminal)
+      .toMatchObject({ refusal: { code: 'runtime_generation_mismatch' } });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await host.startCommand({ ...command('interrupt', 'fresh'), expectedRuntimeGeneration: 1 }).terminal)
+      .toMatchObject({ status: 'completed' });
+  });
+});
 
 describe('descriptor persistence under streaming output', () => {
   it('keeps one write in flight and persists the latest descriptor after a burst', async () => {
@@ -193,11 +254,17 @@ describe('runtime-assigned native identity', () => {
       expect(host.recentSince(before)[0].event).toMatchObject({ type: 'session', session: saved.identity });
       ready = true;
       host.transition('ready');
-      const dispatch = await host.acceptCommand(command('focus'));
+      const store: SuSessionCommandStore = {
+        reserve: vi.fn(async (command, fingerprint) => ({ created: true,
+          receipt: { command, fingerprint, acceptedAt: '2026-10-24T00:00:00Z' } })),
+        finish: vi.fn(async () => undefined),
+      };
+      const dispatch = await host.acceptCommand(command('focus'), store);
       expect(await dispatch.terminal).toMatchObject({ status: 'completed' });
       expect(execute).toHaveBeenCalledOnce();
-      expect((await host.acceptCommand(command('focus'))).replayed).toBe(true);
+      expect((await host.acceptCommand(command('focus'), store)).replayed).toBe(true);
       expect(execute).toHaveBeenCalledOnce();
+      expect(store.reserve).toHaveBeenCalledOnce();
       expect(() => host.attachRuntime({ descriptor: { ...resumed, runtimeGeneration: 3 }, executeCommand: execute })).toThrow('without an executor');
     } finally { host.dispose(); }
   });

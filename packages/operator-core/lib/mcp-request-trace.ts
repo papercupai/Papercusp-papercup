@@ -88,6 +88,8 @@ export interface McpRequestTraceEvent {
   preDispatchPhaseTimingsMs?: McpPreDispatchPhaseTimingsMs;
   /** The phase still awaiting when a pre-dispatch deadline fired. */
   preDispatchActivePhase?: McpPreDispatchPhaseName;
+  /** Bounded subphases of scope enforcement; phase names never contain caller arguments. */
+  transportScopePhases?: HandlerPhasesMetadata | null;
   /** Discovery runs before tool dispatch, so it needs its own bounded phase snapshot. */
   toolsListPhases?: HandlerPhasesMetadata | null;
   /** Per-request subphases inside the idempotency replay lookup. */

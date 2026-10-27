@@ -34,6 +34,7 @@ import {
   reconcileWakeability,
   RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
 } from './assignments';
+import { readWorkItemClaimHistory } from './fleet-claim-history-reader';
 
 export const FLEET_AUDIT_DEFAULT_LIMIT = 20;
 export const FLEET_AUDIT_MAX_LIMIT = 50;
@@ -367,26 +368,15 @@ export const defaultFleetAuditReaders: FleetAuditEvidenceReaders = {
     }));
   },
   async claimTransitions(input, sql) {
-    const rows = await sql<Array<Record<string, unknown>>>`
-      WITH ranked AS (
-        SELECT h.value->>'owner' AS owner_id, wi.feature_id, h.value->>'at' AS at,
-               row_number() OVER (
-                 PARTITION BY h.value->>'owner'
-                 ORDER BY (h.value->>'at')::timestamptz DESC, wi.feature_id) AS rn
-          FROM harness_shared.work_items wi
-          CROSS JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(wi.worked_by_history) = 'array' THEN wi.worked_by_history ELSE '[]'::jsonb END
-          ) h(value)
-         WHERE wi.workspace_id = ${input.workspaceId}
-           AND h.value->>'owner' = ANY(${sql.array(input.ownerIds)}::text[])
-           AND (h.value->>'at')::timestamptz >= ${input.sinceAt}::timestamptz
-           AND (h.value->>'at')::timestamptz <= ${input.snapshotAt}::timestamptz
-           ${input.harnessSlug ? sql`AND wi.harness_slug = ${input.harnessSlug}` : sql``})
-      SELECT owner_id, feature_id, at FROM ranked
-       WHERE rn <= ${FLEET_AUDIT_MEMBER_EVIDENCE_CAP}
-       ORDER BY owner_id, at DESC, feature_id`;
-    return rows.map((row) => ({
-      ownerId: String(row.owner_id), workItemId: String(row.feature_id), at: iso(row.at)!,
+    const history = await readWorkItemClaimHistory(sql, {
+      workspaceId: input.workspaceId,
+      ownerIds: input.ownerIds,
+      sinceAt: input.sinceAt,
+      snapshotAt: input.snapshotAt,
+      harnessSlug: input.harnessSlug,
+    }, { mode: 'per-owner', limit: FLEET_AUDIT_MEMBER_EVIDENCE_CAP });
+    return history.rows.map((row) => ({
+      ownerId: row.ownerId, workItemId: row.workItemId, at: iso(row.at)!,
     }));
   },
   async completions(input, sql) {

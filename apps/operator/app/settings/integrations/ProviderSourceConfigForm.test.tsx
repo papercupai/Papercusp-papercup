@@ -27,7 +27,10 @@ describe('generic provider source config form', () => {
     H.request.mockRejectedValueOnce(new Error('Resource id is invalid'));
     const onSaved = vi.fn();
     render(<ProviderSourceConfigForm source={{ id: 's', config: {} }} displayName="Fixture Service" schema={schema} onSaved={onSaved} />);
-    fireEvent.submit(screen.getByRole('form', { name: 'Fixture Service connection settings', hidden: true }));
+    // The disclosure mounts the form only once it is opened (LazyDetails).
+    expect(screen.queryByRole('form', { name: 'Fixture Service connection settings', hidden: true })).toBeNull();
+    fireEvent.click(screen.getByText('Configure connection'));
+    fireEvent.submit(screen.getByRole('form', { name: 'Fixture Service connection settings' }));
     await waitFor(() => expect(H.error).toHaveBeenCalledWith('Resource id is invalid'));
     expect(onSaved).not.toHaveBeenCalled();
   });

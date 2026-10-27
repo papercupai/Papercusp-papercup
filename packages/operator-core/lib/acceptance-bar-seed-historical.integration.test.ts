@@ -95,6 +95,38 @@ function seedInput(planSlug: string, planContent: string, actorId: string) {
 }
 
 describe('historical deterministic acceptance BAR rubric collision', () => {
+  it('refuses an embedded case selector before activation writes and accepts its exact repair R5-CONTRACT', async () => {
+    const slug = 'seed-named-case-guard';
+    const file = 'packages/operator-core/lib/acceptance-bar-seed-historical.integration.test.ts';
+    const exact = 'refuses an embedded case selector before activation writes and accepts its exact repair R5-CONTRACT';
+    const content = (testName: string) => contentFor(slug).replace(
+      '**R-1 — Canonical outcome.** The first outcome holds.',
+      '**R-1 — Canonical outcome.**\n```requirement\n' + JSON.stringify({
+        intent: { request: 'Reject selectors that cannot name maintained cases.', sourceRefs: ['session_turn:fixture'] },
+        acceptance: { condition: 'Only an exact case citation can activate.', falsifier: 'An embedded tag activates.',
+          evidencePlane: 'tree', requiredScope: ['P-001'], requiredTestLayers: ['integration'] },
+        verification: { method: 'Run the named case.', check: { kind: 'tests', files: [file], testName } },
+      }) + '\n```',
+    );
+    await insertSubject(slug, content('R5-CONTRACT'));
+    const refused = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, content('R5-CONTRACT'), 'su-seeder'), executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(refused).toMatchObject({ ok: false, error: 'bar_contract_check_invalid' });
+    const rows = await db.adminSql`
+      SELECT plan_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${`acceptance-${slug}`}`;
+    expect(rows).toHaveLength(0);
+    const projections = await db.adminSql`
+      SELECT spec_id FROM harness_shared.plan_spec_clauses
+       WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${slug}`;
+    expect(projections).toHaveLength(0);
+    const repaired = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, content(exact), 'su-seeder'), executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(repaired.ok).toBe(true);
+  });
+
   it('resolves the exact seeded rubric version after a later version becomes current', async () => {
     const planSlug = 'seeded-rubric-immutable-history';
     const planContent = contentFor(planSlug);

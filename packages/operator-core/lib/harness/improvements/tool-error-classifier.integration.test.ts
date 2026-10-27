@@ -47,6 +47,17 @@ afterAll(async () => {
 });
 
 describe('generated SQL CASE ↔ classifyToolError parity (P-011)', () => {
+  it('classifies PostgreSQL deadlock messages as transient in SQL and TypeScript', async () => {
+    const sql = db.adminSql;
+    const message = 'deadlock detected';
+    const rows = await sql<{ klass: string }[]>`
+      SELECT ${toolErrorClassSqlCase(sql)} AS klass
+        FROM (VALUES ('handler_error'::text, 'error'::text, ${message}::text))
+          AS input(error_code, status, error_message)`;
+    expect(classifyToolError('handler_error', 'error', message)).toBe('transient');
+    expect(rows.map((row) => row.klass)).toEqual(['transient']);
+  });
+
   it('prefers the primary exact error code over a conflicting secondary message match', async () => {
     const sql = db.adminSql;
     const rows = await sql<{ ord: number; error_code: string; klass: string }[]>`
@@ -176,6 +187,7 @@ describe('generated SQL key parts ↔ toolErrorKeyParts parity (bug-inflow-one-p
     { code: 'handler_error', message: 'handler_error: {"ok":false,"reason":"evidence_not_selectable","detail":"WI-1"}' },
     { code: 'handler_error', message: 'handler_error: claim_conflict: held by su-abc until 14:00' },
     { code: 'handler_error', message: 'column "ownerId" of relation "work_items" does not exist' },
+    { code: 'handler_error', message: 'column wi.duplicate_of does not exist' },
     { code: 'not_found', message: 'handler_error: claim_conflict: held' },
     { code: null, message: 'Cannot read properties of undefined (reading "id")' },
     { code: '  ', message: '' },
@@ -214,6 +226,7 @@ describe('generated SQL key parts ↔ toolErrorKeyParts parity (bug-inflow-one-p
       'evidence_not_selectable@field-unknown',
       'claim_conflict@field-unknown',
       'handler_error@ownerid',
+      'handler_error@duplicate_of',
       'error-code-unknown@field-unknown',
     ]));
   });

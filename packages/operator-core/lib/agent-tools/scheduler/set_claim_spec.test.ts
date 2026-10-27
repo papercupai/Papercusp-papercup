@@ -640,6 +640,81 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     });
   });
 
+  it('uses the direct target member cooldown instead of the leader writer cooldown', async () => {
+    const writerCooldown = {
+      ...eligible,
+      admissible: false,
+      refusedBy: 'release-cooldown',
+      detail: 'writer cooldown',
+    };
+    const explain = vi.fn(async (_harness: string, _ids: readonly string[], opts?: { assignee?: string }) =>
+      opts?.assignee === 'su-leader' ? [writerCooldown] : [eligible],
+    );
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-member',
+      targetAssignee: 'su-member',
+      assignee: 'su-leader',
+      explain,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview.admissibleIds).toEqual([held.id]);
+    expect(explain).toHaveBeenCalledOnce();
+    expect(explain).toHaveBeenCalledWith('papercusp', [held.id], {
+      assignee: 'su-member',
+      states: ['open'],
+    });
+  });
+
+  it('accepts only the direct target member’s own held cohort after rechecking its floors', async () => {
+    const targetHeld = { ...held, heldBy: 'su-member' };
+    const explain = vi.fn(
+      async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
+        opts?.scopeHeldBy?.includes('su-member') ? [eligible] : [targetHeld],
+    );
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-member',
+      targetAssignee: 'su-member',
+      assignee: 'su-leader',
+      explain,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+      floored: [],
+    });
+    expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
+      assignee: 'su-member',
+      states: ['open'],
+      scopeHeldBy: ['su-member'],
+    });
+  });
+
+  it('keeps another member’s held item floored for a direct cup target', async () => {
+    const foreignHeld = { ...held, heldBy: 'su-other' };
+    const explain = vi.fn(async () => [foreignHeld]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-member',
+      targetAssignee: 'su-member',
+      assignee: 'su-leader',
+      explain,
+    });
+
+    expect(result.errors[0]).toContain('already-taken');
+    expect(result.preview.scopeAdmissibleIds).toEqual([]);
+    expect(result.preview.alreadyHeldIds).toEqual([]);
+    expect(explain).toHaveBeenCalledOnce();
+  });
+
   it('still refuses a self-held row when a later claim floor remains', async () => {
     const selfHeld = { ...held, heldBy: 'su-self' };
     const blocked = { ...eligible, admissible: false, refusedBy: 'claim-hold', detail: 'claim-hold' };
@@ -825,6 +900,45 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
       scopeHeldBy: ['su-leader'],
     });
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-leader' }));
+  });
+
+  it('previews a member target as the subject while preserving the leader as writer', async () => {
+    const targetHeld = { ...held, heldBy: 'su-member' };
+    const sql = vi.fn().mockResolvedValue([]);
+    getOrgPg.mockReturnValue({ sql });
+    fetchWakeability.mockResolvedValueOnce(new Map([['su-member', { wakeable: true }]]));
+    getClaimSpecRecord.mockResolvedValueOnce(null);
+    getWorkItem.mockResolvedValueOnce({ family: 'issue' });
+    explainIssueClaimFloors.mockClear();
+    explainIssueClaimFloors.mockResolvedValueOnce([targetHeld]).mockResolvedValueOnce([eligible]);
+    setClaimSpec.mockClear();
+    setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 3 });
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(0);
+
+    const result = await (setClaimSpecTool as any).handler(
+      { cupId: 'su-member', harness: 'papercusp', spec: fixedSpec([held.id]) },
+      { isSuperuser: true, uiClientId: 'su-leader', workspaceId: 'ws-test', harnessSlug: 'papercusp' },
+    );
+
+    expect(result.data.ok).toBe(true);
+    expect(result.data.admissibilityPreview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+    });
+    expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(1, 'papercusp', [held.id], {
+      assignee: 'su-member',
+      states: ['open'],
+    });
+    expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(2, 'papercusp', [held.id], {
+      assignee: 'su-member',
+      states: ['open'],
+      scopeHeldBy: ['su-member'],
+    });
+    expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({
+      cupId: 'su-member',
+      updatedBy: 'su-leader',
+    }));
   });
 
   it('validates fleet existence before any held-cohort membership read or persistence', async () => {

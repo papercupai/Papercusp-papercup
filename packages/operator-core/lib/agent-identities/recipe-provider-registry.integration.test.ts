@@ -110,7 +110,7 @@ describe('recipe provider conformance persistence (real PG)', () => {
     const verbBindings = { read: 'status:read' };
     const report = validateProviderInterface({ capabilityClass, providerPackage: 'status-plugin',
       providerVersion: '1.0.0', registryRevision: 'registry-tool-1', verbBindings,
-      lookup: () => ({ name: 'status:read', pluginName: 'status-plugin', inputSchema: {}, outputSchema }) });
+      lookup: () => ({ name: 'status:read', pluginName: 'status-plugin', providerVersion: '1.0.0', inputSchema: {}, outputSchema }) });
     const recorded = await recordProviderConformance(db.sql, { ...input, providerPackage: 'status-plugin', verbBindings, report });
     expect(recorded.binding).toMatchObject({ providerKind: 'tool', latencyClass: 'sync', verbBindings });
     expect(recorded.binding).not.toHaveProperty('recipeInspections');

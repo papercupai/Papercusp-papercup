@@ -11,13 +11,15 @@
  * teardown, so no test ever execs a stop.sh or touches a real display.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { utimesSync, existsSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import { createRetentionPin } from '../../storage/retention-pins';
 import {
   defaultVerifyScanRoots,
-  gcVerifyInstances,
+  gcVerifyInstances as collectVerifyInstances,
   parseStopScriptDisplay,
   PROTECTED_DISPLAYS,
   runMarkerIsLive,
@@ -25,6 +27,11 @@ import {
   VERIFY_TERMINAL_TASK_GRACE_MS,
   VERIFY_INSTANCE_TTL_HOURS_DEFAULT,
 } from './gc-verify-instances';
+
+// Every process census is injected here; tests never inspect or signal peers.
+const emptyHolders = async () => ({ complete: true, byPath: new Map<string, string[]>() });
+const gcVerifyInstances = (opts: Parameters<typeof collectVerifyInstances>[0] = {}) =>
+  collectVerifyInstances({ scanHolders: emptyHolders, retentionDir: join(root, 'retention'), ...opts });
 
 let root: string;
 const NOW = Date.parse('2026-08-01T12:00:00.000Z');
@@ -39,11 +46,8 @@ async function makeInstance(
   await mkdir(dir, { recursive: true });
   if (opts.withStop !== false) {
     const display = opts.display === undefined ? ':144' : opts.display;
-    const body =
-      display === null
-        ? '#!/usr/bin/env bash\necho "stopped"\n'
-        : `#!/usr/bin/env bash\nkill -9 123 2>/dev/null\npkill -9 -f "Xvfb ${display} " 2>/dev/null\necho "stopped (display ${display})"\n`;
-    await writeFile(join(dir, 'stop.sh'), body);
+    if (display === null) await writeFile(join(dir, 'stop.sh'), '#!/usr/bin/env bash\necho "stopped"\n');
+    else writeNativeScripts(dir, display.slice(1));
   }
   if (opts.bytes) await writeFile(join(dir, 'spa'), 'x'.repeat(opts.bytes));
   const t = hoursAgo(opts.ageHours);
@@ -53,8 +57,288 @@ async function makeInstance(
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'gc-verify-test-'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  await rm(root, { recursive: true, force: true });
+});
+
+/** Run only the real script emitters, never the verifier or generated teardown. */
+async function makeNativeInstance(display = '144', ageHours = 200, targets: Record<string, string> = {}): Promise<string> {
+  const dir = join(root, 'verify-tauri-headless.native');
+  await mkdir(dir);
+  writeNativeScripts(dir, display, targets);
+  utimesSync(dir, hoursAgo(ageHours), hoursAgo(ageHours));
+  return dir;
+}
+
+function writeNativeScripts(dir: string, display: string, targets: Record<string, string> = {}): void {
+  const source = readFileSync(resolve(__dirname, '../../../../../scripts/verify-tauri-headless.sh'), 'utf8');
+  const start = source.indexOf('write_xvfb_stop_script() {');
+  const end = source.indexOf('\n# ── EI-11559:', source.indexOf('write_stop_script() {', start));
+  const reaperStart = source.indexOf('frozen_source_path_is_inside() {');
+  const reaperEnd = source.indexOf('\nwrite_frozen_source_reaper_script || {', reaperStart);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  execFileSync('bash', ['-c', `${source.slice(reaperStart, reaperEnd)}\n${source.slice(start, end)}\nwrite_frozen_source_reaper_script\nwrite_stop_script`], {
+    env: {
+      ...process.env,
+      WORK: dir,
+      DISPLAY_NUM: display,
+      DEV_PORT: '33144',
+      TAURI_LAUNCH_PROVENANCE: 'agent:gc-test:run:123-456',
+      TAURI_PID: '',
+      OPENBOX_PID: '',
+      ISOLATED_PG_PID: '',
+      ...targets,
+    },
+  });
+}
+
+describe('gc-verify-instances — native producer protocol', () => {
+  async function makeLegacyInstance(display = '144'): Promise<string> {
+    const dir = await makeNativeInstance(display);
+    await rm(join(dir, 'frozen-source-reaper.sh'));
+    await writeFile(join(dir, 'stop.sh'), `#!/usr/bin/env bash
+kill -TERM -- -12345 2>/dev/null
+grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=agent:gc-test:run:123-456" <<<"$_env_p" || continue
+"${dir}/stop-xvfb.sh" || true
+echo "stopped (display :${display}, port 33144)"
+`);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    return dir;
+  }
+
+  describe.each([false, true])('retention protection (dryRun=%s)', (dryRun) => {
+    it.each(['native', 'legacy', 'source'])('preserves a pinned %s directory before teardown or census', async (kind) => {
+      const dir = kind === 'legacy' ? await makeLegacyInstance() : kind === 'native' ? await makeNativeInstance() :
+        await makeInstance('source', { ageHours: 200, withStop: false });
+      createRetentionPin({ path: dir, owner: 'test-owner', reason: 'retained verifier evidence',
+        expiresAt: new Date(NOW + 3_600_000).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW });
+      const stop = vi.fn(async () => {});
+      const scan = vi.fn(emptyHolders);
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+      expect(result.reaped).toBe(0);
+      expect(result.bytesFreed).toBe(0);
+      expect(result.instances[0].skipped).toMatch(/live retention pin/);
+      expect(stop).not.toHaveBeenCalled();
+      expect(scan).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+  });
+
+  it('protects a pinned descendant of the separate snapshot removed by generated stop.sh', async () => {
+    const snapshot = join(root, 'snapshot');
+    await mkdir(snapshot);
+    const evidence = join(snapshot, 'evidence.json');
+    await writeFile(evidence, 'retained');
+    const dir = await makeNativeInstance('144', 200, { OPERATOR_SOURCE_WORK: snapshot });
+    createRetentionPin({ path: evidence, owner: 'test-owner', reason: 'retained source evidence',
+      expiresAt: new Date(NOW + 3_600_000).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW });
+    const stop = vi.fn(async () => { await rm(snapshot, { recursive: true }); });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.reaped).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/live retention pin/);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+    expect(readFileSync(evidence, 'utf8')).toBe('retained');
+  });
+
+  it('preserves candidates when the retention store is malformed', async () => {
+    const dir = await makeNativeInstance();
+    await mkdir(join(root, 'retention'));
+    await writeFile(join(root, 'retention', 'lease-broken.tsv'), 'broken');
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.reaped).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/retention pins unreadable/);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('does not let an expired pin prevent safe collection', async () => {
+    const dir = await makeNativeInstance();
+    createRetentionPin({ path: dir, owner: 'test-owner', reason: 'expired evidence',
+      expiresAt: new Date(NOW - 1).toISOString() }, { dir: join(root, 'retention'), nowMs: NOW - 1000 });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: async () => {} });
+    expect(result.reaped).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('preserves a source snapshot when its streaming size census exhausts the entry budget', async () => {
+    const dir = await makeInstance('large', { ageHours: 200, withStop: false, bytes: 20 });
+    await writeFile(join(dir, 'more'), 'more');
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, maxCensusEntries: 2, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/census budget exhausted/);
+    expect(scan).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('preserves a source snapshot if the time budget expires during its holder scan', async () => {
+    const dir = await makeInstance('deadline', { ageHours: 200, withStop: false, bytes: 20 });
+    let wallNow = 100;
+    const scan = vi.fn(async () => { wallNow = 201; return emptyHolders(); });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, clock: () => wallNow, budgetMs: 100, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(result.bytesFreed).toBe(0);
+    expect(result.instances[0].skipped).toMatch(/census budget exhausted/);
+    expect(scan).toHaveBeenCalledOnce();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each([false, true])('collects only quiescent validated legacy metadata without executing old signals (dryRun=%s)', async (dryRun) => {
+    const dir = await makeLegacyInstance();
+    const stop = vi.fn(async () => {});
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+    expect(result.reaped).toBe(1);
+    expect(result.instances[0]).toMatchObject({ dir, display: ':144', cleanup: 'quiescent-legacy' });
+    expect(stop).not.toHaveBeenCalled();
+    expect(scan).toHaveBeenCalledWith([dir], {
+      isolate: true, includeProcessLinks: true, includeMappedFiles: true,
+      environmentByPath: { [dir]: 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=agent:gc-test:run:123-456' },
+    });
+    expect(existsSync(dir)).toBe(dryRun);
+  });
+
+  it.each(['holder', 'partial', 'error', 'changed', 'live-marker', 'helper-symlink'])('preserves legacy WORK when %s evidence prevents quiescence', async (variant) => {
+    const dir = await makeLegacyInstance();
+    const scan = vi.fn(async () => {
+      if (variant === 'error') throw new Error('census unavailable');
+      if (variant === 'changed') await writeFile(join(dir, 'stop.sh'), '# replaced');
+      if (variant === 'live-marker') await writeFile(join(dir, '.papercusp-run'), `pid=${process.pid}\n`);
+      return { complete: variant !== 'partial', byPath: new Map(variant === 'holder' ? [[dir, ['999']]] : []) };
+    });
+    if (variant === 'helper-symlink') {
+      const path = join(dir, 'stop-xvfb.sh');
+      await writeFile(join(root, 'foreign.sh'), readFileSync(path));
+      await rm(path);
+      symlinkSync(join(root, 'foreign.sh'), path);
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    }
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop, scanHolders: scan });
+    expect(result.reaped).toBe(0);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('preserves a legacy protected display before consulting quiescence', async () => {
+    const dir = await makeLegacyInstance('01');
+    const scan = vi.fn(emptyHolders);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, scanHolders: scan });
+    expect(result.instances[0].skipped).toMatch(/protected display :1/);
+    expect(scan).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['holder', 'partial'])('preserves an orphan source snapshot on %s evidence after its marker exits', async (variant) => {
+    const dir = await makeInstance('source-snapshot', { ageHours: 200, withStop: false });
+    const result = await gcVerifyInstances({ roots: [root], now: NOW,
+      scanHolders: async () => ({ complete: variant !== 'partial', byPath: new Map(variant === 'holder' ? [[dir, ['999']]] : []) }),
+    });
+    expect(result.reaped).toBe(0);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('reaps an abandoned directory using the current generated helper-based stop script', async () => {
+    const dir = await makeNativeInstance();
+    const stop = vi.fn(async (_path: string) => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.instances[0]).toMatchObject({ dir, display: ':144' });
+    expect(result.reaped).toBe(1);
+    expect(stop).toHaveBeenCalledWith(join(dir, 'stop.sh'));
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it.each([...PROTECTED_DISPLAYS])('refuses the native helper for protected display %s', async (display) => {
+    const dir = await makeNativeInstance(display.slice(1));
+    const stop = vi.fn(async () => {});
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+    expect(result.instances[0].skipped).toMatch(/protected display/);
+    expect(result.reaped).toBe(0);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['missing', 'symlink', 'wrong-display', 'wrong-provenance', 'unguarded', 'foreign-helper', 'footer-only',
+    'missing-reaper', 'symlink-reaper', 'unguarded-reaper', 'foreign-reaper'])
+    ('refuses a native stop script with %s helper evidence', async (variant) => {
+      const dir = await makeNativeInstance();
+      const path = join(dir, 'stop-xvfb.sh');
+      const helper = readFileSync(path, 'utf8');
+      const stopPath = join(dir, 'stop.sh');
+      if (variant === 'missing' || variant === 'symlink') {
+        await rm(path);
+        if (variant === 'symlink') {
+          await writeFile(join(root, 'foreign-helper.sh'), helper);
+          symlinkSync(join(root, 'foreign-helper.sh'), path);
+        }
+      } else if (variant === 'wrong-display') {
+        await writeFile(path, helper.replace('EXPECTED_DISPLAY=:144', 'EXPECTED_DISPLAY=:1'));
+      } else if (variant === 'wrong-provenance') {
+        await writeFile(path, helper.replace('agent:gc-test:run:123-456', 'agent:another-run'));
+      } else if (variant === 'unguarded') {
+        await writeFile(path, helper.replace('PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY', 'IGNORED=$EXPECTED_DISPLAY'));
+      } else if (variant === 'foreign-helper') {
+        await writeFile(stopPath, readFileSync(stopPath, 'utf8').replace(`${dir}/stop-xvfb.sh`, `${root}/stop-xvfb.sh`));
+      } else if (variant.endsWith('-reaper')) {
+        const reaperPath = join(dir, 'frozen-source-reaper.sh');
+        const reaper = readFileSync(reaperPath, 'utf8');
+        if (variant === 'missing-reaper' || variant === 'symlink-reaper') {
+          await rm(reaperPath);
+          if (variant === 'symlink-reaper') {
+            await writeFile(join(root, 'foreign-reaper.sh'), reaper);
+            symlinkSync(join(root, 'foreign-reaper.sh'), reaperPath);
+          }
+        } else if (variant === 'unguarded-reaper') {
+          await writeFile(reaperPath, reaper.replaceAll('PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$provenance', 'IGNORED=$provenance'));
+        } else {
+          await writeFile(stopPath, readFileSync(stopPath, 'utf8').replace(`source "${reaperPath}"`, `source "${root}/foreign-reaper.sh"`));
+        }
+      } else {
+        await writeFile(stopPath, '#!/usr/bin/env bash\necho "stopped (display :144, port 33144)"\n');
+      }
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
+      const stop = vi.fn(async () => {});
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+
+  it('retains a young native run and honors dry-run without executing teardown', async () => {
+    const dir = await makeNativeInstance('144', 1);
+    const stop = vi.fn(async () => {});
+    expect((await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop })).reaped).toBe(0);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun: true, runStopScript: stop });
+    expect(result.reaped).toBe(1);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it.each(['TAURI_PID', 'OPENBOX_PID', 'ISOLATED_PG_PID'])
+    ('refuses unverified saved %s signals even when the Xvfb helper has valid provenance', async (target) => {
+      const dir = await makeNativeInstance('144', 200, { [target]: String(process.pid) });
+      // Model the pre-identity native emitter. Current emitters delegate these
+      // hints to a nonce/start-time checked helper rather than signalling them.
+      const path = join(dir, 'stop.sh');
+      await writeFile(path, `${readFileSync(path, 'utf8')}\nkill -9 ${process.pid} 2>/dev/null\n`);
+      utimesSync(dir, hoursAgo(200), hoursAgo(200));
+      const stop = vi.fn(async () => {});
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    });
+});
 
 describe('parseStopScriptDisplay', () => {
   it('reads the display out of a real generated stop.sh line', () => {
@@ -66,6 +350,21 @@ describe('parseStopScriptDisplay', () => {
 });
 
 describe('gc-verify-instances — refusals (the safety surface)', () => {
+  it.each([false, true])('refuses pre-helper pattern scripts without signalling or deleting (dryRun=%s)', async (dryRun) => {
+    for (const display of [':144', ':0', ':01']) {
+      const dir = await makeInstance(`pre-helper${display.slice(1)}`, { ageHours: 500 });
+      await writeFile(join(dir, 'stop.sh'), `#!/usr/bin/env bash\nkill -9 123 2>/dev/null\npkill -9 -f "Xvfb ${display} " 2>/dev/null\n`);
+      utimesSync(dir, hoursAgo(500), hoursAgo(500));
+      const stop = vi.fn(async () => {});
+      const scan = vi.fn(emptyHolders);
+      const result = await gcVerifyInstances({ roots: [root], now: NOW, dryRun, runStopScript: stop, scanHolders: scan });
+      expect(result.reaped).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(scan).not.toHaveBeenCalled();
+      expect(existsSync(dir)).toBe(true);
+    }
+  });
+
   it('REFUSES to touch the owner\'s real desktop display', async () => {
     // The load-bearing guard. A stop.sh targeting :0 would log the owner out.
     for (const display of PROTECTED_DISPLAYS) {
@@ -181,14 +480,20 @@ describe('gc-verify-instances — reaping', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
-  it('still removes the dir when stop.sh fails — dead pids exit nonzero, that is success', async () => {
-    const dir = await makeInstance('deadpids', { ageHours: 200 });
+  it.each(['unverified process survivor', 'teardown timeout', 'kill: no such process'])
+    ('preserves the directory and its teardown evidence after %s', async (failure) => {
+    const dir = await makeNativeInstance();
+    await writeFile(join(dir, 'survivor-evidence.log'), failure);
+    utimesSync(dir, hoursAgo(200), hoursAgo(200));
     const stop = vi.fn(async () => {
-      throw new Error('kill: no such process');
+      throw new Error(failure);
     });
     const res = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop });
-    expect(res.reaped).toBe(1);
-    expect(existsSync(dir)).toBe(false);
+    expect(stop).toHaveBeenCalledWith(join(dir, 'stop.sh'));
+    expect(res.reaped).toBe(0);
+    expect(res.bytesFreed).toBe(0);
+    expect(res.instances[0]).toMatchObject({ dir, display: ':144', skipped: 'teardown failed — preserving directory' });
+    expect(readFileSync(join(dir, 'survivor-evidence.log'), 'utf8')).toBe(failure);
   });
 
   it('dryRun names what it WOULD reap and deletes nothing', async () => {
@@ -243,7 +548,7 @@ describe('gc-verify-instances — reaping', () => {
     expect(res.reaped).toBe(2);
     expect(res.skipped).toBe(2);
     expect(stop).toHaveBeenCalledTimes(2);
-    const left = (await readdir(root)).sort();
+    const left = (await readdir(root)).filter((name) => name.startsWith('verify-tauri-headless.')).sort();
     expect(left).toEqual(['verify-tauri-headless.b-fresh', 'verify-tauri-headless.c-desktop']);
   });
 });

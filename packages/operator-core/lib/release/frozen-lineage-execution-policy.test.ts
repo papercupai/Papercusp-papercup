@@ -6,6 +6,7 @@ import {
   type FrozenRepairQueuePreflight,
 } from './checkpoint-required-ancestor';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
+import { createFrozenCandidateQueue } from './frozen-candidate-repair-queue';
 import {
   compareFrozenLineageIdentity,
   classifyFrozenLineageShellCommand,
@@ -588,6 +589,43 @@ describe('frozen lineage shell-command policy', () => {
 });
 
 describe('frozen lineage launch CAS', () => {
+  it('requires live phase proof for original-candidate policy authorization', () => {
+    const input = {
+      operation: 'canonical-verification' as const, selectionSource: 'live-frozen-candidate' as const,
+      checkoutHead: CANDIDATE, expectedIdentity: identity(),
+    };
+    expect(evaluateFrozenLineagePolicy(input, { identity: identity() }))
+      .toMatchObject({ allowed: false, reason: 'queue-decision-mismatch' });
+    expect(evaluateFrozenLineagePolicy(input, { marker: marker({ phase: 'ready-to-verify' }) }))
+      .toMatchObject({ allowed: false, reason: 'queue-decision-mismatch' });
+    expect(evaluateFrozenLineagePolicy(input, { marker: marker({ phase: 'ready-to-test' }) }))
+      .toMatchObject({ allowed: true, reason: 'candidate-match' });
+  });
+
+  it('tests the original frozen candidate before judging an already admitted repair', () => {
+    const queue = {
+      ...createFrozenCandidateQueue({ candidate: CANDIDATE, base: null, nowMs: REVISION }),
+      repairHead: REPAIR_HEAD,
+    };
+    const original = launchPreflight({
+      candidate: CANDIDATE, repairQueue: queue, queueDecision: 'test-candidate',
+    });
+    expect(assessFrozenLineageLaunchCas(identity(), original, CANDIDATE)).toMatchObject({
+      allowed: true, reason: 'candidate-match', selectionSource: 'live-frozen-candidate',
+    });
+    expect(assessFrozenLineageLaunchCas(identity(), original, REPAIR_HEAD)).toMatchObject({
+      allowed: false, reason: 'checkout-head-mismatch',
+    });
+    expect(assessFrozenLineageLaunchCas(identity({ queueRevision: REVISION - 1 }), original, CANDIDATE))
+      .toMatchObject({ allowed: false, reason: 'queue-identity-mismatch' });
+    expect(assessFrozenLineageLaunchCas(identity(), {
+      ...original, repairQueue: { ...queue, phase: 'ready-to-verify' },
+    }, CANDIDATE)).toMatchObject({ allowed: false });
+    expect(assessFrozenLineageLaunchCas(identity(), {
+      ...original, queueDecision: 'verify-repair',
+    }, CANDIDATE)).toMatchObject({ allowed: false, reason: 'checkout-head-mismatch' });
+  });
+
   it('allows only an exact second-read identity at the selected repairHead', () => {
     expect(assessFrozenLineageLaunchCas(identity(), launchPreflight(), REPAIR_HEAD)).toMatchObject({
       allowed: true,

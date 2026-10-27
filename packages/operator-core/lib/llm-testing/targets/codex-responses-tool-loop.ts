@@ -1,4 +1,6 @@
 import { parseBridgeModel } from '../../inference-gateway/codex-cli-bridge';
+import { createStatelessDiagnosticFetch } from '@papercusp/papercusp-shared/agent';
+import type { LlmCallDiagnostic } from '@papercusp/testing-shell/llm';
 import type { BuiltCatalog } from './su-catalog';
 
 const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
@@ -150,10 +152,16 @@ export async function callCodexResponsesTurn(opts: {
   maxOutputTokens: number;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  onDiagnostic?: (diagnostic: LlmCallDiagnostic) => void;
 }): Promise<CodexResponsesTurn> {
   const { id, effort } = parseBridgeModel(opts.model);
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const response = await fetchImpl(gatewayUrl(), {
+  const url = gatewayUrl();
+  // Observe the actual fetch without changing request bytes or waiting for a returned turn.
+  const fetchImpl = opts.onDiagnostic
+    ? createStatelessDiagnosticFetch({ baseURL: url, token: CODEX_GATEWAY_AUTH, headers: {}, label: 'gateway-pool' },
+      opts.onDiagnostic, opts.fetchImpl ?? fetch)
+    : opts.fetchImpl ?? fetch;
+  const response = await fetchImpl(url, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,

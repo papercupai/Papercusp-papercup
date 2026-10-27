@@ -17,6 +17,8 @@
  */
 
 import { isAcceptanceWork, type AcceptanceOrderingItem } from './agent-tools/plans/acceptance-after-build';
+import { deriveRepoPathsFromText } from './agent-tools/work_items/_derive-paths';
+import type { PlanItemAnchor } from './plan-items/anchors';
 
 /** An open (todo/wip/blocked/needs-human) plan item eligible for promotion. */
 export interface OpenPlanItem extends AcceptanceOrderingItem {
@@ -34,6 +36,27 @@ export interface WorkItemCreateSpec {
   sourcePlanSlug: string;
   /** The plan-item ids this work-item covers — the idempotency key with the slug. */
   sourcePlanItemIds: string[];
+  payload?: PlanItemCodePayload;
+}
+
+export interface PlanItemCodePayload {
+  paths: string[];
+  anchors?: PlanItemAnchor[];
+}
+
+/** Shared by promotion and pickup; an unresolved explicit link still suppresses guesses. */
+export function codePayloadForPlanItems(
+  itemIds: readonly string[],
+  anchorsByItem: Readonly<Record<string, PlanItemAnchor[]>>,
+  text: string,
+  repoRoot?: string,
+): PlanItemCodePayload | undefined {
+  const anchors = itemIds.flatMap(id => anchorsByItem[id] ?? []);
+  if (anchors.length > 0) {
+    return { anchors, paths: [...new Set(anchors.flatMap(anchor => anchor.path ? [anchor.path] : []))] };
+  }
+  const paths = deriveRepoPathsFromText(text, { repoRoot });
+  return paths.length > 0 ? { paths } : undefined;
 }
 
 export interface PromotionInput {
@@ -47,6 +70,8 @@ export interface PromotionInput {
    * idempotency guard: an item already promoted is never promoted again.
    */
   existingPromotedItemIds: Iterable<string>;
+  anchorsByItem?: Record<string, PlanItemAnchor[]>;
+  repoRoot?: string;
 }
 
 const MAX_TITLE = 200;
@@ -69,11 +94,15 @@ export function computePromotions(input: PromotionInput): WorkItemCreateSpec[] {
   return input.openItems
     .filter(item => !buildOpen || !isAcceptanceWork(item))
     .filter((it) => !already.has(it.id))
-    .map((it) => ({
-      kind: 'feature' as const,
-      harness: input.harness,
-      title: titleFromPlanItem(it),
-      sourcePlanSlug: input.planSlug,
-      sourcePlanItemIds: [it.id],
-    }));
+    .map((it) => {
+      const payload = codePayloadForPlanItems([it.id], input.anchorsByItem ?? {}, it.text, input.repoRoot);
+      return {
+        kind: 'feature' as const,
+        harness: input.harness,
+        title: titleFromPlanItem(it),
+        sourcePlanSlug: input.planSlug,
+        sourcePlanItemIds: [it.id],
+        ...(payload ? { payload } : {}),
+      };
+    });
 }

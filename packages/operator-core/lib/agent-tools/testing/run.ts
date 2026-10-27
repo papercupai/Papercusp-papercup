@@ -538,6 +538,7 @@ export function buildDetachedTestRunRequest(opts: {
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
       env: {
+        NODE_ENV: 'test',
         PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
         PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(opts.deadline.childCutoffAtMs),
         PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(opts.deadline.cleanupReserveMs),
@@ -565,6 +566,7 @@ export function buildDetachedTestRunRequest(opts: {
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -692,6 +694,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   ].join('\n');
   const root = opts.groups[0]?.root ?? resolveAgentWorkspaceRoot({});
   const env: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -2031,6 +2034,8 @@ async function readFailureDetails(path: string, root: string): Promise<ReturnTyp
  */
 export async function recoverCompletedRunAfterBudget(opts: {
   output: string;
+  /** Node group protocol, kept separately from the bounded diagnostic tail. */
+  nodeTestOutput?: string;
   dir: string;
   root: string;
   runId: string;
@@ -2049,7 +2054,7 @@ export async function recoverCompletedRunAfterBudget(opts: {
     run = mergeDistilledRuns(
       withNodeTestGroupRuns(
         reportTexts.map((text) => distillVitestRun(text, opts.root, { maxFailures: opts.maxFailures, failureDetails })),
-        opts.output,
+        opts.nodeTestOutput ?? opts.output,
         opts.files,
         opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures },
       ),
@@ -2087,6 +2092,8 @@ export interface RouterOutcome extends TestProcessOutcome {
   aborted: boolean;
   spawnError?: string;
   output: string;
+  /** Node group protocol, kept separately from the bounded diagnostic tail. */
+  nodeTestOutput?: string;
   /** Complete file-backed stdout/stderr, retained for every verdict. */
   outputLogPaths?: string[];
   actualDemand?: ResourceDemand;
@@ -2128,6 +2135,7 @@ const ROUTER_PRIORITY_DIAGNOSTIC_RE =
 export interface BoundedRouterOutputCapture {
   append(channel: 'stdout' | 'stderr', value: Buffer | string): void;
   finish(): string;
+  nodeTestOutput(): string;
 }
 
 /**
@@ -2151,11 +2159,23 @@ export function createBoundedRouterOutputCapture(
   const remainders: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
   const diagnosticLines: string[] = [];
   const seenDiagnostics = new Set<string>();
+  const nodeProtocol: string[] = [];
+  let inNodeGroup = false;
   let tail = '';
   let finished: string | null = null;
 
-  const retainLine = (line: string) => {
+  const retainLine = (line: string, channel: 'stdout' | 'stderr') => {
     const normalized = line.replace(ANSI_SGR, '').trimEnd();
+    // A group's stdout is execution evidence. Stderr diagnostics can evict it
+    // from the display tail, but must never erase its per-file result.
+    if (channel === 'stdout') {
+      if (/^ROUTE cwd=/.test(normalized)) {
+        inNodeGroup = /^ROUTE cwd=\S+ runner=node:test\s*$/.test(normalized);
+        nodeProtocol.push(normalized);
+      } else if (inNodeGroup && /^(?:\s+requested\s|\s*(?:ℹ|#)\s*(?:tests|pass|fail|skipped|todo|duration_ms)\s+\d|\s*not ok\b|TEST_FILE_(?:GROUP_RESULT|RESULT)\b)/u.test(normalized)) {
+        nodeProtocol.push(normalized);
+      }
+    }
     if (!ROUTER_PRIORITY_DIAGNOSTIC_RE.test(normalized) || seenDiagnostics.has(normalized)) return;
     seenDiagnostics.add(normalized);
     diagnosticLines.push(normalized.slice(0, 1_200));
@@ -2168,12 +2188,15 @@ export function createBoundedRouterOutputCapture(
       tail = (tail + text).slice(-tailChars);
       const parts = (remainders[channel] + text).split(/\r?\n/);
       remainders[channel] = parts.pop() ?? '';
-      for (const line of parts) retainLine(line);
+      for (const line of parts) retainLine(line, channel);
+    },
+    nodeTestOutput() {
+      return nodeProtocol.join('\n');
     },
     finish() {
       if (finished !== null) return finished;
       for (const channel of ['stdout', 'stderr'] as const) {
-        if (remainders[channel] !== '') retainLine(remainders[channel]);
+        if (remainders[channel] !== '') retainLine(remainders[channel], channel);
         remainders[channel] = '';
       }
       const normalizedTail = tail.replace(ANSI_SGR, '');
@@ -2682,8 +2705,8 @@ export function runTestProcess(
               }
               if (onAbort) childSignal.removeEventListener('abort', onAbort);
               void sampler.stop({ diskBytes: outputBytes }).then(
-                (actualDemand) => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand }),
-                () => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand: plannedDemand }),
+                (actualDemand) => resolve({ ...outcome, nodeTestOutput: outputCapture.nodeTestOutput(), outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand }),
+                () => resolve({ ...outcome, nodeTestOutput: outputCapture.nodeTestOutput(), outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand: plannedDemand }),
               );
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
@@ -3487,6 +3510,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
+  packet.bindNativeIdentity(opts.workspaceId, opts.harnessSlug);
   const reportDirectory = deps.reportDirectories?.[resolve(opts.root)];
   let result: TestFilesCoreResult | undefined;
   let cleanup: OwnedTestDbCleanupResult | undefined;
@@ -3718,6 +3742,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      // Vitest preserves an existing NODE_ENV. The serving operator uses production,
+      // which makes Vite erase builtin identities in jsdom before tests can collect.
+      NODE_ENV: 'test',
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
@@ -3844,6 +3871,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }
 
     outputLogPaths = outcome.outputLogPaths ?? [];
+    packet.captureOutputLogs(outputLogPaths);
     packet.childState = outcome.terminationUnconfirmed || outcome.hostShutdownDetached ? 'pending' : 'closed';
     packet.write('router.json', { code: outcome.code, signal: outcome.signal, timedOut: outcome.timedOut,
       aborted: outcome.aborted, taskId: outcome.taskId ?? null, outputLogPaths, childState: packet.childState });
@@ -3865,6 +3893,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           const cleanup = await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
             deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
           packet.write('late-cleanup.json', cleanup);
+          packet.finish({ result: { code: outcome.code, signal: outcome.signal, lateChildClose: true }, cleanup });
         }).catch(cause => packet.stage('late-cleanup-error', { error: String(cause) }));
       }
       const error = outcome.aborted ? 'aborted' : 'timeout';
@@ -3899,6 +3928,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     if (outcome.timedOut) {
       const completed = await recoverCompletedRunAfterBudget({
         output: outcome.output,
+        nodeTestOutput: outcome.nodeTestOutput,
         dir,
         root,
         runId,
@@ -4058,7 +4088,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const distilledRuns = withNodeTestGroupRuns(
       reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
-      outcome.output,
+      outcome.nodeTestOutput ?? outcome.output,
       pathResolution.files,
       opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {},
     );
@@ -4206,7 +4236,7 @@ export default defineTool({
       .max(50)
       .optional()
       .describe(
-        'Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.',
+        'Test paths: repo-relative, absolute, or relative to exactly one npm workspace. Routes to owner workspace/config; ambiguous paths or zero matches refuse.',
       ),
     rootHarnessSlug: z
       .string()
@@ -4223,7 +4253,7 @@ export default defineTool({
       .max(100)
       .optional()
       .describe(
-        'SOURCE paths you edited (not test files) — returns the `npm run test:affected` PLAN and runs NOTHING (`mode:"plan"`, no pass/fail counts). ~0.4s, no admission ticket, where the real sweep can queue for minutes and be SIGTERMed having measured zero files. Gives the affected workspaces, each exact runnable task command, and the attached guards, so you can pick: run specific test files via `files`, run one `taskCommands[].command` verbatim, or accept the queue. Mutually exclusive with `files`.',
+        'SOURCE paths, not tests: returns test:affected PLAN only (mode:"plan"; no execution, admission or verdict). Gives affected workspaces, exact taskCommands[].command and guards. Run a returned command or choose files separately; incompatible with files.',
       ),
     testNamePattern: z
       .string()
@@ -4231,7 +4261,7 @@ export default defineTool({
       .max(200)
       .optional()
       .describe(
-        "Run only tests whose full name matches — a REGEX (Vitest `-t`), never literal text. To re-run ONE failing test from a previous result's `failures[].test`, regex-escape it first: a name containing `(`, `+` or `[` does not match itself. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`) and hands back the escaped form to retry, never reported as a pass — vitest merely skips them all and exits 0.",
+        'Vitest -t REGEX over full test names. Escape literal names (including parentheses, + and [). Zero matches refuse with name_filter_no_match and return an escaped retry; skipped tests never count as a pass.',
       ),
     timeoutMs: z
       .number()

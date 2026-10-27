@@ -1704,7 +1704,12 @@ export async function getAcceptanceRubricsForPlan(
          AND ${subjectScope}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
-    return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug &&
+    const mapped = await mapRubricPlanRows(rows);
+    if (options.strict && mapped.length !== rows.length) {
+      throw new Error(`Acceptance rubric for plan '${planSlug}' exists but could not be decoded by this runtime. ` +
+        'Check serving-build compatibility and the stored contract before changing the rubric.');
+    }
+    return mapped.filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug &&
       (!options.harnessSlug || !r.subjectHarnessSlug || r.subjectHarnessSlug === options.harnessSlug));
   } catch (error) {
     if (options.strict) throw error;
@@ -2473,11 +2478,12 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
 function migrateLegacyProbeRevision(probe: unknown): unknown {
   if (probe === null || typeof probe !== 'object' || Array.isArray(probe)) return probe;
   const record = probe as Record<string, unknown>;
-  if (typeof record.schemaRevision !== 'string' || record.schemaRevision === LIVE_SCHEMA_REVISION) return probe;
+  if (typeof record.schemaRevision !== 'string') return probe;
 
   // Re-validate through the writer-only `live` sentinel. A successful parse both
-  // proves the old probe still matches the current target contract and returns the
-  // concrete current revision. If it no longer matches, preserve the stale value so
+  // proves the probe still matches the current target contract and returns the
+  // concrete current revision, including for incoming writer-only `live` values.
+  // If it no longer matches, preserve the original value so
   // the normal validation path reports the actionable contract error.
   const migrated = continuityProbeSchema.safeParse({ ...record, schemaRevision: LIVE_SCHEMA_REVISION });
   return migrated.success ? migrated.data : probe;
@@ -4920,7 +4926,7 @@ async function amendAcceptanceBarRubric(
   preview = false,
 ): Promise<AcceptanceAmendmentResult | null> {
   input.onPhase?.('acceptance-routing');
-  const rubricHint = await getRubric(input.rubricId);
+  const rubricHint = await readAmendmentRubric(input.rubricId);
   const subjectPlanHint = rubricHint?.subjectPlan;
   if (!subjectPlanHint) return null;
   const subjectScope = await resolveAcceptanceSubjectScope(
@@ -5907,7 +5913,10 @@ async function amendAcceptanceBarRubric(
                superseded_by = ${subjectIdx.supersededBy}, is_legacy = ${subjectIdx.isLegacy},
                items = ${JSON.stringify(subjectIdx.items)}::text::jsonb,
                decisions = ${JSON.stringify(subjectIdx.decisions)}::text::jsonb,
-               now_state = ${subjectIdx.nowState}, now_next = ${subjectIdx.nowNext},
+               -- now_note is the source of truth after P-004; keep the indexed reader fields
+               -- aligned while the amendment's post-commit readiness refresh updates it.
+               now_state = COALESCE(harness_shared.harness_plans.now_note->>'state', ${subjectIdx.nowState}),
+               now_next = COALESCE(harness_shared.harness_plans.now_note->>'next', ${subjectIdx.nowNext}),
                promote_policy = ${JSON.stringify(subjectIdx.promotePolicy)}::text::jsonb,
                forced_past = ${subjectForcedPast ? JSON.stringify(subjectForcedPast) : null}::text::jsonb,
                acceptance_bar_set_hash = ${String(guard.data.barSetHash ?? '')},
@@ -6155,10 +6164,60 @@ async function amendAcceptanceBarRubric(
  * — every WI-4287 loss-guard still applies to a `replace` (an `append` can only grow).
  * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
  */
+async function readAmendmentRubric(rubricId: string): Promise<Rubric | null> {
+  const read = await readRubricWithoutSeeding(rubricId);
+  if (read.kind === 'ambiguous') throw read.error;
+  if (read.kind === 'read-failed') {
+    throw new Error(`rubric_read_failed: could not read rubric '${rubricId}'`);
+  }
+  return read.kind === 'found' ? read.rubric : null;
+}
+
+/** Refresh the subject plan's canonical Now note after an acceptance-rubric write. */
+async function refreshAcceptanceRubricReadinessNow(
+  rubric: Rubric | null,
+  input: AmendRubricInput,
+  rubricScope: { workspaceId: string; harnessSlug: string },
+): Promise<Rubric | null> {
+  if (!rubric || rubric.kind !== 'acceptance' || !rubric.subjectPlan) return rubric;
+  try {
+    const subjectScope = await resolveAcceptanceSubjectScope(
+      rubricScope.workspaceId,
+      rubric.subjectPlan,
+      rubric.subjectHarnessSlug,
+    );
+    const actor = (input.actorId ?? input.by ?? rubric.createdBy ?? 'rubrics:system').trim() || 'rubrics:system';
+    input.onPhase?.('acceptance-now-readiness-refresh');
+    const [{ reevaluateBarReadinessOnScopeWrite }, { defaultBarReadinessDeps }] = await Promise.all([
+      import('./agent-tools/plans/plan-scope-cascade'),
+      import('./agent-tools/plans/plan-scope-cascade-deps'),
+    ]);
+    const readiness = await reevaluateBarReadinessOnScopeWrite(
+      {
+        workspaceId: subjectScope.workspaceId,
+        harnessSlug: subjectScope.harnessSlug,
+        planSlug: rubric.subjectPlan,
+        cause: 'rubric-amended',
+      },
+      defaultBarReadinessDeps(null, actor),
+    );
+    if (readiness.error) {
+      console.warn(`[rubrics:amend] BAR readiness Now refresh failed for ${rubric.subjectPlan}: ${readiness.error}`);
+    }
+  } catch (error) {
+    // The rubric transaction has already committed. Keep that truthful success while
+    // surfacing a post-commit refresh failure for diagnosis instead of misreporting an
+    // amendment refusal after the contract was written.
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`[rubrics:amend] BAR readiness Now refresh failed for ${rubric.subjectPlan}: ${detail}`);
+  }
+  return rubric;
+}
+
 export async function previewAcceptanceBarAmendment(
   input: AmendRubricInput,
 ): Promise<AcceptanceBarAmendmentPreview | null> {
-  const current = await getRubric(input.rubricId);
+  const current = await readAmendmentRubric(input.rubricId);
   if (!current) return null;
   // An orphan restore previews the cross-plan transaction against the pinned witness;
   // the locked transaction refuses it if no admissible witness exists.
@@ -6323,7 +6382,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     const amended = await amendAcceptanceBarRubric(input, scope);
     // A null reread still refuses. Only an explicit, locked method-only result
     // may use the ordinary writer, which refreshes the dependent revision pins.
-    if (!amended?.methodOnly) return amended?.rubric ?? null;
+    if (!amended?.methodOnly) {
+      return refreshAcceptanceRubricReadinessNow(amended?.rubric ?? null, input, scope);
+    }
     methodOnlyRevision = amended.rubricRevision;
   }
   const compatibilityAudit: { current?: RubricCompatibilityAudit } = {};
@@ -6427,7 +6488,10 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   }
   if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   if (!result.value) return null;
-  return getRubric(input.rubricId);
+  const amended = await getRubric(input.rubricId);
+  return currentForRouting?.kind === 'acceptance'
+    ? refreshAcceptanceRubricReadinessNow(amended, input, scope)
+    : amended;
 }
 
 /** Raw template_data for one rubric plan (the un-projected jsonb) — the merge base for

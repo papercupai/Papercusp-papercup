@@ -8,6 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const runBlindReviewMintOp = vi.fn();
 const resumeBlindGapReviewer = vi.fn();
 const loadBlindReviewBrief = vi.fn();
+const replaceBlindGapReviewer = vi.fn();
+vi.mock('../../blind-review-replacement', () => ({
+  replaceBlindGapReviewer: (...args: unknown[]) => replaceBlindGapReviewer(...args),
+}));
 
 vi.mock('./blind-review-mint-op', () => ({
   runBlindReviewMintOp: (...a: unknown[]) => runBlindReviewMintOp(...a),
@@ -35,7 +39,8 @@ vi.mock('../../blind-review-session-bindings', () => ({
   recordBlindReviewSessionPost: (...a: unknown[]) => recordBlindReviewSessionPost(...a),
   verifyBlindReviewSessionBinding: (...a: unknown[]) => verifyBlindReviewSessionBinding(...a),
 }));
-vi.mock('../../blind-review-gate', () => ({
+vi.mock('../../blind-review-gate', async (importOriginal) => ({
+  ...await importOriginal<object>(),
   evaluateBlindReviewGate: (...a: unknown[]) => evaluateBlindReviewGate(...a),
   loadBlindReviewBrief: (...a: unknown[]) => loadBlindReviewBrief(...a),
   recordBlindGapDispositions: (...a: unknown[]) => recordBlindGapDispositions(...a),
@@ -47,6 +52,29 @@ vi.mock('../../blind-review-scratch-plans', () => ({
 
 import tool from './blind-review';
 
+describe('plans:blind-review typed recruiter replacement', () => {
+  const args = { slug: 'replacement-plan', op: 'replace', activationAuditSeq: 5, sourceReviewId: 60,
+    requestKey: 'corrected-manifest-v1', productReads: { testFiles: ['product.test.ts'] } };
+  it('requires the exact activation, source attempt, immutable request and manifest together', () => {
+    expect(tool.args.safeParse(args).success).toBe(true);
+    for (const key of ['activationAuditSeq', 'sourceReviewId', 'requestKey', 'productReads']) {
+      const missing = { ...args };
+      delete missing[key as keyof typeof missing];
+      expect(tool.args.safeParse(missing).success).toBe(false);
+    }
+    expect(tool.args.safeParse({ slug: args.slug, op: 'mint', requestKey: args.requestKey }).success).toBe(false);
+  });
+  it('forwards only authenticated context and exact request fields to the recovery operation', async () => {
+    replaceBlindGapReviewer.mockResolvedValue({ ok: true, attempt: { id: 9, status: 'uncertain' } });
+    const ctx = { workspaceId: '*', uiClientId: 'su-author', isSuperuser: true };
+    const result = await tool.handler(args as never, ctx as never);
+    const { op: _op, ...request } = args;
+    expect(replaceBlindGapReviewer).toHaveBeenCalledWith({ ...request, harness: 'papercusp', workspaceId: 'ws-resolved',
+      howToRun: undefined, ctx: { ...ctx, workspaceId: 'ws-resolved' } });
+    expect('isError' in result ? result.isError : undefined).toBeUndefined();
+  });
+});
+
 const SLUG = 'demo-plan-2026-10-11';
 const CTX = { workspaceId: '*', ownerId: 'su-author' };
 
@@ -54,7 +82,7 @@ const CTX = { workspaceId: '*', ownerId: 'su-author' };
 const REVIEWER_CTX = { workspaceId: '*', uiClientId: 'su-reviewer', isSuperuser: true };
 
 async function call(args: Record<string, unknown>, ctx: Record<string, unknown> = CTX) {
-  const parsed = tool.args.safeParse(args);
+  const parsed = tool.args.safeParse({ ...(args.op === 'post' ? { outcome: 'conclusive' } : {}), ...args });
   if (!parsed.success) throw new Error(parsed.error.message);
   const out = (await tool.handler(parsed.data as never, ctx as never)) as {
     content: Array<{ text: string }>;
@@ -74,6 +102,35 @@ beforeEach(() => {
   findLatestBlindReviewSessionBindingByReviewer.mockReset().mockResolvedValue(null);
   recordBlindReviewSessionPost.mockReset().mockResolvedValue(true);
   verifyBlindReviewSessionBinding.mockReset().mockResolvedValue({ ok: true });
+});
+
+describe('explicit completion outcome contract', () => {
+  it('requires a valid outcome on post and scopes it to post', () => {
+    for (const outcome of [undefined, null, 'unknown']) {
+      expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome }).success).toBe(false);
+    }
+    for (const outcome of ['conclusive', 'inconclusive']) {
+      expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome }).success).toBe(true);
+      expect(tool.args.safeParse({ slug: SLUG, op: 'brief', outcome }).success).toBe(false);
+    }
+  });
+
+  it.each([
+    ['conclusive', 'INCONCLUSIVE: blocked'],
+    ['inconclusive', 'CONCLUSIVE: completed'],
+  ])('refuses contradictory %s outcomes at the tool boundary', (outcome, summary) => {
+    expect(tool.args.safeParse({ slug: SLUG, op: 'post', gaps: [], outcome, summary }).success).toBe(false);
+  });
+
+  it('forwards an inconclusive outcome unchanged and returns its non-counting receipt', async () => {
+    recordBlindReview.mockResolvedValue({ ok: true, id: 10, activationAuditSeq: 3, gapIds: [] });
+    evaluateBlindReviewGate.mockResolvedValue({ satisfied: false, acceptedReviewIds: [],
+      rejectedReviews: [{ reviewId: 10, reason: 'inconclusive' }] });
+    archiveBlindReviewScratchPlans.mockResolvedValue(null);
+    const { body } = await call({ slug: SLUG, op: 'post', outcome: 'inconclusive', gaps: [], summary: 'INCONCLUSIVE: product blocked' }, REVIEWER_CTX);
+    expect(recordBlindReview).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'inconclusive', gaps: [] }));
+    expect(body).toMatchObject({ ok: true, id: 10, counts: false, rejected: { reason: 'inconclusive' } });
+  });
 });
 
 // verification-system-improvements-2026-10-10#D-050 (5): the reviewer's scratch plans are
@@ -191,12 +248,12 @@ describe('plans:blind-review op mint', () => {
       const extra = op === 'post' ? { gaps: [] } : op === 'dispose' ? { dispositions: [{ reviewId: 1, gapId: 'G-1', itemId: 'P-001' }] } : {};
       const parsed = tool.args.safeParse({ slug: SLUG, op, howToRun: 'npm run dev', ...extra });
       expect(parsed.success, op).toBe(false);
-      expect(parsed.error?.issues.map((i) => i.message), op).toContain("howToRun is op 'mint' only");
+      expect(parsed.error?.issues.map((i) => i.message), op).toContain("howToRun is op 'mint' or 'replace' only");
     }
   });
 
   it('a brief call never reaches the mint adapter', async () => {
-    loadBlindReviewBrief.mockResolvedValue({ activationAuditSeq: 3, ownerTurns: [], excludedRefs: [], text: '' });
+    loadBlindReviewBrief.mockResolvedValue({ activationAuditSeq: 3, ownerTurns: [], unverifiedTurns: [], excludedRefs: [], text: '' });
 
     const { body } = await call({ slug: SLUG, op: 'brief' });
 

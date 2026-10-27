@@ -70,6 +70,7 @@ export const COMMITTED_SOURCE_NOTICE_SCHEMA = 'committed-source-notice-v1';
 const HOOKS_QUERY = 'committed-source-hooks';
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+const GIT_ENV_TO_CLEAR = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR'];
 const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';
 const GIT_UNAVAILABLE_SENTINEL = 'unavailable-at-loader-registration';
 
@@ -145,11 +146,14 @@ function git(top, args, opts = {}) {
   if (!gitExecutable) {
     throw new Error(`${COMMITTED_SOURCE_MARKER} no absolute git executable was available at loader registration for checkout reads`);
   }
+  const env = { ...process.env, ...(opts.env ?? {}) };
+  for (const key of GIT_ENV_TO_CLEAR) delete env[key];
   return execFileSync(gitExecutable, ['-C', top, ...args], {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
     ...opts,
+    env,
   });
 }
 

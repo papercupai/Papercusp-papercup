@@ -266,6 +266,25 @@ function coldLoopBrief(over: Partial<NonNullable<CarryBrief['loop']>> = {}): Car
 }
 
 describe('runFlushGate — cold-successor-no-progress wiring', () => {
+  it('loads the recovery instruction without initializing held-item/control storage', async () => {
+    vi.resetModules();
+    const failIfImported = () => {
+      throw new Error('held-item/control storage must remain lazy for instruction-only imports');
+    };
+    vi.doMock('./carry-brief', failIfImported);
+    vi.doMock('./agent-tools/coordination/control-anchor', failIfImported);
+    try {
+      const { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } =
+        await import('./agent-tools/coordination/compaction-recovery');
+      expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION)
+        .toContain('⟦post-compaction-recovery⟧');
+    } finally {
+      vi.doUnmock('./carry-brief');
+      vi.doUnmock('./agent-tools/coordination/control-anchor');
+      vi.resetModules();
+    }
+  });
+
   it('reads Next action content without including following carry-note sections', async () => {
     const out = await runFlushGate({
       boundary: 'compaction',

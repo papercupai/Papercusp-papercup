@@ -17,9 +17,9 @@ import {
   summarizeAgentStrand,
   type AgentStrandHealth,
 } from './agent-strand-census';
-import { coordinationStatus } from './thresholds';
+import { coordinationStatus, infraStatus } from './thresholds';
 import { strandMetrics } from './compute';
-import type { CoordinationHealth, HealthPanel, SystemHealth } from './types';
+import type { CoordinationHealth, HealthPanel, InfraHealth, SystemHealth } from './types';
 
 // P-011(b), plan parked-agent-census-resumption-and-root-cause-2026-10-09 (BAR R-12): a standing
 // alarm fires when the wedged-session count exceeds its threshold, and likewise for autonomous
@@ -306,6 +306,21 @@ describe('coordinationStatus with the agent-strand census', () => {
     const data = { ...coordination(strand(0, 0)), leaderlessFleets: 1 };
     expect(coordinationStatus(data)).toBe('warn');
     expect(keys(health({ status: coordinationStatus(data), data }))).toEqual([]);
+  });
+
+  it('preserves an independent critical gateway alarm beside WARN population alarms', () => {
+    const data = coordination(strand(AGENT_WEDGED_ALARM_THRESHOLD, AGENT_STRANDED_ALARM_THRESHOLD));
+    const snapshot = health({ status: coordinationStatus(data), data });
+    const infra = { gatewayReachable: false } as InfraHealth;
+    snapshot.panels.infra = { key: 'infra', label: 'Infra', status: infraStatus(infra),
+      summary: 'gateway down', metrics: [], data: infra };
+    expect(snapshot.panels.coordination.status).toBe('warn');
+    expect(snapshot.panels.infra.status).toBe('crit');
+    expect(keys(snapshot).sort()).toEqual(['agents-stranded', 'agents-wedged', 'panel:infra']);
+
+    infra.gatewayReachable = true;
+    snapshot.panels.infra.status = infraStatus(infra);
+    expect(keys(snapshot).sort()).toEqual(['agents-stranded', 'agents-wedged']);
   });
 
   it('warns on any wedged or stranded session but never goes crit (the alarm owns paging)', () => {

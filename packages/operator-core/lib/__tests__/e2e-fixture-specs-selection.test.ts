@@ -79,6 +79,14 @@ describe('fixture spec discovery and selection (real tree)', () => {
     expect(reasons[MATRIX]).toEqual([KASMVNC]);
   });
 
+  it('selects the .mts fullscreen regression when its real dock component changes', () => {
+    const spec = 'apps/operator/e2e/reports-work-fullscreen-layout.spec.mts';
+    expect(discoverFixtureSpecs({ rootDir: REPO_ROOT }).find(row => row.spec === spec)?.fixtures)
+      .toContain('apps/operator/e2e/__fixtures__/work-fullscreen.tsx');
+    expect(selectFixtureSpecs({ closures, changedPaths: ['apps/operator/app/harness/dock/HarnessDock.tsx'] }).selected)
+      .toContain(spec);
+  });
+
   it('a change to the RFB stand-in fixture selects the spec that aliases it', () => {
     expect(selectFixtureSpecs({ closures, changedPaths: ['apps/operator/e2e/__fixtures__/desktop-render-rfb.ts'] }).selected)
       .toContain(MATRIX);

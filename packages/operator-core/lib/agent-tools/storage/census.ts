@@ -1,7 +1,7 @@
 /**
  * storage:census — what is filling each watched disk, and what grew in the last 24h
  * (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Read-only view over the
- * census the scheduled `diskConsumerCensus` workflow writes every 6h
+ * census the scheduled `diskConsumerCensus` workflow writes every hour at minute 35
  * (storage/disk-consumer-census.ts). storage:usage stays the per-CATEGORY view of
  * Papercusp's own stores; this is the per-DEVICE view of everything on the disk.
  */
@@ -12,7 +12,7 @@ export default defineTool({
   name: 'storage:census',
   profile: 'engineer',
   description:
-    'What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the 6-hourly census; flags stale, missing and coverage-gap devices. Read-only.',
+    'What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the hourly census (minute 35); flags stale, missing and coverage-gap devices. Read-only.',
   capability: 'storage:read',
   guidance: {
     when: 'Finding what is using or growing on a disk before reclaiming space, or checking a disk alarm’s cause.',

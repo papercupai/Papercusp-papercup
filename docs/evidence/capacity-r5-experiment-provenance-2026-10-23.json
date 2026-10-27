@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "capacity-provenance-custody-pointer-v1",
+  "recordedAt": "2026-10-23T16:05:34.960Z",
+  "workItem": "WI-6554700010023077",
+  "custodyWorkItem": "EI-26916143924070538",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "requirement": "R-5",
+  "scope": "Recovery of selected original cache receipts; no new provider inventory, resource deletion, account polling, experiment admission, spend estimate treated as invoice, or settlement certification.",
+  "qualification": "incomplete",
+  "archive": {
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/evidence/EI-26916143924070538/e61544f3274ed025be7d63b119c41f6647b10bfcd15e41d4e5ceb976a8db11c8",
+    "manifest": {
+      "name": "manifest.json",
+      "sha256": "e61544f3274ed025be7d63b119c41f6647b10bfcd15e41d4e5ceb976a8db11c8"
+    },
+    "original": {
+      "name": "originals/capacity-r5-experiment-provenance-2026-10-23.json",
+      "sourcePath": "docs/evidence/capacity-r5-experiment-provenance-2026-10-23.json",
+      "sha256": "02cc0ae245484c8cc9ade5047ffbf94eb7430e061dfe95635d521b07ead0c552",
+      "byteLength": 11490
+    }
+  },
+  "readerAccess": {
+    "validation": "Resolve archive.root relative to the operating account home directory. Verify the manifest SHA-256 before selecting files[].path equal to archive.original.sourcePath. Read that original artifact and verify both byte length and SHA-256 against the manifest and this pointer. Parse the original JSON only after verification.",
+    "relatedProof": "Historical source paths inside an original remain unchanged. If a source path names another custody pointer in this set, resolve that pointer and verify its original bytes before comparing the historical source digest.",
+    "preservation": "The archived original is byte-identical to the historical source record. This portable pointer contains no replacement measurements or rewritten proof."
+  },
+  "claims": {
+    "newExecution": false,
+    "currentSourceAdequacy": false,
+    "operationalAcceptance": false,
+    "shipment": false
+  },
+  "unresolved": [
+    "The reviewed file set does not establish that every plan-labelled experiment is represented.",
+    "Original absolute provider deletion deadlines and complete reservations were not recovered for the whole plan.",
+    "Actual provider spend and category reconciliation remain unknown for the named source set.",
+    "Current provider inventory was not queried; historical absence does not assert present-day absence.",
+    "Snapshots, reserved addresses, and other required billable categories need complete labelled absence evidence beyond the legacy verified flag.",
+    "Independent current-revision R5 adequacy and programme settlement are not claimed."
+  ]
+}

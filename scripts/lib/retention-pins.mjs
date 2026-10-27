@@ -127,13 +127,29 @@ export function retentionPinProtectsPath(path, pins, nowMs = Date.now()) {
 
 /** For callers ALREADY holding papercusp-disk-retention. Never acquires a second lock. */
 export function pinProtection(pins, nowMs = Date.now(), resolvePath = realpathSync) {
-  return path => {
+  const physicalPath = path => {
     let physical = path;
     try { physical = resolvePath(path); } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    return retentionPinProtectsPath(path, pins, nowMs) || retentionPinProtectsPath(physical, pins, nowMs);
+    return normalize(physical);
   };
+  // Resolve both sides of aliases from the SAME validated, fixed-time snapshot.
+  // A child protects its atomic parent, but only descendants of the actual pin
+  // qualify as pinned allocation. Do not derive that allowance from keep reasons.
+  const snapshot = pins.filter(pin => Date.parse(pin.expiresAt) > nowMs).map(pin => ({
+    expiresAt: pin.expiresAt,
+    paths: [...new Set(pin.paths.flatMap(path => [normalize(path), physicalPath(path)]))],
+  }));
+  const isPinned = path => retentionPinProtectsPath(path, snapshot, nowMs)
+    || retentionPinProtectsPath(physicalPath(path), snapshot, nowMs);
+  const contains = (outer, inner) => outer === '/' || outer === inner || inner.startsWith(outer + '/');
+  Object.defineProperty(isPinned, 'coversPath', { value: path => {
+    const logical = normalize(path);
+    const physical = physicalPath(path);
+    return snapshot.some(pin => pin.paths.some(scope => contains(scope, logical) || contains(scope, physical)));
+  } });
+  return isPinned;
 }
 
 /** Final protection read and the entire destructive operation share storage:pin's mutex. */

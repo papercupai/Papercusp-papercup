@@ -49,16 +49,7 @@ export const harnessArg = z
   .min(1)
   .optional()
   .describe(
-    'Harness slug to operate on. In a workspace-scoped operator/superuser session, ' +
-      "pass the concrete in-scope harness slug (for example, 'papercusp' for " +
-      "Papercusp's own plans). 'all' is only valid in an unscoped (--all-workspaces) " +
-      'session. A harness-scoped session supplies this automatically. Recovering an ' +
-      'EXACT plan slug without knowing its owner? On plans:get / plans:items you may ' +
-      'omit `harness` entirely — but only an UNSCOPED session auto-resolves the owning ' +
-      'harness from the slug; a session already scoped to a concrete harness (the common ' +
-      'case) stays scoped to it, and a miss there reports which OTHER harness actually ' +
-      'owns the slug instead of silently reading across harnesses — pass that harness ' +
-      'explicitly to read it.',
+    'Concrete in-scope harness slug (e.g. papercusp); harness-scoped sessions infer it. all requires unscoped --all-workspaces. Only UNSCOPED plans:get/plans:items auto-resolve an exact slug across harnesses; scoped misses identify the owning harness, which you must then pass explicitly.',
   );
 
 /** True when a value is the explicit all/operator-scope sentinel. */

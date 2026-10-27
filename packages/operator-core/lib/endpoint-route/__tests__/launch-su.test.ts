@@ -322,6 +322,15 @@ afterEach(() => {
 });
 
 describe('launch-su', () => {
+  it.each([null, {}, { advSessionId: 0, nativeSessionId: 'parent' },
+    { advSessionId: 17, nativeSessionId: '' }])('refuses malformed structured fork sources before spawning (%j)', async fork_from => {
+    const response = await callPost({ agent: 'claude', harness_slug: 'papercup',
+      attached_engine: true, agent_chat_id: 'new-fork', fork_from });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_fork_source' });
+    expect(realSpawns()).toHaveLength(0);
+  });
+
   it('streams launch progress before slow preflight and preserves the final refusal', async () => {
     let release: (() => void) | undefined;
     floorMock.mockImplementationOnce(

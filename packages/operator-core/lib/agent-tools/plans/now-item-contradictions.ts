@@ -77,6 +77,12 @@ const NOW_COMMITTED_CLOSURE_AUTHORITY_RE =
 // "pass P-013" must remain a contradiction.
 const NOW_PASSED_TEST_EVIDENCE_RE =
   /\bpassed\s+(?:(?:\d+\s*\/\s*\d+|\d+)\s+)?(?:[\w-]+\s+){0,4}(?:tests?|checks?|cases?|verifications?|validations?)\b|\b(?:tests?|checks?|cases?|verifications?|validations?)\b[^.!?;:\n]{0,80}\bpassed\b/i;
+// A completed item's current versioned clauses can themselves pass a
+// canonical close contract. Keep this exact grammar separate from generic
+// "passed" prose so routing such as "P-002 clauses passed to the worker"
+// remains a live contradiction.
+const NOW_PASSED_CLAUSE_CLOSE_EVIDENCE_RE =
+  /\bclauses?\s+passed\s+the\s+canonical\s+close\s+contract\b/i;
 // A terminal item's status can be followed by an explanation that contains
 // future/negative vocabulary: `P-001 is DROPPED and will never report` is an
 // affirmative status assertion, not a direction to revisit P-001. Keep this
@@ -401,6 +407,7 @@ export function detectNowItemContradictions(
     const closeAfter =
       (NOW_CLOSED_RE.test(after) ||
         NOW_PASSED_TEST_EVIDENCE_RE.test(after) ||
+        NOW_PASSED_CLAUSE_CLOSE_EVIDENCE_RE.test(after) ||
         NOW_COMMITTED_CLOSURE_AUTHORITY_RE.test(after)) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const explicitTerminalStatus = NOW_TERMINAL_STATUS_ASSERTION_RE.test(after);
@@ -410,6 +417,7 @@ export function detectNowItemContradictions(
     const closeBefore =
       (NOW_CLOSED_RE.test(before) ||
         NOW_PASSED_TEST_EVIDENCE_RE.test(before) ||
+        NOW_PASSED_CLAUSE_CLOSE_EVIDENCE_RE.test(before) ||
         NOW_COMMITTED_CLOSURE_AUTHORITY_RE.test(before)) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
     const stagingOnlyCompletion = isStagingOnlyCompletion(after);

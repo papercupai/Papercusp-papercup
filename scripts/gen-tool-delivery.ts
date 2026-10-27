@@ -39,6 +39,9 @@ import { fileURLToPath } from 'node:url';
 
 import { floorHeadroom } from '@papercusp/operator-core/lib/agent-tools/tool-delivery-policy';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { getEncoding } from 'js-tiktoken';
+
+import { compactInputSchema, summaryGuidanceDescription } from '@papercusp/tooldef';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SNAPSHOT_PATH = 'packages/operator-core/lib/agent-tools/tool-demand-snapshot.json';
@@ -110,6 +113,24 @@ interface GuidanceHalf {
   rails: number;
   reduced: string[];
   unlabelled: boolean;
+}
+
+/** Separate BPE measurements: tokenising a combined definition cannot recover
+ * either half, since token boundaries change at their join. This is an offline
+ * o200k measurement, not a provider billing or request-overhead measurement. */
+export function measureToolDeliveryHalves(
+  tools: readonly { description?: string; inputSchema?: unknown }[],
+  count: (text: string) => number,
+): { schema: { full: number; compact: number }; guidance: { full: number; summary: number } } {
+  const schema = { full: 0, compact: 0 };
+  const guidance = { full: 0, summary: 0 };
+  for (const tool of tools) {
+    schema.full += count(JSON.stringify(tool.inputSchema ?? {}));
+    schema.compact += count(JSON.stringify(compactInputSchema(tool.inputSchema ?? {})));
+    guidance.full += count(tool.description ?? '');
+    guidance.summary += count(summaryGuidanceDescription(tool.description));
+  }
+  return { schema, guidance };
 }
 
 /**
@@ -457,6 +478,7 @@ async function build(): Promise<{
   demandByName: Map<string, { name: string; callers: number; calls: number }>;
   guidanceByName: Map<string, GuidanceHalf>;
   sweepLines: string[];
+  projected: readonly { description?: string; inputSchema?: unknown }[];
 }> {
   const { tooldef, projected, catalog } = await measureCatalog();
   const { partialGuidanceLoss, summaryGuidanceDescription, compactInputSchema, compactWireBytes } = tooldef;
@@ -574,6 +596,7 @@ async function build(): Promise<{
     demandByName,
     guidanceByName,
     sweepLines,
+    projected,
   };
 }
 
@@ -629,6 +652,14 @@ async function main(): Promise<number> {
     );
     process.stdout.write(
       renderGuidanceReport(built.agents.claude, built.guidanceByName, built.catalogByName),
+    );
+    const encoding = getEncoding('o200k_base');
+    const halves = measureToolDeliveryHalves(built.projected, (text) => encoding.encode(text, [], []).length);
+    const byteHalves = measureToolDeliveryHalves(built.projected, (text) => Buffer.byteLength(text, 'utf8'));
+    process.stdout.write(
+      `SCHEMA_BYTES full=${byteHalves.schema.full} compact=${byteHalves.schema.compact} savedByCompact=${byteHalves.schema.full - byteHalves.schema.compact} scope=catalog\n` +
+      `SCHEMA_TOKENS full=${halves.schema.full} compact=${halves.schema.compact} savedByCompact=${halves.schema.full - halves.schema.compact} provenance=measured tokenizer=o200k_base serialization=JSON.stringify scope=catalog\n` +
+      `GUIDANCE_TOKENS full=${halves.guidance.full} summary=${halves.guidance.summary} savedBySummary=${halves.guidance.full - halves.guidance.summary} provenance=measured tokenizer=o200k_base serialization=raw-description scope=catalog\n`,
     );
     process.stdout.write(`${built.sweepLines.join('\n')}\n`);
     return 0;

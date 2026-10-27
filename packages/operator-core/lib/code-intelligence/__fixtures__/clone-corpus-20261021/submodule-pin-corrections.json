@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "candidateCommit": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+  "originalManifestSha256": "5b818f5451a60b02263da5d672c5ef82306d8d563d580d7c2539d87367351e21",
+  "issue": "EI-26742762259332807",
+  "note": "The reviewed manifest is retained byte for byte. One recorded SHA is 39 characters. The full SHA below was independently read from the pinned superproject gitlink and matched the materialized submodule HEAD; the remaining 38 pins match without correction. The original manifest writer cause is unestablished.",
+  "corrections": [
+    {
+      "path": "apps/slack-asana-bug-drill",
+      "recordedPin": "f8b670c5aea000eaea8c9616279994b7b3a170b",
+      "committedGitlink": "cf8b670c5aea000eaea8c9616279994b7b3a170b",
+      "materializedHead": "cf8b670c5aea000eaea8c9616279994b7b3a170b",
+      "verification": "git -C <historical-root> ls-tree 7395c59c0032f6810f995a1ecf7966c92ac83448 -- apps/slack-asana-bug-drill; git -C <historical-root>/apps/slack-asana-bug-drill rev-parse HEAD"
+    }
+  ]
+}

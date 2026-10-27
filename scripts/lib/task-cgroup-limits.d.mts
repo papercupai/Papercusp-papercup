@@ -5,3 +5,4 @@ export interface TaskCgroupReadOptions {
 }
 export function readTaskCgroupLimit(fileName: string, input?: TaskCgroupReadOptions): string | null;
 export function readTaskCgroupMemoryMaxMb(input?: TaskCgroupReadOptions): number | null;
+export function readTaskCgroupMemoryScope(input?: TaskCgroupReadOptions): string | null;

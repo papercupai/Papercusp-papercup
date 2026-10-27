@@ -42,6 +42,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
+import { createOperatorResultHost } from './chat/operator-result-host';
 import {
   resolveDrillInTarget,
   resolveInboxDrillIn,
@@ -678,6 +679,15 @@ export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: re
   // A docked pane renders at '100%' of a portal-owned frame, so there is no
   // numeric width to compare against; the CSS container query alone drives
   // the audience-mode collapse there.
+  const resultContext = useMemo(() => {
+    if (!conv.conversationId) return undefined;
+    const authorizationKey = JSON.stringify([workspaceId, conv.conversationId, harnessSlug]);
+    return { authorizationKey, host: createOperatorResultHost({ workspaceId, harnessSlug, authorizationKey,
+      openReport: id => { router.push(`/reports?sel=${encodeURIComponent(id)}`); },
+      openWorkItem: id => { handleCardDrillIn(`wi:${id}`); },
+    }) };
+  }, [workspaceId, conv.conversationId, harnessSlug, router, handleCardDrillIn]);
+
   const audienceModeOverflow = typeof renderedWidth === 'number' && renderedWidth < AUDIENCE_MODE_OVERFLOW_WIDTH;
   const [audienceMenuOpen, setAudienceMenuOpen] = useState(false);
 
@@ -920,6 +930,7 @@ export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: re
              beside the Papercup name is the one entry to that information. */
           <OperatorChat
             messages={conv.messages}
+            resultContext={resultContext}
             busy={conv.busy}
             peerBusy={conv.peerBusy}
             passive={conv.mode === 'passive'}

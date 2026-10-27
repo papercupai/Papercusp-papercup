@@ -20,7 +20,7 @@ import {
   validateFactScope,
   type AgentFact,
 } from '../../agent-facts/store';
-import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
+import { resolveScopeRefFromCtx, resolveScopeRefAlias, foldScopeRefAliases } from './scope-ctx';
 import { markStaleSourceFacts, type FactSourceStaleness } from './stale-source';
 import type { FactDependencyStaleness } from './dependency-staleness';
 import {
@@ -298,7 +298,8 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
-  args: z.object({
+  // WI-6554700010029664: `scope_ref` / `ref` are folded into scopeRef before parse (not advertised).
+  args: z.preprocess(foldScopeRefAliases, z.object({
     // EI-21149876417311061 (+ the `scope: Invalid option` family: EI-21161865091989242,
     // EI-21320781883732426, EI-22368562068872107) — the ONE filing shape in this cluster
     // that no `argRedirects` entry can ever reach. `scope` IS a declared key, so the
@@ -316,9 +317,11 @@ export default defineTool({
       .describe(
         `Which scope's live facts to list — exactly one of ${FACT_SCOPES.join(' | ')}. There is deliberately NO \`plan\` scope: a standing claim that binds a PLAN belongs in that plan's Decisions (plans:add-decision), which is addressable and auditable afterwards, where a fact is not. For a plan-lane conclusion that must ride every orient, scope it to the \`harness\` the plan lives in, or to the \`work_item\` executing it.`,
       ),
-    scopeRef: z.string().max(120).optional(),
-    scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
-    ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
+    scopeRef: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Scope reference. Also accepted, folded into scopeRef before parse (scopeRef wins): scope_ref, ref (EI-7371).'),
     harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
     limit: z
       .number()
@@ -351,9 +354,9 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'P-008: return the VERSION HISTORY of one `key` (newest first) instead of the live list — what this fact said before it was corrected, each version with its own immutable `id` and the `supersedesId` of the one it replaced. Requires `key`. Superseded versions are pruned 30d after replacement, so history is bounded.',
+        'P-008: return the VERSION HISTORY of one `key` (newest first) instead of the live list — what this fact saidbefore it was corrected, each version with its own immutable `id` and the `supersedesId` of the one it replaced. Requires `key`. Superseded versions are pruned 30d after replacement, so history is bounded.',
       ),
-  }),
+  })),
   async handler(args, ctx) {
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
     // harness = this harness, role = my role) so `facts:list { scope: 'owner' }`

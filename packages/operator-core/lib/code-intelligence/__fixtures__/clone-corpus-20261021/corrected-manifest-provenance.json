@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "issue": "EI-26742762259332807",
+  "originalManifestSha256": "5b818f5451a60b02263da5d672c5ef82306d8d563d580d7c2539d87367351e21",
+  "authority": "thread-post:1198640; coord-send-f7c9122ca029179cebe839d3888696f345af652279954414883ae691f189b75c",
+  "source": "Reconstructed historical checkout, not the unsaved original probe input tree.",
+  "rootCause": "Whole-output trim removed the first leading status space before slice(1) removed the first SHA character.",
+  "candidateCommit": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+  "originalInputIdentity": "UNPROVEN: the original working tree had no complete saved input manifest. This is the approved reconstructed historical regression oracle, never a current-tree replacement.",
+  "correctedManifest": {
+    "path": "candidate-manifest-v3.json",
+    "sha256": "ffdda74e849d627795b8146ceffd65ca1a636eb03ca8dfede24f67a80f00ae9e",
+    "bytes": 3430469
+  },
+  "verification": {
+    "root": "/tmp/pcv/papercusp-lint-as-committed-7395c59c00-Q5PzyA",
+    "commit": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+    "selectedPaths": 10339,
+    "sourceMismatches": 0,
+    "submodulePins": 39,
+    "compilerVersion": "6.0.2",
+    "parentGitlinksChecked": 39,
+    "checkoutHeadsChecked": 39
+  },
+  "regeneration": "node reconstruct.cjs --root <retained-historical-root> --write-corrected-manifest"
+}

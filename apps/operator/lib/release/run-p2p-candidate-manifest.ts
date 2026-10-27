@@ -33,6 +33,8 @@ import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
+import { deriveEndgameOutcomes, type EndgameOriginalAcquisition, type EndgameOutcomeRequest, type EndgameOutcomeReport } from './p2p-endgame-outcomes';
+export type { EndgameOutcomeRequest, EndgameOutcomeOriginals, P521CandidateOriginals } from './p2p-endgame-outcomes';
 import {
   appendReadinessHistory,
   renderReadinessTable,
@@ -57,6 +59,7 @@ import {
   buildP2pCandidateManifest,
   type P2pCandidateProvenance,
   type P2pJourneyResult,
+  type P521LocalPrecheck,
 } from './p2p-candidate-manifest';
 
 function flag(argv: readonly string[], name: string): string | undefined {
@@ -103,6 +106,9 @@ export interface ComputeDeps {
   readLedger(version: string, channel: string): Promise<ReleaseLedgerRecord | null>;
   readBuildCommand(version: string, channel: string, sourceSha: string | null): Promise<BuildCommandRecord | null>;
   hashFile(path: string): Promise<string>;
+  /** Original acquisition is separate from untrusted evidence declarations. */
+  readEndgameOutcomeOriginals?(request: EndgameOutcomeRequest, candidate: DerivedCandidateProvenance): Promise<unknown>;
+  endgameScope?: { workspaceId: string; harnessSlug: string };
 }
 
 export interface ComputeOptions {
@@ -111,6 +117,7 @@ export interface ComputeOptions {
   /** `label=path` pairs. */
   legs: readonly { leg: string; path: string }[];
   evidenceDir?: string;
+  localPrechecks?: readonly P521LocalPrecheck[];
   /** Root that evidence paths are reported relative to (default: cwd). */
   repoRoot?: string;
   rehash?: RehashScope;
@@ -122,6 +129,7 @@ export interface ComputeResult {
   provenance: DerivedCandidateProvenance;
   evidence: DerivedJourneyEvidence;
   manifest: CurrentReadinessManifest;
+  outcomes: EndgameOutcomeReport;
 }
 
 /** Find `<dir>/<name>` or `<dir>/<sub>/<name>` for a ledger artifact basename. */
@@ -217,17 +225,40 @@ export async function computeCandidateManifestFromRecords(
   const manifest = await buildP2pCandidateManifest({
     candidate: provenance,
     journeys: evidence.journeys,
+    localPrechecks: options.localPrechecks ?? evidence.localPrechecks,
     history: options.history,
     now: options.now,
   });
-  return { provenance, evidence, manifest };
+  const outcomes = await deriveEndgameOutcomes(provenance, deps.endgameScope ?? {
+    workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace',
+    harnessSlug: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? 'papercusp',
+  }, deps.readEndgameOutcomeOriginals);
+  return { provenance, evidence, manifest, outcomes };
 }
 
 type SqlClient = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
 
 /** Database-backed deps: the release ledger row and the recorded `release:cut op:run`. */
 export function databaseDeps(sql: SqlClient, workspaceId: string): ComputeDeps {
-  return {
+  // Four outcome discriminants share one computed cohort. Preserve one read
+  // packet for that cohort instead of independently rereading mutable records.
+  const acquisitions = new WeakMap<DerivedCandidateProvenance,
+    { pins: string; read: Promise<EndgameOriginalAcquisition> }>();
+  const deps: ComputeDeps = {
+    endgameScope: { workspaceId, harnessSlug: 'papercusp' },
+    async readEndgameOutcomeOriginals(request, candidate) {
+      const pins = JSON.stringify([request.workspaceId, request.harnessSlug, request.planSlug,
+        request.sourceSha, request.artifactDigest, candidate.provenance.version, candidate.provenance.channel]);
+      let acquired = acquisitions.get(candidate);
+      if (!acquired || acquired.pins !== pins) {
+        const read = import('./p2p-endgame-original-reader').then(({ readCanonicalEndgameComponents }) =>
+          readCanonicalEndgameComponents(request, candidate, {
+            workspaceId, sql, readLedger: deps.readLedger, readBuildCommand: deps.readBuildCommand,
+          }));
+        acquisitions.set(candidate, acquired = { pins, read });
+      }
+      return { ...await acquired.read, outcome: request.outcome };
+    },
     async readLedger(version, channel) {
       const rows = await sql`
         SELECT version, channel, git_sha, cut_at, published_at, artifacts
@@ -274,6 +305,7 @@ export function databaseDeps(sql: SqlClient, workspaceId: string): ComputeDeps {
     },
     hashFile: sha256File,
   };
+  return deps;
 }
 
 function parseLegFlags(values: readonly string[]): { leg: string; path: string }[] {
@@ -315,6 +347,8 @@ async function mainComputed(argv: readonly string[]): Promise<number> {
         channel,
         legs,
         evidenceDir: flag(argv, 'evidence-dir') ?? 'docs/evidence',
+        localPrechecks: flag(argv, 'local-prechecks')
+          ? readJson<P521LocalPrecheck[]>(flag(argv, 'local-prechecks')!) : undefined,
         rehash,
         history: priorHistory(flag(argv, 'history')),
       },
@@ -351,6 +385,8 @@ async function mainLegacy(argv: readonly string[]): Promise<number> {
   const manifest = await buildP2pCandidateManifest({
     candidate: readJson<P2pCandidateProvenance>(provenancePath),
     journeys: journeysPath ? readJson<Record<string, P2pJourneyResult>>(journeysPath) : undefined,
+    localPrechecks: flag(argv, 'local-prechecks')
+      ? readJson<P521LocalPrecheck[]>(flag(argv, 'local-prechecks')!) : undefined,
     history: priorHistory(flag(argv, 'history')),
   });
   writeFileSync(outPath, `${serializeCurrentReadinessManifest(manifest)}\n`);

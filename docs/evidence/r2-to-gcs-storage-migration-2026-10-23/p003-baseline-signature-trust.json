@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "r2gcs-p003-baseline-signature-trust-v1",
+  "observedAt": "2026-10-26T11:28:26.846940+00:00",
+  "workItem": "WI-6554700010025562",
+  "verifierIssue": "EI-26834658620646681",
+  "baselineBuildSha": "2018b667",
+  "retainedRoot": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z",
+  "trustedKeySource": "papercusp-desktop/src-tauri/tauri.conf.json",
+  "originalBaselineSource": "2018b6670687590a3e195392f44191b1f0db3103",
+  "trustedPublicKeyMatchesOriginalSource": true,
+  "trustedKeySha256": "5de37bce5fa95bc52c56f3e0231ec1ef75f3c7546abe6ac01d88046a4fd902c8",
+  "verifier": "papercusp-desktop/bin/verify-tauri-signature.mjs",
+  "verifierSha256": "43e1ab3cc4a0ec725868d0316a7439841c46c597aa3a623ca76a48ea7c5b1f19",
+  "artifacts": [
+    {
+      "artifact": "linux-gui-production/cargo/release/bundle/deb/Papercusp GUI_0.0.26_amd64.deb",
+      "signatureSha256": "064ca3ead7c81ada5ac2087b56e22ddb46c14b5679ab125f70a8beebc5d7fe8b",
+      "signatureFormat": "four-line minisign with trusted comment and global signature",
+      "exitCode": 0,
+      "verification": {
+        "valid": true,
+        "algo": "ED",
+        "keyId": "449908a7d47d3a5d"
+      }
+    },
+    {
+      "artifact": "linux-server-production/final-artifacts/deb/Papercusp Server_0.0.26_amd64.deb",
+      "signatureSha256": "7d2513c1b4bb89e635f7984b499dafc12ecd2aea61e5aeb5cba9e9961b701a94",
+      "signatureFormat": "four-line minisign with trusted comment and global signature",
+      "exitCode": 0,
+      "verification": {
+        "valid": true,
+        "algo": "ED",
+        "keyId": "449908a7d47d3a5d"
+      }
+    }
+  ],
+  "regression": {
+    "redTestRunId": 22181678,
+    "passingDetachedRun": "a9050215-a8de-4620-b6ab-2de523cac09c",
+    "passingFiles": [
+      "papercusp-desktop/test/provenance-sidecar-record.test.js",
+      "papercusp-desktop/test/build-linux-finalize-deb.test.js"
+    ],
+    "scope": "Local modified source; two full canonical Node suites passed with exit 0."
+  },
+  "scope": "Original retained rollback GUI/Server package artifact and global signature verification only. No candidate, installed-client, provider, publication, deployment or shipment acceptance."
+}

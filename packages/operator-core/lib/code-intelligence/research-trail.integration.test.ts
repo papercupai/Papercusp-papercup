@@ -51,7 +51,7 @@ describe('caller-session research replay through the push boundary', () => {
     },
       snapshot: async () => null, enabled: async () => false, legs: () => new Map(), commit: async () => '' };
     try {
-      expect(await codeIntelPushText(batch, CODE_INTEL_PUSH_TURN_CHARS, deps)).toBe('');
+      expect(await codeIntelPushText(batch, deps)).toBe('');
       // The response deadline is not a persistence receipt. Await the actual
       // write, including a cold pool, before asserting the durable projection.
       expect(capture).toBeDefined();
@@ -75,7 +75,7 @@ describe('caller-session research replay through the push boundary', () => {
     const deps: PushChannelDeps = { research: () => capture, snapshot: async () => null,
       enabled: async () => false, legs: () => new Map(), commit: async () => '' };
     try {
-      const response = codeIntelPushText(input({ calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] }), 0, deps);
+      const response = codeIntelPushText(input({ calls: [{ tool: 'Read', toolInput: { file_path: 'code.ts' } }] }), deps);
       await vi.advanceTimersByTimeAsync(101);
       expect(await response).toBe('');
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-research-trail'));

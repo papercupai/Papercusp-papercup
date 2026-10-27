@@ -12,7 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { LOOP_TURN_START_MARKER, SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import {
   materializeLoop,
   getLoopStatus,
@@ -65,6 +65,21 @@ beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines, harness_shared.carry_notes`;
   await sql`TRUNCATE harness_shared.event_awaits, harness_shared.predicate_watches`;
 });
+
+/** Typed transcript origin alone is insufficient: the dispatcher also enrolls
+ * the exact routine/fire at prompt start. Keep this fixture on that contract. */
+async function stampLoopPrompt(promptAt: Date, wakeCountOverride?: number) {
+  await sql`
+    INSERT INTO harness_shared.agent_activity
+      (workspace_id, owner_id, kind, summary, detail, created_at)
+    SELECT ${WS}, ${OWNER}, 'lifecycle', ${LOOP_TURN_START_MARKER},
+           jsonb_build_object('source', 'turn-start', 'loopFire', jsonb_build_object(
+             'routineId', id,
+             'wakeCount', COALESCE(${wakeCountOverride ?? null}::int, (metadata->>'fire_count')::int)
+           )), ${promptAt.toISOString()}::timestamptz
+      FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}
+  `;
+}
 
 async function rawRow(ownerId: string) {
   const rows = await sql<
@@ -533,6 +548,7 @@ describe('loop surface round-trip (real PG)', () => {
         (${WS}, 'claude', 'sess-1', 1, ${recentTurn.toISOString()}::timestamptz,
          ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note', NULL, 'not-user-turn', 1)`;
 
+    await stampLoopPrompt(new Date(recentTurn.getTime() - 1000));
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.fireCount).toBe(209);
     // TEETH: without the session_turns leg this fix adds, lastTurnAt would be NULL here
@@ -599,6 +615,10 @@ describe('loop surface round-trip (real PG)', () => {
          ${OWNER}, ${HARNESS}, 'assistant', 'autonomous loop work completed', NULL, 'not-user-turn', 1)
     `;
 
+    expect((await getLoopStatus(OWNER, { sql }))!.lastLoopTurnAt).toBeNull();
+    await stampLoopPrompt(loopPrompt, 4); // current fire is 5: stale enrollment cannot qualify
+    expect((await getLoopStatus(OWNER, { sql }))!.lastLoopTurnAt).toBeNull();
+    await stampLoopPrompt(loopPrompt);
     const recovered = await getLoopStatus(OWNER, { sql });
     expect(recovered!.lastLoopTurnAt).toBe(loopAssistant.toISOString());
     expect(recovered!.turnsStalled).toBe(false);
@@ -650,6 +670,7 @@ describe('loop surface round-trip (real PG)', () => {
          ${OWNER}, ${HARNESS}, 'assistant', 'late loop turn completed', NULL, 'not-user-turn', 1)
     `;
 
+    await stampLoopPrompt(loopPrompt);
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
     // The arm-scoped turn clock deliberately stays empty after re-arm; only the separate
@@ -718,6 +739,7 @@ describe('loop surface round-trip (real PG)', () => {
          ${OWNER}, ${HARNESS}, 'assistant', 'loop turn completed', NULL, 'not-user-turn', 1)
     `;
 
+    await stampLoopPrompt(loopPrompt);
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.lastLoopTurnAt).toBeNull(); // current-arm clock remains intentionally scoped
     expect(status!.lastSuppressedWakeLoopTurnAt).toBe(loopAssistant.toISOString());
@@ -786,6 +808,7 @@ describe('loop surface round-trip (real PG)', () => {
          ${OWNER}, ${HARNESS}, 'assistant', 'pre-existing loop turn completed', NULL, 'not-user-turn', 1)
     `;
 
+    await stampLoopPrompt(loopPrompt);
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.lastWakeChannel).toBe('suppressed-redundant');
     expect(status!.lastLoopTurnAt).toBe(loopAssistant.toISOString());

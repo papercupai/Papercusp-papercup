@@ -174,6 +174,30 @@ describe('plans:set-plan-status structured acceptance repair routes (P-026)', ()
     })).toMatchObject({ kind: 'diagnostic', instruction: 'Read failed.' });
   });
 
+  it('routes the blocking pre-grading repair before a later author verdict', () => {
+    const ship = lifecycle('bar_snapshot_author_verdict_missing', 'Record the author verdict.');
+    const preGrading = { ...lifecycle('bar_snapshot_vetting_missing', 'Vet the current rubric first.'),
+      phase: 'pre-grading' as const };
+    expect(planAcceptanceRepairAction('p', {
+      satisfied: false, code: 'acceptance_bar_contract_not_ready',
+      acceptanceBarLifecycle: ship, blockingPhase: 'pre-grading', blockingPhaseLifecycle: preGrading,
+    })).toMatchObject({
+      kind: 'rubric-vetting', repairVerb: 'consult:get_feedback', instruction: 'Vet the current rubric first.',
+    });
+  });
+
+  it('never proposes an author verdict while pre-grading proof is missing', () => {
+    const preGrading = { ...lifecycle('bar_snapshot_proof_missing', 'Bind current proof for R-1.'),
+      phase: 'pre-grading' as const };
+    const action = planAcceptanceRepairAction('p', {
+      satisfied: false, code: 'acceptance_bar_contract_not_ready',
+      acceptanceBarLifecycle: lifecycle('bar_snapshot_author_verdict_missing', 'Record acceptance.'),
+      blockingPhase: 'pre-grading', blockingPhaseLifecycle: preGrading,
+    });
+    expect(action).toMatchObject({ kind: 'diagnostic', instruction: 'Bind current proof for R-1.' });
+    expect(action).not.toHaveProperty('repairVerb');
+  });
+
   it('keeps the evidence cohort and scope but never automatically replays force', () => {
     const current = [{ evidenceKind: 'test' as const, evidenceRef: 'test:1', sourceFingerprint: 'sha:1' }];
     for (const satisfied of [false, true]) {

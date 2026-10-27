@@ -31,6 +31,7 @@ import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine }
 import { ensurePapercuspHive, PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { detectPapercupRoot } from './register-papercusp';
 import { PAPERCUSP_WORKSPACE_ID, ensurePapercuspWorkspace } from './papercusp-workspace';
+import { dogfoodHiveDisabled } from './dogfood-hive-kill-switch';
 import { loadHarnessRegistry, type ProjectEntry } from '../harness-registry';
 import { ensureCurrentWorkspace, workspacesRoot } from '../workspace-registry';
 import { recordFromRepoStep } from './from-repo-progress';
@@ -84,35 +85,11 @@ async function seedSelfAdmitEnabled(
   }
 }
 
-/**
- * WI-1423 test-frame isolation: a hard, synchronous, flag-independent kill-switch
- * for the dogfood auto-join. Set `PAPERCUSP_DISABLE_DOGFOOD_HIVE=1` on any box that
- * must NEVER auto-wire into the production `papercusp`/`papercup` hive — CI, a
- * Hetzner/local-matrix test rig frame, an isolated release-testing VM, etc.
- *
- * Root cause this closes: TWO of the three trigger paths (the explicit boot call in
- * host-bootstrap.ts, and the setup-wizard's `/api/desktop/bootstrap-pot/start`)
- * already gate on the `DOGFOOD_PAPERCUSP_POT` flag before calling
- * `startBootstrapPapercuspHive()` — but the THIRD (hive-directory-boot.ts's
- * `maybeTriggerCanonicalJoinOnIngest`, fired the instant a box that has wired the
- * hive directory — which EVERY box does at boot, unconditionally, per boot-all.ts —
- * merely HEARS the canonical hive's announce on the global directory topic) called
- * `startBootstrapPapercuspHive()` directly with NO gate at all. A fresh .deb test-rig
- * install (PAPERCUSP_DESKTOP=1, only GH_TOKEN configured) that ever overhears the
- * real production announce on the shared global directory topic would silently
- * auto-join production through this ungated path, regardless of the flag or of
- * PAPERCUSP_DESKTOP even being set — entangling a disposable test identity into the
- * real hive's membership/roster.
- *
- * Checked here (bootstrapPapercuspHive is the ONE function every trigger path
- * ultimately calls) so it is impossible for a new call site to reintroduce the gap:
- * this is the single choke point, not a per-caller convention. Sync + env-only
- * (no PG/flag dependency) so it works even at the earliest boot tick, before the
- * flag store is necessarily reachable.
- */
-export function dogfoodHiveDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_DISABLE_DOGFOOD_HIVE === '1';
-}
+// WI-1423 / WI-6554700010029282: `dogfoodHiveDisabled` (PAPERCUSP_DISABLE_DOGFOOD_HIVE=1)
+// lives in the dependency-free leaf ./dogfood-hive-kill-switch so the substrate boot
+// path (boot-all's bootSingleHarness) can enforce it too. It is still checked inside
+// bootstrapPapercuspHive below, the ONE function every join trigger path calls, so a
+// new call site cannot reintroduce the WI-1423 ungated-join gap. Rationale: that file.
 
 /** The dogfood repo cloned on first boot when no local checkout is present. */
 export const PAPERCUP_DOGFOOD_REPO_URL = 'https://github.com/Papercusp/papercup';

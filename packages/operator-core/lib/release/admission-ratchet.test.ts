@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   evaluateAdmissionRatchet,
-  impliedPreviousHead,
+  previousHeadVerdicts,
   ratchetAllowsPublication,
 } from './admission-ratchet';
 import { evaluateFixPrecheck, precheckPopulation } from './admission-fix-precheck';
@@ -115,9 +115,27 @@ describe('admission ratchet (P-006, R-5)', () => {
     expect(d.inconclusive).toEqual(['b.test.ts']);
   });
 
-  it('impliedPreviousHead marks signature files red and guarded radius files green', () => {
-    expect(impliedPreviousHead({ signatureTestFiles: ['s.test.ts'], guardedRadius: ['./g.test.ts'] }))
-      .toEqual({ 's.test.ts': 'fail', 'g.test.ts': 'pass' });
+  it('previousHeadVerdicts never implies green: an unmeasured guarded file is unmeasured (D-004 ruling 1)', () => {
+    expect(previousHeadVerdicts({ signatureTestFiles: ['s.test.ts'], guardedRadius: ['./g.test.ts'] }))
+      .toEqual({ 's.test.ts': 'fail', 'g.test.ts': 'unmeasured' });
+  });
+
+  it('previousHeadVerdicts carries the MEASURED baseline for guarded files only; signature membership wins', () => {
+    expect(previousHeadVerdicts({
+      signatureTestFiles: ['s.test.ts'],
+      guardedRadius: ['g.test.ts', 'h.test.ts', 'k.test.ts', 's.test.ts'],
+      measured: { './g.test.ts': 'pass', 'h.test.ts': 'fail', 's.test.ts': 'pass', 'outside.test.ts': 'pass' },
+    })).toEqual({ 's.test.ts': 'fail', 'g.test.ts': 'pass', 'h.test.ts': 'fail', 'k.test.ts': 'unmeasured' });
+  });
+
+  it('a red with an unmeasured previous-head verdict is inconclusive, never a rejection', () => {
+    const d = evaluateAdmissionRatchet({
+      admission: { actor: ACTOR },
+      radius: ['g.test.ts'],
+      previousHead: previousHeadVerdicts({ signatureTestFiles: [], guardedRadius: ['g.test.ts'] }),
+      postAdmission: { 'g.test.ts': 'fail' },
+    });
+    expect(d).toMatchObject({ verdict: 'inconclusive', inconclusive: ['g.test.ts'] });
   });
 
   it('publication: only a measured result or nothing-to-run publishes; a busy tree defers', () => {
@@ -144,7 +162,7 @@ describe('admission ratchet through the R6 pre-check verdict (P-006 wiring)', ()
         { path: 'red.test.ts', status: 'pass' },
         { path: 'neighbour.test.ts', status: 'fail' },
       ],
-    }, { actor: ACTOR });
+    }, { actor: ACTOR, previousHead: { commit: 'b'.repeat(40), results: [{ path: 'neighbour.test.ts', status: 'pass' }] } });
     expect(verdict.ok).toBe(false);
     if (verdict.ok || !verdict.ran) return;
     expect(verdict.code).toBe('admission-imports-red');

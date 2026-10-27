@@ -11,7 +11,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   GATE_RED_STREAK_CONDITION_PREFIX,
+  GREEN_MAIN_SLO_CONDITION_PREFIX,
+  isLiveGateOpsConditionKey,
   LIVE_GATE_OPS_CONDITION_PREFIXES,
+  LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS,
+  liveGateOpsReservedPatterns,
   liveGateOpsSelfSelectExplanation,
   STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES,
   STOP_THE_LINE_RED_HOURS,
@@ -19,6 +23,26 @@ import {
 } from './work-items-admission';
 import * as leaf from './coord/actionable-conditions';
 import * as bridge from './coord/condition-bridge';
+import { greenMainSloConditionKey } from './release/green-main-slo-watchdog';
+
+/** Postgres LIKE semantics (default backslash escape) as an anchored RegExp. */
+function likeToRegExp(pattern: string): RegExp {
+  let out = '';
+  for (let i = 0; i < pattern.length; i += 1) {
+    const c = pattern[i];
+    if (c === '\\') out += pattern[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    else if (c === '%') out += '.*';
+    else if (c === '_') out += '.';
+    else out += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${out}$`, 's');
+}
+const reservedBySql = (key: string): boolean => liveGateOpsReservedPatterns().some((p) => likeToRegExp(p).test(key));
+
+const SCOPE = { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' };
+/** A real watchdog key; the episode embeds the metric name as the watchdog does. */
+const sloKey = (metric: string, subject: string | null = '4a0ab75652bda2698d296eee96aa340f0eb3a620'): string =>
+  greenMainSloConditionKey(SCOPE, metric, `green-main-slo:papercusp:${metric}:${subject ?? 'all'}:1`, subject);
 
 describe('stop-the-line pure contracts (P-013/D-012)', () => {
   it('the exempt set is DERIVED from the actionable-condition catalog, plus deploy-parity:', () => {
@@ -51,8 +75,45 @@ describe('stop-the-line pure contracts (P-013/D-012)', () => {
     const text = liveGateOpsSelfSelectExplanation();
     expect(text).toContain('gate-red-streak:');
     expect(text).toContain('green-stall:');
+    expect(text).toContain('alarm:green-main-slo:');
     expect(text).toContain('BY ID');
     expect(text).toContain('gate.greenCheckpoint.ownership');
+  });
+
+  it('EI-27062367026577459: live-gate green-main-slo alarms are reserved; per-sync and reason alarms are not', () => {
+    expect([...LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS].sort()).toEqual(
+      ['queue-idle', 'red-adding-admission', 'round-cycle-time', 'time-since-green', 'time-since-verdict'],
+    );
+    // The watchdog's key prefix is the one the floor anchors on.
+    expect(sloKey('queue-idle').startsWith(GREEN_MAIN_SLO_CONDITION_PREFIX)).toBe(true);
+
+    // Production keys of the rows that circulated through self-select on 2026-10-26.
+    const recycled = [
+      'alarm:green-main-slo:%5B%22papercusp-workspace%22%2C%22papercusp%22%2C%22red-adding-admission%22%2C%22green-main-slo%3Apapercusp%3Ared-adding-admission%3A55bbd12ce1686d8e722b5a733f5a68783f40b08d%22%2C%224a0ab75652bda2698d296eee96aa340f0eb3a620%22%5D',
+      'alarm:green-main-slo:%5B%22papercusp-workspace%22%2C%22papercusp%22%2C%22round-cycle-time%22%2C%22green-main-slo%3Apapercusp%3Around-cycle-time%3A0a16d4a6fac24e6df84192786ab07129978ab561%3A2%22%2C%220a16d4a6fac24e6df84192786ab07129978ab561%22%5D',
+    ];
+    const reserved = [...recycled, ...LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS.map((m) => sloKey(m)), sloKey('time-since-green', null)];
+    const open = [
+      sloKey('per-sync-red-rate', 'luna-max'),
+      sloKey('non-verdict-reason', 'suite-timeout'),
+      // A reserved metric's name in the SUBJECT slot (last element) must not match.
+      sloKey('per-sync-red-rate', 'queue-idle'),
+      sloKey('non-verdict-reason', 'red-adding-admission'),
+      'alarm:sync-read-budget:papercusp-workspace:papercusp:breach',
+      'deploy-parity:papercusp',
+    ];
+    for (const key of reserved) {
+      expect(isLiveGateOpsConditionKey(key), key).toBe(true);
+      expect(reservedBySql(key), key).toBe(true);
+    }
+    for (const key of open) {
+      expect(isLiveGateOpsConditionKey(key), key).toBe(false);
+      expect(reservedBySql(key), key).toBe(false);
+    }
+    // The singleton prefixes keep their existing reservation.
+    expect(reservedBySql('gate-red-streak:papercusp')).toBe(true);
+    expect(reservedBySql('green-stall:papercusp')).toBe(true);
+    expect(isLiveGateOpsConditionKey(null)).toBe(false);
   });
 
   it('condition-bridge re-exports ARE the leaf module (identity, not a copy)', () => {

@@ -67,6 +67,9 @@ export type ReportKind = (typeof REPORT_KINDS)[number];
 export const REPORT_VISIBILITIES = ['owner', 'pot', 'workspace'] as const;
 export type ReportVisibility = (typeof REPORT_VISIBILITIES)[number];
 
+/** Reports are shared within their workspace unless privacy is explicitly requested. */
+export const REPORT_DEFAULT_VISIBILITY: ReportVisibility = 'workspace';
+
 /** Mirrors `report_library_subject_kind_allowed`. */
 export const REPORT_SUBJECT_KINDS = [
   'pot', 'plan', 'work_item', 'fleet', 'goal', 'repo', 'external', 'none',
@@ -337,7 +340,7 @@ export async function publishReport(
   if (bytes > REPORT_BODY_MAX_BYTES) throw new ReportBodyTooLargeError(bytes);
 
   const kind = requireOneOf(input.kind, REPORT_KINDS, 'audit', 'kind');
-  const visibility = requireOneOf(input.visibility, REPORT_VISIBILITIES, 'owner', 'visibility');
+  const visibility = requireOneOf(input.visibility, REPORT_VISIBILITIES, REPORT_DEFAULT_VISIBILITY, 'visibility');
   const subject = normalizeSubject(snapshot ? { ...input.subject, kind: 'goal', ref: snapshot.goalId } : input.subject);
 
   const supersedesId = input.supersedes?.trim() || null;
@@ -428,6 +431,14 @@ export async function getReport(
       FROM harness_shared.report_library
      WHERE workspace_id = ${workspaceId} AND report_id = ${reportId} AND ${gate}`;
   return row ? mapRow(row) : null;
+}
+
+/** Exact-ID existence is public within a workspace; private metadata and bodies stay gated. */
+export async function reportExists(sql: postgres.Sql, workspaceId: string, reportId: string): Promise<boolean> {
+  const [row] = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (SELECT 1 FROM harness_shared.report_library
+      WHERE workspace_id = ${workspaceId} AND report_id = ${reportId}) AS exists`;
+  return row.exists;
 }
 
 export interface ListReportsOptions {

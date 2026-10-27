@@ -28,6 +28,9 @@ import { clampText, LIMITS, softText } from '../limits';
 import { requestOnlyHost } from '../../background-workers';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
+import { getServingBuild, sameMcpExecutionTarget } from '../../serving-build';
+import { getServingHostIdentity } from '../../serving-host-identity';
+import { moduleRepoRoot } from '../../module-repo-root';
 
 const execFileP = promisify(execFile);
 
@@ -98,7 +101,7 @@ export function gitSyncRunAbortCompletionReceipt(
   if (payload.fired === false) {
     if (
       (resultStatus === 'preview' && payload.dry_run === true) ||
-      (resultStatus === 'refused' && payload.reason === 'request-only-host')
+      (resultStatus === 'refused' && ['request-only-host', 'execution-target-mismatch'].includes(String(payload.reason)))
     ) {
       return {
         status: 'not-recorded',
@@ -259,12 +262,12 @@ export default defineTool({
   abortCompletionReceipt: gitSyncRunAbortCompletionReceipt,
   profile: 'engineer',
   description:
-    "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+    "FIRE git-sync NOW — run its routine action once on demand. Mutations require the background-worker host; a request-only operator refuses, while dryRun:true previews everywhere. A LOCAL commit differs from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. Uses the scheduled action's lock, content guard and attribution. release:deploy fires this before the normal publication/gate path.",
   capability: 'operator:write',
   guidance: {
     when: 'You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.',
     notWhen:
-      'Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).',
+      'A request-only operator cannot execute the mutation locally. Through the standard MCP proxy, provide target with the explicit environment, exact loaded build SHA and install root to resolve its background worker. Missing or ambiguous workers refuse without substitution. To retune cadence use routines:set; to deploy use release:deploy.',
     chaining:
       'git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging).',
   },
@@ -285,6 +288,9 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
+    target: z.object({ environment: z.enum(['main', 'staging']), buildSha: z.string().regex(/^[a-f0-9]{7,64}$/),
+      installRoot: z.string().startsWith('/') }).strict().optional()
+      .describe('Explicit execution environment, exact loaded build SHA and install root. The standard MCP proxy resolves only this exact background worker; unavailable or ambiguous targets do not dispatch.'),
     installSlug: z
       .string()
       .max(120)
@@ -322,6 +328,15 @@ export default defineTool({
     // ambient workspace state select a sibling checkout after these probes had
     // measured a different tree.
     const repoDir = await projectDirForSlug(slug, workspaceId);
+
+    if (args.target && !args.dryRun) {
+      const actual = { environment: getServingBuild(), buildSha: getServingHostIdentity().buildSha ?? '',
+        installRoot: moduleRepoRoot(import.meta.url) };
+      if (!sameMcpExecutionTarget(args.target, actual)) return { content: [{ type: 'text', text: JSON.stringify({
+        ok: false, fired: false, status: 'refused', forwardingResult: 'not_applied', reason: 'execution-target-mismatch',
+        requested: args.target, actual,
+      }) }] };
+    }
 
     if (args.dryRun) {
       const preview: GitSyncPreview = repoDir

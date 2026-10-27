@@ -350,6 +350,7 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(apply).toHaveBeenCalledOnce();
     expect(provider.plan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       canaryTeardownDeadlineAt: canary.teardownDeadlineAt,
+      canaryRunId: canary.runId,
     }));
   });
 

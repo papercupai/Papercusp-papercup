@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-vault-committed-fixture-supplement",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItemId": "WI-6554700010017386",
+  "specId": "SPEC-P-001-VAULT",
+  "specRevision": 2,
+  "specFingerprint": "755ad970436aa9ccdfe42e295504aecf9e1c5598130caa28fab017a6ce0393b3",
+  "historicalBaselineAccepted": false,
+  "canonicalAcceptance": false,
+  "scope": "Current-source synthetic fixture observations against a clean committed snapshot and a migrated throwaway database. This supplement does not reconstruct Avi's historical vault state.",
+  "sourceCommit": "4fd59cac27fe34de4e73fd2bc937f8bd0380f68e",
+  "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+  "testRunId": 21868601,
+  "supportingBinding": {
+    "id": 68459,
+    "bindingFingerprint": "a6c8d74e9c986f0d36330ea65cf25f8d712a345831c7bca00bbfc70218f20c29",
+    "scope": "Current fixture support only; the binding explicitly discloses the historical gap and does not assert full-clause falsifiability or oracle independence."
+  },
+  "clauseEvaluation": {
+    "verdict": "fail",
+    "wouldBlock": [
+      "fixture-calibration",
+      "falsifiability",
+      "correct-layer",
+      "oracle-independence",
+      "plan-class-risk-floor",
+      "disclosed-gap"
+    ],
+    "meaning": "The supporting tests pass, while the historical clause remains unaccepted. No adequacy certificate or independent acceptance is claimed."
+  },
+  "nativeProcessSessionId": 89946,
+  "exitCode": 0,
+  "testStartedAt": "2026-10-24T05:29:40.880Z",
+  "testFinishedAt": "2026-10-24T05:29:47.542Z",
+  "counts": {
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "filesRequested": 1,
+    "filesExecuted": 1
+  },
+  "worktreeDirty": false,
+  "isScratchConfig": false,
+  "command": "node scripts/with-test-pg.mjs -- npm run lint:as-committed -- test:file --any --keep -- packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+  "evidenceSink": "Explicit reporter-only sink from the existing resolveAdminUrl helper; no connection string is published.",
+  "retainedRoot": "/tmp/pcv/papercusp-lint-as-committed-4fd59cac27-gSbohF",
+  "retainedRootLifetime": "Temporary maintained snapshot; the receipt and compressed log are archived separately.",
+  "archive": {
+    "path": "~/.papercusp/evidence/idop-p001-vault-committed-20261024-v1",
+    "files": [
+      {
+        "path": "receipt.json",
+        "bytes": 4372,
+        "sha256": "f065bd884e579da07d608150b9d6fdea5cd3f786157dd4c0d300dfcdb0b83c8d"
+      },
+      {
+        "path": "integration.log.gz",
+        "bytes": 59361,
+        "sha256": "95b0c3933424b7d4bb1233a6d84f2a60abc8882a158eedefc6586a94bf34236d"
+      },
+      {
+        "path": "binding.json",
+        "bytes": 1352,
+        "sha256": "36f4ca5ec8a099f4958632064144f92b2e4401ce02f0d4c0980eb0fb1095111e"
+      },
+      {
+        "path": "evaluation.json",
+        "bytes": 2743,
+        "sha256": "5fc6c27881cc59f1651afca2392c9fa97eb80775979c877c6f8f9d26e567d76b"
+      }
+    ]
+  },
+  "sourceHashes": {
+    "packages/operator-core/lib/personal-vault/authorization.ts": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+    "packages/operator-core/lib/personal-vault/coding-roles.ts": "4430a71a2047860187ed245a83c0b04f736b4e931bb0ff5ba0833bbfb35c223a",
+    "packages/operator-core/lib/personal-vault/ambient.ts": "bf98999206cea5bbde387b4bccadfe3837a2284f241e984b1a19b6203df6fd17",
+    "packages/operator-core/lib/personal-vault/disclosure-ledger.ts": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+    "packages/operator-core/lib/personal-vault/transcript-exclusion.ts": "c3ff4be3de5a90603c041dba4e7782f761447a5bda13dc8e2e7b3fbf27335ff7",
+    "packages/operator-core/lib/personal-vault/store.ts": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+    "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df"
+  },
+  "sourceReadback": "Each of these seven current canonical files matched the retained committed snapshot byte for byte. The test receipt and test ledger independently agree on the commit, file, pass status and clean-source flags.",
+  "observations": [
+    {
+      "setting": "grant terms",
+      "observation": "A non-coding control honors live grants, expiry, revocation, repeated use and scope limits. A presence-resolved su remains denied with coding_agent_denied despite a non-expiring synthetic grant.",
+      "limit": "Control behavior does not establish historical all-effects su authority."
+    },
+    {
+      "setting": "automatic recall",
+      "observation": "Presence-resolved su produces no ambient block and no embedding, search or disclosure calls despite its synthetic grant.",
+      "limit": "A migrated production-helper fixture, not a historical delivered turn or personal content read."
+    },
+    {
+      "setting": "after-read holds",
+      "observation": "Unlabelled synthetic delivery creates no hold. Restricted synthetic delivery records a su hold, permits its sender and rejects an outsider.",
+      "limit": "Independent delivery seam; this does not prove the denied su read path can acquire the document."
+    },
+    {
+      "setting": "transcript visibility",
+      "observation": "For the same disclosure timestamp, the recorder exemption permits its own stamp and a peer is withheld with disclosure-window.",
+      "limit": "Transcript exclusion helper, not the complete sessions:read/search handler population."
+    }
+  ],
+  "historicalEvidence": "docs/evidence/idop-p001-baseline-2026-10-22.json#vault is preserved unchanged; its declarations are not promoted to observed historical acceptance by this test.",
+  "remaining": [
+    "Historical, source-observed four-setting vault behavior required by SPEC-P-001-VAULT@2.",
+    "Full P-001 role, built-in identity, legal stack and effective argument coverage.",
+    "Independent prompt audit and complete P-001 acceptance.",
+    "P-024 dependency, genuine source-authentication gate, current activation audit, three implementation milestones and shipment."
+  ]
+}

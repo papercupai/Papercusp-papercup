@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { brotliDecompressSync } from 'node:zlib';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { DEFAULT_TX_ACQUIRE_DEADLINE_MS } from '@papercusp/db-org';
+import { acquireSnapshot, beginAcquire, DEFAULT_TX_ACQUIRE_DEADLINE_MS } from '@papercusp/db-org';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
@@ -354,6 +354,11 @@ describe('control-anchor kernel resolver (D-030)', () => {
                 poolAcquisitionMs: expect.any(Number),
                 clientQueryMs: null,
                 clientCompletedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+                acquisitionDiagnostics: {
+                  coverage: 'registered-acquisition-tickets-only',
+                  before: { counters: { pool: 'org-admin' } },
+                  settled: { counters: { pool: 'org-admin' } },
+                },
               }],
             },
           },
@@ -368,6 +373,54 @@ describe('control-anchor kernel resolver (D-030)', () => {
       expect(db.release).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('retains bounded pool queue evidence from before and after a delayed authority acquisition', async () => {
+    const baseline = acquireSnapshot('org-admin');
+    const holder = beginAcquire('org-admin');
+    holder.acquired();
+    const waiter = beginAcquire('org-admin');
+    let resolveConnection!: (connection: typeof db.sql) => void;
+    const pendingConnection = new Promise<typeof db.sql>((resolve) => { resolveConnection = resolve; });
+    mockReturnOnceTyped(db.reserve, pendingConnection);
+    db.rows.push([anchorRow({ activation: appliedActivation() })]);
+
+    try {
+      const pendingVerdict = controlAnchorKernelResolver(request());
+      await vi.waitFor(() => expect(db.reserve).toHaveBeenCalledOnce());
+      resolveConnection(db.sql);
+      const verdict = await pendingVerdict;
+      const timings = verdict?.serverAudit?.authorityTimings as {
+        controlAnchorSql: { executions: Array<{ acquisitionDiagnostics: {
+          coverage: string;
+          before: { counters: ReturnType<typeof acquireSnapshot>; tickets: { tickets: unknown[] } };
+          settled: { counters: ReturnType<typeof acquireSnapshot>; tickets: { tickets: unknown[] } };
+        } }> };
+      };
+      const diagnostics = timings.controlAnchorSql.executions[0].acquisitionDiagnostics;
+      expect(verdict).toMatchObject({ decision: 'allow', availability: 'available' });
+      expect(diagnostics).toMatchObject({
+        coverage: 'registered-acquisition-tickets-only',
+        before: { counters: { held: baseline.held + 1, waiting: baseline.waiting + 1 } },
+        settled: { counters: { held: baseline.held + 2, waiting: baseline.waiting + 1 } },
+      });
+      expect(diagnostics.before.tickets.tickets).toEqual(expect.arrayContaining([
+        expect.objectContaining({ state: 'held' }),
+        expect.objectContaining({ state: 'waiting' }),
+      ]));
+      expect(diagnostics.settled.tickets.tickets.length).toBeLessThanOrEqual(8);
+      holder.release();
+      waiter.release();
+      // Retained evidence is a value snapshot, not a later view of the registry.
+      expect(diagnostics.before.counters.held).toBe(baseline.held + 1);
+      expect(acquireSnapshot('org-admin').held).toBe(baseline.held);
+      expect(db.release).toHaveBeenCalledOnce();
+      expect(JSON.stringify(diagnostics)).not.toMatch(/ws-a|SELECT|launch_spec/i);
+    } finally {
+      resolveConnection(db.sql);
+      holder.release();
+      waiter.release();
     }
   });
 

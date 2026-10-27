@@ -13,6 +13,12 @@ import { mergeExactAndBm25 } from '../lexical/rank';
 import { captureCallWindow, createPrecomputedHybridQueries, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
+  declareBm25Attempts,
+  bm25QueryInputsSchema,
+  freezeBm25QueryInputs,
+  restoreBm25QueryInputs,
+  selectBm25ProbeInputs,
+  reconcileBm25Attempts,
   BM25_EXECUTED_SOURCE_PATHS,
   LATENCY_P95_CEILING_MS,
   RECALL_K,
@@ -45,6 +51,8 @@ import {
   summarizeSource,
   warmQueryEmbeddings,
   type ArmObservation,
+  type Bm25AttemptReceipt,
+  type Bm25QueryInputs,
   type ExecutedSourceSnapshot,
   type PairResult,
   type StatementStat,
@@ -119,6 +127,143 @@ describe('executed source qualification', () => {
     for (const patch of [{ profile: undefined }, { profile: { mode: 'gemma', profileId: 'another-profile' } },
       { pairsPerSource: 59 }, { sources: ['work_item'] }, { sources: ['work_item', 'work_item'] }, { explicitDatabase: false }])
       expect(qualificationConfigurationProblems(expected, { ...options, ...patch }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('frozen benchmark query inputs', () => {
+  const pair = (id: string, style: 'fragment' | 'keyword' = 'fragment'): PairResult => ({
+    source: 'work_item', targetId: id, style, query: `exact query ${id}`, arms: { bm25: obs(1, 'bm25') },
+  });
+  const context = { seed: 'frozen-seed', workspaceId: 'fixture-workspace', sources: ['work_item'] as const,
+    pairsPerSource: 60, configuration: { profile: 'fixture@v1', limit: 10 } };
+  const freeze = () => freezeBm25QueryInputs({ ...context, sources: [...context.sources], preparedAt: '2026-10-23T06:00:00Z',
+    paired: [pair('paired')], warmup: [pair('warmup', 'keyword')], steady: [pair('steady')] });
+  it('roundtrips exact queries and disjoint pass identities without carrying observations', () => {
+    const frozen = freeze();
+    const bytes = `${JSON.stringify(frozen, null, 2)}\n`;
+    const restored = restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources] });
+    expect(restored.inputs.corpus).toBeNull();
+    expect(restored.paired).toEqual([{ ...pair('paired'), arms: {} }]);
+    expect(restored.warmup[0]?.targetId).toBe('warmup');
+    expect(restored.steady[0]?.targetId).toBe('steady');
+    expect(JSON.stringify(frozen)).not.toContain('latencyMs');
+    expect(restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources] }, restored.sha256).sha256).toBe(restored.sha256);
+    expect(() => restoreBm25QueryInputs(`${bytes} `, { ...context, sources: [...context.sources] }, restored.sha256))
+      .toThrow('bytes differ');
+  });
+  it('refuses changed scope, seed, source population, sample size and model configuration', () => {
+    const bytes = JSON.stringify(freeze());
+    for (const patch of [{ workspaceId: 'foreign' }, { seed: 'different' }, { sources: ['session_turn'] },
+      { pairsPerSource: 59 }, { configuration: { profile: 'different@v1', limit: 10 } }]) {
+      expect(() => restoreBm25QueryInputs(bytes, { ...context, sources: [...context.sources], ...patch } as Pick<Bm25QueryInputs,
+        'seed' | 'workspaceId' | 'sources' | 'pairsPerSource' | 'configuration'>))
+        .toThrow('differs');
+    }
+  });
+  it('restores exact requests in a fresh private database without treating its address as a corpus pin', () => {
+    const server = { db: 'preparation_fixture', port: 31001, serverVersion: '18.4', libver: '1.5.1' };
+    const configuration = { ...context.configuration, server };
+    const frozen = { ...freeze(), configuration };
+    const bytes = JSON.stringify(frozen);
+    const expected = { ...context, sources: [...context.sources], configuration: {
+      ...configuration, server: { ...server, db: 'measurement_fixture', port: 31002 },
+    } };
+    const restored = restoreBm25QueryInputs(bytes, expected);
+    expect(restored.inputs).toEqual(frozen);
+    expect(restored.inputs.corpus).toBeNull();
+    expect(restored.paired[0]?.query).toBe(frozen.paired[0]?.query);
+    expect(restored.paired[0]?.arms).toEqual({});
+    expect(restoreBm25QueryInputs(bytes, expected, restored.sha256).sha256).toBe(restored.sha256);
+    expect(() => restoreBm25QueryInputs(`${bytes} `, expected, restored.sha256)).toThrow('bytes differ');
+    for (const patch of [{ serverVersion: '19.0' }, { libver: '1.6.0' }, { work_mem: '8192' }])
+      expect(() => restoreBm25QueryInputs(bytes, { ...expected, configuration: {
+        ...expected.configuration, server: { ...expected.configuration.server, ...patch },
+      } })).toThrow('configuration differs');
+    expect(() => restoreBm25QueryInputs(bytes, { ...expected, configuration: {
+      ...expected.configuration, profile: 'different@v1',
+    } })).toThrow('configuration differs');
+  });
+  it('refuses observations, unknown sources, duplicate targets/queries and broadened samples', () => {
+    const frozen = freeze();
+    for (const patch of [{ paired: [pair('paired')] }, { sources: ['unknown'] }, { sources: ['work_item', 'work_item'] },
+      { warmup: frozen.paired }, { steady: [{ ...frozen.steady[0]!, query: frozen.paired[0]!.query }] },
+      { pairsPerSource: 1, paired: [frozen.paired[0]!, { ...frozen.paired[0]!, targetId: 'second', query: 'second query' }] },
+      { corpus: 'unverified-corpus' }]) {
+      expect(bm25QueryInputsSchema.safeParse({ ...frozen, ...patch }).success).toBe(false);
+    }
+  });
+  it('rejects identity-bearing exact inputs instead of changing them during serialization', () => {
+    const frozen = freeze();
+    const query = '/home/' + ['fictional', 'bench', 'account'].join('-') + '/private';
+    expect(bm25QueryInputsSchema.safeParse({ ...frozen, paired: [{ ...frozen.paired[0]!, query }] }).success).toBe(false);
+  });
+  it('accounts for ineligible probe candidates without rewriting queries or shrinking the requested sample', () => {
+    const privateQuery = '/home/' + ['fictional', 'bench', 'account'].join('-') + '/private';
+    const selected = selectBm25ProbeInputs('work_item', [
+      { targetId: 'private', style: 'fragment', query: privateQuery },
+      { targetId: 'empty', style: 'keyword', query: null },
+      { targetId: 'safe', style: 'fragment', query: 'exact  original bytes' },
+      { targetId: 'duplicate-query', style: 'keyword', query: 'exact  original bytes' },
+    ], 60);
+    expect(selected.paired).toEqual([{ source: 'work_item', targetId: 'safe', style: 'fragment', query: 'exact  original bytes', arms: {} }]);
+    expect(selected.warmup).toEqual([]);
+    expect(selected.steady).toEqual([]);
+    expect(selected.candidates.map(c => c.disposition)).toEqual(['identity-bearing', 'not-derivable', 'paired', 'not-selected']);
+    expect(selected.candidates).toHaveLength(4);
+    expect(selected.candidates.every(c => c.queryFingerprint === null || c.queryFingerprint.length === 64)).toBe(true);
+    expect(JSON.stringify(selected.candidates)).not.toContain(privateQuery);
+  });
+});
+
+describe('prospective benchmark request accounting', () => {
+  const pair = (style: 'fragment' | 'keyword' = 'fragment', targetId = 'WI-fixture'): PairResult =>
+    ({ source: 'work_item', style, targetId, query: `query ${targetId}`, arms: {} });
+  const declare = () => declareBm25Attempts({ declaredAt: '2026-10-23T04:00:00Z', sources: ['work_item', 'session_turn'],
+    pairsPerSource: 60, paired: [pair()], warmup: [pair('keyword', 'warmup')], steady: [pair('fragment', 'steady')],
+    pins: { source: 'source-pin', corpus: null, queries: 'query-pin', configuration: 'configuration-pin' } });
+  it('declares missing cells and warm-up identities without shrinking the requested denominator', () => {
+    const declaration = declare();
+    expect(declaration.cells).toHaveLength(24);
+    expect(declaration.cells.every(c => c.requestedPerSource === 60)).toBe(true);
+    expect(declaration.attempts).toHaveLength(6);
+    expect(declaration.attempts.filter(a => a.pass.endsWith('warmup'))).toHaveLength(2);
+    expect(new Set(declaration.attempts.map(a => a.id)).size).toBe(6);
+    expect(declaration.cells.find(c => c.id === 'work_item/fragment/paired/bm25')?.maxP95LatencyMs).toBe(1000);
+    expect(declaration.cells.find(c => c.id === 'work_item/fragment/warm-repeat/bm25')?.maxP95LatencyMs).toBe(200);
+  });
+  it('retains all unvisited requests after a timeout, including warm-ups and empty cells', () => {
+    const declaration = declare();
+    const receipts: Bm25AttemptReceipt[] = [{ id: declaration.attempts[0]!.id, outcome: 'timeout', executed: true,
+      latencyMs: 1200, costUsd: null, observation: null }];
+    const result = reconcileBm25Attempts(declaration, receipts);
+    expect(result.attempts).toHaveLength(6);
+    expect(result.attempts.filter(a => a.outcome === 'unknown')).toHaveLength(5);
+    expect(result.cells.reduce((n, c) => n + c.timeouts, 0)).toBe(1);
+    expect(result.cells.every(c => c.populationStatus === 'unknown')).toBe(true);
+    expect(result.qualification).toBe('unknown');
+  });
+  it('does not count observed known-item calls as labelled relevance or measured cost', () => {
+    const declaration = declare();
+    const receipts: Bm25AttemptReceipt[] = declaration.attempts.map(a => ({ id: a.id, outcome: 'success', executed: true,
+      latencyMs: 10, costUsd: null, observation: obs(null, a.arm, 10, 0) }));
+    const result = reconcileBm25Attempts(declaration, receipts);
+    expect(result.cells.reduce((n, c) => n + c.observed, 0)).toBe(6);
+    expect(result.cells.reduce((n, c) => n + c.judged, 0)).toBe(0);
+    expect(result.qualification).toBe('unknown');
+    expect(result.attempts.every(a => a.costUsd === null)).toBe(true);
+  });
+  it('refuses duplicate and undeclared receipts instead of accepting a repaired denominator', () => {
+    const declaration = declare();
+    const receipt: Bm25AttemptReceipt = { id: declaration.attempts[0]!.id, outcome: 'error', executed: true,
+      latencyMs: 1, costUsd: null, observation: null };
+    expect(() => reconcileBm25Attempts(declaration, [receipt, receipt])).toThrow('duplicate or undeclared');
+    expect(() => reconcileBm25Attempts(declaration, [{ ...receipt, id: 'unknown' }])).toThrow('duplicate or undeclared');
+  });
+  it('refuses duplicated requests and samples outside the declared source population', () => {
+    const options = { declaredAt: '2026-10-23T04:00:00Z', sources: ['work_item'], pairsPerSource: 60,
+      paired: [pair(), pair()], warmup: [], steady: [], pins: declare().pins };
+    expect(() => declareBm25Attempts(options)).toThrow('duplicate declared');
+    expect(() => declareBm25Attempts({ ...options, paired: [{ ...pair(), source: 'private_memory' }] })).toThrow('outside declared');
   });
 });
 

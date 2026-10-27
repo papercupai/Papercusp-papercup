@@ -23,14 +23,17 @@ const censusSelected = [
   'accepts the real native directory-descent disappearance',
   'refuses unproven or incomplete disappearance evidence',
   'compacts capped native file metadata',
+  'compacts uncapped native file metadata',
 ];
 const selected = [
+  'discovers fresh policy roots on each pass and refuses symlink roots before reclaiming',
   'waits for first mutex admission within the whole run deadline',
   'refuses effects when first mutex admission exhausts the whole run deadline',
   'stops waiting for first mutex admission when the run deadline expires',
   'runs the native cargo delegate repeatedly with captured receipts and no missed completion',
   'starts effects without an all-candidate holder census',
   'starts the next pass after a root whose census spent the preceding deadline',
+  'reclaims a pressured device before a healthy census consumes the run deadline',
   'runs independent owners when a whole-root census exhausts the run deadline',
   'finishes an advancing root beyond its inspection allowance',
   'reaps an elevated census worker at its native deadline',
@@ -42,8 +45,8 @@ const selected = [
   'refreshes a new pin after a FIFO handoff without repeating the census',
   'refreshes a new lease after a FIFO handoff without repeating the census',
 ];
-// The advancing-root assertion covers four deadline modes under one title.
-const selectedCount = selected.length + 3;
+// Advancing-root covers four deadline modes; pressure priority covers two alias modes.
+const selectedCount = selected.length + 4;
 const buildSelected = [
   'expires build directories',
   'protected build sources',
@@ -81,7 +84,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
     sourcePaths: [...new Set([assertion, selectedAssertion, censusAssertion, reclaimSource, censusSource,
-      releaseSource, usageSource,
+      releaseSource, usageSource, 'packages/operator-core/lib/storage/usage.ts',
       'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
@@ -172,7 +175,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
         if (selection.census) {
           const census = rows.find(value => value.filePath === censusAssertion);
           expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-            passed: 7, failed: 0, collectionFailed: false,
+            passed: 8, failed: 0, collectionFailed: false,
           } } });
           for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
             (passed: string) => passed.includes(title))).toBe(true);
@@ -189,11 +192,20 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
 };
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
   context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected, ...receiptSelected],
-    expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true }, context),
+    expectedReclaimCases: selectedCount + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true,
+    observedSources: ['packages/operator-core/lib/storage/usage.ts'] }, context),
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
   options.testTimeoutMs);
+it('hands queued writers the mutex before diagnostic auditing in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'releases the real mutex while a queued-writer diagnostic',
+    'finishes an admitted removal, yields the real mutex, then resumes the same pass',
+    'attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation',
+    'refreshes a new pin after a FIFO handoff without repeating the census',
+    'refreshes a new lease after a FIFO handoff without repeating the census',
+  ], expectedReclaimCases: 6, census: false }, context), options.testTimeoutMs);
 it('retains open acceptance evidence through the observed private background runtime',
   context => runSelection({ reclaimTitles: ['retains old evidence bound to an open acceptance item'],
     expectedReclaimCases: 1, census: false,

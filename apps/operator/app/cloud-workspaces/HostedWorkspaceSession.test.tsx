@@ -170,6 +170,55 @@ async function connected() {
 }
 
 describe("tutorial host binding receipts", () => {
+  it.each(["ticket pending", "connected"] as const)("isolates the selected machine when the previous connection is %s", async (previousState) => {
+    const workspace = (id: string): WorkspaceHostControlRow => ({
+      kind: "workspace", id, name: id, connectionId: `connection-${id}`,
+      target: "gcp", scopeLabel: id, region: "us-central1", size: "small", image: "linux",
+      diskGiB: 30, network: "default", desiredState: "running", observedState: "running",
+      recoverability: { kind: "none", label: "None" }, capabilities: {},
+      tunnel: { connector: { routeLabel: `route-${id}`, transport: "websocket" } },
+    });
+    let activeWorkspace = "ws-1";
+    let releaseTicket: ((response: Response) => void) | undefined;
+    M.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/hosted/auth/session")) {
+        return Promise.resolve(Response.json({ ok: true, session: { workspaceId: activeWorkspace } }));
+      }
+      const subject = JSON.parse(String(init?.body));
+      if (subject.hostId === "host-1" && previousState === "ticket pending") {
+        return new Promise<Response>(resolve => { releaseTicket = resolve; });
+      }
+      return Promise.resolve(Response.json({ ok: true, ticket: subject.hostId === "host-1" ? TICKET : `ht_${"b".repeat(43)}` }));
+    });
+    const onWorkspaceBound = vi.fn();
+    const view = (id: string) => <NuqsTestingAdapter searchParams="" hasMemory>
+      <HostedDesktopConnection workspace={workspace(id)} showDesktop={false} onWorkspaceBound={onWorkspaceBound} />
+    </NuqsTestingAdapter>;
+    const rendered = render(view("host-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.fetch.mock.calls.some(([, init]) => String(init?.body).includes('"hostId":"host-1"'))).toBe(true));
+    if (previousState === "connected") await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const previousSocket = M.sockets[0];
+
+    activeWorkspace = "ws-2";
+    rendered.rerender(view("host-2"));
+    onWorkspaceBound.mockClear();
+    const currentSocket = await connected();
+    await act(async () => {
+      releaseTicket?.(Response.json({ ok: true, ticket: TICKET }));
+      previousSocket?.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "old", role: "controller", binding: { generation: 1, hostedSessionId: "old-session" } }) });
+    });
+    expect(M.sockets).toHaveLength(previousState === "connected" ? 2 : 1);
+    expect(onWorkspaceBound.mock.calls.filter(([, id]) => id !== null)).toEqual([]);
+    act(() => currentSocket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "new", role: "controller", binding: { generation: 2, hostedSessionId: "new-session" } }) }));
+    await waitFor(() => expect(onWorkspaceBound).toHaveBeenCalledWith("host-2", "ws-2"));
+    expect(onWorkspaceBound.mock.calls.filter(([, id]) => id !== null)).toEqual([["host-2", "ws-2"]]);
+    if (previousSocket) expect(previousSocket.close).toHaveBeenCalled();
+    expect(M.fetch).toHaveBeenCalledWith("/api/hosted/workspaces/ws-2/connectors/session-ticket", expect.objectContaining({
+      body: JSON.stringify({ hostId: "host-2", routeLabel: "route-host-2", transport: "websocket", audience: "workspace-operator" }),
+    }));
+  });
+
   it("lets observers navigate with Tab and keeps a controller's terminal completion with a backward exit", async () => {
     render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" />);
     const socket = await connected();

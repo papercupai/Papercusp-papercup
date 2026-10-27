@@ -262,7 +262,7 @@ describe('WI-10004972 — spa_require_built_note (the hint every run gets)', () 
     const r = run('spa_require_built_note', [dist, repo]);
     expect(r.status).toBe(0);
     expect(r.out).toContain(`SPA build stamp: ${iso(STAMP_AT)}`);
-    expect(r.out).toContain('2 frontend source file(s) are newer and NOT in this bundle');
+    expect(r.out).toContain('2 frontend source file(s) are newer than this stamp');
     expect(r.out).toContain('VERIFY_TAURI_REQUIRE_BUILT');
   });
 
@@ -273,13 +273,39 @@ describe('WI-10004972 — spa_require_built_note (the hint every run gets)', () 
     expect(r.out).toContain('SPA build stamp: none');
   });
 
-  it('counts unbuilt library source while pruning library test and dist files', () => {
+  it('counts newer library source while pruning library test and dist files', () => {
     put('apps/operator/lib/theme.ts', BASE + 200);
     put('apps/operator/lib/theme.test.ts', BASE + 200);
     put('apps/operator/lib/dist/theme.ts', BASE + 200);
     const r = run('spa_require_built_note', [dist, repo]);
     expect(r.status).toBe(0);
-    expect(r.out).toContain('1 frontend source file(s) are newer and NOT in this bundle');
+    expect(r.out).toContain('1 frontend source file(s) are newer than this stamp');
+  });
+
+  it('does not claim a generated file included during the build is absent just because its mtime is newer', () => {
+    const generated = put('apps/operator-vite/src/routeTree.gen.ts', BASE + 200);
+    const bundled = join(dist, 'assets/routes.js');
+    mkdirSync(dirname(bundled), { recursive: true });
+    writeFileSync(bundled, readFileSync(generated));
+    expect(readFileSync(bundled, 'utf8')).toBe(readFileSync(generated, 'utf8'));
+
+    const r = run('spa_require_built_note', [dist, repo]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('1 frontend source file(s) are newer than this stamp');
+    expect(r.out).toContain('Timestamps alone do not prove whether those files are in this bundle');
+    expect(r.out).not.toContain('NOT in this bundle');
+  });
+
+  it('keeps a newer caller-required edit blocked even though the general note cannot prove inclusion', () => {
+    put('apps/operator-vite/src/a.ts', BASE + 200);
+    const note = run('spa_require_built_note', [dist, repo]);
+    expect(note.status).toBe(0);
+    expect(note.out).toContain('VERIFY_TAURI_REQUIRE_BUILT');
+    expect(note.out).not.toContain('NOT in this bundle');
+
+    const required = gate('apps/operator-vite/src/a.ts');
+    expect(required.status).toBe(1);
+    expect(required.out).toContain('SPA_STALE_VS_SOURCE reason=timeout path=apps/operator-vite/src/a.ts');
   });
 });
 

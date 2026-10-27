@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   ensureHome: vi.fn(),
   readSuperuserToken: vi.fn(),
   allowsAmbient: vi.fn(),
+  repairRoleHome: vi.fn(),
 }));
 
 vi.mock('../../adv-sessions', async (original) => ({
@@ -22,6 +23,7 @@ vi.mock('../../role-launch-spec', async (original) => ({
   ...(await original<typeof import('../../role-launch-spec')>()),
   buildLaunchSpec: mocks.buildLaunchSpec,
 }));
+vi.mock('../../role-codex-home-repair', () => ({ repairRoleCodexHome: mocks.repairRoleHome }));
 vi.mock('../../role-codex-home', async (original) => ({
   ...(await original<typeof import('../../role-codex-home')>()),
   ensureSuCodexHomeConfigAsync: mocks.ensureHome,
@@ -69,9 +71,53 @@ beforeEach(() => {
   mocks.ensureHome.mockReturnValue({ repaired: true });
   mocks.readSuperuserToken.mockReturnValue('test-token');
   mocks.allowsAmbient.mockResolvedValue(true);
+  mocks.repairRoleHome.mockResolvedValue({ status: 200, body: { ok: true, repaired: true } });
 });
 
 describe('default Codex wake home repair', () => {
+  it.each(['scoper', 'judge'].flatMap(role => ['default', 'auto', 'pin'].map(route => ({ role, route }))))(
+    'repairs the recorded $role through the restricted writer on $route', async ({ role, route }) => {
+      const sessionRow = { coordOwnerId: OWNER, agent: 'codex', role,
+        workspaceId: 'papercusp-workspace', sessionId: 'original-native' } as never;
+      const rawRecord = { role, model: 'gpt-6.1-sol', codexSqliteHome: '/original-state' };
+      mocks.readSuLaunchSpecByOwner.mockResolvedValue(rawRecord);
+      expect(await defaultEnsureCodexHomeForWake({ advSessionId: 123, owner: OWNER,
+        codexHome: '/tmp/codex-home', headless: true, sessionRow,
+        requireGatewayProvider: route === 'auto',
+        codexGatewayAccountId: route === 'pin' ? 'original-account' : null,
+      })).toMatchObject({ ok: true, repaired: true });
+      expect(mocks.repairRoleHome).toHaveBeenCalledWith(expect.objectContaining({
+        owner: OWNER, advSessionId: 123, sessionRow, rawRecord,
+      }));
+      expect(mocks.ensureHome).not.toHaveBeenCalled();
+      expect(mocks.buildLaunchSpec).not.toHaveBeenCalled();
+      expect(mocks.readSuperuserToken).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, { coordOwnerId: OWNER, agent: 'codex', role: 'su' },
+    { coordOwnerId: 'other-owner', agent: 'codex', role: 'scoper' }])(
+    'refuses conflicting or unavailable role provenance before any home write', async sessionRow => {
+      mocks.readSuLaunchSpecByOwner.mockResolvedValue({ role: 'scoper', agent: 'codex' });
+      mocks.getAdvSession.mockResolvedValue(sessionRow);
+      expect(await defaultEnsureCodexHomeForWake({ advSessionId: 123, owner: OWNER,
+        codexHome: '/tmp/codex-home', headless: true })).toMatchObject({ ok: false });
+      expect(mocks.repairRoleHome).not.toHaveBeenCalled();
+      expect(mocks.ensureHome).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { status: 402, body: { ok: false, error: 'identity_activation_refused' } },
+    { status: 200, body: { ok: true, repaired: false, reason: 'role-home-preserved' } },
+  ])('does not launch a restricted role after an incomplete repair: $status', async result => {
+    mocks.getAdvSession.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'scoper' });
+    mocks.repairRoleHome.mockResolvedValue(result);
+    expect(await defaultEnsureCodexHomeForWake({ advSessionId: 123, owner: OWNER,
+      codexHome: '/tmp/codex-home', headless: true })).toMatchObject({ ok: false, repaired: false });
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
+
   it.each(['error', 'string'])('redacts credentials in %s config-parser failures without dropping the wake', async (kind) => {
     const bearer = 'opaque-test-bearer-value-for-wake-repair';
     const diagnostic = `Invalid character, expected "=" at row 102\n103: http_headers = { Authorization = "Bearer ${bearer}" }`;

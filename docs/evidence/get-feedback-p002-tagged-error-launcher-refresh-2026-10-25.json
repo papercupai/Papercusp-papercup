@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-tagged-error-launcher-refresh",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "Source and controlled fixtures only. Original native28326/28545 and supplemental69704/69782 remain preserved; actual native actor, lease ABA, custody, cohort quality, independent acceptance and shipment remain open.",
+  "trigger": {
+    "commit": "740c15bcb367bb798dc8ff0f2fb562951493bf99",
+    "sourcePath": "apps/operator/scripts/psu-pty-host.mjs",
+    "sourceSha256": "b3c18410721dcf4104143f16f12a6722e7df649427063896903b21bd51c63d47",
+    "change": "nativeExecutionFromRows preserves the single externally tagged Codex error-info variant instead of coercing its object to [object Object]; ambiguous objects fall back to the terminal event code.",
+    "oldBindings": [70464, 70465],
+    "independentCurrentnessBeforeRefresh": "Source stale only; test and fixture current. Only psu-pty-host.mjs was a moved named source path.",
+    "noReplayedWork": "Expired await367564, completed launcher22057755 and host632 proof were not replayed. No git-sync request or release action was made."
+  },
+  "verification": {
+    "commit": "f1e47c8fe156c7ad4214177350145147ff891e8a",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=f1e47c8fe156c7ad4214177350145147ff891e8a -- apps/operator/lib/psu-launcher.test.ts apps/operator/lib/psu-pty-host-execution-state.test.ts",
+    "startedAt": "2026-10-25T23:05:06.055Z",
+    "finishedAt": "2026-10-25T23:07:38.359Z",
+    "exit": 0,
+    "reporterSink": "Explicit caller-supplied durable PAPERCUSP_TEST_RUNS_DB_URL resolved through scripts/lib/pg-url.mjs; PAPERCUSP_TEST_RUN_HARNESS=papercusp. Maintained inserted-receipt validation passed.",
+    "log": "/tmp/gf-p002-tagged-error-launcher-20261025.log",
+    "logSha256": "fcdfa48ef68984492e032931c460f9a936600370bfaf3e0e98fec9ff00c43a04",
+    "state": "/tmp/gf-p002-tagged-error-launcher-20261025.state.json",
+    "launcher": {
+      "testRunId": 22075890,
+      "passed": 1209,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "collectionFailed": false,
+      "testSha256": "b21611e53835c893c24be3efb0f5c82739099bcd8919fc087462d83f68d1ef7f",
+      "passingCaseRecords": 1209,
+      "declaredCases": 538,
+      "missingOrAmbiguousDeclaredCases": [],
+      "historicalLimit": "Original run21937307 full case identities were not recorded. This preserves the538 explicitly declared cases and does not reconstruct that historical population."
+    },
+    "executionState": {
+      "testRunId": 22075889,
+      "passed": 38,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "collectionFailed": false,
+      "testSha256": "62d652c0382c2b19e18d98b9b7fd95ca58212d084cbe0a938510b209a6e7c673",
+      "reviewedTaggedVariants": ["response_too_many_failed_attempts", "server_overloaded", "invalid_request", "ambiguous multi-key object"],
+      "oracle": "Preserves failure code, retryability, retry delay and unresolved external tool effects; unresolved effects still block injection."
+    }
+  },
+  "qualification": {
+    "replacements": [
+      { "binding": 70645, "retired": 70465, "specId": "GF-P002-source", "specRevision": 1 },
+      { "binding": 70646, "retired": 70464, "specId": "AUTO-BAR-R-2-P-002", "specRevision": 3 }
+    ],
+    "independentCurrentness": "Both replacements server-measured CURRENT across all applicable dimensions before exact old-row retirement; readback after retirement also CURRENT.",
+    "originalRecipesEqual": true,
+    "originalAdequacyEqual": true,
+    "oldRowRetirementReceipts": "Both exact70465/70464 retirement writes returned ok:true/status:retracted.",
+    "inactiveOldRowsReadback": "Ordinary active-only exact-id read of70464/70465/70202 returned count0 after their retirements.",
+    "auditCapture": "/tmp/gf-p002-tagged-error-final-audit-20261025.json",
+    "qualificationCapture": "/tmp/gf-p002-tagged-error-qualification-20261025.json"
+  },
+  "priorStoreArtifact": {
+    "path": "docs/evidence/get-feedback-p002-store-refresh-2026-10-25.json",
+    "sha256": "1916bfd7fd04f4f54417984339e881b7dad41cd92ca4563f4b81832cd79c65b3",
+    "verifiedCommittedIn": "1e0a6d6b79",
+    "note": "The carry's unavailable-file warning was not reproduced: the exact artifact is present, clean and committed. No store rerun was needed."
+  },
+  "storeBarReuse": {
+    "existingCurrentBinding": 70619,
+    "reusedCanonicalRun": 22071099,
+    "replacementBinding": 70659,
+    "retiredBinding": 70202,
+    "originalRecipeEqual": true,
+    "adequacyEqualExceptClauseTarget": true,
+    "originalTwoCasesEqual": true,
+    "independentCurrentness": "Replacement70659 server-measured CURRENT before70202 retirement; active-only read confirms70202 inactive.",
+    "newTestRunRequired": false,
+    "auditCapture": "/tmp/gf-p002-store-bar-reuse-audit-20261025.json"
+  },
+  "remainingAssessment": {
+    "capture": "/tmp/gf-p002-tagged-error-final-audit-20261025.json",
+    "barVerdictBeforeStoreReuse": "fail",
+    "barGapsBeforeStoreReuse": ["dispatcher70481 source/test stale", "store70202 source stale (subsequently repaired via70659)", "mutant70471 source/test/fixture stale"],
+    "sourceVerdict": "fail",
+    "sourceWouldBlock": ["traceability", "falsifiability", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"],
+    "scope": "Launcher refresh and store proof reuse do not establish whole-clause acceptance."
+  },
+  "remaining": {
+    "currentCommittedMethodProof": [69875, 68733, 69319, 69322],
+    "newlyObservedStaleIntegrationBindings": [70594, 70595],
+    "preservedOriginalNativeBindings": [28326, 28545, 69704, 69782],
+    "reporterIncident": "EI-26900834772734276 remains open; original double-timeout root cause is unknown.",
+    "loopOriginIncident": "EI-26984631684161013 remains open; no loop mutation or duplicate monitor was created."
+  }
+}

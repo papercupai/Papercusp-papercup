@@ -1,20 +1,28 @@
 /**
  * scope-roster.test.ts — P-006 §5.2/§5.3 roster seam. Pure over an injected
- * sql (epoch) + optional directory (P-101), no real PG.
+ * live hive membership/epoch readers + optional directory (P-101), no real PG.
  *
  * The load-bearing properties:
- *   - tier-1 (no directory): membership is OWNER-ONLY, and the owner is a member
- *     even with no epoch/grant row (bootstrap-safe);
+ *   - tier-1 (no directory): only an attested, unrevoked owner is a member;
  *   - with a P-101 directory: membership widens to {owner} ∪ publisher-set, and
  *     the owner is always included even if the directory omits them;
- *   - X6: currentEpoch reads the owner's grantor high-water live (cache-
- *     bypassing), 0 when absent, 0 on an unresolvable workspace (fail-closed).
+ *   - disclosure uses the live hive epoch, independently of grant replay counters;
+ *     unresolved authority cannot manufacture an owner grant or baseline epoch.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GrantBackedScopeRoster, type FleetDirectory } from './scope-roster';
 import type { ScopeId } from '../sync/pot-git/scope-repo';
 
 const SCOPE: ScopeId = { kind: 'fleet', ownerGithubUserId: 42, slug: 'widgets' };
+const authority = vi.hoisted(() => ({ members: vi.fn(), epoch: vi.fn() }));
+vi.mock('../federated-pot-scope', () => ({ listHiveMembersForLocalPot: authority.members }));
+vi.mock('../sync/hyperbee/hive-epoch-state', () => ({ getHiveEpoch: authority.epoch }));
+const member = (githubUserId: number, device = `device-${githubUserId}`, revokedPubkeys: string[] = []) =>
+  ({ githubUserId, deviceAttestations: [{ device_pubkey: device }], revokedPubkeys });
+beforeEach(() => {
+  authority.members.mockReset().mockResolvedValue([member(42), member(100), member(200)]);
+  authority.epoch.mockReset().mockResolvedValue(0);
+});
 
 /** A fake `sql` tag returning a fixed grantor-epoch row set. */
 function fakeSql(rows: { high_water_epoch: number }[]) {
@@ -35,12 +43,19 @@ describe('tier-1 (no directory) — owner-only', () => {
     expect(await roster.members(SCOPE)).toEqual([42]);
   });
 
-  it('the owner is a member even with NO epoch/grant row (bootstrap-safe, no read)', async () => {
+  it('does not grant an owner scope without a live attested hive member', async () => {
     const sql = fakeSql([]);
+    authority.members.mockResolvedValue([]);
     const roster = new GrantBackedScopeRoster({ workspaceId: 'ws-1', potSlug: 'papercusp', sqlOverride: sql.tag });
-    expect(await roster.isMember(SCOPE, 42)).toBe(true);
-    // Owner membership must not have needed a PG read.
+    expect(await roster.isMember(SCOPE, 42)).toBe(false);
+    expect(authority.members).toHaveBeenCalledWith('ws-1', 'papercusp', sql.tag);
     expect(sql.calls.length).toBe(0);
+  });
+
+  it('denies owner membership when the hive authority read fails', async () => {
+    authority.members.mockRejectedValue(new Error('roster unavailable'));
+    const roster = new GrantBackedScopeRoster({ workspaceId: 'ws-1', potSlug: 'papercusp' });
+    expect(await roster.isMember(SCOPE, 42)).toBe(false);
   });
 
   it('the predicate is the same membership answer', async () => {
@@ -76,15 +91,27 @@ describe('with a P-101 directory — {owner} ∪ publisher-set', () => {
     expect(await roster.isMember(SCOPE, 100)).toBe(false);
     expect(await roster.members(SCOPE)).toEqual([42]);
   });
+
+  it('a directory cannot retain a revoked member, but an unrevoked rejoin device restores access', async () => {
+    const directory: FleetDirectory = { scopeMembers: async () => [42, 100] };
+    const roster = new GrantBackedScopeRoster({ workspaceId: 'ws-1', potSlug: 'papercusp', directory });
+    expect(await roster.isMember(SCOPE, 100)).toBe(true);
+    authority.members.mockResolvedValue([member(42, 'owner', ['device-100']), member(100)]);
+    expect(await roster.members(SCOPE)).toEqual([42]);
+    expect(await roster.isMember(SCOPE, 100)).toBe(false);
+    authority.members.mockResolvedValue([member(42, 'owner', ['device-100']), member(100, 'rejoin')]);
+    expect(await roster.isMember(SCOPE, 100)).toBe(true);
+  });
 });
 
 describe('currentEpoch (X6)', () => {
-  it('reads the owner grantor high-water live', async () => {
+  it('reads the hive epoch live instead of the independent grant replay high-water', async () => {
     const sql = fakeSql([{ high_water_epoch: 5 }]);
+    authority.epoch.mockResolvedValue(3);
     const roster = new GrantBackedScopeRoster({ workspaceId: 'ws-1', potSlug: 'papercusp', sqlOverride: sql.tag });
-    expect(await roster.currentEpoch(SCOPE)).toBe(5);
-    // The query bound the owner id, not some other grantor.
-    expect(sql.calls[0]).toContain(42);
+    expect(await roster.currentEpoch(SCOPE)).toBe(3);
+    expect(authority.epoch).toHaveBeenCalledWith('ws-1', 'papercusp', sql.tag);
+    expect(sql.calls).toEqual([]);
   });
 
   it('is 0 when the owner has no epoch row', async () => {
@@ -93,11 +120,13 @@ describe('currentEpoch (X6)', () => {
     expect(await roster.currentEpoch(SCOPE)).toBe(0);
   });
 
-  it('is 0 (fail-closed, no read) on an unresolvable workspace partition', async () => {
+  it('refuses an unresolvable workspace partition without manufacturing epoch zero', async () => {
     const sql = fakeSql([{ high_water_epoch: 9 }]);
     // 'default' resolves to undefined via resolveP2pGrantWorkspace (WI-1564).
     const roster = new GrantBackedScopeRoster({ workspaceId: 'default', potSlug: 'papercusp', sqlOverride: sql.tag });
-    expect(await roster.currentEpoch(SCOPE)).toBe(0);
+    expect(await roster.isMember(SCOPE, 42)).toBe(false);
+    await expect(roster.currentEpoch(SCOPE)).rejects.toThrow('unresolved workspace');
+    expect(authority.epoch).not.toHaveBeenCalled();
     expect(sql.calls.length).toBe(0);
   });
 });

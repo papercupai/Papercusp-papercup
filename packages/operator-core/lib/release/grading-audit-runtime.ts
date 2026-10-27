@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { adminUrl, appUrl } from '@papercusp/db-org/connection';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { getBuildInfo, type BuildInfo } from '../build-info';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
 import { acquireGradingAuditSubjectMutex } from '../scorecards';
@@ -10,6 +12,8 @@ import { killTask } from '../task-manager/control';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { listTasks } from '../task-manager/store';
 import type { TaskRow } from '../task-manager/types';
+import { runWithWorkspaceIfConcrete } from '../workspace-als';
+import { measureBootOperatorArtifact, operatorArtifactSource, writeOperatorArtifactManifest } from './operator-artifact';
 import {
   GRADING_AUDIT_SOURCE_PIN_MAX_SEC,
   readGradingAuditSourcePin,
@@ -25,6 +29,14 @@ export interface GradingAuditRuntimeLocator extends GradingAuditSourcePin {
   bundlePath: string;
   baseUrl: string;
   issueIds: string[];
+  acceptanceRefs?: string[];
+  sourceRecovery?: {
+    sourceSha: string;
+    artifactManifestSha256: string;
+    previousTaskId: string;
+    previousSourceRoot: string;
+    previousBundleSha256: string;
+  };
 }
 
 export interface GradingAuditRuntimeBinding {
@@ -33,6 +45,37 @@ export interface GradingAuditRuntimeBinding {
   evaluatorBuild: BuildInfo;
   bundleSha256: string;
   expiresAtSec: number;
+  sourceRecovery?: GradingAuditRuntimeLocator['sourceRecovery'];
+}
+
+/** A maintained exact-ref rebuild is a NEW artifact, never the old digest. */
+export function qualifyRematerializedGradingAuditSource(sourceRoot: string, build: BuildInfo) {
+  sourceRoot = realpathSync(sourceRoot);
+  if (basename(sourceRoot) !== 'checkout' || !basename(dirname(sourceRoot)).startsWith('.candidate-')) {
+    throw new Error('Exact source recovery requires an immutable candidate checkout');
+  }
+  const sourceSha = operatorArtifactSource(sourceRoot);
+  if (!build.sha || !/^[a-f0-9]{7,40}$/.test(build.sha) || !sourceSha.startsWith(build.sha)) {
+    throw new Error('Rematerialized audit source differs from the recorded evaluator');
+  }
+  const bundlePath = join(sourceRoot, 'apps/operator/dist-host/hono-host.mjs');
+  if (!readFileSync(bundlePath).includes(requestOnlyIdentityGuardMarker())) {
+    throw new Error('Audit runtime bundle lacks request-only identity support');
+  }
+  // Require the builder's existing manifest BEFORE rechecking its compiler
+  // inputs against Git objects. A directory name or caller-supplied SHA is
+  // insufficient provenance, and recovery must never manufacture a manifest.
+  const artifact = measureBootOperatorArtifact(bundlePath, build.sha, Date.now());
+  if (artifact.status !== 'measured' || artifact.sourceSha !== sourceSha) {
+    throw new Error('Rematerialized audit bundle has no exact source artifact proof');
+  }
+  const checked = writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
+  if (checked.status !== 'measured' || checked.manifestSha256 !== artifact.manifestSha256) {
+    throw new Error('Rematerialized audit compiler provenance differs');
+  }
+  return { sourceSha, artifactManifestSha256: artifact.manifestSha256,
+    source: { schemaVersion: 1 as const, sourceRoot, bundlePath, evaluatorBuild: build,
+      bundleSha256: artifact.bundleSha256, ownerRef: '' } };
 }
 
 export interface GradingAuditRuntimeDeps {
@@ -42,9 +85,11 @@ export interface GradingAuditRuntimeDeps {
   currentSource?: (build: BuildInfo) => Omit<GradingAuditRuntimeLocator, 'baseUrl' | 'issueIds' | 'expiresAtSec'>;
   recoverSource?: (workspaceId: string, build: BuildInfo, nowSec: number) => GradingAuditRuntimeLocator | null;
   freePort?: () => Promise<number>;
+  logDir?: string;
   spawn?: (workspaceId: string, locator: GradingAuditRuntimeLocator) => Promise<string>;
   probe?: (baseUrl: string) => Promise<BuildInfo | null>;
-  attach?: (taskId: string, workspaceId: string, issueIds: string[]) => Promise<void>;
+  attach?: (taskId: string, workspaceId: string, issueIds: string[], acceptanceRefs?: string[]) => Promise<void>;
+  pendingAcceptanceRefs?: (workspaceId: string, refs: string[]) => Promise<string[]>;
   stop?: (taskId: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -91,8 +136,15 @@ function currentSource(build: BuildInfo): ReturnType<NonNullable<GradingAuditRun
 
 export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator): NodeJS.ProcessEnv {
   const port = new URL(locator.baseUrl).port;
+  // The parent may resolve these from its operator env file, which is absent
+  // from the immutable source clone. Resolve before changing root/cwd so the
+  // child cannot silently discover a different local database.
+  const admin = adminUrl();
+  const app = appUrl();
   return {
     ...process.env,
+    DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
+    HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
     PAPERCUSP_INTEGRATION_ROOT: locator.sourceRoot,
     PAPERCUSP_HONO_PORT: port, PORT: port, PAPERCUSP_BIND_HOST: '127.0.0.1',
     PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_USE_EMBEDDED_PG: '0',
@@ -109,12 +161,75 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
   };
 }
 
-async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLocator): Promise<string> {
-  const logPath = join(dirname(locator.sourceRoot), 'grading-audit-runtime.log');
+/**
+ * The confined task owns this small supervisor AND its exact-bundle child.
+ * A host's intentional watchdog self-SIGKILL cannot restart a transient scope.
+ * Keep the supervisor inline so recovery never loads code from a mutable alias
+ * or asks an old immutable candidate to contain a newer supervisor module.
+ */
+export function gradingAuditRuntimeSupervisorArgs(locator: GradingAuditRuntimeLocator): string[] {
+  const script = String.raw`
+const { spawn } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { createHash } = require('node:crypto');
+const config = JSON.parse(process.argv[1]);
+let child = null, retry = null, escalation = null, stopping = false, shortExits = 0;
+const log = message => console.error('[grading-audit-supervisor] ' + message);
+const finish = code => {
+  clearTimeout(retry); clearTimeout(escalation); clearTimeout(deadline);
+  process.exit(code);
+};
+const stop = reason => {
+  if (stopping) return;
+  stopping = true;
+  clearTimeout(retry);
+  log('stopping: ' + reason);
+  if (!child) return finish(0);
+  child.kill('SIGTERM');
+  escalation = setTimeout(() => { if (child) child.kill('SIGKILL'); }, 5000);
+};
+process.on('SIGTERM', () => stop('SIGTERM'));
+process.on('SIGINT', () => stop('SIGINT'));
+const deadline = setTimeout(() => stop('absolute deadline'), Math.max(0, config.expiresAtSec * 1000 - Date.now()));
+const start = () => {
+  if (stopping) return;
+  if (Date.now() >= config.expiresAtSec * 1000) return stop('absolute deadline');
+  try {
+    if (createHash('sha256').update(readFileSync(config.bundlePath)).digest('hex') !== config.bundleSha256) {
+      log('bundle digest changed; refusing launch'); return finish(1);
+    }
+  } catch (error) { log('bundle read failed: ' + error.message); return finish(1); }
+  const started = Date.now();
+  child = spawn(process.execPath, [config.bundlePath], { stdio: 'inherit' });
+  log('started child pid=' + child.pid);
+  child.once('error', error => { log('child spawn failed: ' + error.message); finish(1); });
+  child.once('exit', (code, signal) => {
+    child = null;
+    if (stopping) return finish(0);
+    if (Date.now() >= config.expiresAtSec * 1000) return stop('absolute deadline');
+    shortExits = Date.now() - started < 30000 ? shortExits + 1 : 0;
+    log('child exited code=' + code + ' signal=' + signal + ' shortExits=' + shortExits);
+    if (shortExits >= 5) { log('restart budget exhausted'); return finish(1); }
+    retry = setTimeout(start, Math.min(5000, 100 * 2 ** shortExits));
+  });
+};
+start();
+`;
+  return ['--eval', script, JSON.stringify({ bundlePath: locator.bundlePath,
+    bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec })];
+}
+
+async function spawnRuntime(workspaceId: string, locator: GradingAuditRuntimeLocator,
+  logDir = papercuspPath('checkpoint-logs')): Promise<string> {
+  // The task ledger owns this durable log; a candidate generation may be pruned while its row remains.
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const logName = createHash('sha256').update(locator.ownerRef).digest('hex');
+  const logPath = join(logDir, `grading-audit-runtime-${logName}.log`);
   const fd = openSync(logPath, 'a', 0o600);
   try {
-    const spawned = await managedSpawn(process.execPath, [locator.bundlePath], {
-      class: 'sidecar', title: locator.ownerRef, argv: [process.execPath, locator.bundlePath],
+    const args = gradingAuditRuntimeSupervisorArgs(locator);
+    const spawned = await managedSpawn(process.execPath, args, {
+      class: 'sidecar', title: locator.ownerRef, argv: [process.execPath, ...args],
       launchedBy: 'system:grading-audit-dispatch', cwd: locator.sourceRoot, logPath,
       runtimeMaxSec: Math.max(1, locator.expiresAtSec - Math.floor(Date.now() / 1000)),
       detail: { label: locator.ownerRef, gradingAuditRuntime: locator },
@@ -136,13 +251,23 @@ async function stopRuntime(taskId: string): Promise<void> {
   }
 }
 
-async function attach(taskId: string, workspaceId: string, issueIds: string[]): Promise<void> {
+async function attach(taskId: string, workspaceId: string, issueIds: string[], acceptanceRefs: string[] = []): Promise<void> {
   const { sql } = getOrgPg();
   const rows = await sql`UPDATE harness_shared.task_ledger
-    SET detail = jsonb_set(detail, '{gradingAuditRuntime,issueIds}', ${sql.json(issueIds)})
+    SET detail = jsonb_set(jsonb_set(detail, '{gradingAuditRuntime,issueIds}', ${sql.json(issueIds)}),
+      '{gradingAuditRuntime,acceptanceRefs}', ${sql.json(acceptanceRefs)})
     WHERE task_id = ${taskId} AND workspace_id = ${workspaceId} AND state IN ('pending','running')
     RETURNING task_id`;
   if (!rows.length) throw new Error('Audit runtime ownership changed before attachment');
+}
+
+async function pendingAcceptanceRefs(workspaceId: string, refs: string[]): Promise<string[]> {
+  if (!refs.length) return [];
+  const { getWorkItemsByIds, TERMINAL_WORK_ITEM_STATES } = await import('../work-items');
+  const items = await runWithWorkspaceIfConcrete(workspaceId, () => getWorkItemsByIds(refs));
+  // Missing/ambiguous reads are unknown, so the hard deadline remains the backstop.
+  if (items.length !== refs.length) return refs;
+  return items.filter(item => item.assignee && !TERMINAL_WORK_ITEM_STATES.includes(item.state)).map(item => item.id);
 }
 
 async function freePort(): Promise<number> {
@@ -177,6 +302,7 @@ function locatorFrom(row: Pick<TaskRow, 'detail'>): GradingAuditRuntimeLocator |
   if (!raw || raw.schemaVersion !== 1 || typeof raw.sourceRoot !== 'string' ||
       typeof raw.bundlePath !== 'string' || typeof raw.ownerRef !== 'string' ||
       !Array.isArray(raw.issueIds) || raw.issueIds.some(id => typeof id !== 'string') ||
+      (raw.acceptanceRefs !== undefined && (!Array.isArray(raw.acceptanceRefs) || raw.acceptanceRefs.some(id => typeof id !== 'string'))) ||
       !raw.evaluatorBuild?.sha || !raw.evaluatorBuild.version || !Number.isSafeInteger(raw.expiresAtSec)) return null;
   try {
     const url = new URL(raw.baseUrl);
@@ -228,6 +354,10 @@ function recoverSource(workspaceId: string, build: BuildInfo, nowSec: number): G
  */
 export async function ensureGradingAuditRuntime(input: {
   workspaceId: string; issueId: string; evaluatorBuild: BuildInfo; allowSeed?: boolean;
+  /** Explicit recovery after exact-ref materialization with the maintained builder. */
+  recoverySourceRoot?: string;
+  /** A claimed source work-item may still need conformance after its audit settles. */
+  acceptanceRef?: string;
 }, deps: GradingAuditRuntimeDeps = {}): Promise<GradingAuditRuntimeBinding> {
   const label = labelFor(input.evaluatorBuild, input.workspaceId);
   return (deps.mutex ?? mutex)(input.workspaceId, label, async () => {
@@ -248,9 +378,21 @@ export async function ensureGradingAuditRuntime(input: {
       if (exact.some(row => row.state === 'running' || row.state === 'pending')) {
         throw new Error('Existing audit runtime has no valid recovery locator');
       }
-      if (input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
-      const source = (deps.currentSource ?? currentSource)(input.evaluatorBuild);
-      locator = { ...source, ownerRef: label, issueIds: [], expiresAtSec: now + GRADING_AUDIT_SOURCE_PIN_MAX_SEC,
+      const previous = ordered.map(row => ({ row, locator: locatorFrom(row) }))
+        .find(entry => entry.locator && sameBuild(entry.locator.evaluatorBuild, input.evaluatorBuild));
+      if (input.recoverySourceRoot && !previous?.locator) {
+        throw new Error('Exact source recovery requires a registered prior runtime locator');
+      }
+      if (!input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
+      const rebuilt = input.recoverySourceRoot
+        ? qualifyRematerializedGradingAuditSource(input.recoverySourceRoot, input.evaluatorBuild) : null;
+      const source = rebuilt?.source ?? (deps.currentSource ?? currentSource)(input.evaluatorBuild);
+      locator = { ...source, ownerRef: label, issueIds: previous?.locator?.issueIds ?? [],
+        ...(rebuilt && previous?.locator ? { sourceRecovery: {
+          sourceSha: rebuilt.sourceSha, artifactManifestSha256: rebuilt.artifactManifestSha256,
+          previousTaskId: previous.row.taskId, previousSourceRoot: previous.locator.sourceRoot,
+          previousBundleSha256: previous.locator.bundleSha256,
+        } } : {}), expiresAtSec: now + GRADING_AUDIT_SOURCE_PIN_MAX_SEC,
         baseUrl: `http://127.0.0.1:${await (deps.freePort ?? freePort)()}` };
     }
     const pin = readGradingAuditSourcePin(locator.sourceRoot, label, now);
@@ -262,8 +404,10 @@ export async function ensureGradingAuditRuntime(input: {
     const liveRefs = exact.filter(row => row.state === 'pending' || row.state === 'running')
       .flatMap(row => locatorFrom(row)?.issueIds ?? []);
     const issueIds = [...new Set([...locator.issueIds, ...liveRefs, input.issueId])];
-    if (issueIds.length > 200) throw new Error('Audit runtime reference budget exhausted');
-    locator = { ...locator, issueIds };
+    const acceptanceRefs = [...new Set([...(locator.acceptanceRefs ?? []), ...exact.flatMap(row =>
+      locatorFrom(row)?.acceptanceRefs ?? []), ...(input.acceptanceRef ? [input.acceptanceRef] : [])])];
+    if (issueIds.length + acceptanceRefs.length > 200) throw new Error('Audit runtime reference budget exhausted');
+    locator = { ...locator, issueIds, acceptanceRefs };
     writeGradingAuditSourcePin(locator, now);
     const isLive = existing && (existing.row.state === 'running' || existing.row.state === 'pending');
     let taskId = isLive ? existing.row.taskId : '';
@@ -276,27 +420,38 @@ export async function ensureGradingAuditRuntime(input: {
       await (deps.stop ?? stopRuntime)(sibling.taskId);
     }
     const readBuild = deps.probe ?? probe;
-    if (isLive && sameBuild(await readBuild(locator.baseUrl) ?? { sha: null, version: '' }, input.evaluatorBuild)) {
-      await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds);
+    const liveBuild = isLive ? await readBuild(locator.baseUrl) : null;
+    if (isLive && !liveBuild) {
+      // HTTP readiness is not process-lifetime evidence. Preserve the enrolled
+      // task and every audit reference so the existing repair sweep can reuse
+      // it after startup or a missed probe, rather than restarting its warmup.
+      await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
+      throw new Error('Audit runtime readiness is unknown');
+    }
+    if (isLive && sameBuild(liveBuild!, input.evaluatorBuild)) {
+      await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
     } else {
       if (isLive) await (deps.stop ?? stopRuntime)(taskId);
-      taskId = await (deps.spawn ?? spawnRuntime)(input.workspaceId, locator);
+      taskId = await (deps.spawn ?? ((workspaceId, current) => spawnRuntime(workspaceId, current, deps.logDir)))(
+        input.workspaceId, locator);
       let ready = false;
-      try {
-        for (let attempt = 0; attempt < 30; attempt += 1) {
-          const actual = await readBuild(locator.baseUrl);
-          if (actual && !sameBuild(actual, input.evaluatorBuild)) throw new Error('Audit runtime evaluator identity mismatch');
-          if (actual) { ready = true; break; }
-          await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const actual = await readBuild(locator.baseUrl);
+        if (actual && !sameBuild(actual, input.evaluatorBuild)) {
+          await (deps.stop ?? stopRuntime)(taskId);
+          throw new Error('Audit runtime evaluator identity mismatch');
         }
-        if (!ready) throw new Error('Audit runtime readiness is unknown');
-      } catch (error) {
-        await (deps.stop ?? stopRuntime)(taskId);
-        throw error;
+        if (actual) { ready = true; break; }
+        await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
       }
+      // Keep an unready task under its existing confined deadline. Its locator
+      // and pin let the next canonical repair retry the same exact evaluator;
+      // expiry and authoritative task termination still govern replacement.
+      if (!ready) throw new Error('Audit runtime readiness is unknown');
     }
     return { taskId, baseUrl: locator.baseUrl, evaluatorBuild: input.evaluatorBuild,
-      bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec };
+      bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec,
+      ...(locator.sourceRecovery ? { sourceRecovery: locator.sourceRecovery } : {}) };
   });
 }
 
@@ -305,9 +460,18 @@ export async function retireUnusedGradingAuditRuntimes(
   workspaceId: string,
   pendingIssueIds: (ids: string[]) => Promise<string[]>,
   deps: GradingAuditRuntimeDeps = {},
+  targetIssueIds?: readonly string[],
 ): Promise<void> {
   const rows = await (deps.list ?? listRuntimeTasks)(workspaceId, LABEL);
-  const labels = [...new Set(rows.map(row => row.detail.label).filter((label): label is string =>
+  // A targeted repair must not wait for another build's cleanup mutex. Select
+  // labels by the requested refs, then keep the full sibling reread below so a
+  // shared endpoint or pin cannot be retired while another audit still needs it.
+  const targets = targetIssueIds?.length ? new Set(targetIssueIds) : undefined;
+  const scopedRows = targets
+    ? rows.filter(row => { const locator = locatorFrom(row);
+      return [...(locator?.issueIds ?? []), ...(locator?.acceptanceRefs ?? [])].some(id => targets.has(id)); })
+    : rows;
+  const labels = [...new Set(scopedRows.map(row => row.detail.label).filter((label): label is string =>
     typeof label === 'string' && label.startsWith(LABEL)))];
   for (const label of labels) await (deps.mutex ?? mutex)(workspaceId, label, async () => {
     // Re-read under the same mutex used by acquisition; never kill from a stale ref set.
@@ -317,18 +481,23 @@ export async function retireUnusedGradingAuditRuntimes(
       if (!locator) continue;
       const now = Math.floor((deps.now?.() ?? Date.now()) / 1000);
       const needed = locator.expiresAtSec > now ? await pendingIssueIds(locator.issueIds) : [];
-      if (needed.length) {
-        if (needed.length < locator.issueIds.length && (row.state === 'running' || row.state === 'pending')) {
-          await (deps.attach ?? attach)(row.taskId, workspaceId, needed);
-          writeGradingAuditSourcePin({ ...locator, issueIds: needed } as GradingAuditRuntimeLocator, now);
+      const acceptance = locator.expiresAtSec > now
+        ? await (deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)(workspaceId, locator.acceptanceRefs ?? []) : [];
+      if (needed.length || acceptance.length) {
+        if ((needed.length < locator.issueIds.length || acceptance.length < (locator.acceptanceRefs?.length ?? 0)) &&
+            (row.state === 'running' || row.state === 'pending')) {
+          await (deps.attach ?? attach)(row.taskId, workspaceId, needed, acceptance);
+          writeGradingAuditSourcePin({ ...locator, issueIds: needed, acceptanceRefs: acceptance } as GradingAuditRuntimeLocator, now);
         }
         continue;
       }
       if (row.state === 'running' || row.state === 'pending') await (deps.stop ?? stopRuntime)(row.taskId);
       // A newer task may share the same pin. Release only after EVERY sibling is unused.
       const siblings = current.map(locatorFrom).filter((item): item is GradingAuditRuntimeLocator => item !== null);
-      if ((await Promise.all(siblings.map(item => item.expiresAtSec > now
-        ? pendingIssueIds(item.issueIds) : Promise.resolve([])))).every(ids => ids.length === 0)) {
+      if ((await Promise.all(siblings.map(async item => item.expiresAtSec > now
+        ? [...await pendingIssueIds(item.issueIds),
+          ...await (deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)(workspaceId, item.acceptanceRefs ?? [])] : [])))
+        .every(ids => ids.length === 0)) {
         releaseGradingAuditSourcePin(locator.sourceRoot, label);
       }
     }

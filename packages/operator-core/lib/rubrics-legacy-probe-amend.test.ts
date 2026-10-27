@@ -75,12 +75,33 @@ describe('acceptance BAR amendments with legacy continuity probes', () => {
     });
   });
 
-  it('keeps an incompatible stale probe unchanged so current validation still refuses it', () => {
+  it.each(['probe', 'all'] as const)('pins the writer-only live revision in a %s check before storage', (field) => {
+    const liveProbe = {
+      kind: 'tool' as const,
+      tool: 'status:read',
+      args: { id: 'incoming' },
+      schemaRevision: 'live',
+      expect: { path: '$.state', op: 'exists' as const },
+    };
+    const check = field === 'probe'
+      ? { kind: 'probe' as const, probe: liveProbe }
+      : { kind: 'probe' as const, all: [liveProbe] };
+
+    const [candidate] = migrateLegacyCriterionProbeRevisions([{ key: 'incoming-probe', check }]);
+    const pinned = { ...liveProbe, schemaRevision: continuityProbeRevision('status:read') };
+
+    expect(candidate?.check).toEqual(field === 'probe'
+      ? { kind: 'probe', probe: pinned }
+      : { kind: 'probe', all: [pinned] });
+    expect(liveProbe.schemaRevision).toBe('live');
+  });
+
+  it.each(['live', 'projected-tool-registry-v1:retired'])('keeps an incompatible %s probe unchanged so current validation still refuses it', (schemaRevision) => {
     const staleProbe = {
       kind: 'tool' as const,
       tool: 'status:read',
       args: { unexpected: true },
-      schemaRevision: 'projected-tool-registry-v1:retired',
+      schemaRevision,
       expect: { path: '$.state', op: 'exists' as const },
     };
 

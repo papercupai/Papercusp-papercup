@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeHttpPhase, runNativeCommand, reloadNativeWorkbench, nativeContractEvidence,
   nativeJourneyScope, nativeBootstrapBudgets, assertNativeMutationProof, assertNativeActionResponse, NATIVE_BOOTSTRAP_TIMEOUT_MS } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
+import { chooseWorkbenchOption } from '../../../../scripts/lib/dao-workbench-controls.mts';
 
 const repo = resolve(import.meta.dirname, '../../../..');
 
@@ -25,6 +26,27 @@ describe('native bootstrap admission and lifecycle', () => {
     const success = { status: 200, body: { ok: true, value: 'contract' } };
     expect(assertNativeActionResponse('prepare', success, diagnostic => retained.push(diagnostic))).toBe(success.body);
     expect(retained).toHaveLength(2);
+  });
+
+  it('selects a stable person value when Radix options share a label and refuses ambiguous label-only lookup', () => {
+    const selected: string[] = [];
+    const options = ['PER-baseline', 'PER-copy'].map(personId => ({
+      textContent: 'Native approver',
+      getAttribute: (name: string) => name === 'data-value' ? personId : null,
+      dispatchEvent: (event: { key?: string }) => { selected.push(`${personId}:${event.key}`); return true; },
+    }));
+    const context = {
+      document: { querySelectorAll: () => options },
+      KeyboardEvent: class {
+        key: string;
+        constructor(_type: string, init: { key: string }) { this.key = init.key; }
+      },
+    };
+
+    expect(runInNewContext(chooseWorkbenchOption('Native approver', 'PER-copy'), context)).toBe(true);
+    expect(selected).toEqual(['PER-copy:Enter']);
+    expect(() => runInNewContext(chooseWorkbenchOption('Native approver'), context))
+      .toThrow('Ambiguous option Native approver');
   });
 
   it('keeps every calibrated native journey in distinct DAO and person scopes', () => {
@@ -441,7 +463,12 @@ describe('native bootstrap admission and lifecycle', () => {
       const release = (phase: string) => join(dir, phase + '.release');
       const waitForRelease = (phase: string) =>
         `while [ ! -f ${JSON.stringify(release(phase))} ]; do sleep 0.01; done`;
-      const program = ['set -eu', shell.slice(start, end),
+      const program = ['set -eu',
+        // The production snapshot cleanup is defined before this slice. The
+        // fixture leaves its source path empty, so preserve its no-op contract.
+        'cleanup_verifier_spa_snapshot() { :; }',
+        'cleanup_verifier_source_snapshot() { :; }',
+        shell.slice(start, end),
         'printf "OPTIONAL_DISABLED=%s\\n" "${VH_DISABLED:-missing}"',
         waitForRelease('prepare'), section('boot'), waitForRelease('boot'),
         section('assert'), waitForRelease('assert')].join('\n');

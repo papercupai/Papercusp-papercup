@@ -172,6 +172,58 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('discovers fresh policy roots on each pass and refuses symlink roots before reclaiming', async () => {
+    const { root, options } = await setup();
+    const one = join(root, 'run-one'), owner = join(fixture!, 'owner');
+    await mkdir(one); await mkdir(owner);
+    await writeFile(join(one, 'expired'), 'disposable');
+    await writeFile(join(owner, 'keep'), 'owner data');
+    await symlink(owner, join(root, 'run-alias'));
+    const discovered = { ...options, roots: undefined,
+      policy: [{ ...options.policy[0]!, roots: [join(root, 'run-*')] }] };
+    const first = await runDiskReclaimOnce(discovered);
+    expect(first.complete).toBe(true);
+    expect(first.roots?.map(value => value.path)).toEqual([one]);
+    expect(first.entries).toContainEqual(expect.objectContaining({ path: join(one, 'expired'), status: 'removed' }));
+    await expect(stat(join(one, 'expired'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(owner, 'keep'), 'utf8')).toBe('owner data');
+    const two = join(root, 'run-two');
+    await mkdir(two); await writeFile(join(two, 'expired'), 'newly discovered');
+    const second = await runDiskReclaimOnce(discovered);
+    expect(second.complete).toBe(true);
+    expect(second.roots?.map(value => value.path).sort()).toEqual([one, two]);
+    await expect(stat(join(two, 'expired'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(owner, 'keep'), 'utf8')).toBe('owner data');
+  });
+
+  it('distinguishes preparation, admission, protection and audit waits in the persisted receipt', async () => {
+    const { root, options } = await setup();
+    let elapsed = 0;
+    const monotonic = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-request') elapsed += 11;
+      if (phase === 'mutex-callback') elapsed += 13;
+    };
+    inspectionProbe.before = path => { if (path === root) elapsed += 17; return undefined; };
+    let persisted: DiskReclaimReceipt | undefined;
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options,
+        sample: async () => { elapsed += 2; return []; },
+        readProtection: async () => { elapsed += 7; return { paths: [] }; },
+        record: async (phase, details) => {
+          if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+          elapsed += 5;
+        },
+      });
+      expect(receipt.complete).toBe(true);
+      expect(persisted?.timings).toMatchObject({ beforeSampleMs: 2, afterSampleMs: 2,
+        initialMutexWaitMs: 24, reacquireMutexWaitMs: 0, protectionReadMs: 7, rootPreparationMs: 17, auditMs: 5 });
+      expect(receipt.mutexTimeout).toBeUndefined();
+      // The receipt cannot truthfully include its own database acknowledgement.
+      expect(receipt.timings).toEqual(persisted?.timings);
+    } finally { monotonic.mockRestore(); }
+  });
+
   it('retains old evidence bound to an open acceptance item and reclaims it after terminal lease expiry', async () => {
     const { root, options } = await setup();
     const db = await createFreshPgDb('open-evidence-retention');
@@ -450,13 +502,27 @@ describe('retention on a real fixture tree', () => {
       await releaseGate;
     });
     await readyGate;
+    let clock = Date.now(), advanced = false;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-waiting' && !advanced) { advanced = true; clock += 5_001; }
+    };
+    let persisted: DiskReclaimReceipt | undefined;
     try {
-      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 100 });
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 5_000,
+        record: async (phase, details) => {
+          if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+        },
+      });
       expect(receipt.complete).toBe(false);
-      expect(receipt.errors.join('; ')).toMatch(/Timed out after .*waiting for fs-mutex|retention run budget exhausted/);
+      expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      expect(receipt.mutexTimeout).toMatchObject({ phase: 'initial', remainingRunBudgetMs: 5_000,
+        waitedMs: 5_001, timeoutMs: 5_000,
+        admissionSubphaseTimingsMs: { 'ticket-scan': expect.any(Number) } });
+      expect(persisted?.mutexTimeout).toEqual(receipt.mutexTimeout);
       expect(receipt.entries).toEqual([]);
       expect(await readFile(path, 'utf8')).toBe('keep');
-    } finally { release(); await holder; }
+    } finally { release(); await holder; now.mockRestore(); }
   });
 
   it('uses a held regular-file lease for file effects while directories keep host holder scans', async () => {
@@ -575,9 +641,100 @@ describe('retention on a real fixture tree', () => {
     expect((await stat(join(source, 'source.ts'))).size).toBe(8192);
   });
 
+  it('preserves the pass budget for expired entries after empty uncapped roots', async () => {
+    const { root, options } = await setup();
+    const empty = [join(root, 'empty-one'), join(root, 'empty-two'), join(root, 'empty-three')];
+    const ready = join(root, 'ready');
+    for (const path of [...empty, ready]) await mkdir(path);
+    const expired = join(ready, 'expired'); await writeFile(expired, 'old data');
+    const roots = [...empty, ready].map(path => ({ path, classId: 'fixture' }));
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const inspectTrees = vi.fn(inspectRetentionTrees);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, roots, runBudgetMs: 100_000, budgetMs: 100_000,
+        policy: options.policy.map(cls => ({ ...cls, roots: [...empty, ready] })), inspectTrees,
+        record: async (phase, details) => {
+          // Each enrolled census has durable progress writes. Empty roots must
+          // not spend those waits before a root with actual candidates starts.
+          if (phase === 'progress' && (details as { phase?: string }).phase === 'census-start') clock += 60_000;
+        },
+      });
+      expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+      expect(receipt.roots?.map(value => value.path)).toEqual([...empty, ready]);
+      expect(inspectTrees.mock.calls.map(([path]) => path)).toEqual([ready]);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+      await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
+
+  it('still requires the complete census for an empty capped root', async () => {
+    const { root, options } = await setup();
+    const inspectTrees = vi.fn(async () => ({ entries: [], retained: [], inspectedNodes: 0,
+      retainedRecentTrees: 0, error: 'allocation census unavailable' }));
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees,
+      policy: options.policy.map(cls => ({ ...cls, maxBytes: 4096 })),
+    });
+    expect(inspectTrees).toHaveBeenCalledWith(root, expect.objectContaining({ includeRecent: true }));
+    expect(receipt.complete).toBe(false);
+    expect(receipt.errors).toContain(`inspect:${root}: allocation census unavailable`);
+    expect(receipt.entries.filter(entry => entry.status === 'removed')).toEqual([]);
+  });
+
+  it('keeps pending initial cap measurements away from selection and fresh effect inspections', async () => {
+    const { root, options } = await setup();
+    const source = join(root, 'source'); await mkdir(source); await writeFile(join(source, 'data'), 'retained until complete');
+    const fresh = vi.fn(inspectRetentionTrees);
+    const initial = vi.fn(async () => ({ entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+      error: 'retention census pending; managed walk continues for adoption' }));
+    const policy = options.policy.map(cls => ({ ...cls, maxBytes: 1 }));
+    const pending = await runDiskReclaimOnce({ ...options, policy, inspectTrees: fresh, inspectInitialCappedTrees: initial });
+    expect(pending.complete).toBe(false); expect(pending.caps ?? []).toEqual([]);
+    expect(initial).toHaveBeenCalledOnce(); expect(fresh).not.toHaveBeenCalled();
+    expect(pending.entries.filter(e => e.status === 'removed')).toEqual([]);
+    const complete = await runDiskReclaimOnce({ ...options, policy, inspectTrees: fresh,
+      inspectInitialCappedTrees: inspectRetentionTrees });
+    expect(complete.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+    expect(fresh).toHaveBeenCalledWith(root, expect.objectContaining({ paths: [source] }));
+  });
+
+  it('adopts a pending continuous census before later roots can spend the next deadline', async () => {
+    const { root, options } = await setup();
+    const before = join(root, 'before'), pending = join(root, 'pending'), later = join(root, 'later');
+    for (const path of [before, pending, later]) await mkdir(path);
+    const source = join(pending, 'expired'); await mkdir(source); await writeFile(join(source, 'data'), 'old');
+    const roots = [before, pending, later].map(path => ({ path, classId: 'fixture' }));
+    const scoped = { ...options, roots, runBudgetMs: 1000,
+      policy: options.policy.map(cls => ({ ...cls, roots: [before, pending, later], maxBytes: 1 })),
+      inspectTrees: inspectRetentionTrees };
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const unfinished = () => ({ entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0,
+      error: 'retention census pending; managed walk continues for adoption' });
+    try {
+      const first = await runDiskReclaimOnce({ ...scoped, inspectInitialCappedTrees: async (path, input) => {
+        if (path !== pending) return inspectRetentionTrees(path, input);
+        clock += 2000;
+        return unfinished();
+      } });
+      expect(first.scan?.stoppedAtRoot).toBe(pending);
+      expect(first.entries.filter(entry => entry.status === 'removed')).toEqual([]);
+      const initial = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
+        if (path !== later) return inspectRetentionTrees(path, input);
+        clock += 2000;
+        return unfinished();
+      });
+      const resumed = await runDiskReclaimOnce({ ...scoped, previousReceipt: first, inspectInitialCappedTrees: initial });
+      expect(initial.mock.calls[0]?.[0]).toBe(pending);
+      expect(resumed.entries).toContainEqual(expect.objectContaining({ path: source, status: 'removed' }));
+      await expect(stat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
+
   it('starts the next pass after a root whose census spent the preceding deadline', async () => {
     const { root, options } = await setup();
     const blocked = join(root, 'data-device'); await mkdir(blocked);
+    await writeFile(join(blocked, 'slow-candidate'), 'requires census');
     const ready = join(root, 'root-device'); await mkdir(ready);
     const expired = join(ready, 'expired'); await writeFile(expired, 'old root-disk data');
     const roots = [blocked, ready].map(path => ({ path, classId: 'fixture' }));
@@ -605,6 +762,45 @@ describe('retention on a real fixture tree', () => {
       const ignored = await runDiskReclaimOnce({ ...scoped, previousReceipt, dryRun: true });
       expect(ignored.roots?.map(value => value.path)).toEqual([blocked, ready]);
     }
+  });
+
+  it.each([false, true])('reclaims a pressured device before a healthy census consumes the run deadline (alias=%s)', async alias => {
+    const { root, options } = await setup();
+    const healthy = join(root, 'healthy-device'); await mkdir(healthy);
+    await writeFile(join(healthy, 'slow-candidate'), 'requires census');
+    const pressured = join(root, 'pressured-device'); await mkdir(pressured);
+    const expired = join(pressured, 'expired'); await writeFile(expired, 'old root-disk data');
+    const roots = [healthy, pressured].map(path => ({ path, classId: 'fixture' }));
+    const gib = 1024 ** 3;
+    const snapshot = (path: string, freeBytes: number, aliases?: string[]) => ({
+      path, aliases, totalBytes: 3000 * gib, freeBytes, freePct: freeBytes / (3000 * gib),
+      totalInodes: 0, freeInodes: 0, freeInodesPct: 0,
+    });
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const visited: string[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, roots, runBudgetMs: 1000,
+        policy: options.policy.map(cls => ({ ...cls, roots: [healthy, pressured] })),
+        sample: async () => [snapshot(root, (alias ? 2000 : 30) * gib), snapshot(healthy, 2000 * gib),
+          ...(alias ? [snapshot('/bound-pressure-device', 30 * gib, [pressured])] : [])],
+        inspectTrees: async (path, input) => {
+          visited.push(path);
+          if (path === healthy) {
+            clock += 2000;
+            return { entries: [], retained: [], inspectedNodes: 1, retainedRecentTrees: 0,
+              error: 'retention native census timed out' };
+          }
+          return inspectRetentionTrees(path, input);
+        },
+      });
+      expect(visited[0]).toBe(pressured);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: expired, status: 'removed' }));
+      await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Priority changes ordering, not coverage: the interrupted healthy root stays incomplete.
+      expect(receipt.complete).toBe(false);
+      expect(receipt.scan?.incompleteRoots).toContain(healthy);
+    } finally { now.mockRestore(); }
   });
 
   it.each(['advancing-census', 'expired-inspection', 'expired-admission', 'expired-run'] as const)
@@ -674,6 +870,7 @@ describe('retention on a real fixture tree', () => {
 
   it('persists root census timeout attribution without copying allocation inventories', async () => {
     const { root, options } = await setup();
+    await mkdir(join(root, 'large'));
     const events: Array<{ phase: string; [key: string]: unknown }> = [];
     const timing = { elapsedMs: 200, lastProgressAfterMs: 150, lastChildPath: join(root, 'large'),
       timeoutMs: 200, progressTimeoutMs: 50, timeoutKind: 'absolute' as const };
@@ -687,7 +884,8 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(false);
     expect(receipt.censuses).toEqual([{ root, classId: 'fixture', elapsedMs: expect.any(Number),
       inspectedNodes: 123, timing, error: 'retention native census timed out' }]);
-    expect(events).toContainEqual({ phase: 'census-start', root, classId: 'fixture' });
+    expect(events).toContainEqual({ phase: 'census-start', root, classId: 'fixture',
+      timings: expect.objectContaining({ auditMs: expect.any(Number) }) });
     expect(events).toContainEqual({ phase: 'census-finish', ...receipt.censuses![0] });
     expect(JSON.stringify({ censuses: receipt.censuses, events })).not.toContain('private allocation graph');
     expect(receipt.entries.some(entry => entry.status === 'removed')).toBe(false);
@@ -729,6 +927,40 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 12288, afterBytes: 4096, overByBytes: 0 });
     expect(receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)).toEqual(ordered.slice(1).map((entry) => entry.path));
     expect(await stat(held)).toBeTruthy();
+  });
+
+  it('subtracts a capped entry that disappears before removal so its stale bytes drive no further eviction', async () => {
+    // EI-26925507003255681: the census may list a child removed since it was measured.
+    // Once it is gone it no longer occupies the cap; counting it would evict a survivor.
+    const { root, options } = await setup();
+    const paths = ['a-old', 'b-middle', 'c-new'].map((name) => join(root, name));
+    for (const [index, path] of paths.entries()) { await writeFile(path, Buffer.alloc(4096)); await utimes(path, 1, index + 1); }
+    const census = await inspectRetentionTrees(root, { retainAfterMs: 0, includeRecent: true });
+    expect(census.error).toBeUndefined();
+    const ordered = [...census.entries].sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+    expect(ordered).toHaveLength(3);
+    const gone = ordered[0]!;
+    const beforeBytes = ordered.reduce((sum, entry) => sum + entry.bytes, 0);
+    // Removing the vanished entry alone meets the cap. Without the subtraction the
+    // cap would still read as exceeded and the next-oldest survivor would be removed.
+    const maxBytes = beforeBytes - gone.bytes;
+    const intents: string[] = [];
+    const receipt = await runDiskReclaimOnce({ ...options, nowMs: Date.now(), inspectTrees: inspectRetentionTrees,
+      policy: options.policy.map((cls) => ({ ...cls, maxBytes, keep: { kind: 'max-age' as const, maxAgeHours: 24 } })),
+      record: async (phase, detail) => {
+        if (phase !== 'remove-intent') return;
+        const path = (detail as { path: string }).path;
+        intents.push(path);
+        // A concurrent remover wins the race between the census and this effect.
+        if (path === gone.path) await rm(path);
+      } });
+    expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: gone.path, bytes: gone.bytes,
+      status: 'changed', reason: 'disappeared before removal' }));
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes, afterBytes: beforeBytes - gone.bytes, overByBytes: 0 });
+    expect(intents).toEqual([gone.path]);
+    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toEqual([]);
+    for (const survivor of ordered.slice(1)) expect((await stat(survivor.path)).size).toBe(4096);
   });
 
   it('counts a live pin in the cap receipt and reports its exempt overage', async () => {
@@ -782,7 +1014,7 @@ describe('retention on a real fixture tree', () => {
         expect(opts?.timeoutMs).toBeGreaterThan(0); expect(opts?.timeoutMs).toBeLessThanOrEqual(60_000);
         run(command, args, opts?.stdin); return { ok: true, detail: 'completed' };
       };
-      const receipt = await runDiskReclaimOnce({ ...options,
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 60_000,
         inspectTrees: (root, opts) => inspectRetentionTrees(root, { ...opts, requirePrivilege: true }),
         removeEntry: (entry, ms) => removePrivilegedRetentionEntry(entry, ms, execute) });
       expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
@@ -891,6 +1123,7 @@ describe('retention on a real fixture tree', () => {
     managedProbe.active = true;
     try {
       await spawned;
+      await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
       await applyEventSubstrateMigrationsForTest(db.sql, {
         label: 'disk-reclaim.integration.test.ts privileged release holder', ...COORD_SUBSCRIPTION_SUBSTRATE,
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
@@ -1193,9 +1426,11 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.errors).toEqual([expect.stringContaining(`incomplete retention effects:${root}:`)]);
       expect(receipt.effects).toEqual([
         expect.objectContaining({ root, selected: 2, processed: 1, remaining: 1, nextPath: paths[1], elapsedMs: 300, stopped: true,
-          timings: { initialHolderScanMs: 100, freshHolderScanMs: 200, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 200, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
+            progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 } }),
         expect.objectContaining({ root: secondRoot, selected: 1, processed: 1, remaining: 0, nextPath: null, elapsedMs: 200, stopped: false,
-          timings: { initialHolderScanMs: 100, freshHolderScanMs: 100, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 100, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
+            progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 } }),
       ]);
       expect(progress).toContainEqual(receipt.effects![0]);
       expect(delegate).toHaveBeenCalledOnce();
@@ -1365,6 +1600,61 @@ describe('retention on a real fixture tree', () => {
       await expect(stat(path)).resolves.toBeDefined();
     } finally { now.mockRestore(); }
   });
+  it('lets an admitted native removal finish within the pass deadline before stopping root admissions', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const timeouts: number[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 1_000, effectBudgetMs: 100,
+        scanHolders: async () => {
+          clock += 45;
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        removeEntry: async (entry, timeoutMs) => {
+          timeouts.push(timeoutMs);
+          // Model an enrolled worker that needs 20ms after its safety checks.
+          // A nearly spent root admission window must not kill that worker.
+          clock += 20;
+          if (timeoutMs < 20) throw new Error('delegate timeout');
+          await rm(entry.path);
+        },
+      });
+      expect(timeouts).toEqual([910]);
+      expect(receipt.entries.filter(entry => entry.status === 'removed').map(entry => entry.path)).toEqual([paths[0]]);
+      expect(receipt.entries.filter(entry => entry.status === 'failed')).toEqual([]);
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1], stopped: true });
+      expect(receipt.complete).toBe(false);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+    } finally { now.mockRestore(); }
+  });
+  it('still bounds an admitted native removal by the remaining whole pass', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'old'); await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const timeouts: number[] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 100, effectBudgetMs: 1_000,
+        scanHolders: async () => {
+          clock += 45;
+          return { complete: true, byPath: new Map<string, string[]>() };
+        },
+        removeEntry: async (entry, timeoutMs) => {
+          timeouts.push(timeoutMs);
+          clock += 5;
+          await rm(entry.path);
+        },
+      });
+      expect(timeouts).toEqual([10]);
+      expect(receipt.complete).toBe(true);
+      expect(receipt.entries[0]).toMatchObject({ path, status: 'removed' });
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
   it('finishes an in-flight removal audit without falsely leaving a fully processed root partial', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
     let clock = Date.now();
@@ -1420,8 +1710,77 @@ describe('retention on a real fixture tree', () => {
       for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { finish(); now.mockRestore(); }
   });
+  it.each(['persisted', 'failed'] as const)('releases the real mutex while a queued-writer diagnostic is %s', async (auditOutcome) => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let firstRemoval!: () => void, finishRemoval!: () => void, queued!: () => void;
+    let auditStarted!: () => void, finishAudit!: () => void, peerAcquired!: () => void;
+    const removing = new Promise<void>(resolve => { firstRemoval = resolve; });
+    const removalGate = new Promise<void>(resolve => { finishRemoval = resolve; });
+    const waiting = new Promise<void>(resolve => { queued = resolve; });
+    const auditing = new Promise<void>(resolve => { auditStarted = resolve; });
+    const auditGate = new Promise<void>(resolve => { finishAudit = resolve; });
+    const acquired = new Promise<void>(resolve => { peerAcquired = resolve; });
+    let peerEntered = false, auditFinished = false, refreshedAfterPeer = false;
+    const records: string[] = [];
+    const waitFor = async (pending: Promise<unknown>, phase: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([pending, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`FIFO diagnostic fixture stalled at ${phase}`)), 10_000);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 60_000,
+      readProtection: async () => { if (peerEntered) refreshedAfterPeer = true; return { paths: [] }; },
+      record: async (phase, details) => {
+        if (phase === 'remove-intent' || phase === 'removed') records.push(`${phase}:${(details as { path: string }).path}`);
+        if (phase === 'progress' && (details as { phase: string }).phase === 'yield-to-queued-writer') {
+          auditStarted(); await auditGate; auditFinished = true;
+          if (auditOutcome === 'failed') throw new Error('fixture handoff audit failed');
+        }
+      },
+      removeEntry: async entry => {
+        if (entry.path === paths[0]) { firstRemoval(); await removalGate; }
+        else { expect(peerEntered && auditFinished && refreshedAfterPeer).toBe(true); }
+        await rm(entry.path);
+      },
+    });
+    let peer: Promise<unknown> | undefined;
+    try {
+      await waitFor(removing, 'first removal');
+      peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; peerAcquired(); },
+        { timeoutMs: 30_000, retryMs: 5, onWaiting: queued });
+      await waitFor(waiting, 'peer queued');
+      expect(peerEntered).toBe(false);
+      finishRemoval();
+      await waitFor(auditing, 'diagnostic suspended');
+      await waitFor(acquired, 'peer admitted during suspended diagnostic');
+      expect(auditFinished).toBe(false);
+      expect(records).toEqual([`remove-intent:${paths[0]}`, `removed:${paths[0]}`]);
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      finishAudit();
+      const receipt = await waitFor(reclaim, 'receipt').then(() => reclaim);
+      await peer;
+      expect(receipt.complete).toBe(auditOutcome === 'persisted');
+      if (auditOutcome === 'failed') {
+        expect(receipt.errors).toContain('fixture handoff audit failed');
+        expect(receipt.scan?.stoppedAtRoot).toBe(root);
+        expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      } else {
+        expect(receipt.errors).toEqual([]);
+        expect(records).toEqual(paths.flatMap(path => [`remove-intent:${path}`, `removed:${path}`]));
+        await expect(stat(paths[1]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+    } finally { finishRemoval(); finishAudit(); await Promise.allSettled([reclaim, peer]); }
+  }, 45_000);
   it('attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation', async () => {
     const { root, options } = await setup();
+    const later = join(dirname(root), 'later'); await mkdir(later);
+    const laterPath = join(later, 'old'); await writeFile(laterPath, 'expired');
+    const scoped = { ...options, roots: [root, later].map(path => ({ path, classId: 'fixture' })),
+      policy: options.policy.map(cls => ({ ...cls, roots: [root, later] })) };
     const paths = [join(root, 'old-a'), join(root, 'old-b')];
     for (const path of paths) await writeFile(path, 'expired');
     let entered!: () => void, finish!: () => void, queued!: () => void, releasePeer!: () => void;
@@ -1431,6 +1790,8 @@ describe('retention on a real fixture tree', () => {
     const peerRelease = new Promise<void>(resolve => { releasePeer = resolve; });
     let reacquisitionQueued!: () => void;
     const reacquiring = new Promise<void>(resolve => { reacquisitionQueued = resolve; });
+    let peerWaitObserved!: () => void;
+    const peerWait = new Promise<void>(resolve => { peerWaitObserved = resolve; });
     let clock = Date.now(), peerEntered = false, failedWait = false, requests = 0;
     const phases: string[] = [];
     const waitFor = async <T>(pending: Promise<T>, phase: string): Promise<T> => {
@@ -1447,9 +1808,18 @@ describe('retention on a real fixture tree', () => {
       if (phase === 'mutex-request') requests++;
       // Advance only after admission has captured its start time. A second
       // waiting notice cannot drive a frozen clock: it is itself time-throttled.
-      if (phase === 'mutex-waiting' && requests === 3) reacquisitionQueued();
+      if (phase === 'mutex-waiting' && requests === 3) {
+        // Advance before withFsMutex resumes its deadline check; doing this in
+        // the peer's async continuation races that check under load.
+        clock += 2_000;
+        reacquisitionQueued();
+      }
     };
-    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 1_000,
+    let persisted: DiskReclaimReceipt | undefined;
+    const reclaim = runDiskReclaimOnce({ ...scoped, runBudgetMs: 1_000,
+      record: async (phase, details) => {
+        if (phase === 'receipt') persisted = structuredClone(details as DiskReclaimReceipt);
+      },
       removeEntry: async entry => { entered(); await finishRemoval; await rm(entry.path); } });
     let peer: Promise<unknown> | undefined;
     try {
@@ -1457,8 +1827,8 @@ describe('retention on a real fixture tree', () => {
       peer = withFsMutex('papercusp-disk-retention', async () => {
         peerEntered = true;
         await reacquiring;
-        clock += 2_000;
         failedWait = true;
+        peerWaitObserved();
         await peerRelease;
       },
         { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
@@ -1469,14 +1839,30 @@ describe('retention on a real fixture tree', () => {
         clock++;
       } finally { finish(); }
       const receipt = await waitFor(reclaim, 'failed reacquisition receipt');
+      await waitFor(peerWait, 'peer retained the lock during failed reacquisition');
       expect(failedWait).toBe(true);
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      expect(receipt.mutexTimeout).toMatchObject({ phase: 'reacquire', remainingRunBudgetMs: 999,
+        waitedMs: 2_000, timeoutMs: 999,
+        admissionSubphaseTimingsMs: { 'ticket-scan': expect.any(Number) } });
+      expect(persisted?.mutexTimeout).toEqual(receipt.mutexTimeout);
+      // The next scheduled pass must rotate past this interrupted root instead
+      // of repeatedly starting at the same early roots after a FIFO timeout.
+      expect(receipt.scan?.stoppedAtRoot).toBe(root);
+      expect(receipt.scan?.incompleteRoots).toEqual([root, later]);
       expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1],
         elapsedMs: 2_001, timings: { yieldWaitMs: 2_000 } });
       expect(receipt.entries.filter(entry => entry.status === 'removed')).toHaveLength(1);
       await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      expect(await readFile(laterPath, 'utf8')).toBe('expired');
+      releasePeer(); await peer;
+      const resumed = await runDiskReclaimOnce({ ...scoped, previousReceipt: receipt });
+      expect(resumed.roots?.map(value => value.path)).toEqual([later, root]);
+      expect(resumed.complete, resumed.errors.join('; ')).toBe(true);
+      expect(resumed.entries.filter(entry => entry.status === 'removed').map(entry => entry.path))
+        .toEqual([laterPath, paths[1]]);
     } finally { finish(); reacquisitionQueued(); releasePeer(); now.mockRestore(); await Promise.allSettled([reclaim, peer]); }
   });
   it.each(['pin', 'lease'] as const)('refreshes a new %s after a FIFO handoff without repeating the census', async (kind) => {
@@ -1489,6 +1875,7 @@ describe('retention on a real fixture tree', () => {
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     let protectedByPeer = false;
     let censusCompleted = false;
+    const protectionReads: boolean[] = [];
     const inspectTrees = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
       const result = await inspectRetentionTrees(path, input);
       // Queue the writer after native IO has completed. This fixture exercises
@@ -1498,8 +1885,11 @@ describe('retention on a real fixture tree', () => {
       return result;
     });
     const reclaim = runDiskReclaimOnce({ ...options, inspectTrees,
-      readProtection: async () => ({ paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
-        pins: protectedByPeer && kind === 'pin' ? [{ paths: [paths[1]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] : [] }),
+      readProtection: async ({ renewEvidence }) => {
+        protectionReads.push(renewEvidence);
+        return { paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
+          pins: protectedByPeer && kind === 'pin' ? [{ paths: [paths[1]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] : [] };
+      },
       removeEntry: async (entry) => { expect(protectedByPeer).toBe(true); await rm(entry.path); },
     });
     await inspecting;
@@ -1509,6 +1899,11 @@ describe('retention on a real fixture tree', () => {
     try { await waiting; } finally { finish(); }
     const receipt = await reclaim; await peer;
     expect(receipt.complete).toBe(true);
+    // The peer's new protection must be read after handoff, while the global
+    // open-evidence maintenance query/renewal is admitted only once per pass.
+    expect(protectionReads.length).toBeGreaterThan(1);
+    expect(protectionReads[0]).toBe(true);
+    expect(protectionReads.slice(1).every(renew => renew === false)).toBe(true);
     expect(inspectTrees.mock.calls.filter(([, input]) => !input.paths)).toHaveLength(1);
     expect(receipt.entries.find((entry) => entry.path === paths[1])).toMatchObject({ status: 'protected', reason: 'live retention lease or pin' });
     await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1524,9 +1919,12 @@ describe('retention on a real fixture tree', () => {
     } });
     try {
       await entered;
-      const second = await runDiskReclaimOnce(options);
+      const second = await runDiskReclaimOnce({ ...options, runBudgetMs: 1000 });
       expect(second.complete).toBe(false);
-      expect(second.errors.join(' ')).toContain('Timed out after 1000ms waiting for fs-mutex');
+      expect(second.errors.join(' ')).toMatch(/Timed out after \d+ms waiting for fs-mutex/);
+      expect(second.mutexTimeout?.phase).toBe('initial');
+      expect(second.mutexTimeout?.timeoutMs).toBeGreaterThan(0);
+      expect(second.mutexTimeout?.timeoutMs).toBeLessThanOrEqual(1000);
       expect(second.entries).toEqual([]);
       expect(await stat(path)).toBeTruthy();
     } finally { releaseFirst(); }
@@ -1813,7 +2211,8 @@ describe('retention on a real fixture tree', () => {
     for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
   it('reserves the shared run budget for later independent owners and policy census', async () => {
-    const { options } = await setup();
+    const { root, options } = await setup();
+    await writeFile(join(root, 'requires-census'), 'expired');
     const started = Date.now();
     let clock = started;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
@@ -2019,6 +2418,7 @@ describe('retention on a real fixture tree', () => {
         sample: async () => [{ path: '/', totalBytes: 500 * gib, freeBytes: 99 * gib, freePct: 0.198, totalInodes: 0, freeInodes: 0, freeInodesPct: 0 }],
         emitToast: async () => {}, attributeUsage: async () => ({ entries: [], truncated: false }),
         escalate: async (input) => { notifications.push(input); }, recentlyEscalated: async () => false,
+        readMissingMounts: async () => null, resolve: async () => false,
         broadcast: async () => true,
       });
       expect(alarm.escalated).toBe(true);

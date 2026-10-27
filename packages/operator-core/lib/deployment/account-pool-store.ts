@@ -941,11 +941,14 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
  *                               themselves can serve; we are limiting ourselves at the door.
  *  - `pacing-policy`          — the burn governor is PACING us off a projection (see
  *                               `BurnDisposition`). Nothing is walled; this is a policy choice.
+ *  - `gateway-shed`           — no point-in-time term binds, but the gateway measurably refused
+ *                               requests (shed / upstream 429) in the recent window. Emitted
+ *                               only by `deriveCapacityVerdict`, never by the pool rollup.
  *  - `host`                   — the box (CPU/memory/PSI), not the provider.
  *  - `none`                   — nothing is binding, OR the evidence does not support a verdict.
  *                               Never act on missing data: `reason` says which.
  */
-export type CapacityBinding = 'usage-wall' | 'admission-concurrency' | 'pacing-policy' | 'host' | 'none';
+export type CapacityBinding = 'usage-wall' | 'admission-concurrency' | 'pacing-policy' | 'gateway-shed' | 'host' | 'none';
 
 /**
  * One provider's capacity rollup over its own `accounts:status` rows (P-002).

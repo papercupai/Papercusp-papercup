@@ -9,12 +9,14 @@
 import type { Env } from './env.ts';
 import { buildApi } from './routes/index.ts';
 import { indexBatch } from './indexer.ts';
+import { configuredGcsObjectStore } from '@papercusp/artifact-registry';
 
 const api = buildApi();
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    return api.fetch(req, env, ctx);
+    // Resolve storage lazily so non-storage routes remain available during setup.
+    return api.fetch(req, { ...env, get ARTIFACTS() { return configuredGcsObjectStore(env); } }, ctx);
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {

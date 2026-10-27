@@ -168,6 +168,8 @@ describe('test-certified base: scope detection (the false-certification hole)', 
     ['equals form', ['node', 'affected-tests.mjs', '--changed-paths=p.ts']],
     ['range-from equals form', ['node', 'affected-tests.mjs', '--range-from=abc']],
     ['range-to space form', ['node', 'affected-tests.mjs', '--range-to', 'abc']],
+    ['qualification remaining work space form', ['node', 'affected-tests.mjs', '--qualification-work', '/snapshot']],
+    ['qualification remaining work equals form', ['node', 'affected-tests.mjs', '--qualification-work=/snapshot']],
   ])('treats %s as scoped', (_label, argv) => {
     expect(isScopedInvocation(argv)).toBe(true);
   });
@@ -233,6 +235,8 @@ describe('test-certified base: the advance decision', () => {
   it.each([
     ['a scoped run (space form)', { argv: ['node', 'x', '--changed-paths', 'p.ts'] }, 'scoped'],
     ['a scoped run (equals form)', { argv: ['node', 'x', '--changed-paths=p.ts'] }, 'scoped'],
+    ['remaining qualification work (space form)', { argv: ['node', 'x', '--qualification-work', '/snapshot'] }, 'scoped'],
+    ['remaining qualification work (equals form)', { argv: ['node', 'x', '--qualification-work=/snapshot'] }, 'scoped'],
     ['a failing run', { failed: true }, 'failed'],
     ['a run with an undetermined task', { undeterminedTasks: true }, 'undetermined'],
     ['a run with a timed-out task', { timedOutTasks: true }, 'timed-out'],

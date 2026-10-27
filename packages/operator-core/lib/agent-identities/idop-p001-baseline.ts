@@ -12,9 +12,110 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { replayAgentSpecification, specificationPrompt } from '@papercusp/orchestrator/blueprint';
 
 export const IDOP_P001_BASELINE_REL = 'docs/evidence/idop-p001-baseline-2026-10-22.json';
 export const IDOP_P001_PROMPT_REL = 'apps/operator/prompts/papercusp-su.codex.md';
+
+export type IdopPromptObservation = {
+  sourceSession: {
+    ownerId: string; nativeSessionId: string; advSessionId: number;
+    nativeMessageTimestamp: string; nativeMetaTimestamp: string;
+    nativeRecordLine: number; nativeTranscript: string;
+    sourceClosure: string; sourceClosureSha256: string; specificationRevision: string;
+  };
+  renderedPrompt: { sha256: string; bytes: number; characters: number; frozenPath: string };
+  nativeDelivery: {
+    recordSha256: string; completeAgentsTextSha256: string; completeAgentsTextBytes: number;
+    occurrences: number; prefix: string; suffix: string; excludedRenderedFields: string[];
+  };
+  files: Array<{ path: string; sha256: string; bytes: number }>;
+};
+
+/** Replay saved launch inputs and compare with an independently read native record.
+ * Raw prompt bytes stay with the caller; the returned receipt contains only digests.
+ */
+export function inspectIdopP001PromptArchive(
+  manifest: IdopPromptObservation,
+  readBytes: (ref: string) => Buffer,
+  originalNativeRecord: Buffer,
+) {
+  const requireProof = (condition: unknown, reason: string): void => {
+    if (!condition) throw new Error(`IDOP prompt observation: ${reason}`);
+  };
+  requireProof(manifest.sourceSession.nativeSessionId.trim(), 'missing native session');
+  requireProof(Number.isSafeInteger(manifest.sourceSession.nativeRecordLine) &&
+    manifest.sourceSession.nativeRecordLine > 0, 'invalid native record line');
+  requireProof(manifest.nativeDelivery.excludedRenderedFields.length === 0, 'render exclusions are not accepted');
+  const files = new Map<string, Buffer>();
+  for (const entry of manifest.files) {
+    requireProof(!files.has(entry.path), 'duplicate archive reference');
+    const bytes = readBytes(entry.path);
+    requireProof(bytes.length === entry.bytes && sha256(bytes) === entry.sha256, 'archive digest mismatch');
+    files.set(entry.path, bytes);
+  }
+  const archived = (ref: string): Buffer => {
+    const bytes = files.get(ref);
+    requireProof(bytes !== undefined, 'unlisted archive reference');
+    return bytes!;
+  };
+  const soleFile = (name: string): Buffer => {
+    const matches = [...files.keys()].filter(ref => ref.endsWith(`/${name}`));
+    requireProof(matches.length === 1, 'missing or ambiguous archive file');
+    return archived(matches[0]);
+  };
+  // sourceClosure names the original observation; files names its frozen copy.
+  // Verify that copy against the original's digest without rewriting provenance.
+  const sourceBytes = soleFile('source-closure.json');
+  requireProof(sha256(sourceBytes) === manifest.sourceSession.sourceClosureSha256, 'source closure digest mismatch');
+  const closure = JSON.parse(sourceBytes.toString('utf8')) as {
+    response: { truncated: boolean; rows: Array<{
+      id: string; session_id: string; coord_owner_id: string;
+      launch_spec: { specificationArtifact: unknown; specificationRevision: string };
+    }> };
+  };
+  requireProof(closure.response.truncated === false && closure.response.rows.length === 1,
+    'source session census is not exact');
+  const session = closure.response.rows[0];
+  requireProof(String(session.id) === String(manifest.sourceSession.advSessionId) &&
+    session.session_id === manifest.sourceSession.nativeSessionId &&
+    session.coord_owner_id === manifest.sourceSession.ownerId, 'source session mismatch');
+  const replayed = replayAgentSpecification(session.launch_spec.specificationArtifact);
+  requireProof(replayed.specificationRevision === manifest.sourceSession.specificationRevision &&
+    session.launch_spec.specificationRevision === replayed.specificationRevision, 'specification revision mismatch');
+  const prompt = archived(manifest.renderedPrompt.frozenPath);
+  requireProof(prompt.length === manifest.renderedPrompt.bytes &&
+    sha256(prompt) === manifest.renderedPrompt.sha256 &&
+    // The capture's Python len counts Unicode code points, not UTF-16 units.
+    Array.from(prompt.toString('utf8')).length === manifest.renderedPrompt.characters, 'render digest mismatch');
+  requireProof(Buffer.from(specificationPrompt(replayed)).equals(prompt), 'replayed render differs');
+  const meta = JSON.parse(soleFile('native-session-meta.jsonl').toString('utf8')) as {
+    timestamp: string; type: string; payload: { id: string; session_id: string; timestamp: string };
+  };
+  // The payload records session creation; the outer timestamp records emission.
+  requireProof(meta.type === 'session_meta' && meta.payload.timestamp === manifest.sourceSession.nativeMetaTimestamp &&
+    meta.payload.id === manifest.sourceSession.nativeSessionId &&
+    meta.payload.session_id === manifest.sourceSession.nativeSessionId, 'native session mismatch');
+  const recordBytes = soleFile('native-agents-record.jsonl');
+  requireProof(recordBytes.equals(originalNativeRecord), 'original native record differs');
+  requireProof(sha256(recordBytes) === manifest.nativeDelivery.recordSha256, 'native record digest mismatch');
+  const record = JSON.parse(recordBytes.toString('utf8')) as {
+    timestamp: string; type: string;
+    payload: { type: string; role: string; content: Array<{ type: string; text?: string }> };
+  };
+  requireProof(record.type === 'response_item' && record.payload.type === 'message' &&
+    record.payload.role === 'user' && record.timestamp === manifest.sourceSession.nativeMessageTimestamp,
+  'native message provenance mismatch');
+  const texts = record.payload.content.filter(part => part.type === 'input_text' &&
+    typeof part.text === 'string').map(part => part.text!);
+  const expected = manifest.nativeDelivery.prefix + prompt.toString('utf8') + manifest.nativeDelivery.suffix;
+  const matches = texts.filter(text => text === expected);
+  requireProof(manifest.nativeDelivery.occurrences === 1 && matches.length === 1, 'native prompt differs');
+  requireProof(Buffer.byteLength(matches[0]) === manifest.nativeDelivery.completeAgentsTextBytes &&
+    sha256(matches[0]) === manifest.nativeDelivery.completeAgentsTextSha256, 'native text digest mismatch');
+  return { nativeSessionId: session.session_id, specificationRevision: replayed.specificationRevision,
+    renderedPromptSha256: sha256(prompt), nativeRecordSha256: sha256(recordBytes), filesChecked: files.size };
+}
 
 type Observation = {
   identity: string;
@@ -36,7 +137,7 @@ type CoverageInput = {
     builtInIdentities: Array<{ id: string }>;
   };
   observations: Array<Pick<Observation, 'identity' | 'status' | 'ownerId' | 'observedAt' |
-    'toolInvocationId' | 'activationEventId' | 'refusal'>>;
+    'toolInvocationId' | 'activationEventId' | 'refusal'> & Partial<Pick<Observation, 'nativeSessionId'>>>;
 };
 
 /** A row-count floor cannot establish coverage of an independently enumerated population. */
@@ -53,10 +154,12 @@ export function inspectIdopP001Coverage(baseline: CoverageInput) {
   for (const row of baseline.observations) {
     const key = `${roles.has(row.identity) ? 'role' : 'identity'}:${row.identity}`;
     const invocation = Number.isSafeInteger(row.toolInvocationId) && Number(row.toolInvocationId) > 0;
+    const sourceSession = typeof row.nativeSessionId === 'string' && row.nativeSessionId.trim().length > 0;
     const receipt = invocation && (row.status === 'launch-refused'
       ? Boolean(row.refusal?.trim())
-      : /^su-/.test(row.ownerId) && (row.status === 'observed' ||
+      : sourceSession && /^su-/.test(row.ownerId) && (row.status === 'observed' ||
           (row.status === 'tool-refused' && Boolean(row.refusal?.trim()))));
+    // An invocation/owner cannot identify the source session; retain missing provenance as invalid.
     // Activation proves a worn layer, but does not by itself prove its effective tool set.
     if (!expected.has(key) || !receipt || !Number.isFinite(Date.parse(row.observedAt))) {
       invalid.push(key);

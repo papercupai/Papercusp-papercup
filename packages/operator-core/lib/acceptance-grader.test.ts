@@ -1229,6 +1229,21 @@ describe('launchAcceptanceGrader', () => {
     expect(brief.length).toBeLessThan(8_000);
   });
 
+  it('keeps an admitted episode launch key across neutral plan revisions and distinguishes the next episode', async () => {
+    const launch = vi.fn(async () => ({ data: { launch: { tasks: [{ taskId: 'episode-task', logPath: '/tmp/episode-task.log' }] } } }));
+    const d = deps(launch);
+    const first = await launchAcceptanceGrader('ship-the-thing', ctx, { ...d, dispatchEpisodeIdentity: 'episode:1' });
+    const moved = { ...plan, row: { ...plan.row, version: 8, contentHash: 'neutral-edit' } };
+    const replay = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...d, readPlan: async () => moved, dispatchEpisodeIdentity: 'episode:1',
+    });
+    const next = await launchAcceptanceGrader('ship-the-thing', ctx, { ...d, dispatchEpisodeIdentity: 'episode:2' });
+    expect(first.state).toBe('launched');
+    expect(replay.idempotencyKey).toBe(first.idempotencyKey);
+    expect(next.idempotencyKey).not.toBe(first.idempotencyKey);
+    expect(launch.mock.calls).toHaveLength(3);
+  });
+
   it('refuses a fresh judge launch when the caller is in the rubric author lineage', async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'must not launch' }],
@@ -1982,6 +1997,56 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
       allowInferenceGatewayError: true,
     })).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(raw + '\n● I resumed the audit.', {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
+  it.each(['claude', 'codex'])('recognizes the host terminal receipt after a damaged %s error screen', (agent) => {
+    const receipt = `[psu] native-turn-failed agent=${agent} code=native_error retryable=false retryAfterMs=unknown`;
+    const raw = `API error · Retrying in 1m 0s · attempt 3/10\r\n\u001b[?25h${receipt}\r\n`;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'native_turn_failed', evidence: receipt,
+    });
+    expect(classifyAcceptanceGraderTerminalFailure(`${raw}◇ su-fixture · ⟳ off · ▶ auto · 8 peers · plans:get`, {
+      allowInferenceGatewayError: true,
+    })).toMatchObject({ code: 'native_turn_failed' });
+    for (const progress of ['● I resumed the audit.', '• Called scorecards:get', '❯ retry the audit']) {
+      expect(classifyAcceptanceGraderTerminalFailure(`${raw}${progress}`, {
+        allowInferenceGatewayError: true,
+      })).toBeNull();
+    }
+    for (const quoted of [`The report quotes ${receipt}`, `> ${receipt}`, `\`\`\`text\n${receipt}\n\`\`\``]) {
+      expect(classifyAcceptanceGraderTerminalFailure(quoted, { allowInferenceGatewayError: true })).toBeNull();
+    }
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace('retryable=false', 'retryable=true'), {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+  });
+
+  // WI-6554700010030184: psu-pty-host prints the native transcript's own failure
+  // code. Codex names its codex_error_info variant, so a 429 retry budget arrives
+  // as response_too_many_failed_attempts, not native_error, and an auditor that
+  // printed it was kept viable while every repair deduped to it.
+  it.each([
+    ['codex', 'response_too_many_failed_attempts'],
+    ['codex', 'usage_limit_exceeded'],
+    ['claude', 'api_error'],
+  ])('recognizes a non-retryable %s receipt with code %s', (agent, code) => {
+    const receipt = `[psu] native-turn-failed agent=${agent} code=${code} retryable=false retryAfterMs=unknown`;
+    const raw = '\u001b[38;5;1;49m■ exceeded retry limit, last status: 429 Too Many Requests\u001b[39m\r\n'
+      + `${receipt}\r\n\u001b[1m›\u001b[22m Ask Codex to do anything\r\n`;
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'native_turn_failed', evidence: receipt,
+    });
+    expect(classifyAcceptanceGraderTerminalFailure(raw.replace('retryable=false', 'retryable=true'), {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(`${raw}• Called scorecards:get`, {
+      allowInferenceGatewayError: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(receipt.replace(`code=${code}`, 'code=bad code'), {
       allowInferenceGatewayError: true,
     })).toBeNull();
   });
@@ -2862,6 +2927,38 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('recruits required independent verification even when grading and the author verdict are settled', async () => {
+    const launch = freshLaunch();
+    const settlement = {
+      settled: true,
+      reason: 'settled' as const,
+      rubricRevision: 7,
+      independentCardId: 'EI-historical-independent',
+      acceptanceCardId: 'EI-author-pending-delivery',
+    };
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-verification', woke: 1 }));
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', {
+      ...baseCtx,
+      acceptanceIndependentVerificationBrief: 'Re-observe the current R-6 and R-7 bindings before grading.',
+    } as never, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => settlement),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('assigned');
+    expect(result.settlement).toEqual(settlement);
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('an open acceptance-grading task suppresses duplicate dispatch (EI-22678191183363422)', async () => {
     const launch = freshLaunch();
     const discover = vi.fn();
@@ -2925,6 +3022,13 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       const appendVerificationBrief = vi.fn(async () => 'appended' as const);
       const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
         ...deps(launch),
+        readSettlement: vi.fn(async () => ({
+          settled: true,
+          reason: 'settled' as const,
+          rubricRevision: 7,
+          independentCardId: 'EI-historical-independent',
+          acceptanceCardId: 'EI-author-pending-delivery',
+        })),
         listWork: openRequest() as never,
         discover: vi.fn() as never,
         appendVerificationBrief,

@@ -3518,7 +3518,19 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.toolName,
         opts.nestedTargetToolName,
       );
-      if (!upstreamProjection?.truncated &&
+      const projectedNotes = (
+        result._meta as { resultProjection?: { notes?: unknown } } | undefined
+      )?.resultProjection?.notes;
+      const inlineUpstreamProjectionWarning =
+        upstreamProjection?.truncated === true &&
+        Array.isArray(projectedNotes) &&
+        projectedNotes.some(
+          (note) =>
+            typeof note === 'string' &&
+            note.includes('ALREADY TRUNCATED') &&
+            items.some((item) => isTextItem(item) && item.text.includes(note)),
+        );
+      if ((!upstreamProjection?.truncated || inlineUpstreamProjectionWarning) &&
         (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) {
         return reconcileWorkItemsGetReceiptResult(result, opts);
       }

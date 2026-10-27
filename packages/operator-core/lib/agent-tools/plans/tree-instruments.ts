@@ -20,7 +20,8 @@
  * set is not a basis a later read can reproduce.
  */
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { join, posix } from 'node:path';
 import { z } from 'zod';
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
@@ -33,6 +34,7 @@ import {
 } from '../../integrations/provider-census';
 import { defaultBlobBatchReader, locateCommittedBlobs, type CommittedTreeDeps } from './committed-tree-reader';
 import { defaultGitRunner } from './evidence-measurement-pin';
+import { censusSources, inScope as isNotificationSourcePath } from '../../../../../scripts/check-fire-and-forget-classification.mjs';
 import {
   KIND_SCAN_ROOTS,
   isKindScanPath,
@@ -43,7 +45,7 @@ import {
   type KindBranchFinding,
 } from '../../plan-types/kind-branch-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -223,9 +225,82 @@ async function kindBranchCensusAtCommit(root: string, commit: string, deps: Comm
   return kindBranchCensusOutput(reconcileKindBranchFindings(findings));
 }
 
+/** Same resolution inputs as scanRepository; package/tsconfig changes can redirect aliases. */
+function isNotificationInput(path: string): boolean {
+  return isNotificationSourcePath(path)
+    || /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(path)
+      && !/(?:^|\/)(?:node_modules|env-sidecars|dist[^/]*|storybook-static|\.papercusp)(?:\/|$)/.test(path);
+}
+
+/**
+ * Reuse the notification detector over committed bytes, including every gitlink at
+ * its parent's pin. The working checkout's index and submodule HEAD are never inputs.
+ * Missing repositories/objects and reachable symlinks refuse instead of shrinking
+ * the population. This measures classification inputs, never delivery durability.
+ */
+async function notificationCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const git = deps.git ?? defaultGitRunner;
+  const pending = [{ repo: '.', commit }];
+  const files: CommittedTreeFile[] = [];
+  const submodules: string[] = [];
+  const declared: string[] = [];
+  while (pending.length) {
+    const next = pending.shift()!;
+    const dir = next.repo === '.' ? root : join(root, next.repo);
+    if (next.repo !== '.') {
+      const available = deps.exists ? await deps.exists(next.repo)
+        : await lstat(join(dir, '.git')).then(entry => entry.isFile() || entry.isDirectory(), () => false);
+      if (!available) throw new Error(`tree_instrument_submodule_unavailable:${next.repo}`);
+    }
+    const entries = parseLsTreeLong(await git(dir, ['ls-tree', '-r', '-z', '-l', next.commit]));
+    if (entries.some(entry => entry.path === '.gitmodules' && entry.type === 'blob')) {
+      // Read Git's own parser from this commit, never the working .gitmodules.
+      const config = await git(dir, ['config', '--blob', `${next.commit}:.gitmodules`, '--list']);
+      for (const line of config.split('\n')) {
+        const match = /^submodule\..*\.path=(.*)$/.exec(line);
+        if (!match) continue;
+        const path = match[1];
+        if (!path || posix.isAbsolute(path) || path.split('/').some(part => part === '..' || part === '.')) {
+          throw new Error(`tree_instrument_invalid_submodule_path:${path}`);
+        }
+        declared.push(next.repo === '.' ? path : `${next.repo}/${path}`);
+      }
+    }
+    for (const entry of entries) {
+      const path = next.repo === '.' ? entry.path : `${next.repo}/${entry.path}`;
+      if (entry.mode === '160000') {
+        submodules.push(path);
+        pending.push({ repo: path, commit: entry.object });
+      } else if (isNotificationInput(path)) {
+        if (entry.mode === '120000') throw new Error(`tree_instrument_symlink_unsupported:${path}`);
+        if (entry.type !== 'blob' || entry.size === null) throw new Error(`tree_instrument_blob_size_unknown:${path}`);
+        files.push({ path, repo: next.repo, blob: entry.object, size: entry.size });
+      }
+    }
+  }
+  const sources: Record<string, string> = {};
+  await forEachCommittedBody(root, files.sort((a, b) => a.path.localeCompare(b.path)), (file, body) => {
+    sources[file.path] = body;
+  }, deps);
+  const census = censusSources(sources);
+  if (!census.files.length) throw new Error('tree_instrument_empty_notification_population');
+  const missingGitlinks = declared.filter(path => !submodules.includes(path));
+  return {
+    schemaVersion: 1,
+    files: census.files.length,
+    sites: census.sites.length,
+    sourceDigest: createHash('sha256').update(JSON.stringify(census.files)).digest('hex'),
+    siteDigest: createHash('sha256').update(JSON.stringify(census.sites)).digest('hex'),
+    gaps: [...census.gaps, ...missingGitlinks.map(path => ({ path, kind: 'declared-submodule-without-gitlink' }))],
+    declaredSubmodules: declared.sort(),
+    submodules: submodules.sort(),
+  };
+}
+
 const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string, deps: CommittedTreeDeps) => Promise<unknown>> = {
   'provider-specific-census': providerCensusAtCommit,
   'deliverable-kind-branch-census': kindBranchCensusAtCommit,
+  'notification-classification-census': notificationCensusAtCommit,
 };
 
 /**

@@ -16,6 +16,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const durableMocks = vi.hoisted(() => ({ admit: vi.fn(), bind: vi.fn(), finish: vi.fn(), observe: vi.fn(), publish: vi.fn(), watch: vi.fn() }));
+vi.mock('../converse-turn', async importOriginal => ({
+  ...await importOriginal<typeof import('../converse-turn')>(), admitConverseTurn: durableMocks.admit,
+}));
+vi.mock('../../../operator-conversation-compaction', () => ({ maybeCompactConversation: vi.fn(async () => undefined) }));
+vi.mock('@papercusp/db-org', async original => ({ ...(await original<Record<string, unknown>>()), getOrgPg: () => ({ sql: {} }) }));
+
 const principalMocks = vi.hoisted(() => ({
   resolveBearer: vi.fn(async () => ({
     kind: 'pi' as const,
@@ -124,6 +131,8 @@ vi.mock('../../../system-principal', () => ({
     capabilities: new Set(['tasks:read']),
     slug: 'system:operator',
     kind: 'system',
+    name: 'operator',
+    bearer: 'original-operator-bearer',
   })),
 }));
 vi.mock('../../../workspace-registry', () => ({
@@ -176,7 +185,7 @@ import { spawnAgentInHarness } from '../../../fleet/operator-spawn';
 import { dispatchSentinelHandoff } from '../../../operator-sentinel-handoff';
 import { delegateDeep } from '../../../papercup/papercup-deep-delegate';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { checkBudget } from '../../../operator-budget';
+import { checkBudget, recordSpend } from '../../../operator-budget';
 import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import tool from '../converse';
 import { buildOperatorPrompt } from '../converse-prompt';
@@ -209,6 +218,15 @@ function makeCtx() {
 let fetchMock: any;
 
 beforeEach(() => {
+  durableMocks.admit.mockReset(); durableMocks.bind.mockReset(); durableMocks.finish.mockReset(); durableMocks.observe.mockReset();
+  durableMocks.publish.mockReset();
+  durableMocks.watch.mockReset().mockResolvedValue({ stop() {} });
+  durableMocks.publish.mockImplementation(async (event, emit) => emit({ event }));
+  durableMocks.bind.mockImplementation(async mount => ({ ...mount, url: mount.url + '&chat_binding=signed' }));
+  durableMocks.finish.mockResolvedValue({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
+  durableMocks.admit.mockResolvedValue({ identity: { conversationId: 'conv-a', turnId: 'durable-turn' },
+    bindMount: durableMocks.bind, finalize: durableMocks.finish, observeToolResult: durableMocks.observe, publish: durableMocks.publish,
+    watchCancellation: durableMocks.watch });
   customerPiMocks.spawnTransform.mockReturnValue(false);
   customerPiMocks.start.mockClear();
   customerPiMocks.end.mockClear();
@@ -227,6 +245,100 @@ afterEach(() => {
 });
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
+  it('P010 scoped converse lifecycle publishes owner report references through the durable queue without leaking tool bodies', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      opts.onToolResult?.({ name: 'reports:publish', callId: 'report-call', isError: false,
+        output: JSON.stringify({ ok: true, report_id: 'report-a', workspace_id: 'ws-real', body_md: 'PRIVATE BODY' }) });
+      yield { type: 'delta', text: '<say>Report ready.</say>' };
+    });
+    const ctx = makeCtx();
+    await handler({ messages: [], conversationId: 'conv-a', retainSession: false }, ctx);
+    expect(durableMocks.publish).toHaveBeenCalledWith({ type: 'result', blocks: [{ id: 'report:report-a',
+      kind: 'report', title: 'Report', sources: [{ ref: 'report:report-a' }],
+      actions: [{ id: 'open', kind: 'open', label: 'Open report', ref: 'report:report-a' }] }] }, expect.any(Function));
+    expect(JSON.stringify(ctx.emit.mock.calls)).not.toContain('PRIVATE BODY');
+  });
+  it('P010 scoped converse lifecycle reserves before provider and finalizes the same turn with stable calls and a durable receipt', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      expect(durableMocks.admit).toHaveBeenCalledOnce();
+      expect(durableMocks.bind).toHaveBeenCalledOnce();
+      opts.onToolResult?.({ name: 'chat:ask_choice', callId: 'native-choice',
+        output: 'signed native result', isError: false });
+      yield { type: 'tool_call', name: 'read', input: { path: 'safe' }, callId: 'call-a' };
+      yield { type: 'delta', text: '<say>Done.</say>' };
+    });
+    const out = await handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx());
+    expect(durableMocks.admit).toHaveBeenCalledWith(expect.objectContaining({
+      credential: { kind: 'system', name: 'operator', bearer: 'original-operator-bearer' }, runId: 'r-test' }));
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith({ status: 'completed', text: 'Done.',
+      tools: [{ name: 'read', input: { path: 'safe' }, callId: 'call-a' }], report: null });
+    expect(out.data.persistedTurn).toEqual({ conversationId: 'conv-a', turnId: 'durable-turn', seq: 4 });
+    expect(durableMocks.observe).toHaveBeenCalledWith({ name: 'chat:ask_choice', callId: 'native-choice',
+      output: 'signed native result', isError: false });
+  });
+  it('P010 scoped converse lifecycle never starts a provider after denied or uncertain admission', async () => {
+    durableMocks.admit.mockRejectedValue(new Error('needs-reconciliation'));
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx())).rejects.toThrow('needs-reconciliation');
+    expect(runAgentChat).not.toHaveBeenCalled(); expect(durableMocks.bind).not.toHaveBeenCalled();
+  });
+  it('P010 scoped converse lifecycle finalizes partial failure once and refuses success after an uncertain final write', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'delta', text: '<say>Partial</say>' }; throw new Error('provider-failed');
+    });
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx())).rejects.toThrow('provider-failed');
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'failed', text: 'Partial' }));
+    durableMocks.finish.mockClear(); durableMocks.finish.mockRejectedValue(new Error('ack-lost'));
+    vi.mocked(recordSpend).mockClear();
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'delta', text: '<say>Done</say>' }; yield { type: 'result', costUsd: 0.03 };
+    });
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx())).rejects.toThrow('ack-lost');
+    expect(durableMocks.finish).toHaveBeenCalledOnce();
+    expect(recordSpend).toHaveBeenCalledExactlyOnceWith(0.03);
+  });
+  it('P010 scoped converse lifecycle cancels the admitted turn and preserves partial output', async () => {
+    const ctrl = new AbortController();
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'delta', text: '<say>Partial</say>' }; ctrl.abort();
+    });
+    await handler({ messages: [], conversationId: 'conv-a', retainSession: false }, { ...makeCtx(), signal: ctrl.signal });
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'cancelled', text: 'Partial' }));
+  });
+  it.each(['initial-read', 'during-provider'])('P010 watcher failure aborts the provider but never attests an explicit cancellation (%s)', async when => {
+    let fail!: (error: unknown) => void;
+    const stop = vi.fn();
+    durableMocks.watch.mockImplementation(async (_cancel, onError) => {
+      fail = onError;
+      if (when === 'initial-read') onError(new Error('watch-authority-unavailable'));
+      return { stop };
+    });
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      yield { type: 'delta', text: '<say>Partial</say>' };
+      fail(new Error('watch-authority-unavailable'));
+      expect(opts.signal?.aborted).toBe(true);
+    });
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx()))
+      .rejects.toThrow('watch-authority-unavailable');
+    expect(runAgentChat).toHaveBeenCalledTimes(when === 'initial-read' ? 0 : 1);
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'failed',
+      text: when === 'initial-read' ? '' : 'Partial' }));
+    expect(stop).toHaveBeenCalledOnce();
+  });
+  it('P010 scoped converse lifecycle cleans a customer PI mount after a signing failure and never starts the provider', async () => {
+    customerPiMocks.spawnTransform.mockReturnValue(true);
+    durableMocks.bind.mockRejectedValue(new Error('signer-unavailable'));
+    await expect(handler({ messages: [], conversationId: 'conv-a', retainSession: false }, makeCtx())).rejects.toThrow('signer-unavailable');
+    expect(runAgentChat).not.toHaveBeenCalled(); expect(customerPiMocks.end).toHaveBeenCalledOnce();
+    expect(durableMocks.finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'failed' }));
+  });
+  it('P010 scoped converse lifecycle derives public scope and original authority only from the current authenticated PI', async () => {
+    await handler({ messages: [], conversationId: 'conv-a', hostTrust: 'public', principalToken: 'portal-parent', retainSession: false }, makeCtx());
+    expect(durableMocks.admit).toHaveBeenCalledWith(expect.objectContaining({
+      credential: { kind: 'pi', sessionId: 'portal-test', bearer: 'portal-parent' }, capability: 'chat:write', toolName: 'chat:ask_choice',
+      options: expect.objectContaining({ workspaceId: 'ws-real', scope: {
+        principalId: 'pi:portal-test', tenantId: 'ws-real', customerId: 'pi:portal-test', publicOwnerId: 'pi:portal-test' } }) }));
+    expect(durableMocks.bind).toHaveBeenCalledWith(expect.objectContaining({ bearer: 'portal-parent' }));
+  });
   it.each([
     { context: { step: 'connection', status: 'ready' }, title: 'Connect Google Cloud' },
     { context: { version: 3, step: 'billing', status: 'ready' }, title: 'Understand the bills' },
@@ -783,7 +895,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     errSpy.mockRestore();
   });
 
-  it('publishes redacted public manual returns, omits other tools and never observes owner returns', async () => {
+  it('publishes redacted public manual returns and keeps owner return bodies private', async () => {
     vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
       yield { type: 'tool_call', name: 'docs:get', input: {}, callId: 'docs-get-1' };
       opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false, callId: 'docs-get-1' });
@@ -806,7 +918,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(JSON.stringify(returns)).not.toContain('PRIVATE-FIXTURE');
     const ownerCtx = makeCtx();
     await handler({ messages: [], trigger: 'user_message', hostTrust: 'owner', sessionUser: null }, ownerCtx);
-    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeUndefined();
+    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeTypeOf('function');
     expect(ownerCtx.emit.mock.calls.some(([name]) => name === 'tool_result')).toBe(false);
   });
 

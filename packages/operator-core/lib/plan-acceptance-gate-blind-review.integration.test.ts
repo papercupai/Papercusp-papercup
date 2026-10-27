@@ -16,6 +16,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { existsSync, readFileSync } from 'node:fs';
 
 import setStatusTool from './agent-tools/plans/set-status';
 import setPlanStatusTool from './agent-tools/plans/set-plan-status';
@@ -33,6 +34,9 @@ const PEEKER = 'su-zzz-br-peeker';
 const WRAPPED_PEEKER = 'su-zzz-br-wrapped-peeker';
 const AUTHOR = 'agent-zzz-br-author';
 const HEX = (c: string) => c.repeat(64);
+const sqlRoot = new URL('../../../libs/papercusp/libs/db/sql/', import.meta.url);
+const outcomeMigrationPath = new URL('1564-blind-review-outcomes.sql', sqlRoot);
+const outcomeMigration = readFileSync(existsSync(outcomeMigrationPath) ? outcomeMigrationPath : new URL('1564-blind-review-outcomes.sql.DRAFT', sqlRoot), 'utf8');
 const RUBRIC_GATE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_ACCEPTANCE_RUBRIC_COMPLETION_GATE';
 
 let fx: PlanPgFixture;
@@ -107,7 +111,7 @@ async function flipItem(itemId: string, status: string): Promise<Record<string, 
 
 async function blindReview(ownerId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const res = (await runWithWorkspace(WS, () => blindReviewTool.handler(
-    { harness: HARNESS, slug: SLUG, ...args } as never, ctxAs(ownerId),
+    { harness: HARNESS, slug: SLUG, ...(args.op === 'post' ? { outcome: 'conclusive' } : {}), ...args } as never, ctxAs(ownerId),
   ))) as ToolResult;
   return JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
@@ -170,8 +174,12 @@ async function seed(): Promise<void> {
 beforeAll(async () => {
   prevRubricGateEnv = process.env[RUBRIC_GATE_ENV];
   process.env[RUBRIC_GATE_ENV] = '0';
-  fx = await setupPlanPgFixture();
+  // This file applies real DDL; never change a shared integration baseline.
+  fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
+  const [column] = await admin`SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'harness_shared' AND table_name = 'plan_blind_reviews' AND column_name = 'protocol_version'`;
+  if (!column) await admin.begin((tx) => tx.unsafe(outcomeMigration));
 }, 60_000);
 
 afterAll(async () => {
@@ -182,6 +190,86 @@ afterAll(async () => {
 });
 
 describe('P-006 blind gap review door — real awaiting-acceptance writers and ship handler', () => {
+  it('keeps historical material and switches old and new concurrent writers to v2 atomically', async () => {
+    const schema = `zzz_br_protocol_${Date.now()}`;
+    const table = `${schema}.plan_blind_reviews`;
+    const rewrite = (sql: string) => sql.replaceAll('harness_shared', schema);
+    await admin.unsafe(`CREATE SCHEMA ${schema}`);
+    let ddl: Awaited<ReturnType<typeof admin.reserve>> | undefined;
+    let writer: Awaited<ReturnType<typeof admin.reserve>> | undefined;
+    let lateInsert: Promise<unknown> | undefined;
+    try {
+      await admin.unsafe(rewrite(readFileSync(new URL('1453-plan-blind-reviews.sql', sqlRoot), 'utf8')));
+      await admin.unsafe(rewrite(readFileSync(new URL('1560-plan-blind-review-resume-bindings.sql', sqlRoot), 'utf8')));
+      await admin.unsafe(`INSERT INTO ${table}
+        (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,gaps,summary,created_by,idempotency_key)
+        VALUES ('ws','h','p','review',5,'[]','Completed product review','su-old','old-1'),
+               ('ws','h','p','review',5,'[]','INCONCLUSIVE: product blocked','su-blocked','old-2')`);
+      const before = await admin.unsafe(`SELECT * FROM ${table} ORDER BY id`);
+      ddl = await admin.reserve();
+      writer = await admin.reserve();
+      await ddl`BEGIN`;
+      await ddl.unsafe(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
+      const [{ pid }] = await writer`SELECT pg_backend_pid() AS pid`;
+      lateInsert = writer.unsafe(`INSERT INTO ${table}
+        (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,created_by)
+        VALUES ('ws','h','p','review',5,'su-late-old')`).then(() => undefined);
+      // Prove a real old-shape insert is waiting on the migration's lock.
+      await vi.waitFor(async () => {
+        // Both pool slots are reserved; inspect using the lock holder itself.
+        const [blocked] = await ddl!`SELECT cardinality(pg_blocking_pids(${pid})) > 0 AS blocked`;
+        expect(blocked.blocked).toBe(true);
+      }, { timeout: 5000 });
+      await ddl.unsafe(rewrite(outcomeMigration));
+      await ddl`COMMIT`;
+      await lateInsert;
+      await writer.unsafe(`INSERT INTO ${table}
+        (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,created_by,outcome)
+        VALUES ('ws','h','p','review',5,'su-late-new','conclusive')`);
+      const after = await ddl.unsafe(`SELECT * FROM ${table} ORDER BY id`);
+      expect(after.slice(0, 2).map(({ protocol_version, outcome, ...material }) => material)).toEqual([...before]);
+      expect(after.map((r) => [r.protocol_version, r.outcome])).toEqual([[1, null], [1, null], [2, null], [2, 'conclusive']]);
+      await expect(ddl.unsafe(`UPDATE ${table} SET summary='rewritten' WHERE id=1`)).rejects.toThrow('append-only');
+    } finally {
+      await ddl?.unsafe('ROLLBACK').catch(() => {});
+      await lateInsert?.catch(() => {});
+      ddl?.release();
+      writer?.release();
+      await admin.unsafe(`DROP SCHEMA ${schema} CASCADE`);
+    }
+  }, 60_000);
+
+  it('an explicitly inconclusive empty-gap receipt cannot drain or ship', async () => {
+    await seed();
+    const receipt = await blindReview(REVIEWER, { op: 'post', outcome: 'inconclusive', gaps: [], summary: 'INCONCLUSIVE: product could not be exercised' });
+    expect(receipt).toMatchObject({ ok: true, counts: false, rejected: { reason: 'inconclusive' } });
+    const flipped = await flipItem('P-002', 'done');
+    expect(flipped.acceptanceBlocked).toMatchObject({ code: 'blind_review_missing' });
+    expect(await runWithWorkspace(WS, () => applyPlanDrainTransition(SLUG, HARNESS)))
+      .toMatchObject({ applied: false, skipped: 'blind_review_missing' });
+    expect(await ship()).toMatchObject({ ok: false, error: 'blind_review_missing' });
+    const retry = await blindReview(REVIEWER, { op: 'post', outcome: 'conclusive', gaps: [] });
+    expect(retry).toMatchObject({ error: 'idempotency_conflict' });
+  }, 60_000);
+
+  it('retains valid v1 eligibility while legacy inconclusive and outcome-less late writers fail closed', async () => {
+    await seed();
+    await admin`INSERT INTO harness_shared.plan_blind_reviews
+      (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,created_by,protocol_version,summary)
+      VALUES (${WS},${HARNESS},${SLUG},'review',1,${REVIEWER},1,'INCONCLUSIVE: UI blocked')`;
+    // Old writer shape AFTER upgrade must never inherit legacy eligibility.
+    await admin`INSERT INTO harness_shared.plan_blind_reviews
+      (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,created_by)
+      VALUES (${WS},${HARNESS},${SLUG},'review',1,'su-zzz-br-late-writer')`;
+    const rejected = await runWithWorkspace(WS, () => evaluateBlindReviewGate({ workspaceId: WS, planSlug: SLUG, harnessSlug: HARNESS }));
+    expect(rejected).toMatchObject({ satisfied: false, code: 'blind_review_missing', acceptedReviewIds: [] });
+    expect(rejected.rejectedReviews.map((r) => r.reason)).toEqual(['inconclusive', 'invalid-completion']);
+    const [legacy] = await admin`INSERT INTO harness_shared.plan_blind_reviews
+      (workspace_id,harness_slug,plan_slug,record_kind,activation_audit_seq,created_by,protocol_version,summary)
+      VALUES (${WS},${HARNESS},${SLUG},'review',1,'su-zzz-br-legacy',1,'Completed product review') RETURNING id`;
+    const accepted = await runWithWorkspace(WS, () => evaluateBlindReviewGate({ workspaceId: WS, planSlug: SLUG, harnessSlug: HARNESS }));
+    expect(accepted).toMatchObject({ satisfied: true, acceptedReviewIds: [Number(legacy.id)] });
+  }, 60_000);
   it('R-6 / BLIND-REVIEW-GATE: with no review recorded, the drain flip returns blind_review_missing and the plan stays put', async () => {
     await seed();
     const flipped = await flipItem('P-002', 'done');

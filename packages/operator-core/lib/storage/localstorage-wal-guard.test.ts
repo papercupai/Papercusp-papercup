@@ -10,6 +10,9 @@ import { mkdtempSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import {
   planWalCheckpoints,
   discoverWalCandidates,
@@ -21,6 +24,47 @@ import {
 } from './localstorage-wal-guard';
 
 const MB = 1024 * 1024;
+
+describe('WAL checkpoint runtime boundary', () => {
+  it('checkpoints and preserves rows using the actual configured interpreter', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wal-guard-runtime-'));
+    const bun = process.env.PAPERCUSP_RUNTIME_TEST_BUN;
+    const source = fileURLToPath(new URL('./localstorage-wal-guard.ts', import.meta.url));
+    const script = `
+      import { existsSync, statSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { checkpointOne } from ${JSON.stringify(source)};
+      const Database = process.versions.bun
+        ? (await import('bun:sqlite')).Database : (await import('node:sqlite')).DatabaseSync;
+      const path = join(${JSON.stringify(root)}, 'private.localstorage');
+      const db = new Database(path);
+      try {
+        db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(value); INSERT INTO t VALUES(42);');
+        const before = statSync(path + '-wal').size;
+        const result = checkpointOne(path);
+        const rows = db.prepare('SELECT value FROM t').all().map(row => row.value);
+        const missing = join(${JSON.stringify(root)}, 'must-not-create.localstorage');
+        const refused = checkpointOne(missing);
+        console.log(JSON.stringify({runtime: process.versions.bun ? 'bun' : 'node',
+          before, result, rows, missingRefused: !refused.ok, missingCreated: existsSync(missing)}));
+      } finally { db.close(); }
+    `;
+    try {
+      const result = spawnSync(bun ?? process.execPath, [
+        ...(bun ? [] : ['--import', createRequire(import.meta.url).resolve('tsx')]),
+        '--input-type=module', '-e', script,
+      ], { cwd: root, env: { PATH: process.env.PATH, VITEST: 'true', PAPERCUSP_BACKGROUND_WORKERS: '0' },
+        encoding: 'utf8', timeout: 20_000 });
+      expect(result.status, result.stderr).toBe(0);
+      const receipt = JSON.parse(result.stdout);
+      expect(receipt.runtime).toBe(bun ? 'bun' : 'node');
+      expect(receipt.before).toBeGreaterThan(0);
+      expect(receipt.result).toMatchObject({ ok: true, busy: false, walBytesAfter: 0 });
+      expect(receipt.rows).toEqual([42]);
+      expect(receipt).toMatchObject({ missingRefused: true, missingCreated: false });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+});
 
 function cand(p: Partial<WalCandidate> & { walPath: string }): WalCandidate {
   return { dbPath: p.walPath.replace(/-wal$/, ''), sizeBytes: 0, ...p };

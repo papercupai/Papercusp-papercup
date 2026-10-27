@@ -9,24 +9,24 @@
  * a safe install in any checkout on this host.
  */
 import { spawn } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { dirSizeBytesAsync, type DiskWalkBudget } from './disk';
+import { inspectRetentionTrees, RetentionAllocationCounter } from './disk-consumer-census';
 import { criticalWriteHeadroomBytes, diskPolicyFromEnv, sampleDiskSnapshots } from './disk-space-alarm';
 import { withRetentionPinProtection } from './retention-pins';
+import { PACKAGE_CACHE_ROOT_MAX_BYTES } from './retention-policy';
 
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 export { PACKAGE_CACHE_MUTEX_NAME };
 
-export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = 8 * 1024 ** 3;
+export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = PACKAGE_CACHE_ROOT_MAX_BYTES;
 /** Keep small working caches; pressure recovery is not a purge on every fetch. */
 export const PRESSURE_PACKAGE_CACHE_MAX_BYTES = 1024 ** 3;
 const DEFAULT_MEASURE_BUDGET_MS = 30_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_MUTEX_TIMEOUT_MS = 300_000;
-const MAX_MEASURED_FILES = 2_000_000;
 const COMMAND_OUTPUT_CHARS = 4_000;
 
 export type PackageCacheManager = 'npm' | 'bun' | 'pnpm';
@@ -41,6 +41,8 @@ export interface PackageCacheTarget {
 
 export interface PackageCacheMeasurement {
   bytes: number;
+  /** Exact physical allocation under validated live pin scopes, when requested. */
+  pinnedBytes?: number;
   /** A bounded walk stopped before exhausting the tree. Actual bytes are >= bytes. */
   truncated: boolean;
 }
@@ -69,6 +71,9 @@ export interface PackageCacheOutcome {
   afterBytes: number;
   reclaimedBytes: number;
   measurementTruncated: boolean;
+  pinnedBytes?: number;
+  pinnedOverageBytes?: number;
+  unprotectedOverageBytes?: number;
   status: PackageCacheOutcomeStatus;
   note?: string;
 }
@@ -91,7 +96,7 @@ interface PackageCacheRetentionOptions {
   mutexTimeoutMs?: number;
   sampleDisk?: typeof sampleDiskSnapshots;
   sameFilesystem?: (a: string, b: string) => Promise<boolean>;
-  measure?: (path: string) => Promise<PackageCacheMeasurement>;
+  measure?: (path: string, coversPinnedPath?: (path: string) => boolean) => Promise<PackageCacheMeasurement>;
   runCommand?: (target: PackageCacheTarget, cwd: string) => Promise<PackageCacheCommandResult>;
   withMutex?: <T>(name: string, run: () => Promise<T>, options?: Record<string, unknown>) => Promise<T>;
 }
@@ -158,10 +163,52 @@ export function resolvePackageCacheTargets(options: PackageCacheTargetOptions = 
   ];
 }
 
-export async function measurePackageCache(path: string): Promise<PackageCacheMeasurement> {
-  const budget: DiskWalkBudget = { deadlineMs: Date.now() + DEFAULT_MEASURE_BUDGET_MS };
-  const bytes = await dirSizeBytesAsync(path, MAX_MEASURED_FILES, budget);
-  return { bytes, truncated: Boolean(budget.truncated) };
+export async function measurePackageCache(path: string, coversPinnedPath?: (path: string) => boolean): Promise<PackageCacheMeasurement> {
+  path = resolve(path);
+  const allocation = new RetentionAllocationCounter();
+  try {
+    let root;
+    try { root = await lstat(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: 0, truncated: false,
+        ...(coversPinnedPath ? { pinnedBytes: 0 } : {}) };
+      throw error;
+    }
+    if (!root.isDirectory() || root.isSymbolicLink()) return { bytes: 0, truncated: true };
+    const add = (entry: { path: string; bytes: number; hardlinks?: Array<{ dev: number; ino: number; bytes: number; paths: string[] }> }) => {
+      const shared = entry.hardlinks ?? [];
+      const exclusive = entry.bytes - shared.reduce((sum, link) => sum + link.bytes, 0);
+      if (!Number.isSafeInteger(exclusive) || exclusive < 0) throw new Error('invalid cache allocation census');
+      allocation.bytes += exclusive;
+      for (const link of shared) {
+        if (!Number.isSafeInteger(link.bytes) || link.bytes < 0 || !link.paths.length) throw new Error('invalid cache hardlink census');
+        allocation.add(link.paths[0]!, { dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2 }, true);
+      }
+    };
+    // Reuse the bounded native no-follow worker, including its per-child inode
+    // metadata. One union counter spans every child of the configured root.
+    allocation.add(path, root, false);
+    const census = await inspectRetentionTrees(path, { retainAfterMs: 0, includeRecent: true,
+      sudo: null, timeoutMs: DEFAULT_MEASURE_BUDGET_MS, coversPinnedPath });
+    for (const entry of census.entries) add(entry);
+    for (const retained of census.retained) if (retained.entry) add(retained.entry);
+    const incomplete = census.retained.some(entry => !entry.entry ||
+      ['filesystem boundary', 'foreign ownership boundary'].includes(entry.reason));
+    const after = await lstat(path);
+    const changed = !after.isDirectory() || after.dev !== root.dev || after.ino !== root.ino || after.ctimeMs !== root.ctimeMs;
+    if (!Number.isSafeInteger(allocation.bytes) || allocation.bytes < 0) throw new Error('cache allocation overflow');
+    let pinnedBytes: number | undefined;
+    if (coversPinnedPath) {
+      if (census.pinnedBytes === undefined) throw new Error('cache pin allocation is unmeasured');
+      pinnedBytes = census.pinnedBytes + (coversPinnedPath(path) ? root.blocks * 512 : 0);
+      if (!Number.isSafeInteger(pinnedBytes) || pinnedBytes < 0 || pinnedBytes > allocation.bytes) {
+        throw new Error('inconsistent cache pin allocation');
+      }
+    }
+    return { bytes: allocation.bytes, truncated: !!census.error || incomplete || changed,
+      ...(pinnedBytes === undefined ? {} : { pinnedBytes }) };
+  } catch {
+    return { bytes: allocation.bytes, truncated: true };
+  }
 }
 
 function appendBounded(current: string, chunk: unknown): string {
@@ -216,9 +263,8 @@ export function runPackageCacheCommand(
 }
 
 function overHighWater(measurement: PackageCacheMeasurement, maxBytes: number): boolean {
-  // A partial size is a lower bound. Cleanup is cache-only + manager-native, so
-  // an inconclusive large walk should reclaim rather than silently bless an
-  // unbounded tree as small.
+  // A partial size needs attention and cannot bless a cache as below threshold.
+  // The writer must establish complete measurement before native mutation.
   return measurement.truncated || measurement.bytes > maxBytes;
 }
 
@@ -326,6 +372,11 @@ export async function runPackageCacheRetention(
         for (const target of eligible) {
           const limit = await threshold(target);
           const before = await measure(target.path);
+          if (limit !== null && before.truncated) {
+            outcomes.set(target.manager, { ...belowOutcome(target, before, limit), status: 'prune-failed',
+              note: 'cache measurement is incomplete or its root is unsafe; native cleanup was not admitted' });
+            continue;
+          }
           if (limit === null || !overHighWater(before, limit)) {
             outcomes.set(target.manager, {
               ...unchanged(target, before, limit),
@@ -337,15 +388,30 @@ export async function runPackageCacheRetention(
 
           // Native managers can remove arbitrary descendants. Hold the common
           // pin mutex through the command and retain the whole cache on overlap.
-          const command = await withRetentionPinProtection((isPinned) =>
-            isPinned(target.path) ? null : runCommand(target, repoRoot));
-          if (command === null) {
+          // notify-classification: {"id":"packages/operator-core/lib/storage/package-cache-retention.ts#<module>/runPackageCacheRetention/<callback>:a14f201ca0655a70eeba:1","classification":"durable","reason":"The pin-protected cache wrapper can reach alarm paths through measurement; no safe-to-lose proof is recorded.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          const command = await withRetentionPinProtection(async (isPinned) => {
+            if (!isPinned(target.path)) return runCommand(target, repoRoot);
+            // Symmetric overlap protects this entire opaque store from native
+            // deletion. Only the same snapshot's descendant coverage can
+            // explain cap overage; unrelated siblings never inherit the pin.
+            const after = await measure(target.path, isPinned.coversPath);
+            const exact = !after.truncated && Number.isSafeInteger(after.bytes) && after.bytes >= 0 &&
+              Number.isSafeInteger(after.pinnedBytes) && after.pinnedBytes! >= 0 && after.pinnedBytes! <= after.bytes;
+            const unprotectedOverageBytes = exact ? Math.max(0, after.bytes - Math.max(limit, after.pinnedBytes!)) : undefined;
             outcomes.set(target.manager, {
-              ...belowOutcome(target, before, limit), status: 'pinned',
-              note: 'live retention pin protects this cache or one of its descendants',
+              ...belowOutcome(target, before, limit),
+              afterBytes: after.bytes, reclaimedBytes: Math.max(0, before.bytes - after.bytes),
+              measurementTruncated: !exact,
+              ...(exact ? { pinnedBytes: after.pinnedBytes, pinnedOverageBytes: Math.max(0, after.pinnedBytes! - limit),
+                unprotectedOverageBytes } : {}),
+              status: !exact || unprotectedOverageBytes! > 0 ? 'prune-failed' : 'pinned',
+              note: !exact ? 'live pin prevents native cleanup; exact pinned allocation is unmeasured'
+                : unprotectedOverageBytes! > 0 ? `live pin prevents native cleanup; non-pin cap excess ${unprotectedOverageBytes} bytes remains`
+                : 'live retention pin protects this cache; remaining overage is fully explained by exact pinned allocation',
             });
-            continue;
-          }
+            return null;
+          });
+          if (command === null) continue;
           if (!command.ok) {
             outcomes.set(target.manager, {
               ...belowOutcome(target, before, limit),
@@ -366,10 +432,15 @@ export async function runPackageCacheRetention(
             afterBytes: after.bytes,
             reclaimedBytes: Math.max(0, before.bytes - after.bytes),
             measurementTruncated: before.truncated || after.truncated,
-            status: 'pruned',
-            note: overHighWater(after, limit)
-              ? 'native cleanup completed, but the cache still measures above the high-water mark'
-              : undefined,
+            // A zero exit code proves the native command ran, not that its
+            // retention objective was met. Keep unmet/unknown caps visible to
+            // the existing telemetry-retention warning path.
+            status: overHighWater(after, limit) ? 'prune-failed' : 'pruned',
+            note: after.truncated
+              ? 'native cleanup completed, but its final measurement was truncated; the high-water bound is unverified'
+              : after.bytes > limit
+                ? 'native cleanup completed, but the cache still measures above the high-water mark'
+                : undefined,
           });
         }
         return outcomes;

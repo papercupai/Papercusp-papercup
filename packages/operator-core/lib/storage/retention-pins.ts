@@ -122,7 +122,7 @@ export async function renewWorkItemEvidencePins(references: readonly WorkItemEvi
         ? repository : undefined;
     if (!isAbsolute(retained.root) && !base) throw new Error(`evidence retention: ambiguous root base in ${ref.evidence_ref}`);
     const path = resolve(base ?? repository, retained.root);
-    if (![home, repository].some(root => ['evidence', 'test-evidence', 'artifacts'].some(kind => inside(join(root, '.papercusp', kind), path)))) {
+    if (![home, repository].some(root => ['evidence', 'test-evidence', 'artifacts', 'release-artifacts'].some(kind => inside(join(root, '.papercusp', kind), path)))) {
       throw new Error(`evidence retention: root outside agent evidence in ${ref.evidence_ref}`);
     }
     const digest = createHash('sha256').update(`${ref.harness_slug}\0${ref.work_item_id}\0${path}`).digest('hex');

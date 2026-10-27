@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "gate-repair-plane R-7 live reading: no selector-less release:repair-queue call is served by the release host after the proxy restart (AUTO-BAR-R-7-P-003)",
+  "framework": "operational",
+  "command": ["sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-v", "ON_ERROR_STOP=1", "-f", "docs/evidence/gate-repair-plane-r6-r7-live-2026-10-27.sql"],
+  "exitCode": 0,
+  "startedAt": "2026-10-27T12:44:31Z",
+  "finishedAt": "2026-10-27T12:44:31Z",
+  "summary": "Read-only SQL over harness_shared.tool_invocations (output: docs/evidence/gate-repair-plane-r6-r7-live-2026-10-27.out.txt). Exhaustive partition of every release:repair-queue invocation in workspace papercusp-workspace since the :9071 proxy restart onto the routing build (2026-10-27T04:06Z) by serving_host, build-selector presence and args nullness. One cell holds every row: serving_host port-3170, no build selector, args not null, n = 174 (04:06:13Z to 12:43:39Z). Zero rows on port-3070 and zero NULL-keyed rows, so no row escapes the partition. 174 selector-less invocations is above the 20-call floor, so the reading is pass, not unknown.",
+  "assertions": [
+    {
+      "id": "r7-no-selectorless-call-on-release-host",
+      "passed": true,
+      "evidence": "Partition cells: (port-3170, has_build_selector=false, args_null=false) = 174; no cell with serving_host port-3070; the cells sum to the 174 filtered rows."
+    },
+    {
+      "id": "r7-sample-above-floor",
+      "passed": true,
+      "evidence": "174 selector-less release:repair-queue invocations after the restart, above the falsifier's 20-call floor."
+    },
+    {
+      "id": "r7-partition-exhaustive",
+      "passed": true,
+      "evidence": "serving_host is coalesced to '<null>' and args nullness is its own column; no '<null>' host and no args_null=true cell appears, so no row fell through."
+    }
+  ],
+  "plan": "gate-repair-plane-on-current-build-2026-10-15",
+  "clauses": ["AUTO-BAR-R-7-P-003@2"],
+  "workItems": ["WI-6554700010030110"],
+  "evidencePlane": "live",
+  "takenAt": "2026-10-27T12:44:31Z",
+  "measuredBy": "su-64f21cce-a614-47e8-8d99-c2cda3469c78"
+}

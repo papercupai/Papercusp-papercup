@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   groupFilesForAttribution,
   mergeImportLinkedGroups,
+  inheritCompanionDeclarationAttribution,
   attributionMapForRepo,
   agentsForScopedFiles,
   intentToSubject,
@@ -129,22 +130,39 @@ describe('mergeImportLinkedGroups (WI-6554700010019415)', () => {
     expect(merged[2]).toEqual(groups[3]);
   });
 
-  it('moves a linked set that spans agents into the residual, never under one of them', () => {
+  // gate-systems-as-designed-2026-10-27 D-001 reverses the two WI-6554700010019415 rules that sent
+  // these sets to the anonymous residual.
+  it('commits a linked set that spans agents as ONE multi-author group carrying every author', () => {
     const groups = groupsFor(
-      [['router.ts', { agent: 'ag1', intent: 'router' }], ['router.test.ts', { agent: 'ag2', intent: 'its test' }], ['solo.ts', { agent: 'ag3' }]],
+      [
+        ['router.ts', { agent: 'ag1', intent: 'router', workItems: ['WI-1'], sessionId: 's1', planSlug: 'p' }],
+        ['router.test.ts', { agent: 'ag2', agentLabel: 'Cup Two', intent: 'its test', workItems: ['WI-2'], sessionId: 's2', planSlug: 'p' }],
+        ['solo.ts', { agent: 'ag3' }],
+      ],
       ['router.ts', 'router.test.ts', 'solo.ts', 'loose.ts'],
     );
 
     const merged = mergeImportLinkedGroups(groups, [{ importer: 'router.test.ts', provider: 'router.ts' }]);
 
-    expect(merged.map((g) => g.agent)).toEqual(['ag3', null]);
-    expect(merged[1]).toEqual({ agent: null, files: ['loose.ts', 'router.test.ts', 'router.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null });
+    expect(merged.map((g) => g.agent)).toEqual(['ag1', 'ag3', null]);
+    expect(merged[0]).toMatchObject({
+      agent: 'ag1',
+      agents: ['ag1', 'ag2'],
+      coAuthors: ['ag1 <ag1@agents.papercusp>', 'Cup Two <ag2@agents.papercusp>'],
+      files: ['router.test.ts', 'router.ts'],
+      subject: groups[0].subject,
+      workItems: ['WI-1', 'WI-2'],
+      planSlug: 'p', // every member agrees
+    });
+    expect(merged[0].sessionId).toBeUndefined(); // s1 vs s2: belongs to no single session
+    expect(merged[1]).toBe(groups[2]);
+    expect(merged[2]).toEqual({ agent: null, files: ['loose.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null });
   });
 
-  it('moves an attributed file linked to a residual file into the residual, transitively', () => {
+  it("keeps one agent's linked set under that agent and absorbs the linked residual files, transitively", () => {
     const groups = groupsFor(
       [['a.ts', { agent: 'ag1', intent: 'a' }], ['b.ts', { agent: 'ag1', intent: 'b' }]],
-      ['a.ts', 'b.ts', 'script-written.ts'],
+      ['a.ts', 'b.ts', 'script-written.ts', 'unlinked.ts'],
     );
 
     const merged = mergeImportLinkedGroups(groups, [
@@ -152,7 +170,106 @@ describe('mergeImportLinkedGroups (WI-6554700010019415)', () => {
       { importer: 'script-written.ts', provider: 'b.ts' },
     ]);
 
-    expect(merged).toEqual([{ agent: null, files: ['a.ts', 'b.ts', 'script-written.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null }]);
+    expect(merged.map((g) => [g.agent, g.files])).toEqual([
+      ['ag1', ['a.ts', 'b.ts', 'script-written.ts']],
+      [null, ['unlinked.ts']],
+    ]);
+    expect(merged[0]).toMatchObject({ subject: groups[0].subject, absorbedUnattributed: ['script-written.ts'] });
+    expect(merged[0].agents).toBeUndefined(); // one author: no multi-author trailers
+  });
+
+  it('pulls only the linked residual FILE, so a residual linked to two agents does not join them', () => {
+    // The whole residual used to be one union-find node: x.json reaching ag1 and y.json reaching
+    // ag2 made {ag1, residual, ag2} one component and both agents went anonymous.
+    const groups = groupsFor(
+      [['one.ts', { agent: 'ag1', intent: 'one' }], ['two.ts', { agent: 'ag2', intent: 'two' }]],
+      ['one.ts', 'two.ts', 'x.json', 'y.json', 'z.json'],
+    );
+
+    const merged = mergeImportLinkedGroups(groups, [
+      { importer: 'one.ts', provider: 'x.json' },
+      { importer: 'two.ts', provider: 'y.json' },
+    ]);
+
+    expect(merged.map((g) => [g.agent, g.files, g.absorbedUnattributed])).toEqual([
+      ['ag1', ['one.ts', 'x.json'], ['x.json']],
+      ['ag2', ['two.ts', 'y.json'], ['y.json']],
+      [null, ['z.json'], undefined],
+    ]);
+  });
+
+  it('leaves the groups untouched when edges link only residual files to each other', () => {
+    const groups = groupsFor([['a.ts', { agent: 'ag1', intent: 'a' }]], ['a.ts', 'gen.mjs', 'gen.d.mts']);
+    expect(mergeImportLinkedGroups(groups, [{ importer: 'gen.d.mts', provider: 'gen.mjs' }])).toBe(groups);
+  });
+});
+
+describe('inheritCompanionDeclarationAttribution (WI-6554700010029864)', () => {
+  const ag1: FileAttribution = { agent: 'ag1', intent: 'edit the launcher', workItems: ['WI-1'] };
+  const ag2: FileAttribution = { agent: 'ag2', intent: 'edit the host', workItems: ['WI-2'] };
+
+  it('gives a regenerated declaration its attributed source, for each declaration flavour', () => {
+    const attribution = new Map<string, FileAttribution>([
+      ['scripts/launcher.mjs', ag1],
+      ['lib/util.ts', ag2],
+      ['lib/legacy.cjs', ag2],
+    ]);
+    const dirty = ['scripts/launcher.mjs', 'scripts/launcher.d.mts', 'lib/util.d.ts', 'lib/legacy.d.cts'];
+
+    const out = inheritCompanionDeclarationAttribution(dirty, attribution);
+
+    expect(out.get('scripts/launcher.d.mts')).toBe(ag1);
+    expect(out.get('lib/util.d.ts')).toBe(ag2);
+    expect(out.get('lib/legacy.d.cts')).toBe(ag2);
+    expect(attribution.has('scripts/launcher.d.mts')).toBe(false); // input map is not mutated
+  });
+
+  it('keeps an explicitly attributed declaration and returns the same map when nothing is inherited', () => {
+    const attribution = new Map<string, FileAttribution>([
+      ['scripts/launcher.mjs', ag1],
+      ['scripts/launcher.d.mts', ag2],
+    ]);
+
+    expect(inheritCompanionDeclarationAttribution(['scripts/launcher.d.mts'], attribution)).toBe(attribution);
+    // No attributed source: a generator-only pair stays in the residual.
+    const none = new Map<string, FileAttribution>();
+    expect(inheritCompanionDeclarationAttribution(['gen/tool.generated.d.mts', 'gen/tool.generated.mjs'], none)).toBe(none);
+  });
+
+  it('stops a regenerated declaration from dragging its agent group into the residual (e9d7f66f05 shape)', () => {
+    // 2026-10-27T00:17Z: git-sync regenerated launcher.d.mts / host.d.mts, which had no ledger row;
+    // each importer reached them, so "merged import-linked attribution groups (8 -> 2)" and both
+    // agents' edits were committed as one unattributed lump.
+    const attribution = new Map<string, FileAttribution>([
+      ['scripts/launcher.mjs', ag1],
+      ['lib/launcher.test.ts', ag1],
+      ['scripts/host.mjs', ag2],
+    ]);
+    const dirty = ['scripts/launcher.mjs', 'scripts/launcher.d.mts', 'lib/launcher.test.ts', 'scripts/host.mjs', 'scripts/host.d.mts', 'loose.json'];
+    const edges = [
+      { importer: 'lib/launcher.test.ts', provider: 'scripts/launcher.d.mts' },
+      { importer: 'scripts/host.d.mts', provider: 'scripts/host.mjs' },
+    ];
+    const opts = { workingTreeMtimeMsByFile: new Map(dirty.map((f, i) => [f, i])) };
+
+    const expected = [
+      ['ag1', ['lib/launcher.test.ts', 'scripts/launcher.d.mts', 'scripts/launcher.mjs']],
+      ['ag2', ['scripts/host.d.mts', 'scripts/host.mjs']],
+      [null, ['loose.json']],
+    ];
+    // Inheritance attributes the declarations before grouping, so nothing is absorbed.
+    const inherited = mergeImportLinkedGroups(
+      groupFilesForAttribution(dirty, inheritCompanionDeclarationAttribution(dirty, attribution), opts),
+      edges,
+    );
+    expect(inherited.map((g) => [g.agent, g.files])).toEqual(expected);
+    expect(inherited.some((g) => g.absorbedUnattributed)).toBe(false);
+
+    // Without inheritance (any other unledgered linked file), D-001 part 2 still keeps both
+    // agents' commits and names the absorbed declarations instead of making one lump.
+    const absorbed = mergeImportLinkedGroups(groupFilesForAttribution(dirty, attribution, opts), edges);
+    expect(absorbed.map((g) => [g.agent, g.files])).toEqual(expected);
+    expect(absorbed.map((g) => g.absorbedUnattributed)).toEqual([['scripts/launcher.d.mts'], ['scripts/host.d.mts'], undefined]);
   });
 });
 

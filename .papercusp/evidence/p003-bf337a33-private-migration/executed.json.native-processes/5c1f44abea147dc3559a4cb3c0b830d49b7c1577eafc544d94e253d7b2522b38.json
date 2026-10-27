@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"6c4665b7-6e9d-48b2-a8da-fe89af879d6a","pid":2952128,"ppid":2942352,"atMs":1792906668846,"loadId":67,"url":"file:///home/marsh-office/.local/node25/lib/node_modules/npm/lib/utils/explain-eresolve.js","scope":"node-sync-load-hook"}

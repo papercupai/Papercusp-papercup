@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "get-feedback P-006 native receipt + answering matrix on staging build c140bfce96 (live plane, DB-state claim)",
+  "framework": "operational",
+  "command": [
+    "mcp-call testing:run --port 3170 nativeConsult x3 (request keys gf-r6-20261026-claudeended-claude-live-v4, gf-r6-20261026-claudeended-codex-live-v5, gf-r6-20261026-codexlive-codex-live-v5)",
+    "SELECT harness_shared.session_ports for port ids 9fa91235-fc91-4023-a147-f67a26ebda32, 7b8b0633-a88e-4558-930e-0201f50e0123, 2cb21ee8-bd73-4e62-b8ed-3de7ec3d91cd",
+    "SELECT harness_shared.consult_state + coord_thread_posts for the three conversations",
+    "python3 .papercusp/scratch/gf-r6-live-c140-gen.py (this generator)"
+  ],
+  "startedAt": "2026-10-26T21:12:30Z",
+  "finishedAt": "2026-10-26T21:37:54.708716Z",
+  "exitCode": 0,
+  "summary": "All three defined matrix cells (Claude ended source to Claude fork, Claude ended source to Codex conversion, Codex live source to Codex session port) delivered a native seed (session_ports status delivered, no error) and received a substantive answer from a session distinct from the requester and the source, on staging build c140bfce96 (:3170 /api/health before and after submission).",
+  "assertions": [
+    {
+      "id": "matrix-claude-ended-to-claude-fork-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-47d804e89ef127dbbebabf89af2f19444eabd34140c37b76b35fc0054dd8bb3b (request key gf-r6-20261026-claudeended-claude-live-v4): port 9fa91235-fc91-4023-a147-f67a26ebda32 claude->claude model fable[1m] status delivered prepared 2026-10-26T17:13:43.756295-04:00 delivered 2026-10-26T17:15:11.082608-04:00 adv 48651->52965; consult state active source/responder su-002facda-0c83-47c4-bcdb-b1577f742d45; answer post 1207195 by su-3e0696b0-0463-4299-a5b4-a82e49c3f09d at 2026-10-26T17:17:28.514-04:00 (5115 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true}"
+    },
+    {
+      "id": "matrix-claude-ended-to-codex-conversion-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-c52843b118659fd2d1ae6718ead46c63464f5da72623a49b01db50d4021bd487 (request key gf-r6-20261026-claudeended-codex-live-v5): port 7b8b0633-a88e-4558-930e-0201f50e0123 claude->codex model gpt-5.6-sol status delivered prepared 2026-10-26T17:18:03.697075-04:00 delivered 2026-10-26T17:18:39.452388-04:00 adv 48359->52970; consult state active source/responder su-0f855fe4-d7e1-4198-be13-e8facd1ecaa2; converted answering session su-97a49748-21a6-4c15-b12e-2d5484ec70f8; answer post 1207209 by su-97a49748-21a6-4c15-b12e-2d5484ec70f8 at 2026-10-26T17:35:31.488-04:00 (3050 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true}"
+    },
+    {
+      "id": "matrix-codex-live-to-codex-session-port-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-d8644df5a1c0942cc069a2b58893a8a6d425586fd8f95f402579e049fc066778 (request key gf-r6-20261026-codexlive-codex-live-v5): port 2cb21ee8-bd73-4e62-b8ed-3de7ec3d91cd codex->codex model gpt-5.6-sol status delivered prepared 2026-10-26T17:18:03.718361-04:00 delivered 2026-10-26T17:18:39.097555-04:00 adv 51591->52969; consult state closed_answered source/responder su-f9dd6b51-766b-4428-9ead-7cef3459f49e; converted answering session su-c0c68994-3231-4421-b684-c8b449118219; answer post 1207200 by su-c0c68994-3231-4421-b684-c8b449118219 at 2026-10-26T17:21:42.888-04:00 (3147 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true}"
+    },
+    {
+      "id": "eight-thread-review-retained",
+      "passed": true,
+      "evidence": "The eight-thread usefulness/adoption review is unchanged and retained in operational binding 71412 (test-run 22258824, docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json); this artifact re-measures only the native receipt/answering matrix on the current build."
+    },
+    {
+      "id": "db-state-claim-runtime-scope",
+      "passed": true,
+      "evidence": "Claim is durable DB state (delivered session_ports rows, consult_state, answer posts in coord_thread_posts by sessions distinct from requester and source). Per consult answer post 1207200 (su-c0c68994, grounded in runtime-vintage.ts / host-bootstrap.ts), such a claim pins postgres:5432 only; hono-host:3170 restarted (pid 316499 -> 898531 at ~21:22Z, same build c140bfce96) after delivery, and no host-process continuity is claimed."
+    }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-10005891",
+  "requesterId": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+  "runtime": {
+    "consultRoute": "staging operator :3170 build c140bfce96 (hono-host pid 316499 at submission/delivery; restarted to pid 898531 ~21:22Z, same build)",
+    "boundRuntimeUnits": [
+      "postgres:5432"
+    ],
+    "launcher": "psu-launcher on psu-pty-host, canonical staging tree (carries WI-6554700010029583 delivery-ack fix)"
+  },
+  "matrix": {
+    "definition": "Three cells: Claude ended source to Claude fork; Claude ended source to Codex conversion; non-Claude (Codex) live source to Codex session port.",
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "status": "checked",
+        "requestKey": "gf-r6-20261026-claudeended-claude-live-v4",
+        "conversationId": "conv-request-47d804e89ef127dbbebabf89af2f19444eabd34140c37b76b35fc0054dd8bb3b",
+        "portId": "9fa91235-fc91-4023-a147-f67a26ebda32",
+        "port": {
+          "id": "9fa91235-fc91-4023-a147-f67a26ebda32",
+          "logical_request_key": "bc5eef1be92ad9aeed2b748aa42ab9c47c2f852fc1f27c6b06ced0bff4e6a6a9",
+          "source_backend": "claude",
+          "target_backend": "claude",
+          "target_model": "fable[1m]",
+          "status": "delivered",
+          "source_adv_session_id": 48651,
+          "target_adv_session_id": 52965,
+          "prepared_at": "2026-10-26T17:13:43.756295-04:00",
+          "pending_at": "2026-10-26T17:14:08.248533-04:00",
+          "delivered_at": "2026-10-26T17:15:11.082608-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "consultState": "active",
+        "sourceOwnerId": "su-002facda-0c83-47c4-bcdb-b1577f742d45",
+        "answeringOwnerId": "su-3e0696b0-0463-4299-a5b4-a82e49c3f09d",
+        "answerPostIds": [
+          1207195
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true
+        }
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "status": "checked",
+        "requestKey": "gf-r6-20261026-claudeended-codex-live-v5",
+        "conversationId": "conv-request-c52843b118659fd2d1ae6718ead46c63464f5da72623a49b01db50d4021bd487",
+        "portId": "7b8b0633-a88e-4558-930e-0201f50e0123",
+        "port": {
+          "id": "7b8b0633-a88e-4558-930e-0201f50e0123",
+          "logical_request_key": "e653bffff831f553eebec7900e737808ea62fdef2f4a923d4dbfadb969d18f71",
+          "source_backend": "claude",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 48359,
+          "target_adv_session_id": 52970,
+          "prepared_at": "2026-10-26T17:18:03.697075-04:00",
+          "pending_at": "2026-10-26T17:18:17.146319-04:00",
+          "delivered_at": "2026-10-26T17:18:39.452388-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "consultState": "active",
+        "sourceOwnerId": "su-0f855fe4-d7e1-4198-be13-e8facd1ecaa2",
+        "answeringOwnerId": "su-97a49748-21a6-4c15-b12e-2d5484ec70f8",
+        "answerPostIds": [
+          1207209
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "status": "checked",
+        "requestKey": "gf-r6-20261026-codexlive-codex-live-v5",
+        "conversationId": "conv-request-d8644df5a1c0942cc069a2b58893a8a6d425586fd8f95f402579e049fc066778",
+        "portId": "2cb21ee8-bd73-4e62-b8ed-3de7ec3d91cd",
+        "port": {
+          "id": "2cb21ee8-bd73-4e62-b8ed-3de7ec3d91cd",
+          "logical_request_key": "f08176b7712a86d08be35279d26b36b6bf111bd24dc5919d0fa61d0326a4b225",
+          "source_backend": "codex",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 51591,
+          "target_adv_session_id": 52969,
+          "prepared_at": "2026-10-26T17:18:03.718361-04:00",
+          "pending_at": "2026-10-26T17:18:17.141247-04:00",
+          "delivered_at": "2026-10-26T17:18:39.097555-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "consultState": "closed_answered",
+        "sourceOwnerId": "su-f9dd6b51-766b-4428-9ead-7cef3459f49e",
+        "answeringOwnerId": "su-c0c68994-3231-4421-b684-c8b449118219",
+        "answerPostIds": [
+          1207200,
+          1207203
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true
+        }
+      }
+    ]
+  },
+  "eightThreadReview": {
+    "retainedIn": "binding 71412 / test-run 22258824",
+    "artifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json"
+  },
+  "details": {
+    "residue": [
+      "Row1 port 9fa91235 was prepared/pending (21:13:43Z/21:14:08Z) on the prior :3170 process (553fd55f1a) and delivered/answered after the 21:14:24Z advance to c140bfce96; it is counted as DB-state evidence only.",
+      "A row1-v5 resubmission (gf-r6-20261026-claudeended-claude-live-v5) at ~21:22Z never reached the operator: mcp-call reported connection refused on :3170 during its restart; no consult_state row was created.",
+      "Prior-process trials on 553fd55f1a (e.g. row3-v3 conv-request-718d8029..., answer 1207185) are retained as supporting evidence only, not bound here.",
+      "EI-25992928696571199: fixture-absence independent verification may be stranded behind the author-only pre-grading refusal."
+    ],
+    "consultAnswersUsed": {
+      "1207200": "runtime-unit scoping for live-plane binding",
+      "1207209": "route for independent fixture verification (direct tracked outside-lineage task)"
+    }
+  }
+}

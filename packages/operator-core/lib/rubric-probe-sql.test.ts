@@ -180,7 +180,7 @@ describe('R-4 — rubric probe checks run read-only SQL through the dev:pg_query
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toMatchObject({
       name: 'dev:pg_query',
-      args: { sql: 'SELECT v FROM probe_sentinel WHERE id = 1', maxRows: SQL_PROBE_DEFAULT_MAX_ROWS, timeoutMs: PROBE_BUDGET_MS },
+      args: { sql: 'SELECT "__pc_data".*, transaction_timestamp()::text AS "__papercusp_measurement_transaction_at_v1" FROM (SELECT v FROM probe_sentinel WHERE id = 1) AS "__pc_data"', maxRows: SQL_PROBE_DEFAULT_MAX_ROWS, timeoutMs: PROBE_BUDGET_MS },
     });
 
     expect(fakeDb.state.txns).toHaveLength(1);
@@ -191,7 +191,7 @@ describe('R-4 — rubric probe checks run read-only SQL through the dev:pg_query
     expect(Number(timeout![1])).toBeGreaterThan(0);
     expect(Number(timeout![1])).toBeLessThanOrEqual(PROBE_BUDGET_MS);
     expect(dataStatements(log)).toEqual([
-      `SELECT * FROM (SELECT v FROM probe_sentinel WHERE id = 1) AS _pgq LIMIT ${SQL_PROBE_DEFAULT_MAX_ROWS + 1}`,
+      `SELECT * FROM (${dispatched[0]!.args.sql}) AS _pgq LIMIT ${SQL_PROBE_DEFAULT_MAX_ROWS + 1}`,
     ]);
   });
 
@@ -255,7 +255,8 @@ describe('R-4 — rubric probe checks run read-only SQL through the dev:pg_query
     const result = await grade(capped, 'healthy');
     expect(result).toMatchObject({ ok: true, checkRuns: { 'r-4': { verdict: 'pass' } } });
     expect(dispatched[0]?.args).toMatchObject({ maxRows: 3 });
-    expect(dataStatements(fakeDb.state.txns[0]!)).toEqual(['SELECT * FROM (SELECT i FROM generate_series(1, 10) AS i) AS _pgq LIMIT 4']);
+    expect(dataStatements(fakeDb.state.txns[0]!)).toEqual([`SELECT * FROM (${dispatched[0]!.args.sql}) AS _pgq LIMIT 4`]);
+    expect(dispatched[0]!.args.sql).toContain('FROM (SELECT i FROM generate_series(1, 10) AS i)');
 
     fakeDb.reset();
     const rowCount = await grade(

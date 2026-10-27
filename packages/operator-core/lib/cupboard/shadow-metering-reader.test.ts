@@ -20,7 +20,7 @@
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { readIdentityOutcomeCost, readIdentityTurnBilledCost, readShadowStatement, shadowMonthBounds, type IdentityTurnUsageBinding,
-  type OutcomeWorkItem } from './shadow-metering-reader';
+  type IdentityMessageUsageBinding, type OutcomeWorkItem } from './shadow-metering-reader';
 import type { FundedIdentityTurn } from './funded-turn-store';
 import { identityPerUseOfferTerms, quoteIdentityInferenceTurn } from './identity-per-use-offer';
 
@@ -64,6 +64,45 @@ describe('exact turn billed-cost evidence', () => {
       { ...binding, usageEventKeys: [key, secondKey] })).toEqual({ ok: true, billedInferenceMicros: 2000n,
       samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7', billedInferenceMicros: '999' },
         { usageEventKey: secondKey, sampleId: '102', activationEventId: '7', billedInferenceMicros: '1001' }] });
+  });
+
+  const messageBinding: IdentityMessageUsageBinding = { workspaceId: 'workspace', ownerId: 'owner', principalId: 'payer',
+    nativeSessionId: 'native-session', nativeMessageId: 'msg-provider', specificationRevision: 'spec',
+    stateRevision: 'state', usageEventKeys: [key] };
+  const messageRow = { ...row, turn_id: null, provider_response_id: 'msg-provider',
+    source_id: 'message:msg-provider', response_id_source: 'native-message-id', adapter: 'claude-iso-2' };
+
+  it('bills a canonical Claude message without inventing a native turn', async () => {
+    const { sql, calls } = recordingSql(() => [messageRow]);
+    expect(await readIdentityTurnBilledCost(sql, messageBinding)).toEqual({ ok: true, billedInferenceMicros: 999n,
+      samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7', billedInferenceMicros: '999' }] });
+    expect(calls[0]!.text).toContain("usage_provenance->>'providerResponseId'");
+    expect(isReadOnlyStatement(calls[0]!.text)).toBe(true);
+  });
+
+  it('rejects mismatched Claude message provenance, fabricated turns and foreign identity', async () => {
+    for (const bad of [{ provider_response_id: null }, { provider_response_id: 'msg-other' },
+      { source_id: 'message:msg-other' }, { source_id: 'line:0' }, { response_id_source: 'native-token-usage-record' },
+      { adapter: 'codex' }, { adapter: null }, { turn_id: 'invented-turn' }, { owner_id: 'other' }]) {
+      expect(await readIdentityTurnBilledCost(recordingSql(() => [{ ...messageRow, ...bad }]).sql, messageBinding))
+        .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
+    }
+  });
+
+  it('refuses ambiguous or incomplete message bindings before querying', async () => {
+    const { sql, calls } = recordingSql(() => [messageRow]);
+    for (const bad of [{ nativeMessageId: '' }, { nativeMessageId: ' ' }, { nativeMessageId: null },
+      { nativeTurnId: 'turn' }, { usageEventKeys: [key, 'b'.repeat(64)] }]) {
+      expect(await readIdentityTurnBilledCost(sql, { ...messageBinding, ...bad } as never))
+        .toMatchObject({ ok: false, code: 'identity-usage-invalid-binding' });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('pins the exact message identity and event population before async IO', async () => {
+    const input = { ...messageBinding, usageEventKeys: [key] };
+    const { sql } = recordingSql(() => { input.nativeMessageId = 'msg-other'; input.usageEventKeys[0] = 'b'.repeat(64); return [messageRow]; });
+    expect(await readIdentityTurnBilledCost(sql, input)).toMatchObject({ ok: true, billedInferenceMicros: 999n });
   });
 
   it('refuses each changed identity, principal and native-turn binding', async () => {

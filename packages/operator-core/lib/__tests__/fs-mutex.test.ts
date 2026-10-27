@@ -1,4 +1,5 @@
 import { lstat, mkdir, mkdtemp, opendir, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -492,6 +493,41 @@ describe('withFsMutexRead wait observations', () => {
     }
   });
 
+  it.each([false, true])('reports failed reader admission even when the timeout observer throws: %s', async (observerThrows) => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-timeout-observation-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'reader-timeout.lock');
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: hostname() }));
+    const timeouts: { waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> }[] = [];
+    let readerEntered = false;
+    let acquired = false;
+    try {
+      await expect(withFsMutexRead('reader-timeout', async () => { readerEntered = true; }, {
+        timeoutMs: 40,
+        retryMs: 2,
+        onAcquired: observerThrows ? () => { acquired = true; } : undefined,
+        onTimedOut: (info) => {
+          timeouts.push(info);
+          if (observerThrows) throw new Error('timeout observer failed');
+        },
+      })).rejects.toMatchObject({ code: 'ETIMEDOUT', timeoutMs: 40 });
+      expect(timeouts).toHaveLength(1);
+      expect(timeouts[0].waitedMs).toBeGreaterThanOrEqual(40);
+      expect(timeouts[0].admissionSubphaseTimingsMs).toMatchObject({
+        'lock-root.ensure': expect.any(Number),
+        'writer-check': expect.any(Number),
+        'retry-wait': expect.any(Number),
+      });
+      expect(readerEntered).toBe(false);
+      expect(acquired).toBe(false);
+      expect(await readdir(join(dir, 'reader-timeout.readers'))).toEqual([]);
+      expect((await lstat(writerDir)).isDirectory()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the one-shot default and cleans up after a bounded timeout', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-default-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
@@ -648,6 +684,27 @@ describe('withFsMutex', () => {
     }
   });
 
+  it('reports the observed holder on timeout without a progress callback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-timeout-holder-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'timeout-holder.lock');
+    const owner = { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() };
+    await mkdir(lockDir);
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify(owner));
+    try {
+      await expect(withFsMutex('timeout-holder', async () => 'must not acquire', {
+        timeoutMs: 80,
+        retryMs: 5,
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`holder (last observed): ${JSON.stringify(owner)}`),
+      });
+      expect((await lstat(lockDir)).isDirectory()).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('stops retrying a slow abandoned-lock reclaim after the deadline and reports its failed phases', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-slow-reclaim-'));
     const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -681,7 +738,10 @@ describe('withFsMutex', () => {
         retryMs: 1,
         io,
         onTimedOut: (info) => { timeoutInfo = info; },
-      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`"pid":${process.pid}`),
+      });
 
       expect(ownerReads).toBe(1);
       expect(performance.now() - startedAt).toBeLessThan(200);
@@ -775,7 +835,7 @@ describe('withFsMutex', () => {
     let reserved = false;
     const io = {
       writeFile: async (...args: Parameters<typeof writeFile>) => {
-        if (String(args[0]).startsWith(readersDir) && !reserved) {
+        if (String(args[0]).endsWith('/owner.json') && !reserved) {
         reserved = true;
         await mkdir(writerDir);
         await writeFile(join(writerDir, 'owner.json'), JSON.stringify({
@@ -1144,6 +1204,59 @@ describe('fs-mutex lease reclamation', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('does not expose an interrupted reader publication to a writer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-publication-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const moduleUrl = new URL('../../../../scripts/lib/fs-mutex.mjs', import.meta.url).href;
+    const childSource = [
+      'import { withFsMutexRead } from ' + JSON.stringify(moduleUrl) + ';',
+      'const io = { writeFile: async (path) => {',
+      '  if (path.endsWith("owner.json")) {',
+      '    process.send("owner-write-started");',
+      '    await new Promise(() => {});',
+      '  }',
+      '} };',
+      'await withFsMutexRead("interrupted-reader-publication", async () => {}, {',
+      '  lockRootDir: process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR, io,',
+      '  timeoutMs: 1000, staleMs: 5000, retryMs: 5,',
+      '});',
+    ].join('\n');
+    const childEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: dir };
+    // test:file injects the committed-source loader through NODE_OPTIONS. This
+    // child must exercise the working-tree implementation under test, not the
+    // committed blob silently substituted into spawned Node processes.
+    delete childEnv.NODE_OPTIONS;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childSource], {
+      env: childEnv,
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const childExited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    const publicationStarted = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('reader did not reach owner publication')), 3000);
+      child.once('message', (message) => {
+        clearTimeout(timer);
+        resolve(String(message));
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error('reader exited before publication: ' + code + '/' + signal));
+      });
+    });
+
+    try {
+      await expect(publicationStarted).resolves.toBe('owner-write-started');
+      child.kill('SIGKILL');
+      await childExited;
+      await expect(withFsMutex('interrupted-reader-publication', async () => 'writer-acquired', {
+        lockRootDir: dir, timeoutMs: 100, staleMs: 5000, retryMs: 5,
+      })).resolves.toBe('writer-acquired');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await childExited;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // EI-21915677034576963: withFsMutex had no fairness at all — every waiter just raced
@@ -1231,6 +1344,45 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     expect(result).toBe('done');
     expect(elapsed).toBeLessThan(2_000);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('attributes FIFO timeout to the live older ticket without a waiting callback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-fifo-timeout-owner-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'fifo-timeout-owner';
+    const queueDir = join(dir, `${name}.queue`);
+    const ticketDir = join(queueDir, '0000000000000001-live.ticket');
+    const owner = JSON.stringify({
+      pid: process.pid, host: hostname(), name,
+      intent: { workItem: 'older-retention-pass', phase: 'census' },
+    });
+    await mkdir(ticketDir, { recursive: true });
+    await writeFile(join(ticketDir, 'owner.json'), owner);
+    let ownerReads = 0;
+    let timeoutCount = 0;
+    let entered = false;
+    try {
+      await expect(withFsMutex(name, async () => { entered = true; }, {
+        timeoutMs: 0,
+        onTimedOut: () => { timeoutCount += 1; },
+        io: {
+          readFile: async (path: string, encoding: 'utf8') => {
+            if (path === join(ticketDir, 'owner.json')) ownerReads += 1;
+            return readFile(path, encoding);
+          },
+        },
+      })).rejects.toMatchObject({
+        code: 'ETIMEDOUT',
+        message: expect.stringContaining(`FIFO head (last observed): ${ticketDir}; owner: ${owner}`),
+      });
+      expect(entered).toBe(false);
+      expect(timeoutCount).toBe(1);
+      expect(ownerReads).toBe(1);
+      expect(await readdir(queueDir)).toEqual(['0000000000000001-live.ticket']);
+      expect(await readFile(join(ticketDir, 'owner.json'), 'utf8')).toBe(owner);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('checks only the live FIFO head in a wide queue instead of reading every waiter owner', async () => {

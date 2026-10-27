@@ -16,7 +16,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
 import { installMethodNotAllowed } from '@papercusp/operator-core/lib/endpoint-route/method-not-allowed';
-import { workspaceContextMiddleware } from '@papercusp/operator-core/lib/workspace-context-middleware';
+import { createWorkspaceContextMiddleware } from '@papercusp/operator-core/lib/workspace-context-middleware';
+import { createLocalMachineOperatorTransport } from '@papercusp/operator-core/lib/workspace-host/local-machine-operator-transport';
 import { configuredRemoteOrigins } from '@papercusp/operator-core/lib/remote-auth-policy';
 
 const app = new Hono().basePath('/api');
@@ -47,6 +48,7 @@ const tauriApiCors = cors({
     // Without this the browser/dev path's CORS preflight strips the custom
     // header before it reaches workspaceContextMiddleware.
     'x-papercusp-workspace',
+    'x-papercusp-machine',
   ],
   credentials: true,
   maxAge: 600,
@@ -72,7 +74,7 @@ app.use('/themes/*', tauriApiCors);
 // harness resolution + PG row-scoping) follow the window that made the request,
 // not the process-global `reg.current`. Must run before any route handler.
 // (per-window-workspace-context-2026-05-31, P-011.)
-app.use('*', workspaceContextMiddleware);
+app.use('*', createWorkspaceContextMiddleware(createLocalMachineOperatorTransport()));
 
 // experts, pty, agent-chats, operator-notes, projects, cross-harness,
 // oracle, dock-layouts migrated to defineTool (endpoint-hono-elimination

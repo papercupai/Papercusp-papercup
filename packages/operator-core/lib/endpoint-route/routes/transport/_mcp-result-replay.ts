@@ -60,6 +60,8 @@ export interface StoredMcpResult {
   isError?: boolean;
   _meta?: Record<string, unknown>;
   structuredContent?: unknown;
+  /** Pre-projection tool outcome, retained so a same-key retry can choose a new view safely. */
+  replaySource?: Omit<StoredMcpResult, 'replaySource'>;
 }
 
 /** The marker stored while an idempotent write is executing asynchronously. */
@@ -387,8 +389,28 @@ export function serializeStoredMcpResult(result: StoredMcpResult): string {
   if (result.structuredContent !== undefined) {
     json += `,"structuredContent":${JSON.stringify(result.structuredContent)}`;
   }
+  if (result.replaySource) {
+    // A raw tool outcome is a leaf receipt, never another replay wrapper.
+    json += `,"replaySource":${serializeStoredMcpResult(result.replaySource as StoredMcpResult)}`;
+  }
   json += '}';
   return json;
+}
+
+function estimateStoredMcpResultSize(result: Omit<StoredMcpResult, 'replaySource'>): number {
+  let estimatedSize = 200; // baseline for metadata (_meta, isError, wrapper)
+  if (Array.isArray(result.content)) {
+    for (const item of result.content) {
+      if (item && typeof item === 'object') {
+        const text = (item as { text?: unknown }).text;
+        if (typeof text === 'string') estimatedSize += text.length;
+      }
+    }
+  }
+  if (result.structuredContent !== undefined) {
+    estimatedSize += JSON.stringify(result.structuredContent).length;
+  }
+  return estimatedSize;
 }
 
 export async function storeMcpResult(args: {
@@ -397,6 +419,7 @@ export async function storeMcpResult(args: {
   toolName: string;
   workspaceId: string;
   result: StoredMcpResult;
+  replaySource?: Omit<StoredMcpResult, 'replaySource'> | null;
 }): Promise<void> {
   const { sql } = getOrgPg();
   // Size gate: skip storing pathologically large results (operator-scalability P1-2
@@ -406,26 +429,29 @@ export async function storeMcpResult(args: {
   // the already-serialized text in content.text fields. Skipping the row forgoes
   // replay for that ONE huge result while the write itself still committed — best-
   // effort by contract, safe.
-  let estimatedSize = 200; // baseline for metadata (_meta, isError, wrapper)
-  if (Array.isArray(args.result.content)) {
-    for (const item of args.result.content) {
-      if (item && typeof item === 'object') {
-        // Content items are {type: 'text', text: <serialized>}. Reuse the text
-        // length instead of re-serializing it.
-        const text = (item as { text?: unknown }).text;
-        if (typeof text === 'string') {
-          estimatedSize += text.length;
-        }
-      }
-    }
+  let result = args.result;
+  let replaySource = args.replaySource ?? undefined;
+  if (
+    replaySource &&
+    estimateStoredMcpResultSize(result) + estimateStoredMcpResultSize(replaySource) > REPLAY_STORE_MAX_BYTES
+  ) {
+    // Keep the committed operation receipt even when retaining both views would
+    // exceed the event-loop budget. A later request for a different view must be
+    // told that its source was not retained; it must never re-execute the write.
+    result = {
+      ...result,
+      _meta: {
+        ...(result._meta ?? {}),
+        replaySourceUnavailable: { reason: 'replay-store-size-limit' },
+      },
+    };
+    replaySource = undefined;
   }
-  // EI-21508946450217911: structuredContent is part of the stored payload now —
-  // a large one must count toward the same event-loop gate the content does,
-  // or the gate under-measures by exactly the field this exists to bound.
-  if (args.result.structuredContent !== undefined) {
-    estimatedSize += JSON.stringify(args.result.structuredContent).length;
-  }
-  if (estimatedSize > REPLAY_STORE_MAX_BYTES) {
+  if (
+    estimateStoredMcpResultSize(result) +
+      (replaySource ? estimateStoredMcpResultSize(replaySource) : 0) >
+    REPLAY_STORE_MAX_BYTES
+  ) {
     maybeSweep();
     return;
   }
@@ -434,7 +460,10 @@ export async function storeMcpResult(args: {
   // Reuse already-serialized text in content items to avoid the 4th stringify
   // (operator P1-4 / app-wide-load-traps F-A1-part2): build the JSON manually
   // from components instead of calling JSON.stringify on the whole result.
-  const resultJson = serializeStoredMcpResult(args.result);
+  const resultJson = serializeStoredMcpResult({
+    ...result,
+    ...(replaySource ? { replaySource } : {}),
+  });
   // First write wins: if a concurrent same-key call already stored, keep
   // the original (both executed in that pathological case; the FIRST
   // stored result is the one every later replay sees — stable).

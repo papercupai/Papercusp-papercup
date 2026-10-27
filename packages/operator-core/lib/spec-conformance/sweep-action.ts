@@ -29,6 +29,7 @@
  * a deferred plan keeps its trigger and leads the next tick by priority.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { PhaseTracker } from '@papercusp/tooldef';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from '../harness/routines/system-actions';
 import { evaluateRequirementEnforcement } from './conformance-contract';
 import { loadConformanceReportPlans } from './conformance-report';
@@ -386,7 +387,7 @@ export async function runSpecConformanceSweep(
 const toIso = (value: unknown): string | null =>
   value instanceof Date ? value.toISOString() : typeof value === 'string' && value ? new Date(value).toISOString() : null;
 
-export function productionSweepDeps(input: { workspaceId: string }): SpecConformanceSweepDeps {
+export function productionSweepDeps(input: { workspaceId: string; phases?: PhaseTracker }): SpecConformanceSweepDeps {
   const sql = () => getOrgPg().sql;
   const { workspaceId } = input;
   return {
@@ -442,7 +443,7 @@ export function productionSweepDeps(input: { workspaceId: string }): SpecConform
     runConformance(plan) {
       return runPlanConformance(
         { planSlug: plan.planSlug, harnessSlug: plan.harnessSlug, planContent: plan.content },
-        productionConformanceDeps({ workspaceId, harnessSlug: plan.harnessSlug, planSlug: plan.planSlug }),
+        productionConformanceDeps({ workspaceId, harnessSlug: plan.harnessSlug, planSlug: plan.planSlug, phases: input.phases }),
       );
     },
     reconcileFootprint(plan, sinceSha, window) {

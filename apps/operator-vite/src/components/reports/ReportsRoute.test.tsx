@@ -18,8 +18,9 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: (opts: { queryName: string; ar
 } }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({ MarkdownPreview: ({ value, onParsed }: { value: string; onParsed?: (root: HTMLElement) => void }) => {
   const root = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (root.current) onParsed?.(root.current); }, [value, onParsed]);
-  return <div ref={root} data-testid="markdown-preview"><span>{value}</span>{value.includes('## Outline fixture') && <><h2 id="repeated">Outline fixture</h2><h3 id="repeated">Nested section</h3></>}</div>;
+  useEffect(() => { if (root.current) { onParsed?.(root.current); onParsed?.(root.current); } }, [value, onParsed]);
+  return <div ref={root} data-testid="markdown-preview"><span>{value}</span>{value.includes('## Outline fixture') && <><h2 id="repeated">Outline fixture</h2><h3 id="repeated">Nested section</h3></>}
+    {value.includes('## Table fixture') && <table><thead><tr><th>Finding</th><th>Evidence</th></tr></thead><tbody><tr><td>Complete finding</td><td>Far right evidence</td></tr></tbody></table>}</div>;
 } }));
 vi.mock('@/app/_components/inbox/chat-seed', () => ({ seedOperatorChatDraft: vi.fn() }));
 import ReportsRoute from './ReportsRoute';
@@ -43,6 +44,36 @@ const mount = (searchParams = '', onUrlUpdate = vi.fn()) => {
 };
 
 describe('Reports route', () => {
+  it('keeps semantic tables in a single keyboard reachable region across repeated parsing and fullscreen', async () => {
+    fixture.detail = [{ ...report, body_md: '## Table fixture' }];
+    mount('?sel=edition-2');
+    const region = screen.getByRole('region', { name: 'Report table 1' });
+    const table = within(region).getByRole('table');
+    expect(region.tabIndex).toBe(0);
+    expect(region.querySelectorAll('.reports-table-scroll')).toHaveLength(0);
+    expect(within(table).getByRole('columnheader', { name: 'Evidence' })).toBeTruthy();
+    expect(within(table).getByRole('cell', { name: 'Far right evidence' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen report reader' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restore report reader' })).toBeTruthy());
+    expect(screen.getByRole('table')).toBe(table);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Fullscreen report reader' })).toBeTruthy());
+    expect(screen.getByRole('table')).toBe(table);
+    expect(screen.getAllByRole('region', { name: 'Report table 1' })).toHaveLength(1);
+  });
+
+  it('contains tables in both compared editions as well as the selected report', async () => {
+    fixture.detail = [{ ...report, body_md: '## Table fixture' }];
+    fixture.previous = [{ ...report, report_id: 'edition-1', body_md: '## Table fixture previous' }];
+    mount('?sel=edition-2');
+    fireEvent.click(screen.getByRole('button', { name: 'Compare editions' }));
+    await waitFor(() => expect(screen.getAllByRole('table')).toHaveLength(3));
+    for (const table of screen.getAllByRole('table')) {
+      expect(table.parentElement?.className).toBe('reports-table-scroll');
+      expect(table.parentElement?.tabIndex).toBe(0);
+    }
+  });
+
   it('fullscreens the complete reader and restores without remounting the report or resetting scroll', async () => {
     fixture.detail = [report];
     let active: Element | null = null;

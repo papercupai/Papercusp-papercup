@@ -51,6 +51,7 @@ const capabilityClass = (overrides: Partial<CapabilityClassRow> = {}): Capabilit
 const providerTool = (overrides: Partial<ProviderToolContract> = {}): ProviderToolContract => ({
   name: 'acme:send-email',
   pluginName: 'acme-crm',
+  providerVersion: '2.0.0',
   // Deliberately reverse property insertion order. Structural comparison is
   // canonical, never JSON.stringify insertion-order theatre.
   inputSchema: {
@@ -96,6 +97,21 @@ describe('capability class vector storage identity', () => {
 });
 
 describe('validateProviderInterface', () => {
+  it.each([null, '1.9.0', '2.0.1'])('refuses an unmeasured or mismatched loaded provider version %s', (loadedVersion) => {
+    const report = validateProviderInterface({
+      capabilityClass: capabilityClass(),
+      providerPackage: 'acme-crm',
+      providerVersion: '2.0.0',
+      registryRevision: 'registry-r1',
+      verbBindings: { send: 'acme:send-email' },
+      lookup: () => ({ ...providerTool(), providerVersion: loadedVersion }),
+    });
+    expect(report.ok).toBe(false);
+    expect(report.checks[0]?.problems).toContain(loadedVersion === null
+      ? 'loaded provider version is unavailable'
+      : `loaded provider version ${loadedVersion} differs from requested 2.0.0`);
+  });
+
   it('passes only from the real provider-owned tool contract and ignores JSON object key order', () => {
     const report = validateProviderInterface({
       capabilityClass: capabilityClass(),

@@ -43,14 +43,20 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, unlinkSync } f
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { managedSpawn } from '../../task-manager/managed-spawn';
-import { listTasks } from '../../task-manager/store';
+import {
+  listTasks,
+  OPERATOR_E2E_TASK_CLASS,
+  OPERATOR_E2E_TASK_LAUNCHED_BY,
+  OPERATOR_E2E_TASK_RETENTION_RUNS,
+  OPERATOR_E2E_TASK_SUBSYSTEM,
+} from '../../task-manager/store';
 import { newTaskId, type TaskRow } from '../../task-manager/types';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 export const OPERATOR_E2E_ISOLATED_ACTION = 'operator-e2e-isolated';
 /** The PAPERCUSP_SID a routine fire hands the rig when no caller session id is inherited. */
-export const OPERATOR_E2E_ISOLATED_SID = `system:${OPERATOR_E2E_ISOLATED_ACTION}`;
+export const OPERATOR_E2E_ISOLATED_SID = OPERATOR_E2E_TASK_LAUNCHED_BY;
 
 /** Ledger run-group prefix for routine fires (plan D-001 #1). */
 export const OPERATOR_E2E_RUN_GROUP_PREFIX = 'operator-e2e-nightly';
@@ -76,7 +82,7 @@ export const OPERATOR_E2E_RUNTIME_MAX_SEC = 60 * 60;
 export const OPERATOR_E2E_MEMORY_MAX_BYTES = 24 * 1024 ** 3;
 
 /** How many per-run log files to keep. Nightly, so two weeks of history. */
-export const OPERATOR_E2E_LOGS_KEPT = 14;
+export const OPERATOR_E2E_LOGS_KEPT = OPERATOR_E2E_TASK_RETENTION_RUNS;
 
 export function integrationRoot(): string {
   return process.env.PAPERCUSP_INTEGRATION_ROOT ?? path.resolve(process.cwd(), '..', '..');
@@ -107,7 +113,7 @@ export interface OperatorE2eInvocation {
  */
 export function buildOperatorE2eInvocation(
   root: string,
-  ids: { fireId: string; workspaceId: string; harnessSlug: string },
+  ids: { fireId: string; workspaceId: string; harnessSlug: string; receiptBasePath?: string },
   baseEnv: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = existsSync,
 ): OperatorE2eInvocation {
@@ -119,6 +125,15 @@ export function buildOperatorE2eInvocation(
   env.PAPERCUSP_TEST_RUN_GROUP = runGroup;
   env.PAPERCUSP_TEST_RUN_WORKSPACE = ids.workspaceId;
   env.PAPERCUSP_TEST_RUN_HARNESS = ids.harnessSlug;
+  // The default suite includes native post-onboarding journeys. Request the
+  // rig's verified ready seed and isolated worker placement, and give receipt
+  // writers distinct per-attempt outputs rather than inherited stale paths.
+  env.VERIFY_TAURI_ISOLATED_SEED = 'ready';
+  env.PAPERCUSP_DEV_BACKGROUND_WORKERS = '1';
+  const receiptBase = path.resolve(ids.receiptBasePath
+    ?? path.join(operatorE2eLogDir(), encodeURIComponent(ids.fireId)));
+  env.PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE = `${receiptBase}.inbox-ack.json`;
+  env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = `${receiptBase}.test-runs.jsonl`;
   // This standing routine must snapshot committed current-build source. The
   // generic runner treats an explicitly empty VERIFY_TAURI_SOURCE_REF as a
   // request for mutable working-tree mode, which can fail on unrelated peer
@@ -209,16 +224,16 @@ export async function runOperatorE2eIsolated(
   const taskId = opts.taskId ?? newTaskId();
   const fireId = ctx.workflowId || taskId;
   const harnessSlug = ctx.installSlug || home;
+  const logDir = opts.logDir ?? operatorE2eLogDir();
+  const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
+  const logPath = path.join(logDir, `${stamp}-${taskId}.log`);
   const invocation = buildOperatorE2eInvocation(
     root,
-    { fireId, workspaceId: ctx.workspaceId, harnessSlug },
+    { fireId, workspaceId: ctx.workspaceId, harnessSlug, receiptBasePath: logPath },
     opts.env ?? process.env,
     exists,
   );
 
-  const logDir = opts.logDir ?? operatorE2eLogDir();
-  const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
-  const logPath = path.join(logDir, `${stamp}-${taskId}.log`);
   let logFd: number | null = null;
   try {
     mkdirSync(logDir, { recursive: true });
@@ -237,17 +252,17 @@ export async function runOperatorE2eIsolated(
       invocation.command,
       invocation.args,
       {
-        class: 'test-run',
+        class: OPERATOR_E2E_TASK_CLASS,
         title: `operator e2e (isolated) ${invocation.runGroup}`,
         argv: [invocation.command, ...invocation.args],
         cwd: invocation.cwd,
-        launchedBy: `system:${OPERATOR_E2E_ISOLATED_ACTION}`,
+        launchedBy: OPERATOR_E2E_TASK_LAUNCHED_BY,
         harnessSlug,
         memoryMaxBytes: OPERATOR_E2E_MEMORY_MAX_BYTES,
         runtimeMaxSec: OPERATOR_E2E_RUNTIME_MAX_SEC,
         ...(logFd == null ? {} : { logPath }),
         detail: {
-          subsystem: 'operator-e2e',
+          subsystem: OPERATOR_E2E_TASK_SUBSYSTEM,
           runGroup: invocation.runGroup,
           routineId: ctx.routineId ?? null,
           workflowId: ctx.workflowId ?? null,

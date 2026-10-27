@@ -54,10 +54,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
-import { withUnpinnedPath, withRetentionPinProtection } from './storage/retention-pins';
+import { withUnpinnedPath, withRetentionPinProtection, readRetentionPins } from './storage/retention-pins';
 import { AGENT_ROOT_MAX_BYTES } from './storage/retention-policy';
 import type { RetentionCapReceipt } from './storage/disk-reclaim';
+import { inspectRetentionTrees, RetentionAllocationCounter } from './storage/disk-consumer-census';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
+import { PAPERCUSP_TMPDIR_CANDIDATES } from '@papercusp/test-config/tmpdir-guard';
+import { defaultVerifyScanRoots, type VerifyScanRootEnv } from './harness/routines/gc-verify-instances';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
 
@@ -126,6 +129,23 @@ export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}) {
   return withRetentionPinProtection((isPinned) => sweepLintWorkRoots(opts, isPinned));
 }
 
+/** The producer can relocate TMPDIR independently of the scheduled operator.
+ * Sweep the same checkout/data roots as verifier GC, plus the test launcher's
+ * standard temp roots. Explicit single-root callers keep their existing scope. */
+export async function runLintWorkRootsGc(
+  opts: Omit<LintWorkRootGcOptions, 'root'> & { discovery?: VerifyScanRootEnv } = {},
+) {
+  const { discovery, ...sweepOptions } = opts;
+  const roots = await defaultVerifyScanRoots({
+    ...discovery,
+    baseDirs: discovery?.baseDirs ?? ['/tmp', tmpdir(), ...PAPERCUSP_TMPDIR_CANDIDATES],
+    dataTempDir: discovery?.dataTempDir ?? '/mnt/data/tmp',
+  });
+  const results = [];
+  for (const root of roots) results.push(await runLintWorkRootGc({ ...sweepOptions, root }));
+  return results;
+}
+
 async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: string) => boolean): Promise<{
   root: string; dryRun: boolean; scanComplete: boolean; scanError?: string;
   removed: Array<{ name: string; reason: string }>;
@@ -140,7 +160,7 @@ async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: 
     try { return readFileSync(join(path, OWNER_MARKER), 'utf8'); } catch { return null; }
   };
   // Preview uses the maintained policy; removal merely records candidate identity.
-  sweepStaleWorkRoots({ root, nowMs, cwds: [], remove: (path: string) => {
+  await sweepStaleWorkRoots({ root, nowMs, cwds: [], remove: (path: string) => {
     const st = lstatSync(path);
     identities.set(path, { ino: st.ino, dev: st.dev, marker: markerAt(path) });
   } });
@@ -151,7 +171,7 @@ async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: 
     catch (error) { scanError = error instanceof Error ? error.message : String(error); }
   }
   const wouldRemove: Array<{ name: string; reason: string }> = [];
-  const result = sweepStaleWorkRoots({ root, nowMs,
+  const result = await sweepStaleWorkRoots({ root, nowMs,
     cwds: [...scan.byPath].filter(([, holders]) => holders.length).map(([path]) => path),
     beforeRemove: (path: string) => {
       if (isPinned(path)) return 'pinned';
@@ -214,7 +234,7 @@ export interface FleetLogsGcDirResult {
   bytesRemaining: number;
   skippedOpen: number;
   skippedRaced: number;
-  /** Logical-byte ceiling, matching bytesRemaining. Null when protection
+  /** Allocated-byte ceiling; bytesRemaining remains logical unlink accounting. Null when protection
    * could not be read; unknown protection must never look like zero pins. */
   cap: RetentionCapReceipt | null;
   errors: Array<{ path: string; error: string }>;
@@ -252,6 +272,119 @@ function discoverFleetLogsDirs(): string[] {
 }
 
 interface FleetLogFile { path: string; mtimeMs: number; size: number; stat: Stats }
+
+interface RootAllocation {
+  bytes: number;
+  pinnedBytes: number;
+  pinnedPaths: string[];
+  sharedPaths: Map<string, Set<string>>;
+}
+
+/** Measure the complete no-follow population while the caller holds the pin
+ * mutex. Retained subtrees are accounting inputs, never eviction candidates. */
+async function measureRootAllocation(dir: string, identity: { dev: number; ino: number }, nowMs = Date.now()): Promise<RootAllocation> {
+  dir = resolve(dir);
+  const deadline = Date.now() + 5_000;
+  const rootStat = lstatSync(dir);
+  if (!rootStat.isDirectory() || rootStat.dev !== identity.dev || rootStat.ino !== identity.ino) {
+    throw new Error('root allocation identity changed');
+  }
+  const pins = readRetentionPins({ nowMs });
+  if (pins.errors.length) throw new Error(`retention pins unreadable: ${pins.errors.join('; ')}`);
+  const sharedPaths = new Map<string, Set<string>>();
+  const measure = async (path: string, counter: RetentionAllocationCounter, collectPaths = false) => {
+    if (Date.now() >= deadline) throw new Error('root allocation census budget exhausted');
+    const st = lstatSync(path);
+    if (st.dev !== rootStat.dev) throw new Error(`filesystem boundary: ${path}`);
+    if (process.getuid && st.uid !== process.getuid()) throw new Error(`foreign ownership boundary: ${path}`);
+    counter.add(path, st, st.isFile());
+    if (!st.isDirectory()) return; // symlinks and special nodes contribute only their own blocks
+    const census = await inspectRetentionTrees(path, { retainAfterMs: 0, includeRecent: true,
+      sudo: null, timeoutMs: Math.max(1, deadline - Date.now()) });
+    if (census.error) throw new Error(census.error);
+    const partial = census.retained.find(entry => !entry.entry ||
+      ['filesystem boundary', 'foreign ownership boundary'].includes(entry.reason));
+    if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
+    const entries = [...census.entries, ...census.retained.map(entry => entry.entry!)];
+    for (const entry of entries) {
+      const links = entry.hardlinks ?? [];
+      const exclusive = entry.bytes - links.reduce((sum, link) => sum + link.bytes, 0);
+      if (!Number.isSafeInteger(exclusive) || exclusive < 0) throw new Error('invalid root allocation census');
+      counter.bytes += exclusive;
+      for (const link of links) {
+        counter.add(link.paths[0]!, { dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2 }, true);
+        if (collectPaths) {
+          const key = `${link.dev}:${link.ino}`;
+          const paths = sharedPaths.get(key) ?? new Set<string>();
+          for (const alias of link.paths) paths.add(alias);
+          sharedPaths.set(key, paths);
+        }
+      }
+    }
+    const confirm = lstatSync(path);
+    if (confirm.dev !== st.dev || confirm.ino !== st.ino || confirm.ctimeMs !== st.ctimeMs) {
+      throw new Error(`root allocation changed during census: ${path}`);
+    }
+  };
+  const all = new RetentionAllocationCounter();
+  await measure(dir, all, true);
+  const contains = (outer: string, inner: string) => outer === inner || inner.startsWith(outer === '/' ? '/' : outer + sep);
+  const pinPaths = [...new Set(pins.pins.flatMap(pin => pin.paths).map(path => resolve(path))
+    .flatMap(path => contains(path, dir) ? [dir] : contains(dir, path) ? [path] : []))]
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const pinnedPaths = pinPaths.filter((path, index) => !pinPaths.slice(0, index).some(parent => contains(parent, path)));
+  const pinned = new RetentionAllocationCounter();
+  for (const path of pinnedPaths) {
+    if (path === dir) { pinned.bytes = all.bytes; break; }
+    try { await measure(path, pinned); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  if (!Number.isSafeInteger(all.bytes) || !Number.isSafeInteger(pinned.bytes) || pinned.bytes > all.bytes) {
+    throw new Error('inconsistent root/pin allocation census');
+  }
+  return { bytes: all.bytes, pinnedBytes: pinned.bytes, pinnedPaths, sharedPaths };
+}
+
+/** Track eligible direct files against the complete root population. A retained
+ * alias inside a nested directory continues owning its inode's allocation. */
+function flatRetentionUsage(files: Array<{ path: string; stat: Stats }>, population: RootAllocation) {
+  const groups = new Map<string, Array<{ path: string; stat: Stats }>>();
+  const references = new Map<string, number>();
+  for (const file of files) {
+    const key = `${file.stat.dev}:${file.stat.ino}`;
+    const group = groups.get(key) ?? [];
+    group.push(file); groups.set(key, group);
+    references.set(key, population.sharedPaths.get(key)?.size ?? 1);
+  }
+  let bytes = population.bytes;
+  return {
+    beforeBytes: population.bytes,
+    get bytes() { return bytes; },
+    remove(path: string, stat: Stats, dryRun: boolean) {
+      const key = `${stat.dev}:${stat.ino}`;
+      const group = groups.get(key)!;
+      const index = group.findIndex(file => file.path === path);
+      group.splice(index, 1);
+      const refs = references.get(key)! - 1;
+      references.set(key, refs);
+      if (!refs) bytes -= stat.blocks * 512;
+      if (!group.length) groups.delete(key);
+      else if (!dryRun) {
+        // Our own unlink changes ctime/nlink on every alias. Accept only that
+        // expected transition; independent writes/replacements still fail the
+        // normal pre-unlink snapshot check.
+        for (const file of group) {
+          try {
+            const next = lstatSync(file.path);
+            if (next.isFile() && next.dev === stat.dev && next.ino === stat.ino
+              && next.size === stat.size && next.blocks === stat.blocks && next.mtimeMs === stat.mtimeMs
+              && next.nlink === stat.nlink - 1) file.stat = next;
+          } catch { /* leave the old snapshot so deletion refuses the race */ }
+        }
+      }
+    },
+  };
+}
 
 function listFilesWithStat(dir: string): FleetLogFile[] {
   let entries: Dirent[];
@@ -295,9 +428,26 @@ async function gcOneDir(
   const raced = new Set<string>();
   // Account for every retained pin, including fresh/open files that neither
   // deletion pass visits. The caller holds the shared pin mutex throughout.
-  const pinned = files.filter((file) => isPinned(file.path));
-  const pinnedBytes = pinned.reduce((total, file) => total + file.size, 0);
-  const beforeBytes = files.reduce((total, file) => total + file.size, 0);
+  let population: RootAllocation;
+  try {
+    if (!identity) {
+      if (files.length) throw new Error('root allocation identity unavailable');
+      return { dir, scanned: 0, removedByAge: 0, removedByCeiling: 0, bytesUnlinked: 0,
+        allocatedBytesUnlinked: 0, wouldUnlinkBytes: 0, bytesRemaining: 0,
+        skippedOpen: 0, skippedRaced: 0, cap: null, errors };
+    }
+    population = await measureRootAllocation(dir, identity);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'root allocation identity changed') {
+      for (const file of files) raced.add(file.path);
+    }
+    return { dir, scanned: files.length, removedByAge: 0, removedByCeiling: 0, bytesUnlinked: 0,
+      allocatedBytesUnlinked: 0, wouldUnlinkBytes: 0, bytesRemaining: files.reduce((sum, file) => sum + file.size, 0),
+      skippedOpen: 0, skippedRaced: raced.size, cap: null,
+      errors: [{ path: dir, error: `root allocation census incomplete: ${String(error)}` }] };
+  }
+  const usage = flatRetentionUsage(files, population);
+  const { beforeBytes } = usage;
   const unlink = async (f: FleetLogFile): Promise<boolean> => {
     if (isPinned(f.path)) return false;
     if (!scan.complete) return false;
@@ -319,6 +469,7 @@ async function gcOneDir(
           bytesUnlinked += st.size;
           if (st.nlink === 1) allocatedBytesUnlinked += st.blocks * 512;
         }
+        usage.remove(f.path, st, dryRun);
         return true;
       })();
     } catch (e) {
@@ -346,10 +497,24 @@ async function gcOneDir(
   remaining.sort((a, b) => a.mtimeMs - b.mtimeMs);
   let total = remaining.reduce((s, f) => s + f.size, 0);
   for (const f of remaining) {
-    if (total <= maxTotalBytes) break;
+    if (usage.bytes <= maxTotalBytes) break;
     if (!(await unlink(f))) continue;
     total -= f.size;
     removedByCeiling++;
+  }
+
+  let cap: RetentionCapReceipt | null = null;
+  try {
+    if (!dryRun) population = await measureRootAllocation(dir, identity!);
+    const afterBytes = dryRun ? usage.bytes : population.bytes;
+    const { pinnedBytes, pinnedPaths } = population;
+    cap = { root: dir, classId: 'fleet-logs', maxBytes: maxTotalBytes, beforeBytes, afterBytes,
+      pinnedBytes, pinnedPaths, overByBytes: Math.max(0, afterBytes - maxTotalBytes),
+      pinnedOverageBytes: Math.max(0, pinnedBytes - maxTotalBytes) };
+  } catch (error) { errors.push({ path: dir, error: `root allocation census incomplete: ${String(error)}` }); }
+  if (!dryRun && cap && cap.overByBytes > cap.pinnedOverageBytes) {
+    errors.push({ path: dir,
+      error: `fleet-log cap retains non-pin excess: ${cap.overByBytes} byte(s) over cap, ${cap.pinnedOverageBytes} accounted for by live pins` });
   }
 
   return {
@@ -363,10 +528,7 @@ async function gcOneDir(
     bytesRemaining: total,
     skippedOpen: open.size,
     skippedRaced: raced.size,
-    cap: { root: dir, classId: 'fleet-logs', maxBytes: maxTotalBytes, beforeBytes,
-      afterBytes: total, pinnedBytes, pinnedPaths: pinned.map((file) => file.path),
-      overByBytes: Math.max(0, total - maxTotalBytes),
-      pinnedOverageBytes: Math.max(0, pinnedBytes - maxTotalBytes) },
+    cap,
     errors,
   };
 }
@@ -1223,7 +1385,7 @@ export interface LaunchContextGcOptions {
    *  Injectable so a test points at a tmp dir. */
   dir?: string;
   retentionMs?: number;
-  /** Logical file-byte ceiling; the flat render collector never follows directories or links. */
+  /** Allocated-byte ceiling; the flat render collector never follows directories or links. */
   maxTotalBytes?: number;
   dryRun?: boolean;
   now?: number;
@@ -1261,7 +1423,9 @@ export interface LaunchContextGcResult {
   liveHeld: number;
   candidates: LaunchContextGcCandidate[];
   /** Dry runs report projected usage after the same oldest-first selection. */
-  cap?: RetentionCapReceipt;
+  cap?: RetentionCapReceipt | null;
+  /** Includes retained non-pin cap excess; live renders remain protected. */
+  errors: Array<{ path: string; error: string }>;
 }
 
 /** The canonical launch-context directory, honouring the same env override as
@@ -1286,7 +1450,7 @@ export async function runLaunchContextGc(opts: LaunchContextGcOptions = {}): Pro
   return withRetentionPinProtection((isPinned) => sweepLaunchContext(opts, isPinned), { nowMs: opts.now });
 }
 
-function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: string) => boolean): LaunchContextGcResult {
+async function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: string) => boolean): Promise<LaunchContextGcResult> {
   const dir = opts.dir ?? defaultLaunchContextDir();
   const retentionMs = opts.retentionMs ?? LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS;
   const maxBytes = opts.maxTotalBytes ?? AGENT_ROOT_MAX_BYTES;
@@ -1309,20 +1473,24 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
       refused: 'no-live-render-evidence',
       liveHeld: 0,
       candidates: [],
+      errors: [],
     };
   }
 
   let entries: Dirent[];
   let rootIdentity: { dev: number; ino: number };
   try {
-    rootIdentity = statSync(dir);
+    rootIdentity = lstatSync(dir);
+    if (!lstatSync(dir).isDirectory()) throw new Error('root allocation is not a plain directory');
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [] };
+  } catch (error) {
+    return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [], cap: null,
+      errors: (error as NodeJS.ErrnoException).code === 'ENOENT' ? []
+        : [{ path: dir, error: `root allocation census incomplete: ${String(error)}` }] };
   }
 
   const candidates: LaunchContextGcCandidate[] = [];
-  const identities = new Map<string, { dev: number; ino: number }>();
+  const identities = new Map<string, { path: string; stat: Stats }>();
   let removed = 0;
   let bytesFreed = 0;
   let liveHeld = 0;
@@ -1345,7 +1513,7 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
       if (!st.isFile()) throw new Error('render changed to a non-file');
       mtimeMs = st.mtimeMs;
       bytes = st.size;
-      identities.set(path, { dev: st.dev, ino: st.ino });
+      identities.set(path, { path, stat: st });
     } catch (e) {
       candidates.push({
         path, name: entry.name, bytes: 0, mtimeMs: 0, ageMs: 0,
@@ -1372,14 +1540,18 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
 
   // One ordering for both age and pressure eviction. Names never outrank writes.
   candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
-  const beforeBytes = candidates.reduce((sum, entry) => sum + entry.bytes, 0);
-  const pinned = candidates.filter((entry) => identities.has(entry.path) && isPinned(entry.path));
-  const pinnedBytes = pinned.reduce((sum, entry) => sum + entry.bytes, 0);
-  let afterBytes = beforeBytes;
+  let population: RootAllocation;
+  try { population = await measureRootAllocation(dir, rootIdentity, now); }
+  catch (error) {
+    return { dir, scanned: candidates.length, removed: 0, bytesFreed: 0, dryRun, liveHeld, candidates, cap: null,
+      errors: [{ path: dir, error: `root allocation census incomplete: ${String(error)}` }] };
+  }
+  const usage = flatRetentionUsage([...identities.values()], population);
+  const { beforeBytes } = usage;
   for (const record of candidates) {
     if (record.skipped) continue;
     const { path, mtimeMs, bytes } = record;
-    if (mtimeMs >= cutoff && afterBytes <= maxBytes) {
+    if (mtimeMs >= cutoff && usage.bytes <= maxBytes) {
       record.skipped = 'too-new';
       continue;
     }
@@ -1389,10 +1561,11 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     try {
       const parent = statSync(dir);
       const confirm = lstatSync(path);
-      const identity = identities.get(path)!;
+      const identity = identities.get(path)!.stat;
       if (parent.dev !== rootIdentity.dev || parent.ino !== rootIdentity.ino ||
           !confirm.isFile() || confirm.dev !== identity.dev || confirm.ino !== identity.ino ||
-          confirm.mtimeMs !== mtimeMs || confirm.size !== bytes) {
+          confirm.mtimeMs !== mtimeMs || confirm.size !== bytes || confirm.blocks !== identity.blocks
+          || confirm.nlink !== identity.nlink || confirm.ctimeMs !== identity.ctimeMs) {
         record.skipped = 'raced';
         record.mtimeMs = confirm.mtimeMs;
         record.ageMs = now - confirm.mtimeMs;
@@ -1416,11 +1589,22 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     record.removed = true;
     removed++;
     bytesFreed += bytes;
-    afterBytes -= bytes;
+    usage.remove(path, identities.get(path)!.stat, dryRun);
   }
 
-  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates,
-    cap: { root: dir, classId: 'fleet-logs', maxBytes, beforeBytes, afterBytes,
-      pinnedBytes, pinnedPaths: pinned.map((entry) => entry.path),
-      overByBytes: Math.max(0, afterBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) } };
+  const errors = candidates.filter((entry) => entry.error).map((entry) => ({ path: entry.path, error: entry.error! }));
+  let cap: RetentionCapReceipt | null = null;
+  try {
+    if (!dryRun) population = await measureRootAllocation(dir, rootIdentity, now);
+    const afterBytes = dryRun ? usage.bytes : population.bytes;
+    const { pinnedBytes, pinnedPaths } = population;
+    cap = { root: dir, classId: 'fleet-logs', maxBytes, beforeBytes, afterBytes, pinnedBytes, pinnedPaths,
+      overByBytes: Math.max(0, afterBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) };
+  } catch (error) { errors.push({ path: dir, error: `root allocation census incomplete: ${String(error)}` }); }
+  if (!dryRun && cap && cap.overByBytes > cap.pinnedOverageBytes) {
+    errors.push({ path: dir,
+      error: `launch-render cap retains non-pin excess: ${cap.overByBytes} byte(s) over cap, ${cap.pinnedOverageBytes} accounted for by live pins` });
+  }
+  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates, errors,
+    cap };
 }

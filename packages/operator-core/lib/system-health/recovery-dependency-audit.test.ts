@@ -22,7 +22,10 @@ import {
   EXECUTOR_REQUIRES,
   HOLDER_LOSS_DISPOSITIONS,
   auditRecoveryDependencies,
+  buildSourceForIngresses,
+  buildSourceMismatches,
   fateSharedComponents,
+  requiredComponents,
   findBrokenBackstops,
   findCoverageGaps,
   findHolderLossGaps,
@@ -46,6 +49,7 @@ describe('recovery-dependency-audit — verdict logic (falsifiable controls)', (
     name: 'control-circular',
     file: 'control.ts',
     executor: 'routine-system-action',
+    buildSource: 'continuous',
     recovers: ['routines-tick'],
     note: 'A routine that recovers the routines tick — cannot fire when it is needed.',
   };
@@ -63,6 +67,7 @@ describe('recovery-dependency-audit — verdict logic (falsifiable controls)', (
     name: 'control-sound',
     file: 'control.ts',
     executor: 'sidecar-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-host-process'],
     note: 'A sidecar watching the operator — observer outside the failure domain.',
   };
@@ -106,6 +111,125 @@ describe('recovery-dependency-audit — verdict logic (falsifiable controls)', (
   });
 });
 
+describe('recovery-dependency-audit — code-delivery dimension (P-005, falsifiable controls)', () => {
+  /** CONTROL: a gate-recovery mechanism whose only executing build is release-gated — a
+   *  fix to it can only ship through the very gate it exists to repair. */
+  const gatedGateRepair: RecoveryMechanism = {
+    name: 'control-gated-gate-repair',
+    file: 'control.ts',
+    executor: 'operator-in-process-timer',
+    buildSource: 'release-gated',
+    recovers: ['release-gate'],
+    note: 'Repairs the release gate from a build that only the gate delivers.',
+  };
+  /** CALIBRATION: the identical mechanism on a continuously-delivered build. */
+  const continuousGateRepair: RecoveryMechanism = {
+    ...gatedGateRepair,
+    name: 'control-continuous-gate-repair',
+    buildSource: 'continuous',
+  };
+  /** CALIBRATION: release-gated, but recovers nothing on the gate — the dimension must not flag it. */
+  const gatedUnrelated: RecoveryMechanism = { ...gatedGateRepair, name: 'control-gated-unrelated', recovers: [] };
+
+  it('fails a release-gate recovery mechanism that runs on a release-gated build', () => {
+    expect(fateSharedComponents(gatedGateRepair)).toEqual(['release-gate']);
+    expect(verdictFor(gatedGateRepair)).toBe('fate-shared');
+  });
+
+  it('downgrades it only when it carries a stated mitigation', () => {
+    const mitigated: RecoveryMechanism = {
+      ...gatedGateRepair,
+      name: 'control-gated-gate-repair-mitigated',
+      mitigation: {
+        kind: 'out-of-band-backstop',
+        backstop: 'control-continuous-gate-repair',
+        why: 'a continuously-delivered twin covers the red-gate case',
+      },
+    };
+    expect(verdictFor(mitigated)).toBe('fate-shared-mitigated');
+  });
+
+  it('the same mechanism on a continuous build is sound', () => {
+    expect(fateSharedComponents(continuousGateRepair)).toEqual([]);
+    expect(verdictFor(continuousGateRepair)).toBe('sound');
+  });
+
+  it('a release-gated mechanism that does not recover the gate is not flagged', () => {
+    expect(verdictFor(gatedUnrelated)).toBe('sound');
+  });
+
+  it('the build source adds to — never replaces — the executor requirements', () => {
+    expect(requiredComponents(gatedGateRepair)).toEqual([
+      ...EXECUTOR_REQUIRES['operator-in-process-timer'],
+      'release-gate',
+    ]);
+    expect(requiredComponents(continuousGateRepair)).toEqual([...EXECUTOR_REQUIRES['operator-in-process-timer']]);
+  });
+});
+
+describe('recovery-dependency-audit — per-call mechanisms are only as current as their oldest ingress (D-005)', () => {
+  /** CONTROL: a request handler reachable through one continuous and one release-gated
+   *  ingress, mis-declared continuous — the shape D-002 measured for the repair-queue verb. */
+  const mixedDeclaredContinuous: RecoveryMechanism = {
+    name: 'control-mixed-ingress-verb',
+    file: 'control.ts',
+    executor: 'operator-request-handler',
+    buildSource: 'continuous',
+    ingresses: [
+      { via: 'routed proxy → current build', buildSource: 'continuous' },
+      { via: 'direct call → release build', buildSource: 'release-gated' },
+    ],
+    recovers: ['release-gate'],
+    note: 'control',
+  };
+
+  it('a per-call mechanism is continuous only when EVERY ingress is', () => {
+    expect(buildSourceForIngresses([{ via: 'a', buildSource: 'continuous' }, { via: 'b', buildSource: 'continuous' }])).toBe(
+      'continuous',
+    );
+    expect(buildSourceForIngresses(mixedDeclaredContinuous.ingresses ?? [])).toBe('release-gated');
+    expect(buildSourceForIngresses([])).toBe('release-gated');
+  });
+
+  it('reports a per-call row that calls itself continuous while an ingress is release-gated', () => {
+    expect(buildSourceMismatches([mixedDeclaredContinuous])).toEqual([
+      { name: 'control-mixed-ingress-verb', declared: 'continuous', derived: 'release-gated' },
+    ]);
+    // A redundant timer (no ingresses) keeps the at-least-one rule and is never reported.
+    const { ingresses: _dropped, ...asTimer } = mixedDeclaredContinuous;
+    expect(buildSourceMismatches([{ ...asTimer, executor: 'operator-in-process-timer' }])).toEqual([]);
+  });
+
+  it('the correctly-declared mixed verb is fate-shared on the gate, and only a stated mitigation downgrades it', () => {
+    const declaredGated: RecoveryMechanism = { ...mixedDeclaredContinuous, buildSource: 'release-gated' };
+    expect(buildSourceMismatches([declaredGated])).toEqual([]);
+    expect(verdictFor(declaredGated)).toBe('fate-shared');
+    expect(
+      verdictFor({ ...declaredGated, mitigation: { kind: 'current-build-routing', why: 'control routing' } }),
+    ).toBe('fate-shared-mitigated');
+  });
+
+  it('REAL TABLE: no per-call row declares a build source its ingresses contradict', () => {
+    expect(buildSourceMismatches(RECOVERY_MECHANISMS)).toEqual([]);
+  });
+
+  it("REAL TABLE: every D-002 repair limb has a row that recovers the release gate", () => {
+    const limbs = ['green-stall-watchdog', 'green-checkpoint-lost-run-alarm', 'release-repair-queue-writes'];
+    const rows = limbs.map((name) => RECOVERY_MECHANISMS.find((m) => m.name === name));
+    expect(rows.map((m) => m?.name)).toEqual(limbs);
+    for (const m of rows) expect(m?.recovers).toContain('release-gate');
+  });
+
+  it('REAL TABLE: the repair-queue verb is release-gated by its direct-:3070 ingress and carries the routing mitigation', () => {
+    const verb = RECOVERY_MECHANISMS.find((m) => m.name === 'release-repair-queue-writes');
+    expect(verb?.executor).toBe('operator-request-handler');
+    expect(verb?.ingresses?.some((i) => i.buildSource === 'release-gated')).toBe(true);
+    expect(verb?.buildSource).toBe('release-gated');
+    expect(verb?.mitigation?.kind).toBe('current-build-routing');
+    expect(verb && verdictFor(verb)).toBe('fate-shared-mitigated');
+  });
+});
+
 describe('recovery-dependency-audit — backstop integrity (falsifiable controls)', () => {
   it('rejects a backstop that names a mechanism not in the table', () => {
     const broken = findBrokenBackstops([
@@ -113,6 +237,7 @@ describe('recovery-dependency-audit — backstop integrity (falsifiable controls
         name: 'a',
         file: 'a.ts',
         executor: 'operator-in-process-timer',
+        buildSource: 'continuous',
         recovers: ['operator-event-loop'],
         mitigation: { kind: 'out-of-band-backstop', backstop: 'does-not-exist', why: 'x' },
         note: '',
@@ -127,6 +252,7 @@ describe('recovery-dependency-audit — backstop integrity (falsifiable controls
         name: 'a',
         file: 'a.ts',
         executor: 'operator-in-process-timer',
+        buildSource: 'continuous',
         recovers: ['operator-event-loop'],
         mitigation: { kind: 'out-of-band-backstop', backstop: 'b', why: 'x' },
         note: '',
@@ -135,6 +261,7 @@ describe('recovery-dependency-audit — backstop integrity (falsifiable controls
         name: 'b',
         file: 'b.ts',
         executor: 'operator-in-process-timer',
+        buildSource: 'continuous',
         recovers: ['operator-event-loop'],
         note: 'also on the loop it judges',
       },
@@ -149,6 +276,7 @@ describe('recovery-dependency-audit — backstop integrity (falsifiable controls
           name: 'a',
           file: 'a.ts',
           executor: 'operator-in-process-timer',
+          buildSource: 'continuous',
           recovers: ['operator-event-loop'],
           mitigation: { kind: 'out-of-band-backstop', backstop: 'b', why: 'x' },
           note: '',
@@ -157,6 +285,7 @@ describe('recovery-dependency-audit — backstop integrity (falsifiable controls
           name: 'b',
           file: 'b.ts',
           executor: 'cluster-primary-timer',
+          buildSource: 'release-gated',
           recovers: ['operator-event-loop'],
           note: 'primary observes the worker',
         },
@@ -193,6 +322,32 @@ describe('recovery-dependency-scan — call extraction', () => {
 
   it('does not match a longer identifier that merely ends in the call name', () => {
     expect(extractManagedTimerCalls(`wrapManagedSetInterval('x', 1, fn, { category: 'watchdog' });`)).toEqual([]);
+  });
+
+  it('reads a createManagedSweepStarter definition — the literals live there, not at its inner call', () => {
+    // Missing this form blinded the coverage gate to seven migrated watchdogs (31e22e32d1).
+    expect(
+      extractManagedTimerCalls(
+        `const arm = createManagedSweepStarter({\n  name: 'goal-liveness-watchdog',\n  intervalMs: 60_000,\n  options: { category: 'watchdog', classification: 'timeout-reaper' },\n  onError: (e) => warn(e),\n});`,
+      ),
+    ).toEqual([{ name: 'goal-liveness-watchdog', category: 'watchdog' }]);
+  });
+
+  it('does not treat the createManagedSweepStarter declaration itself as a call site', () => {
+    expect(
+      extractManagedTimerCalls(`export function createManagedSweepStarter(definition: { name: string }) { return 1; }`),
+    ).toEqual([]);
+  });
+
+  it('reads a template name with a static prefix as a declarable family, and a prefix-less one as unreadable', () => {
+    expect(
+      extractManagedTimerCalls(
+        "managedSetInterval(`sweep-stage:${id}:${stage}`, 60_000, fn, { category: 'watchdog' });\nmanagedSetInterval(`${id}`, 1, fn, { category: 'watchdog' });",
+      ),
+    ).toEqual([
+      { name: 'sweep-stage:*', category: 'watchdog' },
+      { name: null, category: 'watchdog' },
+    ]);
   });
 
   it('ignores a call written inside a comment', () => {
@@ -237,6 +392,7 @@ describe('recovery-dependency-audit — the coverage gate itself is falsifiable'
       name: 'known-timer',
       file: 'x.ts',
       executor: 'operator-in-process-timer',
+      buildSource: 'continuous',
       recovers: [],
       note: '',
     },
@@ -411,6 +567,7 @@ describe('recovery-dependency-audit — holder-loss coverage of the REAL closed 
     const mechanism = RECOVERY_MECHANISMS.find((row) => row.name === 'goal-holder-respawner');
     expect(mechanism).toMatchObject({
       executor: 'operator-in-process-timer',
+      buildSource: 'continuous',
       recovers: [],
     });
     if (!mechanism) throw new Error('goal-holder-respawner declaration missing');
@@ -433,6 +590,27 @@ describe('recovery-dependency-audit — the real table (pinned verdicts)', () =>
     expect(result.counts.sound + result.counts['fate-shared-mitigated'] + result.counts['fate-shared']).toBe(
       result.rows.length,
     );
+  });
+
+  it('every mechanism declares a build source (vitest does not typecheck, so the required field is checked here too)', () => {
+    for (const m of RECOVERY_MECHANISMS) {
+      expect(['release-gated', 'continuous'], `${m.name} buildSource`).toContain(m.buildSource);
+    }
+  });
+
+  it('P-005: no mechanism that recovers the release gate runs on a release-gated build without a mitigation', () => {
+    const gateRecovery = RECOVERY_MECHANISMS.filter((m) => m.recovers.includes('release-gate'));
+    // Non-vacuous: the gate's own recovery limbs are in the population.
+    expect(gateRecovery.map((m) => m.name)).toEqual(
+      expect.arrayContaining(['green-stall-watchdog', 'green-checkpoint-lost-run-alarm']),
+    );
+    for (const m of gateRecovery) {
+      expect(byName.get(m.name)?.verdict, `${m.name} (${m.buildSource})`).not.toBe('fate-shared');
+    }
+  });
+
+  it('the gate watchdog is delivered continuously, so it is sound on the gate it recovers', () => {
+    expect(byName.get('green-stall-watchdog')).toMatchObject({ buildSource: 'continuous', verdict: 'sound' });
   });
 
   it('names are unique — a duplicate row would double-count a verdict', () => {

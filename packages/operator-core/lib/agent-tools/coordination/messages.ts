@@ -605,6 +605,52 @@ export const INBOX_SINCE_TS_SKEW_PAD_MS = 10 * 60_000;
  *  (and logged, never silently). */
 export const INBOX_FAST_PATH_ROW_CAP = 25_000;
 
+/** WI-6554700010029423: how far back a BROADCAST (`to` containing '*') row is part of
+ *  an inbox read. Directed mail (`to` naming the owner) keeps its full history.
+ *
+ *  WHY. Broadcasts are 99.8% of what an inbox read matches (WI-6939), and their
+ *  volume is set by the emitters, not by the reader: measured 2026-10-26 the
+ *  `messages` surface held 182,416 broadcast rows inside the 30-day retention
+ *  window (59,233 in the last 7 days, ~5-12k/day, mostly system-watchdog
+ *  severe-event / severe-event-resolved). So EVERY read without a tight
+ *  `since_ts` - and every keyset-paged read whose stopping rule never fires -
+ *  decoded the newest 25,000 broadcast JSONB bodies. On :3070 that was 328 capped
+ *  reads in 3h; the decoded rows were the top live heap site (814 MB in the
+ *  postgres.js jsonb parser) and drove the request workers into the 3,200 MiB
+ *  memory-watchdog recycle and the 20s event-loop-wedge kill every few minutes,
+ *  dropping every MCP connection on the killed worker.
+ *
+ *  A broadcast is ambient FYI addressed to everyone; a day-old one is history,
+ *  and history has its own readers (coord:feed / coord:catch-up over audience
+ *  history), which this does not touch. Bounding broadcasts by age makes per-read
+ *  cost proportional to the last day's broadcast volume instead of the whole
+ *  retention backlog, whatever the emitters do. Applied as a SQL pre-filter (so
+ *  Postgres never ships the old rows) AND as a JS filter over every path (so the
+ *  PG fast path, the keyset window and the non-PG seam return the same set). */
+export const INBOX_BROADCAST_HORIZON_MS = 24 * 60 * 60_000;
+
+/** Oldest `ts` a broadcast row may carry and still enter an inbox read. */
+export function inboxBroadcastCutoff(nowMs: number = Date.now()): string {
+  return new Date(nowMs - INBOX_BROADCAST_HORIZON_MS).toISOString();
+}
+
+/** Drop broadcast entries older than the broadcast horizon. An entry that also
+ *  names `ownerId` directly is directed mail and always kept, as is an entry whose
+ *  `ts` cannot be parsed (never silently lose a row we cannot date). */
+export function dropAgedBroadcasts(
+  entries: CoordEnvelope[],
+  ownerId: string,
+  cutoffIso: string = inboxBroadcastCutoff(),
+): CoordEnvelope[] {
+  const cutoffMs = Date.parse(cutoffIso);
+  return entries.filter((entry) => {
+    const to = Array.isArray(entry.to) ? entry.to : [];
+    if (to.includes(ownerId) || !to.includes('*')) return true;
+    const ts = Date.parse(String(entry.ts));
+    return !Number.isFinite(ts) || ts >= cutoffMs;
+  });
+}
+
 /**
  * Read everything addressed to `ownerId` (or to '*') across all outboxes.
  * Sorted by ts ascending; forgiving of malformed/missing files.
@@ -682,6 +728,7 @@ export async function readInbox(
     // divergence trap. One seam, one mock, same behaviour when `window` is absent.
     if (window) return (await readInboxWindow(ownerId, opts, window.enough)).entries;
     const sql = coordSql();
+    const broadcastCutoff = inboxBroadcastCutoff();
     const sinceBound = opts.since_ts
       ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
       : null;
@@ -696,7 +743,8 @@ export async function readInbox(
          -- coord_event_log_msgs_to_gin index can answer the native operator,
          -- while the semantically equivalent function-call spelling falls back to
          -- a parallel sequential scan of the whole messages surface.
-         AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
+         -- Broadcasts only within INBOX_BROADCAST_HORIZON_MS (WI-6554700010029423).
+         AND ((body->'to') ? ${ownerId} OR ((body->'to') ? '*' AND ts >= ${broadcastCutoff}))
        ORDER BY id DESC
        LIMIT ${INBOX_FAST_PATH_ROW_CAP}
     `;
@@ -708,10 +756,16 @@ export async function readInbox(
       );
     }
     const lines = rows.map((r) => parseBody(r.body, r));
-    return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
+    return suppressRetracted(
+      dropAgedBroadcasts(filterInbox(lines, ownerId, opts), ownerId, broadcastCutoff),
+      collectRetractedIds(lines),
+    );
   }
   const lines = await coordLog.readLines('messages');
-  return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
+  return suppressRetracted(
+    dropAgedBroadcasts(filterInbox(lines, ownerId, opts), ownerId),
+    collectRetractedIds(lines),
+  );
 }
 
 /** Row cap for {@link readDirectedInbox}: directed traffic to one session id is small
@@ -953,8 +1007,12 @@ export async function readInboxWindow(
   const sinceBound = opts.since_ts
     ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
     : null;
+  const broadcastCutoff = inboxBroadcastCutoff();
   const visible = (raw: CoordEnvelope[]): CoordEnvelope[] =>
-    suppressRetracted(filterInbox(raw, ownerId, opts), collectRetractedIds(raw));
+    suppressRetracted(
+      dropAgedBroadcasts(filterInbox(raw, ownerId, opts), ownerId, broadcastCutoff),
+      collectRetractedIds(raw),
+    );
   let pages = 0;
   try {
     const paged = await pageCoordEventLogDesc({
@@ -965,7 +1023,7 @@ export async function readInboxWindow(
         -- keyset bounds reduce the candidate range; the native operator keeps recipient
         -- membership indexable inside that range.
         AND jsonb_typeof(body->'to') = 'array'
-        AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
+        AND ((body->'to') ? ${ownerId} OR ((body->'to') ? '*' AND ts >= ${broadcastCutoff}))
       `,
       satisfied: (raw) => enough(visible(raw)),
     });

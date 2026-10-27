@@ -1,0 +1,33 @@
+---
+rel_path: "evidence/bg-host-r6-vet-post1204681-20261025.md"
+updated_at: 1792896182401
+_body: "content"
+---
+
+FIRST-PRINCIPLES VET of acceptance-bg-host-committed-generation-2026-10-24 revision 6, criteriaHash 55bc6eefc56c0ca159c627784067b55f563243824614a0bccd5c5fb7ff2b4d4e, against subject plan revision 9 and meta-acceptance-rubric revision 5. I read the current complete four criterion methods/drift markers and all 26 check.cases (counts R1/R2/R3/R4 = 6/7/7/6), plus the plan's current shaping/requirements/decisions surfaces. I did not treat the rubric's existing current r6 vetting record as proof. I also did not treat any case as executed. The two cited r5 artifact loads could not be verified: artifacts:load rejected the supplied slug/path route in this serving session, so claims about exact preservation from those artifacts remain unverified by me.
+
+VERDICT: OBJECT — close, but not adequate yet as a machine-contradictable preimplementation contract under meta criterion 6. The prose contract is strong and additive; the structured oracle is still under-specified for the newly demanded one-defect/one-branch evidence.
+
+What passes:
+1. Outcomes-not-diff: PASS. R1 immutable accepted inputs, R2 bounded activation/recovery, R3 actual entry/readiness, and R4 cleanup/custody are observable outcomes, not code-diff restatements.
+2. Traceability: PASS/qualified. The four bars align with the plan outcome (verified committed generation with matching compiler/artifact/boot/process identity) and Decisions preserving unknown historical identity and original-parent custody. I did not independently recover every Decision body due bounded plan output, so this is not a claim about every clause's provenance.
+3. Falsifiability: PASS. Each method names concrete mismatches and terminal observations that can make the bar fail.
+4. Failure-mode coverage: PASS. The methods cover missing/changed authority and membership, stale epochs, boot/readiness failures, timeouts/cancellation/interruption, rollback failure/deadline expiry, late descendants, custody corruption, and late teardown.
+5. Non-overlap: PASS with boundary coupling. R1 owns accepted inputs, R2 transaction settlement/recovery, R3 live process lineage/readiness, R4 cleanup/custody. R1's actual-service-boot checks overlap R3's live boundary as supporting detectors, but the methods explicitly say they complement rather than replace R3; keep ratings separated by outcome.
+6. Structured checks: FAIL/WEAK, requiring amendment.
+
+Concrete omission A — selectors are not granular enough for the contract's own “FOR EACH injected defect and terminal branch” rule. The new selectors aggregate independently injectable conditions:
+- R1 one selector combines absent authority, UNKNOWN authority, and substituted candidate-derived authority; another combines wrong schemaVersion and wrong digest; another combines added, omitted, and changed literal members.
+- R2 “first start failure closed” aggregates boot/readiness failure plus timeout/cancellation/interruption; “post switch cancellation and interruption” aggregates two events across readiness and rollback phases; “terminal failed rollback” aggregates restore failure, recovery-probe failure, and rollback-deadline expiry. The method additionally requires immediately-before/exactly-at/after deadline boundaries, but no exact selector distinguishes those observations.
+- R4 one custody selector aggregates deletion/reset/replacement/rewriting across fire24, owner, origin, errors, and evidence references; one teardown selector aggregates lifecycle branches, boundary instants, late descendants, and eventual-but-late cleanup.
+A parameterized test can implement these under one testName, but the rubric requires each selector to resolve to an actually executed recorded case and requires per-defect fingerprints, predictions, observations, baseline PASS, and narrow mutant FAIL. With one selector for several defects, the structured binding cannot prove that every subcase ran or prevent one passing subcase from masking an omitted sibling. Add a unique check.cases selector per independent injected defect/terminal branch (or define stable parameterized subcase IDs as part of the structured check schema and require test_runs to record each ID). This is the decisive repair.
+
+Concrete omission B — evidence-layer contradiction. R2, R3, and R4 are evidencePlane live, and their methods require actual service-manager/kernel/runtime or manual-provenance evidence, yet requiredTestLayers is ["unit"] for all three. R1 is evidencePlane tree but its new obligations explicitly exercise actual guarded service boot. Prose says local tests do not satisfy the live condition, but the structured layer declaration does not encode the required live/operational evidence. Add the applicable operational/manual-provenance layer(s) to R2-R4; either add the live layer to R1 for its actual-boot obligation or move those three actual-boot selectors into R3 while retaining R1's input invariant as their premise. Otherwise a unit-only scorecard can appear structurally complete while lacking the required live proof.
+
+Concrete omission C — canonical 11-clause coverage is asserted in prose but not structurally enumerable. The methods say “All AUTO clauses” and preserve prior obligations, but the check objects expose only files/cases, not clause IDs or clause→selector→mutation mappings. For a contract whose acceptance depends on 7 AUTO + 4 custom clauses, add a stable clause identifier and explicit mapping for all 11. Without that, omission detection depends on rereading long prose and cannot show that every clause has a decisive oracle.
+
+No weakening found in the prose delta: it repeatedly preserves prior text, marks new cases UNEXECUTED, keeps original parent manifest UNKNOWN fail-closed, forbids synthetic child proof, and requires parse-success narrow mutants with unchanged controls. The contradiction is between that strong prose and the coarser structured bindings, not between the substantive safety requirements.
+
+Do not activate or claim product acceptance from this review. Repair A and B are required before meta attestation; C is strongly recommended/required if the 11 clauses are intended as individually gradeable obligations. After amendment, vet the new revision/hash and keep actual preparation prohibited until the original authoritative parent manifest resolves and the named cases are implemented and independently observed.
+
+Could not determine: whether the two r5 artifacts byte-for-byte preserve all 16 prior cases; whether the 26 named tests currently exist (the rubric itself labels the additions unexecuted); any runtime outcome; every full plan Decision body.

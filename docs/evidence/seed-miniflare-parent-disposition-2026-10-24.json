@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "plan": "seed-miniflare-cache-census-2026-10-24",
+  "workItem": "WI-6554700010026184",
+  "requirement": "R-6",
+  "recordKind": "limited-repair-acceptance-disposition",
+  "verification": "manual",
+  "recordedAt": "2026-10-24T09:10:00Z",
+  "author": "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+  "disposition": "Acceptance of this narrow Miniflare cache-census repair changes only its explicitly reviewed census boundary. It does not establish full original-source admission, parent GO, or shipment. Those obligations remain unresolved and must be completed through their separate canonical gates.",
+  "repairAcceptanceState": "P-001 is complete. P-002 and final plan acceptance remain open; current exact-source independent review and complete action-census tail are still required.",
+  "parentRecordsRead": [
+    {
+      "ref": "work-item:EI-26830350923351846",
+      "state": "open",
+      "observedObligation": "P-002, the narrow repair plan, and the parent original-source/security/GO/shipment obligations remain open. Earlier source reviews apply only to the old source/test bytes."
+    },
+    {
+      "ref": "work-item:EI-26825512897643109",
+      "state": "open",
+      "observedObligation": "Full frozen source binding is not proved. The separate source-proof-binding-v2 checkpoint check remains contested: the preserved binder receipt records exit1/result.ok=false at the .mf installed-entry guard."
+    }
+  ],
+  "retainedObligations": [
+    "Original-source admission and the complete new frozen execution binding remain unproved.",
+    "Parent GO and final shipment remain unresolved.",
+    "The loop's twelve saved checks and the parent's separate checkpoint checks remain separate obligations; this disposition does not retire or satisfy them.",
+    "A licensed private Windows baseline is still required before the blocked install acceptance; no license activation is authorized here.",
+    "Preserve original-source, security, private-only, no-eighth-cut and sole-publisher boundaries. No release cut, publication or guard bypass is authorized by this record."
+  ],
+  "priorEvidence": ["thread-post:1203765"],
+  "measurementLimit": "Server measurement of this file tracks its exact bytes. The manual scope judgment and parent records must still be read at acceptance; no automated parent-admission checker or final acceptance is claimed."
+}

@@ -26,8 +26,9 @@ import {
   type RepairManifestSummary,
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
+import { parseRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import { casesForFile, newRepairSignatureKeys } from './case-level-signature';
-import type { AdmissionRadius, FixPrecheckVerdict } from './admission-fix-precheck';
+import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from './admission-fix-precheck';
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
@@ -423,6 +424,14 @@ export function frozenRepairAgeEscalationRung(
 export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 
 /**
+ * Token prefix of the dispatch reservation an admission pre-check holds. The pre-check writes
+ * its marker and this reservation in ONE queue write (agent-tools/release/repair-queue.ts),
+ * and its worker drops the reservation when it settles, so a reservation with this prefix and
+ * no marker of the same operationId is an orphan (see parseFrozenCandidateRepairQueue).
+ */
+export const FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX = 'repair-precheck-';
+
+/**
  * A freshly-created queue can legitimately spend a short interval at zero attempts while the
  * checkpoint moves from the red verdict to dispatch. Past this bound, zero attempts means no
  * fixer ever started — categorically different from a fixer that ran and failed.
@@ -463,6 +472,22 @@ export interface FrozenRepairDispatchReservation {
   token: string;
   claimedAtMs: number;
   expiresAtMs: number;
+  /**
+   * gate-repair-plane-on-current-build-2026-10-15 R-2: the process that holds the launch lease
+   * (host id, process id, executing build). Absent on reservations written by older builds.
+   */
+  executor?: RepairLimbExecutor;
+}
+
+/**
+ * R-1: the durable receipt of the last successful fixer launch, naming the executor (host and
+ * build, from the launching process's getBuildInfo()) that launched it. Bound to `spawnId`, so a
+ * later spawn's receipt replaces it.
+ */
+export interface FrozenRepairFixerDispatchReceipt extends RepairLimbExecutor {
+  spawnId: string;
+  runId: string | null;
+  dispatchedAtMs: number;
 }
 
 /**
@@ -483,6 +508,8 @@ export interface FrozenRepairAdmissionPrecheck {
   ledgerRowIds?: number[];
   /** Immutable content identity; unlike builtCommit, it excludes provenance-only message changes. */
   builtTree?: string;
+  /** Versioned fixture policy; legacy shared-PG measurements cannot resume under a new policy. */
+  testEnvironment?: string;
   files: string[];
   actor: string;
   /** Process that owns the in-memory runner; absent on legacy R6 markers. */
@@ -509,6 +536,23 @@ export interface FrozenRepairAdmissionPrecheck {
    * treat every radius file as admitted (refusable) and lose each file's leg.
    */
   radius?: AdmissionRadius;
+  /** Additive JSON state on the existing operation; a different identity never reuses proof. */
+  measurement?: {
+    schemaVersion: 1;
+    identity: string;
+    results: FixPrecheckFileResult[];
+    /**
+     * measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the paired baseline — guarded files
+     * red at the built commit, re-measured at `repairHead` by the same runner and env. Persisted so
+     * the door re-evaluates a passed wide measurement against the SAME baseline, never an implied one.
+     */
+    previousHead?: { commit: string; results: FixPrecheckFileResult[]; detail?: string };
+    /**
+     * EI-27083585698781986: the confirmation re-run — guarded reds that passed at `repairHead`,
+     * re-measured once at `builtCommit`. Persisted so a re-judged wide measurement sees the same flakes.
+     */
+    confirmation?: { commit: string; results: FixPrecheckFileResult[]; detail?: string };
+  };
 }
 
 export interface FrozenCandidateRepairQueue {
@@ -579,6 +623,8 @@ export interface FrozenCandidateRepairQueue {
   ageEscalatedRung?: number;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
+  /** R-1: who launched the current/last fixer, and on which build. */
+  fixerDispatchReceipt?: FrozenRepairFixerDispatchReceipt;
   /** Observable, bounded R6 admission pre-check; publication requires a later confirmed call. */
   admissionPrecheck?: FrozenRepairAdmissionPrecheck;
   /**
@@ -812,6 +858,8 @@ export interface FrozenRepairAdmission {
   };
   /** Explicit reviewed commit delta; provenance is NOT hook or agent authorship. */
   patch?: { commit: string; parent: string; sha256: string };
+  /** Ordered reviewed deltas replayed before the single admission; patch is the final member. */
+  patches?: Array<{ commit: string; parent: string; sha256: string }>;
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
   /** Exact ledger rows captured by this hunk source; later edits are not consumed. Whole-blob and
@@ -1034,6 +1082,15 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       typeof patch.commit === 'string' && /^[0-9a-f]{40,64}$/.test(patch.commit) &&
       typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
       typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
+    const patches = e.patches;
+    const validPatches = validPatch && Array.isArray(patches) && patches.length >= 2 && patches.length <= 20 &&
+      patches.every((p) => p && typeof p === 'object' &&
+        typeof p.commit === 'string' && /^[0-9a-f]{40,64}$/.test(p.commit) &&
+        typeof p.parent === 'string' && /^[0-9a-f]{40,64}$/.test(p.parent) &&
+        typeof p.sha256 === 'string' && /^[0-9a-f]{64}$/.test(p.sha256)) &&
+      new Set(patches.map((p) => p.commit)).size === patches.length &&
+      patches.at(-1).commit === patch.commit && patches.at(-1).parent === patch.parent &&
+      patches.at(-1).sha256 === patch.sha256;
     const precheck = parseAdmissionPrecheckRecord(e.precheck);
     const parsed: FrozenRepairAdmission = {
       atMs: e.atMs as number,
@@ -1047,6 +1104,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
       ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
       ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
+      ...(validPatches ? { patches: patches.map((p) => ({ commit: p.commit, parent: p.parent, sha256: p.sha256 })) } : {}),
       ...(hunksValid ? { hunks } : {}),
       ...(Array.isArray(e.ledgerRowIds) && e.ledgerRowIds.every((id) => Number.isSafeInteger(id) && id > 0)
         ? { ledgerRowIds: [...new Set(e.ledgerRowIds as number[])] } : {}),
@@ -1756,7 +1814,11 @@ export interface FrozenRepairQueueDiagnostic {
     claimedAtMs: number;
     expiresAtMs: number;
     active: boolean;
+    /** R-2: the process holding (or last holding) the launch lease, when the writer stamped it. */
+    executor?: RepairLimbExecutor;
   } | null;
+  /** R-1: who launched the current fixer, from the receipt written at spawn; absent when unstamped. */
+  fixerDispatchReceipt?: FrozenRepairFixerDispatchReceipt;
   /** Durable R6 work visible to `release:repair-queue { op:'get' }`; null means no decision is in flight. */
   admissionPrecheck?: FrozenRepairAdmissionPrecheck | null;
   decision: FrozenRepairQueueDecision['kind'];
@@ -2006,10 +2068,26 @@ function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservati
   const row = value as Record<string, unknown>;
   if (!nonBlank(row.token) || !validTimestamp(row.claimedAtMs) || !validTimestamp(row.expiresAtMs)) return null;
   if ((row.expiresAtMs as number) < (row.claimedAtMs as number)) return null;
+  // Attribution is evidence, not lease state: a malformed stamp drops, the lease stays valid.
+  const executor = parseRepairLimbExecutor(row.executor);
   return {
     token: row.token,
     claimedAtMs: row.claimedAtMs as number,
     expiresAtMs: row.expiresAtMs as number,
+    ...(executor ? { executor } : {}),
+  };
+}
+
+function parseFixerDispatchReceipt(value: unknown): FrozenRepairFixerDispatchReceipt | undefined {
+  const executor = parseRepairLimbExecutor(value);
+  if (!executor) return undefined;
+  const row = value as Record<string, unknown>;
+  if (!nonBlank(row.spawnId) || !validTimestamp(row.dispatchedAtMs)) return undefined;
+  return {
+    ...executor,
+    spawnId: row.spawnId,
+    runId: typeof row.runId === 'string' && row.runId ? row.runId : null,
+    dispatchedAtMs: row.dispatchedAtMs as number,
   };
 }
 
@@ -2025,10 +2103,17 @@ function parseAdmissionRadius(value: unknown, files: readonly unknown[]): Admiss
   const row = value as Record<string, unknown>;
   if (typeof row.status !== 'string' || !ADMISSION_RADIUS_STATUSES.has(row.status) || !nonBlank(row.reason)) return null;
   if (row.detail !== undefined && typeof row.detail !== 'string') return null;
-  const list = (raw: unknown): string[] | null =>
-    Array.isArray(raw) && raw.every((file) => nonBlank(file) && files.includes(file)) ? [...(raw as string[])] : null;
-  const guarded = list(row.guarded);
-  const reportOnly = list(row.reportOnly);
+  const list = (raw: unknown, mustBeExecuted: boolean): string[] | null =>
+    Array.isArray(raw) && raw.every((file) => nonBlank(file) && (!mustBeExecuted || files.includes(file)))
+      ? [...(raw as string[])]
+      : null;
+  // Guarded radius files are executed, so each must be one of the operation's `files`.
+  // Report-only files are NOT executed (WI-6554700010029981, gate-systems-as-designed-2026-10-27#D-003):
+  // `precheckPopulation` leaves them out of `files` and keeps them only here. Requiring them in
+  // `files` made every operation with a non-empty report-only partition parse as ABSENT, so the
+  // worker read no running pre-check and silently dropped the admission (EI-27120593727206825).
+  const guarded = list(row.guarded, true);
+  const reportOnly = list(row.reportOnly, false);
   if (!guarded || !reportOnly || guarded.some((file) => reportOnly.includes(file))) return null;
   if (row.status !== 'measured' && guarded.length + reportOnly.length > 0) return null;
   if (!row.legs || typeof row.legs !== 'object' || Array.isArray(row.legs)) return null;
@@ -2099,6 +2184,54 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
   }
   const radius = row.radius === undefined ? undefined : parseAdmissionRadius(row.radius, files);
   if (radius === null) return undefined;
+  let measurement: FrozenRepairAdmissionPrecheck['measurement'];
+  if (row.measurement !== undefined) {
+    const value = row.measurement as Record<string, unknown> | null;
+    if (!value || typeof value !== 'object' || value.schemaVersion !== 1 ||
+        typeof value.identity !== 'string' || !/^[0-9a-f]{64}$/.test(value.identity) || !Array.isArray(value.results)) return undefined;
+    const parseResults = (list: unknown): FixPrecheckFileResult[] | null => {
+      if (!Array.isArray(list)) return null;
+      const seen = new Set<string>();
+      const out: FixPrecheckFileResult[] = [];
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object' || !files.includes(entry.path) || seen.has(entry.path) ||
+            !['pass', 'fail', 'unmeasured'].includes(entry.status) ||
+            (entry.detail !== undefined && typeof entry.detail !== 'string') ||
+            (entry.exitCode !== undefined && entry.exitCode !== null && !Number.isInteger(entry.exitCode)) ||
+            (entry.durationMs !== undefined && (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0))) return null;
+        seen.add(entry.path);
+        out.push({ ...entry });
+      }
+      return out;
+    };
+    const results = parseResults(value.results);
+    if (!results) return undefined;
+    // D-004: the paired baseline answers for a subset of the same immutable population; the
+    // EI-27083585698781986 confirmation re-run has the same shape at the built commit.
+    const parseSubset = (raw: unknown): { commit: string; results: FixPrecheckFileResult[]; detail?: string } | null => {
+      const prior = raw as Record<string, unknown> | null;
+      if (!prior || typeof prior !== 'object' || Array.isArray(prior) || !nonBlank(prior.commit) ||
+          (prior.detail !== undefined && typeof prior.detail !== 'string')) return null;
+      const priorResults = parseResults(prior.results);
+      if (!priorResults) return null;
+      return { commit: prior.commit as string, results: priorResults,
+        ...(typeof prior.detail === 'string' ? { detail: prior.detail } : {}) };
+    };
+    let previousHead: { commit: string; results: FixPrecheckFileResult[]; detail?: string } | undefined;
+    if (value.previousHead !== undefined) {
+      const parsed = parseSubset(value.previousHead);
+      if (!parsed) return undefined;
+      previousHead = parsed;
+    }
+    let confirmation: { commit: string; results: FixPrecheckFileResult[]; detail?: string } | undefined;
+    if (value.confirmation !== undefined) {
+      const parsed = parseSubset(value.confirmation);
+      if (!parsed) return undefined;
+      confirmation = parsed;
+    }
+    measurement = { schemaVersion: 1, identity: value.identity, results, ...(previousHead ? { previousHead } : {}),
+      ...(confirmation ? { confirmation } : {}) };
+  }
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;
   if (
@@ -2116,6 +2249,8 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     ...(typeof row.sourceCommit === 'string' ? { sourceCommit: row.sourceCommit } : {}),
     ...(Array.isArray(row.ledgerRowIds) ? { ledgerRowIds: [...row.ledgerRowIds] as number[] } : {}),
     ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
+    ...(nonBlank(row.testEnvironment) ? { testEnvironment: row.testEnvironment } : {}),
+    ...(measurement ? { measurement } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,
     ...(typeof row.runnerPid === 'number' ? { runnerPid: row.runnerPid } : {}),
@@ -2350,7 +2485,17 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (row.fixerSpawnId !== null && !nonBlank(row.fixerSpawnId)) return null;
   const dispatchReservation = parseDispatchReservation(row.dispatchReservation);
   if (dispatchReservation === null) return null;
+  const fixerDispatchReceipt = parseFixerDispatchReceipt(row.fixerDispatchReceipt);
   const admissionPrecheck = parseAdmissionPrecheck(row.admissionPrecheck);
+  // A pre-check reservation whose marker is gone guards nothing. Measured 2026-10-27: a reader
+  // that could not parse the marker wrote the queue back without it, and the orphaned
+  // reservation held fixer dispatch and resume behind a ~25h pre-check deadline. Read it as
+  // absent; the next queue write then drops it.
+  const liveDispatchReservation =
+    dispatchReservation?.token.startsWith(FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX) &&
+    admissionPrecheck?.operationId !== dispatchReservation.token
+      ? undefined
+      : dispatchReservation;
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
@@ -2447,7 +2592,8 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
-    ...(dispatchReservation ? { dispatchReservation } : {}),
+    ...(liveDispatchReservation ? { dispatchReservation: liveDispatchReservation } : {}),
+    ...(fixerDispatchReceipt ? { fixerDispatchReceipt } : {}),
     ...(admissionPrecheck ? { admissionPrecheck } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
@@ -2982,6 +3128,8 @@ export function diagnoseFrozenCandidateRepairQueue(
     fixerAlive,
     repairLatency: frozenRepairLatency(queue, observation.nowMs),
     dispatchReservation: reservation,
+    // Present only when a stamped launch exists, so readers of older rows see no new key.
+    ...(queue.fixerDispatchReceipt ? { fixerDispatchReceipt: queue.fixerDispatchReceipt } : {}),
     admissionPrecheck: queue.admissionPrecheck ?? null,
     decision: decision.kind,
     retireAllowed,
@@ -3758,15 +3906,31 @@ export interface FrozenRepairConvergenceSummary {
   failingNow: number;
   /** failingFirst - failingNow. Positive = shrinking. Null when there is no baseline. */
   shrinkTotal: number | null;
-  /** Per-round size and the delta from the previous round (negative = shrank). */
-  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
+  /**
+   * Per-round size and the delta from the previous round (negative = shrank). `atLeast: true`
+   * marks a round whose count sits AT the persisted-failure cap: the true size is "at least
+   * failingCount", so `delta` is null whenever either side of the step is capped.
+   */
+  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null; atLeast?: true }[];
   /**
    * True only when every recorded repair round strictly reduces the failing set. A plateau
    * requires diagnosis even after earlier improvement. Null with fewer than two rounds,
    * because "not yet knowable" and "not converging" are different answers and a reader that
-   * conflates them will call a healthy new cycle a treadmill.
+   * conflates them will call a healthy new cycle a treadmill. Also null when a step's
+   * direction cannot be known because both sides sit at the cap (WI-6554700010029491): three
+   * capped rounds reading "50, 50, 50" are "at least 50 each", not a measured plateau.
    */
   converging: boolean | null;
+  /**
+   * WI-6554700010029491: the bound every persisted failing set is cut to. Absent on records
+   * written before this field existed.
+   */
+  saturationCap?: number;
+  /**
+   * WI-6554700010029491: true when any round, or `failingNow`, sits at `saturationCap`, so the
+   * counts above are FLOORS, not totals. Absent on legacy records (read as unknown).
+   */
+  truncatedByLimit?: boolean;
 }
 
 export function summarizeFrozenRepairConvergence(
@@ -3774,15 +3938,41 @@ export function summarizeFrozenRepairConvergence(
   nowMs: number,
 ): FrozenRepairConvergenceSummary {
   const rounds = queue.convergenceRounds ?? [];
+  const cap = MAX_PERSISTED_FAILURES;
+  // WI-6554700010029491: every persisted failing set is cut to `cap`, so a count AT the cap is a
+  // floor ("at least cap"), never a total. Comparing two floors measures nothing; reading them
+  // as equal reported "50, 50, 50 — not converging" for a cycle whose real size was unknown.
+  const capped = (count: number): boolean => count >= cap;
+  /** Direction of a step: known decrease, known non-decrease, or unknowable (both capped). */
+  const direction = (prev: number, next: number): 'down' | 'not-down' | 'unknown' => {
+    if (capped(prev) && capped(next)) return 'unknown';
+    if (capped(prev)) return 'down'; // >= cap -> below cap
+    if (capped(next)) return 'not-down'; // below cap -> >= cap
+    return next < prev ? 'down' : 'not-down';
+  };
   const failingNow = queue.failingTests.length;
   const failingFirst = rounds.length > 0 ? (rounds[0] as FrozenRepairConvergenceRound).failingCount : null;
-  const shrinkPerRound = rounds.map((entry, index) => ({
-    round: entry.round,
-    failingCount: entry.failingCount,
-    delta: index === 0 ? null : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
-  }));
-  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta < 0);
-  const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
+  const steps: ('down' | 'not-down' | 'unknown')[] = [];
+  const shrinkPerRound = rounds.map((entry, index) => {
+    const prev = index === 0 ? null : (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount;
+    if (prev !== null) steps.push(direction(prev, entry.failingCount));
+    const exact = prev !== null && !capped(prev) && !capped(entry.failingCount);
+    return {
+      round: entry.round,
+      failingCount: entry.failingCount,
+      delta: exact ? entry.failingCount - (prev as number) : null,
+      ...(capped(entry.failingCount) ? { atLeast: true as const } : {}),
+    };
+  });
+  const shrinkTotal = failingFirst === null || capped(failingFirst) || capped(failingNow)
+    ? null
+    : failingFirst - failingNow;
+  const overall = failingFirst === null ? 'unknown' : direction(failingFirst, failingNow);
+  let converging: boolean | null;
+  if (rounds.length < 2) converging = null;
+  else if (steps.includes('not-down') || overall === 'not-down') converging = false;
+  else if (steps.includes('unknown') || overall === 'unknown') converging = null;
+  else converging = true;
   return {
     openedAtMs: queue.openedAtMs,
     ageMs: Math.max(0, nowMs - queue.openedAtMs),
@@ -3792,7 +3982,9 @@ export function summarizeFrozenRepairConvergence(
     failingNow,
     shrinkTotal,
     shrinkPerRound,
-    converging: rounds.length < 2 ? null : monotonic && (shrinkTotal ?? 0) > 0,
+    converging,
+    saturationCap: cap,
+    truncatedByLimit: capped(failingNow) || rounds.some((entry) => capped(entry.failingCount)),
   };
 }
 
@@ -3908,14 +4100,23 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
     return null;
   }
   if (!Array.isArray(row.shrinkPerRound)) return null;
-  const shrinkPerRound: { round: number; failingCount: number; delta: number | null }[] = [];
+  const shrinkPerRound: { round: number; failingCount: number; delta: number | null; atLeast?: true }[] = [];
   for (const entry of row.shrinkPerRound) {
     if (!entry || typeof entry !== 'object') return null;
     const e = entry as Record<string, unknown>;
     if (typeof e.round !== 'number' || typeof e.failingCount !== 'number') return null;
     if (e.delta !== null && typeof e.delta !== 'number') return null;
-    shrinkPerRound.push({ round: e.round, failingCount: e.failingCount, delta: (e.delta as number | null) ?? null });
+    if (e.atLeast !== undefined && e.atLeast !== true) return null;
+    shrinkPerRound.push({
+      round: e.round,
+      failingCount: e.failingCount,
+      delta: (e.delta as number | null) ?? null,
+      ...(e.atLeast === true ? { atLeast: true as const } : {}),
+    });
   }
+  // WI-6554700010029491: optional on legacy records; a wrong TYPE still rejects the blob.
+  if (row.saturationCap !== undefined && typeof row.saturationCap !== 'number') return null;
+  if (row.truncatedByLimit !== undefined && typeof row.truncatedByLimit !== 'boolean') return null;
   // `converging` and `failingFirst` are DELIBERATELY tri-state (null = not yet knowable / no
   // baseline). `null` is a legitimate stored value for both, so neither can be required above
   // — but a wrong TYPE still rejects the whole blob rather than being coerced to null, which
@@ -3936,6 +4137,8 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
     shrinkTotal: shrinkTotalRaw as number | null,
     shrinkPerRound,
     converging: convergingRaw as boolean | null,
+    ...(typeof row.saturationCap === 'number' ? { saturationCap: row.saturationCap } : {}),
+    ...(typeof row.truncatedByLimit === 'boolean' ? { truncatedByLimit: row.truncatedByLimit } : {}),
     candidate,
     repairHead,
     phase: phase as FrozenCandidateRepairPhase,
@@ -4181,6 +4384,15 @@ export function projectFrozenRepairConvergenceCell(
  *
  * A queue that has GIVEN UP is deliberately NOT exempt: `blocked`/`blockedReason` means no repair
  * is advancing, so the red stops being anybody's working signature and the ordinary rules apply.
+ *
+ * The pinned sha is PHASE-DEPENDENT, mirroring what {@link decideFrozenCandidateRepairQueue} puts
+ * under the gate: `ready-to-test` judges the immutable `candidate` (and `awaiting-fixer` keeps the
+ * red computed on it), while `ready-to-verify`/`ready-to-promote` judge the movable `repairHead`.
+ * EI-27020811282666044: comparing against `repairHead` alone re-created the D-004 livelock. An
+ * admission onto a `ready-to-test` queue keeps that phase on purpose (see
+ * {@link markFrozenRepairAdmitted}) so the candidate's own red can seed the signature, but once the
+ * head had moved this predicate called that red a fossil. Measured on candidate 8c03b5dc: two
+ * consecutive ~2h15m runs were withheld and no signature was ever published.
  */
 export function isJudgingPinnedActiveRepair(input: {
   candidate: string;
@@ -4200,8 +4412,12 @@ export function isJudgingPinnedActiveRepair(input: {
     | null;
 }): boolean {
   const { candidate, repairQueue } = input;
-  if (repairQueue == null || repairQueue.repairHead !== candidate) return false;
-  if (repairQueue.phase === 'blocked') return false;
+  if (repairQueue == null || repairQueue.phase === 'blocked') return false;
+  const pinnedSha =
+    repairQueue.phase === 'ready-to-test' || repairQueue.phase === 'awaiting-fixer'
+      ? repairQueue.candidate
+      : repairQueue.repairHead;
+  if (pinnedSha !== candidate) return false;
   return repairQueue.blockedReason == null;
 }
 
@@ -4211,7 +4427,16 @@ export function isJudgingPinnedActiveRepair(input: {
  * has this shape.
  */
 export type FrozenRepairAdmissionQualificationRead =
-  | { status: 'present'; transaction: { attemptId: string; phase?: string | null; repairHead?: string | null } }
+  | {
+      status: 'present';
+      transaction: {
+        attemptId: string;
+        phase?: string | null;
+        repairHead?: string | null;
+        previousAttemptId?: string | null;
+        currentPhysicalRunner?: unknown;
+      };
+    }
   | { status: 'none' | 'unreadable'; error?: string };
 
 export interface FrozenRepairAdmissionHandoffBlock {
@@ -4262,7 +4487,15 @@ export function frozenRepairAdmissionHandoffBlock(
       ? `Terminal qualification attempt ${short(transactionAttemptId)} does not own this queue (origin ` +
         `${short(origin)}), so the admission handoff guard cannot match. Nothing was published. The next ` +
         'qualification begin re-stamps the origin; admit after it. Do not retry-loop.'
-      : `Qualification attempt ${short(transactionAttemptId)} (phase ${transactionPhase ?? 'unknown'}) is judging ` +
+      : transactionPhase === 'waiting' && !transaction.currentPhysicalRunner &&
+          transaction.previousAttemptId === origin
+        // WI-6554700010030197: a parked attempt records no verdict, so "after the run ends" never
+        // arrives. Its next scheduled resume re-stamps the one-hop-stale origin to itself.
+        ? `Qualification attempt ${short(transactionAttemptId)} is parked waiting with no runner and is the ` +
+          `direct successor of this queue's origin ${short(origin)}, which a stale queue write restored. It ` +
+          'records no verdict while parked. Its next scheduled qualification resume re-stamps the origin to it; ' +
+          'admit after that fire begins. Nothing was published. Do not retry-loop.'
+        : `Qualification attempt ${short(transactionAttemptId)} (phase ${transactionPhase ?? 'unknown'}) is judging ` +
         `repairHead ${short(transactionRepairHead ?? queue.repairHead)}. This queue's origin is attempt ` +
         `${short(origin)}, so the admission handoff guard cannot match until that attempt records its verdict. ` +
         'Nothing was published. Admit again after the run ends. Do not retry-loop.';

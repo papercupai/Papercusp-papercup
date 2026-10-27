@@ -14,25 +14,40 @@ const store = vi.hoisted(() => ({
   recovered: [] as { taskId: string; state: string; exitCode: number | null; reason: string }[],
   upserted: [] as { taskId: string; metrics?: unknown }[],
   cleared: [] as string[][],
+  touchGate: null as null | (() => Promise<void>),
+  closeGate: null as null | (() => Promise<void>),
+  refused: new Set<string>(),
 }));
 
 vi.mock('./store', () => ({
+  recoverPendingTaskTerminalEvents: vi.fn(async () => 0),
   listLiveTasks: async () => [] as TaskRow[],
+  listReconcileTasks: async () => [] as TaskRow[],
   touchAlive: async (u: unknown[]) => {
     store.touched.push(...u);
+    await store.touchGate?.();
     return u.length;
   },
   markStranded: async (v: { taskId: string; reason: string }[]) => {
     store.stranded.push(...v);
     return v.length;
   },
-  markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[]) => {
+  markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[],
+    _inject?: unknown, effectsForTask?: (taskId: string) => { onTerminalPersisted?: () => void }) => {
     store.endedUnobserved.push(...v);
-    return v.length;
+    const accepted = v.filter((row) => !store.refused.has(row.taskId));
+    for (const row of accepted) effectsForTask?.(row.taskId).onTerminalPersisted?.();
+    return accepted.length;
   },
-  markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[]) => {
+  markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[],
+    _inject?: unknown, effectsForTask?: (taskId: string) => { stage?: (name: string) => void; onTerminalPersisted?: () => void }) => {
     store.recovered.push(...v);
-    return v.length;
+    for (const row of v) {
+      effectsForTask?.(row.taskId).stage?.('task-close-update');
+      await store.closeGate?.();
+      if (!store.refused.has(row.taskId)) effectsForTask?.(row.taskId).onTerminalPersisted?.();
+    }
+    return v.filter((row) => !store.refused.has(row.taskId)).length;
   },
   upsertUnaccounted: async (g: { taskId: string; metrics?: unknown }[]) => {
     store.upserted.push(...g);
@@ -45,7 +60,7 @@ vi.mock('./store', () => ({
   residueTaskId: (p: string) => `u${p.replace(/[^a-z0-9]/g, '').slice(0, 12)}`,
 }));
 
-const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory } = await import('./reconcile-tick');
+const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory, createReconcileStageReporter } = await import('./reconcile-tick');
 const { scanProcesses } = await import('./scan');
 
 describe('dead managed browser directory receipts', () => {
@@ -170,7 +185,56 @@ beforeEach(() => {
   store.recovered.length = 0;
   store.upserted.length = 0;
   store.cleared.length = 0;
+  store.touchGate = null;
+  store.closeGate = null;
+  store.refused.clear();
   resetNotifyDebounce();
+});
+
+describe('slow reconciliation phase evidence', () => {
+  it.each(['touch', 'close'] as const)('identifies a blocked %s without inventing a later phase', async (blocked) => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const reporter = createReconcileStageReporter({ workspaceId: 'w', harnessSlug: 'papercusp' }, warn);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pause = async () => { enter(); await gate; };
+    if (blocked === 'touch') store.touchGate = pause;
+    else store.closeGate = pause;
+    const task = row({ taskId: 'slow888', pid: 12345, processIdentity: 'ended-identity', logPath: '/tmp/slow888.log' });
+    const tick = reconcileTick({ stage: reporter.stage, scan: () => scanResult([]),
+      listLive: async () => [task], checkScopesReleased: async () => new Set([task.scopeUnit!]),
+      readJobLogTerminal: () => ({ status: 'failed', exitCode: 2 }), notify: async () => {} });
+    try {
+      await entered;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalledOnce();
+      const warning = JSON.parse(warn.mock.calls[0]![0].split('slow phase ')[1]);
+      expect(warning).toMatchObject({ phase: blocked === 'touch' ? 'reconcile-touch-alive' : 'task-close-update',
+        taskId: blocked === 'touch' ? null : task.taskId });
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(warn).toHaveBeenCalledOnce();
+      if (blocked === 'touch') expect(store.recovered).toEqual([]);
+    } finally {
+      release();
+      try { await tick; }
+      finally { reporter.stop(); vi.useRealTimers(); }
+    }
+  });
+
+  it('cancels its warning when the pass finishes promptly', async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const reporter = createReconcileStageReporter({ workspaceId: 'w', harnessSlug: 'papercusp' }, warn);
+    try {
+      await reconcileTick({ stage: reporter.stage, scan: () => scanResult([]),
+        listLive: async () => [], notify: async () => {} });
+      reporter.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { reporter.stop(); vi.useRealTimers(); }
+  });
 });
 
 describe('reconcileTick — happy path', () => {
@@ -537,6 +601,26 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(resetFailedTaskUnit).toHaveBeenCalledWith(terminal);
   });
 
+  it.each(['unobserved', 'runner-log'])('retains refused units in a mixed %s settlement batch', async (path) => {
+    const tasks = ['accepted777', 'refused777'].map((taskId) => row({ taskId,
+      scopeUnit: `pc-${taskId}.service`, logPath: `/logs/${taskId}.log` }));
+    const terminals = tasks.map((task) => ({
+      capturedAt: '2026-10-26T01:00:00.000Z', scopeUnit: task.scopeUnit!, cgroupPath: null,
+      invocationId: `invocation-${task.taskId}`, loadState: 'loaded', activeState: 'failed',
+      serviceResult: 'exit-code', execMainCode: path === 'runner-log' ? null : 1,
+      execMainStatus: path === 'runner-log' ? null : 2, memoryMaxBytes: null,
+      peakMemoryBytes: null, peakMemorySource: 'unknown' as const,
+    }));
+    store.refused.add(tasks[1].taskId);
+    const resetFailedTaskUnit = vi.fn(async () => true);
+    const out = await reconcileTick({ listLive: async () => tasks, scan: () => scanResult([]), fs: memFs({}),
+      inspectTaskUnitTerminals: async () => new Map(terminals.map((terminal) => [terminal.scopeUnit, terminal])),
+      readJobLogTerminal: () => path === 'runner-log' ? { status: 'completed', exitCode: 0 } : null,
+      resetFailedTaskUnit });
+    expect(out.endedUnobservedCount + out.recoveredFromJobLogCount).toBe(1);
+    expect(resetFailedTaskUnit.mock.calls).toEqual([[terminals[0]]]);
+  });
+
   // WI-10004208 — a SUCCESSFUL transient service is garbage-collected at once, so
   // a row whose operator-host watcher died reaches the reconciler with systemd
   // answering not-found and no exit. The runner's JOB END in the log is the exit.
@@ -554,6 +638,31 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     peakMemoryBytes: null,
     peakMemorySource: 'unknown' as const,
   });
+
+  it.each([false, true])('revisits an unobserved terminal row when a delayed marker appears (truncated=%s)', async (ownedTruncated) => {
+    const task = row({ taskId: 'delayed', state: 'ended_unobserved', exitCode: null,
+      endedAt: '2026-10-25T20:00:00.000Z', logPath: '/logs/delayed.log' });
+    const out = await reconcileTick({ listLive: async () => [task], scan: () => scanResult([], { ownedTruncated }),
+      fs: memFs({}), checkScopesReleased: async () => new Set([task.scopeUnit!]),
+      readJobLogTerminal: () => ({ status: 'completed', exitCode: 0 }) });
+    expect(out.recoveredFromJobLogCount).toBe(1);
+    expect(store.recovered).toEqual([expect.objectContaining({ taskId: task.taskId, state: 'exited', exitCode: 0 })]);
+  });
+
+  it.each(['active', 'unavailable', 'seen', 'wrong-host', 'dry-run', 'observed', 'no-marker'])(
+    'refuses delayed recovery without independent matching terminal evidence: %s', async (control) => {
+      const task = row({ taskId: 'delayed', state: control === 'observed' ? 'exited' : 'ended_unobserved',
+        exitCode: control === 'observed' ? 4 : null, endedAt: '2026-10-25T20:00:00.000Z', logPath: '/logs/delayed.log' });
+      const readJobLogTerminal = vi.fn(() => control === 'no-marker' ? null : { status: 'completed' as const, exitCode: 0 });
+      await reconcileTick({ listLive: async () => [task], fs: memFs({}), dryRun: control === 'dry-run',
+        scan: () => scanResult(control === 'seen' ? [proc({ pid: 1, cgroupPath: `${OURS}/${task.scopeUnit}` })] : [],
+          { ownedRootExists: control !== 'wrong-host' }),
+        inspectTaskUnitTerminals: async () => control === 'unavailable' ? new Map() : new Map([[task.scopeUnit!,
+          { ...collected(task.scopeUnit!), activeState: control === 'active' ? 'active' : 'inactive' }]]),
+        resetFailedTaskUnit: vi.fn(async () => true), readJobLogTerminal });
+      expect(store.recovered).toEqual([]);
+      if (control !== 'no-marker') expect(readJobLogTerminal).not.toHaveBeenCalled();
+    });
 
   it.each([false, true])('closes a collected unit from the runner JOB END (ownedTruncated=%s)', async (ownedTruncated) => {
     const terminal = collected('pc-ok888.service');
@@ -721,6 +830,30 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
     });
     expect(out.degraded).toBe(true);
     expect(out.strandedCount).toBe(0);
+  });
+
+  it('does NOT close rows when an async scan deadline leaves owned coverage incomplete', async () => {
+    const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'deadline888' })],
+      scan: () => scanResult([], {
+        ownedRootAbs: null,
+        ownedRootExists: null,
+        ownedTruncated: true,
+        foreignTruncated: true,
+        scanTimedOut: true,
+      }),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(checkScopesReleased).toHaveBeenCalled();
+    expect(out.scan.scanTimedOut).toBe(true);
+    expect(out.degraded).toBe(true);
+    expect(out.degradedReason).toMatch(/deadline/);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.stranded).toHaveLength(0);
+    expect(store.endedUnobserved).toHaveLength(0);
   });
 
   it('a truncated FOREIGN pass does NOT degrade the verdict', async () => {

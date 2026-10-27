@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -21,11 +21,15 @@ describe('vm/p005-ramp.sh (faked systemd-run/systemctl/npx and the sampler)', ()
     mkdirSync(bin());
     mkdirSync(slice());
     mkdirSync(path.join(home, 'capacity'));
+    const vmScripts = path.join(home, 'capacity/scripts/agent-capacity/vm');
+    mkdirSync(vmScripts, { recursive: true });
+    copyFileSync(path.join(__dirname, 'sample-footprint.py'), path.join(vmScripts, 'sample-footprint.py'));
+    copyFileSync(SCRIPT, path.join(vmScripts, 'p005-ramp.sh'));
     writeFileSync(path.join(slice(), 'memory.events'), 'oom 0\noom_kill 0\n');
     stub('systemd-run', `echo "$@" >> "${home}/systemd-run.log"`);
-    stub('systemctl', `echo "$@" >> "${home}/systemctl.log"`);
+    stub('systemctl', `echo "$@" >> "${home}/systemctl.log"; [ -z "\${FAKE_REMOVE_ON_STOP:-}" ] || rm -f "${slice()}/memory.events"`);
     // The sampler would run for the whole window; the verdict step needs the real python3.
-    stub('python3', `case "$1" in *sample-footprint.py) exec sleep 120 ;; *) exec /usr/bin/python3 "$@" ;; esac`);
+    stub('python3', `case " $* " in *" --oom-snapshot "*) exec /usr/bin/python3 "$@" ;; esac; case "$1" in *sample-footprint.py) exec sleep 120 ;; *) exec /usr/bin/python3 "$@" ;; esac`);
     // load-driver: `--check` (the preflight) is logged to check.log and passes unless FAKE_CHECK_FAIL
     // is set; a step writes summary.json for the run (every slot held, so not UNDERDRIVEN);
     // FAKE_SLOW_AT / FAKE_OOM_AT pick the bad step.
@@ -46,6 +50,9 @@ slow=1.05; clean=$n
 # load-driver's real shape when every run diverged (shared tree): no clean run, wallSlowdown null.
 [ -n "\${FAKE_UNMEASURED_AT:-}" ] && [ "$n" -ge "$FAKE_UNMEASURED_AT" ] && { slow=null; clean=0; }
 [ -n "\${FAKE_OOM_AT:-}" ] && [ "$n" -ge "$FAKE_OOM_AT" ] && printf 'oom 1\\noom_kill 1\\n' > "${slice()}/memory.events"
+[ -z "\${FAKE_REMOVE_OOM:-}" ] || rm -f "${slice()}/memory.events"
+[ -z "\${FAKE_RESET_OOM:-}" ] || printf 'oom 0\\noom_kill 0\\n' > "${slice()}/memory.events"
+if [ -n "\${FAKE_REPLACE_CGROUP:-}" ]; then mv "${slice()}" "${slice()}-old"; mkdir "${slice()}"; printf 'oom 0\\noom_kill 0\\n' > "${slice()}/memory.events"; fi
 d="$HOME/.cache/agent-capacity/runs/$run"; mkdir -p "$d"
 printf '{"runs":%s,"clean":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"achievedConcurrency":{"mean":%s,"target":%s,"fraction":1}}' "$n" "$clean" "$slow" "$n" "$n" > "$d/summary.json"`,
     );
@@ -116,6 +123,32 @@ printf '{"runs":%s,"clean":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlow
     expect(r.stdout).toMatch(/RAMP_STEP_END p005-codex-heavy-n2 n=2 rc=0 SATURATED reason=oom_kill=1/);
     expect(r.stdout).toMatch(/RAMP_SATURATED codex-heavy n=2/);
   });
+
+  it('exports direct before/after receipts with writer hashes before releasing the cgroup hold', () => {
+    const r = run({ FAKE_OOM_AT: '1', FAKE_REMOVE_ON_STOP: '1' }, 'receipt', 'all', '1');
+    expect(r.status, r.stderr).toBe(0);
+    const receipt = (phase: string) => JSON.parse(readFileSync(path.join(home, `capacity/fp/p005-receipt-n1.oom-${phase}.json`), 'utf8'));
+    expect(receipt('before').memory_events).toMatchObject({ status: 'read', counters: { oom: 0, oom_kill: 0 } });
+    expect(receipt('after').memory_events).toMatchObject({ status: 'read', counters: { oom: 1, oom_kill: 1 } });
+    expect(receipt('before').writers.files['scripts/agent-capacity/vm/p005-ramp.sh']).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt('after').writers.files).toEqual(receipt('before').writers.files);
+    expect(r.stdout).toContain('SATURATED reason=oom_kill=1');
+  });
+
+  it.each(['missing-before', 'missing-after', 'malformed', 'reset', 'replacement'])(
+    'refuses a capacity verdict for unqualified OOM counters: %s', (failure) => {
+      const env: Record<string, string> = {};
+      if (failure === 'missing-before') rmSync(path.join(slice(), 'memory.events'));
+      if (failure === 'missing-after') env.FAKE_REMOVE_OOM = '1';
+      if (failure === 'malformed') writeFileSync(path.join(slice(), 'memory.events'), 'oom 0\noom_kill bad\n');
+      if (failure === 'reset') { writeFileSync(path.join(slice(), 'memory.events'), 'oom 5\noom_kill 4\n'); env.FAKE_RESET_OOM = '1'; }
+      if (failure === 'replacement') env.FAKE_REPLACE_CGROUP = '1';
+      const r = run(env, 'unmeasured', 'all', '1 2');
+      expect(r.status, r.stdout + r.stderr).toBe(4);
+      expect(r.stdout).toContain('UNMEASURED reason=oom-');
+      expect(r.stdout).not.toMatch(/rc=0 OK|RAMP_SATURATED|RAMP_DONE|RAMP_STEP_START p005-unmeasured-n2/);
+    },
+  );
 
   it('a driver that dies late with no summary saturates the step, not silently passed', () => {
     stub('npx', `case " $* " in *" --check "*) echo DRIVER_CHECK_OK; exit 0 ;; esac; exit 7`);

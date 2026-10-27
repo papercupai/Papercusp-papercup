@@ -5,13 +5,19 @@ import { join } from 'node:path';
 import { captureR11JournalBoundary, publishR11SnapshotBytes, readR11SnapshotBytes, r11JournalDirectory, r11PreservationRoots, r11DiskAllocations } from './r11-window-snapshot';
 import { inspectGovernorSource } from '../../../../scripts/check-resource-governor-enforcement.mjs';
 import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
-import { buildR11JournalCapturePlan, buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, R11_JOURNAL_MAX_BYTES, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
+import { buildR11JournalCapturePlan, buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, captureR11SystemJournalSuppression, evaluateR11Snapshots, R11_JOURNAL_MAX_BYTES, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
 const at = '2026-10-03T03:00:00.000Z';
+const emptySha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 const snapshot = (stage: R11Snapshot['stage'], offsetMs: number, rows: Array<{ key: string; stale: boolean }>): R11Snapshot => ({
   stage, capturedAt: new Date(Date.parse(at) + offsetMs).toISOString(), mode: 'gemma', profileId: 'gemma',
   targets: [{ table: 's.t', embedCol: 'embedding', keyCols: ['id'], predicateHash: 'p',
     rows: rows.map((row) => ({ ...row, recency: null })) }],
+  ...(stage === 'T1' ? { systemJournalSuppression: {
+    status: 'complete' as const, windowStart: at, windowEnd: new Date(Date.parse(at) + offsetMs).toISOString(),
+    checkedAt: new Date(Date.parse(at) + offsetMs + 1000).toISOString(), rawOutput: '', rawOutputBytes: 0,
+    rawOutputSha256: emptySha256, notices: [],
+  } } : {}),
 });
 const cut = (24 * 60 - 10) * 60_000;
 const end = 24 * 60 * 60_000;
@@ -365,6 +371,58 @@ describe('R-11 prospective snapshot', () => {
     expect(evaluateR11Snapshots(t0, tcut, t1).verdict).toBe('healthy');
     t1.targets[0]!.rows[2]!.stale = true;
     expect(evaluateR11Snapshots(t0, tcut, t1).verdict).toBe('failed');
+  });
+
+  it('captures exact-window host-journal suppression notices and makes the window inconclusive', async () => {
+    const t0 = snapshot('T0', 0, [{ key: '[1]', stale: true }]);
+    const tcut = snapshot('Tcut', cut, [{ key: '[1]', stale: true }]);
+    const t1 = snapshot('T1', end, [{ key: '[1]', stale: false }]);
+    const timestamp = String((Date.parse(at) + 1000) * 1000);
+    const rawOutput = `${JSON.stringify({ __CURSOR: 's=1', __REALTIME_TIMESTAMP: timestamp,
+      MESSAGE: 'Suppressed 3 messages from user@1000.service' })}\n`;
+    const execute = vi.fn().mockResolvedValue({ status: 0, signal: null, stdout: rawOutput, stderr: '', actualDemand: {} });
+
+    t1.systemJournalSuppression = await captureR11SystemJournalSuppression(at, t1.capturedAt, execute,
+      () => Date.parse(t1.capturedAt) + 1000);
+    expect(execute).toHaveBeenCalledWith('journalctl', [
+      '--system', '--no-pager', '--output=json', `--since=${at}`, `--until=${t1.capturedAt}`,
+      '--grep=Suppressed.*user@1000\\.service',
+    ], new Uint8Array(), { namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    expect(t1.systemJournalSuppression).toMatchObject({
+      status: 'complete', rawOutput, rawOutputBytes: Buffer.byteLength(rawOutput),
+      notices: [{ cursor: 's=1', realtimeTimestamp: timestamp, suppressedCount: 3 }],
+    });
+    expect(evaluateR11Snapshots(t0, tcut, t1)).toMatchObject({
+      verdict: 'inconclusive', reason: expect.stringContaining('suppression notice'),
+    });
+  });
+
+  it.each([
+    ['nonzero exit', { status: 1, signal: null, stdout: '', stderr: 'permission denied' }],
+    ['malformed JSON', { status: 0, signal: null, stdout: 'not-json\n', stderr: '' }],
+    ['missing journal fields', { status: 0, signal: null, stdout: '{"MESSAGE":"unrelated"}\n', stderr: '' }],
+    ['journal diagnostics', { status: 0, signal: null, stdout: '', stderr: 'incomplete read' }],
+  ])('fails closed on %s system-journal evidence', async (_label, result) => {
+    const execute = vi.fn().mockResolvedValue({ ...result, actualDemand: {} });
+    const evidence = await captureR11SystemJournalSuppression(at,
+      new Date(Date.parse(at) + end).toISOString(), execute, () => Date.parse(at) + end + 1000);
+    expect(evidence.status).toBe('unavailable');
+    expect(evidence.error).toBeTruthy();
+  });
+
+  it('keeps the evaluator inconclusive when system-journal evidence is absent or unavailable', () => {
+    const t0 = snapshot('T0', 0, [{ key: '[1]', stale: true }]);
+    const tcut = snapshot('Tcut', cut, [{ key: '[1]', stale: true }]);
+    const t1 = snapshot('T1', end, [{ key: '[1]', stale: false }]);
+    delete t1.systemJournalSuppression;
+    expect(evaluateR11Snapshots(t0, tcut, t1)).toMatchObject({
+      verdict: 'inconclusive', reason: expect.stringContaining('system-journal suppression evidence'),
+    });
+    t1.systemJournalSuppression = {
+      status: 'unavailable', windowStart: at, windowEnd: t1.capturedAt, checkedAt: t1.capturedAt,
+      rawOutput: '', rawOutputBytes: 0, rawOutputSha256: emptySha256, notices: [], error: 'permission denied',
+    };
+    expect(evaluateR11Snapshots(t0, tcut, t1).verdict).toBe('inconclusive');
   });
 
   it('keeps only newly eligible keys at Tcut and the frozen cohorts at T1', () => {

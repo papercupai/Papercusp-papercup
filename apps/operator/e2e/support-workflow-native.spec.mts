@@ -49,7 +49,7 @@ async function navigate(params: Record<string, string> = {}) {
   url.search = new URLSearchParams({ tab: 'enterprise', welcome: '0',
     ws: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE!, ...params }).toString();
   await native('navigate', url.toString(), '--json');
-  await check('new URL(location.href).searchParams.get("tab")==="enterprise" && !!document.querySelector("section[aria-label=\"Enterprise workspace\"]") && document.querySelector(".pc-wf__title")?.textContent==="Enterprise"');
+  await check(`new URL(location.href).searchParams.get("tab")==="enterprise" && !!document.querySelector('section[aria-label="Enterprise workspace"]') && document.querySelector(".pc-wf__title")?.textContent==="Enterprise"`);
 }
 
 async function fixtureProcess(seed: boolean, permissions?: {
@@ -74,7 +74,9 @@ async function fixtureProcess(seed: boolean, permissions?: {
           const { selection, access } = JSON.parse(process.env.P012_NATIVE_PERMISSIONS);
           console.log(JSON.stringify(await setAccess(sql, selection, access)));
         } else {
-        const f = await seed(sql, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE });
+        const f = await seed(sql, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+          workerAccountReferenceFile: process.env.VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE,
+          requireWorkerAccount: process.env.P012_NATIVE_WORKER_ACCOUNT === '1' });
         const { workspaceId, harnessSlug, operationId, supportCaseId, query, documentTitle, documentId,
           listId, role, identities, approvedRevision, candidateRevision } = f;
         const actors = Object.fromEntries(Object.entries(f.actors).map(([actor, value]) => [actor, { id: value.id }]));
@@ -84,7 +86,8 @@ async function fixtureProcess(seed: boolean, permissions?: {
         }
       } finally { await sql.end({ timeout: 5 }); }
     `], { cwd: sourceRoot, env: { ...process.env, P012_NATIVE_SEED: seed ? '1' : '0',
-      P012_NATIVE_PERMISSIONS: permissions ? JSON.stringify(permissions) : '' },
+      P012_NATIVE_PERMISSIONS: permissions ? JSON.stringify(permissions) : '',
+      P012_NATIVE_WORKER_ACCOUNT: seed && !permissions ? '1' : '0' },
     timeout: 150_000, maxBuffer: 2 * 1024 * 1024 });
   // Login scripts are ephemeral test secrets: never attach subprocess stdout.
   return JSON.parse(result.stdout.trim());
@@ -98,6 +101,37 @@ test('support fixture writer loads under the native acceptance Node loader', asy
 async function submitNativeSupport(selection: NativeFixture) {
   await navigate({ wfSelId: `operation:${selection.harnessSlug}:${selection.operationId}` });
   await check(`!!document.querySelector(${JSON.stringify(form)}) && document.querySelector(${JSON.stringify(form)})?.getAttribute('aria-busy') !== 'true'`);
+  // Observe the real response without replacing it. Keep only refusal/status
+  // metadata: document bodies, request arguments and credentials are excluded.
+  await measure(`(() => {
+    const original = window.fetch.bind(window);
+    window.__supportSearchDiagnostic = null;
+    window.fetch = async (...args) => {
+      const response = await original(...args);
+      if (String(args[0]).includes('/api/agent-mcp/run-tool')) {
+        let request;
+        try { request = JSON.parse(args[1]?.body ?? '{}'); } catch {}
+        if (request?.name === 'documents:search') {
+          try {
+            const body = await response.clone().json();
+            const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+            const data = payload;
+            const leg = data?.legs?.organization;
+            window.__supportSearchDiagnostic = {
+              httpStatus: response.status, ok: body.ok, isError: body.result?.isError,
+              error: body.error ?? payload.error ?? data?.error,
+              organization: leg && { allowed: leg.allowed, refusal: leg.refusal,
+                status: leg.status, errorCode: leg.errorCode, reason: leg.reason },
+              resultCount: Array.isArray(data?.results) ? data.results.length : null,
+              payloadKeys: Object.keys(payload), dataKeys: data ? Object.keys(data) : []
+            };
+          } catch { window.__supportSearchDiagnostic = { httpStatus: response.status, decodeFailed: true }; }
+        }
+      }
+      return response;
+    };
+    return true;
+  })()`);
   await measure(`(() => { const s=document.querySelector(${JSON.stringify(form)}); for (const [label,id] of [['Support case reference','p012-case'],['Find case evidence','p012-query']]) { const input=Array.from(s.querySelectorAll('label')).find(l=>l.textContent.includes(label))?.querySelector('input'); if (!input) throw new Error('Missing '+label); input.id=id; } return true; })()`);
   await native('type', '#p012-case', selection.supportCaseId, '--json');
   await native('type', '#p012-query', selection.query, '--json');
@@ -209,7 +243,7 @@ test.describe('P-012 current-build native acceptance', () => {
     test.setTimeout(180_000);
     try {
       await navigate();
-      await check('(() => { const s=document.querySelector("section[aria-label=\"Enterprise workspace\"]"); return !!s?.querySelector("[aria-label=\"Enterprise journey\"]") && !!s.querySelector("[aria-label=\"Departmental workflow\"]") && s.querySelectorAll("nav[aria-label=\"Supporting workspace evidence\"] button").length===6 && Array.from(s.querySelectorAll("button")).some(b=>b.textContent?.includes("Manage workflows")); })()');
+      await check(`(() => { const s=document.querySelector('section[aria-label="Enterprise workspace"]'); return !!s?.querySelector('[aria-label="Enterprise journey"]') && !!s.querySelector('[aria-label="Departmental workflow"]') && s.querySelectorAll('nav[aria-label="Supporting workspace evidence"] button').length===6 && Array.from(s.querySelectorAll("button")).some(b=>b.textContent?.includes("Manage workflows")); })()`);
       // The check command must reject a missing subject. eval/probe success
       // alone cannot establish either a positive or a negative UI assertion.
       const negative = await native('check', '--selector', '#p012-deliberately-absent-control', '--json')
@@ -332,6 +366,7 @@ test.describe('P-012 current-build native acceptance', () => {
         boundary: 'Business/reviewer evidence only; native admin acceptance and shipment remain separate' });
     } finally {
       await retain(info, 'p012-journey-matrix', matrix);
+      await retain(info, 'p012-search-diagnostic', await measure('window.__supportSearchDiagnostic ?? null'));
       await retain(info, 'p012-journey-dom', await measure('({url:location.href,text:document.body.innerText.slice(0,12000)})'));
     }
   });

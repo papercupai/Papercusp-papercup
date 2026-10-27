@@ -40,6 +40,11 @@ function productionFunction(name) {
   return launcherSource.slice(start, end + 2);
 }
 const readerSource = productionFunction('readLinuxProcessFlockText').slice('export '.length);
+// Qualified by the captured-callback integration probe. The current entry adds
+// container custody, while the exact legacy host source accepted below retains
+// its host-only startup-PID and holder checks. Pin all current bytes so a future
+// production change still requires an explicit qualification.
+const QUALIFIED_PRODUCTION_IDENTITY_HASH = '2902fab7ba16347546ed231d1f58e6b2a4be76079675008343248a8ee91cf2c6';
 
 /**
  * Node's SIGUSR1 inspector activation writes its URL to fd 2 when the
@@ -78,7 +83,7 @@ export function terminalIdentityRepairSource(source) {
     throw new Error('Unknown or ambiguous terminal identity function; repair refused');
   // Pin the maintained entry too: source drift must be re-qualified, not copied
   // blindly into legacy processes. The inline reader is the only changed call.
-  if (productionFunction('codexNativeIdForPty') !== LEGACY_IDENTITY_FUNCTION)
+  if (hash(productionFunction('codexNativeIdForPty')) !== QUALIFIED_PRODUCTION_IDENTITY_HASH)
     throw new Error('Production identity function changed; repair needs re-qualification');
   const repaired = LEGACY_IDENTITY_FUNCTION.replace(
     'const holder = readHolder(codexHome, null, { holderPid: nativePid });',

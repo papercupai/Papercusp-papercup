@@ -32,6 +32,24 @@ export interface HaikuTurnResult {
   tokensOut: number;
 }
 
+/** Unknown usage stays absent. Failed or interrupted summaries can still incur
+ * liability, even though the compatibility text-only helper returns null. */
+export interface HaikuAttempt {
+  status: 'completed' | 'failed' | 'incomplete';
+  text?: string;
+  model: string;
+  costUsd?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+interface HaikuOptions {
+  maxTokens?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  attribution?: { role?: string; runId?: string; sessionId?: string; toolName?: string };
+}
+
 /**
  * Run the haiku model on a single prompt via the stateless anthropic-direct
  * backend, returning the text
@@ -47,28 +65,34 @@ export interface HaikuTurnResult {
  */
 export async function runHaikuTurn(
   prompt: string,
-  opts: {
-    maxTokens?: number;
-    timeoutMs?: number;
-    attribution?: { role?: string; runId?: string; sessionId?: string; toolName?: string };
-  } = {},
+  opts: HaikuOptions = {},
 ): Promise<HaikuTurnResult | null> {
+  const result = await runHaikuAttempt(prompt, opts);
+  return result.status === 'completed' && result.text ? {
+    text: result.text, model: result.model, costUsd: result.costUsd ?? 0,
+    tokensIn: result.tokensIn ?? 0, tokensOut: result.tokensOut ?? 0,
+  } : null;
+}
+
+export async function runHaikuAttempt(prompt: string, opts: HaikuOptions = {}): Promise<HaikuAttempt> {
   const ac = new AbortController();
+  const measured: Omit<HaikuAttempt, 'status' | 'text'> = { model: HAIKU_MODEL };
+  const incomplete = (): HaikuAttempt => ({ ...measured, status: 'incomplete' });
+  if (opts.signal?.aborted) return incomplete();
   // Cancellation is cooperative: an iterator can be waiting in admission or
   // setup before it observes the signal. The utility's deadline must still
   // settle its caller, so a release-note fallback cannot wait indefinitely.
   let killer: ReturnType<typeof setTimeout>;
-  const deadline = new Promise<null>((resolve) => {
+  let onAbort: () => void;
+  const deadline = new Promise<HaikuAttempt>((resolve) => {
+    onAbort = () => { ac.abort(); resolve(incomplete()); };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
     killer = setTimeout(() => {
-      ac.abort();
-      resolve(null);
+      onAbort();
     }, opts.timeoutMs ?? 15_000);
   });
-  const collect = async (): Promise<HaikuTurnResult | null> => {
+  const collect = async (): Promise<HaikuAttempt> => {
     let out = '';
-    let costUsd = 0;
-    let tokensIn = 0;
-    let tokensOut = 0;
     let failed = false;
     try {
       for await (const ev of runAgentChat({
@@ -88,9 +112,10 @@ export async function runHaikuTurn(
         if (ev.type === 'delta') out = ev.text;
         else if (ev.type === 'result') {
           out = ev.finalText || out;
-          costUsd = ev.costUsd ?? 0;
-          tokensIn = ev.tokensIn ?? 0;
-          tokensOut = ev.tokensOut ?? 0;
+          for (const key of ['costUsd', 'tokensIn', 'tokensOut'] as const) {
+            const value = ev[key];
+            if (typeof value === 'number' && Number.isFinite(value) && value >= 0) measured[key] = value;
+          }
         } else if (ev.type === 'error') {
           failed = true;
           console.warn(`[haiku] failed:`, (ev.stderr ?? ev.message).slice(0, 300));
@@ -98,17 +123,17 @@ export async function runHaikuTurn(
       }
     } catch (err) {
       console.warn('[haiku] threw:', (err as Error).message);
-      return null;
+      return { ...measured, status: ac.signal.aborted ? 'incomplete' : 'failed' };
     }
-    if (failed) return null;
     const text = out.trim();
-    if (!text) return null;
-    return { text, model: HAIKU_MODEL, costUsd, tokensIn, tokensOut };
+    return { ...measured, status: ac.signal.aborted ? 'incomplete' : failed || !text ? 'failed' : 'completed',
+      ...(!failed && text && !ac.signal.aborted ? { text } : {}) };
   };
   try {
     return await Promise.race([collect(), deadline]);
   } finally {
     clearTimeout(killer!);
+    opts.signal?.removeEventListener('abort', onAbort!);
   }
 }
 

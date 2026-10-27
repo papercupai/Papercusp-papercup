@@ -377,6 +377,44 @@ describe('sweepExpiredConsults', () => {
     expect(seenKeys[0]).toBe(seenKeys[1]);
   });
 
+  it('does not send a pickup alert when the consult is answered and closed during silent detection', async () => {
+    const closedAt = new Date(NOW.getTime() + 1_000).toISOString();
+    const id = await seedConsult({
+      expiresAt: FUTURE,
+      routing: menuSnapshot(['resp-1'], ['resp-1-fork']),
+    });
+    const { deps, alerts } = makeDeps();
+    deps.findSilentResponders = async () => {
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET state = 'closed_answered',
+               exchanges_used = 1,
+               closed_at = ${closedAt}::timestamptz,
+               updated_at = ${closedAt}::timestamptz
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}
+      `;
+      await rootSql`
+        UPDATE harness_shared.coord_conversations
+           SET state = 'closed', updated_at = ${closedAt}::timestamptz
+         WHERE workspace_id = ${WS} AND id = ${id}
+      `;
+      return new Set([id]);
+    };
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result).toMatchObject({
+      requesterAlerts: [],
+      requesterAlertFailures: [],
+      advanced: 0,
+      expired: 0,
+    });
+    expect(alerts).toEqual([]);
+    const closed = await stateOf(id);
+    expect(closed.state).toBe('closed_answered');
+    expect(closed.closed_at).not.toBeNull();
+  });
+
   it('does not expire a due snapshot after another writer refreshes the TTL', async () => {
     const refreshedExpiry = new Date(NOW.getTime() + 30 * 60_000).toISOString();
     const refreshedAt = new Date(NOW.getTime() + 1_000).toISOString();
@@ -1268,6 +1306,38 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     const alert = alerts.find((a) => a.conversationId === id)!;
     expect(alert.msgId).toContain('consult-review-conversion');
     expect(alert.body).toContain(`vettingWorkItem: 'WI-review-${id}'`);
+  });
+
+  it('does not send a conversion alert when a reply closes the consult during work-item filing', async () => {
+    const closedAt = new Date(NOW.getTime() + 1_000).toISOString();
+    const id = await seedReview({ routing: VETTING, createdMin: -70, expiresMin: 50 });
+    const { deps, filed, alerts } = withFiler();
+    deps.fileReviewWorkItem = async (req) => {
+      filed.push(req);
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET state = 'closed_answered',
+               exchanges_used = 1,
+               closed_at = ${closedAt}::timestamptz,
+               updated_at = ${closedAt}::timestamptz
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}
+      `;
+      await rootSql`
+        UPDATE harness_shared.coord_conversations
+           SET state = 'closed', updated_at = ${closedAt}::timestamptz
+         WHERE workspace_id = ${WS} AND id = ${id}
+      `;
+      return { id: `WI-review-${id}` };
+    };
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(filed.filter((request) => request.conversationId === id)).toHaveLength(1);
+    expect(result).toMatchObject({ converted: [], conversionFailures: [] });
+    expect(alerts).toEqual([]);
+    const closed = await rowOf(id);
+    expect(closed.state).toBe('closed_answered');
+    expect(closed.closed_at).not.toBeNull();
   });
 
   it('converts a due silent review consult rather than cascading or expiring it without a work item', async () => {

@@ -20,6 +20,7 @@ import {
   parseHostedWorkspaceProtocolMessage,
   readHostedWorkspaceId,
   readHostedWorkspaceTicket,
+  readHostedWorkspaceSocketOrigin,
   utf8ToBase64,
   HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES,
   type HostedWorkspaceFileEntry,
@@ -719,7 +720,7 @@ export function HostedWorkspaceSession({
       setStatus("connecting");
       setNotice("Opening the generation-bound workspace relay…");
       const socket = new WebSocket(
-        buildHostedWorkspaceSocketUrl(window.location.origin, ticket),
+        buildHostedWorkspaceSocketUrl(readHostedWorkspaceSocketOrigin(ticketPayload, window.location.origin), ticket),
       );
       const socketEpoch = epoch;
       socketRef.current = socket;

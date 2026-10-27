@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "capacity-provenance-custody-pointer-v1",
+  "recordedAt": "2026-10-23T15:52:38.781346+00:00",
+  "workItem": "WI-6554700010023077",
+  "custodyWorkItem": "EI-26916143924070538",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "requirement": "R-3",
+  "scope": "Historical source authenticity recovery; no new workload execution, VM, current-source adequacy certification or shipment. D-086 hybrid pool plus swap remains the required design.",
+  "archive": {
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/evidence/EI-26916143924070538/fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e",
+    "manifest": {
+      "name": "manifest.json",
+      "sha256": "fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e"
+    },
+    "original": {
+      "name": "originals/capacity-r3-memory-provenance-2026-10-23.json",
+      "sourcePath": "docs/evidence/capacity-r3-memory-provenance-2026-10-23.json",
+      "sha256": "3e332ac92696db8a7ae77e608b7cd8ffb91cf4fe4e6341366acd368e02340915",
+      "byteLength": 11529
+    }
+  },
+  "readerAccess": {
+    "validation": "Resolve archive.root relative to the operating account home directory. Verify the manifest SHA-256 before selecting files[].path equal to archive.original.sourcePath. Read that original artifact and verify both byte length and SHA-256 against the manifest and this pointer. Parse the original JSON only after verification.",
+    "relatedProof": "Historical source paths inside an original remain unchanged. If a source path names another custody pointer in this set, resolve that pointer and verify its original bytes before comparing the historical source digest.",
+    "preservation": "The archived original is byte-identical to the historical source record. This portable pointer contains no replacement measurements or rewritten proof."
+  },
+  "claims": {
+    "newExecution": false,
+    "currentSourceAdequacy": false,
+    "operationalAcceptance": false,
+    "shipment": false
+  },
+  "unresolved": [
+    "No R-3 current-revision live-plane evidence binding or independent adequacy judgment was created.",
+    "Original single-wake host probeExecMs metrics differ under the current summarizer and are excluded; the source of that historical window difference is not diagnosed here.",
+    "Source hashes authenticate retained bytes; they do not independently prove the original provider identity or deployed measurement-writer version.",
+    "The tower parking comparison and stub-backed real-VM terminal trials have different workloads; neither establishes hybrid-pool application readiness, monthly cost or full-plan shipment."
+  ]
+}

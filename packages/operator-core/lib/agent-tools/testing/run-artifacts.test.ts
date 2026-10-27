@@ -1,12 +1,63 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
+import { verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('maintained run deadlines and retained artifacts', () => {
+  function nativePacket() {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-custody-')); roots.push(root);
+    const source = join(root, 'producer'); mkdirSync(source);
+    writeFileSync(join(source, 'subject.test.ts'), 'export {};');
+    const packet = new TestRunArtifactPacket('run-custody', source, testRunDeadline(60_000), join(root, 'retained'));
+    packet.bindNativeIdentity('custody-workspace', 'papercusp');
+    packet.captureSelectedSources(['subject.test.ts'], { commit: 'fixture' });
+    for (const name of ['configuration.json', 'router.json', 'ledger.json']) packet.write(name, { fixture: true });
+    const log = join(source, 'stdout.log'); writeFileSync(log, Buffer.from([0, 255, 10]));
+    packet.captureOutputLogs([log]);
+    return { root, source, packet };
+  }
+  it('preserves private bytes after producer removal without upgrading pending execution or cleanup', () => {
+    const { source, packet } = nativePacket();
+    packet.childState = 'pending';
+    packet.finish({ cleanup: { complete: false } });
+    const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
+    expect(manifest.nativeCustody).toMatchObject({ byteCustody: 'complete', writerState: 'pending',
+      nativeProof: 'unqualified', acceptance: 'unmeasured' });
+    const locator = manifest.nativeCustody.locator;
+    const bytes = readFileSync(join(packet.paths.nativeProof, 'objects', locator.manifest.ref));
+    const retained = JSON.parse(bytes.toString('utf8'));
+    rmSync(source, { recursive: true });
+    const read = verifyNativeProofPacket(packet.paths.nativeProof, locator, { identity: {
+      workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody',
+    }, expected: [{ id: 'packet', attempt: 'primary', selected: [join(source, 'subject.test.ts')],
+      runner: 'unsupported', armed: false, out: null, auxiliary: retained.expected[0].auxiliary }] });
+    expect(read.status).toBe('complete');
+    const log = read.manifest.groups[0].auxiliary.find(row => row.role === 'router-output/0')!.artifact!;
+    expect(readFileSync(join(packet.paths.nativeProof, 'objects', log.ref))).toEqual(Buffer.from([0, 255, 10]));
+  });
+  it('links late-close settlement without changing a sealed pending edition', () => {
+    const { packet } = nativePacket();
+    packet.childState = 'pending'; packet.finish({ cleanup: { complete: false } });
+    const first = JSON.parse(readFileSync(packet.paths.manifest, 'utf8')).nativeCustody.locator;
+    const original = readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref));
+    packet.childState = 'closed'; packet.stage('late-child-close'); packet.finish({ cleanup: { complete: true } });
+    const second = JSON.parse(readFileSync(packet.paths.manifest, 'utf8')).nativeCustody;
+    expect(second.writerState).toBe('settled');
+    expect(second.locator.manifest.sha256).not.toBe(first.manifest.sha256);
+    expect(JSON.parse(readFileSync(join(packet.paths.nativeProof, 'objects', second.locator.manifest.ref), 'utf8')).predecessor).toEqual(first);
+    expect(readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref))).toEqual(original);
+  });
+  it('retains actual cleanup outcome when custody refuses a redirected root', () => {
+    const { source, packet } = nativePacket();
+    symlinkSync(source, packet.paths.nativeProof);
+    packet.childState = 'closed'; packet.finish({ cleanup: { complete: true } });
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ cleanup: { complete: true },
+      nativeCustody: { byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+  });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
       startedAtMs: 1000, taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000,

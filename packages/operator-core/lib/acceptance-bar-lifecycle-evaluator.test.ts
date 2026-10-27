@@ -998,6 +998,18 @@ describe('a refusal names its REPAIR VERB and says it is not recruiting', () => 
     expect(message).toContain('self_graded_only');
   });
 
+  it('separates independent grading and its later author verdict from author repairs', () => {
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot(), 'ship');
+    expect(verdict.codes).toContain('bar_snapshot_grading_missing');
+    expect(verdict.codes).toContain('bar_snapshot_author_verdict_missing');
+    expect(verdict.message).not.toContain("These repairs are the plan author's alone");
+    expect(verdict.message).toContain('missing or stale independent grading is grader work');
+    expect(verdict.message).toContain('author verdict after reading that grading');
+    expect(verdict.message).toContain('Repair the blocking pre-grading obligations first');
+    expect(verdict.message).toContain('plans:set-plan-status');
+    expect(verdict.message).toContain('Never self-grade or launch a parallel reviewer');
+  });
+
   it('still carries the original attribution — the repair line is additive', () => {
     const message = evaluateAcceptanceBarLifecycle(snapshot(), 'ship').message ?? '';
     expect(message).toContain('acceptance BAR contract is not ready for ship');

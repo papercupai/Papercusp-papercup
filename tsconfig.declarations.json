@@ -321,6 +321,7 @@
     // untracked byproducts that `--check` does not police and that reappear every run.
     // Registering all three is what keeps the emitted set and the tracked set equal.
     "apps/operator/scripts/psu-launcher.mjs",
+    "apps/operator/scripts/psu-identity-assume.mjs",
     "packages/operator-core/lib/framework-install-spec.mjs",
     // P-004 bounded native recovery — imported directly by its TypeScript
     // contract test and by psu-launcher.mjs; generate the typed sibling so both
@@ -332,6 +333,7 @@
     // WI-10006057 — imported by psu-launcher.mjs and its TypeScript test.
     "apps/operator/scripts/psu-operator-down-diagnosis.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
+    "apps/operator/scripts/psu-carry-fence.mjs",
     // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
     "apps/operator/scripts/psu-terminal-output.mjs",
     "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
@@ -496,6 +498,11 @@
     "apps/operator/scripts/tutorial-video-contract.mjs",
     "apps/operator/scripts/hooks/inject/core.mjs",
     "scripts/lib/partial-task-resume.mjs",
-    "scripts/with-documenso-sandbox.mjs"
+    // P-003 shares the native config-loader policy with direct fixture producers.
+    "scripts/lib/vitest-host-preflight.mjs",
+    "scripts/with-documenso-sandbox.mjs",
+    // Desktop portal acceptance shares parent/child native budgets with TypeScript.
+    "scripts/lib/verify-tauri-native-env.mjs",
+    "scripts/lib/verify-tauri-deadline.mjs"
   ]
 }

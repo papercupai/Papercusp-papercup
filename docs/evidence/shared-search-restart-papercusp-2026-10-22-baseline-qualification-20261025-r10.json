@@ -1,0 +1,1947 @@
+{
+  "schemaVersion": 1,
+  "kind": "shared-search-baseline-qualification",
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-r10-input-link-v3",
+  "generatedAt": "2026-10-25T09:25:17.998518+00:00",
+  "status": "partial-contributing-evidence",
+  "baselineAccepted": false,
+  "latencyAcceptance": false,
+  "planAcceptance": false,
+  "shipment": "unverified",
+  "priorInventory": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-inventory-20261023-v2.json",
+    "sha256": "42c2be9bea124d343066f5191f940388e43f2358bd361aca38f1f22cc025940a",
+    "bytes": 109811
+  },
+  "inventoryAsOf": "2026-10-23T13:10:38.703Z",
+  "inventoryReference": {
+    "surfaceIds": [
+      "work_items:search",
+      "docs:search",
+      "plans:search",
+      "sessions:search",
+      "search:semantic",
+      "coordination:ask-knowledge-tier",
+      "search:fulltext",
+      "recipes:search",
+      "orchestrate:search",
+      "memory:search",
+      "rubrics:search",
+      "cupboard:search",
+      "personal:search",
+      "documents:search",
+      "social:search",
+      "people:search",
+      "reports:search",
+      "GET /adv/sessions/search",
+      "GET /adv/sessions/search-transcripts",
+      "GET /user/search",
+      "memory:corpus-recall",
+      "coord:feed (q= filter)",
+      "transcript-search-warmup"
+    ],
+    "proseSourceIds": [
+      "escalations",
+      "brainstorm",
+      "turns",
+      "decisions",
+      "work_item",
+      "session_turn",
+      "coord_message",
+      "report",
+      "plan",
+      "doc"
+    ],
+    "applicationIds": [
+      "papercusp/memory:search",
+      "papercusp/memory:auto-injection",
+      "papercusp/memory:corpus-recall",
+      "papercusp/personal:search",
+      "papercusp/social:search",
+      "papercusp/documents:search/personal",
+      "papercusp/documents:search/organization",
+      "papercusp/documents:search/pot",
+      "papercusp/documents:search/live",
+      "restart/storefront:search",
+      "restart/storefront:wholesale",
+      "restart/storefront:autocomplete",
+      "restart/scout:search_products",
+      "restart/scout:shopper-memory"
+    ],
+    "sourceComparison": [
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/search/surface-registry.ts",
+        "inventorySha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+        "currentSha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+        "inventorySha256": "c65d7b85eb7b5394ac3049a328ae5225972180b072470d210265511baed2738b",
+        "currentSha256": "c65d7b85eb7b5394ac3049a328ae5225972180b072470d210265511baed2738b",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.ts",
+        "inventorySha256": "c1ce37b2dc299c219f61304b43aca5337c6ece87a714c2a1dd1ce0493d5b82d8",
+        "currentSha256": "c1ce37b2dc299c219f61304b43aca5337c6ece87a714c2a1dd1ce0493d5b82d8",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/report-source.ts",
+        "inventorySha256": "afdf2b85b503035a9ea3a885420506d37e52f689912eac45028dd2081dcde89d",
+        "currentSha256": "afdf2b85b503035a9ea3a885420506d37e52f689912eac45028dd2081dcde89d",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/semantic.ts",
+        "inventorySha256": "6527894e0b1a679c966241499a06bd5c5b0c0a1910f28d51a83f94659ededb93",
+        "currentSha256": "6527894e0b1a679c966241499a06bd5c5b0c0a1910f28d51a83f94659ededb93",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/fulltext.ts",
+        "inventorySha256": "644a772c6b3b226d28211d38e605e416744cd543d2f9311e0e45c330a0d51b11",
+        "currentSha256": "644a772c6b3b226d28211d38e605e416744cd543d2f9311e0e45c330a0d51b11",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/search/filters.ts",
+        "inventorySha256": "cfe2839a610bc95425292b05e6fa009bc0482df9fb2217e92c73af63a854fb76",
+        "currentSha256": "cfe2839a610bc95425292b05e6fa009bc0482df9fb2217e92c73af63a854fb76",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/memory/configure.ts",
+        "inventorySha256": "84c8f5c3278b829a80849f319254fb2e151a3e055e935cc4ffc3b9db52bed07d",
+        "currentSha256": "84c8f5c3278b829a80849f319254fb2e151a3e055e935cc4ffc3b9db52bed07d",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/memory/injection.ts",
+        "inventorySha256": "a05b3fa473a2fed3e88332bfc6d21221ebb2bec4b1311f34b67e6fe0dbe0b5f1",
+        "currentSha256": "a05b3fa473a2fed3e88332bfc6d21221ebb2bec4b1311f34b67e6fe0dbe0b5f1",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/memory/corpus-recall-io.ts",
+        "inventorySha256": "e11f889954e6f28b1da0f1d41a52c0c47139078dde25341214bd361fde9eb06e",
+        "currentSha256": "e11f889954e6f28b1da0f1d41a52c0c47139078dde25341214bd361fde9eb06e",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/memory/search.ts",
+        "inventorySha256": "82e61cb6794055d1e3ee325ecb05d65228cef635117521e115cb9b77e0fe258e",
+        "currentSha256": "82e61cb6794055d1e3ee325ecb05d65228cef635117521e115cb9b77e0fe258e",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+        "inventorySha256": "5427a5bd94642703ffed9a1c49f9a48b147793e176dbce9a2c1d23ce0c354d82",
+        "currentSha256": "3605342e4626550792fd8125c67d57c7cbd296b49ee54f855c55f3872b95a0b6",
+        "matchesInventory": false
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+        "inventorySha256": "8f15c8c17300f33fffc73b9e889ea521e34e04117b68a0b06b7f80a0eead5b8c",
+        "currentSha256": "313f64d762a3a10d014a806133fc5be43aacdce706efc8844037e6b8930ddf82",
+        "matchesInventory": false
+      },
+      {
+        "product": "papercusp",
+        "path": "libs/generic/search/src/types.ts",
+        "inventorySha256": "062764ce130f7db4a95c9ff1b3fabe1f8c33de3336dc144601c49097f22cac0a",
+        "currentSha256": "062764ce130f7db4a95c9ff1b3fabe1f8c33de3336dc144601c49097f22cac0a",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "libs/generic/search/src/hybrid.ts",
+        "inventorySha256": "015a412da34ec64ee555bc29518acd442b077d4e1175845d97f93284357c2374",
+        "currentSha256": "015a412da34ec64ee555bc29518acd442b077d4e1175845d97f93284357c2374",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "libs/generic/search-core/src/relevance-eval.ts",
+        "inventorySha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+        "currentSha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "libs/generic/search-core/src/relevance-eval.spec.ts",
+        "inventorySha256": "21d4ae5575f3d5ca92f16744d7d2a3faf19ff50b6c926617451c26fac1ba54d9",
+        "currentSha256": "21d4ae5575f3d5ca92f16744d7d2a3faf19ff50b6c926617451c26fac1ba54d9",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "libs/generic/search-core/src/index.ts",
+        "inventorySha256": "11cafe7020db5b2a5a7888b9b009c7da053730da66afa08fe6f7b20c478a9486",
+        "currentSha256": "11cafe7020db5b2a5a7888b9b009c7da053730da66afa08fe6f7b20c478a9486",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/personal/search.ts",
+        "inventorySha256": "2c1fc8082d17bc67aa7217d061b44c2b2693cacd644fcb46e954f324f4f91e52",
+        "currentSha256": "2c1fc8082d17bc67aa7217d061b44c2b2693cacd644fcb46e954f324f4f91e52",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/social/search.ts",
+        "inventorySha256": "7538faa69150aebb090ed19c8838c97bae999f36f0cff83fdcff9d916fa7b470",
+        "currentSha256": "7538faa69150aebb090ed19c8838c97bae999f36f0cff83fdcff9d916fa7b470",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/agent-tools/documents/search.ts",
+        "inventorySha256": "08ccc03b9e9b74800bf13ab3b2672610df56af0cd7ffbe3aa7d3212207691bba",
+        "currentSha256": "7cd604f2496bc22844a3daf459f02853360c1c1c2c8eda7a7a1dd2a422b706a7",
+        "matchesInventory": false
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/personal-vault/store.ts",
+        "inventorySha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+        "currentSha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/personal-vault/authorization.ts",
+        "inventorySha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+        "currentSha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts",
+        "inventorySha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+        "currentSha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/data-sources/documents-corpus.ts",
+        "inventorySha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+        "currentSha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/data-sources/live-search-adapter.ts",
+        "inventorySha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+        "currentSha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+        "matchesInventory": true
+      },
+      {
+        "product": "papercusp",
+        "path": "packages/operator-core/lib/capability-verbs/social-read.ts",
+        "inventorySha256": "1c1d869d2b9537d021c5ef47d979bcafc4879fd56293d876c3c39a6baf8e65ed",
+        "currentSha256": "1c1d869d2b9537d021c5ef47d979bcafc4879fd56293d876c3c39a6baf8e65ed",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "libs/catalog-search/src/config.ts",
+        "inventorySha256": "aefdef92a60b5578e52b2fc02f2a76263a1299f9280144140f294b61efb1002b",
+        "currentSha256": "aefdef92a60b5578e52b2fc02f2a76263a1299f9280144140f294b61efb1002b",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "libs/catalog-search/src/params.ts",
+        "inventorySha256": "62ba42a9392f5de655f371c0fca8842979391fa8247b4d41d33d6ed460180964",
+        "currentSha256": "62ba42a9392f5de655f371c0fca8842979391fa8247b4d41d33d6ed460180964",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "libs/catalog-search/src/useCatalogSearch.ts",
+        "inventorySha256": "eb9986299948f63a54bb0c80244a855cabfe06e4339ccab33a328aba3e3c1b25",
+        "currentSha256": "eb9986299948f63a54bb0c80244a855cabfe06e4339ccab33a328aba3e3c1b25",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "libs/catalog-search/src/useLiveStockOverlay.ts",
+        "inventorySha256": "7ba2fb09f36764b4bdc3689e68eef498a68d3287f6b7f6a3560c57e99ab96d7b",
+        "currentSha256": "7ba2fb09f36764b4bdc3689e68eef498a68d3287f6b7f6a3560c57e99ab96d7b",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/shop-api/src/catalog/catalog.controller.ts",
+        "inventorySha256": "9509aa25ac214fcb036008d3918b1ccf21f43f49cccb41986d5a80530f5e03bd",
+        "currentSha256": "9509aa25ac214fcb036008d3918b1ccf21f43f49cccb41986d5a80530f5e03bd",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/shop-api/src/catalog/catalog.service.ts",
+        "inventorySha256": "d195a7f7b81e458b99c8efd18908571b8b45f8339d16d615328a1180c1befc73",
+        "currentSha256": "d195a7f7b81e458b99c8efd18908571b8b45f8339d16d615328a1180c1befc73",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/shop-api/src/tooldef/tools/catalog.reads.tool.ts",
+        "inventorySha256": "4750338a33078bc3fe45d09f050319b53e675a69f5ab229979330effd9c4cd57",
+        "currentSha256": "4750338a33078bc3fe45d09f050319b53e675a69f5ab229979330effd9c4cd57",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/scout-service/src/scout/scout.service.ts",
+        "inventorySha256": "8ef72912bb028df6584de017774b8012dc49c75c53e369206c8052fe83e1b3b3",
+        "currentSha256": "8ef72912bb028df6584de017774b8012dc49c75c53e369206c8052fe83e1b3b3",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/scout-service/src/scout/memory-scopes.ts",
+        "inventorySha256": "9eecdd1a35bf5ae4d06f34cb49ec9576218d86d1ced1a042657d47ef4c403121",
+        "currentSha256": "9eecdd1a35bf5ae4d06f34cb49ec9576218d86d1ced1a042657d47ef4c403121",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "apps/scout-service/src/memory/memory.service.ts",
+        "inventorySha256": "8e6987a0f4f9ba030388976ec65b144739a7d70763184ffa390ce7841b65c59f",
+        "currentSha256": "8e6987a0f4f9ba030388976ec65b144739a7d70763184ffa390ce7841b65c59f",
+        "matchesInventory": true
+      },
+      {
+        "product": "restart",
+        "path": "scripts/search-eval/run-eval.ts",
+        "inventorySha256": "172a281ae59404834e4f4ef4cc308fbd3f74aa8ef6d7292bbd60bca1e29e08f2",
+        "currentSha256": "172a281ae59404834e4f4ef4cc308fbd3f74aa8ef6d7292bbd60bca1e29e08f2",
+        "matchesInventory": true
+      }
+    ],
+    "meaning": "Prior source inventory, not a newly executed census; changed files require reconciliation."
+  },
+  "contributingExecution": {
+    "taskId": "task0mvnfif7g2emzot1xob",
+    "proofRef": "thread-post:1205014",
+    "receipt": {
+      "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/receipt.json",
+      "sha256": "8ebd7abe3f698b8d06c2e3211ebdbadae9e4238dff7eed8b8b2e4ab6d1cb06e2",
+      "bytes": 71882
+    },
+    "plan": {
+      "path": "$HOME/.papercusp/test-artifacts/shared-search-p001-baseline-su45-20261025-r10.plan.json",
+      "sha256": "8ea897785b41470966eade0e70c2397fc08c29fca8199dd3b4aedc397bffde72",
+      "bytes": 3826
+    },
+    "sourceRevision": "81fb009cce3c0f432a394c3044dd02a932b383f7",
+    "artifactChecks": [
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/installed-model-assets.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "0e3e31736052b5649c76d711a5975cc3669a0153aeef385b96e943ab31a49ca1"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.file-opens.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "ab7966b2ecf41af2ee56d2bd0e38c3ed91f2d71a0b0353230243dce208fb5f42"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "2f1aef09abc114ee96a80e88ce4567f75975c9e437896082ab33bdd98f52dc51"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.native.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "988080ecda2bd86dcbc02a7fe36351b7394fba4ae3e50d10acfa3115b2e1e952"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.report.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "56f1af8a6e235812dbe49df1e25a3d67d32fd6ac41dc66baa3f50e6d2d68f7bf"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.sources.jsonl",
+        "matchesCompletedBytes": true,
+        "actualSha256": "b7b79e5779df8fb0a600533fcc3906080d681f4fd7a3c84633b6ebdd71fd4625"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.stderr.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "bbd6d4cda83123b7834496e4a3b03c3502728ba18588e607c5f52bc9c196ab95"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/ordinary-runtime.stdout.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/phases.jsonl",
+        "matchesCompletedBytes": false,
+        "actualSha256": "46222031357bbab3e4274792c58415adee1672eee6d866a2931cdb4c3d2ea691"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/protocol-preflight.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "5ba9b56df5dfd2d9ec9b5036dbee0f3cff77a63b84050701874367c07d503a5b"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/protocol-preflight.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/restore-data-0.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/restore-data-1.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "5f7bfda7fedf218fe7d16ae70586e5766a21fa8d48619005af11b99e71dfa5d0"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.attempts.jsonl",
+        "matchesCompletedBytes": true,
+        "actualSha256": "dbf869460484206974782c058622705f46bac24758fd9870374ee0f3b7960376"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "88792cd1dee98a28cbd9eb4bb75150814357d8c9e83c77e1c6923d02c7971050"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.inputs.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.ledger.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "3f8e98f0ad75b26feb4a49410aee44813ae2f619f067310d6e6d8e19788f1366"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.md",
+        "matchesCompletedBytes": true,
+        "actualSha256": "2aa0eb1d0d0f67413c47ca40f5cdc1e2acf12ea5c64b42baf8ee91f8519c6b1c"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.file-opens.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "d44d2309e703ef02eb121395835e09b69630567b9bf1e40761862b8c000903ad"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "322c4e0081ed1850fc65dcb94fe31f882419c5dcc9820d4b0e7d2848562a084d"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.native.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "c9070221d11659ce59f27e29799b31af5510be1ba9e64016eaf0650b59b733db"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.report.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "569a0f1a15dddd833c77251edeb3e580f3ef61bdfbc217c31064781ac2bdffa9"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.sources.jsonl",
+        "matchesCompletedBytes": true,
+        "actualSha256": "fafb9fa2e60d17abe6c11f4c18e2e3f54ad0748c1c4179b6f4dc93ebf4911525"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.stderr.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "07ff7c472bff97908d0e41d0fef8eb8271ebbba8b020a25803677980fe0fa3bb"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime.stdout.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "aa0d7bed1bbd6fe7dd387c0ac3c07b0765ae3e23e78ca9f9d77d3edd8fdc1c92"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/schema-preflight.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "a178c0bdca238fb8021c8b6e4213d9ef2433e509c25ed2afce76f4821909c66e"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/schema.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "655ba01e4ddf5b41f891f5cf1fb923a05adba9cf65697188b6d7125e7e12a76a"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "6d7ce204bd9cd3a93b877f605494dd699e68d45b84f22510979b3688a7d513a3"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.attempts.jsonl",
+        "matchesCompletedBytes": true,
+        "actualSha256": "b61dd08f24ae55c9e768f358dbc0fe15556af7ceff05118beaffd94bee26d1c7"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.declaration.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "53a38f14cf851c6ca3a887a12d557a3160a0df7fe2416f10d9fec3a0b2ef5a74"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.inputs.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.ledger.json",
+        "matchesCompletedBytes": true,
+        "actualSha256": "a065aacd4713470f0800a813a78d846d2fc2c82a7267f2698e709fa38d09f367"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.md",
+        "matchesCompletedBytes": true,
+        "actualSha256": "97bf0f49e9df063b9bf08d9b012cd3c11a8576a1354b73eed82fc0a1b7367b4a"
+      },
+      {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing.log",
+        "matchesCompletedBytes": true,
+        "actualSha256": "665cdefdebd7669876fdee7ce238230941e9e61c5687472fa4ff9f81b8f8d46a"
+      }
+    ],
+    "custodyExceptions": [
+      {
+        "artifact": {
+          "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/phases.jsonl",
+          "sha256": "46222031357bbab3e4274792c58415adee1672eee6d866a2931cdb4c3d2ea691",
+          "bytes": 20419
+        },
+        "recordedPin": {
+          "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/phases.jsonl",
+          "sha256": "00b0c170bf77102626aad243c0a1c3f5423b96ab4b810489fba1b3a7502a5cad",
+          "bytes": 20351
+        },
+        "recordedPrefixMatches": true,
+        "append": [
+          {
+            "phase": "measured-contributing-baseline",
+            "elapsedSec": 8872.763
+          }
+        ],
+        "disposition": "immutable contributing evidence; full-file receipt pin is invalid",
+        "durableFixRef": "EI-26940847964477919",
+        "fixTests": [
+          "test-run:21992087",
+          "test-run:21992140"
+        ]
+      }
+    ]
+  },
+  "inputLinks": {
+    "consumption": {
+      "path": "$HOME/.papercusp/test-artifacts/shared-search-p001-consumption-a9eb-20261023.json",
+      "sha256": "1d29274c43d7dd7dfe0d0be3f47410649a99ae7ec0e263d496a3207acd0c0ab3",
+      "bytes": 7199
+    },
+    "schema": {
+      "path": "$HOME/.papercusp/test-artifacts/shared-search-p001-schema-preflight-a9eb-20261024.inputs.json",
+      "sha256": "aba461040057d820e3aa56cfaf18450b58736f9b8d1b30506ee38c1aac81f714",
+      "bytes": 28638
+    },
+    "savedQueries": {
+      "path": "$HOME/.papercusp/test-artifacts/shared-search-p001-query-v3-a9eb-20261024.json.inputs.json",
+      "sha256": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7",
+      "bytes": 94193
+    },
+    "configuration": {
+      "path": "$HOME/.papercusp/test-artifacts/shared-search-p001-model-config-a9eb-20261023.json",
+      "sha256": "4e3d170d82dd3cdf3c1005c45728781ce29b2e75918b53dc1d80db3cd2e257e8",
+      "bytes": 11335
+    },
+    "retainedCorpus": {
+      "manifestSha256": "ae78c0c1fcf5446b92d7e1d1f2987f195be3910908e48c5ae427811053255794",
+      "manifestEncoding": "UTF-8 JSON, sorted keys, compact separators, consumption order",
+      "files": [
+        {
+          "relativePath": "papercusp-state/33579.dat",
+          "sha256": "ddd4a8ca45c2fea1b698aeeccaef2ec0f23f8a18a8fcd798b85e61b6dc8f9a0b",
+          "bytes": 5692106075
+        },
+        {
+          "relativePath": "papercusp-state/34295.dat",
+          "sha256": "8e49128e1b5aa46396d73ed8706f8ce88fbf88d58da5432f0cbf6686bfaf646d",
+          "bytes": 1724968860
+        },
+        {
+          "relativePath": "papercusp-state/34338.dat",
+          "sha256": "912db542cbceae6c486480c89555c926655bb7300575c7f46b4e4b3a181e16ba",
+          "bytes": 5
+        },
+        {
+          "relativePath": "papercusp-state/34352.dat",
+          "sha256": "8858333f7a8e8a935417e6f0d0a47821eeefea4165342b10454528149fa66787",
+          "bytes": 2336404228
+        },
+        {
+          "relativePath": "papercusp-state/toc.dat",
+          "sha256": "f66b635d1b07832e49430e8434fb183dd1c18dd2e138367dcba6edaa82027620",
+          "bytes": 9424727
+        },
+        {
+          "relativePath": "papercusp-transcript/17728.dat.zst",
+          "sha256": "dcaa9e2a2b2b8de2b3e571cf289bcfbdde0dad5d5ecc3af689f2a0db31d282f0",
+          "bytes": 5612382700
+        },
+        {
+          "relativePath": "papercusp-transcript/17731.dat.zst",
+          "sha256": "02dc06fdf1669c6b8ec7df3619d23465e6036f1d2aa24de70d6cf3c515797e68",
+          "bytes": 2783926245
+        },
+        {
+          "relativePath": "papercusp-transcript/toc.dat",
+          "sha256": "4934936780ef8612992a8f5f55419ff562457376487b41df93cb6e0b659a2215",
+          "bytes": 49186
+        }
+      ],
+      "restoredCounts": {
+        "work_items": 421748,
+        "text_chunks": 156683,
+        "personal_disclosures": 0,
+        "session_turn_windows": 4701144,
+        "session_turns": 1418134,
+        "session_turn_chunks": 841640
+      },
+      "basis": "R10 driver validated retained file hashes before and after execution and exact restored table counts; this edition validates receipt/plan/consumption links without rehashing large corpus files.",
+      "declarationCorpusPin": null,
+      "qualification": "post-run contributing input link; not a prospective declaration amendment"
+    },
+    "modelAssets": {
+      "manifest": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/installed-model-assets.json",
+        "sha256": "0e3e31736052b5649c76d711a5975cc3669a0153aeef385b96e943ab31a49ca1",
+        "bytes": 1487
+      },
+      "scope": "Recorded installed assets and retained model input hashes; not proof of bytes read by inference."
+    }
+  },
+  "populations": [
+    {
+      "id": "work_item/fragment/paired/legacy",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "paired",
+      "arm": "legacy",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/0/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/fragment/paired/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "paired",
+      "arm": "bm25",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 1000,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/1/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/fragment/repeat-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "repeat-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/2/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/fragment/warm-repeat/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "warm-repeat",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 200,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/3/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/fragment/steady-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "steady-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/4/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/fragment/steady/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "fragment",
+      "pass": "steady",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/5/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/paired/legacy",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "paired",
+      "arm": "legacy",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/6/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/paired/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "paired",
+      "arm": "bm25",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 1000,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/7/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/repeat-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "repeat-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/8/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/warm-repeat/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "warm-repeat",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 200,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/9/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/steady-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "steady-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/10/attemptIds"
+      }
+    },
+    {
+      "id": "work_item/keyword/steady/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "work_item",
+      "queryClass": "keyword",
+      "pass": "steady",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/11/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/paired/legacy",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "paired",
+      "arm": "legacy",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/12/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/paired/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "paired",
+      "arm": "bm25",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 1200,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/13/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/repeat-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "repeat-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/14/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/warm-repeat/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "warm-repeat",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 400,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/15/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/steady-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "steady-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/16/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/fragment/steady/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "fragment",
+      "pass": "steady",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/17/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/paired/legacy",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "paired",
+      "arm": "legacy",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/18/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/paired/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "paired",
+      "arm": "bm25",
+      "temperature": "cold",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 1200,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "R-13 paired known-item recall nonregression; class-specific quality target unmeasured",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/19/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/repeat-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "repeat-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/20/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/warm-repeat/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "warm-repeat",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": 400,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/21/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/steady-warmup/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "steady-warmup",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "warmup",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/22/attemptIds"
+      }
+    },
+    {
+      "id": "session_turn/keyword/steady/bm25",
+      "product": "papercusp",
+      "adapter": "in-process/runHybridSearch",
+      "source": "session_turn",
+      "queryClass": "keyword",
+      "pass": "steady",
+      "arm": "bm25",
+      "temperature": "warm",
+      "role": "measurement",
+      "requestedPerSource": 60,
+      "minExecuted": 20,
+      "coverageSource": "bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class",
+      "maxP95LatencyMs": null,
+      "budgetSource": "bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029",
+      "quality": "reported-only",
+      "maxPerAttemptCostUsd": null,
+      "maxErrorRate": 0,
+      "maxDegradedRate": 0,
+      "censoring": [],
+      "attemptIdentitySource": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "jsonPointer": "/cells/23/attemptIds"
+      }
+    }
+  ],
+  "runs": {
+    "runtime": {
+      "artifact": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json",
+        "sha256": "5f7bfda7fedf218fe7d16ae70586e5766a21fa8d48619005af11b99e71dfa5d0",
+        "bytes": 1233686
+      },
+      "declaration": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.declaration.json",
+        "sha256": "88792cd1dee98a28cbd9eb4bb75150814357d8c9e83c77e1c6923d02c7971050",
+        "bytes": 326972
+      },
+      "attemptJournal": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.attempts.jsonl",
+        "sha256": "dbf869460484206974782c058622705f46bac24758fd9870374ee0f3b7960376",
+        "bytes": 349703
+      },
+      "ledger": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.ledger.json",
+        "sha256": "3f8e98f0ad75b26feb4a49410aee44813ae2f619f067310d6e6d8e19788f1366",
+        "bytes": 537946
+      },
+      "savedQueries": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/runtime-benchmark.json.inputs.json",
+        "sha256": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7",
+        "bytes": 94193
+      },
+      "startedAt": "2026-10-25T08:32:18.469Z",
+      "declarationAt": "2026-10-25T08:31:06.180Z",
+      "declaredPins": {
+        "source": "184c22899df3f49cfe5ea73a5b580da796bf0b5fd4e4c41f4c0b38cbdba8ec14",
+        "corpus": null,
+        "queries": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7",
+        "configuration": "d06b23f8fa4f7e1fea8ba08a8e4b449da30b09929352959ebbe4836d6b4d3084"
+      },
+      "executedSourceRevision": "81fb009cce3c0f432a394c3044dd02a932b383f7",
+      "sourceQualification": "pass",
+      "sourceVerdict": "pass",
+      "sourceLatencyVerdict": "pass",
+      "judged": false,
+      "qualificationManifest": null,
+      "counts": {
+        "declared": 720,
+        "started": 720,
+        "settled": 720
+      },
+      "cells": [
+        {
+          "id": "work_item/fragment/paired/legacy",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/paired/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/repeat-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/warm-repeat/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/steady-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/steady/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/paired/legacy",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/paired/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/repeat-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/warm-repeat/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/steady-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/steady/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/paired/legacy",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/paired/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/repeat-warmup/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/warm-repeat/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/steady-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/steady/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/paired/legacy",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/paired/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/repeat-warmup/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/warm-repeat/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/steady-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/steady/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        }
+      ]
+    },
+    "timing": {
+      "artifact": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json",
+        "sha256": "6d7ce204bd9cd3a93b877f605494dd699e68d45b84f22510979b3688a7d513a3",
+        "bytes": 1232995
+      },
+      "declaration": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.declaration.json",
+        "sha256": "53a38f14cf851c6ca3a887a12d557a3160a0df7fe2416f10d9fec3a0b2ef5a74",
+        "bytes": 326972
+      },
+      "attemptJournal": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.attempts.jsonl",
+        "sha256": "b61dd08f24ae55c9e768f358dbc0fe15556af7ceff05118beaffd94bee26d1c7",
+        "bytes": 349258
+      },
+      "ledger": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.ledger.json",
+        "sha256": "a065aacd4713470f0800a813a78d846d2fc2c82a7267f2698e709fa38d09f367",
+        "bytes": 537465
+      },
+      "savedQueries": {
+        "path": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-su45-20261025-r10/timing-benchmark.json.inputs.json",
+        "sha256": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7",
+        "bytes": 94193
+      },
+      "startedAt": "2026-10-25T08:39:04.474Z",
+      "declarationAt": "2026-10-25T08:38:46.922Z",
+      "declaredPins": {
+        "source": "1e25907b23065349b4c185940d80386f5a796ae5dcaeaf73b5e9a3930604eadd",
+        "corpus": null,
+        "queries": "b26ff0c30980ad98135a7d6a936184ecc7712dba0d6e4819fcde90e1c12809d7",
+        "configuration": "d06b23f8fa4f7e1fea8ba08a8e4b449da30b09929352959ebbe4836d6b4d3084"
+      },
+      "executedSourceRevision": "81fb009cce3c0f432a394c3044dd02a932b383f7",
+      "sourceQualification": "pass",
+      "sourceVerdict": "pass",
+      "sourceLatencyVerdict": "pass",
+      "judged": false,
+      "qualificationManifest": null,
+      "counts": {
+        "declared": 720,
+        "started": 720,
+        "settled": 720
+      },
+      "cells": [
+        {
+          "id": "work_item/fragment/paired/legacy",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/paired/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/repeat-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/warm-repeat/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/steady-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/fragment/steady/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/paired/legacy",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/paired/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/repeat-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/warm-repeat/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/steady-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "work_item/keyword/steady/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/paired/legacy",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/paired/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/repeat-warmup/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/warm-repeat/bm25",
+          "attempted": 32,
+          "executed": 32,
+          "observed": 32,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/steady-warmup/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/fragment/steady/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/paired/legacy",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/paired/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/repeat-warmup/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/warm-repeat/bm25",
+          "attempted": 28,
+          "executed": 28,
+          "observed": 28,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/steady-warmup/bm25",
+          "attempted": 29,
+          "executed": 29,
+          "observed": 29,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        },
+        {
+          "id": "session_turn/keyword/steady/bm25",
+          "attempted": 31,
+          "executed": 31,
+          "observed": 31,
+          "judged": 0,
+          "errors": 0,
+          "timeouts": 0,
+          "unknown": 0,
+          "populationStatus": "complete",
+          "costMeasured": 0
+        }
+      ]
+    }
+  },
+  "runtimeLimits": {
+    "qualifiedComponentsOnly": true,
+    "searchAdapterExercised": true,
+    "completeRuntimeClosureVerified": false,
+    "modelBytesReadVerified": null,
+    "baselineAccepted": null,
+    "latencyAcceptance": false
+  },
+  "unmeasuredCoverage": {
+    "quality": "No per-query relevance judgments collected; known-item rank/relative R13 recall is a separate instrument.",
+    "cost": "Attempt costUsd is null; zero external API spend cannot substitute for measured execution cost.",
+    "prospectiveBudgets": "Retain original declarations; missing class-specific quality, cost and latency bounds require a new prospective declaration before treatment.",
+    "productAdapters": "R10 invokes Papercusp in-process runHybridSearch for work_item/session_turn only. Other inventoried Papercusp entrypoints and every Restart adapter are unmeasured by R10.",
+    "freshness": "Prior field policies remain prospective; R10 has no canonical field/value/source-revision/current-authority-epoch witness."
+  },
+  "nextRequired": [
+    "Reconcile changed inventory sources and freeze actual adapter census.",
+    "Collect actual relevance judgments and measured cost through maintained instruments.",
+    "Declare complete numeric per-product/adapter/query-class/cold-warm budgets and attempted/executed/judged populations before treatment.",
+    "Complete required runtime closure and model-read proof without claiming component evidence is full-runtime evidence.",
+    "Execute remaining products/adapters and canonical freshness controls, then canonical independent acceptance and release workflow."
+  ]
+}

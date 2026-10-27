@@ -20,7 +20,8 @@
  * `<sha256>  <basename>` lines of its artifact set, so the identity is independent of
  * listing order and changes when any byte of any artifact changes.
  */
-import { createHash } from 'node:crypto';
+import { P521_JOURNEYS, candidateArtifactDigest, validateP521LocalPrechecks } from './p521-local-precheck.mts';
+export { P521_JOURNEYS, candidateArtifactDigest, p521PrecheckSubjectsMatch, validateP521LocalPrechecks } from './p521-local-precheck.mts';
 import {
   evaluateReleaseProfile,
   type ComponentRawVerdict,
@@ -63,54 +64,38 @@ export interface P2pJourneyResult {
   /** `candidateArtifactDigest` of the artifact the journey actually ran on. */
   artifactDigest: string;
   observedPeers: readonly string[];
+  /** Physical start, distinct from the observation/finish time. */
+  startedAt?: string;
+  precheckSubject?: P521PrecheckSubject;
 }
 
-interface JourneyDef {
-  key: string;
-  title: string;
-  /** Source-closed plan items (F1–F8 + v1 scope) whose packaged proof this journey
-   *  discharges. Graph edges only — they never become rows of their own. */
-  dependencies: readonly string[];
+export interface P521PrecheckSubject {
+  artifactDigest: string;
+  installerSha256?: string;
+  runtimeSha256?: string;
+  seedSha256?: string;
 }
 
-/** The physical journeys P-521 requires on the one exact artifact, in P-521's order. */
-export const P521_JOURNEYS: readonly JourneyDef[] = [
-  { key: 'discovery-join', title: 'Discovery and join', dependencies: ['P-512'] },
-  { key: 'git-consistency-signed-scope', title: 'Exact Git consistency and signed scope/generation', dependencies: ['P-512', 'P-513'] },
-  { key: 'serving-identity-restart', title: 'Serving identity through restart/snapshot omission', dependencies: ['P-514'] },
-  { key: 'replicated-write-outage-replay', title: 'Replicated-write outage/replay recovery', dependencies: ['P-515'] },
-  { key: 'delegated-seat-lifecycle', title: 'Trusted delegated-seat boot/work/receipts/stop/revocation', dependencies: ['P-516'] },
-  { key: 'protected-effect-fencing', title: 'Protected-effect fencing', dependencies: ['P-517'] },
-  { key: 'github-bridge', title: 'GitHub bridge', dependencies: ['P-517'] },
-  { key: 'full-installer-compat', title: 'Full-installer compatibility', dependencies: ['P-518', 'P-520'] },
-];
+export interface P521LocalPrecheck {
+  journey: string;
+  check: string;
+  verdict: string;
+  startedAt: string;
+  finishedAt: string;
+  subject: P521PrecheckSubject;
+  command: string[];
+  evidence: EvidenceRef[];
+  exitCode?: number;
+  skipped?: boolean | number;
+}
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
-
-/**
- * Content digest of a candidate's artifact set: sha256 over the sorted
- * `<sha256>  <basename>\n` lines. Refuses an empty set, a malformed hash, or a
- * duplicate basename (two different files would otherwise collapse to one identity).
- */
-export function candidateArtifactDigest(artifacts: readonly P2pCandidateArtifact[]): string {
-  if (artifacts.length === 0) throw new Error('candidate artifact set is empty');
-  const seen = new Set<string>();
-  const lines = artifacts.map(({ name, sha256 }) => {
-    const base = name.trim();
-    if (!base || base.includes('/')) throw new Error(`artifact name must be a basename: '${name}'`);
-    if (!SHA256_HEX.test(sha256)) throw new Error(`artifact '${base}' has a malformed sha256`);
-    if (seen.has(base)) throw new Error(`duplicate artifact basename '${base}'`);
-    seen.add(base);
-    return `${sha256}  ${base}\n`;
-  });
-  return createHash('sha256').update(lines.sort().join('')).digest('hex');
-}
 
 export interface BuildP2pCandidateManifestOptions {
   candidate: P2pCandidateProvenance;
   /** Journey results keyed by `P521_JOURNEYS[].key`; an absent key is unmeasured. */
   journeys?: Readonly<Record<string, P2pJourneyResult>>;
+  localPrechecks?: readonly P521LocalPrecheck[];
   now?: number;
   history?: readonly ReadinessHistoryEntry[];
 }
@@ -137,9 +122,15 @@ export async function buildP2pCandidateManifest(
       if (!result) {
         return { verdict: 'unknown', reason: 'not yet run on this artifact', measuredAt: nowIso, evidence: [] };
       }
+      const precheck = validateP521LocalPrechecks(
+        options.localPrechecks, result.precheckSubject, result.startedAt, [journey.key],
+      );
+      const subjectMatches = result.precheckSubject?.artifactDigest === digest
+        && result.artifactDigest === digest;
       return {
-        verdict: result.verdict,
-        reason: result.reason,
+        verdict: precheck.ok && subjectMatches ? result.verdict : 'fail',
+        reason: precheck.ok && subjectMatches ? result.reason
+          : 'local precheck refused: ' + [...precheck.errors, ...(subjectMatches ? [] : ['candidate subject mismatch'])].join('; '),
         measuredAt: result.measuredAt,
         evidence: result.evidence,
         lineage: { sha: result.artifactDigest },

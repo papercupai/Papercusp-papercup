@@ -88,8 +88,11 @@ function declaredShape(tool: ToolLike, label: string): Record<string, unknown> {
   for (let hop = 0; hop < 8 && node; hop += 1) {
     const shape = (node as { shape?: Record<string, unknown> }).shape;
     if (shape && typeof shape === 'object') return shape;
-    const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
-    node = def?.schema ?? def?.innerType;
+    // WI-6554700010029664: a preprocess/pipe (`{type, in, out}`) is walked through `out` — the
+    // object it parses INTO is the declared shape (an alias fold such as facts:list's
+    // scope_ref → scopeRef lives in `in`). A union still has neither and still throws.
+    const def = (node as { _def?: { schema?: unknown; innerType?: unknown; out?: unknown } })._def;
+    node = def?.schema ?? def?.innerType ?? def?.out;
   }
   throw new Error(`could not read an object shape from ${label}'s args schema`);
 }
@@ -432,9 +435,9 @@ describe('P-008 value-level filings: no argRedirect can ever reach them', () => 
       }).success,
     ).toBe(false);
 
-    const scopeField = (
-      factsListTool as unknown as { args: { shape: Record<string, { description?: string }> } }
-    ).args.shape.scope;
+    const scopeField = declaredShape(factsListTool as unknown as ToolLike, 'facts:list').scope as
+      | { description?: string }
+      | undefined;
     const description = scopeField?.description ?? '';
     expect(description, 'facts:list.scope must carry the teaching — it is the only surface a value-level rejection shows').not.toBe('');
     expect(description).toMatch(/NO `plan` scope/);

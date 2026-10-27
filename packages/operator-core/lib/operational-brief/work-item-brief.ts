@@ -240,6 +240,17 @@ export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkIt
     );
   }
 
+  const blockers = readBlockers(row, workItem, state);
+  const claimEligibilityReason =
+    state === 'blocked'
+      ? 'the work-item state is blocked; resolve its blocker before claiming'
+      : blockers.status === 'unknown'
+        ? `blocker and plan eligibility are unknown: ${blockers.reason}`
+        : blockers.value.length > 0
+          ? 'active blockers are present; resolve them before claiming'
+          : null;
+  const claimableState = state === 'open' || state === 'failing';
+
   let nextAction: BriefField<string>;
   if (state === null) {
     nextAction = unknown('the work-item state is not in this read');
@@ -251,8 +262,12 @@ export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkIt
     nextAction = unknown('the latest checkpoint update is missing or invalid, so preserved history cannot establish a current next action');
   } else if (fields.next?.trim()) {
     nextAction = known(fields.next.trim(), 'checkpoint carry-note ## Next action');
+  } else if (checkpointAbsent && assignee === null && claimEligibilityReason) {
+    nextAction = unknown(claimEligibilityReason);
+  } else if (checkpointAbsent && assignee === null && !claimableState) {
+    nextAction = unknown(`work-item state ${state} is not claimable`);
   } else if (checkpointAbsent && assignee === null) {
-    nextAction = known(`claim it: work_items:claim { id: '${id}' }`, 'derived: open, unclaimed, no checkpoint');
+    nextAction = known(`claim it: work_items:claim { id: '${id}' }`, 'derived: open/failing, unclaimed, no checkpoint, no blockers');
   } else if (checkpointAbsent) {
     nextAction = unknown(`claimed by ${assignee} but no checkpoint records a next action`);
   } else {
@@ -265,7 +280,7 @@ export function projectWorkItemOperationalBrief(row: Rec, options: ProjectWorkIt
     state: state !== null ? known(state, 'work_items:get.workItem.state') : unknown('the work-item state is not in this read'),
     owner: known(assignee, 'work_items:get.workItem.assignee'),
     nextAction,
-    blockers: readBlockers(row, workItem, state),
+    blockers,
     lastVerified: readLastVerified(row, id),
     deadline: terminal
       ? known(null, 'terminal items carry no deadline')

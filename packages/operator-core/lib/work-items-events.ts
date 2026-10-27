@@ -49,6 +49,7 @@ import { isObservationLaneItem } from './fleet/placement-gather';
 import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import {
   getWorkItem,
+  isAdmissionHoldReserved,
   isAdmissionRecoveryReserved,
   isClaimHoldParked,
   workItemObjectRef,
@@ -349,7 +350,7 @@ export function emitWorkItemClaimableEvent(
 ): void {
   // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
   // the broad wake on the same floor as scheduler:get_next and fleet placement.
-  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isAdmissionRecoveryReserved(wi.payload) || isObservationLaneItem(wi.payload)) return;
+  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isAdmissionRecoveryReserved(wi.payload) || isAdmissionHoldReserved(wi.payload) || isObservationLaneItem(wi.payload)) return;
   if (!workItemClaimableUniversalFloor(wi)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
@@ -465,7 +466,7 @@ export async function liveWorkItemClaimableEventPayload(
 ): Promise<Record<string, unknown> | null> {
   const getItem = deps.getItem ?? getWorkItem;
   const wi = await getItem(id, harness);
-  if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isAdmissionRecoveryReserved(wi.payload) || isObservationLaneItem(wi.payload)) return null;
+  if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload) || isAdmissionRecoveryReserved(wi.payload) || isAdmissionHoldReserved(wi.payload) || isObservationLaneItem(wi.payload)) return null;
   if (!workItemClaimableUniversalFloor(wi)) return null;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   try {

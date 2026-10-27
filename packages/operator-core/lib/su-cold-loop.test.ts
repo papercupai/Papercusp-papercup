@@ -5,11 +5,48 @@
 import { describe, expect, it } from 'vitest';
 import {
   readColdLoopMarker,
+  coldDecisionRecord,
   coldWakeMode,
   decideColdWake,
   renderColdWakeInjection,
   DEFAULT_COLD_LOOP_CAPS,
 } from './su-cold-loop';
+
+describe('coldDecisionRecord (WI-6554700010029492)', () => {
+  const at = new Date('2026-10-26T15:02:00.000Z');
+  it('keeps a WARM decision’s reason verbatim — the whole point is to say why it stayed warm', () => {
+    const decision = decideColdWake({
+      payload: { carry: 'cold', wakeCount: 4, harness: 'papercusp' },
+      coldEnabled: true,
+      carryNote: '## Next action\nresume',
+      activeInteractiveExchange: true,
+    });
+    expect(decision.cold).toBe(false);
+    expect(coldDecisionRecord(decision, { at, wakeCount: 4, deliveryId: 997754 })).toEqual({
+      at: '2026-10-26T15:02:00.000Z',
+      cold: false,
+      mode: null,
+      reason: 'active interactive exchange (recent human input) — stays warm (D-005)',
+      wakeCount: 4,
+      deliveryId: '997754',
+    });
+  });
+  it('records the cold MODE taken and never copies the carry-note text', () => {
+    const record = coldDecisionRecord(
+      { cold: true, mode: 'recycle', carryNote: 'SECRET-ISH WORKING STATE' },
+      { at, wakeCount: 5 },
+    );
+    expect(record).toMatchObject({ cold: true, mode: 'recycle', wakeCount: 5, deliveryId: null });
+    expect(record.reason).toContain('recycle');
+    expect(JSON.stringify(record)).not.toContain('SECRET-ISH');
+  });
+  it('normalizes an absent / non-positive wakeCount to null', () => {
+    const warm = { cold: false as const, reason: 'x' };
+    expect(coldDecisionRecord(warm, { at }).wakeCount).toBeNull();
+    expect(coldDecisionRecord(warm, { at, wakeCount: 0 }).wakeCount).toBeNull();
+    expect(coldDecisionRecord(warm, { at, wakeCount: Number.NaN }).wakeCount).toBeNull();
+  });
+});
 
 describe('readColdLoopMarker', () => {
   it('returns null for a payload with neither cold field (an ordinary warm wake)', () => {

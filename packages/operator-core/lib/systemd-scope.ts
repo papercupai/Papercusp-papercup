@@ -41,6 +41,9 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
 ] as const;
 
 /** Exercise a harmless payload before trusting a bus/socket availability hint.
+ * A process already inside a transient scope can instead ask the SAME manager
+ * to attest its kernel-observed scope. That read stays inside the existing
+ * cgroup; another short-lived scope would escape its resource accounting.
  * Callers own caching: the test router probes against each admitted child's env,
  * while managedSpawn retains its existing process-lifetime cache.
  */
@@ -50,14 +53,24 @@ export function probeTransientScopeSupport({
   env = process.env,
   platform = process.platform,
   timeoutMs = 10_000,
+  existingScope,
 }: {
   spawnFn?: typeof spawn;
   systemdRunPath?: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   timeoutMs?: number;
+  /** Kernel membership, supplied by the spawn chokepoint, never an env hint. */
+  existingScope?: { unit: string; cgroupPath: string };
 } = {}): Promise<{ ok: boolean; reason?: string }> {
   if (platform !== 'linux') return Promise.resolve({ ok: false, reason: `platform ${platform} has no cgroup scopes` });
+  if (timeoutMs <= 0) return Promise.resolve({ ok: false, reason: 'systemd-run probe timed out' });
+  if (existingScope) {
+    const started = performance.now();
+    return attestExistingScope(existingScope, spawnFn, env, timeoutMs).then(ok => ok ? { ok: true }
+      : probeTransientScopeSupport({ spawnFn, systemdRunPath, env, platform,
+        timeoutMs: timeoutMs - (performance.now() - started) }));
+  }
   return new Promise(resolve => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -90,6 +103,47 @@ export function probeTransientScopeSupport({
     } catch (error) {
       done({ ok: false, reason: `systemd-run spawn threw: ${error instanceof Error ? error.message : String(error)}` });
     }
+  });
+}
+
+/** A manager roundtrip must agree with the kernel, including unit kind/state. */
+function attestExistingScope(scope: { unit: string; cgroupPath: string }, spawnFn: typeof spawn,
+  env: NodeJS.ProcessEnv, timeoutMs: number): Promise<boolean> {
+  if (!/^pc-[a-z0-9]{4,64}(?:--[^/\s]+)?\.scope$/.test(scope.unit) ||
+      !scope.cgroupPath.startsWith('/') || !scope.cgroupPath.endsWith(`/${scope.unit}`) ||
+      scope.cgroupPath.split('/').some(part => part === '.' || part === '..')) return Promise.resolve(false);
+  return new Promise(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    try {
+      const child = spawnFn('systemctl', ['--user', 'show', '--property=Id', '--property=ControlGroup',
+        '--property=ActiveState', '--property=Transient', '--', scope.unit], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+      let output = '';
+      let overflow = false;
+      createTextCollector(child.stdout, { retainText: false, onDecodedText(text) {
+        if (output.length + text.length > 4096) overflow = true;
+        output = (output + text).slice(0, 4096);
+      } });
+      timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        done(false);
+      }, timeoutMs);
+      timer.unref?.();
+      child.once('error', () => done(false));
+      // close, rather than exit, fences the property stream as well as the CLI.
+      child.once('close', code => {
+        const lines = output.trim().split('\n');
+        done(code === 0 && !overflow && lines.length === 4 &&
+          [`Id=${scope.unit}`, `ControlGroup=${scope.cgroupPath}`, 'ActiveState=active', 'Transient=yes']
+            .every(line => lines.includes(line)));
+      });
+    } catch { done(false); }
   });
 }
 
@@ -528,10 +582,14 @@ export const TASK_DEADLINE_EPOCH_MS_ENV = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
 export function taskDeadlineEnv(
   runtimeMaxSec: number | null | undefined,
   nowMs: number = Date.now(),
+  inheritedEnv: Readonly<Record<string, string | undefined>> = {},
 ): Record<string, string> {
   if (typeof runtimeMaxSec !== 'number' || !Number.isFinite(runtimeMaxSec) || runtimeMaxSec <= 0) return {};
+  const inheritedDeadline = Number(inheritedEnv[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const ownDeadline = Math.floor(nowMs) + Math.floor(runtimeMaxSec) * 1000;
   return {
-    [TASK_DEADLINE_EPOCH_MS_ENV]: String(Math.floor(nowMs) + Math.floor(runtimeMaxSec) * 1000),
+    [TASK_DEADLINE_EPOCH_MS_ENV]: String(Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0
+      ? Math.min(inheritedDeadline, ownDeadline) : ownDeadline),
   };
 }
 
@@ -604,7 +662,7 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   // where they can be reached instead: a SERVICE takes `--setenv` below, and an envless
   // SCOPE payload is forked from the systemd-run client, so its deadline rides the client's
   // env at the launch site (see managed-spawn.ts).
-  const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec);
+  const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec, Date.now(), props.env);
   const payloadEnv = props.env ? { ...props.env, ...deadlineEnv } : null;
   const environmentFdIndex = props.environmentFdIndex;
   if (

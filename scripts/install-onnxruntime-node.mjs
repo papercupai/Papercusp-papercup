@@ -9,7 +9,8 @@
  * `--offline-safe` mode.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, constants, copyFileSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -101,6 +102,39 @@ function readOrtPackageJson(packageRoot) {
   return JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
 }
 
+function providerFileExists(file) {
+  try {
+    const stat = statSync(file);
+    return stat.isFile() && stat.size > 0;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+// Materialized providers can be read-only or share an inode with a dependency
+// generation. Replace the local directory entry before the upstream installer
+// overwrites it; chmod on the original would change every hardlink's protection.
+function detachProviderFiles(files) {
+  for (const file of files) {
+    let stat;
+    try {
+      stat = statSync(file);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    const temporary = `${file}.install-${randomUUID()}`;
+    try {
+      copyFileSync(file, temporary, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
+      chmodSync(temporary, stat.mode | 0o200);
+      renameSync(temporary, file);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  }
+}
+
 export function providerFilePaths({
   packageRoot,
   target = resolveTargetPlatform(),
@@ -122,7 +156,7 @@ export function inspectCudaProvider({
   repoRoot = process.cwd(),
   env = process.env,
   resolvePackageRoot = resolveOrtPackageRoot,
-  fileExists = existsSync,
+  fileExists = providerFileExists,
 } = {}) {
   const target = resolveTargetPlatform(env);
   let packageRoot;
@@ -152,7 +186,7 @@ export function assertCudaProviderAssets({
   repoRoot = process.cwd(),
   env = process.env,
   resolvePackageRoot = resolveOrtPackageRoot,
-  fileExists = existsSync,
+  fileExists = providerFileExists,
 } = {}) {
   const requested = normalizeOs(env.PAPERCUSP_RERANK_DEVICE) || '';
   if (requested !== 'cuda' && requested !== 'gpu') {
@@ -189,7 +223,7 @@ export function installCudaProvider({
   host = { platform: process.platform, arch: process.arch },
   resolvePackageRoot = resolveOrtPackageRoot,
   run = spawnSync,
-  fileExists = existsSync,
+  fileExists = providerFileExists,
 } = {}) {
   const target = resolveTargetPlatform(env, host);
   const setting = requestedInstallSetting(env);
@@ -224,6 +258,18 @@ export function installCudaProvider({
     return { skipped: true, reason: 'package-missing', target };
   }
 
+  const existing = inspectCudaProvider({
+    repoRoot,
+    env,
+    resolvePackageRoot: () => packageRoot,
+    fileExists,
+  });
+  if (existing.missing.length === 0) {
+    console.log(`onnxruntime-node CUDA provider assets already verified for ${target.os}/${target.cpu}.`);
+    return { skipped: false, reused: true, target, packageRoot, files: existing.files };
+  }
+
+  detachProviderFiles(existing.files);
   const installScript = join(packageRoot, 'script', 'install.js');
   const result = run(process.execPath, [installScript], {
     cwd: packageRoot,

@@ -1,0 +1,229 @@
+{
+  "irVersion": "0.1",
+  "surface": "plans-selected-conversation-layout-with-status-filters",
+  "ecosystem": "react-tailwind",
+  "a11y": {
+    "landmark": "main",
+    "headingLevel": 1
+  },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      {
+        "kind": "heading",
+        "copy": {
+          "default": "Plans",
+          "key": "plans.mockup.1"
+        }
+      },
+      {
+        "kind": "tabs",
+        "interactions": [
+          "switch-layout"
+        ],
+        "a11y": {
+          "ariaLabel": {
+            "default": "Choose mockup layout",
+            "key": "plans.mockup.2"
+          }
+        },
+        "children": [
+          {
+            "kind": "text",
+            "copy": {
+              "default": "Selected: Plan and conversation · Overview · Board",
+              "key": "plans.mockup.3"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "tabs",
+        "interactions": ["filter-plan-status"],
+        "a11y": {
+          "ariaLabel": {
+            "default": "Filter plan status",
+            "key": "plans.filter.status"
+          }
+        },
+        "binding": {
+          "slot": "statusCounts",
+          "shape": "all|active|ready|draft|done with plan counts"
+        },
+        "children": [{
+          "kind": "text",
+          "copy": {
+            "default": "All plans · Active · Ready · Draft · Done",
+            "key": "plans.filter.labels"
+          }
+        }]
+      },
+      {
+        "kind": "component",
+        "ref": "plan-search",
+        "interactions": [
+          "search-plans"
+        ],
+        "a11y": {
+          "ariaLabel": {
+            "default": "Search plans or agents",
+            "key": "plans.mockup.4"
+          }
+        }
+      },
+      {
+        "kind": "list",
+        "binding": {
+          "slot": "filteredPlans",
+          "repeats": true,
+          "shape": "PlanListRow with agent roster"
+        },
+        "item": {
+          "kind": "card",
+          "children": [
+            {
+              "kind": "heading",
+              "binding": {
+                "slot": "title",
+                "shape": "string"
+              }
+            },
+            {
+              "kind": "badge",
+              "binding": {
+                "slot": "status",
+                "shape": "draft|ready|active|done"
+              }
+            },
+            {
+              "kind": "text",
+              "binding": {
+                "slot": "activity",
+                "shape": "working|waiting|no-agent|finished"
+              }
+            },
+            {
+              "kind": "progress",
+              "binding": {
+                "slot": "progress",
+                "shape": "completed and total items"
+              },
+              "a11y": {
+                "ariaLabel": {
+                  "default": "Plan item progress",
+                  "key": "plans.mockup.5"
+                }
+              }
+            },
+            {
+              "kind": "component",
+              "ref": "open-conversation",
+              "interactions": [
+                "open-existing-agent-conversation"
+              ],
+              "a11y": {
+                "role": "button",
+                "ariaLabel": {
+                  "default": "Open conversation with this agent",
+                  "key": "plans.mockup.6"
+                }
+              }
+            }
+          ]
+        },
+        "emptyState": {
+          "kind": "empty-state",
+          "copy": {
+            "default": "No matching plans. Clear your filters to see all plans.",
+            "key": "plans.mockup.7"
+          }
+        }
+      },
+      {
+        "kind": "drawer",
+        "ref": "conversation",
+        "a11y": {
+          "ariaLabel": {
+            "default": "Agent conversation",
+            "key": "plans.mockup.8"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "binding": {
+              "slot": "agent",
+              "shape": "selected agent name and plan"
+            }
+          },
+          {
+            "kind": "list",
+            "binding": {
+              "slot": "messages",
+              "repeats": true,
+              "shape": "existing session transcript"
+            },
+            "item": {
+              "kind": "text",
+              "binding": {
+                "slot": "message",
+                "shape": "string"
+              }
+            }
+          },
+          {
+            "kind": "textarea",
+            "placeholder": {
+              "default": "Message this agent…",
+              "key": "plans.mockup.9"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "default": "Message this agent",
+                "key": "plans.mockup.10"
+              }
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "send-preview",
+            "interactions": [
+              "append-local-preview-message"
+            ],
+            "a11y": {
+              "role": "button",
+              "ariaLabel": {
+                "default": "Preview a reply",
+                "key": "plans.mockup.11"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "plan-search",
+      "registry": "control.text",
+      "props": {
+        "placeholder": "Search plans or agents…"
+      }
+    },
+    {
+      "id": "open-conversation",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Open conversation"
+      }
+    },
+    {
+      "id": "send-preview",
+      "registry": "action.primary",
+      "props": {
+        "label": "Preview reply"
+      }
+    }
+  ]
+}

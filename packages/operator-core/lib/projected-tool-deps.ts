@@ -18,8 +18,19 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { generated, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
+import {
+  acquireSnapshot,
+  acquireTicketSnapshot,
+  generated,
+  getOrgPg,
+  withAcquisitionDeadline,
+} from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
+import {
+  CODE_INTEL_RESULT_METADATA_KEY,
+  classifyCodeIntelExit,
+  isNativeCodeIntelTool,
+} from './code-intelligence/code-intel-result-status';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
   PASS_THROUGH,
@@ -276,6 +287,11 @@ interface KernelAuthorityTimingSample {
   calls: number;
   totalMs: number;
 }
+interface KernelAuthorityPoolSnapshot {
+  observedAt: string;
+  counters: ReturnType<typeof acquireSnapshot>;
+  tickets: ReturnType<typeof acquireTicketSnapshot>;
+}
 interface KernelAuthorityQueryTrace {
   queryFingerprint: 'controlAnchorSql/v1';
   traceId: string;
@@ -285,6 +301,13 @@ interface KernelAuthorityQueryTrace {
   clientQueryMs: number | null;
   clientCompletedAt: string | null;
   outcome: 'fulfilled' | 'rejected';
+  acquisitionDiagnostics: {
+    // Logical tickets are a lower bound; direct pool users and physical
+    // connection occupancy are not observed by the acquisition registry.
+    coverage: 'registered-acquisition-tickets-only';
+    before: KernelAuthorityPoolSnapshot;
+    settled: KernelAuthorityPoolSnapshot | null;
+  };
 }
 type KernelAuthorityTimingCollector = {
   controlAnchorSql: KernelAuthorityTimingSample & { executions: KernelAuthorityQueryTrace[] };
@@ -313,6 +336,14 @@ function recordKernelAuthorityTiming(
 
 function elapsedMsSince(startedAt: number): number {
   return Math.round(Math.max(0, performance.now() - startedAt) * 10) / 10;
+}
+
+function controlAnchorPoolSnapshot(): KernelAuthorityPoolSnapshot {
+  return {
+    observedAt: new Date().toISOString(),
+    counters: acquireSnapshot('org-admin'),
+    tickets: acquireTicketSnapshot('org-admin'),
+  };
 }
 
 function attachKernelAuthorityTimings(
@@ -530,6 +561,11 @@ export async function readControlAnchorKernelState(
     clientQueryMs: null,
     clientCompletedAt: null,
     outcome: 'rejected',
+    acquisitionDiagnostics: {
+      coverage: 'registered-acquisition-tickets-only',
+      before: controlAnchorPoolSnapshot(),
+      settled: null,
+    },
   };
   try {
     const reserved = await withAcquisitionDeadline<ReservedAnchorConnection>(
@@ -541,6 +577,7 @@ export async function readControlAnchorKernelState(
           }
           anchorTrace.poolAcquisitionMs = elapsedMsSince(anchorAcquisitionStartedAt);
           disarm();
+          anchorTrace.acquisitionDiagnostics.settled = controlAnchorPoolSnapshot();
           return reserved;
         }),
       { label: 'control-anchor-sql-acquire', pool: 'org-admin' },
@@ -611,6 +648,7 @@ export async function readControlAnchorKernelState(
     anchorTrace.outcome = 'fulfilled';
   } catch (error) {
     anchorTrace.poolAcquisitionMs ??= elapsedMsSince(anchorAcquisitionStartedAt);
+    anchorTrace.acquisitionDiagnostics.settled ??= controlAnchorPoolSnapshot();
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;
@@ -1216,6 +1254,8 @@ interface RecordInvocationInput {
   args?: unknown;
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
+  /** The ToolResult the handler returned on a normal return; read only to classify native code-intel results. */
+  resultSnapshot?: unknown;
   /** Actual applied revision from the final kernel enforcement seat. */
   executionRevision?: KernelExecutionRevision | null;
   /** Structured kernel decisions for audit/debug consumers. */
@@ -1335,6 +1375,25 @@ INSERT INTO harness_shared.tool_invocations
 // telemetry-buffer-config.ts). Kill-switch OFF / empty override ⇒ those defaults ⇒ byte-identical.
 
 let telemetryQueue: TelemetryRow[] = [];
+
+// One native code-intel status row per invocation id (code-intel-delivery-and-outcomes P-004 / R-2).
+// flushPendingTelemetry splices batches and never requeues, so the only duplicate source is a second
+// recordInvocation for the same callId; a retry carries a new callId and records its own row.
+const CODE_INTEL_SEEN_CAP = 4096;
+const codeIntelSeen = pinModuleState('@papercusp/operator-core.projected-tool-deps.code-intel-seen', () => ({
+  callIds: new Set<string>(),
+}));
+export function isDuplicateCodeIntelRecord(callId: string | null | undefined): boolean {
+  if (!callId) return false;
+  const seen = codeIntelSeen.callIds;
+  if (seen.has(callId)) return true;
+  seen.add(callId);
+  if (seen.size > CODE_INTEL_SEEN_CAP) {
+    const oldest = seen.values().next().value;
+    if (oldest !== undefined) seen.delete(oldest);
+  }
+  return false;
+}
 let telemetryFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let telemetryFlushInFlight: Promise<void> | null = null;
 let telemetryDropped = 0;
@@ -1746,6 +1805,51 @@ export function refusalReturnedCorrectedCall(metadata: unknown): boolean {
   return !!corrected && typeof corrected === 'object';
 }
 
+const TELEMETRY_ARGS_MAX_CHARS = 32768;
+
+/** Keep completion attribution queryable even when its evidence body is too large. */
+function truncatedTelemetryArgs(toolName: string, args: unknown, size: number): string {
+  const truncated: Record<string, unknown> = { _truncated: true, _size: size };
+  if (toolName !== 'work_items:complete' || !args || typeof args !== 'object' || Array.isArray(args)) {
+    return JSON.stringify(truncated);
+  }
+  const identity = (value: unknown): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+    const fields = value as Record<string, unknown>;
+    for (const [key, max] of [['id', 120], ['harness', 80], ['state', 40]] as const) {
+      const field = fields[key];
+      // Never shorten an identifier into a different, apparently complete target.
+      if (typeof field === 'string' && field.length > 0 && field.length <= max) result[key] = field;
+    }
+    for (const key of ['validateOnly', 'recordOnly'] as const) {
+      if (typeof fields[key] === 'boolean') result[key] = fields[key];
+    }
+    return result;
+  };
+  Object.assign(truncated, identity(args));
+  const fields = args as Record<string, unknown>;
+  if (Array.isArray(fields.items)) {
+    const items: Record<string, unknown>[] = [];
+    truncated.items = items;
+    truncated._itemsCount = fields.items.length;
+    truncated._itemsOmitted = fields.items.length;
+    // Count serialized characters, including JSON escapes, before appending.
+    // The retained prefix is bounded by both the public bulk limit and the old cap.
+    let length = jsonbSafeStringify(truncated).length;
+    for (const item of fields.items.slice(0, 100)) {
+      const entry = identity(item);
+      const added = jsonbSafeStringify(entry).length + (items.length ? 1 : 0);
+      if (length + added > TELEMETRY_ARGS_MAX_CHARS) break;
+      items.push(entry);
+      length += added;
+    }
+    if (items.length === fields.items.length) delete truncated._itemsOmitted;
+    else truncated._itemsOmitted = fields.items.length - items.length;
+  }
+  return jsonbSafeStringify(truncated);
+}
+
 /**
  * Build the tool_invocations row params snapshot for one settled dispatch.
  * Synchronous + cheap (JSON.stringify of args); null when there is no workspace
@@ -1780,8 +1884,8 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     if (input.args === undefined || input.args === null) return null;
     try {
       const s = jsonbSafeStringify(input.args);
-      if (s.length > 32768) {
-        return JSON.stringify({ _truncated: true, _size: s.length });
+      if (s.length > TELEMETRY_ARGS_MAX_CHARS) {
+        return truncatedTelemetryArgs(input.toolName, input.args, s.length);
       }
       return s;
     } catch {
@@ -1985,8 +2089,32 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  // Native code-intel calls carry a queryable result status (code-intel-delivery-and-outcomes
+  // P-004 / R-2): one row per invocation id, so a second record for the same callId is dropped.
+  const codeIntel = isNativeCodeIntelTool(input.toolName);
+  if (codeIntel && isDuplicateCodeIntelRecord(input.callId)) return;
   const otel = finishToolTrace(input);
-  if (otel) input = { ...input, metadataJson: { ...input.metadataJson, otel } };
+  // OTel identity and child receipts are host-owned, including when tracing was
+  // unavailable. Caller metadata must never survive as a guessed observation.
+  const { otel: _untrustedOtel, [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
+  const codeIntelResult = codeIntel
+    ? classifyCodeIntelExit({
+        toolName: input.toolName,
+        invocationId: input.callId ?? null,
+        status: input.status,
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage,
+        resultSnapshot: input.resultSnapshot,
+      })
+    : null;
+  input = {
+    ...input,
+    metadataJson: {
+      ...metadata,
+      ...(otel ? { otel } : {}),
+      ...(codeIntelResult ? { [CODE_INTEL_RESULT_METADATA_KEY]: codeIntelResult } : {}),
+    },
+  };
   // Close this call's in-flight entry FIRST — before every early return below.
   // Placement is load-bearing: the palette-poll drop and the buildTelemetryRow bail
   // both `return` without writing a row, and settling after either of them would
@@ -2231,6 +2359,9 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
     papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota, toolName, input),
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
+  // Native code-intel calls record a result status even on a transport with no quota window
+  // (HTTP/IPC/unscoped internal), so the unknown-rate denominator covers every call (P-004 / R-2).
+  recordWithoutWindow: isNativeCodeIntelTool,
   overrideTool: overrideToolImpl,
   // Capability-envelope port (agent-capability-confinement B-06 / P-012). Evaluates the
   // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt

@@ -24,6 +24,8 @@
  */
 
 /** Curated: which drill legs back which P-521 journey, and the decision that says so. */
+import { validateP521LocalPrechecks, type P521LocalPrecheck, type P521PrecheckSubject } from './p2p-candidate-manifest';
+
 export const DRILL_LEG_JOURNEYS: ReadonlyArray<{ journey: string; legs: readonly string[]; decision: string }> = [
   // D-083: the run-34 mapping declared discovery/git-consistency/github on the whole A-G run.
   { journey: 'discovery-join', legs: ['A', 'B', 'C', 'D', 'E', 'F', 'G'], decision: 'p2p-public-release-endgame-2026-09-01#D-083' },
@@ -76,6 +78,8 @@ export interface DrillJourneyEvidenceInput {
   workItem?: string;
   /** Restrict output to these journeys (default: every journey in DRILL_LEG_JOURNEYS). */
   journeys?: readonly string[];
+  localPrechecks?: readonly P521LocalPrecheck[];
+  precheckSubject?: P521PrecheckSubject;
 }
 
 export interface DrillJourneyDoc {
@@ -120,6 +124,10 @@ export function deriveDrillJourneyEvidence(input: DrillJourneyEvidenceInput): Dr
     SHA256_HEX.test(actual) && SHA256_HEX.test(expected) && actual === expected && drillDebOk;
 
   return rows.map((row) => {
+    const precheck = validateP521LocalPrechecks(
+      input.localPrechecks, input.precheckSubject, window.startedAt, [row.journey],
+    );
+    const precheckInstallerOk = input.precheckSubject?.installerSha256 === actual && artifactOk;
     const scoped = row.legs.map((leg) => {
       const found = allLegs.find((l) => l.leg === leg);
       // A leg the run never recorded is reported as `missing`, which evidenceVerdict
@@ -128,6 +136,12 @@ export function deriveDrillJourneyEvidence(input: DrillJourneyEvidenceInput): Dr
     });
     const legsPass = scoped.every((l) => l.status === 'pass');
     const assertions = [
+      {
+        id: 'local-precheck',
+        passed: precheck.ok && precheckInstallerOk,
+        evidence: precheck.ok && precheckInstallerOk ? 'earlier passing local precheck on identical subject'
+          : 'local precheck refused: ' + [...precheck.errors, ...(precheckInstallerOk ? [] : ['installer subject mismatch'])].join('; '),
+      },
       {
         id: 'drill-evidence-valid',
         passed: input.validation.ok,
@@ -173,6 +187,8 @@ export function deriveDrillJourneyEvidence(input: DrillJourneyEvidenceInput): Dr
         ...(topology ? { topology } : {}),
       },
       command: input.command,
+      precheckSubject: input.precheckSubject,
+      localPrechecks: input.localPrechecks?.filter((receipt) => receipt.journey === row.journey),
       exitCode,
       startedAt: window.startedAt ?? null,
       finishedAt: window.finishedAt ?? null,

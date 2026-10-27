@@ -69,6 +69,20 @@ function KindBadge({ kind }: { kind: ReportKind }) {
   return <span className={`reports-kind reports-kind--${kind}`}>{kindLabels[kind][0]}</span>;
 }
 
+/** Keep a wide authored table reachable without scrolling or clipping the article. */
+function prepareReportTables(root: HTMLElement) {
+  root.querySelectorAll('table').forEach((table, index) => {
+    if (table.parentElement?.classList.contains('reports-table-scroll')) return;
+    const scroller = document.createElement('div');
+    scroller.className = 'reports-table-scroll';
+    scroller.tabIndex = 0;
+    scroller.setAttribute('role', 'region');
+    scroller.setAttribute('aria-label', `Report table ${index + 1}`);
+    table.before(scroller);
+    scroller.append(table);
+  });
+}
+
 function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollowUp }: {
   report: Full; onSelect: (id: string) => void; historyOpen: boolean;
   onHistoryChange: () => void; onFollowUp: () => void;
@@ -101,6 +115,7 @@ function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollow
     return () => { observer?.disconnect(); window.removeEventListener('resize', updateReading); };
   }, [updateReading]);
   const onParsed = useCallback((root: HTMLElement) => {
+    prepareReportTables(root);
     // Use the actual Markdown renderer's headings: code fences, Mermaid and
     // duplicate headings must not create a second, disagreeing Markdown parser.
     headings.current = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6'));
@@ -155,8 +170,8 @@ function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollow
         {previous.loading && <p role="status">Loading previous edition…</p>}
         {previous.error && <div role="alert">Could not load the previous edition. <Button onClick={previous.invalidate}>Retry comparison</Button></div>}
         {!previous.loading && !previous.error && !previousReport && <p>The previous edition is unavailable.</p>}
-        {previousReport && <div className="reports-comparison-columns"><section><h4>Previous · {previousReport.title}</h4><MarkdownPreview value={previousReport.body_md} /></section>
-          <section><h4>Selected · {report.title}</h4><MarkdownPreview value={report.body_md} /></section></div>}
+        {previousReport && <div className="reports-comparison-columns"><section><h4>Previous · {previousReport.title}</h4><MarkdownPreview value={previousReport.body_md} onParsed={prepareReportTables} /></section>
+          <section><h4>Selected · {report.title}</h4><MarkdownPreview value={report.body_md} onParsed={prepareReportTables} /></section></div>}
       </section>}
       <MarkdownPreview value={report.body_md} className="reports-body" onParsed={onParsed} />
     </div>

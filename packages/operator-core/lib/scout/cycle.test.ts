@@ -10,7 +10,7 @@
  *
  * Run from inside the package: `cd packages/operator-core && npx vitest run lib/scout/cycle`.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { makeFakeScoutLlm, fixtureCorpusDigest, fixtureIdeasAllLenses, FIXTURE_PATTERN_REFS } from './test-support';
 import type { CorpusEntry } from './critique-core';
 import type { RoutingDecision } from './router';
@@ -327,10 +327,13 @@ describe('runScoutCycle — early exits', () => {
   });
 
   it('a zero cap still refuses to spend at all — budget-exhausted, $0, overBudget false (EI-305)', async () => {
-    // The pre-spend refusal is unchanged: a 0 cap halts before the first costed step.
-    // It declined to start (spent $0), so it did not overrun → overBudget is false.
+    // The read-only digest (including observation consumption stamps) still runs;
+    // a 0 cap halts before the first costed step, so overBudget remains false.
     const { deps } = makeDeps({ costUsd: 0.01, limits: { maxCostUsd: 0 } });
+    const readCorpus = vi.fn(deps.readCorpus);
+    deps.readCorpus = readCorpus;
     const r = await runScoutCycle(deps);
+    expect(readCorpus).toHaveBeenCalledTimes(1);
     expect(r.stop).toBe('budget-exhausted');
     expect(r.calls).toHaveLength(0);
     expect(r.costUsd).toBe(0);

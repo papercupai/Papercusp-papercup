@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   computePromotions,
+  codePayloadForPlanItems,
   titleFromPlanItem,
   type OpenPlanItem,
 } from './plan-workitem-promotion';
+import { unknownAnchor } from './plan-items/anchors';
 
 const items: OpenPlanItem[] = [
   { id: 'P-001', text: 'First item' },
@@ -13,6 +15,28 @@ const items: OpenPlanItem[] = [
 
 describe('plan→work-item promotion (unified-work-item-ledger P-003)', () => {
   describe('computePromotions', () => {
+    it('unions linked files across plan items while retaining complete link metadata', () => {
+      const first = { ...unknownAnchor({ symbol: 'linked' }, 'no-snapshot'), path: 'src/a.ts',
+        symbolId: 'symbol-a', consumers: [{ path: 'src/caller.ts', line: 7 }], tests: ['src/a.test.ts'] };
+      const second = unknownAnchor({ path: 'src/b.ts' }, 'not-found');
+      const payload = codePayloadForPlanItems(['P-001', 'P-002'], {
+        'P-001': [first], 'P-002': [first, second],
+      }, 'Misleading src/other.ts');
+      expect(payload).toEqual({ paths: ['src/a.ts', 'src/b.ts'], anchors: [first, first, second] });
+      const [spec] = computePromotions({ planSlug: 'p', harness: 'h', openItems: [items[0]],
+        existingPromotedItemIds: [], anchorsByItem: { 'P-001': [first] } });
+      expect(spec.payload).toEqual({ paths: ['src/a.ts'], anchors: [first] });
+    });
+
+    it('preserves explicit empty paths for unresolved symbols and derives paths only without links', () => {
+      const unknown = unknownAnchor({ symbol: 'missing' }, 'no-snapshot');
+      expect(codePayloadForPlanItems(['P-001'], { 'P-001': [unknown] }, 'src/other.ts'))
+        .toEqual({ anchors: [unknown], paths: [] });
+      expect(codePayloadForPlanItems(['P-001'], {}, 'Touch src/fallback.ts and src/fallback.ts'))
+        .toEqual({ paths: ['src/fallback.ts'] });
+      expect(codePayloadForPlanItems(['P-001'], {}, 'No files')).toBeUndefined();
+    });
+
     it('defers acceptance promotion even when every open build lane already has a work-item', () => {
       const base = { planSlug: 'p', harness: 'h', existingPromotedItemIds: ['P-001'] };
       const grading = { id: 'P-002', text: 'Independent acceptance grading', phase: 'Acceptance' };

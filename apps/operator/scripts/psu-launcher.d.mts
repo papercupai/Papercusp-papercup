@@ -489,7 +489,22 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, }?: {}): {
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, mcpJsonPath?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, model?: string | null, allowNativeLsp?: boolean, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
+export function roleLaunchArgs(backend: string, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, claudeSettings, capabilityPolicy, }?: {
+    promptFile?: string;
+    mcpJsonPath?: string;
+    coordExtPath?: string;
+    injectHookPath?: string;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    model?: string | null;
+    allowNativeLsp?: boolean;
+    claudeSettings?: ClaudeLaunchSettings;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
+}): {
     bin: string;
     args: any[];
 };
@@ -518,9 +533,52 @@ export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExt
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, allowNativeLsp, }?: {}): {
+/**
+ * @param {string} backend
+ * @param {{ promptFile?: string, coordExtPath?: string, injectHookPath?: string, nativeSessionId?: string | null, allowSubagents?: boolean, allowNativeLsp?: boolean, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
+export function suLaunchArgs(backend: string, { promptFile, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, allowNativeLsp, capabilityPolicy, }?: {
+    promptFile?: string;
+    coordExtPath?: string;
+    injectHookPath?: string;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    allowNativeLsp?: boolean;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
+}): {
     bin: string;
-    args: any[];
+    args: (string | undefined)[];
+};
+/** Shared effective bootstrap inputs for the native launcher and structured
+ * engines. Transport adapters translate argv; they do not select another
+ * account, model or authority from their caller's environment.
+ * @param {any} boot
+ * @param {{model?: string|null, resumeSession?: string|null, nativeSessionId?: string|null, allowSubagents?: boolean, compactionLimit?: number|null, inheritedEnv?: NodeJS.ProcessEnv, executionKind?: 'pty'|'programmatic', accountRoute?: string|null}} options
+ */
+export function prepareSuLaunch(boot: any, { model, resumeSession, nativeSessionId, allowSubagents, compactionLimit, inheritedEnv, executionKind, accountRoute, }?: {
+    model?: string | null;
+    resumeSession?: string | null;
+    nativeSessionId?: string | null;
+    allowSubagents?: boolean;
+    compactionLimit?: number | null;
+    inheritedEnv?: NodeJS.ProcessEnv;
+    executionKind?: "pty" | "programmatic";
+    accountRoute?: string | null;
+}): {
+    cwd: any;
+    env: {
+        [x: string]: string | undefined;
+    };
+    model: any;
+    modelArgs: any[];
+    extraArgs: any[];
+    bin: string;
+    args: (string | undefined)[];
+};
+/** @param {NodeJS.ProcessEnv} envelopeEnv
+ * @param {NodeJS.ProcessEnv} inheritedEnv */
+export function prepareSuLaunchEnvironment(envelopeEnv: NodeJS.ProcessEnv, inheritedEnv?: NodeJS.ProcessEnv): {
+    [x: string]: string | undefined;
 };
 /**
  * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
@@ -544,8 +602,12 @@ export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHoo
  * envelope format + JSONL row shape in lockstep. Fail-soft: any error returns
  * the untagged text (the turn then classifies owner/unverified — visible, and
  * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
+ * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
  */
-export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string): any;
+export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: {
+    routineId: string;
+    wakeCount: number;
+} | null): any;
 export function kickoffPositionalArgs(res: any, args: any): any[];
 /**
  * The free-form first-turn text for a launch, with the SPAWN-SAFE env fallback:
@@ -667,10 +729,15 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  */
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
 /**
- * @param {any} session
- * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null }} [opts]
+ * Resolve the host-user-installed OMP coordination extension, not a workspace
+ * `PAPERCUSP_HOME` data root. install-standalone-mcp.sh writes this stable path.
  */
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, codexMcpUrl, env, claudeSettings, }?: {
+export function resolveOmpCoordExtPath(agent: any, home?: string): string | undefined;
+/**
+ * @param {any} session
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null, claudeSettings?: ClaudeLaunchSettings, capabilityPolicy?: Partial<import('../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js').CapabilityPolicyRequest> }} [opts]
+ */
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, codexMcpUrl, env, capabilityPolicy, claudeSettings, }?: {
     coordExtPath?: string;
     injectHookPath?: string;
     fork?: boolean;
@@ -681,6 +748,8 @@ export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork
     personaFile?: string | null;
     env?: NodeJS.ProcessEnv;
     codexMcpUrl?: string | null;
+    claudeSettings?: ClaudeLaunchSettings;
+    capabilityPolicy?: Partial<import("../../../libs/papercusp/packages/orchestrator/src/managed-capability-policy.js").CapabilityPolicyRequest>;
 }): {
     bin: string;
     args: any[];
@@ -1668,16 +1737,21 @@ export function ompDefaultModelAdvisory(home?: string): string | null;
  * overriding it there would strand the original's locks/awaits/presence, which is
  * the exact regression the fresh-random-SID resume caused.
  */
+/**
+ * @param {any} session
+ * @param {{ mintSid?: () => string, fork?: boolean, ownerId?: string | null }} [options]
+ */
 export function resumeEnvFor(session: any, { mintSid, fork, ownerId }?: {
-    mintSid?: (() => string) | undefined;
-    fork?: boolean | undefined;
-    ownerId?: null | undefined;
+    mintSid?: () => string;
+    fork?: boolean;
+    ownerId?: string | null;
 }): {
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 };
 /**
  * Decide how the account is chosen for a RESUME launch. Pure — exported for
@@ -1727,8 +1801,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1743,8 +1818,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1759,8 +1835,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
@@ -1775,8 +1852,9 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
     PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
+    PAPERCUSP_AGENT_ROLE?: any;
+    PAPERCUSP_AGENT: any;
 };
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
  * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides
@@ -1960,6 +2038,25 @@ export function defaultAccountEnv(): {
  */
 export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
 /**
+ * The bare model id a launch spec asks the gateway for: `gpt-6.1-sol:high` and
+ * `gpt-6.1-sol[1m]` both mean `gpt-6.1-sol`. Lowercased, because the gateway keys
+ * refusals by the request body's model string. `null` for an empty spec.
+ *
+ * @param {string | null | undefined} model
+ * @returns {string | null}
+ */
+export function codexModelIdFromSpec(model: string | null | undefined): string | null;
+/**
+ * The gateway's measured serviceable-account count for ONE model, or `null` when the
+ * snapshot does not carry a reading for it (older gateway, or no live refusal for the
+ * model — in which case the provider-wide count already describes it).
+ *
+ * @param {unknown} byModel `stats.codexServiceableByModel`
+ * @param {string} modelId  a {@link codexModelIdFromSpec} result
+ * @returns {number | null}
+ */
+export function codexServiceableForModel(byModel: unknown, modelId: string): number | null;
+/**
  * Verdict for a Codex auto-route launch, from a live gateway `/stats` snapshot.
  *
  * THREE outcomes, deliberately not two:
@@ -1983,7 +2080,7 @@ export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexServiceableByModel?: Record<string, number>, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -2000,6 +2097,7 @@ export function codexAutoPoolVerdict({ agent, model, account, stats, now, }?: {
         codexTotalAccounts?: number;
         codexEarliestRecoveryAt?: number | null;
         codexUnserviceableCause?: "upstream-unreachable" | "temporary-cooldown" | "accounts-unserviceable" | null;
+        codexServiceableByModel?: Record<string, number>;
         codexReachability?: {
             lastTransportFailureKind?: "dns" | "connect" | "timeout" | "other" | null;
         };
@@ -3234,8 +3332,9 @@ export function describeResumeClaimRefusal(outcome: {
  * 2026-07-18 su-57b6247d successor-kill loop). Fire-and-forget, bounded, never
  * rejects — a respawn must never wait on it. Exported with injectables for tests.
  */
-export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
+export function reportSessionRespawned(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, fetchImpl, operatorUrl, token, timeoutMs, appendEventImpl, }?: {
     coordOwnerId?: null | undefined;
+    childLaunchSessionId?: null | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -3252,8 +3351,9 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * notifies a carry announcer when a background retry succeeds; returning the first
  * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
-export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, childLaunchSessionId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
     coordOwnerId?: null | undefined;
+    childLaunchSessionId?: null | undefined;
     reportImpl?: typeof reportSessionRespawned | undefined;
     retryDelaysMs?: number[] | undefined;
     sleepImpl?: ((ms: any) => Promise<any>) | undefined;
@@ -3329,14 +3429,25 @@ export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl
  * transcript containing the exact rendered hash. If the POST response is lost,
  * reconcile through the status route before deciding whether acknowledgement
  * failed; killing a successfully-delivered target on a network ambiguity would
- * be as wrong as accepting PTY output as persistence. */
-export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, coordOwnerId, appendEventImpl, }?: {
+ * be as wrong as accepting PTY output as persistence.
+ *
+ * WI-6554700010029583: when that authoritative status read proves the
+ * disposition did NOT commit (same port + target, still `pending`), re-POST the
+ * identical idempotent disposition up to `maxDeliveryAttempts` times with a
+ * linear backoff. One slow operator response (the 10s client timeout) used to
+ * strand an answered native consult's receipt at `pending` forever. Refusals,
+ * terminal states and identity mismatches are never retried. */
+export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, coordOwnerId, appendEventImpl, maxDeliveryAttempts, maxStatusReads, retryDelayMs, sleepImpl, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
     coordOwnerId?: null | undefined;
     appendEventImpl?: typeof appendHostEvent | undefined;
+    maxDeliveryAttempts?: number | undefined;
+    maxStatusReads?: number | undefined;
+    retryDelayMs?: number | undefined;
+    sleepImpl?: ((ms: number) => Promise<any>) | undefined;
 }): Promise<any>;
 /** Finalize any failure after /prepare, whether bootstrap never minted a target
  * row (`prepared`) or local launch setup failed after bootstrap (`pending`). The
@@ -3512,6 +3623,11 @@ export function spawnInherit(options: SpawnInheritOptions): void;
  * @property {any} [sessionPort]
  * @property {boolean} [preserveCwd]
  * @property {any} [hostHandoff] already-consumed host handoff orders
+ * @property {boolean} [skipHostHandoff] exact target launch must not adopt stale target orders
+ * @property {Record<string, any>} [inheritedEnv] machine environment for an identity transition
+ * @property {string|null} [identityAssumeAttachmentId] retained session surface across identity change
+ * @property {string|null} [identityAssumeHostId] retained logical managed host across identity change
+ * @property {any} [initialCarryRespawn] target checkpoint's existing native bootstrap binding
  * @property {(...args:any[])=>any} [reportSessionEndedImpl]
  * @property {()=>any} [onSpawn]
  * @property {(()=>any)|null} [onSpawnFailure]
@@ -3889,8 +4005,8 @@ export function codexActiveWriterMessage(session: any, holder: any): string;
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
  * relocate cwd — the seeded transcript is keyed by the original's cwd, and claude
  * resolves --resume by CLAUDE_CONFIG_DIR + the encoded cwd it runs in, so the fork
- * MUST run in that same cwd). agent is claude here because tracked forks need a
- * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
+ * MUST run in that same cwd). Codex bootstrap prepares and registers its native
+ * fork before returning; Claude retains its caller-chosen native id.
  */
 export function forkBootstrapBody(session: any, account?: null, launchMode?: null, ownerId?: null, launchArgs?: null): {
     mode_owner_directed?: boolean | undefined;
@@ -3903,7 +4019,11 @@ export function forkBootstrapBody(session: any, account?: null, launchMode?: nul
     launch_argv?: string[] | undefined;
     bootstrap_idempotency_key?: any;
     owner_id?: undefined;
-    agent: string;
+    native_fork_source?: {
+        advSessionId: number;
+        nativeSessionId: any;
+    } | undefined;
+    agent: any;
     workspace: any;
     harness_slug: null;
     plan_slug: any;
@@ -3963,10 +4083,11 @@ export function assertFleetJoined(requestedFleet: any, res: any): void;
 export function psuLaunchArgvRecord(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
 }): string[];
-export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, }?: {
+export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, agentTaskId, }?: {
     brain?: boolean | undefined;
     bootstrapIdempotencyKey?: null | undefined;
     mcpBaseUrl?: any;
+    agentTaskId?: null | undefined;
 }): {
     session_port_protocol?: any;
     session_port_transform_version?: any;
@@ -3999,6 +4120,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     auto?: boolean | undefined;
     carry?: any;
     headless?: boolean | undefined;
+    agent_task_id?: undefined;
     launch_argv: string[];
     bootstrap_idempotency_key?: undefined;
     mcp_base_url?: any;
@@ -4504,9 +4626,11 @@ export function codexForkMcpUrlForOwner(codexHome: any, ownerId: any): string | 
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
+ * @param {{sourcePolicy?: 'preserved-artifact' | null, expectedSpecificationRevision?: string | null, requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
-export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, onFailure, token, timeoutMs, now, }?: {
+export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, sourcePolicy, expectedSpecificationRevision, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, onFailure, token, timeoutMs, now, }?: {
+    sourcePolicy?: "preserved-artifact" | null;
+    expectedSpecificationRevision?: string | null;
     requireGatewayProvider?: boolean;
     model?: string | null;
     headless?: boolean;
@@ -4665,12 +4789,13 @@ export function setupReminderLines(stage: any): string[] | null;
  * preflight refusal into an exception so launchSessionPort can finalize the
  * already-prepared row before the process exits. */
 export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
-export function launchFreshSu(selections: any, args: any, { brain, preflightCodexAutoPoolImpl, apiImpl, runLaunchPreflightImpl, runWrapperImpl, }?: {
+export function launchFreshSu(selections: any, args: any, { brain, preflightCodexAutoPoolImpl, apiImpl, runLaunchPreflightImpl, runWrapperImpl, agentTaskId, }?: {
     brain?: boolean | undefined;
     preflightCodexAutoPoolImpl?: typeof preflightCodexAutoPool | undefined;
     apiImpl?: typeof api | undefined;
     runLaunchPreflightImpl?: typeof runLaunchPreflight | undefined;
     runWrapperImpl?: typeof runWrapper | undefined;
+    agentTaskId?: null | undefined;
 }): Promise<void>;
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */
@@ -5432,6 +5557,26 @@ export type RunWrapperOptions = {
      * already-consumed host handoff orders
      */
     hostHandoff?: any;
+    /**
+     * exact target launch must not adopt stale target orders
+     */
+    skipHostHandoff?: boolean | undefined;
+    /**
+     * machine environment for an identity transition
+     */
+    inheritedEnv?: Record<string, any> | undefined;
+    /**
+     * retained session surface across identity change
+     */
+    identityAssumeAttachmentId?: string | null | undefined;
+    /**
+     * retained logical managed host across identity change
+     */
+    identityAssumeHostId?: string | null | undefined;
+    /**
+     * target checkpoint's existing native bootstrap binding
+     */
+    initialCarryRespawn?: any;
     reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
@@ -5480,14 +5625,7 @@ import { buildFrameworkInstallSpec } from "../../../packages/operator-core/lib/f
 /** Spawn an installer SpawnSpec inheriting this terminal (installs are interactive). */
 declare function runInstallerInherit(spec: any): Promise<any>;
 import { readHostHandoffForParentPid } from "./psu-pty-host.mjs";
-/**
- * Continue a host-code handoff without running bootstrap-su a second time.
- * The shim re-executes this launcher with its original argv, but the original
- * bootstrap result (adv row, Codex home, and route identity) was only held in
- * the predecessor process. Consuming the handoff before the normal launch
- * flow keeps the successor on that exact row/home instead of minting a sibling.
- */
-declare function launchHostHandoff(handoff: any): Promise<void>;
+declare function launchHostHandoff(handoff: any): Promise<any>;
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import { nativeSessionIdFromLaunchArgs } from "./psu-pty-host.mjs";

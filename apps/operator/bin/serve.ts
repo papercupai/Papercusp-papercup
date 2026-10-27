@@ -85,7 +85,7 @@ export { pidAlive, isOrphanedFromParent, resolveExpectedParentPid, startParentDe
 import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestamped-console";
 import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard";
 import {
-  assertVmReleaseRuntimePolicy,
+  assertVmReleaseApplicationRuntime,
   assertVmReleaseRuntimePort,
   isVmReleaseDistribution,
 } from "@papercusp/operator-core/lib/vm-release-runtime-policy";
@@ -1337,6 +1337,7 @@ Options:
   --ensure     Reuse a healthy operator from the same build when one is running.
   --ui         Serve the packaged UI as well as the operator API.
   --verify-boot-imports  Qualify packaged tool imports without starting runtime services.
+  --verify-role-prompts  Report final-image prompt dispositions without starting runtime services.
   -h, --help   Show this help and exit without starting runtime services.
 `;
 
@@ -1375,6 +1376,11 @@ async function main(): Promise<void> {
   if (argv[0] === "--verify-boot-imports") {
     await import("@papercusp/operator-core/lib/agent-tools/index");
     process.stdout.write("PAPERCUSP_BOOT_IMPORTS_OK\n");
+    process.exit(0);
+  }
+  if (argv[0] === "--verify-role-prompts") {
+    const { verifyRolePromptAssets } = await import("@papercusp/operator-core/lib/prompt-assembly");
+    process.stdout.write("PAPERCUSP_ROLE_PROMPT_ASSETS " + JSON.stringify(verifyRolePromptAssets()) + "\n");
     process.exit(0);
   }
 
@@ -1504,7 +1510,7 @@ async function main(): Promise<void> {
   // D-043 / P-050: an immutable VM package must prove its package-contained
   // manifest and one-operator network/environment contract BEFORE --ensure can
   // adopt an already-running process. Non-vm-release profiles no-op here.
-  assertVmReleaseRuntimePolicy({
+  await assertVmReleaseApplicationRuntime({
     env: process.env,
     sidecarDir: dirname(fileURLToPath(import.meta.url)),
     hostname,

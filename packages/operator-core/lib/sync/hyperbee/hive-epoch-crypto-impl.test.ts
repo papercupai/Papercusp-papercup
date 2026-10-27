@@ -14,13 +14,13 @@ const { mem } = vi.hoisted(() => ({ mem: new Map<string, Buffer>() }));
 const DEVICE_SVC = 'papercusp-device-keypair';
 
 vi.mock('../../identity/keychain', () => ({
-  keychainStore: async (id: string, der: Buffer, serviceName: string = DEVICE_SVC) => {
+  keychainStore: vi.fn(async (id: string, der: Buffer, serviceName: string = DEVICE_SVC) => {
     mem.set(serviceName + ':' + id, Buffer.from(der));
-  },
-  keychainLoad: async (id: string, serviceName: string = DEVICE_SVC) => {
+  }),
+  keychainLoad: vi.fn(async (id: string, serviceName: string = DEVICE_SVC) => {
     const v = mem.get(serviceName + ':' + id);
     return v ? { kind: 'ok', value: v } : { kind: 'error', error: { kind: 'not_found' } };
-  },
+  }),
   keychainDelete: async (id: string, serviceName: string = DEVICE_SVC) => {
     mem.delete(serviceName + ':' + id);
   },
@@ -28,7 +28,7 @@ vi.mock('../../identity/keychain', () => ({
 
 const { createHiveEpochCrypto } = await import('./hive-epoch-crypto-impl');
 const { generateEd25519KeypairDer } = await import('../../identity/ed25519');
-const { keychainStore } = await import('../../identity/keychain');
+const { keychainStore, keychainLoad } = await import('../../identity/keychain');
 import type { OpAAD } from './hive-epoch-crypto';
 
 /** Register a device: fresh Ed25519 keypair, private key in the (mock) keychain. */
@@ -42,6 +42,7 @@ const AD = (over: Partial<OpAAD> = {}): OpAAD => ({ potId: 'hive-1', epoch: 1, o
 
 beforeEach(() => {
   mem.clear();
+  vi.clearAllMocks();
 });
 
 describe('HiveEpochCrypto v1 — deriveEpochKey', () => {
@@ -65,6 +66,34 @@ describe('HiveEpochCrypto v1 — deriveEpochKey', () => {
     const a = await c.deriveEpochKey('hive-a', 1);
     const b = await c.deriveEpochKey('hive-b', 1);
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
+  });
+
+  it.each(
+    (['io_error', 'decryption_failed'] as const).flatMap(errorKind =>
+      [false, true].map(preexisting => ({ errorKind, preexisting })),
+    ),
+  )('preserves key state after $errorKind (preexisting: $preexisting)', async ({ errorKind, preexisting }) => {
+    const c = createHiveEpochCrypto();
+    const original = preexisting ? await c.deriveEpochKey('hive-1', 1) : undefined;
+    const ciphertext = original ? await c.encryptOp(Buffer.from('existing content'), original, AD()) : undefined;
+    const before = new Map([...mem].map(([id, value]) => [id, Buffer.from(value)]));
+    vi.mocked(keychainStore).mockClear();
+    vi.mocked(keychainLoad).mockResolvedValueOnce({
+      kind: 'error', error: { kind: errorKind, reason: 'fixture keychain read failure' },
+    });
+
+    const outcome = await c.deriveEpochKey('hive-1', 1).then(
+      () => ({ kind: 'resolved' }),
+      error => ({ kind: 'rejected', message: String(error) }),
+    );
+    expect({ outcome, writes: vi.mocked(keychainStore).mock.calls.length, persisted: mem }).toEqual({
+      outcome: { kind: 'rejected', message: expect.stringContaining(errorKind) }, writes: 0, persisted: before,
+    });
+    if (original && ciphertext) {
+      const recovered = await c.deriveEpochKey('hive-1', 1);
+      expect(Buffer.from(recovered)).toEqual(Buffer.from(original));
+      expect(Buffer.from(await c.decryptOp(ciphertext, recovered, AD())).toString()).toBe('existing content');
+    }
   });
 });
 

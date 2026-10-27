@@ -25,7 +25,8 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
-import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
+import { forEachBoundedBatch } from './file-batches.js';
+import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface GenericFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. Defaults to `generic-fs:<basename(root)>`. */
@@ -118,15 +119,25 @@ export function genericFsAdapter(root: string, opts: GenericFsAdapterOptions = {
 
   let pageCache: Map<string, FsPage> | null = null;
 
-  async function buildPages(): Promise<Map<string, FsPage>> {
-    if (pageCache) return pageCache;
+  async function buildPages(options?: DocListPagesOptions): Promise<Map<string, FsPage>> {
+    if (pageCache) {
+      options?.onTiming?.({ component: 'generic-fs', phase: 'cache', state: 'cached', count: pageCache.size });
+      return pageCache;
+    }
+    const buildStartedAt = Date.now();
+    options?.onTiming?.({ component: 'generic-fs', phase: 'build', state: 'started' });
     const cache = new Map<string, FsPage>();
+    const walkStartedAt = Date.now();
+    options?.onTiming?.({ component: 'generic-fs', phase: 'walk', state: 'started' });
     const files = await walkDocs(root, maxDepth);
-    for (const abs of files) {
+    const walkMs = Math.max(0, Date.now() - walkStartedAt);
+    options?.onTiming?.({ component: 'generic-fs', phase: 'walk', state: 'completed', elapsedMs: walkMs, count: files.length });
+    const readParseStartedAt = Date.now();
+    options?.onTiming?.({ component: 'generic-fs', phase: 'read-parse', state: 'started', count: files.length });
+    await forEachBoundedBatch(files, readSafe, (abs, content) => {
+      if (content === null) return;
       const rel = path.relative(root, abs);
       const slug = slugFromRelPath(rel);
-      const content = await readSafe(abs);
-      if (content === null) continue;
       const slugs = slug.split('/');
       cache.set(slug, {
         slug,
@@ -136,15 +147,18 @@ export function genericFsAdapter(root: string, opts: GenericFsAdapterOptions = {
         toc: extractHeadings(content),
         absolutePath: abs,
       });
-    }
+    });
     pageCache = cache;
+    const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
+    options?.onTiming?.({ component: 'generic-fs', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
+    options?.onTiming?.({ component: 'generic-fs', phase: 'build', state: 'completed', elapsedMs: Math.max(0, Date.now() - buildStartedAt), count: cache.size });
     return cache;
   }
 
   return {
     name,
-    async listPages(): Promise<DocPage[]> {
-      const cache = await buildPages();
+    async listPages(options?: DocListPagesOptions): Promise<DocPage[]> {
+      const cache = await buildPages(options);
       return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
     },
     async getPage(slug: string): Promise<DocPage | null> {

@@ -1,5 +1,6 @@
 /** Durable system actions for work-item admission P-003/P-004. */
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
@@ -24,6 +25,110 @@ import {
 } from '../../work-items-admission-promoter';
 import { optionalModelSpec } from '../../learning/model-policy';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { computeNextFire, type ScheduleTrigger } from './schedule-next';
+
+const ordinarySlotSchema = z.object({
+  dueAt: z.string().refine((value) => Number.isFinite(Date.parse(value))).nullable(),
+  runId: z.string().min(1).optional(),
+  completedRunIds: z.array(z.string()).max(2).optional(),
+  result: z.custom<PromoterRunResult>((value) => !!value && typeof value === 'object' &&
+    typeof (value as PromoterRunResult).runId === 'string').optional(),
+});
+type OrdinarySlot = z.infer<typeof ordinarySlotSchema>;
+type OrdinaryRoutine = {
+  id: string; trigger_config: ScheduleTrigger; metadata: Record<string, unknown> | null; now: Date;
+};
+
+async function ordinaryRoutine(sql: Sql, options: ReturnType<typeof admissionPromoterOptions>) {
+  const rows = await sql<(Omit<OrdinaryRoutine, 'now'> & { now: Date | string })[]>`
+    SELECT id, trigger_config, metadata, now() AS now FROM harness_shared.routines
+     WHERE workspace_id = ${options.workspaceId} AND install_slug = ${options.harnessSlug}
+       AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
+       AND target_role = ${`system:${WORK_ITEM_ADMISSION_PROMOTER}`} AND active = true
+       AND (trigger_config->>'cron' IS NOT NULL OR trigger_config->>'rrule' IS NOT NULL)
+     FOR UPDATE`;
+  if (rows.length !== 1) throw new Error('ordinary admission requires one active recurring promoter');
+  const routine = rows[0]!;
+  // The operator's SQL transport can return raw timestamptz strings. Normalize
+  // before both deadline comparison and recurrence calculation; the fresh-PG
+  // connection's default Date parser otherwise hides this production boundary.
+  const now = routine.now instanceof Date ? routine.now : new Date(routine.now);
+  if (!Number.isFinite(now.getTime())) throw new Error('ordinary admission requires a valid database clock');
+  return { ...routine, now };
+}
+
+function nextOrdinaryDeadline(routine: OrdinaryRoutine): string | null {
+  const next = computeNextFire(routine.trigger_config, routine.now);
+  return next?.toISOString() ?? null;
+}
+
+async function claimOrdinarySlot(
+  sql: Sql, options: ReturnType<typeof admissionPromoterOptions>, force = false,
+): Promise<OrdinarySlot | null> {
+  return sql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Sql;
+    const routine = await ordinaryRoutine(tx, options);
+    const slot = ordinarySlotSchema.parse(routine.metadata?.admissionOrdinarySlot ?? {
+      // Legacy accelerated rows have lost their natural deadline. Establish the
+      // next recurring boundary once; subsequent requests cannot postpone it.
+      dueAt: nextOrdinaryDeadline(routine),
+    });
+    if (slot.completedRunIds?.includes(options.runId) && slot.result) return slot;
+    const claimed = slot.runId || force || slot.dueAt !== null && Date.parse(slot.dueAt) <= routine.now.getTime();
+    const next = claimed ? { ...slot, runId: slot.runId ?? options.runId } : slot;
+    await tx`UPDATE harness_shared.routines SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}',
+      ${JSON.stringify(next)}::text::jsonb) WHERE id = ${routine.id}`;
+    return claimed ? next : null;
+  });
+}
+
+async function finishOrdinarySlot(
+  sql: Sql, options: ReturnType<typeof admissionPromoterOptions>, result: PromoterRunResult,
+): Promise<void> {
+  await sql.begin(async (rawTx) => {
+    const tx = rawTx as unknown as Sql;
+    const routine = await ordinaryRoutine(tx, options);
+    const slot = ordinarySlotSchema.parse(routine.metadata?.admissionOrdinarySlot);
+    if (slot.runId !== result.runId) throw new Error('ordinary admission slot changed during execution');
+    const next = { dueAt: nextOrdinaryDeadline(routine),
+      completedRunIds: [...new Set([result.runId, options.runId])], result };
+    // The run ledger outlives later slot cycles, so an old workflow replay must
+    // never fall back to exact recovery after its metadata witness is replaced.
+    await tx`UPDATE harness_shared.admission_runs SET detail = jsonb_set(
+      detail, '{ordinarySlotResult}', ${JSON.stringify(result)}::text::jsonb)
+      WHERE id = ${result.runId} AND workspace_id = ${options.workspaceId}
+        AND harness_slug = ${options.harnessSlug} AND detail->>'status' = 'complete'`;
+    await tx`UPDATE harness_shared.routines SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}', ${JSON.stringify(next)}::text::jsonb),
+      next_fire_at = CASE WHEN EXISTS (
+        SELECT 1 FROM harness_shared.work_items
+         WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
+           AND payload #>> '{_admissionRecovery,routineId}' = ${routine.id}
+           AND payload #>> '{_admissionRecovery,state}' = 'queued'
+      ) THEN LEAST(COALESCE(next_fire_at, now()), now()) ELSE next_fire_at END
+      WHERE id = ${routine.id}`;
+  });
+}
+
+async function completedOrdinaryResult(
+  sql: Sql, options: ReturnType<typeof admissionPromoterOptions>, runId: string, storedOnly = false,
+): Promise<PromoterRunResult | null> {
+  const [row] = await sql<{ result: PromoterRunResult }[]>`
+    SELECT COALESCE(detail->'ordinarySlotResult', jsonb_build_object(
+      'runId', id, 'batchSize', batch_size, 'flaggedPairs', detail->'flaggedPairs',
+      'promoted', promoted, 'merged', merged, 'held', held,
+      'modelCalled', model_id IS NOT NULL, 'tokensIn', tokens_in, 'tokensOut', tokens_out,
+      'censusBefore', census_before, 'censusAfter', census_after,
+      'guardRefusals', detail->'guardRefusals', 'writerCoverageGap', detail->'writerCoverageGap'
+    )) AS result FROM harness_shared.admission_runs
+     WHERE id = ${runId} AND workspace_id = ${options.workspaceId}
+       AND harness_slug = ${options.harnessSlug} AND run_kind = 'promoter-tick'
+       AND detail->>'mode' = 'promoter' AND detail->>'status' = 'complete'
+       AND (${storedOnly} AND detail ? 'ordinarySlotResult'
+         OR ${!storedOnly} AND detail ? 'componentScreening')`;
+  return row?.result ?? null;
+}
 
 function positiveInteger(value: unknown, fallback: number): number {
   const n = Number(value);
@@ -88,9 +193,33 @@ export async function runAdmissionPromoterWithRecovery(
   options: ReturnType<typeof admissionPromoterOptions>,
   deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch' | 'lockSql'> & { sql: Sql; llmCall: PromoterLlmCall },
 ): Promise<PromoterRunResult> {
-  const { runAdmissionRecoveries, readAuthorizedComponentScreeningIds } = await import('../../work-item-admission-recovery');
+  const { withAdmissionPromoterLock } = await import('../../work-item-admission-recovery');
+  // Explicit targets retain their original scope and never consume an ordinary slot.
+  if (options.targetItemIds !== undefined) {
+    return runWorkItemAdmissionPromoter({ ...options, sql: deps.sql, llmCall: deps.llmCall });
+  }
+  const result = await withAdmissionPromoterLock(options, deps.lockSql, () => admissionPromoterPass(options, deps));
+  // Another workflow owns this invocation. As in the per-request lock, a losing
+  // consumer performs no writes and leaves the owning workflow to finish.
+  return result ?? { runId: options.runId, batchSize: 0, flaggedPairs: 0,
+    promoted: 0, merged: 0, held: 0, modelCalled: false, tokensIn: 0, tokensOut: 0,
+    censusBefore: 0, censusAfter: 0, guardRefusals: [], writerCoverageGap: [] };
+}
+
+async function admissionPromoterPass(
+  options: ReturnType<typeof admissionPromoterOptions>,
+  deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch' | 'lockSql'> & { sql: Sql; llmCall: PromoterLlmCall },
+): Promise<PromoterRunResult> {
+  const { runAdmissionRecoveries, readAuthorizedComponentScreening } = await import('../../work-item-admission-recovery');
+  const completed = await completedOrdinaryResult(deps.sql, options, options.runId, true);
+  if (completed) return completed;
+  const { runAdmissionReviews } = await import('../../work-item-admission-review');
+  const reviewed = await runAdmissionReviews(options, deps.sql, deps.llmCall);
+  if (reviewed) return reviewed;
+  let ordinarySlot = options.targetItemIds === undefined ? await claimOrdinarySlot(deps.sql, options) : null;
+  if (ordinarySlot?.completedRunIds?.includes(options.runId) && ordinarySlot.result) return ordinarySlot.result;
   const recoveryRuns: PromoterRunResult[] = [];
-  const recovered = await runAdmissionRecoveries(options, {
+  const recovered = ordinarySlot ? 0 : await runAdmissionRecoveries(options, {
     authorize: deps.authorize,
     dispatch: deps.dispatch,
     lockSql: deps.lockSql,
@@ -108,7 +237,7 @@ export async function runAdmissionPromoterWithRecovery(
     },
   }, deps.sql);
   // A request-accelerated fire must not also accelerate writes to unrelated items.
-  // The routine engine has already retained its ordinary recurring cadence.
+  // A due persisted ordinary slot instead gets its own invocation before recovery.
   if (recovered > 0) {
     await settleAdmissionRunReplacedByRecovery(deps.sql, {
       runId: options.runId,
@@ -131,14 +260,38 @@ export async function runAdmissionPromoterWithRecovery(
       guardRefusals: [], writerCoverageGap: [],
     });
   }
-  const componentScreeningItemIds = options.targetItemIds === undefined
-    ? await readAuthorizedComponentScreeningIds(options, deps, deps.sql) : [];
-  return runWorkItemAdmissionPromoter({
+  if (options.targetItemIds === undefined && !ordinarySlot) {
+    ordinarySlot = await claimOrdinarySlot(deps.sql, options, true);
+  }
+  if (ordinarySlot?.runId) {
+    // The ordinary writer may have committed immediately before its host died,
+    // leaving the slot unsettled. Reuse that committed result without model I/O.
+    const result = await completedOrdinaryResult(deps.sql, options, ordinarySlot.runId);
+    if (result) {
+      await finishOrdinarySlot(deps.sql, options, result);
+      return result;
+    }
+  }
+  const componentScreening = options.targetItemIds === undefined
+    ? await readAuthorizedComponentScreening(options, deps, deps.sql) : undefined;
+  const result = await runWorkItemAdmissionPromoter({
     ...options,
+    runId: ordinarySlot?.runId ?? options.runId,
     sql: deps.sql,
     llmCall: deps.llmCall,
-    componentScreeningItemIds,
+    componentScreeningItemIds: componentScreening?.itemIds,
+    componentScreening,
+    ...(ordinarySlot ? { beforePersist: async () => {
+      await deps.sql.begin(async (rawTx) => {
+        const routine = await ordinaryRoutine(rawTx as unknown as Sql, options);
+        if (ordinarySlotSchema.parse(routine.metadata?.admissionOrdinarySlot).runId !== ordinarySlot!.runId) {
+          throw new Error('ordinary admission slot changed before persistence');
+        }
+      });
+    } } : {}),
   });
+  if (ordinarySlot) await finishOrdinarySlot(deps.sql, options, result);
+  return result;
 }
 
 /**

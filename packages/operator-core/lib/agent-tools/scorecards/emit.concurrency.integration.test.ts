@@ -238,14 +238,70 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     const subject = { workspaceId: activeWorkspaceId(), subjectIssueId: 'EI-MUTEX-TIMEOUT-SUBJECT' };
     const releaseFirst = await acquireGradingAuditSubjectMutex(subject);
     try {
-      await expect(acquireGradingAuditSubjectMutex(subject, undefined, 150)).rejects
-        .toBeInstanceOf(ScorecardEmitMutexWaitTimeoutError);
+      await expect(acquireGradingAuditSubjectMutex(subject, undefined, 150)).rejects.toMatchObject({
+        name: 'ScorecardEmitMutexWaitTimeoutError',
+        code: 'scorecard_emit_mutex_timeout',
+        phase: 'local-queue',
+      } satisfies Partial<ScorecardEmitMutexWaitTimeoutError>);
     } finally {
       await releaseFirst();
     }
     const retryRelease = await acquireGradingAuditSubjectMutex(subject, undefined, 150);
     await retryRelease();
   }, 120_000);
+
+  it('keeps same-key waiters out of the mutex pool while an independent subject proceeds', async () => {
+    const blockedSubject = {
+      workspaceId: activeWorkspaceId(),
+      subjectIssueId: 'EI-MUTEX-SAME-KEY-WAITERS',
+    };
+    const independentSubject = {
+      workspaceId: activeWorkspaceId(),
+      subjectIssueId: 'EI-MUTEX-INDEPENDENT-SUBJECT',
+    };
+    const releaseBlocked = await acquireGradingAuditSubjectMutex(blockedSubject);
+    const waiterPhases = Array.from({ length: 7 }, () => createPhaseTracker());
+    const waiters = waiterPhases.map((phases) =>
+      acquireGradingAuditSubjectMutex(blockedSubject, phases, 10_000).then((release) => release()),
+    );
+    const independentPhases = createPhaseTracker();
+    let releaseIndependent: (() => Promise<void>) | undefined;
+    const independent = acquireGradingAuditSubjectMutex(independentSubject, independentPhases, 10_000).then(
+      (release) => {
+        releaseIndependent = release;
+        return 'acquired' as const;
+      },
+      () => 'rejected' as const,
+    );
+
+    try {
+      // All same-key requests have synchronously joined the local queue by this
+      // point. They must not occupy the seven remaining dedicated pool slots.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(waiterPhases.flatMap((phases) => phases.intervals()).filter(({ phase }) =>
+        phase === 'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+      )).toEqual([]);
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const independentBeforeRelease = await Promise.race([
+        independent,
+        new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), 2_000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      expect(independentBeforeRelease).toBe('acquired');
+      expect(independentPhases.intervals().map(({ phase }) => phase)).toContain(
+        'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+      );
+    } finally {
+      await releaseIndependent?.();
+      await releaseBlocked();
+      await Promise.allSettled(waiters);
+      await independent;
+      await releaseIndependent?.();
+    }
+  }, 30_000);
 
   it('bounds grading-audit mutex pool acquisition and releases a late reservation', async () => {
     await _closeGradingAuditSubjectMutexForTests();
@@ -726,7 +782,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     });
     const secondIntervals = secondPhases.intervals();
     expect(secondIntervals.map(({ phase }) => phase)).toContain('scorecards:emit:mutex:grading-audit-subject:pool-reservation');
-    expect(secondIntervals.find(({ phase }) => phase === 'scorecards:emit:mutex:grading-audit-subject:advisory-lock')?.durationMs)
+    expect(secondIntervals.find(({ phase }) => phase === 'scorecards:emit:mutex:grading-audit-subject:local-queue')?.durationMs)
       .toBeGreaterThan(0);
   }, 30_000);
 });

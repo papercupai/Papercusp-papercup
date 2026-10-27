@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { deriveCapacityVerdict, type AdmissionTerms } from './capacity-verdict';
+import {
+  deriveCapacityVerdict as deriveCapacityVerdictRaw,
+  GATEWAY_REFUSAL_MIN_COUNT,
+  type AdmissionTerms,
+  type GatewayOutcomeTerms,
+} from './capacity-verdict';
+
+/** A MEASURED gateway outcome window with no refusals — the clear control. */
+const CLEAR_OUTCOMES: GatewayOutcomeTerms = {
+  windowMinutes: 15,
+  refused: 0,
+  served: 500,
+  refusedOwners: 0,
+  topRefusedOwner: null,
+};
+
+/**
+ * The pre-WI-6554700010029776 cases below predate the outcome leg and assume no refusals.
+ * Default it to a measured clear window so their meaning is unchanged; the outcome-leg
+ * cases pass `outcomes` explicitly (including `null`).
+ */
+type VerdictInput = Parameters<typeof deriveCapacityVerdictRaw>[0];
+const deriveCapacityVerdict = (
+  input: Omit<VerdictInput, 'outcomes'> & { outcomes?: GatewayOutcomeTerms | null },
+) => deriveCapacityVerdictRaw({ ...input, outcomes: input.outcomes === undefined ? CLEAR_OUTCOMES : input.outcomes });
 import type { ProviderPoolVerdict } from '../deployment/account-pool-store';
 
 /**
@@ -202,9 +226,91 @@ describe('deriveCapacityVerdict', () => {
       { provider: 'codex', pool: pool({ provider: 'codex', serviceable: 2 }), admission: { reachable: true, blind: false, dispatchBudget: 0, inFlight: 3 } },
     ];
     for (const input of cases) {
-      expect(['usage-wall', 'admission-concurrency', 'pacing-policy', 'none']).toContain(
+      expect(['usage-wall', 'admission-concurrency', 'pacing-policy', 'gateway-shed', 'none']).toContain(
         deriveCapacityVerdict(input).binding,
       );
     }
+  });
+});
+
+/**
+ * WI-6554700010029776 — the gateway OUTCOME leg. Pinned to the reading that exposed the gap:
+ * on 2026-10-27 01:00-01:58Z codex served 714 and refused 164 (shed/429) in 60m, every pool
+ * row read serviceable and admission had spare slots, and the verdict said "measured green".
+ */
+describe('deriveCapacityVerdict — gateway outcome leg', () => {
+  const refusing = (over: Partial<GatewayOutcomeTerms> = {}): GatewayOutcomeTerms => ({
+    windowMinutes: 15,
+    refused: 164,
+    served: 714,
+    refusedOwners: 3,
+    topRefusedOwner: { ownerId: 'oddsmith-sidecar', refused: 70 },
+    ...over,
+  });
+
+  it('binds gateway-shed when refusals cross both floors while every point-in-time leg is clear', () => {
+    const v = deriveCapacityVerdict({ provider: 'codex', pool: pool({ provider: 'codex' }), admission: MEASURED_ADMISSION, outcomes: refusing() });
+    expect(v.binding).toBe('gateway-shed');
+    expect(v.atCapacity).toBe(false);
+    expect(v.reason).toContain('refused 164');
+    expect(v.reason).not.toContain('every leg was measured');
+    const ev = v.evidence.find((e) => e.signal === 'gateway.refusedRecent');
+    expect(ev?.value).toBe(164);
+    expect(ev?.writer).toContain('summarizeGatewayProviderOutcomes');
+  });
+
+  it('is atCapacity only when nothing was served', () => {
+    const v = deriveCapacityVerdict({ provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION, outcomes: refusing({ served: 0 }) });
+    expect(v.binding).toBe('gateway-shed');
+    expect(v.atCapacity).toBe(true);
+  });
+
+  it('stays none below the count floor, however high the share', () => {
+    const v = deriveCapacityVerdict({
+      provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION,
+      outcomes: refusing({ refused: GATEWAY_REFUSAL_MIN_COUNT - 1, served: 0 }),
+    });
+    expect(v.binding).toBe('none');
+  });
+
+  it('stays none below the share floor, however many refusals', () => {
+    const v = deriveCapacityVerdict({ provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION, outcomes: refusing({ refused: 40, served: 10_000 }) });
+    expect(v.binding).toBe('none');
+    expect(v.reason).toContain('every leg was measured, so this is a measured green');
+  });
+
+  it('an unreadable outcome leg is UNMEASURED, never a measured green', () => {
+    const v = deriveCapacityVerdict({ provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION, outcomes: null });
+    expect(v.binding).toBe('none');
+    expect(v.unknown.some((u) => u.includes('gateway outcomes'))).toBe(true);
+    expect(v.reason).not.toContain('every leg was measured');
+    expect(v.evidence.find((e) => e.signal === 'gateway.refusedRecent')?.value).toBeNull();
+  });
+
+  it('a provider wall still beats refusals', () => {
+    const v = deriveCapacityVerdict({
+      provider: 'codex', pool: pool({ serviceable: 0, walledFresh: 7, atCapacity: true, binding: 'usage-wall' }),
+      admission: MEASURED_ADMISSION, outcomes: refusing(),
+    });
+    expect(v.binding).toBe('usage-wall');
+  });
+
+  it('pacing keeps its binding and carries the refusal note', () => {
+    const v = deriveCapacityVerdict({
+      provider: 'codex', pool: pool({ serviceable: 0, pacing: 3, atCapacity: true, binding: 'pacing-policy' }),
+      admission: MEASURED_ADMISSION, outcomes: refusing(),
+    });
+    expect(v.binding).toBe('pacing-policy');
+    expect(v.reason).toContain('refused 164');
+  });
+
+  it('names the caller when one caller holds most refusals, and does not when they are spread', () => {
+    const concentrated = deriveCapacityVerdict({
+      provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION,
+      outcomes: refusing({ refusedOwners: 1, topRefusedOwner: { ownerId: 'oddsmith-sidecar', refused: 164 } }),
+    });
+    expect(concentrated.reason).toContain('ONE caller (oddsmith-sidecar)');
+    const spread = deriveCapacityVerdict({ provider: 'codex', pool: pool(), admission: MEASURED_ADMISSION, outcomes: refusing() });
+    expect(spread.reason).not.toContain('ONE caller');
   });
 });

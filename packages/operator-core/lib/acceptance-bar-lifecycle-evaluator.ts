@@ -248,14 +248,16 @@ function attributedMessage(
     ? `\nNEXT REPAIR${repair.barKey ? ` (${repair.barKey}, ${repair.code})` : ` (${repair.code})`}: ${repair.action}`
     : '';
 
-  // The second omission that cost real time: this refusal does not recruit a grader,
-  // and nothing said so. Recruitment fires only for ACCEPTANCE_GRADER_GATE_CODES
-  // ({acceptance_ungraded, self_graded_only}) — deliberately, so a malformed rubric
-  // cannot spawn agents. Every code rendered HERE is a contract code, so recruitment
-  // is categorically not in play and the author owns every repair above.
+  // This evaluator does not recruit. Its ship-phase inventory also includes
+  // independent grading and the later author verdict; those are not author repairs
+  // that can be performed before the grading door opens. The canonical ship gate
+  // checks pre-grading prerequisites before deciding whether to recruit.
   const recruitmentLine =
     '\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / '
-    + 'self_graded_only. These repairs are the plan author\'s alone — do not recruit or wake a peer for them.';
+    + 'self_graded_only through plans:set-plan-status. Repair the blocking pre-grading obligations first; '
+    + 'then retry plans:set-plan-status with status shipped to use its independent grader routing. '
+    + 'A missing or stale independent grading is grader work; record the author verdict after reading that grading. '
+    + 'Never self-grade or launch a parallel reviewer.';
 
   return `${head}${repairLine}${recruitmentLine}`;
 }

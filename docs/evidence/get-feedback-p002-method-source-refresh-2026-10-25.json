@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-method-source-refresh",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "Committed source and controlled fixtures only. Original native28326/28545 and supplemental69704/69782, source lease ABA, custody, physical actor, cohort usefulness, independent acceptance and shipment remain open.",
+  "trigger": "Named committed METHOD changes persist the explicit rubric context, bypass archived answers for current-method reviews and recheck canonical source/answerer eligibility before launch. Named dispatcher, core, prod/tool and test-run fixture bytes moved relative to the selected old proofs.",
+  "testReview": "Core adds METHOD context/fingerprint/recovery/lineage and archive-bypass tests, expands initial recovery from the default case to default plus METHOD, and adds METHOD to current-review delivery cases. Original four declared core cases and164 declared dispatcher cases remain unchanged. No equivalence of the complete historical core population is claimed.",
+  "verification": {
+    "commit": "b4976bd27afe37d4fba7ccac3669cced038bab1d",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=b4976bd27afe37d4fba7ccac3669cced038bab1d -- packages/operator-core/lib/consult/get-feedback-core.integration.test.ts packages/operator-core/lib/consult/consult-dispatch.test.ts packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+    "startedAt": "2026-10-25T23:22:57.139Z",
+    "finishedAt": "2026-10-25T23:27:13.892Z",
+    "exit": 0,
+    "reporterSink": "Explicit caller-supplied durable PAPERCUSP_TEST_RUNS_DB_URL, PAPERCUSP_TEST_RUN_HARNESS=papercusp and maintained inserted-receipt validation.",
+    "totalPassed": 376,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "collectionFailed": false,
+    "runs": [
+      { "id": 22077093, "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts", "passed": 162, "declaredCasesPreserved": 4 },
+      { "id": 22077111, "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts", "passed": 172, "declaredCasesPreserved": 164 },
+      { "id": 22077094, "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts", "passed": 9, "declaredCasesPreserved": 9 },
+      { "id": 22077092, "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts", "passed": 33, "declaredCasesPreserved": 0 }
+    ],
+    "missingOrAmbiguousDeclaredCases": [],
+    "log": "/tmp/gf-p002-method-source-20261025.log",
+    "logSha256": "b62a770dbc37bbe1d3cd764b41314d5fc77e07cab4d15dc231296d1221fc1fd1",
+    "state": "/tmp/gf-p002-method-source-20261025.state.json",
+    "caseAudit": "/tmp/gf-p002-method-case-audit-20261025.json"
+  },
+  "qualification": {
+    "replacements": [
+      { "binding": 70681, "retired": 70595, "specId": "GF-P002-source", "run": 22077092 },
+      { "binding": 70682, "retired": 70594, "specId": "GF-P002-source", "run": 22077094 },
+      { "binding": 70683, "retired": 70481, "specId": "AUTO-BAR-R-2-P-002", "run": 22077111 },
+      { "binding": 70684, "retired": 70480, "specId": "GF-P002-source", "run": 22077111 },
+      { "binding": 70685, "retired": 69875, "specId": "GF-P002-source", "run": 22077093 }
+    ],
+    "independentCurrentness": "Five replacements independently server-measured CURRENT before exact old-row retirement.",
+    "originalRecipesEqual": true,
+    "originalAdequacyEqual": true,
+    "addedFixturePaths": [],
+    "removedFixturePaths": [],
+    "currentnessCapture": "/tmp/gf-p002-method-source-currentness-20261025.json",
+    "retirementCapture": "/tmp/gf-p002-method-source-retirement-20261025.json",
+    "inactiveOldRowsReadback": "Active-only exact-id read of70595/70594/70481/70480/69875 returned count0 after retirement.",
+    "historicalAuthority": "D-035 retains the earlier dispatcher oracle evolution; D-037 retains contract fixture repair history. This refresh preserves the selected current declarations."
+  },
+  "postRefreshAssessment": {
+    "capture": "/tmp/gf-p002-post-method-assessment-20261025.json",
+    "barRequirement": "AUTO-BAR-R-2-P-002@3",
+    "barVerdict": "fail",
+    "passingTestBindings": [70646, 70683, 65882, 70659],
+    "barGaps": ["Caught mutant70471 is source/test/fixture stale."],
+    "sourceRequirement": "GF-P002-source@1",
+    "sourceVerdict": "fail",
+    "sourceWouldBlock": ["traceability", "execution-integrity", "freshness", "disclosed-gap"],
+    "scope": "A passing source refresh does not establish current native execution, physical actor, lease ABA, custody, cohort usefulness, independent acceptance or shipment."
+  },
+  "remaining": {
+    "mutationBindingsNotRefreshed": [68733, 69319, 69322, 70016, 70471],
+    "exactPriorMutationDescriptors": "/tmp/gf-p002-method-prior-mutant-runs-20261025.json",
+    "priorMutationRunIds": [21878002, 21936787, 21937299, 21999419],
+    "reporterIncident": "EI-26900834772734276 original double-timeout root cause remains unknown.",
+    "nativeLoopIncident": "EI-26984631684161013 remains open; delivered wake is not qualified loop-origin execution proof.",
+    "next": "Review exact backend, identity, retained-history and attribution mutation commands against the current committed source. Refresh only with canonical clean control/copy/mutant provenance; preserve original failed-case populations and all native limits."
+  }
+}

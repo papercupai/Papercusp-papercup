@@ -1365,6 +1365,42 @@ describe('runConditionStalenessTick — bridge wiring', () => {
     expect(bridgeInputs).toEqual([{ key, open: true }]);
   });
 
+  it('WI-6554700010029296: hands the held-owner sweep the bridged keys and appends its releases', async () => {
+    const coveredSeen: string[][] = [];
+    const swept = { conditionKey: 'alarm:codex-rollout-provider:x', released: 'WI-1', settled: true };
+    const res = await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp', open: true })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async () => ({
+        acquired: [],
+        released: [{ conditionKey: 'green-stall:other', released: 'WI-0', settled: true }],
+        skipped: 0,
+      }),
+      reconcileHeldOwners: async (covered) => {
+        coveredSeen.push([...covered]);
+        return [swept];
+      },
+    });
+    expect(coveredSeen).toEqual([['green-stall:papercusp']]);
+    expect(res.bridged.released.map((r) => r.conditionKey)).toEqual(['green-stall:other', swept.conditionKey]);
+  });
+
+  it('WI-6554700010029296: a held-owner sweep failure keeps the bridge result', async () => {
+    const res = await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async () => ({ acquired: [], released: [], skipped: 3 }),
+      reconcileHeldOwners: async () => {
+        throw new Error('sweep down');
+      },
+    });
+    expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 3 });
+  });
+
   it('a bridge failure never crashes the tick', async () => {
     const res = await runConditionStalenessTick({
       readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],

@@ -320,7 +320,14 @@ export default defineTool({
           includeArchived,
           conversationsWorkspace,
         },
-        tags: ['harness_plans', 'plan_revisions', 'plan_runs', 'coord_event_log'],
+        tags: [
+          'harness_plans', 'plan_revisions', 'plan_runs', 'coord_event_log',
+          // Owner questions and their Decision escalation projection each have
+          // their own reactive writes. Bust this aggregate on those same
+          // events that refresh the Inbox, before its sync refetch can cache a
+          // snapshot predating a neighbouring question.
+          'coord_open_escalations', 'coord_conversations',
+        ],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
         // P-007/D-082: the read D-078 measured. :3070 runs 16 workers against
         // per-process L1s, so each paid its OWN cold build of this ~10-source

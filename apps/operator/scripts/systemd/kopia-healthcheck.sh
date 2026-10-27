@@ -439,7 +439,7 @@ unit_procs() { tr '\n' ' ' < "$1/cgroup.procs" 2>/dev/null | sed 's/ *$//'; }
 leftover=""
 if [ -d "$UNIT_CGROUP_ROOT" ]; then
   for unit in kopia-home-snapshot.service kopia-snapshots.service; do
-    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" 2>/dev/null | head -1)
+    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" -print -quit 2>/dev/null || true)
     [ -n "$cg" ] || continue
     [ -n "$(unit_procs "$cg")" ] || continue   # empty cgroup: no systemctl round trip
     unit_stopped "$unit" || continue

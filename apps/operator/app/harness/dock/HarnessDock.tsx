@@ -86,7 +86,8 @@ export function DockPaneFullscreenActions({ activePanel }: IDockviewHeaderAction
   const { maximized, toggle } = useContext(PaneFullscreenContext);
   if (!activePanel) return null;
   const label = maximized ? `Restore ${activePanel.title}` : `Fullscreen ${activePanel.title}`;
-  return <Button variant="ghost" aria-label={label} title={maximized ? `${label} (Esc)` : label}
+  return <Button variant="ghost" data-dock-pane-id={activePanel.id}
+    aria-label={label} title={maximized ? `${label} (Esc)` : label}
     onPointerDown={event => event.stopPropagation()}
     onClick={() => toggle(activePanel.id)}>
     {maximized ? <Minimize2 size={13} aria-hidden /> : <Maximize2 size={13} aria-hidden />}
@@ -98,6 +99,7 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   const [fullscreenPane, setFullscreenPane] = useQueryState('dockpane', parseAsString);
   const [dockApi, setDockApi] = useState<DockviewApi | null>(null);
   const ownsMaximizedGroup = useRef(false);
+  const paneSizes = useRef<Array<{ group: DockviewApi['groups'][number]; width: number; height: number }>>([]);
   useLayoutEffect(() => {
     if (!dockApi) return;
     if (fullscreen.maximized && fullscreenPane) {
@@ -107,18 +109,31 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
         ownsMaximizedGroup.current = true;
       }
     } else if (ownsMaximizedGroup.current) {
+      // Dockview caches hidden siblings in pixels across the viewport resize.
+      // Reapply the original proportions without rehydrating/remounting panes.
+      const surface = fullscreen.popupRef.current;
+      if (surface) dockApi.layout(surface.clientWidth, surface.clientHeight);
       dockApi.exitMaximizedGroup();
+      for (const { group, width, height } of paneSizes.current) {
+        if (dockApi.groups.includes(group)) {
+          group.api.setSize({ width: width * dockApi.width, height: height * dockApi.height });
+        }
+      }
+      paneSizes.current = [];
       ownsMaximizedGroup.current = false;
       void setFullscreenPane(null);
     }
-  }, [dockApi, fullscreen.maximized, fullscreenPane, setFullscreenPane]);
+  }, [dockApi, fullscreen.maximized, fullscreenPane, fullscreen.popupRef, setFullscreenPane]);
   const togglePaneFullscreen = useCallback((panelId: string) => {
     if (fullscreen.maximized) fullscreen.reset();
     else {
+      if (dockApi) paneSizes.current = dockApi.groups.map(group => ({
+        group, width: group.api.width / dockApi.width, height: group.api.height / dockApi.height,
+      }));
       void setFullscreenPane(panelId);
       fullscreen.toggleScreen();
     }
-  }, [fullscreen.maximized, fullscreen.reset, fullscreen.toggleScreen, setFullscreenPane]);
+  }, [dockApi, fullscreen.maximized, fullscreen.reset, fullscreen.toggleScreen, setFullscreenPane]);
   const fullscreenControls = useMemo(() => ({ maximized: fullscreen.maximized, toggle: togglePaneFullscreen }),
     [fullscreen.maximized, togglePaneFullscreen]);
   useEffect(() => {

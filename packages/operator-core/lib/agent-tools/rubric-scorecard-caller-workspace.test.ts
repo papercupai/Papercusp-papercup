@@ -15,7 +15,7 @@ import type { Rubric } from '../rubrics';
 const h = vi.hoisted(() => ({
   getRubric: vi.fn(),
   getRubricWithoutSeeding: vi.fn(),
-  listRubrics: vi.fn(),
+  listRubricsPage: vi.fn(),
   readRubricPlanRevision: vi.fn(),
   listScorecards: vi.fn(),
   listScorecardPage: vi.fn(),
@@ -27,7 +27,11 @@ vi.mock('../rubrics', async (importOriginal) => {
     ...actual,
     getRubric: h.getRubric,
     getRubricWithoutSeeding: h.getRubricWithoutSeeding,
-    listRubrics: h.listRubrics,
+    readRubricWithoutSeeding: async (...args: unknown[]) => {
+      const rubric = await h.getRubricWithoutSeeding(...args);
+      return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+    },
+    listRubricsPage: h.listRubricsPage,
     readRubricPlanRevision: h.readRubricPlanRevision,
   };
 });
@@ -104,9 +108,9 @@ describe('rubric/scorecard caller workspace binding (EI-22577140653575153)', () 
       observed.push({ store: 'getRubric', workspaceId: activeWorkspaceId() });
       return rubric;
     });
-    h.listRubrics.mockImplementation(async () => {
-      observed.push({ store: 'listRubrics', workspaceId: activeWorkspaceId() });
-      return [rubric];
+    h.listRubricsPage.mockImplementation(async () => {
+      observed.push({ store: 'listRubricsPage', workspaceId: activeWorkspaceId() });
+      return { rubrics: [rubric], hasMore: false, nextOffset: null };
     });
     h.getRubricWithoutSeeding.mockImplementation(async () => {
       observed.push({ store: 'getRubricWithoutSeeding', workspaceId: activeWorkspaceId() });
@@ -129,7 +133,7 @@ describe('rubric/scorecard caller workspace binding (EI-22577140653575153)', () 
 
     expect(observed).toEqual([
       { store: 'getRubric', workspaceId: CALLER_WORKSPACE },
-      { store: 'listRubrics', workspaceId: CALLER_WORKSPACE },
+      { store: 'listRubricsPage', workspaceId: CALLER_WORKSPACE },
       { store: 'getRubricWithoutSeeding', workspaceId: CALLER_WORKSPACE },
       { store: 'listScorecards', workspaceId: CALLER_WORKSPACE },
       { store: 'listScorecardPage', workspaceId: CALLER_WORKSPACE },

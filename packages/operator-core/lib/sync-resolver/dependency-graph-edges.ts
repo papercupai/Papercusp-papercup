@@ -70,11 +70,12 @@ import {
   type UncertifiedConditionReason,
 } from '../external-condition-reachability';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /** The coordination workspace `work_item_deps` is keyed in. NOT a tenant knob — see header. */
 const COORD_WORKSPACE = 'default';
 
 /** Families, as the ENGINE decides them: by the VALUE of item_kind, never by a family name. */
-const ISSUE_KINDS = ['bug', 'change', 'task'] as const;
+const ISSUE_KINDS = ISSUE_FAMILY_ROUTE_KINDS;
 
 export interface DependencyGraphEdge {
   /** feature_id of the BLOCKED item (the dependant). Always resolves — it is an inner join. */

@@ -5,6 +5,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { buildPersonalQueryEmbedder, PERSONAL_EMBEDDER_MODE } from '../../personal-vault/embedding';
 import { searchSocialPosts, SocialSearchNotGranted } from '../../capability-verbs/social-read';
+import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
@@ -56,6 +57,7 @@ export default defineTool({
       const outcome = await searchSocialPosts(ctx.tx as unknown as postgres.Sql, {
         workspaceId,
         userId: user.id,
+        agentOwnerId: disclosureSubject(ctx),
         query: args.query,
         // The granted set, narrowed to social sources by the seam. Passing it
         // through unfiltered would search the owner's mail as well.

@@ -86,9 +86,24 @@ if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined) {
 // Evidence must outlive the private database. Require an explicit reporter-only
 // sink before bootstrapping when the caller asks for durable ledger receipts.
 // Never derive it from a product URL or silently claim a private insert survived.
-if (isolatedRuntime && (process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() ||
-    process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim()) {
-  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+const durableEvidenceRequested = ['PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+  'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT']
+  .some(key => process.env[key]?.trim());
+if (durableEvidenceRequested && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim()) {
+  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL is required for durable test receipts');
+  process.exit(1);
+}
+
+// Capture reporter attribution BEFORE replacing the product workspace below.
+// A shared-ledger insert under test-runtime-* survives cleanup but cannot be
+// read or bound by the caller's workspace. Nested wrappers retain this pin.
+const callerTestRunWorkspace = (process.env.PAPERCUSP_TEST_RUN_WORKSPACE ||
+  process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE)?.trim();
+if (isolatedRuntime && (
+  (process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== undefined && !process.env.PAPERCUSP_TEST_RUN_WORKSPACE.trim()) ||
+  (process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim() && !callerTestRunWorkspace)
+)) {
+  console.error('[with-test-pg] evidence preflight failed: isolated shared-ledger runs require a nonblank caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE, PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE)');
   process.exit(1);
 }
 
@@ -124,18 +139,23 @@ try {
 let managedTaskSocket;
 let managedTaskBusAddress;
 let runtimeRoot = null;
+let runtimeTmpBase = null;
 async function createIsolatedRuntimeRoot() {
   // PG and Vitest may use /dev/shm, but Linux SRT replaces /dev with a
   // private device namespace and deliberately skips /dev allowWrite mounts.
   // Native HOME/TMPDIR must survive that namespace. Resolve symlinks too;
   // changing PG's capacity-selected volume would not fix this placement rule.
-  let base = await realpath(tmpdir());
+  // Nested proof wrappers need sibling private roots on the same selected
+  // volume. Recursively nesting beneath the parent's TMPDIR eventually exceeds
+  // the Unix socket address limit even for an ordinary fixture socket.
+  let base = await realpath(process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE?.trim() || tmpdir());
   const masked = path => process.platform === 'linux' && /^\/(dev|proc)(\/|$)/.test(path);
   if (masked(base)) {
     await mkdir('/tmp/pcv', { recursive: true });
     base = await realpath('/tmp/pcv');
     if (masked(base)) throw new Error('isolated native runtime temporary root resolves into the sandbox device namespace');
   }
+  runtimeTmpBase = base;
   return mkdtemp(join(base, 'papercusp-test-runtime-'));
 }
 if (managedTasks) {
@@ -235,7 +255,7 @@ const { SHARED_TEST_PG_DURABILITY_OFF } = await import('../libs/test-config/src/
 const { browserCachePath } = await import('./lib/playwright-cache-path.mjs');
 const { defaultEvidenceRoot } = await import('../libs/generic/verification-harness/src/evidence-root.ts');
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
-const { cleanupOwnedTestState } = await import('./lib/with-test-pg-cleanup.mjs');
+const { cleanupOwnedTestState, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
@@ -422,7 +442,7 @@ async function stopPrivateManagedTasks() {
 const ownProcessGroup = isolatedRuntime && process.platform === 'linux' &&
   Number(readFileSync('/proc/self/stat', 'utf8').split(')').slice(1).join(')').trim().split(/\s+/)[2]) === process.pid;
 if (isolatedRuntime) {
-  for (const sig of ['SIGINT', 'SIGTERM']) AsyncExitHook.unhookEvent(sig);
+  unhookRegisteredExitSignals(AsyncExitHook);
 }
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
@@ -536,13 +556,19 @@ if (runtimeRoot && runtimeId) {
   // Rustup shims depend on HOME/settings.toml. Capture the selected installed
   // executable while the caller's toolchain configuration is still available;
   // only its binary directory crosses into the private runtime, like rg above.
-  const rustupAsset = await resolveExecutable((process.env.PATH ?? '').split(delimiter)
-    .filter(Boolean).map(dir => resolve(ROOT, dir, 'rustup')));
-  const cargoSelection = rustupAsset ? spawnSync(rustupAsset, ['which', 'cargo'], {
-    cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 5000,
-  }) : null;
-  const cargoAsset = cargoSelection?.status === 0
-    ? await resolveExecutable([cargoSelection.stdout.trim()]) : undefined;
+  // A parent wrapper already selected this executable before isolating HOME.
+  // Revalidate that input instead of consulting the now-empty Rustup settings.
+  const inheritedCargo = process.env.PAPERCUSP_TEST_CARGO?.trim();
+  let cargoAsset = inheritedCargo ? await resolveExecutable([inheritedCargo]) : undefined;
+  if (!cargoAsset) {
+    const rustupAsset = await resolveExecutable((process.env.PATH ?? '').split(delimiter)
+      .filter(Boolean).map(dir => resolve(ROOT, dir, 'rustup')));
+    const cargoSelection = rustupAsset ? spawnSync(rustupAsset, ['which', 'cargo'], {
+      cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 5000,
+    }) : null;
+    cargoAsset = cargoSelection?.status === 0
+      ? await resolveExecutable([cargoSelection.stdout.trim()]) : undefined;
+  }
   const home = join(runtimeRoot, 'home');
   const papercuspHome = join(home, '.papercusp');
   const workspacesRoot = join(runtimeRoot, 'workspaces');
@@ -597,6 +623,9 @@ if (runtimeRoot && runtimeId) {
     PAPERCUSP_DBOS_ORCHESTRATOR: operatorApi ? '0' : '1',
     // The test starts explicit background work; global scheduled routines may
     // otherwise act on the shared checkout or external services during boot.
+    // The orchestrator's own tick has a separate opt-out: an unset harness
+    // override schedules every harness even when routines and timers are off.
+    PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
     PAPERCUSP_DBOS_ROUTINES: '0',
     PAPERCUSP_DBOS_TIMERS: '0',
     PAPERCUSP_DBOS_AUTOLOOP: '0',
@@ -625,6 +654,7 @@ if (runtimeRoot && runtimeId) {
     // otherwise Playwright silently resolves an empty runtime-local cache.
     PLAYWRIGHT_BROWSERS_PATH: browserCachePath(process.env),
     PAPERCUSP_PG_SQL_DIR: sqlDir,
+    PAPERCUSP_TEST_RUNTIME_TMP_BASE: runtimeTmpBase,
     TMPDIR: join(runtimeRoot, 'tmp'),
   };
 }
@@ -653,6 +683,9 @@ if (isolatedRuntime) {
     // Optional receipts from the existing committed-source loader are evidence,
     // not an operator identity or endpoint. Retain them in the profile child.
     'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
+    // This is the test router's execution contract, not a product endpoint.
+    // Multi-process proofs validate it before allocating their nested runtime.
+    'PAPERCUSP_TEST_FILE_TIMEOUT_MS',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
@@ -676,6 +709,7 @@ if (isolatedRuntime) {
       delete childEnv[key];
     }
   }
+  if (callerTestRunWorkspace) childEnv.PAPERCUSP_TEST_RUN_WORKSPACE = callerTestRunWorkspace;
 }
 if (operatorApi) {
   // A request journey needs the same isolation as a background test, but must

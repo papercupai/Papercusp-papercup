@@ -21,44 +21,33 @@
  *   tsx seed-gate-fire-drill-routine.ts             # seed ACTIVE
  *   tsx seed-gate-fire-drill-routine.ts --inactive  # seed off
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.GATE_FIRE_DRILL_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** 6-field cron, second-first: weekly, Sunday 04:23:00. */
 const CRON = '0 23 4 * * 0';
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'gate-fire-drill';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify({ cron: CRON })}::text::jsonb,
-            'system:gate-fire-drill', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      active = EXCLUDED.active,
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-gate-fire-drill-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `weekly (Sun 04:23) kill-a-run fire drill asserting the P-003 alarm chain. ` +
-      (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
-  );
-  await sql.end({ timeout: 5 });
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-gate-fire-drill-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-gate-fire-drill-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const name = 'gate-fire-drill';
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify({ cron: CRON }),
+      targetRole: 'system:gate-fire-drill',
+      replaceActive: true,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, name }) => {
+    console.log(
+        `[seed-gate-fire-drill-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `weekly (Sun 04:23) kill-a-run fire drill asserting the P-003 alarm chain. ` +
+          (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
+      );
+    await sql.end({ timeout: 5 });
+  },
+});

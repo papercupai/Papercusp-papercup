@@ -246,6 +246,25 @@ export function diffRegistry(expected: ExpectedRow[], actual: SubstitutionRow[])
 }
 
 /** Human-readable drift report — one block per row, truncated for terminals. */
+/**
+ * The `--check` verdict. An EMPTY registry is not drift: that database was never seeded
+ * (the gate's private test Postgres, a fresh dev DB), so nothing can be compared. Measured
+ * 2026-10-27 at frozen repair head 5ff872da: the gate leg ran against
+ * `[db] target source=discovery`, reported every pair MISSING and exited 1, a gating red no
+ * candidate could ever clear. `unseeded` maps to EXIT_NOT_CHECKED, which the guard registry
+ * treats as non-gating; a seeded (live) database still gates on real drift.
+ */
+export type RegistryCheckVerdict =
+  | { kind: 'unseeded' }
+  | { kind: 'clean' }
+  | { kind: 'drift'; drifts: RowDrift[] };
+
+export function registryCheckVerdict(expected: ExpectedRow[], actual: SubstitutionRow[]): RegistryCheckVerdict {
+  if (actual.length === 0) return { kind: 'unseeded' };
+  const drifts = diffRegistry(expected, actual);
+  return drifts.length === 0 ? { kind: 'clean' } : { kind: 'drift', drifts };
+}
+
 export function formatDrift(drifts: RowDrift[]): string {
   if (drifts.length === 0) return '✓ bash_tool_substitutions matches the audited pairs\n';
 

@@ -60,6 +60,7 @@ import {
   describeActivationAuditPlanTargetProblems,
   validateActivationAuditPlanTargets,
   type AuditCitation,
+  type CitationDeps,
   type AuditItemEntry,
   type ActivationAuditPayload,
 } from '../../plan-audits';
@@ -881,17 +882,21 @@ export default defineTool({
       // An unresolvable citation root leaves file / symbol / package entries unverified,
       // never falsely not-found against the wrong tree.
       let declarationRepoRoot: string | null = null;
+      let declarationCitationDeps: CitationDeps | null = null;
       if (declarationGate?.applies) {
         try {
           const context = await repoCitationContextForHarness(harnessSlug);
-          if (context && !isCitationContextFailure(context)) declarationRepoRoot = context.repoRoot;
+          if (context && !isCitationContextFailure(context)) {
+            declarationRepoRoot = context.repoRoot;
+            declarationCitationDeps = context.deps;
+          }
         } catch {
           declarationRepoRoot = null;
         }
       }
       if (reuseData && currentPlan) {
         reuseReferences = await resolveReuseReferences(reuseData, {
-          resolvers: defaultReuseReferenceResolvers({ repoRoot: declarationRepoRoot, sql: getOrgPg().sql as never, workspaceId }),
+          resolvers: defaultReuseReferenceResolvers({ repoRoot: declarationRepoRoot, citationDeps: declarationCitationDeps, sql: getOrgPg().sql as never, workspaceId }),
           planItemIds: new Set(parsePlan(currentPlan.content, { filePath: `${args.slug}.md` }).items.map((item) => item.id)),
         });
         if (!reuseReferences.ok) {

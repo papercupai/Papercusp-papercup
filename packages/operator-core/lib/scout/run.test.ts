@@ -271,28 +271,42 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     };
     const admissionPressureGate = vi.fn(async () => pressure);
     const recordGovernor = vi.fn();
+    sched.runScoutTick.mockImplementationOnce(async (tickDeps) => {
+      await tickDeps.recordTick?.({
+        status: 'ran',
+        ideasGenerated: 0,
+        ideasRouted: 0,
+        ideasDeduped: 0,
+        budgetUsedUsd: 0,
+        detail: { cycleId: 'c-preflight', stop: 'budget-exhausted' },
+      });
+      return { fired: true, reason: 'idle-capacity', cycleId: 'c-preflight', costUsd: 0, routedCount: 0 };
+    });
     const res = await runScoutCycleTick(
       { ...baseInput, payloadTemplate: { budget: { maxCostUsd: 2, maxIdeators: 6 } } },
       mkDeps({ admissionPressureGate, recordGovernor }),
     );
-    expect(res).toEqual({ fired: false, reason: 'generation-preflight' });
-    expect(sched.runScoutTick).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ fired: true, reason: 'generation-preflight', cycleId: 'c-preflight', costUsd: 0 });
+    expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
+    expect(sched.runScoutTick.mock.calls[0]?.[1]?.budget).toMatchObject({ maxCostUsd: 0, maxIdeators: 1 });
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: null });
-    expect(recordTick).toHaveBeenCalledWith({
+    expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({
       status: 'gated',
       gate: 'generation-preflight',
-      detail: {
+      detail: expect.objectContaining({
         reason: 'admission-throttle-deep',
         pending: 41,
         p95Ms: null,
         throttleReasons: pressure.reasons,
         admissionThrottle: pressure,
+        paidGenerationSkipped: true,
+        readOnlyCycleRan: true,
         budgetProvenance: {
           schemaVersion: 1, supplied: { maxCostUsd: 2, maxIdeators: 6 },
-          resolved: { maxCostUsd: 2, maxIdeators: 6, maxCriticsPerIdea: 2 },
+          resolved: { maxCostUsd: 0, maxIdeators: 1, maxCriticsPerIdea: 2 },
         },
-      },
-    });
+      }),
+    }));
   });
 
   // WI-10007380 / P-003 (R-5, R-6): dedup saturation that outlasted the novelty
@@ -304,42 +318,52 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
       ideasDeduped: 9,
       ideasRouted: 0,
     }));
+    sched.runScoutTick.mockImplementationOnce(async (tickDeps) => {
+      await tickDeps.recordTick?.({
+        status: 'ran',
+        ideasGenerated: 0,
+        detail: { cycleId: 'c-dedup', stop: 'budget-exhausted' },
+      });
+      return { fired: true, reason: 'idle-capacity', cycleId: 'c-dedup', costUsd: 0, routedCount: 0 };
+    });
     const skipped = await runScoutCycleTick(
       baseInput,
       mkDeps({ generationPreflightTicks: async () => saturated }),
     );
-    expect(skipped).toEqual({ fired: false, reason: 'generation-preflight' });
-    expect(sched.runScoutTick).not.toHaveBeenCalled();
-    expect(recordTick).toHaveBeenCalledWith({
+    expect(skipped).toMatchObject({ fired: true, reason: 'generation-preflight', costUsd: 0 });
+    expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
+    expect(sched.runScoutTick.mock.calls[0]?.[1]?.budget).toMatchObject({ maxCostUsd: 0 });
+    expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({
       status: 'gated',
       gate: 'generation-preflight',
-      detail: { reason: 'dedup-saturated', consecutiveSaturated: 5, lastRatio: 0.9, skipStreak: 5, probeIn: 5,
-        budgetProvenance: {
-          schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 },
-        },
-      },
-    });
+      detail: expect.objectContaining({
+        reason: 'dedup-saturated', consecutiveSaturated: 5, lastRatio: 0.9, skipStreak: 5, probeIn: 5,
+        paidGenerationSkipped: true,
+        readOnlyCycleRan: true,
+      }),
+    }));
 
     const priorSkips = Array.from({ length: 5 }, () => ({
       status: 'gated' as const,
       gate: 'generation-preflight',
       detail: { reason: 'dedup-saturated' },
     }));
+    sched.runScoutTick.mockClear();
     await runScoutCycleTick(
       baseInput,
       mkDeps({ generationPreflightTicks: async () => [...priorSkips, ...saturated] }),
     );
     expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
+    expect(sched.runScoutTick.mock.calls[0]?.[1]?.budget).toBeUndefined();
   });
 
-  it.each(['pot-disabled', 'not-hive-runner', 'workspace-ceiling', 'generation-preflight'] as const)(
+  it.each(['pot-disabled', 'not-hive-runner', 'workspace-ceiling'] as const)(
     'preserves the supplied one-ideator zero-spend cap when %s refuses before the scheduler', async gate => {
       const budget = { maxCostUsd: 0, maxIdeators: 1 };
       const refusal = {
         'pot-disabled': { potGate: async () => ({ enabled: false }) },
         'not-hive-runner': { hiveRunnerGate: async () => ({ run: false }) },
         'workspace-ceiling': { workspaceCeilingGate: async () => ({ allow: false }) },
-        'generation-preflight': { admissionPressureGate: async () => ({ level: 'deep', reasons: [] }) },
       }[gate]!;
       const result = await runScoutCycleTick(
         { ...baseInput, payloadTemplate: { budget } }, mkDeps(refusal),

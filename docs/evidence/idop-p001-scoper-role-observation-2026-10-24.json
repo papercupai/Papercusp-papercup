@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010026390",
+  "parentWorkItem": "WI-6554700010017386",
+  "entry": "role:scoper",
+  "acceptance": "OPEN",
+  "kind": "actual registered scoper bounded observation with independent parent replay",
+  "sourceSession": {
+    "nativeSessionId": "01a16c8c-027c-7830-ac0c-d65261dddb36",
+    "coordOwnerId": "su-72c0b278-2103-44c1-b614-92c72f4e91a5",
+    "registeredSessionId": "51319",
+    "roleFromEnvironment": "scoper",
+    "roleFromCurrentCallerCatalog": "scoper",
+    "principalFromActualRefusals": "system:scoper",
+    "catalogIsSuperuser": false,
+    "harnessFromEnvironment": "papercusp",
+    "operatorUrlFromEnvironment": "http://127.0.0.1:9071",
+    "nativeOriginator": "codex-tui",
+    "nativeCliVersion": "0.163.0",
+    "nativeStartedAt": "2026-10-24T06:14:37.596Z"
+  },
+  "observedAt": "2026-10-24T06:27:05.660382+00:00",
+  "nativeSchemas": {
+    "representation": "Verbatim advertised exec tool declaration text from native ALL_TOOLS metadata; no conversion to raw MCP JSONSchema",
+    "distinctAdvertisedTools": 155,
+    "chunks": [
+      {
+        "index": 0,
+        "path": "native-schema-0.json",
+        "nativeLine": 128,
+        "bytes": 50551,
+        "sha256": "32e9c254d5fe8607339e5e01372078fc0c24d5d193c27faf2a2f51be232a9785",
+        "tools": 27
+      },
+      {
+        "index": 1,
+        "path": "native-schema-1.json",
+        "nativeLine": 136,
+        "bytes": 52044,
+        "sha256": "7539185a48e4ef3695b125b0a41b7353e0f769537b0244dfb5a32a50b9dc546d",
+        "tools": 41
+      },
+      {
+        "index": 2,
+        "path": "native-schema-2.json",
+        "nativeLine": 136,
+        "bytes": 52063,
+        "sha256": "dd276d5494c82f76afd50753724e1c637f592be61c49bb008715e7e18b12d076",
+        "tools": 28
+      },
+      {
+        "index": 3,
+        "path": "native-schema-3.json",
+        "nativeLine": 146,
+        "bytes": 51589,
+        "sha256": "1a3476ab4a0fcdbf9727cfdf16565990315366a1364e48dda440ff30d44ecb8c",
+        "tools": 26
+      },
+      {
+        "index": 4,
+        "path": "native-schema-4.json",
+        "nativeLine": 140,
+        "bytes": 51489,
+        "sha256": "5f040188afefb2809d382c3126609c018c43511ce32cd18f73b1aea6436cc8d9",
+        "tools": 25
+      },
+      {
+        "index": 5,
+        "path": "native-schema-5.json",
+        "nativeLine": 128,
+        "bytes": 11278,
+        "sha256": "a579f98c90bcecbdaebf3fc14e7d1236556bad75debbd01a9fdedf14703dffc3",
+        "tools": 8
+      }
+    ]
+  },
+  "permissionCoverage": {
+    "method": "Normal tools:invoke -> agent_tools:list; no asRole/asPrincipal overrides",
+    "broadResponseCount": 500,
+    "allowedResponseCount": 26,
+    "completePartition": false,
+    "limitation": "Broad catalog, work_items group and allowed-only responses were structurally truncated; _projection.cursor.reason=spill-write-failed. Narrow complete annotations retained for agent_tools:list, artifacts load/save/append/delete, work_items get/list/checkpoint. Counts are response counts, not a verified total registry population.",
+    "ownWorkItemProbes": "Not attempted: current-caller annotations deny work_items:get/list (missing work_items:read).",
+    "checkpointAndArtifactPersistence": "Not attempted via denied tools: current-caller annotations deny work_items:checkpoint (missing work_items:write) and artifacts:save (missing artifacts:write). Native transcript is the permitted checkpoint/source receipt."
+  },
+  "controlTuple": {
+    "authoritativeRead": "unavailable: coord:orient, mode:get and state:read refused missing coord:read",
+    "promptOnlySnapshot": {
+      "exec": "confirm-before-execution",
+      "mission": "execute-owner-directed-scope",
+      "ideation": "direct-improvements-only"
+    },
+    "controlGeneration": null
+  },
+  "actualRefusals": [
+    {
+      "tool": "coord:orient",
+      "exact": "missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: coord:orient)",
+      "nativeInvocationId": "call_bb27f214c79a4514be87e2769cae3b18"
+    },
+    {
+      "tool": "facts:list",
+      "exact": "missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: facts:list)",
+      "nativeInvocationId": "call_bb27f214c79a4514be87e2769cae3b18"
+    },
+    {
+      "tool": "mode:get",
+      "exact": "handler_error: missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: mode:get)",
+      "nativeInvocationId": "call_70ef3a8b1425431fb9898fc62bf36072"
+    },
+    {
+      "tool": "state:read",
+      "exact": "handler_error: missing_capability: Principal \"system:scoper\" lacks capability \"coord:read\" (tool: state:read)",
+      "nativeInvocationId": "call_881d205c57e64a4aa043133bbf099b46"
+    }
+  ],
+  "parentReplay": {
+    "path": "~/.papercusp/evidence/idop-p001-scoper-observation-20261024-v1/parent-verification.json",
+    "sha256": "1eeb2052e8a6f7498467cab5529fa2b42bb58420cda9b4dfa18d720ed7aea91a",
+    "nativePrefixBytes": 1449814,
+    "nativePrefixSha256": "54560ec028f8e9819cdc524cec95bc48212fd7513a713a6d8f96d96652427fd5",
+    "allSixChunkDigestsAndLengthsMatch": true,
+    "all155NamesDistinct": true,
+    "privateManifestReadbackMatched": true,
+    "rejectedTruncatedDuplicates": [
+      {
+        "index": 1,
+        "nativeLine": 128,
+        "reason": "ValueError"
+      },
+      {
+        "index": 3,
+        "nativeLine": 140,
+        "reason": "ValueError"
+      }
+    ]
+  },
+  "limits": [
+    "Advertisement is distinct from effective authorization. Raw MCP JSONSchema and top-level wrapper schemas were not independently extracted.",
+    "Full current-caller permission partition, authoritative control tuple/generation and effective own-item scope probes remain unmeasured.",
+    "This preserves the actual bounded sample and does not close P001 or replace the original frozen baseline.",
+    "No extra measurement or implementation agent, role impersonation, policy/grant/mode change or personal/vault payload access occurred."
+  ]
+}

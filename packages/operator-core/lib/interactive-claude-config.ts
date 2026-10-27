@@ -1065,6 +1065,8 @@ export async function writeInteractiveClaudeConfig(opts: {
    * already known-trusted (e.g. a resume into an existing session's cwd).
    */
   cwd?: string;
+  /** Exact initial headless task id, scoped to lifecycle hook commands only. */
+  agentTaskId?: string | null;
 }): Promise<InteractiveClaudeConfig> {
   const configDir = sessionClaudeConfigDir(opts.sid);
   return serializeByKey(interactiveMaterializationQueue, configDir, () =>
@@ -1148,7 +1150,7 @@ async function materializeInteractiveClaudeConfig(
     // WI-3278: settings.json is a REAL merged copy with the bypassPermissions
     // grant baked in — see writeSessionSettings.
     if (name === 'settings.json') {
-      await writeSessionSettings(join(srcClaude, name), join(configDir, name));
+      await writeSessionSettings(join(srcClaude, name), join(configDir, name), opts.agentTaskId);
       continue;
     }
     await linkIntoAsync(join(srcClaude, name), join(configDir, name));
@@ -1156,7 +1158,7 @@ async function materializeInteractiveClaudeConfig(
   // WI-3278: a box with no global settings.json (the fresh Windows VM) still
   // needs the session-level bypass grant.
   if (!entries.includes('settings.json')) {
-    await writeSessionSettings(null, join(configDir, 'settings.json'));
+    await writeSessionSettings(null, join(configDir, 'settings.json'), opts.agentTaskId);
   }
 
   // WI-3280: the SessionStart recovery hook (always) + the parked playbook
@@ -1305,7 +1307,11 @@ export async function ensureInteractiveClaudeConfig(opts: {
  * fresh global hooks; a pre-fix dir's SYMLINK is removed first so the write
  * lands in the session dir, never through the link into the user's real file.
  */
-async function writeSessionSettings(srcSettings: string | null, dest: string): Promise<void> {
+async function writeSessionSettings(
+  srcSettings: string | null,
+  dest: string,
+  agentTaskId?: string | null,
+): Promise<void> {
   let cfg: Record<string, unknown> = {};
   if (srcSettings) {
     try {
@@ -1336,6 +1342,36 @@ async function writeSessionSettings(srcSettings: string | null, dest: string): P
     ],
   });
   hooks.SessionStart = sessionStart;
+  // Keep the exact enrollment id in this session's lifecycle hook command,
+  // never in Claude's process environment where model tools could inherit it.
+  const lifecycleTaskId =
+    typeof agentTaskId === 'string' && /^[0-9a-z]{19}$/.test(agentTaskId) ? agentTaskId : null;
+  if (lifecycleTaskId) {
+    for (const event of ['SessionStart', 'SessionEnd'] as const) {
+      const groups = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
+      hooks[event] = groups.map((rawGroup) => {
+        if (!rawGroup || typeof rawGroup !== 'object' || Array.isArray(rawGroup)) return rawGroup;
+        const group = rawGroup as Record<string, unknown>;
+        if (!Array.isArray(group.hooks)) return rawGroup;
+        return {
+          ...group,
+          hooks: group.hooks.map((rawHook) => {
+            if (!rawHook || typeof rawHook !== 'object' || Array.isArray(rawHook)) return rawHook;
+            const hook = rawHook as Record<string, unknown>;
+            if (
+              hook.type !== 'command' ||
+              typeof hook.command !== 'string' ||
+              !hook.command.includes('lifecycle-report.sh')
+            ) return rawHook;
+            const command = hook.command
+              .replace(/(^|\s)PAPERCUSP_AGENT_TASK_ID=(?:'[^']*'|"[^"]*"|\S+)/g, '$1')
+              .trimStart();
+            return { ...hook, command: 'PAPERCUSP_AGENT_TASK_ID=' + lifecycleTaskId + ' ' + command };
+          }),
+        };
+      });
+    }
+  }
   // WI-6554700010009529: the egress-guard PreToolUse hook rewrites native Bash
   // commands to RTK, and RTK nags this session's tool output to install its own
   // competing hook unless RTK_SESSION_ENV is in the command's environment.

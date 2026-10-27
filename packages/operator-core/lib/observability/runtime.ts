@@ -1,13 +1,70 @@
 /** Owning-process composition. Portable helpers never configure export. */
 import { pinModuleState } from '@papercusp/module-singleton';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
+import { context, trace, TraceFlags } from '@opentelemetry/api';
+import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import type { DispatchProjectedDeps } from '@papercusp/agent-mcp';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
 import { createTracing } from './tracing';
 import { PosthogSpanExporter } from './posthog-exporter';
+import { measureBootOperatorArtifact, type OperatorArtifactIdentity } from '../release/operator-artifact';
+import { getBuildInfo } from '../build-info';
 
 type DispatchStart = Parameters<NonNullable<DispatchProjectedDeps['onDispatchStart']>>[0];
 type InvokeRequest = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type Invocation = Parameters<NonNullable<DispatchProjectedDeps['recordInvocation']>>[0];
+
+interface BoundaryContext { callId: string; workspaceId: string; harness: string; tool: string;
+  receipts: ExecutionBoundaryReceipt[] }
+
+/** Hash the actual loaded function body. Reading its source file here would
+ * race a working-tree edit and could label old compiled code with new bytes. */
+export function loadedHandlerFingerprint(handler: (...args: never[]) => unknown): string | null {
+  try { return createHash('sha256').update(Function.prototype.toString.call(handler)).digest('hex'); } catch { return null; }
+}
+
+/** A parent dispatch span or request trace ID cannot create this child receipt. */
+export async function observeEngineeringBoundary<T>(sourceFingerprint: string | null, work: () => Promise<T>):
+Promise<{ result: T; boundaryObservation?: ExecutionBoundaryReceipt; boundaryObservationGap?: string }> {
+  const current = state.boundaryContext.getStore();
+  const parent = current && state.runtime?.current(current.callId);
+  if (!current || current.tool !== 'graph:query' || !parent || !sourceFingerprint
+    || current.receipts.length >= 8) return { result: await work(), boundaryObservationGap:
+      !current || !parent ? 'trace-unavailable' : !sourceFingerprint ? 'source-unavailable'
+        : current.receipts.length >= 8 ? 'boundary-limit' : 'instrumentation-context-unavailable' };
+  let span: ReturnType<ReturnType<typeof trace.getTracer>['startSpan']>;
+  try { span = state.runtime!.provider.getTracer('papercusp.runtime', '1').startSpan('papercusp.engineering-evidence'); }
+  catch { state.observerFailures++; return { result: await work(), boundaryObservationGap: 'trace-observer-failed' }; }
+  const identity = span.spanContext();
+  const startedAt = Date.now();
+  let outcome: 'ok' | 'error' = 'ok';
+  let observation: ExecutionBoundaryReceipt | undefined;
+  let result: T;
+  const recording = span.isRecording() && Boolean(identity.traceFlags & TraceFlags.SAMPLED);
+  try { result = await context.with(trace.setSpan(context.active(), span), work); }
+  catch (error) { outcome = 'error'; throw error; }
+  finally {
+    try {
+      span.end();
+      if (recording) {
+        const sha = getBuildInfo().sha;
+        const buildSha = sha && /^[a-f0-9]{10,64}$/.test(sha) ? sha : null;
+        observation = { boundary: 'graph:query:evidence', callId: current.callId,
+          workspaceId: current.workspaceId, harness: current.harness,
+          traceId: identity.traceId, spanId: identity.spanId, traceFlags: identity.traceFlags,
+          parentSpanId: parent.spanId, startedAt, endedAt: Date.now(), outcome, sourceFingerprint, buildSha,
+          artifactFingerprint: state.artifact?.status === 'measured' ? state.artifact.bundleSha256 : null,
+          environmentFingerprint: createHash('sha256').update(JSON.stringify({ node: process.version,
+            platform: process.platform, arch: process.arch, processId: process.pid, buildSha })).digest('hex'),
+          workflowId: null };
+        current.receipts.push(observation);
+      }
+    } catch { state.observerFailures++; }
+  }
+  return { result, ...(observation ? { boundaryObservation: observation } : {
+    boundaryObservationGap: identity.traceFlags & TraceFlags.SAMPLED ? 'trace-not-recording' : 'trace-sampled-out' }) };
+}
 
 export async function runtimeTraceDeliveryConfig() {
   const [{ resolveTelemetryConfig }, { customerAgentExecutionRequired }] = await Promise.all([
@@ -25,8 +82,14 @@ const state = pinModuleState('@papercusp/operator-core.otel-runtime', () => ({
   runtime: null as ReturnType<typeof createTracing> | null,
   exporter: null as PosthogSpanExporter | null,
   observerFailures: 0,
+  artifact: null as OperatorArtifactIdentity | null,
   registration: null as ReturnType<ReturnType<typeof createTracing>['register']> | null,
+  boundaryContext: new AsyncLocalStorage<BoundaryContext>(),
+  boundaryReceipts: new Map<string, ExecutionBoundaryReceipt[]>(),
 }));
+// An already running development host can retain the pre-extension singleton.
+state.boundaryContext ??= new AsyncLocalStorage<BoundaryContext>();
+state.boundaryReceipts ??= new Map<string, ExecutionBoundaryReceipt[]>();
 
 function runtime() {
   if (!state.runtime) {
@@ -39,6 +102,7 @@ function runtime() {
 
 /** Called during host boot before DBOS can install a competing global provider. */
 export function initializeRuntimeObservability(): void {
+  if (!state.artifact) state.artifact = measureBootOperatorArtifact(process.argv[1] ?? '', getBuildInfo().sha);
   try { runtime(); } catch { state.observerFailures++; }
 }
 
@@ -57,12 +121,29 @@ export function beginToolTrace(event: DispatchStart): void {
 
 export function runToolTrace(request: InvokeRequest, invoke: () => ReturnType<InvokeRequest['invoke']>) {
   // Never retry a handler after a tracing failure: it might already have committed.
-  return state.runtime ? state.runtime.run(request.callId, invoke) : invoke();
+  if (!state.runtime) return invoke();
+  const receipts: ExecutionBoundaryReceipt[] = [];
+  if (state.boundaryReceipts.size < 1024) state.boundaryReceipts.set(request.callId, receipts);
+  return state.runtime.run(request.callId, () => state.boundaryContext.run({ callId: request.callId,
+    workspaceId: request.ctx.workspaceId ?? '', harness: request.ctx.harnessSlug ?? '',
+    tool: request.toolName, receipts }, invoke));
 }
 
 export function finishToolTrace(input: Invocation) {
-  try { return input.callId ? state.runtime?.finish(input.callId, input.status, input.errorCode ?? undefined) : undefined; }
+  const boundaryObservations = input.callId ? state.boundaryReceipts.get(input.callId) : undefined;
+  if (input.callId) state.boundaryReceipts.delete(input.callId);
+  try {
+    const correlation = input.callId ? state.runtime?.finish(input.callId, input.status, input.errorCode ?? undefined) : undefined;
+    return correlation ? { ...correlation, callId: input.callId,
+      ...(boundaryObservations?.length ? { boundaryObservations } : {}) } : undefined;
+  }
   catch { state.observerFailures++; return undefined; }
+}
+
+/** Only the maintained transport supplies this; caller metadata is overwritten
+ * by finishToolTrace at the invocation writer. Ordinary tools imply no model. */
+export function expectSuccessfulToolModelTrace(requestId?: string | null): void {
+  try { state.runtime?.expectModel(requestId); } catch { state.observerFailures++; }
 }
 
 export function beginGatewayTrace(key: string, provider: string, headers: Record<string, string>) {
@@ -90,6 +171,7 @@ export function finishGatewayTrace(key: string, timeline: GatewayRequestTimeline
 
 export function runtimeObservabilityHealth() {
   return { initialized: state.runtime !== null, observerFailures: state.observerFailures,
+    artifact: state.artifact,
     globalProviderRegistered: state.registration?.registered ?? false,
     tracing: state.runtime?.health() ?? null, posthog: state.exporter?.health() ?? null };
 }
@@ -102,4 +184,5 @@ export async function shutdownRuntimeObservability(): Promise<void> {
   state.runtime = null;
   state.exporter = null;
   state.registration = null;
+  state.boundaryReceipts.clear();
 }

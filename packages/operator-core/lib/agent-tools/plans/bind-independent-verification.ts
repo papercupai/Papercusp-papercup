@@ -33,17 +33,15 @@ const independentBindingSchema = bindingSchema.refine((b) => b.evidenceKind === 
   message:
     "plans:bind-independent-verification records ONLY evidenceKind 'independent-verification'. Any other kind is implementer evidence and goes through plans:bind-spec-evidence (capability plans:write).",
   path: ['evidenceKind'],
-});
+}).describe(
+  "Copy implementer's workItemId/specId/specRevision, evidenceRef and unchanged currentMeasurement as measurement (or sourceFingerprint); verifiesBindingId=its id. details.note records independent observation/time/runtime.",
+);
 
 const argsSchema = refineEvenWithShapeIssues(
   z.object({
     harness: harnessArg,
     slug: z.string().min(1).describe('Plan owning the outcome bar this observation independently re-verifies.'),
-    binding: independentBindingSchema
-      .optional()
-      .describe(
-        "One independent-verification binding: { workItemId, specId, specRevision, evidenceKind:'independent-verification', verifiesBindingId:<the implementer binding id>, evidenceRef:<the same evidenceRef>, measurement:<its details.currentMeasurement, unchanged> (or sourceFingerprint), details:{ note:<what you re-observed, when, through which runtime> } }.",
-      ),
+    binding: independentBindingSchema.optional(),
     items: z.array(independentBindingSchema).min(1).max(100).optional(),
   }),
   (args, ctx) => {

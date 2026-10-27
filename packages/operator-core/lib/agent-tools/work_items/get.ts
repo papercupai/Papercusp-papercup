@@ -46,6 +46,7 @@ import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../.
 import { readAssumptionFlags, renderFlagLine } from "../../agent-facts/retraction-cascade";
 import { shapeWorkItemsGet } from "./get-shape";
 import { readWorkItemResume } from './resume';
+import { readWorkItemTouchHistory } from '../../work-item-touch-history';
 import {
   CARRY_NOTE_MAX_CHECKS,
   CHECKPOINT_BODY_CAP_CHARS,
@@ -726,6 +727,18 @@ const workItemsGetResultRowSchema = z.object({
   /** P-013: present with availability 'ambiguous' — every harness holding the id. */
   candidates: z.array(z.string()).optional(),
   workItem: workItemIdentityResultSchema.optional(),
+  touchHistory: z.object({
+    status: z.enum(['available', 'unavailable']),
+    reason: z.enum(['scope-unavailable', 'ledger-read-failed']).optional(),
+    totalFiles: z.number().int().nonnegative().optional(),
+    truncated: z.boolean().optional(),
+    files: z.array(z.object({
+      file: z.string(),
+      symbols: z.array(z.string()).nullable(),
+      symbolsIncomplete: z.boolean(),
+      symbolsTruncated: z.boolean(),
+    })).optional(),
+  }).describe('Files and symbols merged across this item’s edit-attribution rows. NULL symbols are unknown; [] is known empty. Lists are bounded with explicit truncation; unavailable is never empty history.').optional(),
   // P-012 (D-049): distinct reporters + filings from the occurrence ledger. Orders
   // verification work; never a verification receipt. Absent when nothing corroborates.
   corroboration: z.object({
@@ -1032,6 +1045,7 @@ export default defineTool({
     const needsHolder = sourceSelectionWants(sourceSelection, 'holder');
     // P-009/R-8 (D-004): the read-time mechanical section of a held item.
     const needsMechanics = !checksOnly && !checkpointOnly && sourceSelectionWants(sourceSelection, 'mechanics');
+    const needsTouchHistory = !checksOnly && !checkpointOnly && sourceSelectionWants(sourceSelection, 'touchHistory');
     const needsThreadWindow = sourceSelectionWants(sourceSelection, 'threadWindow', 'threadWindowReadFailed');
     const needsCompletionFreshness = sourceSelectionWants(sourceSelection, 'completionFreshness');
     const needsDeploymentPosition = sourceSelectionWants(sourceSelection, 'deploymentPosition');
@@ -1070,6 +1084,7 @@ export default defineTool({
       !needsPlanItemTextDrift &&
       !needsHolder &&
       !needsMechanics &&
+      !needsTouchHistory &&
       !needsThreadWindow &&
       !needsCompletionFreshness &&
       !needsDeploymentPosition &&
@@ -1422,6 +1437,7 @@ export default defineTool({
           priorWorkRaw,
           threadWindowReadResult,
           mechanics,
+          touchHistory,
         ] = await Promise.all([
           needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .then((r) => {
@@ -1497,6 +1513,14 @@ export default defineTool({
           // projection on every read; never written back. Fail-soft like its siblings.
           needsMechanics && workItem.assignee && workItem.takenAt
             ? trackWorkItemsGetEnrichment(stage, 'mechanics', () => readWorkItemMechanics(workItem)).catch(() => null)
+            : Promise.resolve(null),
+          needsTouchHistory
+            ? trackWorkItemsGetEnrichment(stage, 'touchHistory', () => readWorkItemTouchHistory({
+                workspaceId: activeWorkspaceId(),
+                harness: workItem.harness,
+                workItemId: workItem.id,
+                signal: ctx.signal,
+              }))
             : Promise.resolve(null),
         ]);
         const [decorated] = decoratedRows;
@@ -1741,6 +1765,7 @@ export default defineTool({
           id,
           availability: 'available' as const,
           workItem,
+          ...(touchHistory ? { touchHistory } : {}),
           ...(decorated?.holder ? { holder: decorated.holder } : {}),
           ...(corroboration ? { corroboration } : {}),
           checkpoint,

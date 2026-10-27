@@ -31,11 +31,13 @@
 set -euo pipefail
 
 SOURCE_MODEL=""
+CHECK_SOURCE=0
 if [ "$#" -gt 0 ]; then
-  if [ "$#" -ne 2 ] || [ "$1" != "--source" ]; then
-    echo "usage: setup-porcupine-runtime.sh [--source <model-file>]" >&2
+  if [ "$#" -ne 2 ] || { [ "$1" != "--source" ] && [ "$1" != "--check-source" ]; }; then
+    echo "usage: setup-porcupine-runtime.sh [--source <model-file> | --check-source <model-file>]" >&2
     exit 2
   fi
+  [ "$1" != "--check-source" ] || CHECK_SOURCE=1
   SOURCE_MODEL="$2"
 fi
 
@@ -53,6 +55,15 @@ verify() {
   [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$PORCUPINE_SHA256" ]
 }
 
+if [ "$CHECK_SOURCE" = 1 ]; then
+  verify "$SOURCE_MODEL" || {
+    echo "ERR: porcupine-runtime: required cached model is missing or has the wrong checksum: $SOURCE_MODEL" >&2
+    exit 1
+  }
+  echo "porcupine-runtime: cached source verified"
+  exit 0
+fi
+
 if verify "$DEST"; then
   echo "porcupine-runtime: already current (sha256 verified) — skipping download"
   exit 0
@@ -65,7 +76,13 @@ trap 'rm -f "$TMP"' EXIT
 # Immutable test snapshots may borrow cached bytes, but the COMMITTED pin
 # decides whether they are usable. Verify the copied bytes to avoid a race
 # with a source refresh; never link a mutable shared asset into the snapshot.
-if [ -n "$SOURCE_MODEL" ] && [ -f "$SOURCE_MODEL" ] && cp "$SOURCE_MODEL" "$TMP" && verify "$TMP"; then
+if [ -n "$SOURCE_MODEL" ]; then
+  # An explicit source is an offline input contract, not a hint to download.
+  # Recheck the copied bytes in case the donor changed after its preflight.
+  if ! { [ -f "$SOURCE_MODEL" ] && cp "$SOURCE_MODEL" "$TMP" && verify "$TMP"; }; then
+    echo "ERR: porcupine-runtime: required cached model is missing or has the wrong checksum: $SOURCE_MODEL" >&2
+    exit 1
+  fi
   mv "$TMP" "$DEST"
   chmod 644 "$DEST"
   trap - EXIT

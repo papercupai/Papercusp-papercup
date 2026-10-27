@@ -339,6 +339,8 @@ export type GatewayRequestKernelErrorCode =
   | 'request-ceiling'
   | 'ttfb-timeout'
   | 'retry-budget-exhausted'
+  | 'admission-timeout'
+  | 'account-unavailable'
   | 'upstream-body-idle'
   | 'downstream-idle'
   | 'cancelled'
@@ -1102,18 +1104,37 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               : ttfbTimeoutMs;
           let attemptPermitRelease: (() => void) | null = null;
           if (opts.admission.acquireAttempt) {
+            let admissionFailure: GatewayRequestKernelError | null = null;
+            span.beginStage('queueWait');
             try {
               attemptPermitRelease = await abortable(
                 Promise.resolve(opts.admission.acquireAttempt(attemptContext)),
                 requestController.signal,
               );
             } catch (error) {
-              const admissionFailure = normalizeError(error, requestController.signal);
+              admissionFailure = normalizeError(error, requestController.signal);
               await opts.admission.observeAttempt?.({
                 context: attemptContext,
                 response: null,
                 error: admissionFailure,
               });
+            } finally {
+              span.endStage('queueWait');
+            }
+            // No upstream call has started. A route that became unavailable
+            // while pacing may be replaced under the same pin/attempt budget
+            // as a retryable preparation failure.
+            if (admissionFailure) {
+              if (admissionFailure.retryable && attempt < opts.policy.maxAttempts) {
+                const next = await chooseNextRoute({
+                  currentRoute, attempt, lastResponse: null, lastError: admissionFailure,
+                });
+                if (next) {
+                  lastRetriedStatus = null;
+                  route = currentRoute = adoptRoute(next);
+                  continue;
+                }
+              }
               throw admissionFailure;
             }
           }

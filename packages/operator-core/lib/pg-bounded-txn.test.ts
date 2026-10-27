@@ -36,6 +36,32 @@ function pgError(code: string): Error & { code: string } {
 }
 
 describe('boundedOrgTxn', () => {
+  it('uses a savepoint on a workspace transaction that has no begin method', async () => {
+    const queries: string[] = [];
+    const tx = Object.assign(async (strings: TemplateStringsArray) => {
+      queries.push(strings.join('?'));
+      return [{ lock_timeout: '5s', statement_timeout: '30s' }];
+    }, { savepoint: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work(tx)) });
+    expect('begin' in tx).toBe(false);
+    const caller = vi.fn(async (scoped) => {
+      expect(scoped).toBe(tx);
+      await scoped`SELECT 1`;
+      return 'workspace-result';
+    });
+    expect(await boundedOrgTxn(caller, { client: tx as never })).toBe('workspace-result');
+    expect(tx.savepoint).toHaveBeenCalledTimes(1);
+    expect(caller).toHaveBeenCalledTimes(1);
+    expect(queries.some(query => query.includes('statement_timeout'))).toBe(true);
+    expect(queries).toContain('SELECT 1');
+  });
+
+  it('does not attempt to change an existing transaction to read-only', async () => {
+    const savepoint = vi.fn();
+    await expect(boundedOrgTxn(vi.fn(), { client: { savepoint } as never, readOnly: true }))
+      .rejects.toThrow('cannot change transaction read-only mode');
+    expect(savepoint).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, 'org-admin'])('attributes injected acquisition only with explicit pool %s', async (acquirePool) => {
     vi.useFakeTimers();
     const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');

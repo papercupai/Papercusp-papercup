@@ -55,7 +55,11 @@ function extractRuntimeBuildBlock(): string {
   return lines.slice(start, endRel === -1 ? undefined : start + 1 + endRel).join('\n');
 }
 
-const BLOCK = extractRuntimeBuildBlock();
+const REGISTRY = SCRIPT.match(/RUNTIME_BUILD_WORKSPACES=\([\s\S]*?\n\)/)?.[0] ?? '';
+const BLOCK = `${REGISTRY}\n${extractRuntimeBuildBlock()}`;
+const DEPENDENCY_CLOSURE = SCRIPT.match(
+  /# RUNTIME DEPENDENCY CLOSURE\n([\s\S]*?)# END RUNTIME DEPENDENCY CLOSURE/,
+)?.[1] ?? '';
 
 function extractSidecarPostInstallRuntimeBuildBlock(): string {
   return SIDECAR_SCRIPT.match(
@@ -70,6 +74,48 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
 
   afterEach(() => {
     for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('enrolls registered local toolchains in selected captures and rejects incomplete pins before copying', () => {
+    expect(DEPENDENCY_CLOSURE, 'runtime dependency capture closure is missing').not.toBe('');
+    const root = mkdtempSync(join(tmpdir(), 'runtime-dependency-closure-'));
+    tempRoots.push(root);
+    const integrationRoot = join(root, 'integration');
+    const generation = join(root, 'generation');
+    const capture = join(root, 'capture');
+    const scope = join(integrationRoot, 'node_modules/@papercusp');
+    mkdirSync(scope, { recursive: true });
+    for (const [name, path] of [['omp', 'packages/omp-plugin'], ['sse', 'libs/generic/sse']]) {
+      mkdirSync(join(integrationRoot, path, 'node_modules'), { recursive: true });
+      symlinkSync(join(integrationRoot, path), join(scope, name));
+    }
+    const runner = [
+      'set -euo pipefail',
+      `INTEGRATION_ROOT=${JSON.stringify(integrationRoot)}`,
+      `DEPENDENCY_GENERATION_TREE=${JSON.stringify(generation)}`,
+      'PINNED_DEPENDENCY_GENERATION_ID=fixture-generation',
+      REGISTRY,
+      DEPENDENCY_CLOSURE,
+      `dependency_generation_configure_workspace_dirs() { printf '%s\\n' "$@" > ${JSON.stringify(capture)}; }`,
+      'NODE_MODULES_WORKSPACE_DIRS=(papercusp-desktop)',
+      'configure_release_dependency_workspace_dirs',
+      'validate_runtime_dependency_toolchains',
+    ].join('\n');
+    const missing = spawnSync('bash', ['-c', runner], { encoding: 'utf8' });
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain('missing the package-local toolchain');
+    expect(readFileSync(capture, 'utf8').trim().split('\n')).toEqual([
+      integrationRoot, 'papercusp-desktop', 'packages/omp-plugin', 'libs/generic/sse',
+    ]);
+    for (const path of ['packages/omp-plugin', 'libs/generic/sse']) {
+      mkdirSync(join(generation, path, 'node_modules'), { recursive: true });
+    }
+    expect(spawnSync('bash', ['-c', runner], { encoding: 'utf8' }).status).toBe(0);
+    const full = runner.replace('NODE_MODULES_WORKSPACE_DIRS=(papercusp-desktop)', 'NODE_MODULES_WORKSPACE_DIRS=()');
+    expect(spawnSync('bash', ['-c', full], { encoding: 'utf8' }).status).toBe(0);
+    expect(readFileSync(capture, 'utf8').trim()).toBe(integrationRoot);
+    expect(SCRIPT.indexOf('    validate_runtime_dependency_toolchains\n'))
+      .toBeLessThan(SCRIPT.indexOf('  if pinned_dependency_generation_reuse_safe; then'));
   });
 
   it('builds registered runtime workspaces from pinned source, never integration output', () => {

@@ -1,7 +1,7 @@
 # Contributing to Papercusp
 
 Thanks for your interest. Papercusp is source-available under the
-[Elastic License 2.0](LICENSE). Issues and pull requests are welcome.
+[Sustainable Use License 1.0](LICENSE). Issues and pull requests are welcome.
 
 ## How this repository works
 
@@ -25,7 +25,7 @@ Agreement (CLA). A bot comments on your first pull request with a link. You sign
 and it covers all your future contributions.
 
 The CLA lets us keep distributing your contribution, including under licence terms
-other than the Elastic License 2.0 in the future. You keep the copyright to your work.
+other than the Sustainable Use License in the future. You keep the copyright to your work.
 Documentation typo fixes do not need a CLA.
 
 ## Before you open a pull request
@@ -38,7 +38,7 @@ Documentation typo fixes do not need a CLA.
    anything fails.
 4. Run `npm ci` and `npm run lint:tsc` (the typecheck) before opening the pull request. CI
    runs the same two steps on every pull request.
-5. Do not add dependencies whose licence is incompatible with the Elastic License 2.0.
+5. Do not add dependencies whose licence is incompatible with the Sustainable Use License.
    That rules out GPL, AGPL, SSPL and non-commercial licences.
 
 ## Reporting security issues

@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal wake queue receipt correlated to a later real Codex canary turn",
+  "framework": "playwright",
+  "command": [
+    "npm",
+    "run",
+    "test:file",
+    "--",
+    "packages/operator-core/lib/endpoint-route/__tests__/portal-roster-native-pickup.e2e.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-23T17:12:32.675Z",
+  "finishedAt": "2026-10-23T17:12:32.816Z",
+  "summary": "Actual Portal control returned queued/unconfirmed; exact durable delivery matched a later native turn-start. Wrong message, recipient and turn controls were rejected. Original executions used uncommitted working source and are not clean-commit shipment proof.",
+  "assertions": [
+    {
+      "id": "queued-is-unconfirmed",
+      "passed": true,
+      "evidence": "Canonical send run 21834562: queued=1, pickupConfirmed=false, rendered note retained in original receipt."
+    },
+    {
+      "id": "native-exact-delivery",
+      "passed": true,
+      "evidence": "{\"owner\": \"su-db6fff53-ed42-4873-b05f-7fa758a5c3f1\", \"msgId\": \"mvl86yuc-0000-6485d5bbc7eb4c509c8030b675fcf4d2\", \"deliveryId\": 956555, \"nativeStartedAt\": \"2026-10-23T17:10:24.626Z\", \"servingBuild\": \"08cf177087\", \"hostEventsPath\": \"[selected native host log]\", \"recordedHostEventsPath\": \"[selected native host log]\"}"
+    },
+    {
+      "id": "wrong-message-rejected",
+      "passed": true,
+      "evidence": "Canonical verify run 21834577 completed its wrong-message assertion."
+    },
+    {
+      "id": "wrong-recipient-rejected",
+      "passed": true,
+      "evidence": "Canonical verify run 21834577 completed its wrong-recipient assertion."
+    },
+    {
+      "id": "unrelated-turn-rejected",
+      "passed": true,
+      "evidence": "Canonical verify run 21834577 completed its unrelated-turn assertion."
+    }
+  ],
+  "workItemId": "WI-10007843",
+  "planSlug": "cloud-portal-desktop-parity-closure-2026-10-09",
+  "sourceTestPath": "packages/operator-core/lib/endpoint-route/__tests__/portal-roster-native-pickup.e2e.test.ts",
+  "sourceTestSha256": "3bb995fd7a82688b3c2ffce78afe74fb07c4115c0f95eec456bef3f9b2dbf487",
+  "originalRuns": [
+    {
+      "id": 21834577,
+      "status": "pass",
+      "startedAt": "2026-10-23T17:12:32.675Z",
+      "finishedAt": "2026-10-23T17:12:32.816Z",
+      "executionDetails": {
+        "runStartedAt": "2026-10-23T17:12:13.245Z",
+        "commitSha": "a581f17e48d78bf02f58bb72116452dea6a20f3c",
+        "worktreeDirty": true,
+        "passedCaseTitles": [
+          "later native turn correlates the exact Portal wake message and rejects other receipts"
+        ],
+        "testLayer": "e2e"
+      }
+    },
+    {
+      "id": 21834562,
+      "status": "pass",
+      "startedAt": "2026-10-23T17:10:11.475Z",
+      "finishedAt": "2026-10-23T17:10:14.578Z",
+      "executionDetails": {
+        "runStartedAt": "2026-10-23T17:09:50.321Z",
+        "commitSha": "a581f17e48d78bf02f58bb72116452dea6a20f3c",
+        "worktreeDirty": true,
+        "passedCaseTitles": [
+          "real Portal wake records queueing for this native session without claiming pickup"
+        ],
+        "testLayer": "e2e"
+      }
+    }
+  ],
+  "witness": {
+    "owner": "su-db6fff53-ed42-4873-b05f-7fa758a5c3f1",
+    "controller": "su-301ad526-c772-44aa-b9aa-97baf21f1fb3",
+    "workspace": "papercusp-workspace",
+    "sentAt": "2026-10-23T17:10:14.109Z",
+    "msgId": "mvl86yuc-0000-6485d5bbc7eb4c509c8030b675fcf4d2",
+    "receipt": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "to": [
+            "su-db6fff53-ed42-4873-b05f-7fa758a5c3f1"
+          ],
+          "msg_id": "mvl86yuc-0000-6485d5bbc7eb4c509c8030b675fcf4d2",
+          "ts": "2026-10-23T17:10:14.244Z",
+          "federated": false,
+          "wake": {
+            "mode": "required",
+            "targets": [
+              "su-db6fff53-ed42-4873-b05f-7fa758a5c3f1"
+            ],
+            "queued": 1,
+            "woken": 1,
+            "pickupConfirmed": false,
+            "pickup": [
+              {
+                "target": "su-db6fff53-ed42-4873-b05f-7fa758a5c3f1",
+                "event": "wake:not-picked-up:su-db6fff53-ed42-4873-b05f-7fa758a5c3f1",
+                "windowSec": 600
+              }
+            ],
+            "wakeOutcome": "queued"
+          },
+          "bodyTruncated": false,
+          "bodyMayBeTruncated": false,
+          "bodyAuthoredChars": 23,
+          "bodyFullChars": 23,
+          "bodyDeliveredChars": 23,
+          "bodyDeliveryCap": 600,
+          "bodyCrowdedPageCap": 300,
+          "phaseTimingsMs": {
+            "prePersistMs": 35,
+            "persistMs": 19,
+            "postPersistMs": 14
+          }
+        }
+      ],
+      "counts": {
+        "ok": 1,
+        "failed": 0
+      }
+    },
+    "note": "su-db6fff53-ed42-4873-b05f-7fa758a5c3f1: queued; pickup not confirmed",
+    "servingBuild": "08cf177087",
+    "browserBundleSha256": "1e114f6fbc54296a9a5732f7e8e0e65e71aee17280fdb276b9fa5b74e261d079"
+  },
+  "nativeEvent": {
+    "ts": "2026-10-23T17:10:24.626Z",
+    "kind": "native-turn-start-confirmed",
+    "deliveryId": "956555",
+    "childGeneration": 1,
+    "reason": "native-turn-started"
+  },
+  "nativeEventSha256": "a8d0b88472694369b446ae1251f103f75595e2ee2d74e4e7fe6f2b74abcd273a",
+  "qualification": {
+    "originalWorktreeDirty": true,
+    "shipmentProven": false
+  }
+}

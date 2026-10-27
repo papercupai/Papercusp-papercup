@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { workspaceContextMiddleware } from './workspace-context-middleware';
+import { createWorkspaceContextMiddleware, workspaceContextMiddleware } from './workspace-context-middleware';
 import { activeWorkspaceId } from './workspace-registry';
 import { installWorkspaceHeaderFetch } from './transport-adapters/workspace-header-fetch';
 import { ipcFetch, type EndpointStreamEvent, type DispatchEndpointStreamFn } from '@papercusp/desktop-ipc';
@@ -45,6 +45,89 @@ afterAll(() => {
 });
 
 describe('workspaceContextMiddleware (per-window-workspace-context P-011)', () => {
+  it('routes workspace, launch and stream requests to their authorized machine before local workspace resolution', async () => {
+    const local = vi.fn();
+    const destinations: Array<{ machine: string; path: string; workspace: string | null }> = [];
+    const targets = new Map(['machine-a', 'machine-b'].map(machine => {
+      const remote = new Hono();
+      remote.all('*', c => {
+        destinations.push({ machine, path: c.req.path,
+          workspace: c.req.header('x-papercusp-workspace') ?? c.req.query('ws') ?? null });
+        expect(c.req.header('x-papercusp-machine')).toBeUndefined();
+        expect(c.req.query('desktopHost')).toBeUndefined();
+        return c.json({ machine, path: c.req.path });
+      });
+      return [machine, remote] as const;
+    }));
+    const app = new Hono();
+    app.use('*', createWorkspaceContextMiddleware({
+      async forwardMachineRequest(request, machine) {
+        // Authentication and inventory precede selection consumption. An
+        // unknown/offline target never becomes a call to the local handler.
+        if (request.headers.get('authorization') !== 'Bearer owner-fixture')
+          return Response.json({ error: 'unauthorized' }, { status: 401 });
+        const remote = targets.get(machine);
+        if (!remote) return Response.json({ error: 'unavailable' }, { status: 503 });
+        const url = new URL(request.url);
+        url.searchParams.delete('desktopHost');
+        const headers = new Headers(request.headers);
+        headers.delete('x-papercusp-machine');
+        return remote.fetch(new Request(url, new Request(request, { headers })));
+      },
+    }));
+    app.all('*', c => { local(); return c.json({ machine: 'local' }); });
+    for (const machine of targets.keys()) {
+      for (const path of ['/api/workspaces', '/api/adv/sessions/launch-su', '/api/zero-harness/sse']) {
+        const stream = path.endsWith('/sse');
+        const response = await app.request(path + (stream ? `?desktopHost=${machine}&ws=remote-ws` : ''), {
+          method: path.includes('launch-su') ? 'POST' : 'GET',
+          headers: { authorization: 'Bearer owner-fixture', ...(stream ? {} : {
+            'x-papercusp-machine': machine, 'x-papercusp-workspace': 'remote-ws',
+          }) },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ machine, path });
+      }
+    }
+    expect(destinations).toHaveLength(6);
+    expect(destinations.every(row => row.workspace === 'remote-ws')).toBe(true);
+    expect((await app.request('/api/workspaces', { headers: {
+      'x-papercusp-machine': 'machine-a',
+    } })).status).toBe(401);
+    expect((await app.request('/api/workspaces', { headers: {
+      authorization: 'Bearer owner-fixture', 'x-papercusp-machine': 'offline',
+    } })).status).toBe(503);
+    expect((await app.request('/api/workspaces?desktopHost=machine-b', { headers: {
+      authorization: 'Bearer owner-fixture', 'x-papercusp-machine': 'machine-a',
+    } })).status).toBe(400);
+    expect(local).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unresolved machine destination before a workspace or launch handler can run locally', async () => {
+    const handled = vi.fn();
+    const app = new Hono();
+    app.use('*', workspaceContextMiddleware);
+    app.post('/api/adv/sessions/launch-su', c => {
+      handled();
+      return c.json({ status: 'ok', workspaceId: activeWorkspaceId() });
+    });
+    const response = await app.request('/api/adv/sessions/launch-su', {
+      method: 'POST',
+      headers: { 'x-papercusp-machine': 'remote-machine', 'x-papercusp-workspace': 'ws-known' },
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'selected_machine_not_connected', machine: 'remote-machine' });
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit local-machine request in this window workspace', async () => {
+    const response = await makeApp().request('/probe', {
+      headers: { 'x-papercusp-machine': 'local', 'x-papercusp-workspace': 'ws-known' },
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).ws).toBe('ws-known');
+  });
+
   it('binds the browser workspace after the real fetch and sys:http bridges, independently of the host default', async () => {
     const app = new Hono();
     app.use('*', workspaceContextMiddleware);

@@ -8,15 +8,20 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
+import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-measurement';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
+import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY } from './code-intelligence/code-intel-unknown-rate-probe';
+import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY } from './code-intelligence/push-leg-liveness';
+import { CLEANUP_OUTCOME_INSTRUMENT_KEYS } from './code-cleanup/outcome';
 import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY } from './dream/dream-control-live-instrument';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
+import { DEFERRED_SPEND_INSTRUMENT_KEYS } from './workspace-host/deferred-spend-acceptance-instruments';
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
@@ -240,10 +245,14 @@ describe('the registry seed set', () => {
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
       DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
+      'observability:configured-project-delivery',
+      'observability:staging-runtime-journey',
+      'observability:release-artifact-delivery',
       'session:carry-drill-lifecycle',
       'woe.goal-mode-base-scorecard',
       ...TOOL_DELIVERY_INSTRUMENTS,
       ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
+      ...Object.values(DEFERRED_SPEND_INSTRUMENT_KEYS),
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       'storage:disk-headroom-post-shipment-72h',
       DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
@@ -256,9 +265,13 @@ describe('the registry seed set', () => {
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS),
+      ...Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS),
       RATCHET_METRICS_INSTRUMENT_KEY,
       POSTGRES_RETENTION_INSTRUMENT_KEY,
       SILENT_HALT_STRANDED_INSTRUMENT_KEY,
+      CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
+      CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
+      ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -275,6 +288,15 @@ describe('the registry seed set', () => {
         if (instrument?.evaluator !== 'platform') throw new Error('expected platform instrument');
         const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
         if (!criterion) {
+          if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
+            expect(instrument.rescore?.windowMs).toBe(28 * 86_400_000);
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(instrument.rescore?.unit).toBe(key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.redundancy
+              || key === REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes ? 'count' : '%');
+            expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown',
+              detail: 'Exact workspace, harness and valid window required.' });
+            continue;
+          }
           const harnessFamilies = [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
             DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS), RATCHET_METRICS_INSTRUMENT_KEY,
             POSTGRES_RETENTION_INSTRUMENT_KEY];
@@ -285,10 +307,32 @@ describe('the registry seed set', () => {
                 ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             if (harnessFamilies.includes(key)) expect(instrument.rescore?.scope).toBe('harness');
+          } else if (key.startsWith('observability:')) {
+            expect(instrument.rescore?.windowMs).toBe(120_000);
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(await instrument.rescore!.resolve(window)).toMatchObject({ verdict: 'unknown' });
           } else if (key === SILENT_HALT_STRANDED_INSTRUMENT_KEY) {
             expect(instrument.rescore?.windowMs).toBe(60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('workspace');
+          } else if (key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY) {
+            // P-004 (R-9): one 24 h probe window per run, unknown share in %.
+            expect(instrument.rescore?.windowMs).toBe(24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('%');
+            expect(instrument.rescore?.scope).toBe('workspace');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY) {
+            // P-003 (R-1): one 7-day liveness window per run, alarmed-signal count.
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('workspace');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS).some(k => k === key)) {
+            // code-cleanup-campaigns P-008: 7-day campaign outcome window, harness scoped.
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
           } else expect(instrument.rescore).toBeUndefined();
           continue;
         }
@@ -300,6 +344,41 @@ describe('the registry seed set', () => {
       expect(measure).toHaveBeenCalledTimes(2);
       expect(measure).toHaveBeenCalledWith(window);
     } finally { measure.mockRestore(); }
+  });
+
+  it('measures Postgres cold-reader adoption at its actual source and preserves unknown containment', async () => {
+    const org = await import('@papercusp/db-org');
+    const pipeline = await import('./git-pipeline-position');
+    const retention = await import('./storage/retention-interval-evidence');
+    const sql = {} as ReturnType<typeof org.getOrgPg>['sql'];
+    const database = vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as ReturnType<typeof org.getOrgPg>);
+    const position = vi.spyOn(pipeline, 'gitPipelinePosition').mockResolvedValue({
+      servingRuntimes: [
+        { runtime: 'bg-host', containsChange: true },
+        { runtime: 'staging-operator', containsChange: false },
+        { runtime: 'release-operator', containsChange: null },
+      ],
+    } as Awaited<ReturnType<typeof pipeline.gitPipelinePosition>>);
+    const measure = vi.spyOn(retention, 'measurePostgresRetentionEvidence')
+      .mockResolvedValue({ verdict: 'unknown', detail: 'unqualified reader remains unknown', checks: [] });
+    try {
+      const instrument = getRegisteredInstrument(POSTGRES_RETENTION_INSTRUMENT_KEY);
+      if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('expected Postgres rescore');
+      expect(existsSync(new URL('./session-archive.ts', import.meta.url))).toBe(true);
+      const result = await instrument.rescore.resolve({ workspaceId: 'ws', harnessSlug: 'papercusp',
+        windowStart: '2026-10-22T00:00:00Z', windowEnd: '2026-10-23T00:00:00Z' });
+      expect(position).toHaveBeenCalledWith({ path: 'packages/operator-core/lib/session-archive.ts' });
+      expect(measure).toHaveBeenCalledWith(sql, expect.objectContaining({ workspaceId: 'ws',
+        servingRuntimes: [
+          { runtime: 'bg-host', applicable: true, containsColdFallback: true },
+          { runtime: 'staging-operator', applicable: true, containsColdFallback: false },
+          { runtime: 'release-operator', applicable: true, containsColdFallback: null },
+        ],
+      }));
+      expect(result).toEqual({ verdict: 'unknown', detail: 'unqualified reader remains unknown', checks: [] });
+    } finally {
+      measure.mockRestore(); position.mockRestore(); database.mockRestore();
+    }
   });
 
   it("never registers the manual key, and treats 'none' case-insensitively as manual", () => {
@@ -328,7 +407,7 @@ describe('runInstrument', () => {
 
   it('computes a two-sample instrument as a rate, never a single lifetime counter', async () => {
     const samples = ['usage_usec 1000000\n', 'usage_usec 5000000\n'];
-    const times = [0, 2000];
+    const times = [0, 0, 2000];
     const slept: number[] = [];
     const reading = await runInstrument('host:cgroup-cpu-delta-cores', {
       exec: async () => samples.shift() as string,
@@ -341,6 +420,13 @@ describe('runInstrument', () => {
     // 4,000,000 µs of CPU over 2,000 ms of wall = 2 cores.
     expect(reading.value).toBe(2);
     expect(reading.unit).toBe('cores');
+    expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
+      { path: '$["samples"]["0"]["value"]', value: 1000000 },
+      { path: '$["samples"]["1"]["value"]', value: 5000000 },
+    ]));
+    expect(reading.provenance?.procedure.snapshot).toContain('host:cgroup-cpu-delta-cores');
+    expect(reading.provenance?.startedAt).toBe('1970-01-01T00:00:00.000Z');
+    expect(reading.provenance?.finishedAt).toBe('1970-01-01T00:00:02.000Z');
   });
 
   it('reports an unparseable or failed command as value null with an error, never 0', async () => {
@@ -553,7 +639,7 @@ describe('papercusp-app-performance instruments (P-010)', () => {
       'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 1000\n',
       'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 7103\n',
     ];
-    const times = [NOW, NOW + 5000];
+    const times = [NOW, NOW, NOW + 5000];
     const slept: number[] = [];
     const reading = await runInstrument('host:memory-paging-budget-pct', {
       exec: async () => outputs.shift()!,
@@ -565,6 +651,11 @@ describe('papercusp-app-performance instruments (P-010)', () => {
     expect(slept).toEqual([5000]);
     expect(reading).toMatchObject({ key: 'host:memory-paging-budget-pct', unit: '%', value: 500 });
     expect(reading.error).toBeUndefined();
+    expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
+      { path: '$["samples"]["0"]["numericFields"]["4"]["label"]', value: 'pswpin' },
+      { path: '$["samples"]["0"]["numericFields"]["4"]["value"]', value: '1000' },
+      { path: '$["samples"]["1"]["numericFields"]["4"]["value"]', value: '7103' },
+    ]));
   });
 
   it('a raw two-sample instrument whose second sample is reshaped reads null with an error', async () => {

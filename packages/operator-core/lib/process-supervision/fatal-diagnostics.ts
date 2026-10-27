@@ -1,5 +1,34 @@
 import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { pgQueryFamily } from '@papercusp/db-org/acquire-registry';
 import { papercuspPath } from '../papercusp-root';
+
+/** postgres-js puts SQL on a non-enumerable Error property. Console output can
+ * omit it and unsafe/reservation errors can lack a caller stack, so retain a
+ * searchable fingerprint without printing SQL, parameters, or credentials.
+ * Inspect data properties only: diagnostics must never invoke an error getter. */
+export function describeFatalPgError(reason: unknown): {
+  code: string;
+  queryAvailable: boolean;
+  queryHash?: string;
+  queryFamily?: string;
+} | null {
+  try {
+    if (reason === null || typeof reason !== 'object') return null;
+    const code = Object.getOwnPropertyDescriptor(reason, 'code')?.value;
+    if (typeof code !== 'string' || !/^CONNECTION_(?:DESTROYED|ENDED|CLOSED)$/.test(code)) return null;
+    const query = Object.getOwnPropertyDescriptor(reason, 'query')?.value;
+    if (typeof query !== 'string') return { code, queryAvailable: false };
+    return {
+      code,
+      queryAvailable: true,
+      queryHash: createHash('sha256').update(query).digest('hex'),
+      queryFamily: query.length <= 65_536 ? pgQueryFamily(query) : 'oversized',
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * WI-3849 follow-up — installFatalDiagnostics: arm Node's built-in diagnostic

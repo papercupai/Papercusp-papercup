@@ -379,7 +379,7 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional().describe(
-    'Maximum evidence rows to load for the filtered plan/spec/work-item/evidence scope, not the number of selected clauses. The default is 1000. If loaded rows reach this ceiling, evaluation refuses with evidence_selection_hit_limit and no verdict because the cohort may be truncated; omit this argument or set it above the expected evidence rows (up to 1000), or narrow the selectors.',
+    'Evidence-row limit across filtered scope (not clauses), default/max1000. Reaching it refuses with evidence_selection_hit_limit and no verdict: cohort may be truncated. Omit, increase within max, or narrow selectors.',
   ),
   detail: reviewReadDetailArg,
   criteria: z.array(z.enum(ADEQUACY_CRITERIA)).min(1).max(ADEQUACY_CRITERIA.length).optional().describe(
@@ -625,9 +625,9 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
 
 /**
  * oversized-tool-results-reduction-2026-10-12 P-006: the ready plans:certify-spec-clauses
- * call for a result with passing rows. Offered only for a live, unpinned evaluation against
- * an active acceptance rubric: certify cannot pin bindingIds or a clause snapshot, so a
- * pinned read would silently widen its cohort. Carries only arguments certify accepts.
+ * call for a result with passing rows. Offered for a live evaluation against an active
+ * acceptance rubric, preserving any exact binding cohort. Immutable clause snapshots
+ * still cannot be certified by this live-clause verb.
  */
 export function certifyPassingRef(
   args: {
@@ -649,8 +649,7 @@ export function certifyPassingRef(
     ctx.passingCount === 0 ||
     ctx.classRefSource !== 'active-acceptance-rubric' ||
     args.replaySnapshot === true ||
-    args.specRevision !== undefined ||
-    args.bindingIds !== undefined
+    args.specRevision !== undefined
   ) {
     return undefined;
   }
@@ -662,6 +661,7 @@ export function certifyPassingRef(
       classRef: ctx.classRef,
       ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
       ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
+      ...(args.bindingIds !== undefined ? { bindingIds: args.bindingIds } : {}),
       ...(args.specIds ? { specIds: args.specIds } : {}),
       ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
       ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),
@@ -680,7 +680,7 @@ export default defineTool({
     returns:
       'Live test-checked rows have evaluationMode:"mechanical", mechanicalProof { applicable, verdict, requiredFiles, passingTestBindingIds, caughtMutantBindingIds, gaps } and measurementEvidence in both detail levels; they have no judgment ratings, scorecardDraft or certifyPassing referral. Judgment rows follow the detail and criteria contract below. ' +
       'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full", where each criterion text sits once, in the draft (rows[].ratings[c].evidenceAt points there). To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
-    when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
+    when: 'During implementation or before work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
       'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete.',

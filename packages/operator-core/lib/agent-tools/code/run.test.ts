@@ -414,6 +414,11 @@ describe('code:run registration (B-CX-2A)', () => {
   it('accepts explicit replay inputs and seeds the stateless sandbox', async () => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
+    const inputsDescription =
+      (tool.inputSchema as { properties?: { inputs?: { description?: string } } }).properties?.inputs?.description ?? '';
+    expect(inputsDescription).toContain('deeply frozen');
+    expect(inputsDescription).toContain('Clone nested values before mutation');
+    expect(inputsDescription).toContain('use store/load for state the script updates');
     const args = { script: 'return { cursor: inputs.cursor, label: inputs.label };', inputs: { cursor: 7, label: 'resume' } };
     expect(codeRunTool.args.safeParse(args).success).toBe(true);
     const res = await tool.fn(args, {

@@ -82,7 +82,8 @@ async function adminGet(
   params: Record<string, string | number | boolean> = {},
 ): Promise<{ status: number; json: unknown }> {
   const url = new URL(`${baseURL}/api/admin/plans/${verb}`);
-  url.searchParams.set('harness', harnessSlug);
+  // Transcript lookup is keyed by runId; its tool schema has no harness argument.
+  if (verb !== 'run-transcript') url.searchParams.set('harness', harnessSlug);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, String(v));
   }
@@ -245,16 +246,18 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     });
     expect(launched.status).toBe(200);
     const launchJson = launched.json as {
-      ok?: boolean;
       runId?: number;
       sessionId?: string;
       mode?: string;
       status?: string;
     };
-    expect(launchJson.ok, JSON.stringify(launched.json)).toBe(true);
+    // The admin route unwraps the tool's JSON payload; background launch
+    // success is represented by the run identity and state, without an ok flag.
     expect(launchJson.mode).toBe('background');
     expect(launchJson.status).toBe('running');
     expect(launchJson.runId).toBeGreaterThan(0);
+    expect(launchJson.sessionId).toEqual(expect.any(String));
+    expect(launchJson.sessionId).not.toBe('');
     const runId = launchJson.runId!;
 
     // ── 6. plans:runs should immediately show the run.
@@ -298,8 +301,9 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
         message: 'P-028: continue — describe what you just did.',
       });
       expect(resumed.status).toBe(200);
-      const rj = resumed.json as { ok?: boolean; mode?: string; status?: string };
-      expect(rj.ok).toBe(true);
+      const rj = resumed.json as { runId?: number; sessionId?: string; mode?: string; status?: string };
+      expect(rj.runId).toBe(runId);
+      expect(rj.sessionId).toBe(launchJson.sessionId);
       expect(rj.mode).toBe('background');
       expect(rj.status).toBe('running');
 

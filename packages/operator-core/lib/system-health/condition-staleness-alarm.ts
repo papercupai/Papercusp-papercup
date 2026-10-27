@@ -32,6 +32,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   computeConditionStates,
   readConditionEnvelopes,
+  readConditionEnvelopesForKey,
   type ConditionState,
 } from '../agent-tools/coordination/tools/conditions';
 import {
@@ -49,9 +50,11 @@ import { DEGRADATION_CONDITION_PREFIX } from '../coord/actionable-conditions';
 import {
   actionableConditionFor,
   reconcileConditions,
+  reconcileHeldConditionOwners,
   resolveConditionHarness,
   type ConditionState as BridgeConditionState,
   type ReconcileSummary,
+  type ReleaseResult,
 } from '../coord/condition-bridge';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import {
@@ -775,6 +778,14 @@ export interface ConditionStalenessDeps {
     states: readonly BridgeConditionState[],
     opts: { workspaceId?: string },
   ) => Promise<ReconcileSummary>;
+  /**
+   * WI-6554700010029296: holder-side sweep for bridge-minted items the aggregate
+   * reconcile cannot reach (key outside the bounded fold, or no longer in the
+   * actionable catalog). Receives the keys the bridge was already given this tick;
+   * its releases are appended to `bridged.released`. Write-side, so opt-in like
+   * `bridgeConditions`; the production loop wires it.
+   */
+  reconcileHeldOwners?: (coveredKeys: ReadonlySet<string>) => Promise<ReleaseResult[]>;
   /** P-003: ambient harness for condition keys that carry none (`single-primary:*`).
    *  Default = `operatorHomeHarnessSlug()`. */
   homeHarness?: () => string;
@@ -1035,6 +1046,7 @@ export async function runConditionStalenessTick(
   // affect the escalation verdict computed above.
   let bridged: ReconcileSummary = { acquired: [], released: [], skipped: 0 };
   if (deps.bridgeConditions) {
+    let coveredKeys: ReadonlySet<string> = new Set();
     try {
       const homeHarness = (deps.homeHarness ?? operatorHomeHarnessSlug)();
       // EI-19930875455827867: this opts object MUST carry a concrete workspaceId.
@@ -1047,11 +1059,23 @@ export async function runConditionStalenessTick(
       // release path shares the defect so it can never self-heal. D-022's
       // `resolveStoredConditionHarness` normalization is correct and deployed; it was
       // simply INERT because its only production caller passed `{}`.
-      bridged = await deps.bridgeConditions(toBridgeConditionStates(states, homeHarness), {
+      const bridgeStates = toBridgeConditionStates(states, homeHarness);
+      coveredKeys = new Set(bridgeStates.map((s) => s.conditionKey));
+      bridged = await deps.bridgeConditions(bridgeStates, {
         workspaceId: coordScopeWorkspace(),
       });
     } catch {
       /* a bridge failure must never crash the request worker */
+    }
+    if (deps.reconcileHeldOwners) {
+      // WI-6554700010029296. Separate try: a sweep failure must not discard what
+      // the bridge already did this tick.
+      try {
+        const swept = await deps.reconcileHeldOwners(coveredKeys);
+        if (swept.length > 0) bridged = { ...bridged, released: [...bridged.released, ...swept] };
+      } catch {
+        /* fail-soft; the next tick retries */
+      }
     }
   }
 
@@ -1112,6 +1136,18 @@ export async function runConditionStalenessTick(
  * (unref'd timer, env-killable, interval overridable). Wire alongside
  * startInfraLivenessAlarm() in bin/hono-host.ts.
  */
+/**
+ * Exact-key openness for the holder-side sweep: `true` open, `false` resolved,
+ * `null` when the 30-day log holds no lifecycle envelope for the key. Uses the
+ * indexed exact-key read, never the bounded aggregate window.
+ */
+export async function readExactConditionOpen(conditionKey: string): Promise<boolean | null> {
+  const state = computeConditionStates(await readConditionEnvelopesForKey(conditionKey)).find(
+    (s) => s.condition_key === conditionKey,
+  );
+  return state ? state.open : null;
+}
+
 export function startConditionStalenessAlarm(opts: { intervalMs?: number } = {}): { stop(): void } {
   if (process.env.PAPERCUSP_CONDITION_STALENESS_ALARM === '0') return { stop() {} };
   const envMs = Number(process.env.PAPERCUSP_CONDITION_STALENESS_ALARM_MS);
@@ -1123,7 +1159,17 @@ export function startConditionStalenessAlarm(opts: { intervalMs?: number } = {})
       // P-003: THIS is what turns the condition→work-item bridge on. The tick
       // defaults it off (it is the one write-side dep — see ConditionStalenessDeps);
       // the production loop opts in, so the shipped behavior is ON.
-      runConditionStalenessTick({ bridgeConditions: reconcileConditions }).then(
+      runConditionStalenessTick({
+        bridgeConditions: reconcileConditions,
+        // WI-6554700010029296: settle resolved bridge-minted items the aggregate
+        // reconcile cannot reach (outside the bounded fold or the narrowed catalog).
+        reconcileHeldOwners: (coveredKeys) =>
+          reconcileHeldConditionOwners({
+            coveredKeys,
+            readKeyOpen: readExactConditionOpen,
+            workspaceId: coordScopeWorkspace(),
+          }),
+      }).then(
         () => undefined,
         () => undefined,
       ),

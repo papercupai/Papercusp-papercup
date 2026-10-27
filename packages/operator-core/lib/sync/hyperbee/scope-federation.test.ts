@@ -147,6 +147,26 @@ function fed(
   return { registry, f };
 }
 
+describe('P533 authority outages', () => {
+  it.each(['epoch', 'membership'] as const)('detaches an existing scope when %s authority becomes unavailable', async failure => {
+    const store = new FakeStore();
+    const roster = fakeRoster({ 'fleet:42/widgets': [7] });
+    const refusal = vi.fn();
+    const { f } = fed(store, roster, 42, refusal);
+    await f.ensureOwnScopes([SCOPE_A]);
+    const { ctx, muxer, sent } = fakeCtx();
+    await f.onPeerAnnounce(frame(7), ctx);
+    const session = [...store.byName.values()][0]!;
+    expect(session.attachedMuxes.has(muxer)).toBe(true);
+    if (failure === 'epoch') roster.currentEpoch = async () => { throw new Error('epoch unavailable'); };
+    else roster.isMember = async () => { throw new Error('roster unavailable'); };
+    await f.redisclose();
+    expect(session.attachedMuxes.has(muxer)).toBe(false);
+    expect(sent.at(-1)?.scoped_logs).toEqual([]);
+    expect(refusal).toHaveBeenCalledWith({ kind: 'roster-authority', refusal: { reason: 'roster-unavailable' } });
+  });
+});
+
 describe('§5.2 send — directed follow-up + loop damping', () => {
   it('serves + discloses a scope the peer is a member of, then damps the repeat', async () => {
     const store = new FakeStore();

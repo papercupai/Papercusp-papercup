@@ -185,11 +185,28 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
       'carries a BUILDER_EXEMPT entry saying why the default scan cap is safe for it.',
   },
   {
+    file: 'libs/generic/search/src/chunks/vector-leg.ts',
+    contains: 'AS chunk_leg_candidate_vector',
+    reason:
+      "The half chunk arm (no chunk ANN leg) orders the chunk rows joined to the parent slice by " +
+      'their vector distance. It lives in the same chunkAwareVectorLegSql builder as the two arms ' +
+      'above: a fragment that executes nothing, so rule 2 (every call site runs it inside ' +
+      'withIterativeScan or carries a BUILDER_EXEMPT entry) is what covers its scan.',
+  },
+  {
     file: 'packages/operator-core/lib/personal-vault/store.ts',
     contains: 'row_number() OVER (ORDER BY embedding <=>',
     reason:
       'harness_shared.documents has no HNSW index and this ORDER BY is a window over a ' +
       'pre-filtered CTE, so Postgres sorts exactly; there is no ef_search cap to under-return.',
+  },
+  {
+    file: 'packages/operator-core/lib/code-intelligence/semantic-code.ts',
+    contains: 'AS cosine_similarity FROM harness_shared.semantic_code_functions',
+    reason:
+      'harness_shared.semantic_code_functions has no vector index (migration 1568 creates only the ' +
+      'GIN search_text index), so this ORDER BY embedding <=> is an exact sort over the filtered ' +
+      'rows; there is no HNSW ef_search cap to under-return. Wrap it if a vector index is added.',
   },
   // R-33's same-time A/B bench (generic-rag-chunking D-040). Arm A must be the
   // pre-change query exactly as it ran at 9a9473af95, so the pair differs only in

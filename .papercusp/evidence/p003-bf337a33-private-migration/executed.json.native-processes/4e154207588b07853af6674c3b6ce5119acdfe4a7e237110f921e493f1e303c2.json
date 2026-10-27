@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"9cc5ad99-5b7c-433e-9834-a85ce24b81a6","pid":2947867,"ppid":2947864,"atMs":1792906663670,"loadId":100,"url":"file:///mnt/data/offload/papercusp-r2gcs-p003-bf337a33/libs/test-config/src/configuration-snapshot.ts","scope":"node-sync-load-hook"}

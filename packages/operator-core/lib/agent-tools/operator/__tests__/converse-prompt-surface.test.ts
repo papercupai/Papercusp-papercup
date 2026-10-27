@@ -9,6 +9,9 @@
  * sibling converse.test.ts mocking style).
  */
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // The surface contract needs one real catalog entry to prove colon→underscore
 // display rewriting. Keep the allowlist narrow and register that definition.
@@ -28,8 +31,7 @@ vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => null),
   lastUserContext: vi.fn(() => ''),
 }));
-vi.mock('../../../harness-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../harness-registry')>()),
+vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
 }));
 vi.mock('../../../workspace-registry', () => ({
@@ -51,7 +53,7 @@ vi.mock('../../../papercup/papercup-context', () => ({
 }));
 
 import { buildOperatorPrompt } from '../converse-prompt';
-import { loadRoleToolsMd } from '../../../prompt-assembly';
+import { loadRoleToolsMd, RolePromptUnavailableError } from '../../../prompt-assembly';
 import previewPrompt from '../preview_prompt';
 
 /** Narrow a tool result union to its `data` payload; a result without one fails the test. */
@@ -61,6 +63,30 @@ function responseData(result: object): unknown {
 }
 
 describe('buildOperatorPrompt — per-surface affordances', () => {
+  it('refuses pruned required content before optional gathers and rechecks installed inputs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'converse-required-'));
+    const keys = ['PAPERCUSP_PROMPTS_DIR', 'PAPERCUSP_HARNESS_DIR', 'PAPERCUSP_PROMPT_ROOT', 'PAPERCUSP_INTEGRATION_ROOT'] as const;
+    const saved = keys.map(key => process.env[key]);
+    try {
+      mkdirSync(join(root, 'prompts')); mkdirSync(join(root, 'harness'));
+      process.env.PAPERCUSP_PROMPTS_DIR = join(root, 'prompts');
+      process.env.PAPERCUSP_HARNESS_DIR = join(root, 'harness');
+      process.env.PAPERCUSP_PROMPT_ROOT = join(root, 'harness');
+      delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      const { loadVoicePrefs } = await import('../../../voice-prefs');
+      vi.mocked(loadVoicePrefs).mockClear();
+      await expect(buildOperatorPrompt({ messages: [], role: 'operator' }, null))
+        .rejects.toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', document: 'converse' });
+      expect(loadVoicePrefs).not.toHaveBeenCalled();
+      writeFileSync(join(root, 'prompts/operator.converse.md'), 'SYNTHETIC CONVERSE');
+      await expect(buildOperatorPrompt({ messages: [], role: 'operator' }, null))
+        .rejects.toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', document: 'persona' });
+      expect(loadVoicePrefs).not.toHaveBeenCalled();
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('voice defaults to a smaller history window while standard and text retain their budget', async () => {
     const messages = Array.from({ length: 24 }, (_, i) => ({ role: 'user' as const, content: `turn-${i}:` + 'x'.repeat(6000) }));
     const slim = await buildOperatorPrompt({ messages, modality: 'voice' }, null);

@@ -92,11 +92,17 @@ beforeAll(async () => {
   const installed = { id: INSTALLED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] };
   await writeBlueprint(join(home, 'blueprints', INSTALLED), { ...installed,
     attestation: { contentHash: layerContentHash(installed), signedBy: 'r9-integration-fixture' } });
+  const installedPrompts = join(home, 'blueprints', INSTALLED, 'prompts');
+  await mkdir(installedPrompts, { recursive: true });
+  await writeFile(join(installedPrompts, 'agent-base-overlay.md'), '# Installed integration domain\n');
   await writeBlueprint(join(home, 'blueprints', UNSIGNED),
     { id: UNSIGNED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] });
   // Local library: an abstract practice component and a provider-bound (incompatible) one.
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PRACTICE),
     { id: PRACTICE, extends: 'base', version: '1.0.0', slots: [{ slot: 'practice' }] });
+  const practicePrompts = join(home, '.papercusp', 'blueprints', PRACTICE, 'prompts');
+  await mkdir(practicePrompts, { recursive: true });
+  await writeFile(join(practicePrompts, 'practice.md'), '# Integration practice\n');
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PROVIDER), {
     id: PROVIDER, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
     contributions: [{ id: 'current-brief', purpose: 'operational', source: 'provider', refresh: 'launch',

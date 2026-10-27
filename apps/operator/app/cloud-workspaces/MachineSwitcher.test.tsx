@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import { parseAsString, useQueryState } from "nuqs";
 import MachineSwitcher, { MachineSwitcherView } from "./MachineSwitcher";
+import { getBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const query = vi.hoisted(() => vi.fn());
@@ -18,13 +19,50 @@ vi.mock("@/app/harness/Select", () => ({
     {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
   </select>,
 }));
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); window.sessionStorage.clear(); });
 const rows = [
   { kind: "workspace", id: "a", name: "Home desktop", observedState: "running" },
   { kind: "workspace", id: "b", name: "Laptop", observedState: "stopped" },
 ] as WorkspaceHostControlRow[];
 
 describe("persistent machine selection", () => {
+  it.each([true, false])("binds the visible default to request routing (localMode=%s) without moving apps", async (localMode) => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const update = vi.fn();
+    const onSelect = vi.fn();
+    render(<MachineSwitcher localMode={localMode} onSelect={onSelect} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?app=mail&ws=own", onUrlUpdate: update }),
+    });
+    const expected = localMode ? "local" : "a";
+    await vi.waitFor(() => expect(getBrowserMachineId()).toBe(expected));
+    await vi.waitFor(() => expect(update).toHaveBeenCalled());
+    const params = update.mock.calls.at(-1)![0].searchParams as URLSearchParams;
+    expect(params.get("desktopHost")).toBe(expected);
+    expect(params.get("app")).toBe("mail");
+    expect(params.get("ws")).toBe("own");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicitly selected remote machine in a local GUI", () => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const update = vi.fn();
+    render(<MachineSwitcher localMode onSelect={vi.fn()} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?desktopHost=b&host=b", onUrlUpdate: update }),
+    });
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("b");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("does not establish an implicit target from a refused inventory", () => {
+    query.mockReturnValue({ data: rows, loading: false, error: new Error("denied") });
+    const update = vi.fn();
+    render(<MachineSwitcher onSelect={vi.fn()} />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: "?app=mail", onUrlUpdate: update }),
+    });
+    expect(getBrowserMachineId()).toBeUndefined();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("uses the authorized inventory, shows availability and leaves missing selections explicit", () => {
     const onSelect = vi.fn();
     render(<MachineSwitcherView localMode={false} value="removed" rows={rows}
@@ -66,25 +104,15 @@ describe("persistent machine selection", () => {
     expect(transitions.every((params) => params.get("app") === "desktops" && params.get("desktopHost") === "b")).toBe(true);
   });
 
-  it("offers personal terminal and GUI connection instructions without a hosted workspace", async () => {
+  it("opens the shared Remote access setup without requiring a hosted workspace", async () => {
     render(<MachineSwitcher localMode={false} workspaceSelected={false} />);
-    const help = screen.getByRole("button", { name: "Connect your computer" });
-    expect(help.dataset.connectionClass).toBe("ssh-profile");
+    const help = screen.getByRole("link", { name: "Connect your computer" });
+    expect(help.getAttribute("href")).toBe("/settings/remote-access#connect-computer");
     fireEvent.focus(help);
     const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip.textContent).toBe("SSH connection profile");
+    expect(tooltip.textContent).toBe("Choose a connection method");
     expect(help.getAttribute("aria-describedby")).toBe(tooltip.id);
-    fireEvent.click(help);
-    const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
-    expect(screen.getByTestId("machine-connection-authority").textContent).toContain("SSH machine access");
-    expect(dialog.textContent).toContain("portal relay and phone pairing are managed separately");
-    expect(within(dialog).getByRole("link", { name: "Remote access" }).getAttribute("href"))
-      .toBe("/settings/remote-access");
-    expect(dialog.textContent).toContain("--connect-add-ssh=my-computer");
-    expect(dialog.textContent).toContain("--connect-gui");
-    expect(dialog.textContent).toContain("Forgetting an entry alone does not revoke");
     expect(query).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

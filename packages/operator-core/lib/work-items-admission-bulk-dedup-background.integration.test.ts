@@ -21,10 +21,13 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
     execute: async (observe, evidenceDir) => {
   const source = resolve(root, 'packages/operator-core/lib/work-items-admission-bulk-dedup.ts');
   const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
+  const promoterSourceHash = createHash('sha256').update(readFileSync(resolve(root,
+    'packages/operator-core/lib/work-items-admission-promoter.ts'))).digest('hex');
   const child = spawn(process.execPath, [
     resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
     process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_bulk-dedup-background-child.ts'),
-  ], { cwd: root, detached: true, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  ], { cwd: root, detached: true, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', BULK_BG_EXPECTED_SOURCE_SHA: sourceHash,
+    BULK_BG_EXPECTED_PROMOTER_SHA: promoterSourceHash, BULK_BG_INJECT_FAILURE: failingExit ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   observe(child);
   child.stdout!.on('data', (chunk) => {
     const text = String(chunk);
@@ -57,6 +60,29 @@ isolatedIntegrationCases('recovers a guarded partial stage and removes its priva
     expect(receipt.liveFire.durableSteps).toContain('routine-fire-start');
     expect(receipt.liveFire.durableSteps.some((name: string) => name.startsWith('bulk:bulk-grade-live-fire-rehearsal:'))).toBe(true);
     expect(receipt.pinnedRecompute).toEqual({ sourceCensusRunId: 'bulk-background-acceptance-census-0', before: 2, after: 1, retiredByStage: 1 });
+    expect(receipt.claimedComparison.sourceHash).toBe(promoterSourceHash);
+    expect(receipt.claimedComparison.runtime.processId).toBeTruthy();
+    expect(receipt.claimedComparison.runtime.buildSha).toBeTruthy();
+    expect(receipt.claimedComparison.cases).toEqual([
+      { name: 'unauthenticated', modelCalls: 0, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'distinct', modelCalls: 1, promoted: 1, merged: 0, comparisonPreserved: true },
+      { name: 'duplicate-admitted', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'duplicate-pending', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'omitted', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+    ]);
+    expect(receipt.auditedParkComparison.sourceHash).toBe(promoterSourceHash);
+    expect(receipt.auditedParkComparison.runtime).toEqual(receipt.claimedComparison.runtime);
+    expect(receipt.auditedParkComparison.cases).toEqual([
+      { name: 'unauthenticated', modelCalls: 0, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'distinct-admitted', modelCalls: 1, promoted: 1, merged: 0, comparisonPreserved: true },
+      { name: 'distinct-pending', modelCalls: 1, promoted: 1, merged: 0, comparisonPreserved: true },
+      { name: 'duplicate', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'omitted', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'missing-audit', modelCalls: 0, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'audit-drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+      { name: 'dependency-drift', modelCalls: 1, promoted: 0, merged: 0, comparisonPreserved: true },
+    ]);
     expect(existsSync(receipt.runtimeRoot)).toBe(false);
     const dataDir = output.match(/datadir ([^)\n]+)/)?.[1];
     expect(dataDir).toBeTruthy();

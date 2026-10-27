@@ -40,6 +40,7 @@ when needed, request a coordinated :3170 restart.
 
 Options:
   -h, --help  Show this help and exit without inspecting or mutating staging.
+  --cleanup-only  Run bounded retired-generation cleanup without preparing or restarting staging.
 
 Configuration is supplied through the PAPERCUSP_* environment variables used
 by the staging sync timer; this command accepts no positional arguments.
@@ -53,6 +54,7 @@ USAGE
 # This script is also used for usage discovery, so --help must be a genuinely
 # side-effect-free operation rather than an argument that falls through into
 # the live sync workflow.
+STAGING_SYNC_CLEANUP_ONLY=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
     -h|--help)
@@ -63,6 +65,14 @@ if [ "$#" -gt 0 ]; then
       fi
       usage
       exit 0
+      ;;
+    --cleanup-only)
+      if [ "$#" -ne 1 ]; then
+        printf 'sync-staging-checkout.sh: --cleanup-only does not accept additional arguments\n' >&2
+        usage >&2
+        exit 2
+      fi
+      STAGING_SYNC_CLEANUP_ONLY=1
       ;;
     *)
       printf 'sync-staging-checkout.sh: unknown argument: %s\n' "$1" >&2
@@ -81,6 +91,8 @@ INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
 LEGACY_STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
 STAGING_ROOT="${LEGACY_STAGING_ROOT}.current"
 STAGING_GENERATIONS_ROOT="${LEGACY_STAGING_ROOT}.generations"
+# Measured on-disk size of the last published generation (WI-6554700010029252).
+STAGING_GENERATION_BYTES_FILE="${STAGING_GENERATION_BYTES_FILE:-$STAGING_GENERATIONS_ROOT/.generation-bytes}"
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercusp-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
@@ -139,8 +151,8 @@ fi
 # Keep the checkout flock in a dedicated coprocess. A shell fd opened with
 # `exec 9>...` is inherited by every child, so an unrelated child can keep the
 # staging barrier alive after this script exits (the android-ci failure mode).
-# The keeper owns fd 9 and only receives mode changes over a pipe; the main
-# workflow and all of its children never receive the lock descriptor.
+# The keeper owns the writer lease on fd 8 and generation barrier on fd 9,
+# receiving mode changes over a pipe. No workflow child inherits either fd.
 # Bash owns STAGING_SYNC_LOCK_KEEPER_PID and unsets it when the coprocess exits.
 # Keep our cleanup receipt separately so cleanup is safe even after reaping.
 STAGING_SYNC_LOCK_PROCESS_PID=""
@@ -148,10 +160,30 @@ STAGING_SYNC_LOCK_READ_FD=""
 STAGING_SYNC_LOCK_WRITE_FD=""
 STAGING_SYNC_LOCK_OWNER_PID="$$"
 
+staging_sync_lock_next_command() {
+  local command_line="" command_chunk="" read_status
+  while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
+    command_chunk=""
+    if IFS= read -r -t 1 command_chunk; then read_status=0; else read_status=$?; fi
+    # read -t consumes partial input even when it times out. Preserve it until
+    # the newline arrives rather than silently discarding a lock command.
+    command_line+="$command_chunk"
+    ((${#command_line} <= 128)) || return 2
+    if ((read_status == 0)); then
+      IFS=' ' read -r staging_lock_command staging_lock_budget <<< "$command_line"
+      return 0
+    fi
+    # Timeouts allow a liveness check; EOF must end the keeper.
+    ((read_status > 128)) || return 1
+  done
+  return 1
+}
+
 staging_sync_lock_start() {
   coproc STAGING_SYNC_LOCK_KEEPER {
+    exec 8>"${STAGING_SYNC_LOCK_PATH}.writer"
     exec 9>"$STAGING_SYNC_LOCK_PATH"
-    if ! flock -n 9; then
+    if ! flock -n 8 || ! flock -n 9; then
       printf '%s\n' busy
       # Keep the coprocess alive until the parent acknowledges the result.
       # Bash removes the generated named-coproc PID variables as soon as a
@@ -159,37 +191,46 @@ staging_sync_lock_start() {
       # STAGING_SYNC_LOCK_KEEPER_PID under nounset and abort on a benign busy
       # lock before it could release its pipe/fd state.
       staging_lock_command=""
-      while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
-        if IFS= read -r -t 1 staging_lock_command; then
-          [[ "$staging_lock_command" == release ]] && break
-        fi
+      while staging_sync_lock_next_command; do
+        [[ "$staging_lock_command" == release ]] && break
       done
       exit 75
     fi
     printf '%s\n' exclusive
     staging_lock_command=""
-    while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
-      if IFS= read -r -t 1 staging_lock_command; then
+    while staging_sync_lock_next_command; do
         case "$staging_lock_command" in
           shared)
             if flock -s 9; then printf '%s\n' shared; else printf '%s\n' shared-failed; exit 1; fi
             ;;
+          exclusive)
+            # flock conversions can drop the shared lock while waiting. The
+            # separate writer lease remains held throughout this transition.
+            if flock -x -w "$staging_lock_budget" -E 75 9; then
+              printf '%s\n' exclusive
+            else
+              printf 'exclusive-failed:%s\n' "$?"
+            fi
+            ;;
           release)
             flock -u 9
+            flock -u 8
             printf '%s\n' released
             exit 0
             ;;
+          *) printf '%s\n' invalid-command; exit 2 ;;
         esac
-      fi
     done
     flock -u 9
+    flock -u 8
   }
   STAGING_SYNC_LOCK_PROCESS_PID="${STAGING_SYNC_LOCK_KEEPER_PID:-}"
   STAGING_SYNC_LOCK_READ_FD="${STAGING_SYNC_LOCK_KEEPER[0]:-}"
   STAGING_SYNC_LOCK_WRITE_FD="${STAGING_SYNC_LOCK_KEEPER[1]:-}"
   [[ -n "$STAGING_SYNC_LOCK_PROCESS_PID" && -n "$STAGING_SYNC_LOCK_READ_FD" && -n "$STAGING_SYNC_LOCK_WRITE_FD" ]] || return 1
   staging_lock_state=""
-  if ! IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+  if ! IFS= read -r -t 5 staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: initial acknowledgement unavailable; refusing admission' >&2
     return 1
   fi
   if [[ "$staging_lock_state" == busy ]]; then
@@ -201,18 +242,46 @@ staging_sync_lock_start() {
 staging_sync_lock_shared() {
   printf '%s\n' shared >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
   staging_lock_state=""
-  IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
+  # The keeper is a separate process: liveness alone cannot guarantee a reply.
+  # Fail closed so the EXIT trap releases this invocation's leases and a later
+  # tick can retry; a missing acknowledgement must never freeze staging forever.
+  if ! IFS= read -r -t 5 staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: shared acknowledgement unavailable; refusing preparation' >&2
+    return 1
+  fi
   [[ "$staging_lock_state" == shared ]]
 }
 
+staging_sync_lock_exclusive() {
+  local budget="${1:-45}" state
+  [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] && ((budget <= 300)) || return 2
+  printf 'exclusive %s\n' "$budget" >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
+  if ! IFS= read -r -t "$((budget + 5))" state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    printf '%s\n' 'staging lock: exclusive acknowledgement unavailable; refusing publication' >&2
+    return 1
+  fi
+  case "$state" in
+    exclusive) return 0 ;;
+    exclusive-failed:*) return "${state#exclusive-failed:}" ;;
+    *) return 1 ;;
+  esac
+}
+
 staging_sync_lock_release() {
-  local keeper_pid="$STAGING_SYNC_LOCK_PROCESS_PID"
+  local keeper_pid="$STAGING_SYNC_LOCK_PROCESS_PID" acknowledgement=""
   [[ -n "$keeper_pid" ]] || return 0
   STAGING_SYNC_LOCK_PROCESS_PID=""
   # An already-exited keeper can leave a closed pipe. Keep the write in this
   # shell: Bash's coprocess descriptors are not reliably inherited by a
   # subshell, and a subshell here would silently lose the release handshake.
   printf '%s\n' release 2>/dev/null >&"$STAGING_SYNC_LOCK_WRITE_FD" || true
+  # Cleanup must not wait forever for a keeper that cannot receive or process
+  # its release command. It owns only this invocation's lock descriptors; once
+  # release is requested, terminating it safely releases both leases.
+  if ! IFS= read -r -t 2 acknowledgement <&"$STAGING_SYNC_LOCK_READ_FD" 2>/dev/null ||
+     [[ "$acknowledgement" != released ]]; then
+    kill -KILL "$keeper_pid" 2>/dev/null || true
+  fi
   wait "$keeper_pid" 2>/dev/null || true
 }
 
@@ -239,6 +308,41 @@ staging_alias_bootstrap() {
     fi
     log "bootstrapped stable staging alias to the existing serving checkout"
   fi
+}
+
+# Retired generations are reclaimed asynchronously (launch_staging_trash_drain),
+# but candidate preparation can allocate gigabytes before that drain finishes.
+# Reuse the writers' reserve so a cleanup backlog cannot keep growing while
+# shared PostgreSQL and Git already refuse new writes.
+staging_preparation_has_headroom() {
+  (
+    cd "$INTEGRATION_ROOT" || exit 1
+    timeout --kill-after=2s 10s node --experimental-strip-types --input-type=module - "$STAGING_GENERATIONS_ROOT" "${STAGING_GENERATION_BYTES_FILE:-}" <<'NODE'
+import { readFileSync, statfsSync } from 'node:fs';
+import { criticalWriteHeadroomBytes, diskPolicyFromEnv } from './packages/operator-core/lib/storage/disk-space-policy.ts';
+const snapshot = statfsSync(process.argv[2]);
+const total = Number(snapshot.blocks) * Number(snapshot.bsize);
+const available = Number(snapshot.bavail) * Number(snapshot.bsize);
+if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(available) || available < 0 || available > total) {
+  throw new Error('staging source preparation: filesystem capacity is unmeasured');
+  }
+const reserve = criticalWriteHeadroomBytes(total, diskPolicyFromEnv());
+// WI-6554700010029252: preparing a candidate writes about one more generation, so
+// the reserve must still hold AFTER it lands. With no usable measurement yet the
+// check is the writer reserve alone. (Closing braces stay indented: tests
+// extract this function with a sed range that ends at the first column-0 `}`.)
+let generationBytes = 0;
+try {
+  const raw = readFileSync(process.argv[3], 'utf8').trim();
+  if (/^[0-9]+$/.test(raw) && Number.isSafeInteger(Number(raw))) generationBytes = Number(raw);
+  } catch {}
+const required = reserve + generationBytes;
+if (available < required) {
+  console.error(`staging source preparation deferred: ${available} available bytes below ${required} required (${reserve} writer reserve + ${generationBytes} measured generation size) on ${process.argv[2]}; retaining the serving generation while cleanup continues`);
+  process.exitCode = 75;
+  }
+NODE
+  )
 }
 
 create_staging_candidate() {
@@ -310,6 +414,17 @@ collect_staging_generation_refs() {
         tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/environ:PAPERCUSP_INTEGRATION_ROOT=#\1\tintegration-root\t#p' || true
       find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%p\t%l\n' 2>/dev/null |
         sed -n 's#^/proc/\([0-9]*\)/cwd\t#\1\tcwd\t#p' || true
+      # WI-6554700010029679: an argv element naming a path INSIDE a generation
+      # pins it too. release:cut runs `bash -c 'source "$1" …' <root>/bin/
+      # release-local.sh <generation>/…/bin/release-local.sh …` with its cwd in
+      # the release root and no PAPERCUSP_INTEGRATION_ROOT, yet the orchestrator
+      # keeps opening files from that generation until the cut's final step.
+      # Anchored on the generations-root prefix (the same literal prefix every
+      # pruned candidate sits under), so the batched scan stays one grep.
+      if [[ -n "${STAGING_GENERATIONS_ROOT:-}" ]]; then
+        grep -sazHo -- "^$(printf '%s' "$STAGING_GENERATIONS_ROOT" | sed 's/[][\\.*^$]/\\&/g')/.*" /proc/[0-9]*/cmdline 2>/dev/null |
+          tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/cmdline:#\1\targv\t#p' || true
+      fi
     } | sort -u || true
   )"
   STAGING_GENERATION_REFS="$(printf '%s\n' "$STAGING_GENERATION_PROCESS_REFS" | cut -f3- | sort -u)"
@@ -390,10 +505,146 @@ staging_generation_holder_evidence() {
   return 0
 }
 
+# WI-6554700010029246: a retired generation is a ~25 GiB node_modules-heavy
+# tree. Deleting it INSIDE this tick's exclusive lock under a 15s budget
+# reclaimed only a sliver per tick while 2-3 generations/hour were published,
+# so idle trees piled up (~300 GiB on /, 2026-10-23..26) until every writer's
+# disk reserve refused: the green-checkpoint gate recorded 150 consecutive
+# no-verdict runs and git-sync publication was refused. Retirement under the
+# lock is therefore O(1) — a same-filesystem rename of the whole generation
+# home to a .trash-* sibling — and byte reclamation runs OUTSIDE the lock in
+# launch_staging_trash_drain with no small budget.
+retire_staging_generation_home() {
+  local home="$1" root="${2:-${STAGING_GENERATIONS_ROOT:-}}" name trash
+  name="$(basename "$home")"
+  [[ -n "$root" && "$(dirname "$home")" == "$root" && "$name" == .candidate-* && -d "$home" ]] || return 1
+  trash="$root/.trash-${name#.}.$(date +%s)"
+  if ! mv -T -- "$home" "$trash"; then
+    log "ALARM: could not retire staging generation to trash (rename failed); retaining it for next tick: $home"
+    return 1
+  fi
+  rm -f -- "${home}.prune-pending"
+  STAGING_GENERATIONS_RETIRED=$((${STAGING_GENERATIONS_RETIRED:-0} + 1))
+  return 0
+}
+
+# Renaming a worktree directory leaves its registration in the integration
+# repository's .git/worktrees; `git worktree prune` drops exactly the entries
+# whose directory is gone (locked/initializing worktrees are skipped by Git).
+prune_staging_worktree_registrations() {
+  local budget="${1:-15}"
+  [[ "${STAGING_GENERATIONS_RETIRED:-0}" -gt 0 ]] || return 0
+  if ! command -v timeout >/dev/null 2>&1; then
+    log "ALARM: timeout is unavailable; leaving stale staging worktree registrations for next tick"
+    return 0
+  fi
+  local status
+  if timeout --signal=KILL "${budget}s" git -C "$INTEGRATION_ROOT" worktree prune >/dev/null 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  if ((status == 124 || status == 137)); then
+    log "staging generation cleanup budget exhausted after ${budget}s in git worktree prune; stale registrations are retried next tick"
+  else
+    log "git worktree prune failed (status=$status); stale staging registrations are retried next tick"
+  fi
+  return 0
+}
+
+# Reclaim .trash-* bytes in a transient systemd unit so the deletion outlives
+# this tick: the sync service's cgroup is torn down when the tick exits, which
+# would kill an ordinary background child. The unit name is keyed by the
+# generations root so a test fixture can never collide with (or wait behind)
+# the production drain, and an already-active drain is left to finish — its
+# successor picks up whatever it did not cover on the next tick. Deliberately
+# NOT idle-class IO: under fleet load the idle class starves almost completely.
+launch_staging_trash_drain() {
+  local root="${1:-${STAGING_GENERATIONS_ROOT:-}}" entry unit rm_bin status
+  local -a trash=()
+  [[ -n "$root" && -d "$root" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    trash+=("$entry")
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name '.trash-*' -print0 2>/dev/null)
+  ((${#trash[@]} > 0)) || return 0
+  if [[ "${STAGING_TRASH_DRAIN_MODE:-detached}" == inline ]]; then
+    if rm -rf -- "${trash[@]}"; then
+      log "reclaimed ${#trash[@]} retired staging generation tree(s) inline"
+    else
+      status=$?
+      log "ALARM: inline reclamation of retired staging generations failed (status=$status); retrying next tick"
+    fi
+    return 0
+  fi
+  rm_bin="$(command -v rm)"
+  unit="papercup-staging-trash-drain-$(printf '%s' "$root" | sha256sum | cut -c1-12)"
+  if command -v systemd-run >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet "$unit.service" 2>/dev/null; then
+      log "retired staging generation drain already running unit=$unit; ${#trash[@]} trash tree(s) are covered by it or the next tick"
+      return 0
+    fi
+    if systemd-run --user --quiet --collect --unit="$unit" \
+        --description="Reclaim retired papercusp staging generations (WI-6554700010029246)" \
+        --nice=10 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=7 \
+        -- "$rm_bin" -rf -- "${trash[@]}" >/dev/null 2>&1; then
+      log "launched detached retired staging generation drain unit=$unit trees=${#trash[@]}"
+      return 0
+    fi
+    log "systemd-run could not launch $unit; falling back to a detached session (may be cut short when this tick exits; the next tick relaunches it)"
+  fi
+  setsid nice -n 10 "$rm_bin" -rf -- "${trash[@]}" </dev/null >/dev/null 2>&1 &
+  log "launched detached retired staging generation drain pid=$! trees=${#trash[@]}"
+  return 0
+}
+
+# WI-6554700010029252: record a published generation's real on-disk size for
+# staging_preparation_has_headroom. A df delta across preparation is unusable
+# because the detached trash drain frees space at the same time, so this walks
+# the tree. That walk took over a minute under gate load, so it runs detached,
+# like the drain, never inside the tick. A failed or partial walk writes nothing
+# and leaves the previous measurement in place.
+STAGING_GENERATION_MEASURE_SCRIPT='set -o pipefail
+bytes="$(du -sxB1 -- "$1" | awk "NR==1 {print \$1}")" || exit 1
+[[ "$bytes" =~ ^[0-9]+$ ]] && ((bytes > 0)) || exit 1
+printf "%s\n" "$bytes" > "$2.tmp.$$" && mv -f -- "$2.tmp.$$" "$2" || { rm -f -- "$2.tmp.$$"; exit 1; }'
+
+launch_staging_generation_measure() {
+  local home="$1" file="${2:-$STAGING_GENERATION_BYTES_FILE}" unit bash_bin status
+  [[ -n "$home" && -d "$home" && -n "$file" ]] || return 0
+  bash_bin="$(command -v bash)"
+  if [[ "${STAGING_GENERATION_MEASURE_MODE:-detached}" == inline ]]; then
+    if "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file"; then
+      log "measured staging generation size inline: $(cat -- "$file" 2>/dev/null) bytes"
+    else
+      status=$?
+      log "staging generation size measurement failed inline (status=$status); keeping the previous measurement"
+    fi
+    return 0
+  fi
+  unit="papercup-staging-generation-size-$(printf '%s' "$file" | sha256sum | cut -c1-12)"
+  if command -v systemd-run >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet "$unit.service" 2>/dev/null; then
+      log "staging generation size measurement already running unit=$unit; the next publication re-measures"
+      return 0
+    fi
+    if systemd-run --user --quiet --collect --unit="$unit" \
+        --description="Measure the published papercusp staging generation size (WI-6554700010029252)" \
+        --nice=10 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=7 \
+        -- "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file" >/dev/null 2>&1; then
+      log "launched detached staging generation size measurement unit=$unit home=$home"
+      return 0
+    fi
+    log "systemd-run could not launch $unit; falling back to a detached session"
+  fi
+  setsid nice -n 10 "$bash_bin" -c "$STAGING_GENERATION_MEASURE_SCRIPT" staging-generation-measure "$home" "$file" </dev/null >/dev/null 2>&1 &
+  log "launched detached staging generation size measurement pid=$! home=$home"
+  return 0
+}
+
 prune_staging_generations() {
   local current_root candidate_root resolved_root candidate_home refs_collected=0
   local audit_pin audit_expiry audit_mtime audit_now audit_pinned
-  local cleanup_budget="${1:-15}" cleanup_started="" cleanup_remaining cleanup_status
+  local cleanup_budget="${1:-15}" cleanup_started="" cleanup_remaining retained_idle=0
   local pending_cleanup pending_home
   # Pruning runs before candidate preparation while this tick holds the
   # exclusive staging lock. Keep that startup path bounded; the optional
@@ -404,36 +655,17 @@ prune_staging_generations() {
     cleanup_budget=15
   fi
   [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
-  # Git has already detached these worktrees; finish their bounded directory
-  # cleanup on this or a later timer tick. Keep the marker outside the tree so
-  # an interrupted rm cannot erase its own retry record.
+  STAGING_GENERATIONS_RETIRED=0
+  # Legacy markers: Git already detached these worktrees and an earlier tick
+  # began (but could not finish) a budgeted rm. Retire the remainder to trash.
   while IFS= read -r -d '' pending_cleanup; do
     pending_home="${pending_cleanup%.prune-pending}"
     if [[ ! -d "$pending_home" ]]; then
       rm -f -- "$pending_cleanup"
       continue
     fi
-    [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining deferred directory cleanup for next tick: $pending_home"
-      return 0
-    fi
-    if ! command -v timeout >/dev/null 2>&1; then
-      log "ALARM: timeout is unavailable; retaining deferred staging generation cleanup: $pending_home"
-      return 0
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$pending_home"; then
-      rm -f -- "$pending_cleanup"
-      log "completed deferred staging generation directory cleanup: $pending_home"
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $pending_home"
-      else
-        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $pending_home"
-      fi
-      return 0
+    if retire_staging_generation_home "$pending_home"; then
+      log "retired deferred staging generation directory to trash: $pending_home"
     fi
   done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 1 -maxdepth 1 -type f -name '.candidate-*.prune-pending' -print0 2>/dev/null)
   current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
@@ -479,6 +711,7 @@ prune_staging_generations() {
     done
     if [[ "$audit_pinned" -eq 1 ]]; then
       log "retaining prior staging generation for a bounded audit runtime pin: $resolved_root"
+      retained_idle=$((retained_idle + 1))
       continue
     fi
     # Scan /proc only when there is something to prune, so the every-tick prune
@@ -490,65 +723,53 @@ prune_staging_generations() {
     if staging_generation_in_use "$resolved_root"; then
       log "retaining prior staging generation still referenced by a process: $resolved_root"
       staging_generation_holder_evidence "$resolved_root" || log "retention holder evidence unavailable: $resolved_root (generation retained)"
+      retained_idle=$((retained_idle + 1))
       continue
     fi
     candidate_home="$(dirname "$resolved_root")"
     [[ "$(dirname "$candidate_home")" == "$STAGING_GENERATIONS_ROOT" &&
        "$(basename "$candidate_home")" == .candidate-* ]] || continue
     [[ -n "$cleanup_started" ]] || cleanup_started="$SECONDS"
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining generation for next tick: $resolved_root"
-      break
+    if retire_staging_generation_home "$candidate_home"; then
+      log "pruned unused staging generation $resolved_root (retired to trash; bytes reclaimed outside the lock)"
     fi
-    if ! command -v timeout >/dev/null 2>&1; then
-      log "ALARM: timeout is unavailable; retaining staging generation for next tick: $resolved_root"
-      break
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" \
-      git -C "$INTEGRATION_ROOT" worktree remove --force "$resolved_root" >/dev/null 2>&1; then
-      cleanup_status=0
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial generation for next tick: $resolved_root"
-        break
-      fi
-      # Preserve the prior best-effort behavior for non-timeout Git errors;
-      # the bounded filesystem cleanup below still reclaims the retired tree.
-      log "staging generation worktree removal failed (status=$cleanup_status); continuing bounded directory cleanup: $resolved_root"
-    fi
-    pending_cleanup="${candidate_home}.prune-pending"
-    if ! : > "$pending_cleanup"; then
-      log "ALARM: could not create deferred-cleanup marker; retaining staging generation directory: $candidate_home"
-      break
-    fi
-    cleanup_remaining=$((cleanup_budget - (SECONDS - cleanup_started)))
-    if ((cleanup_remaining <= 0)); then
-      log "staging generation cleanup budget exhausted after ${cleanup_budget}s; deferred directory cleanup to next tick: $candidate_home"
-      break
-    fi
-    if timeout --signal=KILL "${cleanup_remaining}s" rm -rf -- "$candidate_home"; then
-      rm -f -- "$pending_cleanup"
-      log "pruned unused staging generation $resolved_root"
-    else
-      cleanup_status=$?
-      if ((cleanup_status == 124 || cleanup_status == 137)); then
-        log "staging generation cleanup budget exhausted after ${cleanup_budget}s; retaining partial directory cleanup for next tick: $candidate_home"
-      else
-        log "staging generation directory cleanup failed (status=$cleanup_status); retaining cleanup marker for next tick: $candidate_home"
-      fi
-      break
-    fi
-  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout -print0 2>/dev/null)
+  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout \
+    -path "$STAGING_GENERATIONS_ROOT/.candidate-*/checkout" -print0 2>/dev/null)
+  # Detector for the WI-6554700010029246 class: every retained non-serving
+  # generation costs ~25 GiB on the shared root volume, so more than two held
+  # at once is a leak (a stuck holder or an unexpired pin), not steady state.
+  if ((retained_idle > 2)); then
+    log "ALARM: ${retained_idle} non-serving staging generations retained by holders or audit pins under $STAGING_GENERATIONS_ROOT; each holds ~a full checkout of disk — inspect the staging-generation-holder lines above"
+  fi
+  cleanup_remaining=$((cleanup_budget - (SECONDS - ${cleanup_started:-$SECONDS})))
+  ((cleanup_remaining > 0)) || cleanup_remaining=1
+  prune_staging_worktree_registrations "$cleanup_remaining"
+  launch_staging_trash_drain
+  return 0
 }
 
 cleanup_staging_candidate() {
   if [[ -n "$STAGING_CANDIDATE_HOME" && "$STAGING_CANDIDATE_PUBLISHED" -eq 0 ]]; then
-    [[ ! -d "$STAGING_CANDIDATE_ROOT" ]] ||
-      git -C "$INTEGRATION_ROOT" worktree remove --force "$STAGING_CANDIDATE_ROOT" >/dev/null 2>&1 || true
-    rm -rf -- "$STAGING_CANDIDATE_HOME"
+    local cleanup_budget="${1:-15}"
+    if [[ ! "$cleanup_budget" =~ ^[0-9]+$ ]] || ((cleanup_budget < 1 || cleanup_budget > 15)); then
+      cleanup_budget=15
+    fi
+    # Exit cleanup still holds the publication lease, so it stays O(1) like the
+    # generation pruner (WI-6554700010029246): retire the failed candidate to
+    # trash, drop its registration, and reclaim the bytes outside the lock.
+    [[ -d "$STAGING_CANDIDATE_HOME" ]] || return 0
+    local candidate_parent
+    candidate_parent="$(dirname "$STAGING_CANDIDATE_HOME")"
+    STAGING_GENERATIONS_RETIRED=0
+    if retire_staging_generation_home "$STAGING_CANDIDATE_HOME" "$candidate_parent"; then
+      log "retired failed staging candidate to trash: $STAGING_CANDIDATE_HOME"
+      prune_staging_worktree_registrations "$cleanup_budget"
+      launch_staging_trash_drain "$candidate_parent"
+    else
+      log "ALARM: failed staging candidate could not be retired; the next tick's pruner retries it: $STAGING_CANDIDATE_HOME"
+    fi
   fi
+  return 0
 }
 
 copy_staging_runtime_environment() {
@@ -1198,8 +1419,10 @@ current_commit_age_sec() {
 }
 
 # Single-flight: a second timer tick (or a manual run) waits/skips rather than
-# racing two setups on the same checkout. A release cut whose orchestrator is this
-# checkout also holds the lock SHARED for its whole run (WI-10003515,
+# racing two setups on the same checkout, even when preparation permits readers.
+# A separate writer lease serializes ticks; the generation barrier is exclusive
+# only for GC/bootstrap and publication. A release cut whose orchestrator is this
+# checkout holds the generation barrier SHARED for its whole run (WI-10003515,
 # release-cut-launch.ts wrapWithStagingSyncLock), so re-cloning submodules in place
 # cannot delete scripts out from under an in-flight cut.
 STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"
@@ -1239,6 +1462,15 @@ staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging 
 # collected on the next timer tick through this same maintained GC path.
 prune_staging_generations
 staging_sync_checkpoint "generation cleanup complete"
+
+if [[ "${STAGING_SYNC_CLEANUP_ONLY:-0}" == 1 ]]; then
+  log "staging generation cleanup-only pass complete"
+  exit 0
+fi
+
+# Immutable candidate preparation cannot invalidate a selected generation.
+# Keep the writer lease, but admit shared readers during the expensive work.
+staging_sync_lock_shared || { log "FATAL: could not admit generation readers after cleanup"; exit 1; }
 
 forward_compat_review_warnings
 
@@ -1325,6 +1557,17 @@ fi
 
 SYNC_ROOT="$(realpath -e "$STAGING_ROOT" 2>/dev/null || printf '%s' "$STAGING_ROOT")"
 if [ "$checkout_needs_advance" = 1 ]; then
+  if staging_preparation_has_headroom; then
+    :
+  else
+    headroom_status=$?
+    if [[ "$headroom_status" -eq 75 ]]; then
+      log "deferring candidate preparation until critical disk headroom recovers; the next tick retries cleanup"
+      exit 0
+    fi
+    log "FATAL: could not verify candidate filesystem headroom (exit $headroom_status); preserving the serving generation"
+    exit 1
+  fi
   log "preparing isolated staging candidate for ${target:0:10}"
   prepare_staging_candidate "$target"
   staging_sync_checkpoint "candidate checkout and SPA prepared"
@@ -1352,6 +1595,16 @@ if [ "$restart_required" = 1 ]; then
 fi
 
 if [ "$checkout_needs_advance" = 1 ]; then
+  # Serialize publication with GC/selection readers. A failed bounded upgrade
+  # leaves the old alias intact; the EXIT trap cleans only our unpublished work
+  # before releasing the separate writer lease.
+  if staging_sync_lock_exclusive; then
+    :
+  else
+    publication_lock_status=$?
+    log "FATAL: generation publication lock unavailable (exit $publication_lock_status); keeping the published alias"
+    exit "$publication_lock_status"
+  fi
   mark_staging_candidate_ready "$target"
   require_host_bundle=0
   if [ "$restart_required" = 1 ]; then
@@ -1359,6 +1612,7 @@ if [ "$checkout_needs_advance" = 1 ]; then
   fi
   publish_staging_generation "$STAGING_CANDIDATE_ROOT" "$STAGING_CANDIDATE_HOME" "$target" "$require_host_bundle"
   staging_sync_checkpoint "generation published"
+  launch_staging_generation_measure "$STAGING_CANDIDATE_HOME"
 fi
 
 # WI-5710 — SPA-only advance: the stable alias now points at the complete

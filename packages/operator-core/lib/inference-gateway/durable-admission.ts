@@ -111,9 +111,8 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
       ttlMs: leaseTtlFor(context, this.leaseTtlMs, this.#now()),
     });
     if (!claim) {
-      await this.queue
-        .cancel(request.idempotencyKey, 'durable gateway receipt could not be leased')
-        .catch(() => undefined);
+      // An identical caller may already own this receipt. Losing admission
+      // grants no authority to cancel its lease or the running provider call.
       throw new AdmissionPersistenceError(`durable gateway receipt '${queued.receipt.receiptId}' could not be leased`);
     }
 
@@ -121,17 +120,13 @@ export class DurableGatewayAdmissionDriver implements AdmissionDriver {
     try {
       running = await this.queue.markRunning(claim.receiptId, claim.lease.leaseId);
     } catch (error) {
+      // Cleanup must remain fenced by our lease token: another caller can take
+      // over before a failed or rejected transition returns to this process.
       await this.queue.releaseLease(claim.receiptId, claim.lease.leaseId).catch(() => undefined);
-      await this.queue
-        .cancel(request.idempotencyKey, 'durable gateway running transition failed')
-        .catch(() => undefined);
       throw error;
     }
     if (!running?.changed) {
       await this.queue.releaseLease(claim.receiptId, claim.lease.leaseId).catch(() => undefined);
-      await this.queue
-        .cancel(request.idempotencyKey, 'durable gateway running transition was rejected')
-        .catch(() => undefined);
       throw new AdmissionPersistenceError(`durable gateway receipt '${claim.receiptId}' could not enter running state`);
     }
 

@@ -362,6 +362,22 @@ describe('workspace-host observability store', () => {
     await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).rejects.toThrow('ambiguous hosted customer bindings');
   });
 
+  it('reads AWS canary identity from the earliest creating operation and leaves a missing origin explicit', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1', target: 'aws',
+      desired_spec: { hostId: 'host-1', target: 'aws', labels: { papercusp_canary: 'true', papercusp_run_id: 'original' },
+        provider: { canaryTeardownDeadlineAt: 'caller-forged' } } }]);
+    H.rows.set("SELECT id, request->'canary' AS canary", [{ id: 'original-provision', canary: {
+      runId: 'original', workspaceId: 'ws-1', teardownDeadlineAt: '2026-10-23T06:00:00.000Z' } }]);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
+      originalCanaryAdmission: { operationId: 'original-provision', runId: 'original', workspaceId: 'ws-1',
+        teardownDeadlineAt: '2026-10-23T06:00:00.000Z' } });
+    const query = H.queries.find(entry => entry.sql.includes("SELECT id, request->'canary' AS canary"))!;
+    expect(query.sql).toContain("action IN ('provision', 'restore') ORDER BY created_at, id LIMIT 1");
+    expect(query.values).toEqual(['ws-1', 'host-1']);
+    H.rows.set("SELECT id, request->'canary' AS canary", []);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({ originalCanaryAdmission: null });
+  });
+
   it('retains an unknown original pool allocation for fail-closed launch while keeping teardown readable', async () => {
     H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1',
       desired_spec: { hostId: 'host-1', data: { allocation: { dbGiB: 999, workspaceGiB: 999 } } },

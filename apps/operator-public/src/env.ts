@@ -5,12 +5,16 @@
  * carry over. D1 + KV bindings; GitHub OAuth secrets; rate-limit vars.
  */
 
-export interface Env {
+import type { GcsStorageBindings, ObjectStore } from '@papercusp/artifact-registry';
+
+export interface Env extends GcsStorageBindings {
   // Bindings
   DB: D1Database;
   COUNTERS: KVNamespace;
-  /** Existing shared bucket, namespaced under artifacts/workspace-host/. */
-  ARTIFACTS: R2Bucket;
+  /** Injected private GCS port; route policy controls public admission. */
+  ARTIFACTS: ObjectStore;
+  /** Secret releases/<random path> prefix. Installed as a Worker secret at cutover. */
+  RELEASE_PATH_PREFIX?: string;
 
   // Secrets
   GITHUB_CLIENT_ID: string;

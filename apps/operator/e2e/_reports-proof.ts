@@ -12,6 +12,44 @@ export interface PublishedReportProof {
   workspace_id: string;
 }
 
+export interface PublishedReportSession {
+  origin: string;
+  token: string;
+  workspaceId: string;
+  clientId: string;
+}
+
+/** Authenticate only this local operator's API, including the selected report query. */
+export async function configurePublishedReportSession(
+  page: Pick<Page, 'addInitScript'>,
+  session: PublishedReportSession,
+): Promise<void> {
+  const origin = new URL(session.origin).origin;
+  const target = new URL(origin);
+  if (!['http:', 'https:'].includes(target.protocol) ||
+      !['localhost', '127.0.0.1', '[::1]'].includes(target.hostname) ||
+      !session.token.trim() || !session.workspaceId || !session.clientId) {
+    throw new Error('Published report proof requires an explicit local operator origin, token, workspace and client');
+  }
+  // Keep HTTP and cancellation in Chromium. Playwright route overrides propagate
+  // headers across redirects and race background requests during page teardown.
+  await page.addInitScript(`(() => {
+    const session = ${JSON.stringify({ ...session, origin })};
+    if (location.origin !== session.origin) return;
+    window.sessionStorage.setItem('pc:selected-machine', 'local');
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.origin !== session.origin || !url.pathname.startsWith('/api/')) return nativeFetch(input, init);
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set('authorization', 'Bearer ' + session.token);
+      headers.set('x-papercusp-workspace', session.workspaceId);
+      headers.set('x-papercusp-client', session.clientId);
+      return nativeFetch(input, { ...init, headers, redirect: 'error' });
+    };
+  })()`);
+}
+
 /** Consume the complete reports:get receipt, rather than a hand-copied summary. */
 export async function readPublishedReportProof(path: string): Promise<PublishedReportProof> {
   const receipt = JSON.parse(await readFile(path, 'utf8'));
@@ -137,13 +175,15 @@ export async function navigateToPublishedReport(page: Page, report: PublishedRep
   const payload = await response.json();
   expect(payload.rows?.find((row: PublishedReportProof) => row.report_id === report.report_id))
     .toMatchObject({ report_id: report.report_id, title: report.title, body_md: report.body_md });
+  return response;
 }
 
 /** Vditor assigns these ids only on script load, before resolving preview().
  * Cold asset initialization belongs to navigation readiness, before the short
  * content/geometry assertions. A visible body alone can precede onParsed.
+ * Use the navigation deadline so cold assets do not inherit the action timeout.
  */
-export async function waitForReportRenderer(page: Page): Promise<void> {
+export async function waitForReportRenderer(page: Page, navigationTimeout: number): Promise<void> {
   await page.waitForFunction(() => [
     'vditorLuteScript', 'vditorI18nScripten_US', 'vditorIconScript',
   ].every(id => {
@@ -151,7 +191,7 @@ export async function waitForReportRenderer(page: Page): Promise<void> {
     return script instanceof HTMLScriptElement &&
       new URL(script.src).origin === location.origin &&
       new URL(script.src).pathname.startsWith('/vditor/');
-  }));
+  }), undefined, { timeout: navigationTimeout });
 }
 
 export async function verifyPublishedReportAndOfflineExport(
@@ -161,7 +201,7 @@ export async function verifyPublishedReportAndOfflineExport(
   await expect(page.locator('.reports-reader'), 'The selected Reports reader must mount').toHaveCount(1, { timeout: readerTimeout });
   expect(new URL(page.url()).searchParams.get('sel')).toBe(report.report_id);
   await expect(page.locator('.reports-article-main > h2')).toHaveText(report.title);
-  await waitForReportRenderer(page);
+  await waitForReportRenderer(page, testInfo.project.use.navigationTimeout ?? 30_000);
   await expect(page.locator('.reports-body')).toBeVisible();
   await page.getByRole('button', { name: 'Copy as Markdown', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { reportProofMarkdown?: string }).reportProofMarkdown))

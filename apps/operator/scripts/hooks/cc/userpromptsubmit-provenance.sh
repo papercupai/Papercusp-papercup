@@ -714,11 +714,21 @@ SUMMARY_NEEDED_NOTICE = (
     "orders:summarize {{ id: {id}, summary: '<=200 chars, what the owner asked for' }}."
 )
 
+
+def owner_source_turn_ref(prompt, native_session, native_turn=None):
+    """The exact idempotency/provenance key shared by capture + continuation."""
+    turn_id = native_turn.strip() if isinstance(native_turn, str) else ''
+    if turn_id:
+        return f"{native_session or sid}:{turn_id}:{sha256_hex(prompt)}"
+    return f"{native_session or sid}:{sha256_hex(prompt)}"
+
+
 # The verbs in the order they are tried. orders:capture lands the turn OPEN
 # (every owner turn is a directive, D-001). orders:capture-pending is its
 # predecessor and stays as a fallback while the green release on :3070 predates
 # the rename; migration 1198's BEFORE trigger lands its rows open too.
 CAPTURE_VERBS = ('orders:capture', 'orders:capture-pending')
+_CAPTURED_DIRECTIVE_ID = None
 
 
 def capture_owner_prompt(prompt, native_session, native_turn=None):
@@ -733,17 +743,15 @@ def capture_owner_prompt(prompt, native_session, native_turn=None):
     words must not be quietly dropped. The caller folds the returned notice into
     additionalContext.
     """
+    global _CAPTURED_DIRECTIVE_ID
+    _CAPTURED_DIRECTIVE_ID = None
     if not isinstance(prompt, str) or not prompt.strip():
         return None
     # Codex supplies a stable native turn id, so include it in the idempotency
     # key: identical prompts from distinct Codex turns must still create distinct
     # directives. Claude does not expose a stable turn id on every payload, so
     # retain its session+payload-hash fallback.
-    turn_id = native_turn.strip() if isinstance(native_turn, str) else ''
-    if turn_id:
-        source = f"{native_session or sid}:{turn_id}:{sha256_hex(prompt)}"
-    else:
-        source = f"{native_session or sid}:{sha256_hex(prompt)}"
+    source = owner_source_turn_ref(prompt, native_session, native_turn)
     args = {
         # Keep the same complete source whose hash keys this capture. Display
         # budgets belong to the directive renderer, never to durable capture.
@@ -768,6 +776,7 @@ def capture_owner_prompt(prompt, native_session, native_turn=None):
         res = _mcp_call('orders:capture', args, timeout=1)
     if not isinstance(res, dict) or not isinstance(res.get('id'), int):
         return capture_unconfirmed_notice(source)
+    _CAPTURED_DIRECTIVE_ID = res['id']
     # directive-ownership-clarity-2026-09-23 P-001 / D-002: ALWAYS tell the session
     # the id of the directive this turn became. Before this, the id was only emitted
     # when a summary was owed, so an agent closing "its" directive had to find it by
@@ -777,6 +786,34 @@ def capture_owner_prompt(prompt, native_session, native_turn=None):
     if res.get('needsSummary'):
         notice += "\n" + SUMMARY_NEEDED_NOTICE.format(id=res['id'])
     return notice
+
+
+def request_released_operation_continuation(prompt, native_session, native_turn=None, directive_id=None):
+    """OWNER-branch only: ask the host to mint a distinct SU assignment.
+
+    The tool is deliberately absent from operation receipts. Its dispatch-seat
+    exception admits only this hook-declared transport, and its handler rereads
+    the exact captured directive, applied receipt and released claim. A timeout
+    is outcome-unknown: the launch has its own source-turn idempotency key, so
+    this hook never retries or claims failure from a lost response.
+    """
+    if (not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000
+            or not isinstance(directive_id, int)):
+        return None
+    session_ref = native_session.strip() if isinstance(native_session, str) and native_session.strip() else sid
+    res = _mcp_call('sessions:continue-released-operation', {
+        'prompt': prompt,
+        'sourceTurnRef': owner_source_turn_ref(prompt, native_session, native_turn),
+        'sessionRef': session_ref,
+        'directiveId': directive_id,
+    }, timeout=1)
+    if not isinstance(res, dict) or res.get('launched') is not True:
+        return None
+    return (
+        "⟦engineering-continuation⟧ This owner turn reached a released restricted-operation "
+        "assignment. The host launched a fresh, separately receipted SU continuation carrying "
+        "the exact prompt. This old worker remains restricted; do not widen or reuse its receipt."
+    )
 
 
 # Classify the UNWRAPPED text; the owner branch still records/captures `prompt`
@@ -897,9 +934,9 @@ else:
         )
         # This branch — and ONLY this branch — is a genuine human turn, so it is
         # the only place a mode grant may be honoured automatically.
+        native_session = data.get('session_id') or data.get('sessionId')
+        native_turn = data.get('turn_id') or data.get('turnId')
         try:
-            native_session = data.get('session_id') or data.get('sessionId')
-            native_turn = data.get('turn_id') or data.get('turnId')
             record_owner_prompt(prompt, native_session)
         except Exception:
             pass  # fail-open: persistence is advisory to the prompt path
@@ -910,6 +947,13 @@ else:
             _cap_note = CAPTURE_FAILED_NOTICE + f" [{type(_cap_exc).__name__}]"
         if _cap_note:
             stamp += "\n\n" + _cap_note
+        try:
+            _continuation_note = request_released_operation_continuation(
+                prompt, native_session, native_turn, _CAPTURED_DIRECTIVE_ID)
+        except Exception:
+            _continuation_note = None  # fail-open: the owner turn still reaches the current CLI
+        if _continuation_note:
+            stamp += "\n\n" + _continuation_note
         try:
             _note = register_owner_mode(prompt)
         except Exception:

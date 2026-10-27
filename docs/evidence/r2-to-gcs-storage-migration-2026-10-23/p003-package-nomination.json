@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "r2gcs-p003-package-nomination-v1",
+  "workItem": "WI-6554700010025562",
+  "verificationExecChunk": "540daa",
+  "journey": "papercusp-desktop/bin/candidate-install-upgrade-rollback.sh",
+  "status": "rollback-pair-verified-candidate-not-nominated",
+  "baseline": {
+    "buildSha": "2018b667",
+    "desktopGitHead": "2018b6670687590a3e195392f44191b1f0db3103",
+    "workspaceGitHead": "faa5abc1730ded04d2dfe5fcf829edec6b7b93bb",
+    "version": "0.0.26",
+    "architecture": "amd64",
+    "retainedRoot": "/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z",
+    "gui": {
+      "path": "linux-gui-production/cargo/release/bundle/deb/Papercusp GUI_0.0.26_amd64.deb",
+      "provenance": "linux-gui-production/cargo/release/bundle/build-provenance.json",
+      "package": "papercusp-gui",
+      "sizeBytes": 51268526,
+      "sha256": "d022b96031f4f58007ff69da502e30b13bd26820a54395c1c08280a47aa44857"
+    },
+    "server": {
+      "path": "linux-server-production/final-artifacts/deb/Papercusp Server_0.0.26_amd64.deb",
+      "provenance": "linux-server-production/final-artifacts/build-provenance.json",
+      "package": "papercusp-server",
+      "sizeBytes": 1483261060,
+      "sha256": "966509144a93d7e8b3e56cb69c77ff81b3fadd074cec29611c9e20fbba05c6f1"
+    },
+    "verification": {
+      "fullFileDigestsMatchOriginalReceipts": true,
+      "sizesMatchOriginalReceipts": true,
+      "bothProvenanceBuildShasMatch": true,
+      "packageHeadersMatchReceiptVersion": true,
+      "inspection": "Full SHA-256 and stat against each original build-provenance.json; dpkg-deb -f Package Version Architecture.",
+      "signatureVerificationPerformed": true,
+      "signatureTrustReceipt": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p003-baseline-signature-trust.json"
+    }
+  },
+  "candidate": null,
+  "remaining": [
+    "Identify or produce the current migration GUI and Server pair through the maintained release producer, with exact source provenance and distinct build SHA.",
+    "Retain the candidate and baseline receipts and packages throughout the maintained disposable-VM journey.",
+    "Run the maintained install, upgrade and exact rollback journey with the four nominated packages; bind current evidence at the required spec revision and plane."
+  ],
+  "limitations": [
+    "This receipt verifies two rollback files and their original size, digest, version and build identity. Signature trust is verified in the linked p003-baseline-signature-trust.json receipt; installation, upgrade, rollback execution, independent acceptance and shipment remain unverified.",
+    "The older d234 pair was not selected because nearby Linux build provenance was not found in the inspected retained paths.",
+    "The baseline predates the storage migration and cannot serve as the migration candidate.",
+    "Original package bytes and provenance receipts were read without modification."
+  ]
+}

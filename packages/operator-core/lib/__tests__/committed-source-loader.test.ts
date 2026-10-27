@@ -300,6 +300,19 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(readFileSync(fakeGitCalls, 'utf8')).toBe('');
   }, 75_000);
 
+  it('ignores inherited Git repository selectors when reading the checkout HEAD', () => {
+    const env = cleanEnv();
+    env.GIT_DIR = join(scratch, 'missing-git-dir');
+    env.GIT_WORK_TREE = join(scratch, 'other-worktree');
+    env.GIT_INDEX_FILE = join(scratch, 'missing-index');
+    env.GIT_OBJECT_DIRECTORY = join(scratch, 'missing-objects');
+    env.GIT_COMMON_DIR = join(scratch, 'missing-common');
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(fixture, 'entry.mjs')], env);
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('V=HEAD');
+  }, 60_000);
+
   it.each([
     { name: 'eval', argv: ['-e', "console.log('INLINE-RAN')"], input: undefined },
     { name: 'print', argv: ['-p', "'INLINE-RAN'"], input: undefined },

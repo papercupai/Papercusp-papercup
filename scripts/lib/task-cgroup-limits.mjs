@@ -3,6 +3,17 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/** Stable identity for the current unified cgroup; unreadable stays unknown. */
+export function readTaskCgroupMemoryScope({ readFile = readFileSync,
+  procCgroupPath = '/proc/self/cgroup' } = {}) {
+  try {
+    const path = String(readFile(procCgroupPath, 'utf8')).split(/\r?\n/)
+      .find(line => line.startsWith('0::'))?.slice(3).trim();
+    if (!path?.startsWith('/') || path.split('/').includes('..')) return null;
+    return `cgroup:${path}`;
+  } catch { return null; }
+}
+
 export function readTaskCgroupLimit(fileName, {
   readFile = readFileSync,
   procCgroupPath = '/proc/self/cgroup',

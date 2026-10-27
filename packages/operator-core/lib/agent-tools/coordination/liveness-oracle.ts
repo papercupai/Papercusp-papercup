@@ -61,6 +61,7 @@
  */
 
 import { hostname } from 'node:os';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import { probeProcessLiveness, getPresence, listPresence } from './presence';
 import {
   fetchWakeability,
@@ -798,12 +799,13 @@ export async function resolveSessionStates(
   }
   const liveHostsByOwner = new Map<string, unknown | null>();
   if (!explicitFindHostFn) {
-    const idsToLookup = [...hostLookupOwnerIds];
-    for (let i = 0; i < idsToLookup.length; i += 16) {
-      await Promise.all(idsToLookup.slice(i, i + 16).map(async (ownerId) => {
+    // Refill each available slot independently: one slow filesystem lookup
+    // must not hold every later owner behind an otherwise finished batch.
+    await timeLivenessLeg('findLiveHosts', () => mapWithConcurrency(
+      [...hostLookupOwnerIds], 16, async (ownerId) => {
         liveHostsByOwner.set(ownerId, await findHostAsyncFn(ownerId).catch(() => null));
-      }));
-    }
+      },
+    ), opts.onTiming);
   }
   const findHostFn = explicitFindHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const psuHost = {

@@ -58,6 +58,12 @@ beforeAll(async () => {
     heartbeat_at timestamptz DEFAULT now() NOT NULL )`;
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
     spawn_id text, session_owner text, run_id text, status text, heartbeat_at timestamptz )`;
+  // WI-6554700010029302: the warm-dead subtraction (warmDeadHolderFragment) also reads
+  // tool_invocations and routines; stub only the columns it reads.
+  await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+    coord_owner_id text, invoked_at timestamptz NOT NULL DEFAULT now() )`;
+  await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text )`;
 }, 90_000);
 
 afterAll(async () => {
@@ -68,6 +74,9 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.plan_item_claims`;
   await db.sql`TRUNCATE harness_shared.coord_presence`;
   await db.sql`TRUNCATE harness_shared.spawned_agents`;
+  await db.sql`TRUNCATE harness_shared.agent_activity`;
+  await db.sql`TRUNCATE harness_shared.tool_invocations`;
+  await db.sql`TRUNCATE harness_shared.routines`;
 });
 
 async function claim(itemId: string, owner: string): Promise<void> {
@@ -165,5 +174,78 @@ describe('reclaimExpiredPlanItemClaims (EI-179 plan-item lease GC)', () => {
     expect(r.released.map((x) => x.item_id)).toEqual(['P-020']);
     expect(await present('P-020')).toBe(false);
     expect(await present('P-021')).toBe(true);
+  });
+});
+
+// WI-6554700010029302 recurrence guard: a holder whose PROCESS still heartbeats but
+// whose agent took no turn past ACTIVITY_DEAD_MS (6h) and has no armed loop is the
+// oracle's warm-dead. The plan-item claim reaper must treat it as gone, exactly like
+// the work-item reaper (WI-6554700010029295). Before the fix the fresh beat alone
+// kept such a claim held indefinitely after its lease lapsed.
+describe('WI-6554700010029302: warm-dead plan-claim holders', () => {
+  async function beatNow(owner: string): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at)
+                 VALUES (${owner}, now() - interval '30 seconds')`;
+  }
+  async function activityAgo(owner: string, agoMin: number): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.agent_activity (owner_id, kind, created_at)
+                 VALUES (${owner}, 'tool', now() - make_interval(mins => ${agoMin}))`;
+  }
+  async function toolCallAgo(owner: string, agoMin: number): Promise<void> {
+    await db.sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, invoked_at)
+                 VALUES (${owner}, now() - make_interval(mins => ${agoMin}))`;
+  }
+
+  it('reaps a lapsed claim whose holder heartbeats but took no turn for 7h', async () => {
+    await claim('P-WD1', 'su-warm-dead');
+    await lapse('P-WD1', 4000);
+    await beatNow('su-warm-dead');
+    await activityAgo('su-warm-dead', 7 * 60);
+    const r = await reclaimExpiredPlanItemClaims(db.sql, { graceMs: GRACE });
+    expect(r.released.map((x) => x.item_id)).toEqual(['P-WD1']);
+    expect(r.released[0]!.former_owner).toBe('su-warm-dead');
+    expect(await present('P-WD1')).toBe(false);
+  });
+
+  it('keeps a lapsed claim whose heartbeat-fresh holder took a turn within 6h', async () => {
+    await claim('P-WD2', 'su-working');
+    await lapse('P-WD2', 4000);
+    await beatNow('su-working');
+    await activityAgo('su-working', 30);
+    const r = await reclaimExpiredPlanItemClaims(db.sql, { graceMs: GRACE });
+    expect(r.released).toEqual([]);
+    expect(await present('P-WD2')).toBe(true);
+  });
+
+  it('keeps it when the only recent evidence is a tool call (holder with no fresh activity row)', async () => {
+    await claim('P-WD3', 'codex-tool-calls');
+    await lapse('P-WD3', 4000);
+    await beatNow('codex-tool-calls');
+    await activityAgo('codex-tool-calls', 7 * 60);
+    await toolCallAgo('codex-tool-calls', 10);
+    const r = await reclaimExpiredPlanItemClaims(db.sql, { graceMs: GRACE });
+    expect(r.released).toEqual([]);
+    expect(await present('P-WD3')).toBe(true);
+  });
+
+  it('keeps it for an armed-loop owner between warm wakes', async () => {
+    await claim('P-WD4', 'su-looped');
+    await lapse('P-WD4', 4000);
+    await beatNow('su-looped');
+    await activityAgo('su-looped', 7 * 60);
+    await db.sql`INSERT INTO harness_shared.routines (active, reschedule_interval_sec, target_owner_id)
+                 VALUES (true, 3600, 'su-looped')`;
+    const r = await reclaimExpiredPlanItemClaims(db.sql, { graceMs: GRACE });
+    expect(r.released).toEqual([]);
+    expect(await present('P-WD4')).toBe(true);
+  });
+
+  it('is conservative on missing data: a heartbeat-fresh holder with NO activity in the lookback keeps its claim', async () => {
+    await claim('P-WD5', 'su-no-evidence');
+    await lapse('P-WD5', 4000);
+    await beatNow('su-no-evidence');
+    const r = await reclaimExpiredPlanItemClaims(db.sql, { graceMs: GRACE });
+    expect(r.released).toEqual([]);
+    expect(await present('P-WD5')).toBe(true);
   });
 });

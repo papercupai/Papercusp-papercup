@@ -186,6 +186,52 @@ beforeEach(async () => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('listSpecEvidence measures repo-files proof at the measurement commit', () => {
+  it.each([true, false])('keeps dirty copy-out mutation proof unknown despite matching declared hashes (baseline dirty=%s)', async (baselineDirty) => {
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/a.ts'], testPaths: ['src/b.ts'] };
+    const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+    const mutation = {
+      schemaVersion: 1, probeInvocationId: 'isolated-mutation-currentness-001',
+      leg: 'mutant', mode: 'copy-out', subjectPath: 'src/a.ts',
+      mutateExpression: 's/a = 1/a = 2/', againstCommit: null,
+      subjectBeforeSha256: createHash('sha256').update(readFileSync(join(root, 'src/a.ts'))).digest('hex'),
+      subjectAfterSha256: createHash('sha256').update('export const a = 2;\n').digest('hex'),
+      mutantDiff: '-export const a = 1;\n+export const a = 2;', mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64),
+      testFileSha256: createHash('sha256').update(readFileSync(join(root, 'src/b.ts'))).digest('hex'),
+    };
+    const execution = {
+      schemaVersion: 1, root, filePath: 'src/b.ts', runGroupId: null,
+      workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
+      testLayer: 'unit', mutationPhase: 'mutant', commitSha: git(root, 'rev-parse', 'HEAD'),
+      worktreeDirty: true, passed: 0, failed: 1, skipped: 0, collectionFailed: false,
+      failedCaseTitles: ['guard > rejects'], mutation,
+    };
+    h.rows = [{
+      ...await storedBinding(1, recipe.sourcePaths),
+      evidence_kind: 'mutation', evidence_ref: 'mutation:isolated-copy-out',
+      test_fingerprint: measured.testFingerprint,
+      details: { currentMeasurement: recipe, [MEASUREMENT_PIN_DETAILS_KEY]: measured.pin },
+      test_run_id: 47, test_run_present: true, test_run_file_path: execution.filePath,
+      test_run_commit_sha: execution.commitSha, test_run_worktree_dirty: true,
+      test_run_source: 'mutation-probe', test_run_status: 'fail',
+      test_run_execution_details: execution, mutation_execution_details: execution,
+      mutation_baseline_id: 46, mutation_baseline_status: 'pass',
+      mutation_baseline_execution_details: { ...execution, worktreeDirty: baselineDirty,
+        mutationPhase: 'copy-baseline', passed: 1, failed: 0,
+        passedCaseTitles: ['guard > rejects'], failedCaseTitles: [],
+        mutation: { ...mutation, leg: 'copy-baseline' } },
+    }];
+
+    // Containing the subject does not certify every imported dependency in the
+    // mutant run. Matching declared paths must not launder its dirty checkout.
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(row.currentness).toMatchObject({ overall: 'unknown', provenance: 'server-measured',
+      dimensions: { source: 'current', test: 'current', testRun: 'unknown' },
+      unknownReasons: ['test-run-worktree-not-clean'] });
+    expect(row.testRunProvenance?.mutationBaseline?.status).toBe('pass');
+  });
+
   it('coalesces identical committed recipes within a request while retaining distinct recipes and fresh commits', async () => {
     const original = h.rows[0]!;
     h.rows = [original, { ...original, id: 3, work_item_id: 'WI-3' },

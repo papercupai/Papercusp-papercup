@@ -48,6 +48,12 @@ export interface AttributedCommitGroup {
   planSlug?: string;
   /** Session id for the `Papercusp-Session:` trailer + link rows (P-004). */
   sessionId?: string;
+  /** Every agent in a multi-author group, `agent` first (D-001 part 3). Set only when there are two or more. */
+  agents?: string[];
+  /** One Co-Authored-By value per agent of a multi-author group (D-001 part 3). Replaces `coAuthor` when set. */
+  coAuthors?: string[];
+  /** Unattributed dirty files this agent group absorbed because an import edge links them to it (D-001 part 2). */
+  absorbedUnattributed?: string[];
 }
 
 /** The git-sync default subject (unchanged from today's single-commit message stem). */
@@ -164,6 +170,44 @@ export function coAuthorTrailer(a: FileAttribution): string | null {
   return `${name} <${email}>`;
 }
 
+/** Declaration suffix → the executable/source extensions it can describe, most specific first. */
+const COMPANION_DECLARATION_SOURCES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['.d.mts', ['.mjs', '.mts']],
+  ['.d.cts', ['.cjs', '.cts']],
+  ['.d.ts', ['.ts', '.tsx', '.js', '.jsx']],
+];
+
+/**
+ * WI-6554700010029864 (plan gate-systems-as-designed-2026-10-27 P-002): a companion declaration
+ * that git-sync regenerated (or a generator script wrote) beside an edited source — `x.d.mts` for
+ * `x.mjs`, `x.d.ts` for `x.ts`/`x.js`, `x.d.cts` for `x.cjs` — never gets an edit-ledger row, so it
+ * sat in the residual, and `mergeImportLinkedGroups` then moved the source's WHOLE agent group into
+ * the residual because the pair is import-linked. Measured 2026-10-27T00:17Z: git-sync logged
+ * "regenerated tracked declarations before commit (8 dirty pair(s))", then "merged import-linked
+ * attribution groups (8 -> 2)", and committed e9d7f66f05 as one unattributed 36-file lump although
+ * most of its files had exact-path ledger rows.
+ *
+ * A declaration describes its source, so it inherits the source's attribution. A declaration with
+ * its own attribution keeps it. Returns `attribution` itself when nothing is inherited.
+ */
+export function inheritCompanionDeclarationAttribution(
+  dirtyFiles: readonly string[],
+  attribution: Map<string, FileAttribution>,
+): Map<string, FileAttribution> {
+  let out: Map<string, FileAttribution> | null = null;
+  for (const file of dirtyFiles) {
+    if (attribution.has(file)) continue;
+    const rule = COMPANION_DECLARATION_SOURCES.find(([suffix]) => file.endsWith(suffix));
+    if (!rule) continue;
+    const stem = file.slice(0, -rule[0].length);
+    const source = rule[1].map((ext) => `${stem}${ext}`).find((candidate) => attribution.has(candidate));
+    if (!source) continue;
+    out ??= new Map(attribution);
+    out.set(file, attribution.get(source)!);
+  }
+  return out ?? attribution;
+}
+
 /**
  * Partition `dirtyFiles` into per-agent commit groups + a catch-all remainder.
  *
@@ -253,22 +297,36 @@ export function groupFilesForAttribution(
  * WI-6554700010019415: merge the commit groups an import edge links. Each group commits
  * from its own private index, so an importer and its changed provider in two groups each
  * see the other as excluded and the post-stage guard holds both; only the final catch-all
- * could commit them, and a drain yield before it skips that. Linked groups of ONE agent
- * become one group under that agent (the earliest group's subject and provenance, work-items
- * unioned). A linked set that spans agents or touches the residual moves into the residual,
- * since no single agent authored it. Unlinked groups keep their order; the residual stays
- * last. Returns `groups` itself when nothing is linked.
+ * could commit them, and a drain yield before it skips that. Each import-linked component
+ * becomes one group, emitted at its earliest group with that group's subject and work-items
+ * unioned (plan gate-systems-as-designed-2026-10-27 D-001):
+ *
+ * - Every residual FILE is its own node, so an unattributed file pulls only itself into the
+ *   group it is linked to, never the whole residual (whose other files may link other agents).
+ * - A component of ONE agent stays under that agent and absorbs its linked residual files,
+ *   named in `absorbedUnattributed` so the commit says which files no ledger row backs.
+ * - A component spanning agents commits as one multi-author group: `agents` and `coAuthors`
+ *   carry every author, and session/plan provenance is kept only when all members agree.
+ *
+ * Until 2026-10-27 both cases moved into the anonymous residual (WI-6554700010019415), which
+ * turned one regenerated declaration into an unattributed 36-file lump (WI-6554700010029864).
+ * Unlinked groups keep their order; the residual stays last. Returns `groups` itself when no
+ * component joins an attributed group to anything.
  */
 export function mergeImportLinkedGroups(
   groups: AttributedCommitGroup[],
   edges: ReadonlyArray<{ importer: string; provider: string }>,
 ): AttributedCommitGroup[] {
-  const groupOf = new Map<string, number>();
+  const residualIndex = groups.findIndex((g) => g.agent === null);
+  const residualFiles = residualIndex === -1 ? [] : groups[residualIndex].files;
+  // Union-find nodes: attributed group i is node i; residual file j is node groups.length + j.
+  // Roots are the smallest node, so a component's root is its earliest attributed group.
+  const nodeOf = new Map<string, number>();
   groups.forEach((g, i) => {
-    for (const f of g.files) groupOf.set(f, i);
+    if (g.agent !== null) for (const f of g.files) nodeOf.set(f, i);
   });
-  // Union-find over group indexes; the root is the component's earliest group.
-  const parent = groups.map((_, i) => i);
+  residualFiles.forEach((f, j) => nodeOf.set(f, groups.length + j));
+  const parent = Array.from({ length: groups.length + residualFiles.length }, (_, i) => i);
   const find = (i: number): number => {
     while (parent[i] !== i) {
       parent[i] = parent[parent[i]];
@@ -276,53 +334,74 @@ export function mergeImportLinkedGroups(
     }
     return i;
   };
-  let linked = false;
   for (const { importer, provider } of edges) {
-    const a = groupOf.get(importer);
-    const b = groupOf.get(provider);
+    const a = nodeOf.get(importer);
+    const b = nodeOf.get(provider);
     if (a === undefined || b === undefined) continue;
     const ra = find(a);
     const rb = find(b);
-    if (ra === rb) continue;
-    parent[Math.max(ra, rb)] = Math.min(ra, rb);
-    linked = true;
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
   }
-  if (!linked) return groups;
-  const members = new Map<number, AttributedCommitGroup[]>();
-  groups.forEach((g, i) => {
-    const root = find(i);
-    members.set(root, [...(members.get(root) ?? []), g]);
-  });
-  const merged: AttributedCommitGroup[] = [];
-  const toResidual: string[] = [];
+  const attributedByRoot = new Map<number, number[]>();
   groups.forEach((g, i) => {
     if (g.agent === null) return;
     const root = find(i);
-    const component = members.get(root) ?? [g];
-    if (component.length === 1) {
+    attributedByRoot.set(root, [...(attributedByRoot.get(root) ?? []), i]);
+  });
+  const residualByRoot = new Map<number, string[]>();
+  residualFiles.forEach((f, j) => {
+    const root = find(groups.length + j);
+    if (!attributedByRoot.has(root)) return; // linked only to other residual files: stays put
+    residualByRoot.set(root, [...(residualByRoot.get(root) ?? []), f]);
+  });
+  const joins = [...attributedByRoot].some(([root, ids]) => ids.length > 1 || residualByRoot.has(root));
+  if (!joins) return groups;
+
+  const merged: AttributedCommitGroup[] = [];
+  const absorbed = new Set<string>();
+  groups.forEach((g, i) => {
+    if (g.agent === null) return;
+    const root = find(i);
+    const ids = attributedByRoot.get(root) ?? [i];
+    const linkedResidual = residualByRoot.get(root) ?? [];
+    if (ids.length === 1 && linkedResidual.length === 0) {
       merged.push(g);
       return;
     }
     if (root !== i) return; // emitted once, at the component's earliest group
-    if (component.some((m) => m.agent === null) || new Set(component.map((m) => m.agent)).size > 1) {
-      for (const m of component) if (m.agent !== null) toResidual.push(...m.files);
-      return;
-    }
-    const workItems = [...new Set(component.flatMap((m) => m.workItems ?? []))];
-    merged.push({
-      ...g,
-      files: [...new Set(component.flatMap((m) => m.files))].sort(),
-      workItems: workItems.length > 0 ? workItems : undefined,
-    });
+    for (const f of linkedResidual) absorbed.add(f);
+    merged.push(combineLinkedComponent(ids.map((k) => groups[k]), linkedResidual));
   });
-  const residual = groups.find((g) => g.agent === null) ?? {
-    agent: null,
-    files: [],
-    subject: DEFAULT_GIT_SYNC_SUBJECT,
-    coAuthor: null,
-  };
-  merged.push({ ...residual, files: [...new Set([...residual.files, ...toResidual])].sort() });
+  const residual = residualIndex === -1 ? null : groups[residualIndex];
+  merged.push({
+    ...(residual ?? { agent: null, subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null }),
+    files: residualFiles.filter((f) => !absorbed.has(f)),
+  });
   return merged;
+}
+
+/** One commit group for an import-linked component (see {@link mergeImportLinkedGroups}). */
+function combineLinkedComponent(
+  members: AttributedCommitGroup[],
+  linkedResidual: string[],
+): AttributedCommitGroup {
+  const head = members[0];
+  const workItems = [...new Set(members.flatMap((m) => m.workItems ?? []))];
+  const out: AttributedCommitGroup = {
+    ...head,
+    files: [...new Set([...members.flatMap((m) => m.files), ...linkedResidual])].sort(),
+    workItems: workItems.length > 0 ? workItems : undefined,
+  };
+  if (linkedResidual.length > 0) out.absorbedUnattributed = [...linkedResidual].sort();
+  const agents = [...new Set(members.map((m) => m.agent).filter((a): a is string => a !== null))];
+  if (agents.length > 1) {
+    out.agents = agents;
+    out.coAuthors = [...new Set(members.map((m) => m.coAuthor).filter((c): c is string => c !== null))];
+    // A session or plan belongs to one agent; keep it only when every member agrees.
+    if (new Set(members.map((m) => m.sessionId ?? null)).size > 1) out.sessionId = undefined;
+    if (new Set(members.map((m) => m.planSlug ?? null)).size > 1) out.planSlug = undefined;
+  }
+  return out;
 }
 
 /**
@@ -421,4 +500,45 @@ export function agentsForScopedFiles(
     if (hit) agents.add(hit.agent);
   }
   return [...agents];
+}
+
+/**
+ * The record separator a git-log reader puts around `%B` (`--format=…%n%x1e%B%x1e`), so the
+ * message can be told apart from the `--name-only` paths that follow it. Built without a
+ * source escape: `lint:no-control-bytes` refuses a raw control byte in a source file.
+ */
+export const COMMIT_MESSAGE_DELIMITER = String.fromCharCode(0x1e);
+
+/** The git-log `--format` fragment that emits a commit message between two delimiters. */
+export const COMMIT_MESSAGE_FORMAT = '%x1e%B%x1e';
+
+/**
+ * WI-6554700010029864: read the `Papercusp-Agent:` authors of one git-log block.
+ *
+ * `afterHeader` is everything after the block's header line. In the delimited shape
+ * ({@link COMMIT_MESSAGE_FORMAT}) the agents come from the message, which reads both the single
+ * trailer block git-sync writes now and the one-trailer-per-paragraph messages it wrote until
+ * 2026-10-27 — `%(trailers:key=Papercusp-Agent)` returned nothing for 323 of the last 400 of
+ * those. Without delimiters, a line of the form `Papercusp-Agent: <id>` is an agent (the
+ * `%(trailers)` shape). `rest` is the remaining text: the changed paths.
+ */
+export function readCommitAgents(afterHeader: string): { agents: string[]; rest: string } {
+  const agents: string[] = [];
+  const collect = (line: string): boolean => {
+    const m = /^Papercusp-Agent:\s*(\S+)/.exec(line.trim());
+    if (!m) return false;
+    if (!agents.includes(m[1])) agents.push(m[1]);
+    return true;
+  };
+  const open = afterHeader.indexOf(COMMIT_MESSAGE_DELIMITER);
+  const close = open === -1 ? -1 : afterHeader.indexOf(COMMIT_MESSAGE_DELIMITER, open + 1);
+  if (close !== -1) {
+    for (const line of afterHeader.slice(open + 1, close).split('\n')) collect(line);
+    return { agents, rest: afterHeader.slice(close + 1) };
+  }
+  const rest = afterHeader
+    .split('\n')
+    .filter((line) => !collect(line))
+    .join('\n');
+  return { agents, rest };
 }

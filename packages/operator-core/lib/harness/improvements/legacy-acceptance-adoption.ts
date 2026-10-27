@@ -44,12 +44,13 @@ import {
   sealImplementationAcceptance,
 } from './agent-review-policy';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 export const LEGACY_ADOPTION_SCHEMA_VERSION = 'legacy-acceptance-adoption-v1' as const;
 /** Upper bound on the rows ONE cohort examines (D-004 "bounded cohorts"). */
 export const LEGACY_ADOPTION_MAX_COHORT = 200;
 /** A report older than this cannot be applied; re-run the report first. */
 export const LEGACY_ADOPTION_REPORT_TTL_MS = 60 * 60_000;
-export const LEGACY_ADOPTION_KINDS = ['bug', 'change', 'task'] as const;
+export const LEGACY_ADOPTION_KINDS = ISSUE_FAMILY_ROUTE_KINDS;
 export type LegacyAdoptionKind = (typeof LEGACY_ADOPTION_KINDS)[number];
 export const LEGACY_ADOPTION_PAYLOAD_KEY = 'legacyAcceptanceAdoption' as const;
 export const LEGACY_ADOPTION_WRITER = 'legacy-acceptance-adoption' as const;

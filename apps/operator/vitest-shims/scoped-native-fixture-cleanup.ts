@@ -2,6 +2,7 @@ import type { OrgTestDb } from '../../../packages/operator-core/test/_org-test-d
 import { drainDetached } from '@papercusp/operator-core/lib/detached-imports';
 import { stopInterestWatchSweeper } from '@papercusp/operator-core/lib/events/await/interest-watch';
 import { flushFallbackObservations } from '@papercusp/operator-core/lib/degradation/fallback-observations';
+import { stopInvalidationListener } from '@papercusp/operator-core/lib/sync-sse';
 
 /** Retire fixture-owned writers before closing the SQL handle they retain. */
 export async function cleanupScopedNativeFixtureDatabase(db: Pick<OrgTestDb, 'adminSql' | 'cleanup'> | undefined) {
@@ -11,6 +12,9 @@ export async function cleanupScopedNativeFixtureDatabase(db: Pick<OrgTestDb, 'ad
     await drainDetached();
     const flushed = await flushFallbackObservations({ sql: db.adminSql });
     if (flushed.failed > 0) throw new Error(`Scoped native fixture lost ${flushed.failed} fallback observation(s) during teardown`);
+    // Coalesced notifications own timers outside drainDetached(). Flush their
+    // trailing edge while the fixture's SQL routing is still installed.
+    await stopInvalidationListener();
     return flushed;
   } finally {
     await db.cleanup();

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"6c4665b7-6e9d-48b2-a8da-fe89af879d6a","pid":2952128,"ppid":2942352,"atMs":1792906668866,"loadId":79,"url":"file:///home/marsh-office/.local/node25/lib/node_modules/npm/node_modules/@npmcli/map-workspaces/lib/index.js","scope":"node-sync-load-hook"}

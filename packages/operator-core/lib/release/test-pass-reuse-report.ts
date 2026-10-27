@@ -76,6 +76,10 @@ export function parsePureProofCaptureResult(value: unknown): PureProofCaptureRes
     slices: v.slices as number, files: v.files as number, rows: v.rows as number,
     retired: v.retired as number, failed: v.failed as number, isolatedFail: v.isolatedFail as number,
     remaining: v.remaining as number, stoppedBy: v.stoppedBy as string | null,
+    // WI-6554700010030061: absent on records written before slice-timeout splitting; carried
+    // only when present so an archived record round-trips exactly.
+    ...(isCount(v.timedOutSlices) ? { timedOutSlices: v.timedOutSlices } : {}),
+    ...(Array.isArray(v.hung) && v.hung.every((f) => text(f)) ? { hung: v.hung as string[] } : {}),
     evidence: { version: 1, runGroupId: e.runGroupId, startedAtMs: e.startedAtMs,
       completedAtMs: e.completedAtMs, clean: e.clean as boolean | null, proofs } };
 }
@@ -219,6 +223,10 @@ export interface TestPassReuseRun {
   alarms: TestPassReuseAlarm[];
   auditResults?: TestPassReuseAuditFile[];
   malformedAuditResults?: number;
+  /** WI-6554700010026699: per-task exclusion samples; absent when the runner printed none. */
+  exclusions?: TestPassReuseExclusionSample[];
+  /** Exclusion sample lines or example records that failed validation. */
+  malformedExclusions?: number;
 }
 
 /** Exact reporter identity, retained in the existing round archive without a display cap. */
@@ -252,6 +260,133 @@ function parseAuditFile(value: unknown): TestPassReuseAuditFile | null {
     judgedSha: v.judgedSha as string | null, runnerIdentity: v.runnerIdentity as string | null,
     runContext: v.runContext as string | null, runGroupId: v.runGroupId as string | null,
     dirty: v.dirty as boolean | null };
+}
+
+/**
+ * WI-6554700010026699: the exclusive reasons the selector excludes a reuse candidate for. Each
+ * excluded candidate carries exactly one, and the per-reason counts are the selector's existing
+ * summary counters.
+ */
+export const TEST_PASS_REUSE_EXCLUSION_REASONS = [
+  'noProof', 'otherContext', 'otherRunner', 'notCaptured', 'opaque', 'unknownDrift',
+  'legacyFormatDrift', 'globalInput', 'inputChanged', 'audited',
+] as const;
+export type TestPassReuseExclusionReason = (typeof TEST_PASS_REUSE_EXCLUSION_REASONS)[number];
+const EXCLUSION_REASONS = new Set<string>(TEST_PASS_REUSE_EXCLUSION_REASONS);
+
+/** One excluded candidate and its cause, as the selector recorded it (WI-6554700010026699). */
+export interface TestPassReuseExclusionRecord {
+  ws: string;
+  /** The candidate's repo-relative selector key. */
+  file: string;
+  reason: TestPassReuseExclusionReason;
+  /** The sha the candidate's proof was recorded at; null when there is no proof. */
+  recordedSha: string | null;
+  judgedSha: string;
+  /** The branch's cause evidence as compact JSON, clipped; null when the branch has none. */
+  evidence: string | null;
+}
+
+/** One task's `TEST_PASS_REUSE_EXCLUSIONS` line: its total and a bounded sample. */
+export interface TestPassReuseExclusionSample {
+  ws: string;
+  total: number;
+  examples: TestPassReuseExclusionRecord[];
+  /** The retained affected-tests journal that holds every record of this task. */
+  journal: string | null;
+  runGroupId: string | null;
+}
+
+/**
+ * A round's exclusion evidence. `omitted` is always `total - examples.length`. The full records
+ * live in `journals` (the retained affected-tests journals), correlated by `runGroupIds`.
+ */
+export interface TestPassReuseExclusionSummary {
+  total: number;
+  examples: TestPassReuseExclusionRecord[];
+  omitted: number;
+  journals: string[];
+  runGroupIds: string[];
+  /** Sample lines or example records that failed validation and were dropped. */
+  malformed: number;
+}
+
+const EXCLUSION_SHA_RE = /^[0-9a-f]{7,64}$/;
+const EXCLUSION_EVIDENCE_MAX_CHARS = 300;
+
+function isRepoRelativePath(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && !value.startsWith('/') && !value.includes('\\') &&
+    !value.split('/').some((part) => !part || part === '.' || part === '..');
+}
+
+const nonEmptyOrNull = (value: unknown): value is string | null =>
+  value === null || (typeof value === 'string' && value.trim() !== '');
+
+/**
+ * Validate one exclusion record. The selector writes `evidence` as an object; the persisted health
+ * record holds it as clipped JSON text. Either way the result is bounded.
+ */
+function parseExclusionRecord(value: unknown): TestPassReuseExclusionRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.ws !== 'string' || !v.ws.trim() || !isRepoRelativePath(v.file) ||
+      typeof v.reason !== 'string' || !EXCLUSION_REASONS.has(v.reason) ||
+      !(v.recordedSha === null || (typeof v.recordedSha === 'string' && EXCLUSION_SHA_RE.test(v.recordedSha))) ||
+      typeof v.judgedSha !== 'string' || !EXCLUSION_SHA_RE.test(v.judgedSha)) return null;
+  let evidence: string | null = null;
+  if (typeof v.evidence === 'string') evidence = v.evidence.slice(0, EXCLUSION_EVIDENCE_MAX_CHARS);
+  else if (v.evidence && typeof v.evidence === 'object' && !Array.isArray(v.evidence)) {
+    evidence = JSON.stringify(v.evidence).slice(0, EXCLUSION_EVIDENCE_MAX_CHARS);
+  } else if (v.evidence !== undefined && v.evidence !== null) return null;
+  return { ws: v.ws, file: v.file, reason: v.reason as TestPassReuseExclusionReason,
+    recordedSha: v.recordedSha as string | null, judgedSha: v.judgedSha, evidence };
+}
+
+/** Validate a `TEST_PASS_REUSE_EXCLUSIONS` payload; bad examples are dropped and counted. */
+function parseExclusionSample(payload: unknown): { sample: TestPassReuseExclusionSample; dropped: number } | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const p = payload as Record<string, unknown>;
+  if (p.version !== 1 || typeof p.ws !== 'string' || !p.ws.trim() || !isCount(p.total) ||
+      !Array.isArray(p.examples) || p.examples.length > p.total ||
+      !nonEmptyOrNull(p.journal) || !nonEmptyOrNull(p.runGroupId)) return null;
+  const ws = p.ws;
+  const examples: TestPassReuseExclusionRecord[] = [];
+  let dropped = 0;
+  for (const raw of p.examples) {
+    const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? parseExclusionRecord({ ...(raw as Record<string, unknown>), ws })
+      : null;
+    if (record) examples.push(record);
+    else dropped += 1;
+  }
+  return { sample: { ws, total: p.total, examples, journal: p.journal, runGroupId: p.runGroupId }, dropped };
+}
+
+function summarizeExclusions(runs: TestPassReuseRun[]): TestPassReuseExclusionSummary | null {
+  const samples = runs.flatMap((r) => r.exclusions ?? []);
+  const malformed = runs.reduce((n, r) => n + (r.malformedExclusions ?? 0), 0);
+  // No sample line at all = a runner predating the records: not measured, never zero.
+  if (samples.length === 0 && malformed === 0) return null;
+  const total = samples.reduce((n, s) => n + s.total, 0);
+  const examples = samples.flatMap((s) => s.examples);
+  const distinct = (values: (string | null)[]) => [...new Set(values.filter((x): x is string => x !== null))];
+  return { total, examples, omitted: total - examples.length,
+    journals: distinct(samples.map((s) => s.journal)), runGroupIds: distinct(samples.map((s) => s.runGroupId)),
+    malformed };
+}
+
+/** Read-side check for a persisted exclusion summary; anything inconsistent reads as null. */
+function parseExclusionSummary(value: unknown): TestPassReuseExclusionSummary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (!isCount(v.total) || !isCount(v.omitted) || !isCount(v.malformed) || !Array.isArray(v.examples) ||
+      v.omitted !== v.total - v.examples.length ||
+      !Array.isArray(v.journals) || !v.journals.every((j) => typeof j === 'string' && j.trim()) ||
+      !Array.isArray(v.runGroupIds) || !v.runGroupIds.every((g) => typeof g === 'string' && g.trim())) return null;
+  const examples = v.examples.map(parseExclusionRecord);
+  if (examples.some((e) => e === null)) return null;
+  return { total: v.total, examples: examples as TestPassReuseExclusionRecord[], omitted: v.omitted,
+    journals: v.journals as string[], runGroupIds: v.runGroupIds as string[], malformed: v.malformed };
 }
 
 const LINE_RE = /^(?:\[[^\]]*\]\s*)?(TEST_PASS_REUSE(?:_TOTAL|_ALARM)?) (.*)$/;
@@ -313,6 +448,22 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
             !run.alarms.some((a) => a.ws === file.ws && a.file === file.file)) {
           run.alarms.push({ ws: file.ws, file: file.file, proof: 'audit' });
         }
+      }
+      continue;
+    }
+    // WI-6554700010026699: one bounded exclusion sample per armed task. The full records
+    // (`TEST_PASS_REUSE_EXCLUSION`, singular) live only in the retained journal.
+    const exclusionLine = /^(?:\[[^\]]*\]\s*)?TEST_PASS_REUSE_EXCLUSIONS (.*)$/.exec(raw.trimStart());
+    if (exclusionLine) {
+      const run = current ?? openRun();
+      let parsed: ReturnType<typeof parseExclusionSample> = null;
+      try {
+        parsed = parseExclusionSample(JSON.parse(exclusionLine[1]!));
+      } catch { /* malformed: counted below */ }
+      if (!parsed) run.malformedExclusions = (run.malformedExclusions ?? 0) + 1;
+      else {
+        (run.exclusions ??= []).push(parsed.sample);
+        if (parsed.dropped > 0) run.malformedExclusions = (run.malformedExclusions ?? 0) + parsed.dropped;
       }
       continue;
     }
@@ -584,6 +735,11 @@ export interface TestPassReuseRoundSummary {
   auditedFiles?: TestPassReuseAuditFile[] | null;
   /** Uncapped per-task selector population, retained for exact archived-window qualification. */
   auditRuns?: TestPassReuseRun[] | null;
+  /**
+   * WI-6554700010026699: why candidates were not reused. Absent or null = not measured (a runner
+   * predating the records), never zero; present with `total: 0` = nothing was excluded.
+   */
+  exclusions?: TestPassReuseExclusionSummary | null;
   headline: string;
 }
 
@@ -803,6 +959,7 @@ export function summarizeTestPassReuse(
   }
   if (recorder) headline += `; ${recorderHeadline(recorder)}`;
   const audit = summarizeReuseAudits(runs);
+  const exclusions = summarizeExclusions(runs);
   return {
     invocations: runs.length,
     candidates,
@@ -816,6 +973,8 @@ export function summarizeTestPassReuse(
     auditedFiles: summarizeAuditFiles(runs, audit),
     auditRuns: audit ? runs.map(({ applied, offReason, workspaces, total, alarms }) =>
       ({ applied, offReason, workspaces, total, alarms })) : null,
+    // Omitted, not null, when nothing was reported: a round from an older runner keeps its shape.
+    ...(exclusions === null ? {} : { exclusions }),
     headline,
   };
 }
@@ -926,6 +1085,7 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     ...(v.audit === undefined ? {} : { audit: parseAuditSummary(v.audit) }),
     ...(v.auditedFiles === undefined ? {} : { auditedFiles: parseArchivedAuditFiles(v.auditedFiles) }),
     ...(v.auditRuns === undefined ? {} : { auditRuns: parseArchivedAuditRuns(v.auditRuns) }),
+    ...(v.exclusions === undefined ? {} : { exclusions: parseExclusionSummary(v.exclusions) }),
     headline: v.headline,
   };
 }
@@ -1017,8 +1177,23 @@ export function parseTestPassReuseAuditArchive(value: unknown): {
 /** Storage caps for `gate_health.testPassReuse`. The headline keeps the full alarm COUNT, so a
  *  capped list never hides how many alarms fired — it only bounds the blob. */
 export const TEST_PASS_REUSE_HEALTH_MAX_ALARMS = 20;
+/** WI-6554700010026699 (R-4): exclusion examples kept in the health record; the rest are omitted. */
+export const TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES = 20;
+const HEALTH_EXCLUSION_LINKS_MAX = 8;
 const HEALTH_HEADLINE_MAX_CHARS = 400;
 const HEALTH_ALARM_FIELD_MAX_CHARS = 300;
+
+/** Bound a round's exclusion summary for storage; `omitted` is recomputed from what is kept. */
+function boundExclusionSummary(s: TestPassReuseExclusionSummary): TestPassReuseExclusionSummary {
+  const clip = (v: string) => v.slice(0, HEALTH_ALARM_FIELD_MAX_CHARS);
+  const examples = s.examples
+    .slice(0, TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES)
+    .map((e) => ({ ...e, ws: clip(e.ws), file: clip(e.file) }));
+  return { total: s.total, examples, omitted: s.total - examples.length,
+    journals: s.journals.slice(0, HEALTH_EXCLUSION_LINKS_MAX).map(clip),
+    runGroupIds: s.runGroupIds.slice(0, HEALTH_EXCLUSION_LINKS_MAX).map(clip),
+    malformed: s.malformed };
+}
 
 /**
  * P-013 runner half: the one record the gate keeps per suite round. The producer (the real
@@ -1057,6 +1232,7 @@ export function buildTestPassReuseHealth(
             .map((a) => ({ task: clip(a.task), outcome: clip(a.outcome), error: clip(a.error) })),
         }
       : null,
+    ...(summary.exclusions ? { exclusions: boundExclusionSummary(summary.exclusions) } : {}),
     headline: summary.headline.slice(0, HEALTH_HEADLINE_MAX_CHARS),
     judgedSha,
     recordedAtMs,

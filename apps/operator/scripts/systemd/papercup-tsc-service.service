@@ -4,8 +4,9 @@
 # instead of each caller paying a 13 GB whole-project compile. Socket-activated by
 # papercup-tsc-service.socket; exits by itself after PAPERCUSP_TSC_SERVICE_IDLE_SEC idle.
 #
-# Memory: one operator-core program is ~4-5 GB loaded and checked; two open projects fit well under
-# MemoryMax, and the server restarts its tsgo child past PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB. If the
+# Memory: keep one project's program loaded, release its previous snapshot before refresh, and
+# reset the compiler before switching projects. The server also resets its child past
+# PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB. If the
 # unit is killed anyway, every caller falls back to the full CLI compile, so the ceiling costs
 # speed, never a verdict. No swap: a swapped-out checker is slower than a fresh load.
 

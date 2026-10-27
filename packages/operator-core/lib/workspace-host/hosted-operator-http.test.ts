@@ -31,6 +31,7 @@ vi.mock('../endpoint-route/routes', () => {
 
 describe('decideOperatorHttpRoute', () => {
   it.each([
+    ['GET', '/api/health'],
     ['GET', '/api/zero-harness/rest-query?name=x&args=%7B%7D'],
     ['GET', '/api/zero-harness/sse'],
     ['GET', '/api/harness/portal/agent-chats?limit=50'],
@@ -95,6 +96,8 @@ describe('decideOperatorHttpRoute', () => {
     ['POST', '/api/admin/inbox/automation-policy/extra'],
     ['POST', '/api/mcp'],
     ['GET', '/api/agent-config/secrets'],
+    ['POST', '/api/health'],
+    ['GET', '/api/health/private'],
     // Right path, wrong method.
     ['DELETE', '/api/harness/portal/agent-chats/chat-1'],
     ['GET', '/api/adv/sessions/launch-su'],
@@ -284,6 +287,30 @@ const decodeBody = (frames: Array<Record<string, unknown>>) =>
   frames.filter((f) => f.type === 'http.body').map((f) => Buffer.from(String(f.data), 'base64').toString()).join('');
 
 describe('OperatorHttpChannel request ownership', () => {
+  it('relays native owned-origin health to the operator without admitting health writes or subpaths', async () => {
+    const { origin, seen } = await operator((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, service: 'papercusp-operator', sha: 'current-build' }));
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    await h.relay({ type: 'http.request', requestId: 'native-health', method: 'GET', path: '/api/health' });
+    expect(h.payloads()).toContainEqual({ type: 'http.response', requestId: 'native-health', status: 200,
+      headers: { 'content-type': 'application/json' } });
+    expect(JSON.parse(decodeBody(h.payloads()))).toEqual({ ok: true, service: 'papercusp-operator', sha: 'current-build' });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+    for (const [requestId, method, path] of [
+      ['health-write', 'POST', '/api/health'],
+      ['health-subpath', 'GET', '/api/health/private'],
+    ]) {
+      await h.relay({ type: 'http.request', requestId, method, path });
+      expect(h.payloads()).toContainEqual({ type: 'http.error', requestId, code: 'route_not_relayed', status: 403 });
+    }
+    expect(seen).toHaveLength(1);
+    await h.adapter.accept({ type: 'relay.close', channelId: 'http-1', reason: 'test_complete' });
+  });
+
   it('runs a private callback only after route/body validation with filtered headers', async () => {
     const frames: Record<string, unknown>[] = [];
     const seen: Request[] = [];
@@ -411,11 +438,13 @@ describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)',
     await h.open();
     await h.relay({ type: 'http.request', requestId: 'autonomy-save', method: 'POST',
       path: '/api/admin/inbox/automation-policy',
-      headers: { 'content-type': 'application/json', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged-user', authorization: 'Bearer forged' },
+      headers: { 'content-type': 'application/json', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged-user',
+        'x-papercusp-workspace': 'forged-workspace', authorization: 'Bearer forged' },
       body: Buffer.from(JSON.stringify(policy)).toString('base64') });
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ method: 'POST', url: '/api/admin/inbox/automation-policy' });
     expect(seen[0].headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+    expect(seen[0].headers['x-papercusp-workspace']).toBe(binding.customerWorkspaceId);
     expect(seen[0].headers.authorization).toBeUndefined();
     expect(JSON.parse(decodeBody(h.payloads().filter(f => f.requestId === 'autonomy-save'))))
       .toEqual({ ok: true, policy });

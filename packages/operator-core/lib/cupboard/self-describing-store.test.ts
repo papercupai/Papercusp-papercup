@@ -10,6 +10,7 @@
  * so BOTH the deep source layout and the shallow bundle resolve to the same dir.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,6 +55,42 @@ describe('inRepoFallbackDir', () => {
     expect(out).toBe(join(root, 'rubrics'));
     expect(out.startsWith(root)).toBe(true);
   });
+
+  it('does not crash a permission-confined import that cannot read the bundle ancestors (WI-6554700010029714)', async () => {
+    // The packaged sidecar's import qualification runs serve.mjs under
+    // `node --permission --allow-fs-read=<bundle>`. There, existsSync on an
+    // ancestor THROWS ERR_ACCESS_DENIED rather than returning false, and nine
+    // cupboard stores walk up at MODULE SCOPE, so the whole import died. Run the
+    // REAL module, bundled the way the sidecar is, under the REAL permission model.
+    const { build } = await import('esbuild');
+    const side = join(root, 'papercusp-desktop', 'src-tauri', 'sidecar');
+    mkdirSync(side, { recursive: true });
+    await build({
+      entryPoints: [join(import.meta.dirname, 'self-describing-store.ts')],
+      outfile: join(side, 'store.mjs'), bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
+    });
+    writeFileSync(join(side, 'probe.mjs'), [
+      "import { pathToFileURL } from 'node:url';",
+      "import { inRepoFallbackDir } from './store.mjs';",
+      "const moduleUrl = pathToFileURL(process.argv[2]).href;",
+      "process.stdout.write(JSON.stringify({ dir: inRepoFallbackDir('goal-packages', moduleUrl) }));",
+    ].join('\n'));
+    const run = (confined: boolean) => spawnSync(process.execPath, [
+      ...(confined ? ['--permission', `--allow-fs-read=${side}`] : []),
+      join(side, 'probe.mjs'), join(side, 'serve.mjs'),
+    ], { cwd: side, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' }, timeout: 30_000 });
+
+    // Control: unconfined, the walk climbs out of the bundle to the fake repo root.
+    const open = run(false);
+    expect(open.stderr).toBe('');
+    expect(JSON.parse(open.stdout)).toEqual({ dir: join(root, 'goal-packages') });
+
+    // Confined: the import survives and stays inside the bundle (cwd fallback).
+    const confined = run(true);
+    expect(confined.stderr).not.toMatch(/ERR_ACCESS_DENIED|Access to this API has been restricted/);
+    expect(confined.status).toBe(0);
+    expect(JSON.parse(confined.stdout)).toEqual({ dir: join(side, 'goal-packages') });
+  }, 60_000);
 
   it('falls back to cwd/<subdir> when the module is outside any repo root', () => {
     // A module URL under a dir with no package.json+packages/ ancestor → cwd fallback.

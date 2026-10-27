@@ -93,9 +93,16 @@ export function nativeCliPlan(baseUrl: string, name: string, args: Record<string
   // An inherited green proxy must never reclassify an alternate/remote pin.
   delete env.PAPERCUSP_MCP_PROXY_BASE;
   delete env.PAPERCUSP_MCP_PROXY_PORT;
-  const cliUrl = staging ? resolveAgentMcpBaseUrl(baseUrl, {
+  let cliUrl = staging ? resolveAgentMcpBaseUrl(baseUrl, {
     ...env, PAPERCUSP_MCP_STAGING_PROXY_PORT: inherited.PAPERCUSP_MCP_STAGING_PROXY_PORT ?? '9171',
   }) : baseUrl.replace(/\/$/, '');
+  // Foreground bash returns prose unless structured output is negotiated.
+  // Keep JSON decoding strict and request the tool's maintained exit receipt.
+  if (name === 'capability:bash') {
+    const structured = new URL(cliUrl);
+    structured.searchParams.set('structured', '1');
+    cliUrl = structured.toString();
+  }
   if (staging) {
     const proxy = new URL(cliUrl);
     if (proxy.origin === selected.origin || ['3070', '9071'].includes(proxy.port)) {
@@ -134,6 +141,8 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
 }
 
 export type NativeCliRecoveryOptions = {
+  /** Explicit fixture scope; ptool environment flags override URL query scope. */
+  env?: NodeJS.ProcessEnv;
   /**
    * Accept a field-truncated result door only when the caller requested a
    * projection and the door contains a complete JSON projection item. The
@@ -196,7 +205,7 @@ export function recoverNativeCliResult(result: Parameters<typeof nativeCliResult
 
 export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>,
   invoke: typeof spawnSync = spawnSync, options: NativeCliRecoveryOptions = {}): Record<string, any> {
-  const plan = nativeCliPlan(baseUrl, name, args);
+  const plan = nativeCliPlan(baseUrl, name, args, options.env ?? process.env);
   const startedAt = performance.now();
   // Write to the worker's actual descriptor: Vitest buffers console output until
   // the file settles, hiding completed requests from the router's existing
@@ -219,5 +228,5 @@ export function nativeCliCall(baseUrl: string, name: string, args: Record<string
   }
   progress('settled', result);
   return recoverNativeCliResult(result,
-    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke), options) as Record<string, any>;
+    pageArgs => nativeCliCall(baseUrl, 'capability:read', pageArgs, invoke, options), options) as Record<string, any>;
 }

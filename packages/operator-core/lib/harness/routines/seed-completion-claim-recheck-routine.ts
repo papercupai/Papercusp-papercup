@@ -11,47 +11,33 @@
  *   tsx seed-completion-claim-recheck-routine.ts
  *   tsx seed-completion-claim-recheck-routine.ts --inactive
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { COMPLETION_CLAIM_RECHECK } from './completion-claim-recheck-action';
 
 const SLUG = process.env.COMPLETION_CLAIM_RECHECK_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const { sql } = getOrgPg();
-  const workspaceId = activeWorkspaceId();
-  const name = COMPLETION_CLAIM_RECHECK;
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: '0 25 */6 * * *' };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       payload_template, concurrency, catchup, active, tier, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${workspaceId}, ${name}, 'cron',
-            ${JSON.stringify(triggerConfig)}::text::jsonb, ${`system:${name}`},
-            ${'{}'}::text::jsonb, 'skip', 'skip-old',
-            ${active}, 'durable', now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      tier = EXCLUDED.tier,
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()`;
-  console.log(
-    `[seed-completion-claim-recheck-routine] ${SLUG}: seeded durable 6-hourly :25 ` +
-      `completion-claim recheck (${active ? 'ACTIVE' : 'inactive'}).`,
-  );
-  await sql.end({ timeout: 5 });
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(
-      '[seed-completion-claim-recheck-routine] FAILED:',
-      error instanceof Error ? error.message : error,
-    );
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-completion-claim-recheck-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const name = COMPLETION_CLAIM_RECHECK;
+    const triggerConfig = { cron: '0 25 */6 * * *' };
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: `system:${name}`,
+      tier: 'durable' as const,
+      payloadTemplate: '{}',
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId, sql, name, triggerConfig }) => {
+    console.log(
+        `[seed-completion-claim-recheck-routine] ${SLUG}: seeded durable 6-hourly :25 ` +
+          `completion-claim recheck (${active ? 'ACTIVE' : 'inactive'}).`,
+      );
+    await sql.end({ timeout: 5 });
+  },
+});

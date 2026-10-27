@@ -28,7 +28,8 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
-import { injectIntoHost, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
+import { injectIntoHostWithConfirmation, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
+import { hostCarryFenceBindable } from '../../events/await/carry-fence-bindable';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
@@ -701,7 +702,7 @@ export default defineTool({
     // the tool layer never read). Fail-soft by construction: an unreadable log
     // reports `none` and changes nothing.
     const priorRespawn = await readPriorRespawnOutcome(identity.ownerId);
-    const ok = await injectIntoHost(
+    const injectResult = await injectIntoHostWithConfirmation(
       host.sock,
       {
         mode: 'carry-respawn',
@@ -709,11 +710,32 @@ export default defineTool({
         systemPromptAddendum: spec.systemPromptAddendum,
         ...(self?.sourceKind === 'codex' && self.filePath ? { sourceTranscriptPath: self.filePath } : {}),
         ownerId: identity.ownerId,
+        // EI-27053660657887116: bind the carry to a nonce ONLY when the host can
+        // match the fence identity. A Claude host advertises the cap but has no
+        // native session id, so a bound carry is refused there as
+        // 'stale-carry-target'; it still admits the unbound form.
+        ...(hostCarryFenceBindable(host) ? {
+          carryNonce: pendingCarryRespawn.nonce,
+          workspaceId: identity.workspaceId ?? 'default',
+          expectedAdvSessionId: String(host.advSessionId),
+          expectedNativeSessionId: host.nativeSessionId ?? '',
+          expectedHostStartedAt: host.startedAt,
+          expectedChildGeneration: host.childGeneration,
+          expectedHostCodeVersion: host.hostCodeVersion ?? '',
+        } : {}),
       },
       // EI-18686525818431054: NOT the 2000ms default — see
       // CARRY_RESPAWN_SOCKET_TIMEOUT_MS's doc comment above.
       CARRY_RESPAWN_SOCKET_TIMEOUT_MS,
     );
+    const ok = injectResult.ok;
+    // EI-27053660657887116: a host that ANSWERED with a refusal is reachable. Keep
+    // its reason so the caller is never told "cannot reach the socket" when the
+    // host was reached and said no (that misreport hid a fleet-wide refusal).
+    const hostRefusalReason =
+      !ok && injectResult.confirmation === 'acked'
+        ? String(injectResult.reason ?? '').trim() || 'refused-without-reason'
+        : null;
     if (!ok) {
       // Clear only this attempt. A newer concurrent compaction request owns a
       // different nonce and must survive this host refusal.
@@ -908,9 +930,23 @@ export default defineTool({
               ? { mechanicalFallback: gate.fallback }
               : {}),
             ...provenanceFields,
-            ...(!ok ? { hostSock: host.sock, hostPid: host.pid } : {}),
+            ...(!ok
+              ? {
+                  hostSock: host.sock,
+                  hostPid: host.pid,
+                  hostConfirmation: injectResult.confirmation,
+                  ...(hostRefusalReason ? { hostRefusalReason } : {}),
+                }
+              : {}),
             note:
-              (!ok
+              (!ok && hostRefusalReason
+                ? // EI-27053660657887116: the host ANSWERED. Say so, with its reason,
+                  // instead of the unreachable-socket text below.
+                  `The session TUI host (${host.sock}, host pid ${host.pid}) was reached and REFUSED ` +
+                  `the carry-respawn: ${hostRefusalReason}. Nothing was queued. This is not a socket ` +
+                  'failure, so an unchanged retry will be refused the same way; the host records its ' +
+                  'side in ~/.papercusp/psu-pty/<owner>.events.jsonl.'
+                : !ok
                 ? // EI-18686525818431054 ask #3: name the socket path + host pid tried,
                   // so the next diagnosis doesn't have to reverse-engineer it from `ps`
                   // + `find` (this filing's own investigation cost ~6 tool calls on that

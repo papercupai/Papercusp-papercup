@@ -9,7 +9,8 @@
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import type { Stats } from 'node:fs';
+import { type RetentionPinPredicate, withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import {
   appendFile,
   link,
@@ -492,20 +493,32 @@ async function removeRunIfEligible(
 /** Bounded, no-follow allocated-byte census shared by preview and eviction.
  * Count an inode once across the root, including retained and unknown entries;
  * those entries consume space but never become deletion candidates. */
-async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: Map<string, { bytes: number; newest: number }> }> {
+async function retentionRootUsage(root: string, coversPath: (path: string) => boolean): Promise<{
+  bytes: number; pinnedBytes: number; runs: Map<string, { bytes: number; newest: number }>;
+}> {
   let budget = 100000;
   const deadline = Date.now() + 30000;
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
+  const pinned = new Set<string>();
+  let pinnedBytes = 0;
+  const allocation = (target: string, s: Stats) => {
+    const key = `${s.dev}:${s.ino}`;
+    const bytes = s.blocks * 512;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('allocated blocks unavailable');
+    if (seen.has(key) && seen.get(key) !== bytes) throw new Error('retention allocation changed during census');
+    // A shared inode may first appear outside the pin. Attribute it independently
+    // from total usage, when a covered link is encountered later in the same walk.
+    if (coversPath(target) && !pinned.has(key)) { pinned.add(key); pinnedBytes += bytes; }
+    const added = seen.has(key) ? 0 : bytes;
+    seen.set(key, bytes);
+    return added;
+  };
   const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
     if (--budget < 0 || Date.now() >= deadline) throw new Error('retention byte census budget exceeded');
     const s = await lstat(target);
-    const key = `${s.dev}:${s.ino}`;
-    if (seen.has(key)) return { bytes: 0, newest: s.mtimeMs };
-    seen.add(key);
-    if (!Number.isSafeInteger(s.blocks) || s.blocks < 0) throw new Error('allocated blocks unavailable');
-    let bytes = s.blocks * 512;
+    let bytes = allocation(target, s);
     let newest = s.mtimeMs;
-    if (s.isDirectory()) for (const name of await readdir(target)) {
+    if (s.isDirectory()) for (const name of (await readdir(target)).sort()) {
       const child = await walk(path.join(target, name));
       bytes += child.bytes; newest = Math.max(newest, child.newest);
     }
@@ -513,15 +526,24 @@ async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: 
   };
   const base = await lstat(root);
   if (!base.isDirectory() || base.isSymbolicLink()) throw new Error('unsafe retention root');
-  let bytes = base.blocks * 512;
-  seen.add(`${base.dev}:${base.ino}`);
+  let bytes = allocation(root, base);
   const runs = new Map<string, { bytes: number; newest: number }>();
   for (const name of (await readdir(root)).sort()) {
     const usage = await walk(path.join(root, name));
     bytes += usage.bytes;
     runs.set(name, usage);
   }
-  return { bytes, runs };
+  if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(pinnedBytes)) throw new Error('retention allocation overflow');
+  return { bytes, pinnedBytes, runs };
+}
+
+function updateRetentionCap(cap: NonNullable<RunPruneReport['cap']>, usage: { bytes: number; pinnedBytes: number }): void {
+  cap.afterBytes = usage.bytes;
+  cap.pinnedBytes = usage.pinnedBytes;
+  cap.overByBytes = Math.max(0, usage.bytes - cap.maxBytes);
+  cap.pinnedOverageBytes = Math.max(0, usage.pinnedBytes - cap.maxBytes);
+  delete cap.error;
+  if (cap.overByBytes > cap.pinnedOverageBytes) cap.error = `retention size cap remains exceeded:${cap.overByBytes}`;
 }
 
 /**
@@ -544,7 +566,7 @@ export async function pruneRunsWithReport(
 }
 
 async function pruneRunsWithProtection(
-  evidenceRoot: string, keep: number, now: number, options: RunPruneOptions, isPinned: (path: string) => boolean,
+  evidenceRoot: string, keep: number, now: number, options: RunPruneOptions, isPinned: RetentionPinPredicate,
 ): Promise<RunPruneReport> {
   const env = options.env ?? process.env;
   const measure = options.measureDisk ?? measureDiskSpace;
@@ -569,17 +591,28 @@ async function pruneRunsWithProtection(
   };
   const removed = new Set<string>();
   let usage: Awaited<ReturnType<typeof retentionRootUsage>> | null = null;
-  try { usage = await retentionRootUsage(evidenceRoot); } catch (error) {
+  try { usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath); } catch (error) {
     report.cap = { maxBytes, beforeBytes: null, afterBytes: null, pinnedBytes: null,
       pinnedPaths: [], overByBytes: null, pinnedOverageBytes: null, error: String(error) };
   }
   const pinnedPaths = names.filter(name => isPinned(path.join(evidenceRoot, name)));
   if (usage) {
-    const pinnedBytes = pinnedPaths.reduce((sum, name) => sum + (usage!.runs.get(name)?.bytes ?? 0), 0);
+    const pinnedBytes = usage.pinnedBytes;
     report.cap = { maxBytes, beforeBytes: usage.bytes, afterBytes: usage.bytes, pinnedBytes,
       pinnedPaths: pinnedPaths.map(name => path.join(evidenceRoot, name)),
       overByBytes: Math.max(0, usage.bytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) };
+    updateRetentionCap(report.cap, usage);
   }
+  const refreshUsage = async () => {
+    try {
+      usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath);
+      updateRetentionCap(report.cap!, usage);
+    } catch (error) {
+      usage = null;
+      Object.assign(report.cap!, { afterBytes: null, overByBytes: null, pinnedBytes: null,
+        pinnedOverageBytes: null, error: String(error) });
+    }
+  };
   const capExceeded = () => usage !== null && usage.bytes > maxBytes;
   const oldest = [...names].sort((a, b) => (usage?.runs.get(a)?.newest ?? 0) - (usage?.runs.get(b)?.newest ?? 0) || a.localeCompare(b));
   if (options.dryRun) {
@@ -631,16 +664,7 @@ async function pruneRunsWithProtection(
       if (await removeRunIfEligible(evidenceRoot, name, now, !countVictim, isPinned)) {
         removed.add(name);
         report.removed.push(name);
-        if (usage) {
-          try {
-            usage = await retentionRootUsage(evidenceRoot);
-            report.cap!.afterBytes = usage.bytes;
-            report.cap!.overByBytes = Math.max(0, usage.bytes - maxBytes);
-          } catch (error) {
-            usage = null; report.cap!.afterBytes = null; report.cap!.overByBytes = null;
-            report.cap!.error = String(error);
-          }
-        }
+        await refreshUsage();
       }
     }
   }
@@ -666,6 +690,7 @@ async function pruneRunsWithProtection(
     if (!(await removeRunIfEligible(evidenceRoot, name, now, true, isPinned))) continue;
     removed.add(name);
     report.removed.push(name);
+    await refreshUsage();
     sample = await measure(evidenceRoot);
     if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
         !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
@@ -691,7 +716,9 @@ async function pruneRunsWithProtection(
 
 export function formatRunRetentionLine(report: RunPruneReport): string | null {
   const d = report.disk;
+  const cap = report.cap;
   const needsReport = report.removed.length > 0 ||
+    !!cap?.error || (cap?.overByBytes ?? 0) > 0 ||
     (d.status === 'unresolved' || (d.status === 'unmeasured' && report.runDirsSeen > 0));
   if (!needsReport) return null;
   const fmt = (value: number | null) => value === null ? 'unknown' : String(value);
@@ -699,7 +726,11 @@ export function formatRunRetentionLine(report: RunPruneReport): string | null {
     ' disk=' + d.status +
     ' free_before_bytes=' + fmt(d.availableBeforeBytes) +
     ' reserve_bytes=' + fmt(d.reserveBytes) +
-    ' free_after_bytes=' + fmt(d.availableAfterBytes);
+    ' free_after_bytes=' + fmt(d.availableAfterBytes) +
+    (cap ? ' cap=' + (cap.afterBytes === null ? 'unknown' : cap.error ? 'exceeded' : (cap.overByBytes ?? 0) > 0 ? 'pinned-overage' : 'within-cap') +
+      ' cap_after_bytes=' + fmt(cap.afterBytes) + ' pinned_bytes=' + fmt(cap.pinnedBytes) +
+      ' over_by_bytes=' + fmt(cap.overByBytes) + ' pinned_overage_bytes=' + fmt(cap.pinnedOverageBytes) +
+      (cap.error ? ' cap_error=' + JSON.stringify(cap.error) : '') : '');
 }
 
 export async function pruneRuns(
@@ -1006,10 +1037,16 @@ export async function pruneEvidenceRoot(
 ): Promise<EvidenceRootPruneResult> {
   // One pin snapshot and one admission cover both destructive passes. In particular,
   // a harness finalizer must be able to yield before either pass on contention.
+  // notify-classification: {"classification":"durable","reason":"Retention pin protection wraps both destructive passes; any notification or escalation reached by the wrapper must retain terminal delivery custody.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withRetentionPinProtection(async isPinned => {
     const runRetention = await pruneRunsWithProtection(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env }, isPinned);
     const foreign = await pruneStaleForeignWithProtection(evidenceRoot,
       { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now, dryRun: options.dryRun }, isPinned);
+    if (!options.dryRun && foreign.removed.length > 0 && runRetention.cap) {
+      try { updateRetentionCap(runRetention.cap, await retentionRootUsage(evidenceRoot, isPinned.coversPath)); }
+      catch (error) { Object.assign(runRetention.cap, { afterBytes: null, overByBytes: null,
+        pinnedBytes: null, pinnedOverageBytes: null, error: String(error) }); }
+    }
     return { runs: runRetention.removed, runRetention, foreign };
   }, { dir: env.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now, onWaiting: options.onWaiting });
 }

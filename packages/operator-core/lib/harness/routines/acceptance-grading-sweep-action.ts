@@ -26,24 +26,41 @@
  * re-running the idempotent dispatcher here lets that delayed failure reach its
  * safe retirement/fallback path instead of leaving the target scorecard pending.
  */
+import { randomUUID } from 'node:crypto';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { registerSystemAction } from './system-actions';
+import { enqueueAcceptanceGradingDispatch } from '../../acceptance-grading-sweep-dispatch';
+import { Cache, getOrSetBounded } from '@papercusp/cache';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import type { AcceptanceBarPinSweepCursor, AcceptanceBarPinSweepResult } from '../../acceptance-bar-pin-sweep';
+import type { ObservedPlanRow } from '../../acceptance-grading-sweep-run';
 
 // Advance past permanently held pins so one bad batch cannot starve the rest.
 let subjectPinCursor: AcceptanceBarPinSweepCursor | null = null;
+let planCursor: ObservedPlanRow | null = null;
+// Existing bounded-cache semantics retain a slow read for the next tick instead of
+// starting another copy every minute. Only observations/reconcilers use this cache;
+// durable dispatch admission always executes its explicit idempotent path.
+const scanCache = pinModuleState('@papercusp/operator-core.gradingSweepObservations', () =>
+  new Cache({ defaultSoftTtlMs: 60_000, defaultHardTtlMs: 60_000 }));
 
-/** Cadence hint consumed by the seeder; 10 minutes is far below every threshold the
- *  decision core uses (2h re-dispatch, 12h escalate), so the sweep's own timing can
- *  never be what decides an outcome. */
-export const ACCEPTANCE_GRADING_SWEEP_INTERVAL_SEC = 600;
+export function resetAcceptanceGradingSweepForTest(): void {
+  scanCache.clearL1();
+  planCursor = null;
+  subjectPinCursor = null;
+}
+
+/** One minute detector cadence; slow reads retain their in-flight cache entry. */
+export const ACCEPTANCE_GRADING_SWEEP_INTERVAL_SEC = 60;
 
 registerSystemAction('acceptance-grading-sweep', async (ctx) => {
+  const deadline = Date.now() + 55_000;
   const [
     { getOrgPg },
     { RUBRIC_TEMPLATE_NAME },
     { evaluatePlanAcceptanceGate },
-    { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, resolveAcceptanceGrader, gradingLaunchProfile },
+    { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, gradingLaunchProfile },
     { reconcilePendingGradingAudits },
     { listTasks },
     { upsertConditionWorkItem },
@@ -67,6 +84,39 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
 
   const { sql } = getOrgPg();
   const gradingLaunch = gradingLaunchProfile({ gradingLaunch: ctx.payloadTemplate?.gradingLaunch });
+  const sweepId = ctx.workflowId ?? randomUUID();
+  const stages: Record<string, { durationMs: number; outcome: 'completed' | 'failed' }> = {};
+  const boundedObservation = async <T>(workspaceId: string, key: string, work: () => Promise<T>): Promise<T> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('grading sweep wall-time budget exhausted');
+    const result = await getOrSetBounded(scanCache, workspaceId, key, work, {
+      deadlineMs: Math.min(5_000, remaining),
+    });
+    if (!result.ok) throw result.reason === 'error' ? result.error : new Error(`grading sweep ${key} observation remains in flight`);
+    return result.value;
+  };
+  // EI-26619271533407778: a registry long-tick report cannot identify which
+  // awaited repair owns the guard. Keep that identity visible while it runs,
+  // and retain the settled measurements in the action's existing diagnostics.
+  const observeStage = async <T>(stage: string, work: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    const prefix = `[acceptance-grading-sweep] sweep=${sweepId} stage=${stage}`;
+    console.log(`${prefix} started`);
+    const progress = managedSetInterval(`acceptance-grading-sweep-stage:${sweepId}:${stage}`, 60_000, () => {
+      console.warn(`${prefix} still running elapsedMs=${Date.now() - startedAt}`);
+    }, { category: 'watchdog', classification: 'timeout-reaper' });
+    let outcome: 'completed' | 'failed' = 'failed';
+    try {
+      const result = await work();
+      outcome = 'completed';
+      return result;
+    } finally {
+      progress.stop();
+      const durationMs = Date.now() - startedAt;
+      stages[stage] = { durationMs, outcome };
+      console.log(`${prefix} ${outcome} elapsedMs=${durationMs}`);
+    }
+  };
 
   // WI-6554700010014766: a post-start neutral edit may strand a pin. Recover it
   // before grading, using the same clock rather than adding another routine.
@@ -74,7 +124,8 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
   let subjectPinError: string | undefined;
   try {
     const { runAcceptanceBarPinSweep } = await import('../../acceptance-bar-pin-sweep');
-    subjectPins = await runAcceptanceBarPinSweep({ after: subjectPinCursor });
+    subjectPins = await observeStage('subject-pins', () => boundedObservation(ctx.workspaceId,
+      `subject-pins:${JSON.stringify(subjectPinCursor)}`, () => runAcceptanceBarPinSweep({ after: subjectPinCursor })));
     subjectPinCursor = subjectPins.nextCursor;
     if (subjectPins.errors.length > 0) {
       subjectPinError = `subject-pin reconciliation failed for ${subjectPins.errors.length} plan(s)`;
@@ -83,8 +134,9 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     subjectPinError = `subject-pin reconciliation failed: ${error instanceof Error ? error.message : error}`;
   }
 
+  let auditError: string | undefined;
   try {
-    const result = await reconcilePendingGradingAudits({
+    const result = await observeStage('pending-audits', () => boundedObservation(ctx.workspaceId, 'pending-audits', () => reconcilePendingGradingAudits({
       ctx: {
         ...(gradingLaunch ? { gradingLaunch } : {}),
         workspaceId: ctx.workspaceId,
@@ -98,7 +150,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         userId: null,
       } as never,
       harness: ctx.installSlug,
-    });
+    })));
     const launched = result.receipts.filter((receipt) => receipt.state === 'launched').length;
     if (launched > 0) {
       console.log(`[acceptance-grading-sweep] reconciled ${launched} pending grading-integrity auditor(s)`);
@@ -114,9 +166,10 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
       '[acceptance-grading-sweep] pending grading-integrity reconciliation failed:',
       error instanceof Error ? error.message : error,
     );
+    auditError = `pending grading-integrity reconciliation failed: ${error instanceof Error ? error.message : error}`;
   }
 
-  await runAcceptanceGradingSweep({
+  const grading = await observeStage('plan-grading', () => runAcceptanceGradingSweep({
     now: () => Date.now(),
 
     /**
@@ -132,7 +185,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
      * downstream call is built from it (the same per-row identity pattern as
      * consult-expiry-action.ts).
      */
-    listCandidates: async (limit) => {
+    listCandidates: async (limit, after) => {
       // The predicate itself (including the workspace-work-scope-policy-2026-09-04
       // P-007 harness filter) moved to `lib/acceptance-awaiting-plans.ts` so the
       // delegation-count provider can ask the SAME question this sweep asks
@@ -145,17 +198,21 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         sql,
         rubricTemplateName: RUBRIC_TEMPLATE_NAME,
         limit,
+        after,
       })) as never;
     },
 
     /** R7 — the ONE definition of stuck-ness. Never re-derived from scorecard rows. */
-    evaluateGate: async (planSlug) => {
+    evaluateGate: async (planSlug, row) => {
       // WI-6554700010018901 (D-006): judge "stuck" at the plan's pinned type revisions, the
       // revisions the ship door judges, so a newer registry revision cannot change the answer.
       const { withPinnedPlanTypes } = await import('../../plan-types/pins');
-      const verdict = await withPinnedPlanTypes({ planSlug }, () =>
-        evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true }),
-      );
+      const workspaceId = (row as unknown as { workspaceId?: string })?.workspaceId;
+      if (!workspaceId || !row?.harnessSlug) throw new Error('grading gate requires scoped candidate identity');
+      const verdict = await boundedObservation(workspaceId,
+        `gate:${row.harnessSlug}:${planSlug}:${row.gradeableSinceMs}`, () =>
+          withPinnedPlanTypes({ planSlug, harnessSlug: row.harnessSlug!, workspaceId }, () =>
+            evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true, harnessSlug: row.harnessSlug! })));
       return { satisfied: verdict.satisfied, code: verdict.code ?? null };
     },
 
@@ -201,35 +258,16 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     dispatchGrader: async (row) => {
       const workspaceId = (row as unknown as { workspaceId?: string }).workspaceId;
       if (!workspaceId) return { ok: false, error: 'acceptance grading candidate is missing workspace identity' };
-      const ctx = {
+      const input = {
         ...(gradingLaunch ? { gradingLaunch } : {}),
         workspaceId,
-        harnessSlug: row.harnessSlug ?? undefined,
-        principal: {
-          kind: 'system',
-          slug: ACCEPTANCE_GRADING_SWEEP_ACTOR,
-          workspaceId,
-        },
-        ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
-        ownerLabel: 'acceptance grading sweep',
-        userId: null,
-      } as never;
+        harnessSlug: row.harnessSlug ?? '',
+        planSlug: row.planSlug,
+        gradeableSinceMs: row.gradeableSinceMs ?? NaN,
+      };
       try {
-        const life = await resolveAcceptanceGrader(row.planSlug, ctx);
-        // 'settled' (WI-1699998) is a SUCCESS, and belongs here for a sharper reason
-        // than tidiness: this sweep is the very caller whose re-dispatch caused that
-        // bug, and omitting the state would turn a correct skip into `ok:false`,
-        // feeding the stall path that mints an "UNGRADED for Nh — needs an
-        // independent grader" escalation against a plan that is fully graded. The
-        // fix for re-routing a decided grading must not become a false escalation.
-        const ok =
-          life.state === 'assigned' ||
-          life.state === 'launched' ||
-          life.state === 'deduped' ||
-          life.state === 'settled';
-        return ok
-          ? { ok: true, state: life.state }
-          : { ok: false, state: life.state, error: life.error ?? `grader resolve returned ${life.state}` };
+        await enqueueAcceptanceGradingDispatch(input);
+        return { ok: true, state: 'admitted' };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -257,7 +295,11 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     },
 
     onEvent: (ev) => {
-      if (ev.kind === 'dispatched') {
+      if (ev.kind === 'observe-started') {
+        console.log(`[acceptance-grading-sweep] sweep=${sweepId} plan=${ev.planSlug} operation=${ev.operation} started`);
+      } else if (ev.kind === 'observe-settled') {
+        console.log(`[acceptance-grading-sweep] sweep=${sweepId} plan=${ev.planSlug} operation=${ev.operation} ${ev.outcome} elapsedMs=${ev.durationMs}`);
+      } else if (ev.kind === 'dispatched') {
         console.log(`[acceptance-grading-sweep] re-dispatched grader for ${ev.planSlug} (${ev.state ?? 'ok'})`);
       } else if (ev.kind === 'escalated') {
         console.log(
@@ -267,12 +309,14 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         console.warn(`[acceptance-grading-sweep] ${ev.kind} for ${ev.planSlug}: ${'error' in ev ? ev.error : ''}`);
       }
     },
-  });
+  }, { timeBudgetMs: Math.max(1, deadline - Date.now()), after: planCursor }));
+  if (grading) planCursor = grading.nextCursor;
 
   // A failed sub-pass remains visible through routine health without suppressing
   // independent grading/audit recovery or making a partial scan look healthy.
+  const softError = [subjectPinError, auditError, grading?.budgetExhausted ? 'grading scan wall-time budget exhausted' : null].filter(Boolean).join('; ');
   return {
-    diagnostics: { subjectPins: subjectPins ?? { error: subjectPinError } },
-    ...(subjectPinError ? { softError: subjectPinError } : {}),
+    diagnostics: { subjectPins: subjectPins ?? { error: subjectPinError }, stages, grading },
+    ...(softError ? { softError } : {}),
   };
 });

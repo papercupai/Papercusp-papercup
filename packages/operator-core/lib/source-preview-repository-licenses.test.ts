@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { auditPublicRepositoryLicenses } from '../../../scripts/source-preview.mjs';
+import { auditPublicRepositoryLicenses, PUBLIC_LICENSE_ID, PUBLIC_LICENSE_PATH, ROOT } from '../../../scripts/source-preview.mjs';
 import { parseOperationalEvidenceArtifact } from './agent-tools/testing/record-run';
 
 const text = 'reviewed license fixture\n';
@@ -78,9 +80,38 @@ describe('public repository licensing census', () => {
     expect(result.rows[0].errors).toEqual(['D-011/D-023 require ELv2: LICENSE']);
   });
 
-  it('preserves the declared permissive library policy even when the new text is a recognized product license', async () => {
-    const fx = fixture();
+  it('recognizes the canonical SUL for the app without changing existing ELv2 component licenses', async () => {
+    for (const [name, body, expected] of [
+      ['papercusp-app', readFileSync(PUBLIC_LICENSE_PATH, 'utf8'), 'LicenseRef-Sustainable-Use-1.0'],
+      ['cupboard-actions', readFileSync(join(ROOT, 'apps/operator-public/cupboard-actions/LICENSE'), 'utf8'), 'ELv2'],
+    ]) {
+      const { licenseHashes: _unused, ...fx } = fixture({ name, body });
+      const result = await auditPublicRepositoryLicenses(fx);
+      expect(result.exitCode).toBe(0);
+      expect(result.rows[0].licenses[0].license).toBe(expected);
+    }
+    expect(PUBLIC_LICENSE_ID).toBe('LicenseRef-Sustainable-Use-1.0');
+  });
+
+  it('rejects the former ELv2 license for the app even when the license text is recognized', async () => {
+    const fx = fixture({ name: 'papercusp-app' });
     fx.licenseHashes[sha256] = 'ELv2';
+    const result = await auditPublicRepositoryLicenses(fx);
+    expect(result.exitCode).toBe(1);
+    expect(result.rows[0].errors).toEqual(['Application release requires SUL 1.0: LICENSE']);
+  });
+
+  it('does not silently relicense an existing ELv2 component under SUL', async () => {
+    const fx = fixture({ name: 'goals' });
+    fx.licenseHashes[sha256] = PUBLIC_LICENSE_ID;
+    const result = await auditPublicRepositoryLicenses(fx);
+    expect(result.exitCode).toBe(1);
+    expect(result.rows[0].errors).toEqual(['D-011/D-023 require ELv2: LICENSE']);
+  });
+
+  it.each(['ELv2', 'LicenseRef-Sustainable-Use-1.0'])('preserves permissive library policy when text is recognized as %s', async (license) => {
+    const fx = fixture();
+    fx.licenseHashes[sha256] = license;
     const result = await auditPublicRepositoryLicenses(fx);
     expect(result.exitCode).toBe(1);
     expect(result.rows[0].errors).toEqual(['D-003 requires a permissive library license: LICENSE']);

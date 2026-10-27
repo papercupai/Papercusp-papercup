@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Historical isolated P544 GCS HTTP byte verification",
+  "framework": "operational",
+  "command": ["node", "--input-type=module"],
+  "exitCode": 0,
+  "startedAt": "2026-10-24T15:51:54.344Z",
+  "finishedAt": "2026-10-24T15:54:41.273Z",
+  "summary": "Records the already-completed isolated Workerd/private-GCS verification task 0mvmku2wa1v36si1v0n. The original runner completed with exit 0; its durable output records four exact HTTP body digests and sizes and invalidDigestRejected=true. This is historical evidence registration, with no new execution, production delivery, independent acceptance, or complete runtime-import census claim.",
+  "assertions": [
+    {
+      "id": "P002 historical HTTP manifest bytes",
+      "passed": true,
+      "evidence": "Original task output: verified manifest.json; sha256=5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8; sizeBytes=12555. Expected bytes came from the retained original publication custody, independently of the GCS response metadata. The committed receipt records the same result."
+    },
+    {
+      "id": "P002 historical HTTP signature bytes",
+      "passed": true,
+      "evidence": "Original task output: verified server.tgz.minisig; sha256=b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54; sizeBytes=295. The original P544 manifest files.signature and signature trust evidence identify this digest, independently of the delivery implementation."
+    },
+    {
+      "id": "P002 historical HTTP SBOM bytes",
+      "passed": true,
+      "evidence": "Original task output: verified sbom.cdx.json; sha256=4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d; sizeBytes=800554. The retained original P544 manifest trustReport SBOM evidence identifies this document digest."
+    },
+    {
+      "id": "P002 historical HTTP bundle bytes",
+      "passed": true,
+      "evidence": "Original task output: verified server.tgz; sha256=7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948; sizeBytes=2118168717. The original P544 manifest files.bundle, release.bundleSha256 and signature subject identify these admitted bytes."
+    },
+    {
+      "id": "P002 historical invalid expected digest rejected",
+      "passed": true,
+      "evidence": "The original command fetched the signature with an expected digest of 64 zeroes and its admitted size. It required the bytes-differ error, threw if the wrong digest was accepted, and logged invalidDigestRejected=true before exit 0. This assertion does not claim a new mutation execution."
+    },
+    {
+      "id": "P002 historical named source hashes unchanged",
+      "passed": true,
+      "evidence": "The original command compared each named source file against custody.sourceHashesAfterCheck and threw on any difference before emitting result=pass. The committed receipt retains those hashes and the verifier/instrument hashes. This checks the named files only, without asserting a complete runtime import census."
+    }
+  ],
+  "originalExecution": {
+    "taskId": "0mvmku2wa1v36si1v0n",
+    "runtimeTaskId": "0mvmkfeqp90eu3z4ol3",
+    "payloadArgv": ["node", "--input-type=module"],
+    "stdin": "Original task ledger argv last element: quoted NODE heredoc payload. The command field records its Node payload argv, not a new invocation.",
+    "shellArgvPrefix": ["bash", "-o", "pipefail", "-c"],
+    "shellCommandSha256": "d72c0abad23da21ab5de94e79a1e074f246a08ee0c459140e23bc947cf55e937",
+    "shellCommandLength": 2453,
+    "runnerTerminalAt": "2026-10-24T15:54:41.303Z",
+    "runnerTerminalStatus": "completed",
+    "runnerExitCode": 0,
+    "verifiedFrom": [
+      "capability:bash_output task_id=0mvmku2wa1v36si1v0n peek=true: durable completed/exit_code=0 and original output",
+      "processes:list taskId=0mvmku2wa1v36si1v0n includeEnded=true live=false: exited/exitCode=0",
+      "task-manager/store.getTask exact task: original shell argv and command hash"
+    ]
+  },
+  "receipt": {
+    "path": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-maintained-delivery-live.json",
+    "sha256": "4d26389f017abfc4fa69adac43c3968954b33d08e464e48d4f9b383074c03f6a",
+    "originalReceiptSha256": "29fdc55ff2182c2c3505f3a81d8255b923aef358f62c77b7de50a78b82caac0c",
+    "custodyIndex": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/historical-proof-custody.json"
+  },
+  "oracle": {
+    "independent": true,
+    "basis": "Expected digests and sizes are retained original P544 publication identities, including the original signed bundle/signature and SBOM document identity. The verifier hashes streamed HTTP bodies and compares them with those admitted values, rather than trusting uploader/provider metadata. The original wrong-digest control and separately recorded same-size corruption mutation demonstrate rejection. This declaration concerns oracle data, not an independent acceptance agent.",
+    "originalPublication": ".papercusp/release-artifacts/p544-7a9e83f6-restore20261024",
+    "pathBase": "Operating account home directory"
+  },
+  "scope": {
+    "evidencePlane": "tree",
+    "historicalExecution": true,
+    "newExecution": false,
+    "productionDeployed": false,
+    "independentAcceptance": false,
+    "runtimeImportClosure": "unmeasured"
+  }
+}

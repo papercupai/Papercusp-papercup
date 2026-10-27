@@ -817,6 +817,65 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('repairs a better-sqlite3 wrapper whose lazy native binding cannot open a database', async () => {
+    const errorMessages: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args) => {
+      errorMessages.push(args.map(String).join(' '));
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const root = fixture({
+      packages: { 'apps/operator': { dependencies: { 'better-sqlite3': '*' } } },
+      extracted: { '': ['better-sqlite3'] },
+    });
+    const packageDir = join(root, 'node_modules/better-sqlite3');
+    const lock = JSON.stringify({ packages: {
+      'node_modules/better-sqlite3': { version: '12.9.0' },
+    } });
+    writeFileSync(join(root, 'package-lock.json'), lock);
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: 'better-sqlite3', version: '12.9.0', main: 'index.js',
+    }));
+    const brokenWrapper = "module.exports = class Database { constructor() { throw new Error('Could not locate the bindings file'); } };\n";
+    writeFileSync(join(packageDir, 'index.js'), brokenWrapper);
+
+    // The old import-only validation accepted this shape: the wrapper resolves
+    // even though its native binding fails as soon as a connection is opened.
+    execFileSync(process.execPath, ['-e', "require('better-sqlite3')"], { cwd: root });
+    expect(resolveRuntimeContentProbes(root)).toContainEqual({
+      specifier: 'better-sqlite3',
+      nativeExercise: 'sqlite-memory-query',
+    });
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      expect.objectContaining({
+        specifier: 'better-sqlite3',
+        detail: expect.stringContaining('Could not locate the bindings file'),
+        nativeExercise: 'sqlite-memory-query',
+        resolvedPath: join(packageDir, 'index.js'),
+      }),
+    ]);
+
+    let repairs = 0;
+    const status = await verifyDepsExtracted({
+      repoRoot: root,
+      deps: { sleep: async () => {} },
+      runNpm: () => {
+        repairs++;
+        expect(existsSync(packageDir)).toBe(false);
+        mkdirSync(packageDir);
+        writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+          name: 'better-sqlite3', version: '12.9.0', main: 'index.js',
+        }));
+        writeFileSync(join(packageDir, 'index.js'),
+          "module.exports = class Database { prepare() { return { get() { return { ok: 1 }; } }; } close() {} };\n");
+        return 0;
+      },
+    });
+    expect(status, errorMessages.join('\n')).toBe(0);
+    expect(repairs).toBe(1);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+    expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+  });
+
   it('repairs missing published font assets through the default CSS-content probe', async () => {
     silenceConsole();
     const root = fixture({ packages: { 'apps/ui': {} }, extracted: { '': ['@blocknote/core'] } });

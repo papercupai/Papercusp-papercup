@@ -18,8 +18,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { killSpawnedProcessTree } from './lib/batch-watchdog.mjs';
-import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
+import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
+import { governedProcessIdempotencyKey, runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
 function ping(socketPath, timeoutMs, signal) {
   return new Promise((done) => {
@@ -81,20 +81,16 @@ export async function waitForPrivatePodmanApi({ host, socketPath, signal,
   }
 }
 
-async function stop(child) {
-  if (!child?.pid) return;
-  // A shell can exit before its descendants. Its owned process group still
-  // needs cleanup even when the direct child's close event already arrived.
-  if (child.exitCode !== null || child.signalCode !== null) {
-    killSpawnedProcessTree(child, 'SIGKILL');
-    return;
-  }
-  const closed = new Promise(done => child.once('close', done));
-  killSpawnedProcessTree(child, 'SIGTERM');
-  const timer = setTimeout(() => killSpawnedProcessTree(child, 'SIGKILL'), 5_000);
-  try { await closed; } finally {
-    clearTimeout(timer);
-    killSpawnedProcessTree(child, 'SIGKILL');
+async function stop(child, lifetime, observation) {
+  if (!child?.pid) { observation.verified = true; return; }
+  // Parent close does not prove helpers have exited. Keep the same graceful
+  // deadline and escalation alive until the shared process-group exit fence.
+  try {
+    await lifetime.terminate();
+    observation.verified = true;
+  } catch (error) {
+    observation.error = String(error);
+    throw error;
   }
 }
 
@@ -117,9 +113,12 @@ export async function runWithPrivatePodman(command, args, options = {}) {
   return runGovernedTestProcess({
     env,
     owner,
+    executionApi: options.executionApi,
     namespace: 'with-private-podman',
     admissionClass: 'process',
-    idempotencyKey: `with-private-podman:${owner}`,
+    // Each fresh evidence directory owns a separate service/workload lifetime.
+    // The session identity alone would reuse its first terminal receipt.
+    idempotencyKey: governedProcessIdempotencyKey('with-private-podman', `${owner}:${resolve(evidenceDir)}`),
     demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024,
       diskBytes: 256 * 1024 * 1024, fileDescriptors: 16 },
     timeoutMs: runTimeoutMs,
@@ -153,7 +152,11 @@ async function runPrivatePodman(command, args, { evidenceDir, env = process.env,
   const probes = [];
   const receipt = { startedAt: new Date().toISOString(), api, healthPath: '/_ping', probes, runTimeoutMs,
     deadlineAt: new Date(Date.now() + runTimeoutMs).toISOString(), ...(storage ? { storage } : {}) };
-  let host, child, log;
+  let host, child, log, hostLifetime, childLifetime;
+  const cleanupGroups = { api: { verified: false, diagnostics: [] },
+    command: { verified: false, diagnostics: [] } };
+  const enroll = (process, observation) => processGroupLifetime(process,
+    message => observation.diagnostics.push(message));
   const abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
   // This bound belongs to the workload owner, so it survives a CLI observer's
@@ -171,11 +174,13 @@ async function runPrivatePodman(command, args, { evidenceDir, env = process.env,
     host = spawn(podman, [...storageArgs, 'system', 'service', '--time=0', api], {
       env, stdio: ['ignore', log, log], detached: process.platform !== 'win32',
     });
+    hostLifetime = enroll(host, cleanupGroups.api);
     receipt.apiPid = host.pid;
     receipt.readiness = await waitForPrivatePodmanApi({ host, socketPath, signal: combined, timeoutMs, probes });
     combined.throwIfAborted();
     child = spawn(command, args, { env: { ...env, DOCKER_HOST: api }, stdio: 'inherit',
       detached: process.platform !== 'win32' });
+    childLifetime = enroll(child, cleanupGroups.command);
     receipt.commandPid = child.pid;
     let onAbort;
     try {
@@ -194,14 +199,30 @@ async function runPrivatePodman(command, args, { evidenceDir, env = process.env,
     throw error;
   } finally {
     clearTimeout(deadline);
-    try { await stop(child); await stop(host); }
+    try {
+      // Keep the API available while the command drains; still attempt both
+      // cleanups if the first fence fails.
+      const failures = [];
+      for (const [process, lifetime, observation] of [
+        [child, childLifetime, cleanupGroups.command], [host, hostLifetime, cleanupGroups.api],
+      ]) {
+        try { await stop(process, lifetime, observation); }
+        catch (error) { failures.push(error); }
+      }
+      if (failures.length) {
+        receipt.cleanupFailure = failures.map(String).join('; ');
+        throw new AggregateError(failures, 'private Podman process-group cleanup unverified');
+      }
+    }
     finally {
       if (log !== undefined) closeSync(log);
       process.off('SIGTERM', interrupted);
       process.off('SIGINT', interrupted);
-      receipt.cleanup = { apiStopped: !host || host.exitCode !== null || host.signalCode !== null,
-        commandStopped: !child || child.exitCode !== null || child.signalCode !== null };
-      await rm(runtime, { recursive: true, force: true });
+      receipt.cleanup = { apiStopped: cleanupGroups.api.verified,
+        commandStopped: cleanupGroups.command.verified };
+      receipt.cleanupGroups = cleanupGroups;
+      if (cleanupGroups.api.verified && cleanupGroups.command.verified)
+        await rm(runtime, { recursive: true, force: true });
       receipt.finishedAt = new Date().toISOString();
       await writeFile(join(evidenceDir, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
     }

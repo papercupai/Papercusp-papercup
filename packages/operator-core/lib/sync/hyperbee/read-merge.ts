@@ -29,13 +29,16 @@ import { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from '../../agent-tools/plans/
 import type postgres from 'postgres';
 import {
   applyHyperbeeOpToPg,
+  getProjection,
   lwwPick,
   runInProjectionBatch,
   runOutsideProjectionBatch,
   type ProjectionBatchSession,
   type ProjectionGroupWriter,
   type StoredOrderPrefetch,
+  type ProjectionLookup,
 } from './projection';
+import { mergeRuleFor, operationGroupKey } from './merge-rules';
 import { encodeHlc } from '@papercusp/locks-core';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -161,6 +164,7 @@ const winnersEvictors = new WeakMap<Map<string, WinnerMeta>, Iterator<string>>()
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 export interface MergeOpts {
+  projectionLookup?: ProjectionLookup;
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). For tests. */
   applyImpl?: (op: OpEnvelope) => Promise<boolean>;
   /**
@@ -261,6 +265,7 @@ function snapshotRows(op: PeerLogOp): SnapshotRow[] {
 function snapshotRowToEnvelope(
   row: SnapshotRow,
   sourceLogKeyHex: string,
+  snapshotReplay?: OpEnvelope['snapshotReplay'],
 ): OpEnvelope {
   return {
     // EI-1688: a tombstone row reconstitutes a DELETE. Emitting a `del` env seeds the
@@ -284,6 +289,7 @@ function snapshotRowToEnvelope(
     // = the 57-drop). `??` (not `||`) so a genuine '' row author is preserved.
     writerPubkey: row.author_pubkey ?? '',
     sourceLogKeyHex,
+    ...(snapshotReplay ? { snapshotReplay: Object.freeze({ ...snapshotReplay }) } : {}),
   };
 }
 
@@ -318,6 +324,7 @@ function toEnvelope(op: PeerLogOp, sourceLogKeyHex: string): OpEnvelope {
  */
 export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): Promise<number> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
+  const lookup = opts?.projectionLookup ?? getProjection;
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const maxOpsPerAuthor = opts?.maxOpsPerAuthor ?? DEFAULT_MAX_OPS_PER_AUTHOR;
   const onCapped = opts?.onCapped;
@@ -349,7 +356,7 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       if (env.type === 'put') governancePuts.push(env);
       return;
     }
-    const groupKey = `${env.table}::${env.hbKey}`;
+    const groupKey = operationGroupKey(env, mergeRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule));
     const prev = winners.get(groupKey);
     winners.set(groupKey, prev ? lwwPick(prev, env) : env);
   };
@@ -384,8 +391,8 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       // winners a full fold from 0 would). Non-snapshot-aware callers never reach
       // here because snapshot ops only exist once the flag-gated producer ran.
       if (isSnapshotOp(op)) {
-        for (const row of snapshotRows(op)) {
-          const env = snapshotRowToEnvelope(row, log.keyHex);
+        for (const [rowIndex, row] of snapshotRows(op).entries()) {
+          const env = snapshotRowToEnvelope(row, log.keyHex, { logIndex: i, rowIndex });
           fold(env);
         }
         continue;
@@ -3460,6 +3467,7 @@ export function describeMergeProgress(probe: MergeProgressProbe, now: number = D
 }
 
 export interface IncrementalMergeOpts {
+  projectionLookup?: ProjectionLookup;
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). */
   applyImpl?: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
   /** Per-op read timeout (ms) — same semantics as MergeOpts.getTimeoutMs. */
@@ -4041,6 +4049,9 @@ async function mergeIncrementalPass(
   batch: FoldBatch | null,
 ): Promise<IncrementalMergeResult> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
+  const lookup = opts?.projectionLookup ?? getProjection;
+  const groupKeyFor = (env: OpEnvelope) => operationGroupKey(env,
+    mergeRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule));
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const applyTimeoutMs = opts?.applyTimeoutMs ?? MERGE_APPLY_TIMEOUT_MS;
   const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;
@@ -4349,9 +4360,9 @@ async function mergeIncrementalPass(
       // The open batch holds ops before this chunk; commit it so its row locks are gone.
       if (!(await settleBatch(pos))) return false;
       const applicable: LaneRow[] = [];
-      for (const row of rows) {
-        const env = snapshotRowToEnvelope(row, log.keyHex);
-        const groupKey = `${env.table}::${env.hbKey}`;
+      for (const [rowIndex, row] of rows.entries()) {
+        const env = snapshotRowToEnvelope(row, log.keyHex, { logIndex: pos, rowIndex });
+        const groupKey = groupKeyFor(env);
         const prev = cursor.winners.get(groupKey);
         // stale row, never applied (P-002: a seeded winner skips only a strictly-older op)
         if (prev && isStaleAgainst(env, prev)) {
@@ -4791,14 +4802,14 @@ async function mergeIncrementalPass(
           continue;
         }
         let retryable = false;
-        for (const row of rows) {
+        for (const [rowIndex, row] of rows.entries()) {
           // P-002 step 2: one chunk can hold thousands of rows; bound the batch inside it too.
           if (batch?.due && !(await settleBatch(pos + 1))) {
             retryable = true;
             break;
           }
-          const env = snapshotRowToEnvelope(row, log.keyHex);
-          const groupKey = `${env.table}::${env.hbKey}`;
+          const env = snapshotRowToEnvelope(row, log.keyHex, { logIndex: pos, rowIndex });
+          const groupKey = groupKeyFor(env);
           const prev = batch?.provisional(groupKey) ?? cursor.winners.get(groupKey);
           // stale row, never applied (P-002: a seeded winner skips only a strictly-older op)
           if (prev && isStaleAgainst(env, prev)) {
@@ -4844,7 +4855,7 @@ async function mergeIncrementalPass(
         continue;
       }
       const env = toEnvelope(op, log.keyHex);
-      const groupKey = `${env.table}::${env.hbKey}`;
+      const groupKey = groupKeyFor(env);
       const prev = batch?.provisional(groupKey) ?? cursor.winners.get(groupKey);
       // ts-guard: stale op, never applied (P-002: a seeded winner skips only a strictly-older op)
       if (prev && isStaleAgainst(env, prev)) {

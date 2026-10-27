@@ -3,10 +3,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { runWithWorkspace } from '../../workspace-als';
 import { metadataClauseWrite, metadataInputSchema, metadataPlanSlug } from './coordination-metadata-fixtures';
 import { parsePlan } from './parser';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 
 const WS = 'coord-metadata-preflight-test';
 const A = 'metadata-a';
@@ -47,6 +49,7 @@ const { setSpecClause } = await import('./spec-clauses-store');
 const { getAcceptanceRubricForPlan, getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan, proposeRubric } = await import('../../rubrics');
 const evaluate = (await import('./evaluate-spec-quality')).default;
 const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
+const { recordSystemPlanRevisionInTransaction } = await import('./revisions');
 let db: OrgTestDb;
 let legacyMigration: string;
 let expandMigration: string;
@@ -64,7 +67,7 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
-  await h.sql`TRUNCATE harness_shared.harness_plans CASCADE`;
+  await h.sql`TRUNCATE harness_shared.harness_plans, harness_shared.plan_revisions CASCADE`;
   // Restore the actual legacy invariant for EVERY test. Applying CONTRACT in
   // one case must not accidentally give an EXPAND-only test post-rollout powers.
   await replayLegacyMigration();
@@ -90,16 +93,26 @@ async function plan(harness: string, inputs: object = { harness: A, attempts: 1 
   // Both the plan-body evaluator and persisted item reader must see the same
   // positive control; a zero-item parse would make refusal assertions vacuous.
   expect(parsePlan(content).items.map((item) => item.id)).toEqual(['P-001']);
-  await h.sql`
-    INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, input_schema, template_data)
-    VALUES (${WS}, ${harness}, ${metadataPlanSlug}, ${content}, md5(${content}), 'Metadata fixture', 'draft',
-      ${JSON.stringify(metadataInputSchema.inputSchema)}::jsonb, ${JSON.stringify(inputs)}::jsonb)`;
-  // Explicitly model pre-adoption plans; migration 1111 marks every new insert.
-  await h.sql`UPDATE harness_shared.harness_plans SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
-    WHERE workspace_id = ${WS} AND harness_slug = ${harness} AND plan_slug = ${metadataPlanSlug}`;
-  await h.sql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
-    VALUES (${WS}, ${harness}, ${metadataPlanSlug}, 'P-001', 1, 'Submit an event', 'todo')`;
+  await h.sql.begin(async (tx) => {
+    await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(WS, harness, metadataPlanSlug));
+    const contentHash = hashPlanContent(content);
+    await tx`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, input_schema, template_data)
+      VALUES (${WS}, ${harness}, ${metadataPlanSlug}, ${content}, ${contentHash}, 'Metadata fixture', 'draft',
+        ${JSON.stringify(metadataInputSchema.inputSchema)}::jsonb, ${JSON.stringify(inputs)}::jsonb)`;
+    // Explicitly model pre-adoption plans; migration 1111 marks every new insert.
+    await tx`UPDATE harness_shared.harness_plans SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+      WHERE workspace_id = ${WS} AND harness_slug = ${harness} AND plan_slug = ${metadataPlanSlug}`;
+    await tx`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
+      VALUES (${WS}, ${harness}, ${metadataPlanSlug}, 'P-001', 1, 'Submit an event', 'todo')`;
+    // Grading requires the exact immutable body, not just a current plan row.
+    await recordSystemPlanRevisionInTransaction(tx, {
+      workspaceId: WS, harnessSlug: harness, planSlug: metadataPlanSlug,
+      content, contentHash, rationale: 'Seed metadata preflight fixture',
+      authorId: 'metadata-preflight-fixture',
+    });
+  });
 }
 
 async function rubric(id: string, harness?: string, classRef = 'plan-class-bugfix') {
@@ -130,8 +143,13 @@ async function grade(harness: string) {
 }
 
 async function persistedState() {
-  return h.sql`SELECT harness_slug, plan_slug, content, content_hash, version, template_data, op_status, updated_at
-    FROM harness_shared.harness_plans WHERE workspace_id = ${WS} ORDER BY harness_slug, plan_slug`;
+  const [plans, revisions] = await Promise.all([
+    h.sql`SELECT harness_slug, plan_slug, content, content_hash, version, template_data, op_status, updated_at
+      FROM harness_shared.harness_plans WHERE workspace_id = ${WS} ORDER BY harness_slug, plan_slug`,
+    h.sql`SELECT harness_slug, plan_slug, seq, content_hash, content_snapshot
+      FROM harness_shared.plan_revisions WHERE workspace_id = ${WS} ORDER BY harness_slug, plan_slug, seq`,
+  ]);
+  return { plans, revisions };
 }
 
 describe('P002 migration phases (isolated Postgres only)', () => {
@@ -223,7 +241,7 @@ describe('P002 real-store metadata preflight after CONTRACT', () => {
     await clause(A); await clause(B);
     const before = await persistedState();
     const first = await grade(A);
-    expect(first).toMatchObject({ ok: true, harnessSlug: A, classRef: 'plan-class-bugfix' });
+    expect(first, JSON.stringify(first)).toMatchObject({ ok: true, harnessSlug: A, classRef: 'plan-class-bugfix' });
     expect(first.scorecardDraft).toBeDefined();
     expect(await grade(A)).toEqual(first);
     expect(await grade(B)).toMatchObject({ ok: true, harnessSlug: B, classRef: 'plan-class-investigation' });

@@ -89,6 +89,8 @@ import tool, {
   allocateNextDecisionId,
   decisionMeasurementAdvisory,
   decisionCitedRuleAdvisory,
+  stripLeadingDecisionId,
+  titleIdPrefixAdvisory,
 } from './add-decision';
 import { parsePlan } from './parser';
 
@@ -1256,5 +1258,170 @@ describe('plans:add-decision — reserved ```deviation fence (R-17, P-028)', () 
     );
     expect(out.results[0]!.error).not.toBe('deviation_fence_reserved');
     expect(handlerMocks.withPlanLock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// EI-27020408323515699: a caller that copies the rendered `### D-NNN — <title>` form
+// into `title` used to get `### D-013 — D-013 — …`, or — when another writer appended
+// in between — `### D-005 — D-004 — …`, a misleading id inside the decision's own heading.
+describe('plans:add-decision — caller-supplied D-NNN title prefix (EI-27020408323515699)', () => {
+  const PLAN_WITH = (n: number) =>
+    [
+      '---',
+      'slug: handler-plan',
+      'status: active',
+      '---',
+      '',
+      '## Now',
+      'State: testing',
+      '',
+      '## Decisions',
+      '',
+      ...Array.from({ length: n }, (_, i) => {
+        const id = `D-${String(i + 1).padStart(3, '0')}`;
+        return `### ${id} — Ruling ${i + 1}\nDate: 2026-10-26\nBody of ruling ${i + 1}.\n`;
+      }),
+    ].join('\n');
+
+  describe('stripLeadingDecisionId', () => {
+    it.each([
+      ['D-013 — Split mixed bars', 'Split mixed bars', 'D-013'],
+      ['D-013 – en dash', 'en dash', 'D-013'],
+      ['D-013: colon form', 'colon form', 'D-013'],
+      ['D-013 - spaced hyphen', 'spaced hyphen', 'D-013'],
+      ['D-013—tight em dash', 'tight em dash', 'D-013'],
+      ['  D-1042 — four digits', 'four digits', 'D-1042'],
+    ])('strips the prefix from %j', (input, title, strippedId) => {
+      expect(stripLeadingDecisionId(input)).toEqual({ title, strippedId });
+    });
+
+    it.each([
+      // A title that REFERS to another decision has no separator after the id.
+      'D-003 BAR amendment: reword R-1',
+      // A hyphen with no whitespace after it is part of a word, not a separator.
+      'D-003-style rule for bars',
+      // Not a decision id.
+      'P-013 — plan item, not a decision',
+      'Decision on D-013 — mid-title reference',
+      // Nothing would be left: keep the caller's text rather than render an empty heading.
+      'D-013 — ',
+    ])('leaves %j unchanged', (input) => {
+      expect(stripLeadingDecisionId(input)).toEqual({ title: input, strippedId: null });
+    });
+
+    it('strips only ONE prefix — a second id after the separator is content', () => {
+      expect(stripLeadingDecisionId('D-005 — D-003: superseded')).toEqual({
+        title: 'D-003: superseded',
+        strippedId: 'D-005',
+      });
+    });
+  });
+
+  it('appendDecisionToBody never renders a doubled id, for library callers too', () => {
+    const body = PLAN_WITH(12);
+    const id = allocateNextDecisionId(body);
+    expect(id).toBe('D-013');
+    const out = appendDecisionToBody(body, id, 'D-013 — Split mixed bars', 'Body.', '2026-10-26', []);
+    expect(out).toContain('### D-013 — Split mixed bars\n');
+    expect(out).not.toContain('D-013 — D-013');
+    const parsed = parsePlan(out, { filePath: 'handler-plan.md' });
+    expect(parsed.decisions.at(-1)).toMatchObject({ id: 'D-013', title: 'Split mixed bars' });
+  });
+
+  it('titleIdPrefixAdvisory is null when nothing was stripped, and names the real id on a mismatch', () => {
+    expect(titleIdPrefixAdvisory(null, 'D-005', 'p#D-005')).toBeNull();
+    expect(titleIdPrefixAdvisory('D-005', 'D-005', 'p#D-005')).toMatchObject({ removed: 'D-005', allocated: 'D-005' });
+    const mismatch = titleIdPrefixAdvisory('D-004', 'D-005', 'p#D-005');
+    expect(mismatch).toMatchObject({ removed: 'D-004', allocated: 'D-005' });
+    expect(mismatch!.note).toContain('Cite p#D-005, not D-004');
+  });
+
+  function primeHandler(): void {
+    vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
+    handlerMocks.planRevisionCapture.mockReturnValue({ afterWrite: undefined, recorded: { current: null } });
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+    handlerMocks.defaultBarReadinessDeps.mockReturnValue({});
+    handlerMocks.reevaluateBarReadinessOnScopeWrite.mockResolvedValue({});
+  }
+
+  /** Install a one-shot lock that runs the real mutator over `planBody`, capturing what it would write. */
+
+  function lockOver(planBody: string, sink: { body: string | null }) {
+    handlerMocks.withPlanLock.mockImplementationOnce(async (_ctx, _opts, mutate) => {
+      const mutation = await (mutate as (
+        body: string,
+        meta: unknown,
+      ) => Promise<{ newBody: string | null; value: Record<string, unknown> }>)(planBody, {});
+      sink.body = mutation.newBody;
+      if (mutation.value.ok === false) return { kind: 'refused', value: mutation.value } as never;
+      return {
+        kind: 'ok',
+        value: mutation.value,
+        filePath: 'handler-plan.md',
+        version: 1,
+        scope: { workspaceId: 'ws-add-decision', harnessSlug: 'explicit-harness' },
+      } as never;
+    });
+  }
+
+  it('a STALE prefix: the heading carries the allocated id and the result names the mismatch', async () => {
+    primeHandler();
+    const sink = { body: null as string | null };
+    lockOver(PLAN_WITH(4), sink);
+
+    const out = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'D-004 — D-003 BAR amendment', body: 'Amend the bar.' },
+      handlerContext(),
+    );
+
+    const r = out.results[0]!;
+    expect(r).toMatchObject({ ok: true, decisionId: 'D-005', titleIdPrefix: { removed: 'D-004', allocated: 'D-005' } });
+    expect(sink.body).toContain('### D-005 — D-003 BAR amendment\n');
+    expect(sink.body).not.toContain('D-005 — D-004');
+    // the plan-event carries the cleaned title too
+    expect(handlerMocks.emitPlanEventForCaller).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ event: 'decision_added', detail: 'D-005', after: 'D-003 BAR amendment' }),
+    );
+  });
+
+  it('a clean title keeps the exact prior result shape (no titleIdPrefix key)', async () => {
+    primeHandler();
+    const sink = { body: null as string | null };
+    lockOver(PLAN_WITH(2), sink);
+
+    const out = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'A clean ruling', body: 'Clean body.' },
+      handlerContext(),
+    );
+
+    expect(out.results[0]).toMatchObject({ ok: true, decisionId: 'D-003' });
+    expect(out.results[0]).not.toHaveProperty('titleIdPrefix');
+    expect(sink.body).toContain('### D-003 — A clean ruling\n');
+  });
+
+  it('a prefixed RETRY of the last decision dedupes instead of appending a twin', async () => {
+    primeHandler();
+    const sink = { body: null as string | null };
+    // The last decision is `### D-002 — Ruling 2` / `Body of ruling 2.` — retry it with the prefix.
+    lockOver(PLAN_WITH(2), sink);
+
+    const out = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'D-002 — Ruling 2', body: 'Body of ruling 2.' },
+      handlerContext(),
+    );
+
+    expect(out.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-002',
+      deduped: true,
+      titleIdPrefix: { removed: 'D-002', allocated: 'D-002' },
+    });
+    expect(sink.body).toBeNull();
   });
 });

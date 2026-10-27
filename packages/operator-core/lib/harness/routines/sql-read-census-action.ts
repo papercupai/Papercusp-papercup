@@ -27,6 +27,16 @@
  * is an incremental ingester that never re-reads bytes (migration 811).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createHmac } from 'node:crypto';
+import { getDbEncryptionKey } from '../../db-encryption';
+import { mineSqlCandidateSlice, purgeSqlCandidateData, readSqlCandidates, type SqlMiningDeps, type SqlMiningOptions,
+  type SqlMiningResult } from '../../bash-substitution/sql-tool-candidates';
+import { rankSqlToolCandidates, SQL_DEMAND_SCORE_VERSION } from '../../sql-tool-candidate-score';
+import { submitSqlCandidateReview, submitMonitoredCandidateReview } from '../../sql-tool-candidate-review';
+import { recordSqlCandidateFeedback } from '../../sql-tool-candidate-feedback';
+import type { SqlRepairMeasurement } from '../../bash-substitution/sql-census';
+import { miningFailureReason } from '../../agent-opportunities/pipeline';
+import { runMonitoredCensus } from '../../agent-opportunities/census';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fetchSqlCorpusAtoms } from '../../bash-substitution/sql-corpus';
 import { SQL_READ_NO_PAIR_DECISIONS, SQL_READ_PAIRS } from '../../bash-substitution/pairs';
@@ -286,19 +296,145 @@ export async function runSqlReadCensus(
   }
 }
 
+/** Same production cadence; source dispatch has no dependency on this background path. */
+export interface SqlIntentCensusDeps extends SqlMiningDeps {
+  review?: typeof submitSqlCandidateReview;
+  monitoredReview?: typeof submitMonitoredCandidateReview;
+  feedback?: typeof recordSqlCandidateFeedback;
+  /** Trusted exposure/coverage adapter; absence is explicitly UNKNOWN in the ledger. */
+  repairMeasurement?: (review: Awaited<ReturnType<typeof submitSqlCandidateReview>>) => Promise<SqlRepairMeasurement | null>;
+}
+export const SQL_CENSUS_REVIEW_LIMIT = 10;
+function censusMiningOptions(opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> &
+  Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>): SqlMiningOptions {
+  const epoch = new Date(opts.now ?? Date.now()).toISOString().slice(0, 7);
+  return { ...opts, scope: opts.scope ?? { workspaceId: opts.workspaceId, sourceBoundary: 'authorized-tool-ledger', epoch,
+    key: createHmac('sha256', getDbEncryptionKey()).update(`sql-intent-mining-v1:${epoch}`).digest() },
+  authorize: opts.authorize ?? (async () => true) };
+}
+
+/** Same trusted production scope and cadence for every family; no separate routine or opt-in flag. */
+export async function runSqlOpportunityCensus(opts: Parameters<typeof censusMiningOptions>[0] & {
+  routineId?: string; workflowId?: string;
+}, deps: SqlIntentCensusDeps = {}) {
+  let sqlResult: Awaited<ReturnType<typeof runSqlIntentCensus>> = {
+    status: 'UNKNOWN', stage: 'source', reason: 'sql_mining_source_missing', rows: 0 };
+  let sqlWork: Promise<typeof sqlResult> | undefined;
+  try {
+    const miningOpts = censusMiningOptions(opts);
+    // Existing SQL mining/intake must keep running even if the new monitoring
+    // tables are unavailable. Share one promise: no second SQL slice on failure.
+    sqlWork = runSqlIntentCensus(miningOpts, deps);
+    const monitored = await runMonitoredCensus({ ...miningOpts, routineId: opts.routineId, workflowId: opts.workflowId },
+      async () => { sqlResult = await sqlWork!; return sqlResult; });
+    sqlResult = await sqlWork;
+    // The existing reservation/intake workflow owns all families. Diagnostics
+    // choose a bounded batch; only a fresh canonical evidence read admits it.
+    const candidates = monitored.families.filter(f => f.family !== 'sql').flatMap(f =>
+      (f.diagnostics.candidates as Array<{ id: string; reviewEligible: boolean }> ?? [])
+        .filter(c => c.reviewEligible).map(c => ({ family: f.family as Exclude<typeof f.family, 'sql'>, id: c.id })))
+      .sort((a, b) => a.family.localeCompare(b.family) || a.id.localeCompare(b.id));
+    const selected = candidates.slice(0, SQL_CENSUS_REVIEW_LIMIT);
+    const reviews = [];
+    for (const candidate of selected) {
+      try {
+        const review = await (deps.monitoredReview ?? submitMonitoredCandidateReview)({ ...miningOpts,
+          runId: monitored.runId, family: candidate.family, candidateId: candidate.id,
+          submittedBy: 'system:sql-read-census', contractRef: 'monitored-review-demand-v1' }, { client: opts.client });
+        reviews.push({ family: candidate.family, candidateId: candidate.id, ...review });
+      } catch (error) {
+        reviews.push({ family: candidate.family, candidateId: candidate.id, status: 'UNKNOWN' as const,
+          stage: 'review' as const, reason: miningFailureReason(error) });
+      }
+    }
+    // Retain review-stage failures with the same normalized family run. These
+    // are opaque links/statuses; fresh evidence reads still guard every intake.
+    const client = opts.client ?? getOrgPg().sql;
+    const reviewFields = new Set(['family', 'candidateId', 'lifecycleId', 'editionId', 'workItemId', 'status', 'stage', 'reason']);
+    for (const family of new Set(selected.map(c => c.family))) {
+      // Current ownership is read from the canonical review item on demand;
+      // never retain an actor identity in the minimized 120-day family rows.
+      const links = reviews.filter(r => r.family === family).map(r => Object.fromEntries(
+        Object.entries(r).filter(([key]) => reviewFields.has(key))));
+      await client`UPDATE harness_shared.sql_intent_family_runs
+        SET diagnostics=jsonb_set(diagnostics,'{reviewIntake}',${JSON.stringify(links)}::jsonb)
+        WHERE workspace_id=${opts.workspaceId} AND run_id=${monitored.runId}::uuid AND family=${family}`;
+    }
+    return { sql: sqlResult, monitored, monitoredReviewIntake: {
+      selected: selected.length, outsideBatch: candidates.length - selected.length, reviews } };
+  } catch (error) {
+    if (sqlWork) sqlResult = await sqlWork;
+    return { sql: sqlResult, monitored: null, reason: miningFailureReason(error) };
+  }
+}
+export async function runSqlIntentCensus(
+  opts: Omit<SqlMiningOptions, 'scope' | 'authorize'> & Partial<Pick<SqlMiningOptions, 'scope' | 'authorize'>>,
+  deps: SqlIntentCensusDeps = {},
+): Promise<SqlMiningResult & { purgeBreach?: boolean; reviewIntake?: { selected: number; outsideBatch: number } }> {
+  let purgeBreach = false;
+  let reviewIntake: { selected: number; outsideBatch: number } | undefined;
+  try {
+    const purge = await purgeSqlCandidateData(opts);
+    purgeBreach = purge.breach;
+  } catch {
+    // Mining may still advance. Expiry is enforced by reads even with a failed purge worker.
+    purgeBreach = true;
+  }
+  try {
+    // Host-key custody stays outside the repo. Exposed reads still require current ACL callbacks.
+    const miningOpts = censusMiningOptions(opts), scope = miningOpts.scope;
+    const result = await mineSqlCandidateSlice(miningOpts, { ...deps, alert: async packet => {
+      // This callback runs only after summary+cursor commit, and remains pending on failure.
+      // The bounded top-ranked intake is advisory review demand, never a new-tool verdict.
+      const snapshots = await readSqlCandidates({ ...miningOpts, ranOn: packet.ranOn,
+        authorizeSource: async () => miningOpts.authorize({ workspaceId: opts.workspaceId,
+          harnessSlug: opts.harnessSlug, sourceBoundary: scope.sourceBoundary }) });
+      if (snapshots.length !== 1) throw new Error('sql_candidate_review_source_unavailable');
+      for (const snapshot of snapshots) {
+        const candidates = rankSqlToolCandidates(snapshot.summary).candidates.filter(c => c.eligible);
+        const selected = candidates.slice(0, SQL_CENSUS_REVIEW_LIMIT);
+        reviewIntake = { selected: selected.length, outsideBatch: candidates.length - selected.length };
+        for (const candidate of selected) {
+          const reviewed = await (deps.review ?? submitSqlCandidateReview)({
+            workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+            submittedBy: 'system:sql-read-census', candidate,
+            sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
+            contractRef: `sql-review-demand-v1:${candidate.parserVersion}:${SQL_DEMAND_SCORE_VERSION}`,
+          }, { client: opts.client });
+          if (reviewed.status === 'UNKNOWN') throw new Error('sql_candidate_review_unavailable');
+          await (deps.feedback ?? recordSqlCandidateFeedback)({ workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug, review: reviewed,
+            sourceRef: { scopeId: packet.scopeId, ranOn: packet.ranOn },
+            repair: reviewed.status === 'accepted' ? await deps.repairMeasurement?.(reviewed) ?? null : null,
+          // The results-ledger seam intentionally types bind values as unknown;
+          // postgres.Sql's overload accepts only driver values. Same adapter as its default client.
+          }, { client: opts.client as unknown as NonNullable<Parameters<typeof recordSqlCandidateFeedback>[1]>['client'] });
+        }
+      }
+      await deps.alert?.(packet);
+    } });
+    return { ...result, purgeBreach, ...(reviewIntake ? { reviewIntake } : {}) };
+  } catch (error) {
+    return { status: 'UNKNOWN', stage: 'source', reason: miningFailureReason(error), rows: 0, purgeBreach };
+  }
+}
+
 registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const num = (v: unknown): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
-  const result = await runSqlReadCensus({
+  const [result, opportunities] = await Promise.all([runSqlReadCensus({
     workspaceId: ctx.workspaceId,
     windowDays: num(cfg.window_days),
     agentThreshold: num(cfg.agent_threshold),
     graceDays: num(cfg.grace_days),
     requiredFallPct: num(cfg.required_fall_pct),
-  });
+  }), runSqlOpportunityCensus({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug,
+    routineId: ctx.routineId, workflowId: ctx.workflowId,
+    rowBudget: num(cfg.intent_row_budget), timeBudgetMs: num(cfg.intent_time_budget_ms) })]);
+  const intents = opportunities.sql;
   const line =
     `[sql-read-census] ${ctx.workspaceId} ${result.ranOn}: ${result.outcome} — ` +
     `${result.clusters} cluster(s), uncovered ${result.uncovered}, drift ${result.drift}, ` +
@@ -306,4 +442,10 @@ registerSystemAction('sql-read-census', async (ctx: SystemActionCtx) => {
     (result.reason ? ` (${result.reason})` : '');
   if (result.outcome === 'error' || result.outcome === 'alerted') console.warn(line);
   else console.log(line);
+  if (intents.status === 'UNKNOWN' || intents.purgeBreach)
+    console.warn(`[sql-intent-census] ${ctx.workspaceId}: ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}`);
+  return { diagnostics: { sqlRead: result, sqlIntent: intents, opportunities: opportunities.monitored },
+    ...(intents.status === 'UNKNOWN' || intents.purgeBreach || !opportunities.monitored
+      ? { softError: `sql-intent-census ${intents.status} stage=${intents.stage} reason=${intents.reason ?? 'none'} purgeBreach=${intents.purgeBreach}` }
+      : {}) };
 });

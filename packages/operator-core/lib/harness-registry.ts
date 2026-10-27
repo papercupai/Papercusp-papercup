@@ -399,6 +399,13 @@ const LEGACY_DOGFOOD_SLUG = 'papercup';
  */
 const CANONICAL_DOGFOOD_SLUG = PLATFORM_POT_SLUG;
 
+/** Is `slug` the dogfood hive's registry identity: the canonical slug, or the legacy
+ *  repo-name duplicate `canonicalizeLegacyPapercup` folds into it? Used by the
+ *  dogfood-hive kill switch (WI-6554700010029282) to cover both spellings. */
+export function isDogfoodHiveSlug(slug: string): boolean {
+  return slug === CANONICAL_DOGFOOD_SLUG || slug === LEGACY_DOGFOOD_SLUG;
+}
+
 /**
  * Legacy-identity guard (WI-3168): `papercup` is the PRE-RENAME name of the
  * papercusp dogfood repo (`github.com/Papercusp/papercup` → product/hive slug

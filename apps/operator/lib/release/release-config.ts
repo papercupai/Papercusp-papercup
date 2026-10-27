@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { checkpointLogDirFromEnv } from '@papercusp/operator-core/lib/release/checkpoint-log-dir';
 /**
  * Release-gating shared config — plan release-gate-ready-branch-2026-06-04.
  *
@@ -367,10 +367,7 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
     // precedence chain — `?? default` only fills a nullish env, never an explicit ''.
     spaBuildWorkspace:
       overrides.spaBuildWorkspace ?? process.env.PAPERCUSP_SPA_BUILD_WORKSPACE ?? '@papercusp/operator-vite',
-    checkpointLogDir:
-      overrides.checkpointLogDir ??
-      process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ??
-      papercuspPath('checkpoint-logs'),
+    checkpointLogDir: overrides.checkpointLogDir ?? checkpointLogDirFromEnv(),
     memoryCanaryPolicy:
       overrides.memoryCanaryPolicy ??
       (process.env.PAPERCUSP_MEMORY_CANARY_POLICY as 'off' | 'report' | 'block' | undefined) ??

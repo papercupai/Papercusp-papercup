@@ -1,10 +1,8 @@
 /**
  * gateway-stall-store — durable write-through for rate-limit stall candidates (EI-2431).
  *
- * Exercised on InMemoryGatewayStallStore (the same store tests inject via
- * configureGatewayStallStore — mirrors runtime-vintage.test.ts's injection contract).
- * The Pg store's insert/prune is exercised live by the gateway's own recordStall() +
- * the stall-waker-loop's fetchStalls merge, not here.
+ * Covers InMemoryGatewayStallStore and the Pg store's SQL parameters, without
+ * writing synthetic stall events into the shared database.
  *
  * All tests run on a fixed fake clock (a real 2026-ish epoch, not near-zero) so the
  * store's real `Date.now() - STALL_MAX_AGE_MS` age cutoff behaves exactly as it does
@@ -12,6 +10,10 @@
  * fake `at` would create.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+
 import {
   InMemoryGatewayStallStore,
   configureGatewayStallStore,
@@ -39,6 +41,28 @@ describe('gateway-stall-store — durable stall write-through (EI-2431)', () => 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({ ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: BASE + 12345, at: BASE });
   });
+
+  it('rounds reset deadlines up and recorded times down to integer milliseconds', async () => {
+    const event = { ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: BASE + 12345.5, at: BASE + 0.75 };
+    await recordGatewayStall(event, 'default');
+    expect(await listGatewayStallsSince(BASE - 0.5)).toEqual([
+      { ...event, soonestResetAt: BASE + 12346, at: BASE },
+    ]);
+    expect(await listGatewayStallsSince(BASE + 0.5)).toEqual([]);
+    expect(event.at).toBe(BASE + 0.75);
+    expect(event.soonestResetAt).toBe(BASE + 12345.5);
+  });
+
+  it.each([NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid epoch milliseconds (%s) before recording a stall',
+    async (invalid) => {
+      const event = { ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: BASE + 1000, at: BASE };
+      await expect(recordGatewayStall({ ...event, soonestResetAt: invalid }, 'default')).rejects.toThrow('soonestResetAt');
+      await expect(recordGatewayStall({ ...event, at: invalid }, 'default')).rejects.toThrow('at');
+      await expect(listGatewayStallsSince(invalid)).rejects.toThrow('sinceMs');
+      expect(await listGatewayStallsSince(BASE - 1)).toEqual([]);
+    },
+  );
 
   it('excludes stalls at/before the watermark (since is exclusive, matching the in-memory ring contract)', async () => {
     await recordGatewayStall({ ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: 1, at: BASE }, 'default');
@@ -82,4 +106,46 @@ describe('gateway-stall-store — durable stall write-through (EI-2431)', () => 
     const rows = await listGatewayStallsSince(0);
     expect(rows).toHaveLength(0);
   });
+});
+
+describe('gateway-stall-store — PostgreSQL timestamp boundary (EI-26968689642201896)', () => {
+  beforeEach(() => {
+    resetGatewayStallStore();
+    sql.mockReset();
+    sql.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE);
+  });
+  afterEach(() => {
+    resetGatewayStallStore();
+    vi.useRealTimers();
+  });
+
+  it('binds fractional reset arithmetic as bigint-compatible integer milliseconds', async () => {
+    const event = { ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: 1792945979692.5, at: BASE + 0.75 };
+    await recordGatewayStall(event, 'default');
+    expect(sql.mock.calls[0][0].join('')).toContain('INSERT INTO harness_shared.gateway_stall_events');
+    expect(sql.mock.calls[0].slice(1)).toEqual(['default', 'bee-1', 'acct-a', 1792945979693, BASE]);
+    expect(sql.mock.calls[1][0].join('')).toContain('DELETE FROM harness_shared.gateway_stall_events');
+    expect(sql.mock.calls[1].slice(1)).toEqual([BASE - 4 * 60 * 60_000]);
+
+    sql.mockResolvedValueOnce([
+      { owner_id: 'bee-1', account_id: 'acct-a', soonest_reset_at: '1792945979693', recorded_at_ms: String(BASE) },
+    ]);
+    expect(await listGatewayStallsSince(BASE - 0.5)).toEqual([
+      { ...event, soonestResetAt: 1792945979693, at: BASE },
+    ]);
+    expect(sql.mock.calls[2].slice(1)).toEqual([BASE - 1]);
+  });
+
+  it.each([NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid epoch milliseconds (%s) before issuing SQL',
+    async (invalid) => {
+      const event = { ownerId: 'bee-1', accountId: 'acct-a', soonestResetAt: BASE + 1000, at: BASE };
+      await expect(recordGatewayStall({ ...event, soonestResetAt: invalid }, 'default')).rejects.toThrow('soonestResetAt');
+      await expect(recordGatewayStall({ ...event, at: invalid }, 'default')).rejects.toThrow('at');
+      await expect(listGatewayStallsSince(invalid)).rejects.toThrow('sinceMs');
+      expect(sql).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -270,6 +270,71 @@ test('stop during an image pull joins the request and prevents subsequent prepar
   assert.equal(inspections, 1);
 });
 
+test('pinned source receipt preparation precedes providers and is required by the DAO HR bootstrap', () => {
+  const wrapper = readFileSync(new URL('./with-documenso-sandbox.mjs', import.meta.url), 'utf8');
+  const daoBootstrap = readFileSync(new URL('../packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts', import.meta.url), 'utf8');
+  const sourcePhase = wrapper.indexOf("sourcePreparation = await runPhase('source'");
+  const imagePhase = wrapper.indexOf("runPhase('images'");
+  const reaperPhase = wrapper.indexOf("runPhase('reaper'");
+  assert.ok(sourcePhase >= 0 && sourcePhase < imagePhase && imagePhase < reaperPhase,
+    'the pinned source must be frozen before image pulls, the reaper, or provider allocation');
+  assert.match(wrapper, /prepareVerifierSource\(/);
+  assert.match(wrapper, /prepareVerifierDependencies\(/);
+  assert.match(wrapper, /prepareVerifierDependencies\(\{ donor: committedWorkRootDependencyDonor\(donor\), dest: sourceRoot/,
+    'materialized committed source is a reader; dependency snapshots must use its physical donor');
+  assert.match(wrapper, /verifierSourceChildEnv\(/);
+  assert.match(wrapper, /childEnvironment\.PAPERCUSP_REPO_DIR = sourceRoot/);
+  assert.match(wrapper, /childEnvironment\.VERIFY_TAURI_SOURCE_INPUTS = receipt\.testedInputs/);
+  assert.match(wrapper, /env: \{ \.\.\.sourcePreparation\.env,/);
+  assert.match(daoBootstrap, /expect\(Boolean\(receiptPath\)/,
+    'the native bootstrap must fail closed instead of freezing after providers have started');
+});
+
+test('pinned verifier preparation seeds the gitignored Porcupine model through the committed source helper', () => {
+  const sourcePreview = readFileSync(new URL('./source-preview.mjs', import.meta.url), 'utf8');
+  const start = sourcePreview.indexOf('export async function prepareVerifierDependencies');
+  const end = sourcePreview.indexOf('/** Measure installed bytes', start);
+  assert.ok(start >= 0 && end > start, 'the dependency preparation implementation must remain discoverable');
+  const preparation = sourcePreview.slice(start, end);
+  const sourceCheck = preparation.indexOf('{ runtimeArtifacts: false, dependencyStaging: true }');
+  const assetSeed = preparation.indexOf("runPhase('deps.runtime-assets'");
+  const runtimeCheck = preparation.indexOf("runPhase('deps.source.after-runtime-assets'");
+  assert.ok(sourceCheck >= 0 && assetSeed > sourceCheck && runtimeCheck > assetSeed,
+    'verify the committed source, seed ignored runtime assets, then verify runtime artifacts');
+  assert.match(preparation, /join\(dest, 'apps\/operator\/scripts\/setup-porcupine-runtime\.sh'\)/);
+  assert.match(preparation, /join\(donor, 'apps\/operator\/public\/porcupine\/porcupine_params\.pv'\)/);
+  assert.match(preparation, /run\('bash', \[runtimeSetup, '--source', modelDonor\]\)/,
+    'the immutable source helper must checksum and copy the donor bytes');
+});
+
+test('pinned source without declared inputs fails before image or provider allocation', async () => {
+  const keys = ['VERIFY_TAURI_SOURCE_REF', 'VERIFY_TAURI_SOURCE_INPUTS',
+    'VERIFY_TAURI_SOURCE_INPUTS_FILE', 'VERIFY_TAURI_SOURCE_RECEIPT'];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  process.env.VERIFY_TAURI_SOURCE_REF = 'HEAD';
+  const phases = [];
+  const originalError = console.error;
+  console.error = line => {
+    if (typeof line === 'string' && line.startsWith('[documenso-sandbox-phase] '))
+      phases.push(JSON.parse(line.slice('[documenso-sandbox-phase] '.length)));
+  };
+  try {
+    await assert.rejects(runSandbox({ image: 'unused', command: [] }, {
+      prepareImages: () => assert.fail('image/provider allocation must wait for a complete source receipt'),
+    }), /VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE/);
+    assert.deepEqual(phases.map(({ phase, status }) => [phase, status]), [
+      ['source', 'started'], ['source', 'failed'], ['cleanup', 'started'], ['cleanup', 'completed'],
+    ]);
+  } finally {
+    console.error = originalError;
+    for (const key of keys) {
+      if (previous.get(key) === undefined) delete process.env[key];
+      else process.env[key] = previous.get(key);
+    }
+  }
+});
+
 test('actual sandbox entry refuses provider allocation when pinned image preparation fails', () => {
   const directory = mkdtempSync(join(tmpdir(), 'daohr-image-preparation-'));
   const calls = join(directory, 'calls.jsonl');
@@ -281,7 +346,9 @@ test('actual sandbox entry refuses provider allocation when pinned image prepara
     const result = spawnSync(process.execPath, ['scripts/with-documenso-sandbox.mjs',
       '--image=documenso/documenso@sha256:' + 'a'.repeat(64), '--', process.execPath, '-e', 'process.exit(91)'], {
       encoding: 'utf8', timeout: 30_000,
-      env: { ...process.env, PATH: directory + ':' + process.env.PATH, DAOHR_IMAGE_TEST_CALLS: calls },
+      env: { ...process.env, PATH: directory + ':' + process.env.PATH, DAOHR_IMAGE_TEST_CALLS: calls,
+        VERIFY_TAURI_SOURCE_REF: '', VERIFY_TAURI_SOURCE_INPUTS: '', VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
+        VERIFY_TAURI_SOURCE_RECEIPT: '' },
     });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 1, result.stderr);
@@ -289,7 +356,8 @@ test('actual sandbox entry refuses provider allocation when pinned image prepara
     const phases = result.stderr.split('\n').filter(line => line.startsWith('[documenso-sandbox-phase] '))
       .map(line => JSON.parse(line.slice('[documenso-sandbox-phase] '.length)));
     assert.deepEqual(phases.map(({ phase, status }) => [phase, status]),
-      [['images', 'started'], ['images', 'failed'], ['cleanup', 'started'], ['cleanup', 'completed']]);
+      [['source', 'started'], ['source', 'completed'], ['images', 'started'], ['images', 'failed'],
+        ['cleanup', 'started'], ['cleanup', 'completed']]);
     assert.ok(phases.every(row => /^daohr-documenso-/.test(row.network) &&
       Number.isFinite(Date.parse(row.at)) && row.elapsedMs >= 0));
     const requests = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));

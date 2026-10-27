@@ -63,9 +63,69 @@ export interface GatewayRequestOutcomeReport {
   retentionMs: number;
 }
 
+/** A provider-wide window over every caller, for capacity verdicts (WI-6554700010029776). */
+export interface GatewayProviderOutcomeQuery {
+  provider: GatewayRequestTimeline['provider'];
+  fromMs: number;
+  toMs?: number;
+  nowMs?: number;
+}
+
+/**
+ * Per-provider outcome counts over a window. `refused` is the gateway turning a
+ * request away (`shed` + `upstream-429`); `served` is `ok`. `cancelled` is a
+ * client abort, not a capacity signal, so it counts in `byOutcome` only.
+ */
+export interface GatewayProviderOutcomeSummary {
+  provider: GatewayRequestTimeline['provider'];
+  fromMs: number;
+  toMs: number;
+  byOutcome: Record<GatewayRequestTimeline['outcome'], number>;
+  refused: number;
+  served: number;
+  /** Distinct callers (owner ids, null counted once) that had at least one refusal. */
+  refusedOwners: number;
+  /** The caller with the most refusals, or null when nothing was refused. */
+  topRefusedOwner: { ownerId: string | null; refused: number } | null;
+}
+
 export interface GatewayRequestOutcomeStore {
   record(record: GatewayRequestOutcomeRecord): Promise<void>;
   report(query: GatewayRequestOutcomeQuery): Promise<GatewayRequestOutcomeReport>;
+  providerSummary(query: GatewayProviderOutcomeQuery): Promise<GatewayProviderOutcomeSummary>;
+}
+
+const REFUSED_OUTCOMES: ReadonlySet<GatewayRequestTimeline['outcome']> = new Set(['shed', 'upstream-429']);
+
+/** Fold (outcome, owner, count) triples into a provider summary. Shared by both stores. */
+export function summarizeProviderOutcomeCounts(
+  provider: GatewayRequestTimeline['provider'],
+  window: { fromMs: number; toMs: number },
+  rows: Iterable<{ outcome: GatewayRequestTimeline['outcome']; ownerId: string | null; count: number }>,
+): GatewayProviderOutcomeSummary {
+  const byOutcome = emptyCounts();
+  const refusedByOwner = new Map<string | null, number>();
+  for (const row of rows) {
+    if (!(row.outcome in byOutcome) || !Number.isFinite(row.count) || row.count <= 0) continue;
+    byOutcome[row.outcome] += row.count;
+    if (REFUSED_OUTCOMES.has(row.outcome)) {
+      refusedByOwner.set(row.ownerId, (refusedByOwner.get(row.ownerId) ?? 0) + row.count);
+    }
+  }
+  let topRefusedOwner: GatewayProviderOutcomeSummary['topRefusedOwner'] = null;
+  for (const [ownerId, refused] of refusedByOwner) {
+    if (!topRefusedOwner || refused > topRefusedOwner.refused) topRefusedOwner = { ownerId, refused };
+  }
+  return {
+    provider,
+    fromMs: window.fromMs,
+    toMs: window.toMs,
+    byOutcome,
+    refused: byOutcome.shed + byOutcome['upstream-429'],
+    served: byOutcome.ok,
+    refusedOwners: refusedByOwner.size,
+    topRefusedOwner,
+  };
 }
 
 const OUTCOMES: readonly GatewayRequestTimeline['outcome'][] = [
@@ -247,6 +307,28 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
       retentionMs: GATEWAY_REQUEST_OUTCOME_RETENTION_MS,
     };
   }
+
+  async providerSummary(query: GatewayProviderOutcomeQuery): Promise<GatewayProviderOutcomeSummary> {
+    const sql = sqlOf(this.injectedSql);
+    const nowMs = safeWindow(query.nowMs, Date.now());
+    const fromMs = safeWindow(query.fromMs, nowMs);
+    const toMs = safeWindow(query.toMs, nowMs + 1);
+    // Aggregated in SQL: a busy provider writes thousands of rows per window, and only
+    // (outcome, owner) counts are needed. Bounded by the window, never by a row LIMIT,
+    // so the counts are a census of the window rather than a floor.
+    const rows = await sql<Array<{ outcome_class: GatewayRequestTimeline['outcome']; owner_id: string | null; n: number | string }>>`
+      SELECT outcome_class, owner_id, count(*) AS n
+        FROM harness_shared.gateway_request_outcomes
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND provider = ${query.provider}
+         AND retention_expires_at_ms > ${nowMs}
+         AND request_timestamp_ms >= ${fromMs}
+         AND request_timestamp_ms < ${toMs}
+       GROUP BY outcome_class, owner_id
+    `;
+    return summarizeProviderOutcomeCounts(query.provider, { fromMs, toMs },
+      rows.map((r) => ({ outcome: r.outcome_class, ownerId: r.owner_id, count: Number(r.n) })));
+  }
 }
 
 /** Construct the PostgreSQL adapter; the optional client is a test seam for real-PG integration coverage. */
@@ -292,6 +374,16 @@ export class InMemoryGatewayRequestOutcomeStore implements GatewayRequestOutcome
       retentionMs: GATEWAY_REQUEST_OUTCOME_RETENTION_MS,
     };
   }
+  async providerSummary(query: GatewayProviderOutcomeQuery): Promise<GatewayProviderOutcomeSummary> {
+    const nowMs = safeWindow(query.nowMs, Date.now());
+    const fromMs = safeWindow(query.fromMs, nowMs);
+    const toMs = safeWindow(query.toMs, nowMs + 1);
+    const workspaceId = activeWorkspaceId();
+    return summarizeProviderOutcomeCounts(query.provider, { fromMs, toMs }, this.rows
+      .filter((row) => row.workspaceId === workspaceId && row.provider === query.provider &&
+        row.retentionExpiresAtMs > nowMs && row.requestTimestampMs >= fromMs && row.requestTimestampMs < toMs)
+      .map((row) => ({ outcome: row.outcomeClass, ownerId: row.ownerId, count: 1 })));
+  }
 }
 
 let store: GatewayRequestOutcomeStore = createPostgresGatewayRequestOutcomeStore();
@@ -300,4 +392,6 @@ export function configureGatewayRequestOutcomeStore(next: GatewayRequestOutcomeS
 export function resetGatewayRequestOutcomeStore(): void { store = createPostgresGatewayRequestOutcomeStore(); }
 export function recordGatewayRequestOutcome(record: GatewayRequestOutcomeRecord): Promise<void> { return store.record(record); }
 export function reportGatewayRequestOutcomes(query: GatewayRequestOutcomeQuery): Promise<GatewayRequestOutcomeReport> { return store.report(query); }
+/** Provider-wide refusal/served census over a window — the capacity verdict's gateway term. */
+export function summarizeGatewayProviderOutcomes(query: GatewayProviderOutcomeQuery): Promise<GatewayProviderOutcomeSummary> { return store.providerSummary(query); }
 

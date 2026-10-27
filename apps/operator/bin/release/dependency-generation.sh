@@ -482,6 +482,8 @@ dependency_generation_configure_workspace_dirs() {
 # transient tree mid-snapshot and tear the gate's generation (exit 75).
 # Next's .next/standalone dependency copies are emitted build output too;
 # their writers do not hold the source-install reader/writer lock.
+# The broker's captured driver is also emitted output. Its complete bytes are
+# measured by the generated closure, never as a newly installed source tree.
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
   # WI-10006855: emitted desktop payloads copy dependencies from source trees;
@@ -490,7 +492,7 @@ dependency_generation_enumerate_node_modules() {
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
-      case "$dir" in .next|.next/*|*/.next|*/.next/*) continue ;; esac
+      case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
       if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
         && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
         printf '%s\n' "$root/$dir/node_modules"
@@ -504,6 +506,7 @@ dependency_generation_enumerate_node_modules() {
     \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
       -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+      -o -path "$root/apps/operator/dist-verify" \
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
       -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
       -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \
@@ -535,7 +538,7 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
@@ -546,7 +549,7 @@ dependency_generation_tree_fingerprint() {
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
@@ -1628,18 +1631,30 @@ dependency_generation_ref_pin_path() {
 
 dependency_generation_write_ref_pin_locked() {
   local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5"
-  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now
+  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now checkout marker
   [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 2
   [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
   [[ "$ttl" =~ ^[0-9]+$ ]] || return 2
   case "$integration_root$ref" in *$'\n'*) return 2 ;; esac
   dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
-  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins"
   pin="$(dependency_generation_ref_pin_path "$generation_root" "$integration_root" "$label")" || return 1
+  # Shared stores can still be swept by a deployed helper predating ref pins.
+  # That reader removes any same-host pin without a matching checkout marker,
+  # regardless of kind/expiry. Supply its real marker contract as well as the
+  # native ref fields; never spoof a foreign host to bypass its validation.
+  # One tiny anchor per identity stays outside the immutable generation tree
+  # and is collected with that generation by the current retention code.
+  checkout="$generation_root/.ref-pins/$identity"
+  dependency_generation_ensure_store_root \
+    "$generation_root" "$generation_root/.pins" "$checkout/node_modules" || return $?
+  marker="$checkout/node_modules/.papercusp-dependency-generation"
+  tmp="$marker.tmp.$$"
+  cp "$generation_root/$identity/.papercusp-dependency-generation" "$tmp" || return $?
+  mv "$tmp" "$marker" || return $?
   tmp="$pin.tmp.$$"
   now="$(date +%s)"
-  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
-    "$(dependency_generation_host)" "$identity" "$label" "$integration_root" "$ref" \
+  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\ncheckout=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
+    "$(dependency_generation_host)" "$identity" "$checkout" "$label" "$integration_root" "$ref" \
     "$now" "$((now + ttl))" > "$tmp"
   mv "$tmp" "$pin"
 }
@@ -1905,7 +1920,7 @@ dependency_generation_quarantine_unretained_locked() {
   local generation_root="$1" retain_count="${2:-${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}}"
   local min_retain=1
   [ -z "${2:-}" ] || min_retain=0
-  local protected=' ' generation identity created pin lease kept=0 quarantine
+  local protected=' ' generation identity created pin lease kept=0 quarantine ref_checkout
   local ranked=()
   if [[ ! "$retain_count" =~ ^[0-9]+$ ]] || [ "$retain_count" -lt "$min_retain" ]; then
     dependency_generation_log "FATAL: DEPENDENCY_GENERATION_RETAIN_COUNT must be an integer >= 1"
@@ -1981,6 +1996,9 @@ dependency_generation_quarantine_unretained_locked() {
       "$generation_root" "$identity" || return $?
     quarantine="$generation_root/.prune-$identity-$(date +%s)-$$"
     if mv "$generation" "$quarantine"; then
+      ref_checkout="$generation_root/.ref-pins/$identity"
+      rm -f -- "$ref_checkout/node_modules/.papercusp-dependency-generation"
+      rmdir "$ref_checkout/node_modules" "$ref_checkout" 2>/dev/null || true
       dependency_generation_log "quarantined unretained generation $identity"
       DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
     fi
@@ -2222,7 +2240,7 @@ dependency_generation_subtree_io() {
 dependency_generation_acquire_copy_lock() {
   local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
   local holder_pid io last_io last_progress next_sample idle reason
-  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0
+  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0 wait_id
   if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
     DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
@@ -2243,6 +2261,10 @@ dependency_generation_acquire_copy_lock() {
     return 76
   }
   started="$(date +%s)"
+  # Each acquire invocation resets advances, including admission retries in the
+  # same verifier process group. Namespace its counter so the parent watchdog
+  # does not compare fresh progress with the previous wait's larger maximum.
+  wait_id="${BASHPID:-$$}:$(dependency_generation_now_ns)"
   next_notice=30
   last_io=''
   last_progress="$started"
@@ -2267,7 +2289,7 @@ dependency_generation_acquire_copy_lock() {
          { [ -n "$lock_progress" ] && [ "$lock_progress" != "$last_lock_progress" ]; }; then
         last_progress="$now"
         advances=$((advances + 1))
-        dependency_generation_log "copy lock progress: $lock advances=$advances"
+        dependency_generation_log "copy lock progress: $lock wait=$wait_id advances=$advances"
       fi
       last_io="$io"
       last_lock_progress="$lock_progress"
@@ -2706,7 +2728,7 @@ dependency_generation_source_records() {
     LC_ALL=C find . -xdev -mindepth 1 \
       \( \( -path ./.cache -o -path ./.package-lock.json \
         -o -path ./.papercusp-isolated-snapshot \
-        -o \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
+        -o \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
         -prune \) -o \
       \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
       -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
@@ -2985,6 +3007,8 @@ dependency_generation_prune_ephemeral() {
   # and Storybook likewise mutate .astro/.vite/.vite-temp or the conventional
   # .cache directories while a dependency generation is being copied. Packages
   # such as Hugging Face transformers download models inside their own .cache.
+  # Bun's .bun-cache also holds mutable install metadata and absolute version
+  # index links; installed package contents remain outside that cache.
   # None belong in an immutable generation: retaining or fingerprinting them can
   # false-fail rc75 on unrelated churn.
   #
@@ -3003,9 +3027,9 @@ dependency_generation_prune_ephemeral() {
   # setup-release-checkout replaces the marker with the NEW generation id.
   # Strip it at the generation boundary just like npm's local bookkeeping.
   rm -f -- "$root/.package-lock.json" "$root/.papercusp-isolated-snapshot"
-  rm -rf -- "$root/.cache"
+  rm -rf -- "$root/.cache" "$root/.bun-cache"
   find "$root" -type d \
-    \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
+    \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
     -exec rm -rf -- {} +
 }
 
@@ -3017,7 +3041,7 @@ dependency_generation_prune_ephemeral() {
 # independently proved the source tree is immutable and never patched.
 dependency_generation_materialize_tree() {
   local src="$1" dest="$2" tmp old
-  local source_device dest_device mode='copy'
+  local source_device dest_device mode='copy' clone_rc=0
   tmp="${dest}.generation-tmp.$$"
   old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
@@ -3032,6 +3056,20 @@ dependency_generation_materialize_tree() {
       mode='hardlink'
     else
       rm -rf -- "$tmp"
+    fi
+  fi
+  if [ ! -d "$tmp" ]; then
+    # An immutable same-filesystem CoW clone consumes no physical-copy slot.
+    # Strict cloning must fail rather than silently copy behind a live peer's
+    # capacity hold. Keep headroom and owned-child cancellation checks, then
+    # use the existing locked copier only when strict cloning is unsupported.
+    if [ "$source_device" = "$dest_device" ]; then
+      dependency_generation_check_headroom "$src" "$tmp" || return $?
+      dependency_generation_copy_with_progress "$src" "$tmp" --reflink=always || clone_rc=$?
+      if [ "$clone_rc" -ne 0 ]; then
+        rm -rf -- "$tmp"
+        case "$clone_rc" in 73|130|143) return "$clone_rc" ;; esac
+      fi
     fi
   fi
   if [ ! -d "$tmp" ]; then

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
@@ -7,7 +8,8 @@ import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool } from '@papercusp/tooldef';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
-import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
+import { SuStdioRequestRefusal, type RpcFrame, type SuStdioPeerOptions } from './su-session-stdio-peer';
+import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
@@ -41,8 +43,11 @@ vi.mock('./mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170',
   resolveChildSessionOperatorBaseUrl: () => 'http://127.0.0.1:3170',
 }));
-vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
+vi.mock('./su-session-stdio-peer', async original => ({
+  ...(await original<typeof import('./su-session-stdio-peer')>()), startSuStdioPeer: vi.fn(),
+}));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
+  ...(await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()),
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   assertLaunchPersona: mocks.persona, sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
@@ -69,10 +74,14 @@ afterEach(async () => {
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
+  cwd?: string;
   nativeId?: string; tools?: boolean; model?: string; contextWindow?: number;
+  bootstrapModel?: string; compactionLimit?: number;
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
+  legacyFork?: boolean;
+  paginatedFork?: boolean;
   history?: RpcFrame[];
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
@@ -94,7 +103,8 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', nativeSession: null } as PuiSuSessionBinding & { backend: 'codex' | 'omp' };
   const boot: BootstrapSuResult = { status: 'ok', specificationRevision: 'spec', stateRevision: 'state', compositionSource: 'blueprint',
     codexHome: '/configured/codex', coordExtPath: null,
-    agent: backend, sessionId: 71, nativeSessionId: null, cwd: '/project', promptFile: '/sealed/su.md',
+    model: overrides.bootstrapModel, compactionLimit: overrides.compactionLimit,
+    agent: backend, sessionId: 71, nativeSessionId: null, cwd: overrides.cwd ?? '/project', promptFile: '/sealed/su.md',
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', envelopeEnv: {
       PAPERCUSP_SID: binding.ownerId!, CODEX_HOME: '/configured/codex', PAPERCUSP_PROFILE: 'engineer',
       ...overrides.env,
@@ -108,8 +118,9 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     sent.push(frame);
     const override = await overrides.request?.(frame);
     if (override) return override;
-    if (frame.method === 'thread/start' || frame.method === 'thread/resume') return {
-      thread: { id: overrides.nativeId ?? 'native-codex', cwd: '/project', path: nativePath },
+    if (frame.method === 'thread/start' || frame.method === 'thread/resume' || frame.method === 'thread/fork') return {
+      thread: { id: overrides.nativeId ?? 'native-codex', cwd: overrides.cwd ?? '/project', path: nativePath,
+        ...(overrides.paginatedFork ? { historyMode: 'paginated', forkedFromId: '11111111-1111-4111-8111-111111111111' } : {}) },
       model: overrides.model ?? 'codex-model',
     };
     if (frame.method === 'mcpServerStatus/list') return { data: overrides.tools === false ? [] : [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
@@ -141,10 +152,11 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     stage: overrides.stage,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
+    ...(overrides.legacyFork ? { forkFrom: {} } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
   });
   engines.push(engine);
-  return { engine, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
+  return { engine, boot, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
 }
 
 function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: string = type) {
@@ -152,6 +164,378 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
     commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
   return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
+
+it('attaches the exact registered Codex child without creating a second fork', async () => {
+  const f = fixture('codex', { resume: true }); await f.engine.ready;
+  expect(f.sent).toContainEqual({ method: 'thread/resume', params: {
+    cwd: '/project', approvalPolicy: 'never', sandbox: 'danger-full-access',
+    threadId: 'native-codex',
+  } });
+  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/fork')).toBe(false);
+  expect(f.engine.adapter.host.descriptor().identity).toMatchObject({ ownerId: 'su-rpc-fixture', nativeSessionId: 'native-codex' });
+  expect(f.engine.nativeSession()).toMatchObject({ ownerId: 'su-rpc-fixture', rolloutId: 'native-codex' });
+  expect(mocks.persist).toHaveBeenCalled();
+});
+
+it('refuses the legacy unregistered fork option before native startup', () => {
+  expect(() => fixture('codex', { legacyFork: true })).toThrow('tracked launcher');
+});
+
+it.each(['resume', 'tools', 'registration'] as const)('refuses registered child readiness on %s failure', async failure => {
+  if (failure === 'registration') mocks.persist.mockResolvedValue(false);
+  const f = fixture('codex', { resume: true, tools: failure !== 'tools',
+    request: async frame => {
+      if (failure === 'resume' && frame.method === 'thread/resume') throw new Error('native resume refused');
+      return undefined;
+    } });
+  await expect(f.engine.ready).rejects.toThrow();
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  expect(f.close).toHaveBeenCalled();
+  expect(f.sent.some(frame => frame.method === 'thread/start' || frame.method === 'thread/fork')).toBe(false);
+});
+
+it('restores visible fork history before readiness without reviving historical questions or tool calls', async () => {
+  const stages: string[] = [];
+  const f = fixture('codex', { resume: true, paginatedFork: true, stage: name => { stages.push(name); },
+    request: async frame => {
+      if (frame.method === 'thread/turns/list') return { data: [{ id: 'completed-parent', status: 'completed' }], nextCursor: null };
+      if (frame.method === 'thread/items/list') return { data: [
+        { turnId: 'completed-parent', item: { id: 'prompt', type: 'userMessage', content: [{ type: 'text', text: 'Parent visible input' }] } },
+        { turnId: 'completed-parent', item: { id: 'answer', type: 'agentMessage', text: 'Parent visible answer', questions: [{ id: 'parent-question' }] } },
+        { turnId: 'completed-parent', item: { id: 'tool', type: 'mcpToolCall', server: 'fixture', tool: 'read', status: 'completed', result: {} } },
+      ], nextCursor: null };
+      return undefined;
+    } });
+  await f.engine.ready;
+  const events = f.engine.adapter.host.recent.map(row => row.event);
+  expect(events).toContainEqual(expect.objectContaining({ type: 'transcript', role: 'owner', content: 'Parent visible input' }));
+  expect(events).toContainEqual(expect.objectContaining({ type: 'transcript', role: 'assistant', content: 'Parent visible answer' }));
+  expect(events).toContainEqual(expect.objectContaining({ type: 'tool', phase: 'completed', name: 'read' }));
+  expect(events.some(event => event.type === 'card')).toBe(false);
+  expect(f.sent.some(frame => frame.method === 'turn/start')).toBe(false);
+  expect(stages.indexOf('rpc-replay-history')).toBeLessThan(stages.indexOf('rpc-ready'));
+});
+
+function steerCommand(engine: SuRpcEngine, id = 'correction', activeTurnId = 'owner-owner_turn') {
+  return { ...command(engine, 'owner_turn', id), type: 'steer', activeTurnId };
+}
+
+function completeCodex(f: ReturnType<typeof fixture>, id = 'native-turn') {
+  f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id, status: 'completed' } } });
+}
+
+describe('Codex typed native input', () => {
+  const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+  it('rechecks project references after admission and reconciles a refused delivery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'su-codex-input-admission-')); nativeDirs.push(root);
+    const path = join(root, 'notes.txt'), bytes = Buffer.from('sensitive'); writeFileSync(path, bytes);
+    const barrier = deferred<void>();
+    const reconcile = vi.fn(async () => {});
+    const admit = vi.fn(async () => { await barrier.promise; return { ok: true as const,
+      bindNativeTurn: async () => {}, complete: async () => {}, reconcile }; });
+    const f = fixture('codex', { cwd: root, turnLifecycle: { admit } });
+    await f.engine.ready;
+    const turn = f.engine.adapter.host.startCommand({ ...command(f.engine, 'owner_turn'), input: [{ type: 'file',
+      uri: 'project:notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+    chmodSync(path, 0); barrier.resolve();
+    await expect(turn.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_unreadable' } });
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith({ phase: 'delivery', message: 'File reference is no longer available under this session project' });
+    expect(f.request.mock.calls.filter(([call]) => call.method === 'turn/start')).toHaveLength(0);
+    expect(f.close).not.toHaveBeenCalled();
+  });
+
+  it('SU-EXEC R-6 acceptance contract: delivers image bytes through turn/start and turn/steer instead of plain text', async () => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? { turnId: 'native-turn' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const input = [{ type: 'image' as const, mediaType: 'image/png', data }];
+    expect(host.descriptor().capabilities.input?.parts).toEqual(['text', 'image', 'file']);
+    expect(await host.startCommand({ ...command(f.engine, 'owner_turn'), input } as never).terminal).toMatchObject({ status: 'completed' });
+    expect(f.sent.find(frame => frame.method === 'turn/start')?.params).toMatchObject({
+      input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'image', url: `data:image/png;base64,${data}` }],
+    });
+    expect(await host.startCommand({ ...steerCommand(f.engine), input } as never).terminal).toMatchObject({ status: 'completed' });
+    expect(f.sent.find(frame => frame.method === 'turn/steer')?.params).toMatchObject({
+      input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'image', url: `data:image/png;base64,${data}` }], expectedTurnId: 'native-turn',
+    });
+    completeCodex(f);
+  });
+  it.each(['revoked', 'moved', 'expired', 'foreign-workspace', 'changed', 'unsupported-media'] as const)(
+    'SU-EXEC R-6 acceptance contract: refuses %s references at the native RPC boundary', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'su-codex-reference-')); nativeDirs.push(root);
+      const path = join(root, 'notes.txt'), bytes = Buffer.from('Selected file answer: 雪');
+      writeFileSync(path, bytes);
+      const f = fixture('codex', { cwd: root }); await f.engine.ready;
+      const host = f.engine.adapter.host;
+      const input = [{ type: 'file' as const, uri: 'project:notes.txt', workspaceId: 'workspace',
+        sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain' }];
+      expect(await host.startCommand({ ...command(f.engine, 'owner_turn', 'valid-reference'), input } as never).terminal)
+        .toMatchObject({ status: 'completed' });
+      expect(f.sent.find(frame => frame.method === 'turn/start')?.params).toMatchObject({
+        input: [{ type: 'text', text: 'Hello from PUI' }, { type: 'text', text: `File project:notes.txt\n${bytes.toString()}` }],
+      });
+      completeCodex(f);
+      if (scenario === 'revoked') chmodSync(path, 0);
+      if (scenario === 'moved') renameSync(path, join(root, 'moved.txt'));
+      if (scenario === 'changed') writeFileSync(path, 'Replacement content');
+      const replay = JSON.parse(JSON.stringify(input));
+      if (scenario === 'expired') replay[0].expiresAt = '2000-01-01T00:00:00Z';
+      if (scenario === 'foreign-workspace') replay[0].workspaceId = 'other-workspace';
+      if (scenario === 'unsupported-media') replay[0].mediaType = 'application/zip';
+      const expected = scenario === 'expired' ? 'input_expired'
+        : scenario === 'foreign-workspace' ? 'input_workspace_mismatch'
+          : scenario === 'changed' ? 'input_identity_changed'
+            : scenario === 'unsupported-media' ? 'unsupported_input_media_type' : 'input_unreadable';
+      expect(await host.startCommand({ ...command(f.engine, 'owner_turn', `replay-${scenario}`), input: replay } as never).terminal)
+        .toMatchObject({ status: 'refused', refusal: { code: expected } });
+      expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+      expect(f.close).not.toHaveBeenCalled();
+    },
+  );
+  it('refuses invalid content before native delivery and keeps the connection usable', async () => {
+    const f = fixture('codex'); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const result = await host.startCommand({ ...command(f.engine, 'owner_turn', 'bad-image'),
+      input: [{ type: 'image', mediaType: 'image/jpeg', data }] } as never).terminal;
+    expect(result).toMatchObject({ status: 'refused', refusal: { code: 'input_media_mismatch' } });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(0);
+    expect(await host.startCommand(command(f.engine, 'owner_turn', 'good-text') as never).terminal).toMatchObject({ status: 'completed' });
+    completeCodex(f);
+  });
+});
+
+describe('Codex exact active-turn steering', () => {
+  it('steers without waiting for completion and correlates one idempotent receipt', async () => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? { turnId: 'native-turn' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const correction = steerCommand(f.engine);
+    const first = host.startCommand(correction), replay = host.startCommand(correction);
+    expect(replay.replayed).toBe(true);
+    await expect(first.terminal).resolves.toMatchObject({ commandId: 'correction', commandType: 'steer', status: 'completed' });
+    expect(await replay.terminal).toEqual(await first.terminal);
+    expect(f.sent.filter(frame => frame.method === 'turn/steer')).toEqual([{ method: 'turn/steer', params: {
+      threadId: 'native-codex', expectedTurnId: 'native-turn', input: [{ type: 'text', text: 'Hello from PUI' }],
+    } }]);
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+    expect(host.descriptor().lifecycle).toBe('running');
+    expect(host.recent.map(row => row.event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', turnId: 'owner-correction', content: 'Hello from PUI', role: 'owner',
+    }));
+  });
+
+  it('queues a distinct turn behind completion while steering the running turn immediately', async () => {
+    let starts = 0;
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/start'
+      ? { turn: { id: `native-${++starts}` } } : frame.method === 'turn/steer' ? { turnId: 'native-1' } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const queued = host.startCommand({ ...command(f.engine, 'owner_turn', 'queued'), type: 'queue', model: 'later-model:high' });
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(starts).toBe(1);
+    expect(host.descriptor().model).toBe('codex-model');
+    completeCodex(f, 'native-1');
+    await expect(queued.terminal).resolves.toMatchObject({ status: 'completed', commandId: 'queued', commandType: 'queue' });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')[1]).toMatchObject({ params: { model: 'later-model', effort: 'high' } });
+    expect(host.descriptor().model).toBe('later-model:high');
+    await expect(host.startCommand(steerCommand(f.engine, 'stale')).terminal).resolves.toMatchObject({
+      status: 'refused', refusal: { code: 'active_turn_mismatch' },
+    });
+    expect(f.sent.filter(frame => frame.method === 'turn/steer')).toHaveLength(1);
+  });
+
+  it('refuses idle and mismatched owner turns without dispatch', async () => {
+    const f = fixture('codex'); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await expect(host.startCommand(steerCommand(f.engine, 'idle')).terminal).resolves.toMatchObject({ refusal: { code: 'no_active_turn' } });
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine, 'wrong', 'other-owner')).terminal).resolves.toMatchObject({ refusal: { code: 'active_turn_mismatch' } });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('applies queued model and approvals reversions at delivery, not at acceptance', async () => {
+    let starts = 0;
+    const f = fixture('codex', { toolApproval: 'prompt', request: async frame => frame.method === 'turn/start'
+      ? { turn: { id: `native-${++starts}` } } : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const away = host.startCommand({ ...command(f.engine, 'owner_turn', 'away'), type: 'queue', model: 'another-model', approvals: 'read-only' });
+    const back = host.startCommand({ ...command(f.engine, 'owner_turn', 'back'), type: 'queue', model: 'codex-model', approvals: 'auto-edit' });
+    completeCodex(f, 'native-1'); await away.terminal;
+    completeCodex(f, 'native-2'); await back.terminal;
+    expect(f.sent.filter(frame => frame.method === 'turn/start').map(frame => frame.params)).toMatchObject([
+      {}, { model: 'another-model', sandboxPolicy: { type: 'readOnly' } },
+      { model: 'codex-model', sandboxPolicy: { type: 'workspaceWrite' } },
+    ]);
+    expect(host.descriptor()).toMatchObject({ model: 'codex-model', approvals: 'auto-edit' });
+  });
+
+  it.each([{ model: 'other-model' }, { model: '' }, { approvals: 'read-only' }, { approvals: 'auto-edit' },
+    { cwd: '/elsewhere' }, { effort: 'low' }, { sandboxPolicy: { type: 'readOnly' } }, { outputSchema: {} }])(
+    'refuses mid-turn overrides before dispatch: %j', async override => {
+      const f = fixture('codex'); await f.engine.ready;
+      const host = f.engine.adapter.host;
+      await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+      await expect(host.startCommand({ ...steerCommand(f.engine), ...override }).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'steer_overrides_unsupported' } });
+      expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+      expect(host.descriptor().model).toBe('codex-model');
+    });
+
+  it('waits for native binding but refuses a finish observed before turn/start responds', async () => {
+    const start = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/start' ? start.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const owner = host.startCommand(command(f.engine, 'owner_turn'));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/start')).toBe(true));
+    const correction = host.startCommand(steerCommand(f.engine));
+    completeCodex(f);
+    start.resolve({ turn: { id: 'native-turn' } });
+    await owner.terminal;
+    await expect(correction.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'active_turn_finished' } });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('refuses steering as soon as completion is observed even while account refresh is pending', async () => {
+    const refresh = deferred<string | null>();
+    const f = fixture('codex', { servedAccountReader: () => refresh.promise }); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    completeCodex(f);
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ status: 'refused' });
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+    refresh.resolve(null);
+  });
+
+  it.each(['completed', 'interrupted'])('never reports success when %s wins before the steer acknowledgement', async status => {
+    const response = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? response.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const correction = host.startCommand(steerCommand(f.engine));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(true));
+    if (status === 'interrupted') await host.startCommand(command(f.engine, 'interrupt')).terminal;
+    else completeCodex(f);
+    response.resolve({ turnId: 'native-turn' });
+    await expect(correction.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'steer_outcome_unknown', retryable: false } });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('blocks steering and queued delivery until the exact interrupt receipt settles', async () => {
+    const interrupt = deferred<RpcFrame>();
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/interrupt' ? interrupt.promise : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const stop = host.startCommand(command(f.engine, 'interrupt'));
+    await vi.waitFor(() => expect(f.sent.some(frame => frame.method === 'turn/interrupt')).toBe(true));
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    const next = host.startCommand({ ...command(f.engine, 'owner_turn', 'later'), type: 'queue' });
+    completeCodex(f);
+    await vi.waitFor(() => expect(host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+    interrupt.resolve({});
+    await stop.terminal;
+    await expect(next.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(2);
+    expect(f.sent.some(frame => frame.method === 'turn/steer')).toBe(false);
+  });
+
+  it('cancels a turn interrupted during admission without opening native inference', async () => {
+    const admission = deferred<Awaited<ReturnType<SuCodexTurnLifecycle['admit']>>>();
+    const reconcile = vi.fn(async () => {}), admit = vi.fn(() => admission.promise);
+    const f = fixture('codex', { turnLifecycle: { admit } }); await f.engine.ready;
+    const host = f.engine.adapter.host;
+    const owner = host.startCommand(command(f.engine, 'owner_turn'));
+    await vi.waitFor(() => expect(admit).toHaveBeenCalledOnce());
+    const stop = host.startCommand(command(f.engine, 'interrupt'));
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    admission.resolve({ ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile });
+    await expect(owner.terminal).resolves.toMatchObject({ refusal: { code: 'turn_interrupting' } });
+    await expect(stop.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(reconcile).toHaveBeenCalledWith({ phase: 'delivery', message: 'Owner interrupted before native delivery' });
+    expect(f.sent.some(frame => ['turn/start', 'turn/steer', 'turn/interrupt'].includes(String(frame.method)))).toBe(false);
+  });
+
+  it.each([{}, { turnId: 'different-turn' }])('fences an uncorrelated steer receipt: %j', async response => {
+    const f = fixture('codex', { request: async frame => frame.method === 'turn/steer' ? response : undefined });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({
+      status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
+    });
+    expect(f.close).toHaveBeenCalledOnce();
+    expect(f.sent.filter(frame => frame.method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('keeps the connection usable after a correlated native refusal', async () => {
+    const f = fixture('codex', { request: async frame => {
+      if (frame.method === 'turn/steer') throw new SuStdioRequestRefusal('No steerable active turn');
+      return undefined;
+    } });
+    await f.engine.ready;
+    const host = f.engine.adapter.host;
+    await host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    await expect(host.startCommand(steerCommand(f.engine)).terminal).resolves.toMatchObject({ refusal: { code: 'native_steer_refused' } });
+    expect(f.close).not.toHaveBeenCalled();
+    expect(host.snapshot().streamReady).toBe(true);
+  });
+});
+
+describe('effective launch configuration consumed by the Codex engine', () => {
+  it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at app-server boundary (approval=%s)', async toolApproval => {
+    const f = fixture('codex', { bootstrapModel: 'gpt-5.6-sol:high', model: 'gpt-5.6-sol', compactionLimit: 360000,
+      toolApproval, env: { PAPERCUSP_WORKSPACE: 'workspace', PAPERCUSP_HARNESS_SLUG: 'project',
+        PAPERCUSP_PLAN_SLUG: 'chosen-plan', PAPERCUSP_AUTO_MODE: '1',
+        PAPERCUSP_LAUNCH_CONTEXT_FILE: '/sealed/context.md', PAPERCUSP_TOOLS: 'coord_orient',
+        PAPERCUSP_TTY: '/dev/pts/parent', PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' } });
+    const prepared = prepareSuLaunch(f.boot, { executionKind: 'programmatic', accountRoute: 'default' });
+    await f.engine.ready;
+    const actual = f.transport();
+    for (const [key, value] of Object.entries(prepared.env)) expect(actual.env[key], key).toBe(value);
+    const modelArgs: string[] = [];
+    for (let i = 0; i < prepared.modelArgs.length; i++) {
+      if (prepared.modelArgs[i] === '-m') modelArgs.push('-c', `model=${JSON.stringify(prepared.modelArgs[++i])}`);
+      else modelArgs.push(prepared.modelArgs[i]);
+    }
+    expect(actual.args).toEqual([...prepared.args, 'app-server', ...modelArgs]);
+    expect(actual.cwd).toBe(prepared.cwd);
+    expect(actual.env).not.toHaveProperty('PAPERCUSP_TTY');
+    expect(actual.env.CODEX_HOME).toBe('/configured/codex');
+    expect(actual.env.PAPERCUSP_LAUNCH_CONTEXT_FILE).toBe('/sealed/context.md');
+    expect(actual.args).toContain('--dangerously-bypass-hook-trust');
+    expect(f.sent.find(frame => frame.method === 'thread/start')?.params).toEqual({ cwd: prepared.cwd,
+      approvalPolicy: toolApproval === 'prompt' ? 'on-request' : 'never',
+      sandbox: toolApproval === 'prompt' ? 'workspace-write' : 'danger-full-access' });
+  });
+
+  it('passes the resolved bootstrap model, effort and managed budget to app-server', async () => {
+    const f = fixture('codex', { bootstrapModel: 'gpt-5.6-sol:high', model: 'gpt-5.6-sol', compactionLimit: 360000 });
+    await f.engine.ready;
+    expect(f.transport().args).toEqual(expect.arrayContaining([
+      'app-server', 'model="gpt-5.6-sol"', 'model_reasoning_effort="high"',
+      'model_auto_compact_token_limit=288000',
+    ]));
+    expect(f.transport().args).not.toContain('model="codex-model"');
+    expect(f.transport().cwd).toBe('/project');
+    expect(f.transport().env).toMatchObject({ PAPERCUSP_SID: 'su-rpc-fixture', CODEX_HOME: '/configured/codex' });
+    expect(f.transport().env).not.toHaveProperty('PAPERCUSP_TTY');
+  });
+});
 
 describe('P-017 awaited Codex host lifecycle', () => {
   it.each([false, true])('default attached installed admission refuses paid tools before inference (resume=%s)', async resume => {
@@ -766,7 +1150,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       expect(f.sent).toContainEqual(expect.objectContaining({ method: 'thread/resume', params: expect.objectContaining({ threadId: 'native-codex' }) }));
       expect(f.sent.some((frame) => frame.method === 'thread/start')).toBe(false);
     } else expect(f.transport().args.slice(-2)).toEqual(['--resume', 'native-omp']);
-    expect(f.engine.adapter.host.descriptor()).toMatchObject({ identity: { ownerId: 'su-rpc-fixture', harnessSlug: 'project', workspaceId: 'workspace' }, modes: ['auto'], carry: 'warm' });
+    expect(f.engine.adapter.host.descriptor()).toMatchObject({ identity: { ownerId: 'su-rpc-fixture', harnessSlug: 'project', workspaceId: 'workspace' }, executionKind: 'programmatic', modes: ['auto'], carry: 'warm' });
   });
 
   it('fails closed if resume returns a different native identity', async () => {

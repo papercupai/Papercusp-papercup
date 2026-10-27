@@ -229,6 +229,42 @@ function source(probe: ContinuityProbe, i = 0): ContinuityProbeSource {
   };
 }
 
+describe('original rubric measurement execution', () => {
+  it('retains surrounding population diagnostics and the frozen descriptor before live source changes', async () => {
+    const payload = { state: 'green', sample_count: 7, password: 'tiny' };
+    const probe = readProbe();
+    const batch = await runContinuityProbeBatch([source(probe)], {
+      retainMeasurement: true, now: () => Date.parse('2026-10-23T00:00:00Z'),
+      dispatchTool: async () => ({ data: payload }),
+    });
+    payload.sample_count = 999;
+    expect(batch.results[0]?.observed).toBe('green');
+    expect(batch.results[0]?.provenance?.diagnostics).toContainEqual({ path: '$["sample_count"]', value: 7 });
+    expect(batch.results[0]?.provenance?.procedure.snapshot).toContain('status:read');
+    expect(JSON.stringify(batch)).not.toContain('tiny');
+  });
+
+  it('captures the SQL transaction clock in the original query without coercing native scalar types', async () => {
+    const clock = '__papercusp_measurement_transaction_at_v1';
+    let executedSql = '';
+    const probe = { kind: 'sql' as const, sql: 'SELECT 9007199254740993::bigint AS n;', maxRows: 5,
+      schemaRevision: continuityProbeRevision('dev:pg_query')!,
+      expect: { path: '$.rows[0].n', op: 'eq' as const, value: '9007199254740993' } };
+    const batch = await runContinuityProbeBatch([source(probe)], {
+      retainMeasurement: true, now: () => Date.parse('2026-10-23T00:00:01Z'),
+      dispatchTool: async (_name, args) => {
+        executedSql = String(args.sql);
+        return { data: { rowCount: 1, fields: ['n', clock], rows: [{ n: '9007199254740993', [clock]: '2026-10-23T00:00:00Z' }] } };
+      },
+    });
+    expect(executedSql).toContain('transaction_timestamp()');
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', observed: '9007199254740993',
+      provenance: { transactionAt: '2026-10-23T00:00:00.000Z' } });
+    expect(batch.results[0]?.provenance?.procedure.snapshot).toContain('9007199254740993::bigint');
+    expect(batch.results[0]?.provenance?.diagnostics.some(d => d.path.includes(clock))).toBe(false);
+  });
+});
+
 beforeEach(() => {
   catalog.splice(
     0,
@@ -237,7 +273,8 @@ beforeEach(() => {
     projected('state:read', 'read', { cell: { type: 'string' }, as: { type: 'string' } }),
     projected('status:write', 'write', { id: { type: 'string' } }),
     projected(LONG_READ_TOOL, 'read', { value: { type: 'string' } }),
-    projected('dev:pg_query', 'read', { sql: { type: 'string' } }),
+    projected('dev:pg_query', 'read', { sql: { type: 'string' }, maxRows: { type: 'number' },
+      timeoutMs: { type: 'number' }, allowUnscoped: { type: 'boolean' }, allowUnboundedJsonSearch: { type: 'boolean' } }),
     projected('tools:invoke', 'read', { name: { type: 'string' } }),
   );
   cells.clear();

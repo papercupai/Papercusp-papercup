@@ -4,8 +4,8 @@
  * The task ledger's first successful terminal UPDATE is the authority. The store
  * invokes this bridge only after that UPDATE returns a row, so competing exit,
  * kill, timeout, and reconciler writers produce one event rather than one per
- * attempted close. Delivery is best-effort and never rolls a truthful ledger
- * close back when the wake plane is degraded.
+ * attempted close. Failed delivery retains the ledger's pending marker for the
+ * existing reconciler; it never rolls a truthful terminal close back.
  */
 import type { TaskState } from './types';
 
@@ -20,9 +20,11 @@ export interface TaskTerminalEventInput {
   state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded' | 'ended_unobserved'>;
   exitCode: number | null;
   exitReason: string | null;
+  /** Durable outbox generation; absent only for legacy direct bridge callers. */
+  revision?: number;
 }
 
-export type TaskTerminalEventEmitter = (event: TaskTerminalEventInput) => void | Promise<void>;
+export type TaskTerminalEventEmitter = (event: TaskTerminalEventInput) => boolean | void | Promise<boolean | void>;
 
 export interface TaskTerminalEventDeps {
   emit?: (opts: import('../events/await/engine').EmitAwaitedEventOpts) => Promise<unknown>;
@@ -36,7 +38,7 @@ export function taskTerminalEventKey(taskId: string): string {
 export async function emitTaskTerminalEvent(
   event: TaskTerminalEventInput,
   deps: TaskTerminalEventDeps = {},
-): Promise<void> {
+): Promise<boolean> {
   const payload = {
     taskId: event.taskId,
     state: event.state,
@@ -45,24 +47,30 @@ export async function emitTaskTerminalEvent(
     taskClass: event.taskClass,
     harness: event.harnessSlug,
     launchedBy: event.launchedBy,
+    ...(event.revision == null ? {} : { terminalEventRevision: event.revision }),
   };
   try {
     const emit = deps.emit ?? (await import('../events/await/engine')).emitAwaitedEvent;
-    await emit({
+    const result = await emit({
       key: taskTerminalEventKey(event.taskId),
       summary: `Managed ${event.taskClass} task ${event.taskId} entered terminal state ${event.state}.`,
       payload,
       source: 'task-manager',
       workspaceId: event.workspaceId,
+      ...(event.revision == null ? {} : {
+        taskTerminal: { taskId: event.taskId, workspaceId: event.workspaceId, revision: event.revision },
+      }),
     });
+    return (result as { latchRecorded?: boolean } | null)?.latchRecorded !== false;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/relation .*event_awaits.* does not exist/.test(message)) return;
+    if (/relation .*event_awaits.* does not exist/.test(message)) return false;
     // Import failures need their original frame: the bridge's warning site
     // cannot identify the module whose initialization failed.
     const diagnostic = error instanceof Error ? error.stack || message : message;
     (deps.warn ?? ((value: string) => console.warn(value)))(
       `[task-manager] terminal event failed for ${event.taskId}: ${diagnostic}`,
     );
+    return false;
   }
 }

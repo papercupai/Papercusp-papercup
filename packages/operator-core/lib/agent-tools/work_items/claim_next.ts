@@ -9,6 +9,7 @@
  * the deliberate exception (work_items:claim with an explicit assignee).
  */
 import { z } from 'zod';
+import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -113,6 +114,8 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const reuse = createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+      outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes }));
     const requestedAssignee = args.assignee ?? ident.ownerId;
     const assigneeResolution = await resolveExplicitAgentOwnerId(
       requestedAssignee,
@@ -704,7 +707,7 @@ export default defineTool({
     };
     const taskBriefFor = async (workItem: ReturnType<typeof wiOf>) => {
       const m = await import('../../code-intelligence/task-brief');
-      return m.getClaimTimeTaskBrief({ workItem, harness: args.harness, workspaceId: ident.workspaceId });
+      return m.getClaimTimeTaskBrief({ workItem, harness: args.harness, workspaceId: ident.workspaceId, reuse });
     };
 
     const count = args.count ?? 1;

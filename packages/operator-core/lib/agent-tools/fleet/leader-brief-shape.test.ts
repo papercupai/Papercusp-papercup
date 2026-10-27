@@ -3,6 +3,46 @@ import leaderBriefTool from './leader-brief';
 import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { projectFleetHeadcountState } from '../../agent-fleets-store';
 
+describe('parked capacity delivery', () => {
+  it('preserves eligible and unread member identities under emergency pressure', () => {
+    const base = largeBrief();
+    const out = shapeLeaderBrief({ ...base, summary: { ...base.summary,
+      parkedCapacityAlert: true,
+      parked_capacity: { population: 'current runnable members', eligible: ['spare'], unknown: ['unread'], protected: [], atCapacity: [], noWork: [] },
+    } }, 'trimmed') as Record<string, any>;
+    expect(out.summary).toMatchObject({ parkedCapacityAlert: true, parked_capacity: { eligible: ['spare'], unknown: ['unread'], eligibleCount: 1, unknownCount: 1 } });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+  it('keeps actionable identities and unknown admission distinct through monitor shaping', () => {
+    const out = shapeLeaderBrief({ ok: true,
+      summary: { parkedCapacityAlert: true, parked_capacity: { population: 'current runnable members', eligible: ['spare'], unknown: ['unread'], protected: ['owner-only'], atCapacity: ['capped'], noWork: ['restricted'] } },
+      members: [{ agentId: 'spare', parkedCapacity: { status: 'eligible', claimable: 3, activeClaims: 0, maxConcurrentClaims: 2, heldIds: [], blockerParkedIds: ['WI-blocked'], specRef: 'override@4', recoverVia: 'Resume managed pull and retain blocker wake.' } }],
+    }, 'trimmed') as Record<string, any>;
+    expect(out.summary).toMatchObject({ parkedCapacityAlert: true, parked_capacity: { eligibleCount: 1, eligible: ['spare'], unknownCount: 1, unknown: ['unread'], protected: ['owner-only'], atCapacity: ['capped'], noWork: ['restricted'] } });
+    expect(out.members[0].parkedCapacity).toMatchObject({ status: 'eligible', specRef: 'override@4', blockerParkedIds: ['WI-blocked'], maxConcurrentClaims: 2 });
+  });
+});
+
+describe('claimability supervision delivery', () => {
+  it.each([false, true])('retains degraded queue supervision and its recovery read under emergency pressure=%s', (emergency) => {
+    const base = emergency ? largeBrief() : { ok: true, summary: { fleet: 'alpha', members: 2 } };
+    const supervision = {
+      status: 'degraded', fleet: 'alpha', harness: 'papercusp', value: null,
+      reason: 'The claimability diagnostic did not settle.',
+      recoverVia: 'work_items:claimable { harness:"papercusp", spec:"alpha", breakdownOnly:true }',
+    };
+    const out = shapeLeaderBrief({
+      ...base,
+      summary: { ...base.summary, claimability_supervision: supervision, claimabilitySupervisionDegraded: true },
+    }, 'trimmed') as Record<string, any>;
+    expect(out.summary.claimabilitySupervisionDegraded).toBe(true);
+    expect(out.summary.claimability_supervision).toMatchObject({
+      status: 'degraded', fleet: 'alpha', value: null, recoverVia: supervision.recoverVia,
+    });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+});
+
 describe('leader checkpoint progress delivery (P-005)', () => {
   it('keeps source identity, unknown state and truncation/recovery markers in the default tier', () => {
     const recovery = { tool: 'work_items:get', args: { id: 'WI-A', harness: 'fixture' } };

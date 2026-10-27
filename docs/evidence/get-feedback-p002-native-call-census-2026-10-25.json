@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Retained P002 answerer call census and native actor correlation",
+  "framework": "operational",
+  "command": ["retained native JSONL read", "activity:tool-log", "code:run", "dev:pg_query", "SHA256 native item IDs versus server requestOrigin.nativeSession call fingerprints"],
+  "startedAt": "2026-10-25T03:29:57.284Z",
+  "finishedAt": "2026-10-25T03:40:57.482Z",
+  "timingBasis": "Start is the first census receipt's filesystem creation time; finish is the final validation timestamp after checking the complete native record, six input pins, three physical fingerprints, four correlated rows and shared identity guards. These are retained-record inspection times, not the historical native execution window below.",
+  "exitCode": 0,
+  "summary": "Six retained native exec inputs, three physical MCP calls and a completed native turn were accounted for. All three physical call fingerprints match bound server receipts for the isolated answerer. Two repository searches are present in the native record. This is a finite retained-record observation; it does not establish exhaustive database lease transitions, ABA absence, universal noninterference, current runtime acceptance or shipment.",
+  "assertions": [
+    { "id": "retained-answerer-transcript-pin", "passed": true, "evidence": "The target51916 native JSONL has628738 bytes/60 lines and SHA2562a57e1070cb1a6e298f3aa0967faf15dc01d0c95a9bd45f8852241cc7c3e375a. Original frame line8 and reply line52 hashes equal the original calibration artifact." },
+    { "id": "retained-six-exec-inputs", "passed": true, "evidence": "Read complete inputs at lines14,20,27,34,42,50. They list schemas, find tools, read this conversation, run two rg pipelines, and post the typed reply. Each input is SHA256-pinned below and marked completed in the native record." },
+    { "id": "retained-native-terminal", "passed": true, "evidence": "The final line60 is event_msg/task_complete with SHA256752202ed4236ec623b8a523dc9ff54267a234b679688e8fe758d75def853fa9f. Complete transcript hash remained unchanged across two reads in this observation." },
+    { "id": "retained-audit-positive-control", "passed": true, "evidence": "Same read-only transaction returns the known consult:reply row44214170 for the exact workspace/answerer as a positive control. The bounded answerer query returns12 rows and truncated:false." },
+    { "id": "retained-all-three-physical-call-fingerprints", "passed": true, "evidence": "Set equality: SHA256 of native item IDs at lines22,29,52 equals the three distinct callIdFingerprint values in four server rows44213883,44213911,44213912,44214170. Every selected receipt is bound/meta:threadId, answerer owner3cf167, candidateADV51916, native session fingerprintb35c9865. The conversations:get inner row and tools:invoke wrapper share one physical call." },
+    { "id": "retained-native-search-accounting", "passed": true, "evidence": "Both exec_command inputs at lines34/42 were read completely and contain only rg pipelines. The canonical activity log independently reports two Bash rg calls. This closes that finite native-call accounting gap; it does not turn the MCP-only ledger into an exhaustive host or database audit." }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "governingDecision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+  "originalCalibration": {
+    "path": "docs/evidence/get-feedback-p002-native-calibration-2026-10-25.json",
+    "sha256": "f46b6ffa8a825e628690edaa8510de69929c696bce1687e3c1c4d87d42ff31d8",
+    "testRunId": 21960506,
+    "status": "Original nine assertions remain unchanged. This file is supplementary retained-record evidence."
+  },
+  "nativeRecord": {
+    "advSessionId": 51916,
+    "ownerId": "su-3cf167ac-da89-444f-b45f-4605d51bf16d",
+    "nativeSessionId": "01a170e5-3c39-7962-a712-c2812561f04c",
+    "conversationId": "conv-request-c713ac82ffc39be484e4d6e566f284fd78b816afd192e52a406155ecd6ad979f",
+    "pathPolicy": "Resolve the transcript from the exact ADV/native/owner registry identities and verify this full-file hash. USER_HOME in the original calibration is a template, not a literal home path.",
+    "sha256": "2a57e1070cb1a6e298f3aa0967faf15dc01d0c95a9bd45f8852241cc7c3e375a",
+    "bytes": 628738,
+    "lines": 60,
+    "eventCounts": { "session_meta": 1, "event_msg": 23, "response_item": 27, "world_state": 1, "turn_context": 1, "token_usage_record": 7 },
+    "execInputs": [
+      { "line": 14, "inputBytes": 122, "inputSha256": "fe997c0b36c1de9fa5aef4e04fe9500d8f59021085b4a1a124352df5bf8bb9de", "operation": "List matching ALL_TOOLS metadata" },
+      { "line": 20, "inputBytes": 289, "inputSha256": "a6afa46cc4c2eac24b863a50bdb93e6f7aec23e2b9febc643add989887fcf2e7", "operation": "tools:find" },
+      { "line": 27, "inputBytes": 441, "inputSha256": "6b88a0f7bf96f7ffcb7d1acb1ae85b79c575810561da087e7f860d1993504a62", "operation": "tools:invoke conversations:get for the exact conversation" },
+      { "line": 34, "inputBytes": 333, "inputSha256": "23a175dd429c6e2f22f9f7b17079aa1c7d1c465f89a61a9e76899efaf8b38cda", "operation": "exec_command: rg repository pipeline" },
+      { "line": 42, "inputBytes": 387, "inputSha256": "360d28af4eeb6d314e8c93b490036dea17e876ad9e66983dcbb03b17d2b7618b", "operation": "exec_command: rg repository pipeline" },
+      { "line": 50, "inputBytes": 3310, "inputSha256": "69fe3d7b3288e1d16710213ee945c62c81e08dd11ebd4432502fe2d6d2890604", "operation": "consult:reply with the substantive answer" }
+    ],
+    "physicalMcpCalls": [
+      { "line": 22, "tool": "tools:find", "itemId": "exec-b235468d-562e-4289-abae-ac75a1db0d3d", "itemIdSha256": "c1860a35b90c8eca100414f497444ef332a1a5a897e912158b6de35727d20526", "ledgerIds": [44213883] },
+      { "line": 29, "tool": "tools:invoke", "nestedTool": "conversations:get", "itemId": "exec-591daf73-5daa-4e6b-beec-ab1757e9704b", "itemIdSha256": "3af68ad7df56a27ebdf3a9cd6846ec7789979734727990dc361f9d054575b50a", "ledgerIds": [44213911, 44213912] },
+      { "line": 52, "tool": "consult:reply", "itemId": "exec-8c76029d-45a1-4755-a6bf-e0a0775b824a", "itemIdSha256": "6fce937702d563d1271b0288d83e487bba035256cab9ddc5c2f67b5ba2789510", "ledgerIds": [44214170] }
+    ],
+    "terminal": { "line": 60, "type": "event_msg/task_complete", "lineSha256": "752202ed4236ec623b8a523dc9ff54267a234b679688e8fe758d75def853fa9f", "startedAtEpochSec": 1792895434, "completedAtEpochSec": 1792895540 }
+  },
+  "serverAudit": {
+    "workspaceId": "papercusp-workspace",
+    "ownerId": "su-3cf167ac-da89-444f-b45f-4605d51bf16d",
+    "window": { "from": "2026-10-25T02:30:14.763Z", "to": "2026-10-25T02:37:13.087293Z" },
+    "selectedRows": 12,
+    "truncated": false,
+    "positiveControl": { "id": 44214170, "tool": "consult:reply", "status": "ok", "result": "passed" },
+    "byTool": { "activity:report": 5, "tools:find": 1, "conversations:get": 1, "tools:invoke": 1, "locks:check_command": 2, "consult:reply": 1, "journal:record-turn": 1 },
+    "correlatedReceiptRows": 4,
+    "distinctPhysicalCalls": 3,
+    "boundNativeSessionFingerprint": "b35c98651412187a21ad6f2564833ba5fc87f0d4b65017660fa95b3161ef9142",
+    "candidateAdvSessionId": 51916,
+    "binding": "bound",
+    "carrier": "meta:threadId",
+    "activityLog": { "calls": 4, "rawRows": 4, "log": "tools_find; Bash rg x2; consult_reply", "limitation": "Activity hook events and MCP invocation rows are different populations; neither replaces the retained native transcript." },
+    "writerRead": "packages/operator-core/lib/projected-tool-deps.ts records resolveAgentIdentity(ctx).ownerId as coord_owner_id and uses the dispatch-settle invoked_at. This is caller-attributed MCP telemetry, not a database row-mutation history."
+  },
+  "remaining": [
+    "Complete source lease mutation history and actor attribution, including ABA; endpoint and tool-call observations do not establish it.",
+    "The source's documented compaction/redeclaration and changed claim/native IDs remain as recorded in the original calibration.",
+    "Original operational bindings28326/28545 and their historical execution limits remain unchanged.",
+    "Other native matrix cells, original and supplementary cohort limits, custody/admission/approval, independent acceptance and shipment remain open."
+  ],
+  "reobservePolicy": "Re-read these retained records by exact identities and hashes; do not launch a native consultation or replay source tests solely for a wake or HEAD change."
+}

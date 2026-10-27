@@ -3,9 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
-import { describe, expect, it } from 'vitest';
-import { reportSessionEnded } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { afterEach, describe, expect, it } from 'vitest';
 import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
@@ -23,6 +23,12 @@ const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 type Session = { id: string; agent: SessionBackend; coord_owner_id: string;
   session_id: string | null; omp_thread_id: string | null; ended_at: string | null };
+const MATRIX_SOURCE_PATHS = [
+  'apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/scripts/psu-pty-host.mjs',
+] as const;
+type MatrixSourceLock = { lockId: string; domain: string };
+type HeldMatrixSourceLocks = { sourceRoot: string; origin: string; locks: MatrixSourceLock[] };
 
 function verifiedEmptyCleanup(name: string, args: Record<string, unknown>, status: number | null,
   value: Record<string, any> | undefined) {
@@ -109,6 +115,26 @@ function assertLauncherLogProgress(taskId: string, log: string) {
   }
 }
 
+function matrixFailureResult(observations: Array<Record<string, unknown>>, expected: number, error: unknown) {
+  let message = String(error instanceof Error ? error.message : error).trim() || 'Unknown matrix failure';
+  if (message.length > 2000) {
+    const omission = '\n[exception truncated: ' + message.length + ' characters]\n';
+    message = message.slice(0, 600) + omission + message.slice(-(2000 - 600 - omission.length));
+  }
+  return {
+    exitCode: 1,
+    summary: 'Final matrix stopped after ' + observations.length + '/' + expected + ' observations.',
+    assertions: [
+      ...observations.map((observation, index) => ({
+        id: 'completed-observation-' + (index + 1),
+        passed: true,
+        evidence: JSON.stringify(observation).slice(0, 2000),
+      })),
+      { id: 'matrix-stop', passed: false, evidence: message },
+    ],
+  };
+}
+
 function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<string, unknown>) {
   // `serving` is the probe's policy-checked STATE. `ok`, HTTP 200, unknown
   // projections and the `unwalled` DELTA do not establish eligible capacity.
@@ -120,7 +146,151 @@ function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<strin
   }
 }
 
+function maintainedCanonicalTree(env: Partial<Pick<NodeJS.ProcessEnv,
+  'PAPERCUSP_CANONICAL_TREE' | 'PAPERCUSP_INTEGRATION_ROOT'>>) {
+  const canonical = env.PAPERCUSP_CANONICAL_TREE || env.PAPERCUSP_INTEGRATION_ROOT;
+  if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
+  return resolve(canonical);
+}
+
+function matrixSourceLockDomains(sourceRoot: string, canonical: string) {
+  return [...new Set([resolve(sourceRoot), resolve(canonical)])];
+}
+
+function matrixSourceLockArgs(domain: string, sourceRoot: string) {
+  const resolvedRoot = resolve(sourceRoot);
+  const resolvedDomain = resolve(domain);
+  return {
+    paths: [...MATRIX_SOURCE_PATHS],
+    intent: 'Keep launcher source bytes stable throughout the final resume matrix.',
+    ttl_sec: 900,
+    ...(resolvedDomain === resolvedRoot ? {} : { coordination_domain: resolvedDomain }),
+  };
+}
+
+function assertMatrixSourceLock(receipt: Record<string, any>) {
+  const held = Array.isArray(receipt.held) ? receipt.held as unknown[] : [];
+  if (typeof receipt.lock_id !== 'string' ||
+    !MATRIX_SOURCE_PATHS.every(path => held.includes(path))) {
+    throw new Error('Final matrix could not secure both launcher source files: ' +
+      JSON.stringify({ lockId: receipt.lock_id, held: receipt.held, busy: receipt.busy }));
+  }
+  return receipt.lock_id as string;
+}
+
+function releaseMatrixSourceLocks(locks: MatrixSourceLock[], sourceRoot: string, origin: string) {
+  const resolvedRoot = resolve(sourceRoot);
+  for (const lock of [...locks].reverse()) {
+    call('locks:release', {
+      lock_id: lock.lockId,
+      ...(lock.domain === resolvedRoot ? {} : { coordination_domain: lock.domain }),
+    }, origin);
+  }
+}
+
+function acquireMatrixSourceLocks(sourceRoot: string, canonical: string, origin: string) {
+  const locks: MatrixSourceLock[] = [];
+  try {
+    for (const domain of matrixSourceLockDomains(sourceRoot, canonical)) {
+      const receipt = call('locks:acquire', matrixSourceLockArgs(domain, sourceRoot), origin);
+      locks.push({ lockId: assertMatrixSourceLock(receipt), domain });
+    }
+    return locks;
+  } catch (error) {
+    try { releaseMatrixSourceLocks(locks, sourceRoot, origin); }
+    catch (releaseError) {
+      throw new Error(`Final matrix source-lock acquisition failed: ${String(error)}\n` +
+        `Partial lock cleanup failed: ${String(releaseError)}`);
+    }
+    throw error;
+  }
+}
+
+function assertCodexAutoRoute(report: Record<string, unknown>) {
+  const accounts = Array.isArray(report.codexAccounts)
+    ? report.codexAccounts.filter((account): account is string => typeof account === 'string' && account.length > 0)
+    : [];
+  // gateway:status quarantines the legacy pool-health fields under `legacy`.
+  // A missing cause remains a refusal; only the explicit healthy/null state or
+  // psu's advisory temporary-cooldown state permits the auto route.
+  const legacy = report.legacy && typeof report.legacy === 'object'
+    ? report.legacy as Record<string, unknown>
+    : {};
+  const causePresent = Object.prototype.hasOwnProperty.call(legacy, 'codexUnserviceableCause');
+  const cause = causePresent ? legacy.codexUnserviceableCause : undefined;
+  // psu treats a temporary cooldown as an advisory and launches with normal
+  // gateway retry handling. All other non-null causes refuse the exact route.
+  if (report.ok !== true || accounts.length === 0 ||
+    !causePresent || (cause !== null && cause !== 'temporary-cooldown')) {
+    throw new Error('Final matrix has no launchable Codex auto-route from fresh gateway status: ' +
+      JSON.stringify({ codexAccounts: report.codexAccounts,
+        codexHealthyAccounts: legacy.codexHealthyAccounts,
+        codexUnserviceableCause: causePresent ? cause : '<missing>',
+        codexReachability: legacy.codexReachability }));
+  }
+}
+
+function matrixCapacityProbeArgs(provider: 'claude' | 'codex') {
+  // The explicit Codex matrix target is gpt-6.1-sol:xhigh. Probe that same
+  // model family: accounts:probe-capacity otherwise defaults to gpt-5.6-sol,
+  // which can report serving capacity while the requested model is at capacity.
+  return {
+    provider,
+    ...(provider === 'codex' ? { model: 'gpt-6.1-sol' } : {}),
+    apply: false,
+  };
+}
+
+function assertResumableArchiveRow(source: Session, sessions: Array<Record<string, any>>) {
+  const row = sessions.find(candidate => Number(candidate.id) === Number(source.id));
+  const expectedNativeId = source.agent === 'omp'
+    ? source.omp_thread_id ?? source.session_id : source.session_id;
+  const actualNativeId = row?.agent === 'omp'
+    ? row.ompThreadId ?? row.sessionId : row?.sessionId;
+  if (!row || row.agent !== source.agent || !expectedNativeId || actualNativeId !== expectedNativeId ||
+    row.hasArchive !== true) {
+    throw new Error(`Archived source ${source.id} is not safely resumable: ` + JSON.stringify({
+      expectedAgent: source.agent, expectedNativeId, actualAgent: row?.agent,
+      actualNativeId, hasArchive: row?.hasArchive,
+    }));
+  }
+}
+
+async function assertResumableArchiveEndpoint(source: Session, origin: string) {
+  const url = new URL('/api/adv/sessions/resumable', origin);
+  url.searchParams.set('id', String(source.id));
+  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`Archived source ${source.id} preflight returned HTTP ${response.status}`);
+  const body = await response.json() as { sessions?: Array<Record<string, any>> };
+  assertResumableArchiveRow(source, Array.isArray(body.sessions) ? body.sessions : []);
+}
+
+describe('final resume archived-source preflight', () => {
+  const source: Session = { id: '42', agent: 'omp', coord_owner_id: 'fixture-owner',
+    session_id: null, omp_thread_id: '01a133bc-e525-75a1-885d-ea1cd5d4a1e5', ended_at: '2026-10-13T00:00:00Z' };
+  it('requires the exact OMP thread identity and archive marker before launching targets', () => {
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'omp', sessionId: null,
+      ompThreadId: source.omp_thread_id, hasArchive: true }])).not.toThrow();
+  });
+  it('fails before launch when the endpoint omits the source or archive marker', () => {
+    expect(() => assertResumableArchiveRow(source, [])).toThrow('not safely resumable');
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'omp', sessionId: null,
+      ompThreadId: source.omp_thread_id, hasArchive: false }])).toThrow('not safely resumable');
+  });
+  it('does not accept a same-id row from a different backend', () => {
+    expect(() => assertResumableArchiveRow(source, [{ id: 42, agent: 'claude',
+      sessionId: source.omp_thread_id, hasArchive: true }])).toThrow('not safely resumable');
+  });
+});
+
 describe('owned matrix capacity preflight', () => {
+  it('probes the same Codex model family as the explicit matrix target', () => {
+    expect(matrixCapacityProbeArgs('codex')).toEqual({
+      provider: 'codex', model: 'gpt-6.1-sol', apply: false,
+    });
+    expect(matrixCapacityProbeArgs('claude')).toEqual({ provider: 'claude', apply: false });
+  });
+
   it('accepts measured serving capacity without requiring an unwall correction', () => {
     expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: true,
       probed: 1, serving: ['healthy'], unwalled: [] })).not.toThrow();
@@ -138,6 +308,39 @@ describe('owned matrix capacity preflight', () => {
       serving: ['healthy-codex'] })).toThrow('no eligible claude capacity');
     expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: false,
       serving: ['healthy'] })).toThrow('dry probe');
+  });
+
+  it('requires the maintained canonical selector before live preflights', () => {
+    expect(() => maintainedCanonicalTree({})).toThrow('maintained canonical tree selector');
+    expect(maintainedCanonicalTree({ PAPERCUSP_CANONICAL_TREE: '/canonical' })).toBe(resolve('/canonical'));
+    expect(maintainedCanonicalTree({ PAPERCUSP_INTEGRATION_ROOT: '/integration' })).toBe(resolve('/integration'));
+  });
+
+  it('locks both source trees and requires both launcher paths in the receipt', () => {
+    expect(matrixSourceLockDomains('/source', '/source')).toEqual(['/source']);
+    expect(matrixSourceLockDomains('/source', '/canonical')).toEqual(['/source', '/canonical']);
+    expect(matrixSourceLockArgs('/source', '/source')).not.toHaveProperty('coordination_domain');
+    expect(matrixSourceLockArgs('/canonical', '/source').coordination_domain).toBe('/canonical');
+    expect(assertMatrixSourceLock({ lock_id: 'lock-1', held: [...MATRIX_SOURCE_PATHS] })).toBe('lock-1');
+    expect(() => assertMatrixSourceLock({ lock_id: 'lock-1', held: [MATRIX_SOURCE_PATHS[0]] }))
+      .toThrow('could not secure both launcher source files');
+  });
+
+  it('follows psu route policy: refuse unavailable routes but allow a temporary-cooldown warning', () => {
+    const route = (cause: unknown) => ({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      legacy: { codexUnserviceableCause: cause } });
+    expect(() => assertCodexAutoRoute(route(null))).not.toThrow();
+    expect(() => assertCodexAutoRoute(route('accounts-unserviceable')))
+      .toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute(route('temporary-cooldown'))).not.toThrow();
+    expect(() => assertCodexAutoRoute(route('upstream-unreachable')))
+      .toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: [],
+      legacy: { codexUnserviceableCause: null } })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'],
+      codexUnserviceableCause: null })).toThrow('no launchable Codex auto-route');
+    expect(() => assertCodexAutoRoute({ ok: true, codexAccounts: ['chatgpt-sub-cli'], legacy: {} }))
+      .toThrow('no launchable Codex auto-route');
   });
 });
 
@@ -271,6 +474,29 @@ describe('owned matrix lifetime and progress', () => {
   });
 });
 
+describe('owned matrix failure evidence', () => {
+  it('retains completed observations and the stop cause when a later port fails', () => {
+    const observation = { source: 'claude', target: 'codex', targetAdvSessionId: '43472' };
+    const result = matrixFailureResult([observation], 9, new Error('explicit xhigh launch refused'));
+    expect(result.exitCode).toBe(1);
+    expect(result.summary).toBe('Final matrix stopped after 1/9 observations.');
+    expect(result.assertions).toEqual([
+      { id: 'completed-observation-1', passed: true, evidence: JSON.stringify(observation) },
+      { id: 'matrix-stop', passed: false, evidence: 'explicit xhigh launch refused' },
+    ]);
+  });
+
+  it('keeps both the trace start and semantic tail when the stop error is clipped', () => {
+    const result = matrixFailureResult([], 9,
+      new Error('MCP launch trace start\n' + 'connection detail\n'.repeat(400) + 'explicit xhigh refusal'));
+    const failure = result.assertions.at(-1)!;
+    expect(failure.evidence).toContain('MCP launch trace start');
+    expect(failure.evidence).toContain('[exception truncated:');
+    expect(failure.evidence).toContain('explicit xhigh refusal');
+    expect(failure.evidence.length).toBeLessThanOrEqual(2000);
+  });
+});
+
 async function native(session: Session, archivedSource = false) {
   const id = session.agent === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id;
   if (!id) return undefined;
@@ -292,7 +518,15 @@ async function native(session: Session, archivedSource = false) {
 }
 
 describe.skipIf(!enabled)('final live session resume matrix', () => {
+  let heldSourceLocks: HeldMatrixSourceLocks | null = null;
+  afterEach(() => {
+    const held = heldSourceLocks;
+    heldSourceLocks = null;
+    if (held) releaseMatrixSourceLocks(held.locks, held.sourceRoot, held.origin);
+  });
+
   it('delivers six cross-backend ports and three original-backend PUI-shaped resumes', async () => {
+    const canonical = maintainedCanonicalTree(process.env);
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     const origin = profile.origin as string;
@@ -303,12 +537,40 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const parentTaskId = matrixParentTaskId();
     const parentWorkItemId = matrixParentWorkItemId(parentTaskId,
       call('processes:list', { taskId: parentTaskId }, origin).tasks);
+    heldSourceLocks = { sourceRoot: root, origin, locks: acquireMatrixSourceLocks(root, canonical, origin) };
+    // Import only after acquiring the lock so cleanup uses the exact launcher
+    // bytes that the matrix hashes and holds stable through every fixture.
+    const { reportSessionEnded } = await import(pathToFileURL(
+      resolve(canonical, 'apps/operator/scripts/psu-launcher.mjs')).href);
+    const sourceHashes: Record<string, string> = {};
+    for (const path of MATRIX_SOURCE_PATHS) {
+      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
+      sourceHashes[path] = hash(root);
+      expect(hash(canonical), `Canonical ${path} changed after source lock`).toBe(sourceHashes[path]);
+    }
+
+    // The upstream capacity probe is not the exact account=auto launch route.
+    // Read the gateway's route-level serviceability before preparing any targets;
+    // psu's own launch refusal remains the final guard against state changing later.
+    const route = call('gateway:status', {}, origin);
+    const legacyRoute = route.legacy && typeof route.legacy === 'object'
+      ? route.legacy as Record<string, unknown>
+      : {};
+    const routeCausePresent = Object.prototype.hasOwnProperty.call(legacyRoute, 'codexUnserviceableCause');
+    console.info('CBP_FINAL_ROUTE_PREFLIGHT', JSON.stringify({ ok: route.ok,
+      codexAccounts: route.codexAccounts,
+      codexHealthyAccounts: legacyRoute.codexHealthyAccounts,
+      codexUnserviceableCause: routeCausePresent ? legacyRoute.codexUnserviceableCause : '<missing>',
+      codexReachability: legacyRoute.codexReachability }));
+    assertCodexAutoRoute(route);
     // Both target backends, and Claude maintenance summarization, are required
     // by the unchanged matrix profile. Refuse known capacity walls before any
     // fixture is launched; dry probes neither unwall nor readmit accounts.
     for (const provider of ['claude', 'codex'] as const) {
-      const capacity = call('accounts:probe-capacity', { provider, apply: false }, origin);
+      const capacityArgs = matrixCapacityProbeArgs(provider);
+      const capacity = call('accounts:probe-capacity', capacityArgs, origin);
       console.info('CBP_FINAL_CAPACITY_PREFLIGHT', JSON.stringify({ provider,
+        model: capacityArgs.model ?? 'tool-default',
         dryRun: capacity.dryRun, probed: capacity.probed, serving: capacity.serving,
         confirmedWalled: capacity.confirmedWalled, failed: capacity.failed }));
       assertMatrixCapacity(provider, capacity);
@@ -324,18 +586,12 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     for (const source of sessions) {
       expect(source.ended_at, `Source ${source.id} must be an ended plan fixture`).toBeTruthy();
       assertSourceAvailable(source, origin);
+      // Check the live launcher preflight surface before starting any expensive
+      // target host: a canonical archive read alone does not prove that psu's
+      // resumable endpoint exposes the same native identity and hasArchive key.
+      await assertResumableArchiveEndpoint(source, origin);
       const snapshot = await native(source, true);
       expect(snapshot?.text).toContain('MATRIX-SRC');
-    }
-    // Fresh managed hosts below use the canonical launcher, whose bytes must
-    // match this committed test tree. No existing peer host is restarted.
-    const canonical = process.env.PAPERCUSP_CANONICAL_TREE || process.env.PAPERCUSP_INTEGRATION_ROOT;
-    if (!canonical) throw new Error('The final matrix requires the maintained canonical tree selector');
-    const sourceHashes: Record<string, string> = {};
-    for (const path of ['apps/operator/scripts/psu-launcher.mjs', 'apps/operator/scripts/psu-pty-host.mjs']) {
-      const hash = (base: string) => createHash('sha256').update(readFileSync(resolve(base, path))).digest('hex');
-      sourceHashes[path] = hash(root);
-      expect(hash(canonical), `Canonical ${path} changed after preparation`).toBe(sourceHashes[path]);
     }
     const observations: Array<Record<string, unknown>> = [];
     const attemptId = randomUUID();
@@ -450,13 +706,20 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             }
           }
         };
-        for (const pair of SESSION_PORT_SUPPORTED_PAIRS) {
-          await launch(sessions.find(session => session.agent === pair.source)!, pair.target);
-        }
-        for (const source of sessions) await launch(source);
-        expect(observations).toHaveLength(9);
-        for (const [path, sha256] of Object.entries(sourceHashes)) {
-          expect(createHash('sha256').update(readFileSync(resolve(canonical, path))).digest('hex')).toBe(sha256);
+        try {
+          for (const pair of SESSION_PORT_SUPPORTED_PAIRS) {
+            await launch(sessions.find(session => session.agent === pair.source)!, pair.target);
+          }
+          for (const source of sessions) await launch(source);
+          expect(observations).toHaveLength(9);
+          for (const [path, sha256] of Object.entries(sourceHashes)) {
+            expect(createHash('sha256').update(readFileSync(resolve(canonical, path))).digest('hex')).toBe(sha256);
+          }
+        } catch (error) {
+          // Return a failed artifact instead of throwing here: executeOperationalRun
+          // can persist the completed ports and first stop cause only when its callback
+          // returns. The test's final pass expectation still fails the Vitest run.
+          return matrixFailureResult(observations, SESSION_PORT_SUPPORTED_PAIRS.length + sessions.length, error);
         }
         return { exitCode: 0, summary: 'Six fresh delivered ports and three PUI-shaped original-backend native resumes',
           assertions: observations.map((observation, index) => ({

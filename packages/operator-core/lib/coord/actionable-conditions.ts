@@ -46,6 +46,23 @@ export interface ActionableCondition {
    */
   harnessFrom: 'suffix' | 'ambient' | 'leading-segment';
   severity: 'critical' | 'major' | 'minor' | 'nit';
+  /**
+   * Who a freshly MINTED owning work-item is assigned to at creation
+   * (gate-repair-plane-on-current-build-2026-10-15 P-004, BAR R-4).
+   *
+   * 'live-gate-owner' = the holder of `gate.greenCheckpoint.ownership` for the
+   * condition's harness, but ONLY when the presence oracle positively reports that
+   * holder live (`ownershipHeldByLiveHolder`). With no live holder the item lands
+   * unassigned and its summary states why — so an alarm item never sits silently in
+   * the open queue while the agent already driving the gate never hears of it, and
+   * never lands on a dead or stalled holder either.
+   *
+   * Omitted = unassigned at creation, claimable by anyone. That is deliberately the
+   * default and the right answer for `frozen-repair-leg:` (D-028/D-029 of
+   * green-main-cycle-time-2026-10-08: any agent may fix a leg, so assigning legs to
+   * the gate owner would re-serialize exactly the labour that entry exists to spread).
+   */
+  assignTo?: 'live-gate-owner';
 }
 
 /** Stable condition namespace for bridge residues with a known agent remedy. */
@@ -85,10 +102,12 @@ export const DEGRADATION_CONDITION_PREFIX = 'degraded:';
  * harness derivation is explicit per-entry rather than parsed.
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
-  { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical' },
+  // `assignTo: 'live-gate-owner'` on the gate and repair-queue entries below: see
+  // ActionableCondition.assignTo (gate-repair-plane-on-current-build-2026-10-15 P-004).
+  { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical', assignTo: 'live-gate-owner' },
   // P-008: reuse the lost-run sweep's existing keys and measured recovery.
-  { prefix: 'green-checkpoint-lost-run:', harnessFrom: 'suffix', severity: 'critical' },
-  { prefix: 'green-checkpoint-run-progress:', harnessFrom: 'suffix', severity: 'major' },
+  { prefix: 'green-checkpoint-lost-run:', harnessFrom: 'suffix', severity: 'critical', assignTo: 'live-gate-owner' },
+  { prefix: 'green-checkpoint-run-progress:', harnessFrom: 'suffix', severity: 'major', assignTo: 'live-gate-owner' },
   // P-005 (gate-ownership-followup-2026-08-08). A gate that FIRES hourly and reds
   // every time is not a stall — `green-stall:` above cannot see it (its legs are
   // fire-staleness and a 12h no-green backstop), so until this entry existed a plain
@@ -96,7 +115,7 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // `trackGateStall` (harness/routines/release-actions.ts) at the SAME edge that
   // already fires the urgent stall alert, so the condition's open/close cannot drift
   // from the state machine that decides the gate is stuck. Critical: `main` is frozen.
-  { prefix: 'gate-red-streak:', harnessFrom: 'suffix', severity: 'critical' },
+  { prefix: 'gate-red-streak:', harnessFrom: 'suffix', severity: 'critical', assignTo: 'live-gate-owner' },
   // WI-2141736 P-003 (frozen-candidate-freeze-actually-holds-2026-09-02). Distinct from
   // `gate-red-streak:` above, which says "the gate is red, own it". THIS one says the
   // frozen candidate is being HELD with no dispatchable fixer — so agent/human convergence
@@ -108,7 +127,12 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // converge call). Emitted by green-checkpoint's `routeFrozenRepairToAgents` dep on every
   // tick the hold holds; suffix is `pipelineName(integrationRoot)`, the same slug the other
   // gate entries use. Critical: it is the last path off a frozen `main`.
-  { prefix: FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'critical' },
+  {
+    prefix: FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX,
+    harnessFrom: 'suffix',
+    severity: 'critical',
+    assignTo: 'live-gate-owner',
+  },
   // green-main-cycle-time-2026-10-08 P-013 (D-028/D-029): ONE claimable item per failing
   // leg of the frozen queue, so the repair is not a single gate owner's serial labour —
   // any agent may claim a leg, fix it and admit the fix (admission needs no gate
@@ -116,7 +140,8 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // it leaves, never per-tick. Major, not critical: the convergence and red-streak items
   // above already carry the stop-the-line severity for the queue as a whole.
   { prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX, harnessFrom: 'leading-segment', severity: 'major' },
-  { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
+  // `main` lagging `staging` is the gate not promoting, so it is the gate owner's too.
+  { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major', assignTo: 'live-gate-owner' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'single-primary:', harnessFrom: 'ambient', severity: 'critical' },

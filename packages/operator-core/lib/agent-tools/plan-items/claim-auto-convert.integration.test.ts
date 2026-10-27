@@ -17,7 +17,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -117,6 +117,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   // The convert→claim path reaches the claim door, which reads adv_sessions, event_awaits
   // and the other claim-path tables (WI-10005130 / WI-10005225).
@@ -166,7 +167,7 @@ describe('plan_items:claim ENFORCEMENT (work-queue-completeness Phase A)', () =>
     // a single inline claim is n=1 → { ok, results:[one], counts }; the per-item
     // result carries the same claim/convert payload the single call always returned.
     const env = await call(claim, { plan: PLAN, item: 'P-001' }, ctxA);
-    expect(env.ok).toBe(true);
+    expect(env.ok, JSON.stringify(env)).toBe(true);
     expect(env.counts).toEqual({ ok: 1, failed: 0 });
     const res = env.results[0];
     expect(res.ok).toBe(true);
@@ -176,6 +177,7 @@ describe('plan_items:claim ENFORCEMENT (work-queue-completeness Phase A)', () =>
     expect(res.convertStatus).toBe('converted');
     expect(res.workItem).toBeTruthy();
     expect(res.workItem.id).toBe('WI-1');
+    expect(res.workItem.kind).toBe('change'); // inferred coding profile; task would bypass executable proof
 
     // The plan-item lease is held by the caller.
     expect(res.result.claim.owner).toBe('sess-A');

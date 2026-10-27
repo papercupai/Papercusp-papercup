@@ -75,11 +75,12 @@ export function resolveRecordedGitDir(repoRoot: string): string | null;
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string | null} [o.runnerIdentity] Explicit runtime proof identity; unknown means run fresh.
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @param {string | null} [o.gitDir] the reading checkout's object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, gitDir }: {
+export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, runnerIdentity, gitDir }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -87,6 +88,7 @@ export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, 
     };
     workspaceName: string;
     repoRoot: string;
+    runnerIdentity?: string | null | undefined;
     files?: string[] | undefined;
     gitDir?: string | null | undefined;
 }): Promise<{
@@ -111,12 +113,13 @@ export function rowsToReuseProofs(rows: Array<Record<string, unknown>>): Map<str
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string | null} [o.runnerIdentity] Filter before newest-per-file selection; unknown means run fresh.
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
  * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export function loadReuseProofs({ client, workspaceName, runContext, files, repoRoot, gitDir, }: {
+export function loadReuseProofs({ client, workspaceName, runContext, files, runnerIdentity, repoRoot, gitDir, }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -124,6 +127,7 @@ export function loadReuseProofs({ client, workspaceName, runContext, files, repo
     };
     workspaceName: string;
     runContext: string;
+    runnerIdentity?: string | null | undefined;
     files?: string[] | undefined;
     repoRoot?: string | undefined;
     gitDir?: string | null | undefined;
@@ -139,11 +143,12 @@ export function loadReuseProofs({ client, workspaceName, runContext, files, repo
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string | null} [o.runnerIdentity] Membership is scoped to the requested runtime; unknown means run fresh.
  * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
  * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ files: string[], rows: number }>}
  */
-export function loadReuseProofFiles({ client, workspaceName, runContext, repoRoot, gitDir, }: {
+export function loadReuseProofFiles({ client, workspaceName, runContext, runnerIdentity, repoRoot, gitDir, }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -151,6 +156,7 @@ export function loadReuseProofFiles({ client, workspaceName, runContext, repoRoo
     };
     workspaceName: string;
     runContext: string;
+    runnerIdentity?: string | null | undefined;
     repoRoot?: string | undefined;
     gitDir?: string | null | undefined;
 }): Promise<{

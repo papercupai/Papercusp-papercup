@@ -56,6 +56,8 @@ import { activationDeclarationReadiness, previewPlanStartConsult } from './get-a
 import { getBuildInfo } from '../../build-info';
 import { readPlanItemAnchors } from '../../plan-items/anchor-store';
 import { renderAnchorLine } from '../../plan-items/anchors';
+import { parsePlan } from '@papercusp/plan-parser';
+import { getPlanRevisionSnapshot } from './revisions';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -121,12 +123,16 @@ const argsSchema = z
       .max(100)
       .optional()
       .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
+    revision: z
+      .union([z.number().int().positive().max(Number.MAX_SAFE_INTEGER), z.string().regex(/^[a-f0-9]{64}$/)])
+      .optional()
+      .describe('Immutable revision sequence or content hash from plans:revisions. Requires one slug. Reads only that scoped snapshot, never falls back to current content, and omits live enrichments and the current CAS version. Heading, decision and item selectors still apply.'),
     items: z
       .array(z.string().min(1))
       .max(100)
       .optional()
       .describe(
-        'Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.',
+        'Select P-NNN item records. Counts cover the whole plan; itemSelection reports requested/matched/missing ids.',
       ),
     // EI-22056792132086608: plans:items' selector is `itemIds`, so a caller
     // moving between the two tools writes `itemIds` here and hits invalid_args
@@ -255,7 +261,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Ask for the side-effect-free activation readiness preview. Returns `activationReadiness.consult` with the same selected candidates, evidence, selection provenance, and honest no-responder/degraded outcome that `plans:start` would evaluate — without opening a consult or changing the plan. Use this before `plans:audit { phase:'activation' }` or plans:start so feedback can shape first-class clauses early.",
+        "Read-only activation preview: activationReadiness.consult gives plans:start's candidates, evidence, provenance and no-responder/degraded outcome, without opening a consult. Read before activation audit/start to shape clauses.",
       ),
     efficiency: z
       .boolean()
@@ -266,6 +272,15 @@ const argsSchema = z
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
     message: 'Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.',
+  })
+  .refine((v) => v.revision === undefined || (!!v.slug && !v.slugs?.length), {
+    message: 'revision requires one slug, without slugs.',
+  })
+  .refine((v) => v.revision === undefined || !(
+    v.includeEnrichments || v.includeHistory || v.priorAttemptRefs?.length ||
+    v.shipReadiness || v.activationReadiness || v.operationalBrief || v.efficiency || v.current?.length
+  ), {
+    message: 'revision reads immutable content only; live enrichments, history and readiness options require a separate current read.',
   });
 
 interface PlanSection {
@@ -593,6 +608,10 @@ export function narrowDecisionPayload<T extends { id: string }>(
     'filename',
     'forcedPast',
     'counts',
+    'readSource',
+    'revision',
+    'revisionId',
+    'contentSnapshotHash',
   ]);
   for (const [key, value] of Object.entries(base)) {
     if (!identityFields.has(key)) continue;
@@ -636,6 +655,7 @@ export function narrowDecisionPayload<T extends { id: string }>(
       call: {
         ...(typeof out.slug === 'string' ? { slug: out.slug } : {}),
         ...(typeof out.harness === 'string' ? { harness: out.harness } : {}),
+        ...(typeof out.revision === 'number' ? { revision: out.revision } : {}),
         decisions: deferred,
       },
     };
@@ -745,6 +765,64 @@ export default defineTool({
       args.decisionId || decisionSelectors?.length
         ? [...new Set([...(args.decisionId ? [args.decisionId] : []), ...(decisionSelectors ?? [])])]
         : null;
+    // Historical citations must never acquire today's lifecycle, audit, anchors,
+    // history or CAS version. Use the existing scoped revision spine and return
+    // before the mutable cache/enrichment pipeline, including judge decorations.
+    if (args.revision !== undefined) {
+      const revisionScope = await resolvePlanScope(opts);
+      const env = await runBulk(slugs, async (slug) => {
+        const snapshot = await getPlanRevisionSnapshot(slug, args.revision!, revisionScope);
+        if (!snapshot) return { ok: false as const, slug, error: 'revision_not_found', revision: args.revision };
+        const parsed = parsePlan(snapshot.contentSnapshot);
+        const sections = splitSections(parsed.prose);
+        const selectedItems = requestedItemIdSet
+          ? parsed.items.filter((item) => requestedItemIdSet.has(item.id))
+          : parsed.items;
+        const itemSelection = requestedItemIds ? {
+          requested: requestedItemIds,
+          matched: selectedItems.map((item) => item.id),
+          missing: requestedItemIds.filter((id) => !selectedItems.some((item) => item.id === id)),
+        } : undefined;
+        const items = mode === 'full' ? selectedItems : selectedItems.map(({ rawLine: _rawLine, ...rest }) => rest);
+        const base = {
+          slug,
+          harness: revisionScope.harnessSlug,
+          readSource: 'revision' as const,
+          revision: snapshot.seq,
+          revisionId: snapshot.id,
+          contentHash: snapshot.contentHash,
+          contentSnapshotHash: snapshot.contentSnapshotHash,
+          legacy: parsed.isLegacy,
+          frontmatter: parsed.frontmatter,
+          now: parsed.now,
+          counts: { items: parsed.items.length, decisions: parsed.decisions.length, sections: sections.length },
+          sectionIndex: sections.map(({ heading, level, chars }) => ({ heading, level, chars })),
+        };
+        if (requestedDecisionIds) {
+          return {
+            ok: true as const,
+            ...narrowDecisionPayload(base, requestedDecisionIds,
+              parsed.decisions.filter((decision) => requestedDecisionIds.includes(decision.id)),
+              decisionPageBudgetChars(ctxAny.ownerId, 1)),
+            ...(itemSelection ? { items, itemSelection } : {}),
+          };
+        }
+        if (args.heading) return {
+          ok: true as const,
+          ...narrowHeadingPayload(base, args.heading, findSection(sections, args.heading)),
+        };
+        if (mode === 'meta') return { ok: true as const, ...base, ...(itemSelection ? { itemSelection } : {}) };
+        return {
+          ok: true as const,
+          ...base,
+          items,
+          ...(itemSelection ? { itemSelection } : {}),
+          decisions: mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions),
+          ...(mode === 'full' ? { prose: parsed.prose, ...(includeRaw ? { raw: parsed.raw } : {}) } : {}),
+        };
+      }, { keyOf: (slug) => ({ slug }) });
+      return bulkContent(env);
+    }
     // Keep diagnostics in the invocation ledger, outside the cached payload.
     // Stage times include awaited IO and synchronous work since the prior mark;
     // they are wall time, not database-only or CPU time.
@@ -1232,16 +1310,32 @@ export default defineTool({
               id: it.id,
               deliverable: (it as { deliverable?: string | null }).deliverable,
             }));
-            let itemTypes: PlanVerificationSummary['itemTypes'] = null;
+            const verificationPlan = {
+              verificationProfile: row.verificationProfile,
+              verificationProfileSource: row.verificationProfileSource,
+              planType: typeof parsed.frontmatter.type === 'string' ? parsed.frontmatter.type : null,
+            };
+            const typeScope = {
+              workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID,
+              harnessSlug: row.harnessSlug,
+              planSlug: row.planSlug,
+            };
+            // The built-in resolver remains fail-safe if the workspace registry cannot be read.
+            let verification: PlanVerificationSummary = {
+              ...summarizePlanVerification(verificationPlan, verificationItems), itemTypes: null,
+            };
             try {
-              const { readItemTypeChecklist } = await import('../../plan-types/item-type-contract');
-              itemTypes = await readItemTypeChecklist(
-                { workspaceId: row.workspaceId ?? DEFAULT_WORKSPACE_ID, harnessSlug: row.harnessSlug, planSlug: row.planSlug },
-                { verificationProfile: row.verificationProfile, content: parsed.raw },
-                verificationItems,
-              );
+              const [{ readItemTypeChecklist }, { withPinnedPlanTypes }] = await Promise.all([
+                import('../../plan-types/item-type-contract'), import('../../plan-types/pins'),
+              ]);
+              verification = await withPinnedPlanTypes(typeScope, async () => ({
+                ...summarizePlanVerification(verificationPlan, verificationItems),
+                itemTypes: await readItemTypeChecklist(
+                  typeScope, { verificationProfile: row.verificationProfile, content: parsed.raw }, verificationItems,
+                ),
+              }));
             } catch {
-              itemTypes = null;
+              // Keep the conservative module summary and mark completion requirements unread.
             }
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
@@ -1309,7 +1403,7 @@ export default defineTool({
               // ever been shipped through an explicit code-truth waiver.
               forcedPast: row.forcedPast,
               // plan-verification-profiles P-002 (R-4): the checklist this plan is held to.
-              verification: { ...summarizePlanVerification(row, verificationItems), itemTypes },
+              verification,
               sectionIndex: sections.map((s) => ({
                 heading: s.heading,
                 level: s.level,

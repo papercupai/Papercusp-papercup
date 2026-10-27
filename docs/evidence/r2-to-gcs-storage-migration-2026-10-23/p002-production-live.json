@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "r2gcs-p002-production-http-v1",
+  "observedAt": "2026-10-26T19:34:34.182Z",
+  "workItem": "WI-6554700010025561",
+  "runtime": "deployed Cloudflare Worker backed by private GCS",
+  "workerVersion": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+  "baseUrl": "https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/",
+  "deployment": {
+    "command": "npm run deploy",
+    "pendingMigrationApplied": "049_type_packs.sql",
+    "bucket": "pc-p317-host-bundle-20260917",
+    "installedSecretNames": ["GCS_SERVICE_ACCOUNT_JSON", "RELEASE_PATH_PREFIX"],
+    "deployedBindingsReadback": "GCS_BUCKET and both GCS secrets present; no r2_bucket binding",
+    "deploymentLog": "/tmp/f9dd6-p002-worker-production-deploy.log",
+    "versionReadback": "/tmp/f9dd6-p002-production-worker-version.json"
+  },
+  "checks": [
+    {
+      "name": "server.tgz",
+      "status": 200,
+      "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+      "sizeBytes": 2118168717,
+      "headStatus": 200,
+      "headContentLength": "2118168717",
+      "cacheControl": "public, max-age=31536000, immutable",
+      "ok": true
+    },
+    {
+      "name": "server.tgz.minisig",
+      "status": 200,
+      "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+      "sizeBytes": 295,
+      "headStatus": 200,
+      "cacheControl": "public, max-age=31536000, immutable",
+      "ok": true
+    },
+    {
+      "name": "manifest.json",
+      "status": 200,
+      "sha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+      "sizeBytes": 12555,
+      "headStatus": 200,
+      "cacheControl": "public, max-age=31536000, immutable",
+      "ok": true
+    },
+    {
+      "name": "sbom.cdx.json",
+      "status": 200,
+      "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+      "sizeBytes": 800554,
+      "headStatus": 200,
+      "headContentLength": "800554",
+      "cacheControl": "public, max-age=31536000, immutable",
+      "ok": true
+    },
+    {"name": "raw-bucket-anonymous-denied", "status": 403, "ok": true}
+  ],
+  "verification": {
+    "helper": "scripts/lib/workspace-host-gcs-publication.mjs#verifyGcsPublicBytes",
+    "expectedIdentities": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-worker-live.json",
+    "method": "Anonymous production GET streams hashed in full and compared with admitted size and SHA-256; HEAD and direct raw-bucket denial also observed.",
+    "tests": [
+      {"file": "apps/operator-public/src/routes/gcs-storage.test.ts", "runId": "b05a1717-af8c-4410-b572-77f235ee75bb", "result": "pass"},
+      {"file": "apps/operator-public/src/routes/release-files.test.ts", "runId": "a88ccb74-1e83-437e-bd41-343946c881ad", "result": "pass"},
+      {"file": "apps/operator-public/src/routes/workspace-host-artifacts.test.ts", "runId": "7eb0b942-9f82-4ca9-b7f7-cbbabf002dc1", "result": "pass", "foregroundRecoveryFrom": "550f6d88-e194-432b-8fcc-3769046cf0c6"}
+    ]
+  },
+  "result": "pass",
+  "productionDeployed": true,
+  "independentAcceptance": false,
+  "originalJournal": {
+    "schemaVersion": 1,
+    "taskId": "0mvkl22i0febmllzn1h",
+    "operationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+    "sourceSha": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "version": "0.0.21-p544q20261023r2"
+  },
+  "sourceRetained": true,
+  "inaccessibleSourceException": "WI-6554700010025592",
+  "limitations": [
+    "Production byte delivery proof does not establish independent acceptance or full migration completion.",
+    "Inaccessible original R2 populations and migration-window completeness remain unknown and owned by WI-6554700010025592.",
+    "P003 candidate publication and explicit legacy-client recovery remain separate obligations under D-006."
+  ]
+}

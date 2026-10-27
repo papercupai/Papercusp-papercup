@@ -109,6 +109,13 @@ export interface FleetBriefDelta {
   members: DeltaAxis & {
     joined: number | null;
     left: number | null;
+    /**
+     * Of `joined`, the launches that never made a call past the boot grace — dead at boot,
+     * not seat turnover (EI-27031443048618869). Null when unmeasured.
+     */
+    neverActive: number | null;
+    /** Of `joined`, the launches still inside the boot grace with no call yet. Null when unmeasured. */
+    bootPending: number | null;
     /** Shown-count movement, which also moves when a member merely goes stale-idle. */
     counted: DeltaAxis;
   };
@@ -221,6 +228,12 @@ export function differenceAxis(
 export interface MembershipChurn {
   joined: number;
   left: number;
+  /**
+   * Of `joined`: dead launches and still-booting launches (fleet-membership-store
+   * readJoinActivation). Null when the activation read failed — unknown, never zero.
+   */
+  neverActive: number | null;
+  pending: number | null;
 }
 
 /** The closes half, supplied by the caller from the burn-down delta. */
@@ -265,6 +278,8 @@ export function computeFleetBriefDelta(input: {
       ...roster,
       joined: churn?.joined ?? null,
       left: churn?.left ?? null,
+      neverActive: churn?.neverActive ?? null,
+      bootPending: churn?.pending ?? null,
       counted,
     },
     closes: { ...closesAxis, isFloor: closes.isFloor },
@@ -288,8 +303,12 @@ export function describeFleetBriefDelta(delta: FleetBriefDelta): string {
     if (delta.members.joined !== null && delta.members.left !== null) {
       const churned = delta.members.joined + delta.members.left;
       // Churn the net difference cannot show: a member who joined AND left inside the window.
-      if (churned > Math.abs(delta.members.delta)) {
-        m += ` (${delta.members.joined} joined / ${delta.members.left} left)`;
+      // Dead launches are ALWAYS named: a raw join count that hides them reads as seat
+      // turnover (EI-27031443048618869), whether or not the net difference already shows it.
+      const dead = delta.members.neverActive ?? 0;
+      if (churned > Math.abs(delta.members.delta) || dead > 0) {
+        const deadNote = dead > 0 ? `, ${dead} never made a call` : '';
+        m += ` (${delta.members.joined} joined${deadNote} / ${delta.members.left} left)`;
       }
     }
     parts.push(m);

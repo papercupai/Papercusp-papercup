@@ -21,6 +21,10 @@
  */
 import { test, expect, type Page, type Route } from './_egress';
 import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import postgres from 'postgres';
+import { admitConverseTurn } from '../../../packages/operator-core/lib/agent-tools/operator/converse-turn';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -342,4 +346,145 @@ test.describe('/adv Conversations + Sessions e2e', () => {
 
     sync.assertServed('advRoster.list', 'agentDetail.byOwner');
   });
+});
+
+// This journey deliberately uses the migrated disposable database and the
+// serving application's real routes. The existing /adv fixtures above cover
+// presentation only; their route stubs cannot establish session authority.
+test('P010 owner public session journeys', async ({ page, request }, info) => {
+  test.setTimeout(180_000);
+  expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
+  expect(process.env.VERIFY_TAURI_ISOLATED_SEED).toBe('ready');
+  const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
+  expect(workspace).toMatch(/^verify-tauri-isolated-/);
+  const database = new URL(process.env.HARNESS_ADMIN_DATABASE_URL!);
+  expect(['localhost', '127.0.0.1']).toContain(database.hostname);
+  expect(database.port).not.toBe('5432');
+  expect(database.port).not.toBe('');
+  const sql = postgres(database.toString(), { max: 1, onnotice: () => {} });
+  const conversationId = randomUUID();
+  const unrelatedId = randomUUID();
+  const unrelatedTurnId = randomUUID();
+  const ownerName = `p010-owner-${randomUUID()}`;
+  const ownerBearer = randomUUID();
+  const sessions = [0, 1].map(() => ({ id: randomUUID(), bearer: randomUUID() }));
+  const owner = { conversationId, turnId: randomUUID() };
+  const publicTurns = sessions.map(() => ({ conversationId, turnId: randomUUID() }));
+  const post = (body: object) => request.post(`${baseURL}/api/agent-mcp/operator-converse`, {
+    headers: { origin: baseURL, 'x-papercusp-workspace': workspace },
+    data: { chatProtocolVersion: 1, ...body }, timeout: 15_000,
+  });
+  const replay = (identity: typeof owner, session?: typeof sessions[number]) => post({
+    operation: 'reconnect', ...identity, afterSequence: 0,
+    ...(session ? { hostTrust: 'public', principalToken: session.bearer } : {}),
+  });
+  try {
+    await sql.unsafe(`INSERT INTO harness_shared.operator_conversations
+      (id,workspace_id,status,started_at,subject_kind) VALUES
+      ($1,$3,'active',$4,'global'),($2,$3,'done',$4,'global')`,
+    [conversationId, unrelatedId, workspace, Date.now() + 10_000]);
+    await sql.unsafe(`INSERT INTO harness_shared.operator_turns
+      (id,conversation_id,workspace_id,seq,role,text,source,created_at)
+      VALUES ($1,$2,$3,0,'user','P010 unrelated session remains intact','text_typed',$4)`,
+    [unrelatedTurnId, unrelatedId, workspace, Date.now()]);
+    const unrelatedBefore = await sql.unsafe(`SELECT * FROM harness_shared.operator_turns
+      WHERE conversation_id=$1`, [unrelatedId]);
+    await sql.unsafe(`INSERT INTO harness_shared.system_principals
+      (workspace_id,name,bearer_hash,capabilities) VALUES ($1,$2,$3,'["chat:write"]')`,
+    [workspace, ownerName, createHash('sha256').update(ownerBearer).digest('hex')]);
+    await sql.unsafe(`INSERT INTO harness_shared.token_index (workspace_id,harness_slug,kind,token)
+      VALUES ($1,$2,'system',$3)`, [workspace, `system:${ownerName}`, ownerBearer]);
+    for (const session of sessions) {
+      await sql.unsafe(`INSERT INTO harness_shared.pi_sessions
+        (workspace_id,session_id,bearer_hash,capabilities,allowed_tools,expires_at)
+        VALUES ($1,$2,$3,'["chat:write"]','["chat:ask_choice"]',clock_timestamp()+interval '1 hour')`,
+      [workspace, session.id, createHash('sha256').update(session.bearer).digest('hex')]);
+      await sql.unsafe(`INSERT INTO harness_shared.token_index (workspace_id,harness_slug,kind,token)
+        VALUES ($1,$2,'pi',$3)`, [workspace, `pi:${session.id}`, session.bearer]);
+    }
+
+    // Admission and publication use the production PG adapter. This fixture
+    // supplies completed provider output; it makes no model/delegation claim.
+    const save = async (identity: typeof owner, credential:
+      { kind: 'system'; name: string; bearer: string } | { kind: 'pi'; sessionId: string; bearer: string }, text: string) => {
+      const principalId = credential.kind === 'system' ? `system:${credential.name}` : `pi:${credential.sessionId}`;
+      const turn = await admitConverseTurn({ options: { sql, workspaceId: workspace, turn: identity,
+        scope: { principalId, tenantId: workspace, customerId: principalId, publicOwnerId: principalId } },
+      credential, capability: 'chat:write', toolName: 'chat:ask_choice', runId: randomUUID(), source: 'text_typed' });
+      await turn.publish({ type: 'delta', text }, () => {});
+      await turn.finalize({ status: 'completed', text });
+    };
+    const beforeUnknown = await sql.unsafe('SELECT id FROM harness_shared.operator_turns WHERE workspace_id=$1', [workspace]);
+    expect((await post({ chatProtocolVersion: 99, messages: [{ role: 'user', content: 'reject before admission' }] })).status()).toBe(400);
+    expect(await sql.unsafe('SELECT id FROM harness_shared.operator_turns WHERE workspace_id=$1', [workspace])).toEqual(beforeUnknown);
+    await save(owner, { kind: 'system', name: ownerName, bearer: ownerBearer }, 'P010 owner persisted reply');
+    for (const [index, session] of sessions.entries()) await save(publicTurns[index],
+      { kind: 'pi', sessionId: session.id, bearer: session.bearer }, `P010 public session ${index} persisted reply`);
+
+    const fixture = await sql.unsafe(`SELECT id,workspace_id,status,subject_kind,subject_ref,
+      current_database() AS database,inet_server_port() AS port FROM harness_shared.operator_conversations
+      WHERE id=$1`, [conversationId]);
+    const current = await request.get(`${baseURL}/api/zero-harness/rest-query`, {
+      params: { name: 'operatorConversations.current', args: JSON.stringify({ workspaceId: workspace }) },
+      headers: { 'x-papercusp-workspace': workspace },
+    });
+    const currentBody = await current.json();
+    await info.attach('p010-owner-public-fixture-readback', { body: JSON.stringify({ fixture,
+      status: current.status(), current: currentBody }), contentType: 'application/json' });
+    expect(fixture).toMatchObject([{ id: conversationId, workspace_id: workspace, status: 'active', subject_ref: null }]);
+    expect(current.status()).toBe(200);
+    expect(currentBody.rows).toMatchObject([{ id: conversationId, workspaceId: workspace }]);
+
+    await page.goto(`${baseURL}/?chat=true`);
+    const sidebar = page.getByRole('complementary', { name: 'Papercup chat' });
+    await expect(sidebar).toContainText('P010 owner persisted reply');
+    await expect(sidebar).toContainText('P010 public session 0 persisted reply');
+    await page.reload();
+    await expect(sidebar).toContainText('P010 owner persisted reply');
+    await expect(sidebar).toContainText('P010 public session 1 persisted reply');
+
+    const ownerReplay = await replay(owner);
+    expect(ownerReplay.status()).toBe(200);
+    const ownerFrames = await ownerReplay.text();
+    expect(ownerFrames).toContain('P010 owner persisted reply');
+    expect(ownerFrames).toContain(owner.turnId);
+    expect(ownerFrames).toContain('event: done');
+    for (const [index, session] of sessions.entries()) {
+      const own = await replay(publicTurns[index], session);
+      expect(own.status()).toBe(200);
+      expect(await own.text()).toContain(`P010 public session ${index} persisted reply`);
+      for (const forbidden of [owner, publicTurns[1 - index]]) {
+        const denied = await replay(forbidden, session);
+        expect(denied.status()).toBe(403);
+        expect(await denied.text()).not.toContain('persisted reply');
+      }
+    }
+
+    // A page already showing the reply is never an authorization cache.
+    await sql.unsafe(`UPDATE harness_shared.pi_sessions SET ended_at=clock_timestamp()
+      WHERE workspace_id=$1 AND session_id=$2`, [workspace, sessions[0].id]);
+    const revoked = await page.evaluate(async ({ url, body }) => {
+      const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body) });
+      return { status: response.status, text: await response.text() };
+    }, { url: `${baseURL}/api/agent-mcp/operator-converse`, body: { chatProtocolVersion: 1,
+      operation: 'reconnect', ...publicTurns[0], afterSequence: 0,
+      hostTrust: 'public', principalToken: sessions[0].bearer } });
+    expect(revoked.status).toBe(403);
+    expect(revoked.text).not.toContain('persisted reply');
+    expect((await replay(publicTurns[1], sessions[1])).status()).toBe(200);
+    expect((await replay(owner)).status()).toBe(200);
+    const turns = await sql.unsafe(`SELECT id,chat_state->'execution'->>'status' AS status
+      FROM harness_shared.operator_turns WHERE conversation_id=$1 ORDER BY seq`, [conversationId]);
+    expect(turns).toEqual([owner, ...publicTurns].map(turn => ({ id: turn.turnId, status: 'completed' })));
+    expect(await sql.unsafe('SELECT * FROM harness_shared.operator_turns WHERE conversation_id=$1', [unrelatedId])).toEqual(unrelatedBefore);
+    await info.attach('p010-owner-public-session-states', { body: await page.screenshot(), contentType: 'image/png' });
+    await info.attach('p010-owner-public-session-identity', { body: JSON.stringify({
+      conversationId, ownerTurnId: owner.turnId, publicTurnIds: publicTurns.map(turn => turn.turnId),
+      unrelatedId, unrelatedTurnId, rows: turns.length, revoked: revoked.status,
+    }), contentType: 'application/json' });
+    if (process.env.VERIFY_TAURI_SOURCE_RECEIPT) await info.attach('p010-owner-public-source', {
+      body: await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT), contentType: 'application/json',
+    });
+  } finally { await sql.end({ timeout: 5 }); }
 });

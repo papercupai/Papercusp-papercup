@@ -4,6 +4,7 @@ import { AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS, AWS_WORKSPACE_HOST_PERMISSION_ACT
 import {
   AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID,
   AWS_CUSTOMER_SETUP_CONNECTION_FIELDS,
+  awsCanaryDeadlineStackFragment,
   awsCustomerSetupTemplate,
   awsWorkspaceHostLeastPrivilegePolicy,
 } from './aws-customer-setup-template';
@@ -12,6 +13,10 @@ import { awsSpotServiceLinkedRoleStatement, hostedAwsHostStackFragment } from '.
 
 const ACCOUNT = '123456789012';
 const REGION = 'eu-west-2';
+const CANARY_NOW = Date.parse('2026-10-23T03:00:00.000Z');
+const CANARY = { runId: 'p544-trial-20261023', workspaceId: 'hosted-fixture-p544-trial',
+  organizationId: 'org-p544', hostId: 'host-p544', workloadDeadlineAt: '2026-10-23T03:30:00.000Z',
+  teardownDeadlineAt: '2026-10-23T03:41:00.000Z' };
 
 type Doc = {
   Rules: Record<string, { Assertions: Array<{ Assert: unknown }> }>;
@@ -44,6 +49,70 @@ function referencedLogicalIds(value: unknown, into: Set<string> = new Set()): Se
   }
   return into;
 }
+
+describe('finite AWS qualification foundation in the existing customer stack', () => {
+  it('binds the genuine isolated runtime workspace into cleanup and launcher confinement', () => {
+    const workspaceId = 'test-runtime-p544-private-20261023';
+    const f = awsCanaryDeadlineStackFragment({ ...CANARY, workspaceId,
+      accountId: ACCOUNT, region: REGION, principalArn: `arn:aws:iam::${ACCOUNT}:role/admin` }, CANARY_NOW);
+    expect(f.plan.document.mainSteps[1].inputs.InputPayload.filters).toContainEqual({
+      Name: 'tag:papercusp:workspace-id', Values: [workspaceId] });
+    expect(f.plan.cleanupPolicy.Statement[1].Condition.StringEquals).toMatchObject({
+      'ec2:ResourceTag/papercusp:workspace-id': workspaceId });
+    expect(f.Resources.CanaryLauncherRole.Properties.Policies[0].PolicyDocument.Statement).toContainEqual({
+      Effect: 'Deny', Action: 'ec2:CreateSnapshot', Resource: [`arn:aws:ec2:${REGION}::snapshot/*`],
+      Condition: { StringNotEquals: { 'aws:RequestTag/papercusp:workspace-id': workspaceId } } });
+  });
+
+  it('adds dedicated roles and a versioned SSM document without changing the ordinary operator policy', () => {
+    const ordinary = doc();
+    const finite = awsCustomerSetupTemplate({ accountId: ACCOUNT, region: REGION, finiteCanary: CANARY }, CANARY_NOW).document as unknown as Doc;
+    expect(operatorRole(finite)).toEqual(operatorRole(ordinary));
+    expect(ordinary.Resources).not.toHaveProperty('CanaryLauncherRole');
+    expect(finite.Resources.CanaryLauncherRole.Type).toBe('AWS::IAM::Role');
+    expect(finite.Resources.CanaryDeadlineDocument.Properties).toMatchObject({
+      DocumentType: 'Automation', UpdateMethod: 'NewVersion', Content: { schemaVersion: '0.3' } });
+    expect(cloudFormationDanglingReferences(finite)).toEqual([]);
+    expect(finite.Outputs.CanaryDocumentVersion.Value).toBe('1');
+  });
+
+  it('reuses host confinement and separately denies each wrong creation tag before the cutoff', () => {
+    const f = awsCanaryDeadlineStackFragment({ ...CANARY, accountId: ACCOUNT, region: REGION,
+      principalArn: `arn:aws:iam::${ACCOUNT}:role/admin` }, CANARY_NOW);
+    const statements = f.Resources.CanaryLauncherRole.Properties.Policies[0].PolicyDocument.Statement as Array<{
+      Sid?: string; Effect: string; Action: string | string[]; Resource: string | string[]; Condition?: Record<string, unknown>;
+    }>;
+    expect(statements.some(s => s.Sid === 'TagOnlyAtCreation')).toBe(true);
+    expect(statements.some(s => s.Sid === 'NoCreationAfterTrialCutoff')).toBe(true);
+    const creationDenies = statements.filter(s => s.Effect === 'Deny' && s.Condition?.StringNotEquals);
+    expect(creationDenies).toHaveLength(6);
+    for (const deny of creationDenies) expect(Object.keys(deny.Condition!.StringNotEquals as object)).toHaveLength(1);
+    expect(creationDenies).toContainEqual({ Effect: 'Deny', Action: 'ec2:CreateSnapshot',
+      Resource: [`arn:aws:ec2:${REGION}::snapshot/*`],
+      Condition: { StringNotEquals: { 'aws:RequestTag/papercusp:workspace-id': CANARY.workspaceId } } });
+    expect(statements.some(s => Array.isArray(s.Action) && s.Action.includes('iam:PutRolePolicy'))).toBe(false);
+  });
+
+  it('confines the cleanup service trust and leaves no scheduling or guest-execution dependency', () => {
+    const f = awsCanaryDeadlineStackFragment({ ...CANARY, accountId: ACCOUNT, region: REGION,
+      principalArn: `arn:aws:iam::${ACCOUNT}:role/admin` }, CANARY_NOW);
+    expect(f.Resources.CanaryCleanupRole.Properties.AssumeRolePolicyDocument.Statement).toEqual([
+      { Effect: 'Allow', Principal: { Service: 'ssm.amazonaws.com' }, Action: 'sts:AssumeRole', Condition: {
+        StringEquals: { 'aws:SourceAccount': ACCOUNT },
+        ArnLike: { 'aws:SourceArn': `arn:aws:ssm:${REGION}:${ACCOUNT}:automation-execution/*` },
+      } },
+    ]);
+    expect(Object.values(f.Resources).map(r => r.Type)).toEqual(['AWS::IAM::Role', 'AWS::IAM::Role', 'AWS::SSM::Document']);
+    expect(f.Resources.CanaryDeadlineDocument.Properties.Content).toEqual(f.plan.document);
+  });
+
+  it('refuses expired trials and a principal in another account before emitting a stack', () => {
+    expect(() => awsCustomerSetupTemplate({ accountId: ACCOUNT, region: REGION,
+      finiteCanary: CANARY }, Date.parse(CANARY.workloadDeadlineAt))).toThrow();
+    expect(() => awsCanaryDeadlineStackFragment({ ...CANARY, accountId: ACCOUNT, region: REGION,
+      principalArn: 'arn:aws:iam::999999999999:role/other' }, CANARY_NOW)).toThrow();
+  });
+});
 
 describe('awsCustomerSetupTemplate — the customer-run (desktop) AWS setup template (P-013 / D-011)', () => {
   it('grants the operator role exactly AWS_WORKSPACE_HOST_PERMISSION_ACTIONS and nothing broader', () => {

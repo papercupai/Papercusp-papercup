@@ -13,7 +13,8 @@
  *    sidecar owns the full per-harness substrate engine (Corestore + own-log +
  *    merge/projection loop + swarm/admission + outbox/presence send-side). The
  *    main process caches `RemoteBootedHarnessHandle` proxies and routes append /
- *    control calls over IPC. OFF (the default) remains byte-identical in-process.
+ *    control calls over IPC. Node hosts retain the optional in-process path.
+ *    Bun hosts require this existing Node boundary for native libuv capabilities.
  */
 
 import { getFlag } from '@papercusp/flags/server';
@@ -63,7 +64,7 @@ export interface BootSubstrateResult {
     harnessSlug: string;
     state: 'booted' | 'already-booted' | 'failed' | 'deferred';
     error?: string;
-    deferReason?: 'inactive';
+    deferReason?: 'inactive' | 'dogfood-hive-disabled';
   }>;
   usedSidecar: boolean;
   /** Whether the LAZY_SUBSTRATE_BOOT eviction reaper was started this boot. */
@@ -188,13 +189,15 @@ export function stopSubstrateEvictionReaper(): void {
 }
 
 /**
- * Boot substrate — via IPC sidecar if the (dark) SUBSTRATE_SIDECAR flag is ON,
- * else in-process — then start the LAZY_SUBSTRATE_BOOT reaper.
+ * Boot substrate through the retained Node IPC sidecar for Bun hosts, or when
+ * SUBSTRATE_SIDECAR is enabled on Node, then start the LAZY_SUBSTRATE_BOOT reaper.
  */
 export async function bootSubstrateWithFallback(
   opts?: BootSubstrateOpts,
 ): Promise<BootSubstrateResult> {
-  const useSidecar = await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system').catch(() => false);
+  const requiresNodeSidecar = Boolean(process.versions.bun);
+  const useSidecar = requiresNodeSidecar
+    || await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system').catch(() => false);
   // WI-3297 (flag-gated, default ON — the same gate substrate-sidecar-host reads):
   // durable PG merge-cursor for IN-PROCESS engines, so a packaged install (no
   // sidecar) resumes each admitted log's fold across restarts instead of
@@ -225,7 +228,7 @@ export async function bootSubstrateWithFallback(
   }
 
   try {
-    console.log('[substrate-boot] SUBSTRATE_SIDECAR on: spawning sidecar for relocated substrate boot');
+    console.log('[substrate-boot] spawning Node sidecar for relocated substrate boot');
     await spawnSubstrateSidecar();
     registerSidecarShutdownHooks();
     // WI-1877: arm the post-respawn reconcile BEFORE the first boot sweep below —
@@ -292,7 +295,9 @@ export async function bootSubstrateWithFallback(
   } catch (err) {
     observeFallback('substrate-sidecar-boot', { eligible: 1, applied: 0, reason: 'sidecar-boot-failed' });
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);
+    console.warn(requiresNodeSidecar
+      ? '[substrate-boot] sidecar spawn failed, refusing unsupported in-process Bun fallback:'
+      : '[substrate-boot] sidecar spawn failed, falling back to in-process:', msg);
     // WI-900 (M4): this catch also covers a PARTIAL mid-boot failure — the sidecar
     // spawned + passed healthz, `bootAllHarnessesForActiveWorkspace` ran routed
     // through it (line ~203 above), and some harnesses booted successfully via the
@@ -314,6 +319,11 @@ export async function bootSubstrateWithFallback(
         '[substrate-boot] stopSubstrateSidecar during fallback failed (continuing anyway):',
         e instanceof Error ? e.message : String(e),
       );
+    }
+    if (requiresNodeSidecar) {
+      throw new Error('Bun requires the retained Node substrate sidecar; in-process native fallback is unsupported', {
+        cause: err,
+      });
     }
     // Sidecar unavailable → clear the defaults so standalone boots use in-process.
     setSubstrateBootDefaults({ bootHarness: null, skipSendSideWiring: false, mergeCursorStoreFactory });

@@ -384,41 +384,96 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     );
   });
 
-  it('hydrates a selected coord-message from the exact inbox window when the latest attention page omits it', async () => {
+  it('keeps a selected live message actionable after 51 newer messages advance the attention window', async () => {
     const stale = {
       ...item,
       itemId: 'coord-message:older-message',
       ref: { kind: 'coord-message', msgId: 'older-message' },
     };
     h.getRunItems.mockResolvedValue([stale]);
-    h.callPlansRead.mockResolvedValue({ groups: [] });
-    h.getMessagesByIds.mockResolvedValue(new Map([
-      ['older-message', {
-        msg_id: 'older-message',
-        ts: '2026-10-16T12:00:00.000Z',
-        kind: 'message',
-        from: 'su-sender',
-        to: ['human'],
-        summary: 'An older selected message',
-        body: 'The message is still live.',
-      }],
-    ]));
+    const selected = { id: stale.itemId, ref: stale.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] };
+    let humanMessages = [selected];
+    h.callPlansRead.mockImplementation(async () => ({ groups: [{ items: humanMessages.slice(0, 50) }] }));
+    h.getMessagesByIds.mockResolvedValue(
+      new Map([
+        [
+          'older-message',
+          {
+            msg_id: 'older-message',
+            ts: '2026-10-16T12:00:00.000Z',
+            kind: 'message',
+            from: 'su-sender',
+            to: ['human'],
+            summary: 'An older selected message',
+            body: 'The message is still live.',
+          },
+        ],
+      ]),
+    );
 
-    const result = body(
+    const initial = body(
       await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never),
     );
+    expect(initial).toMatchObject({
+      ok: true,
+      items: [expect.objectContaining({ itemId: stale.itemId, actions: [expect.objectContaining({ id: 'ack' })] })],
+    });
+    expect(h.getMessagesByIds).not.toHaveBeenCalled();
+
+    humanMessages = [
+      ...Array.from({ length: 51 }, (_, i) => ({ ...selected, id: `coord-message:newer-${i}` })),
+      selected,
+    ];
+    const result = body(await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never));
 
     expect(h.getMessagesByIds).toHaveBeenCalledWith(['older-message']);
     expect(result).toMatchObject({
       ok: true,
-      items: [expect.objectContaining({
-        itemId: stale.itemId,
-        actions: [
-          { id: 'ack', label: 'Acknowledge', terminal: true },
-          { id: 'discuss', label: 'Discuss', terminal: false },
-        ],
-      })],
+      items: [
+        expect.objectContaining({
+          itemId: stale.itemId,
+          actions: [
+            { id: 'ack', label: 'Acknowledge', terminal: true },
+            { id: 'discuss', label: 'Discuss', terminal: false },
+          ],
+        }),
+      ],
     });
+  });
+
+  it.each(['acknowledged', 'removed'] as const)('does not restore actions for an older %s message', async (state) => {
+    const selected = {
+      ...item,
+      itemId: 'coord-message:older-message',
+      ref: { kind: 'coord-message', msgId: 'older-message' },
+    };
+    h.getRunItems.mockResolvedValue([selected]);
+    h.callPlansRead.mockResolvedValue({ groups: [] });
+    if (state === 'acknowledged') {
+      h.getMessagesByIds.mockResolvedValue(
+        new Map([
+          [
+            'older-message',
+            {
+              msg_id: 'older-message',
+              kind: 'message',
+              to: ['human'],
+              summary: 'Already acknowledged',
+            },
+          ],
+        ]),
+      );
+      h.readAckedMsgIds.mockResolvedValue(new Set(['older-message']));
+    }
+
+    const result = body(await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never));
+
+    expect(result).toMatchObject({
+      ok: true,
+      items: [expect.objectContaining({ itemId: selected.itemId, actions: [] })],
+    });
+    expect(h.getMessagesByIds).toHaveBeenCalledWith(['older-message']);
+    expect(h.readAckedMsgIds).toHaveBeenCalledWith('pc-admin-coord-ui');
   });
 });
 
@@ -1056,6 +1111,75 @@ describe('inbox:bulk-run-act authority boundary', () => {
     expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
     expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['acknowledged', 'removed'] as const)(
+    'refuses an older message %s after the manifest offered ack',
+    async (state) => {
+      const activeItem = {
+        ...item,
+        itemId: 'coord-message:older-message',
+        ref: { kind: 'coord-message', msgId: 'older-message' },
+      };
+      h.getRunItems.mockResolvedValue([activeItem]);
+      h.callPlansRead.mockResolvedValue({ groups: [] });
+      h.getMessagesByIds.mockResolvedValue(
+        new Map([
+          [
+            'older-message',
+            {
+              msg_id: 'older-message',
+              kind: 'message',
+              to: ['human'],
+              summary: 'Still live at manifest time',
+            },
+          ],
+        ]),
+      );
+
+      const manifest = body(
+        await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never),
+      );
+      expect(manifest).toMatchObject({
+        ok: true,
+        items: [
+          expect.objectContaining({
+            itemId: activeItem.itemId,
+            actions: expect.arrayContaining([expect.objectContaining({ id: 'ack', terminal: true })]),
+          }),
+        ],
+      });
+      h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => {
+        // Change source liveness only once inside the run-row authority window.
+        if (state === 'acknowledged') h.readAckedMsgIds.mockResolvedValue(new Set(['older-message']));
+        else h.getMessagesByIds.mockResolvedValue(new Map());
+        return { actionResult: await input.execute(), refused: null };
+      });
+
+      const result = body(
+        await bulkRunAct.handler(
+          {
+            runId: run.runId,
+            itemId: activeItem.itemId,
+            actionId: 'ack',
+            rationale: 'The prior manifest offered acknowledgement.',
+            confidenceLevel: 'high',
+          },
+          { workspaceId: run.workspaceId } as never,
+        ),
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: 'terminal_action_failed',
+        actionDispatched: false,
+        reconciliationRequired: false,
+      });
+      expect(result.message).toContain('not currently offered');
+      expect(h.getMessagesByIds).toHaveBeenCalledTimes(2);
+      expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+      expect(h.upsertTriage).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns a retryable action-discovery error before dispatching a terminal action', async () => {
     h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => {

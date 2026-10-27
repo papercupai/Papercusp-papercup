@@ -12,6 +12,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { fetchPresenceTier1 } from './presence-tier1';
 import { getDefaultWakeMode, setWakeMode } from './wake-mode';
 import { planItemRef } from '../../issue-blocks-merge';
+import { openAwaitsByOwner } from '../../adv-roster';
 
 const OWNER = `tier1-it-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -67,6 +68,51 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.awaitingNote).toBe('blocked on the run');
     expect(e!.wakeMode).toBe('manual');
     expect(e!.model).toBeNull(); // no running spawned_agents row for this owner
+  });
+
+  it('does not report an emitter declaration as a consumer wait', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy, note)
+      VALUES (${WS}, ${OWNER}, 'presence-test:source-ship', 'announce', 'Declaration only')
+    `;
+
+    expect((await fetchPresenceTier1([OWNER])).get(OWNER)).toMatchObject({
+      awaitingEvent: false,
+      awaitingEventKey: null,
+      awaitingNote: null,
+    });
+    expect((await openAwaitsByOwner([OWNER])).has(OWNER)).toBe(false);
+  });
+
+  it('keeps a real consumer wait visible when its owner declares a newer output gate', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, policy, note, created_at)
+      VALUES
+        (${WS}, ${OWNER}, 'presence-test:release-receipt', 'wake', 'Waiting for release receipt', now() - interval '1 second'),
+        (${WS}, ${OWNER}, 'presence-test:source-ship', 'announce', 'Declaration only', now())
+    `;
+
+    expect((await fetchPresenceTier1([OWNER])).get(OWNER)).toMatchObject({
+      awaitingEvent: true,
+      awaitingEventKey: 'presence-test:release-receipt',
+      awaitingNote: 'Waiting for release receipt',
+    });
+    expect((await openAwaitsByOwner([OWNER])).get(OWNER)).toMatchObject({
+      eventKey: 'presence-test:release-receipt',
+      note: 'Waiting for release receipt',
+    });
   });
 
   it('an unclaimed owner gets empty defaults (no rows, inherits the global default wake mode)', async (ctx) => {

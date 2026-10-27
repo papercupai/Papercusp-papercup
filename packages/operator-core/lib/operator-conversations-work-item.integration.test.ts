@@ -37,6 +37,11 @@ vi.mock('./workspace-registry', () => ({
 vi.mock('./sync-sse', () => ({
   notifySyncInvalidate: vi.fn(async () => {}),
 }));
+vi.mock('./endpoint-route/session-or-local', () => ({
+  getSessionUserOrLocalDefaultAuthority: async () => ({
+    user: { id: 'integration-owner', workspace_id: WS }, authorize: async () => true,
+  }),
+}));
 
 const {
   appendTurn,
@@ -89,6 +94,7 @@ beforeAll(async () => {
       audio_url text,
       created_at bigint NOT NULL,
       tools jsonb,
+      chat_state jsonb,
       report jsonb,
       workspace_id text NOT NULL,
       CONSTRAINT operator_turns_conv_seq UNIQUE (conversation_id, seq)
@@ -163,6 +169,12 @@ describe('work-item Papercup conversations (real Postgres)', () => {
       status: 'scoped',
     });
     expect(global).toMatchObject({ subjectKind: 'global', subjectRef: null, status: 'active' });
+    // Public route ids are untrusted text. Invalid UUIDs must be lookup
+    // misses, rather than PostgreSQL 22P02 errors escaping as HTTP 500.
+    for (const id of ['spec-fixture-id', 'with spaces', 'with/slash', '../../etc/passwd']) {
+      expect(await getConversationById(id, WS)).toBeNull();
+    }
+    expect(await getConversationById(a.id, WS)).toMatchObject({ id: a.id });
     expect(await getConversationById(a.id, 'ws-other')).toBeNull();
     expect(
       await getWorkItemConversation({
@@ -218,5 +230,22 @@ describe('work-item Papercup conversations (real Postgres)', () => {
         workItemId: 'WI-card-answer',
       })).id,
     ).toBe(conversation.id);
+  });
+
+  it('hydrates canonical result references from the existing durable state without confusing them with curator reports', async () => {
+    const conversation = await getOrCreateWorkItemConversation({ workspaceId: WS, harnessSlug: 'papercusp', workItemId: 'WI-result-view' });
+    const turn = await appendTurn({ conversationId: conversation.id, role: 'assistant', text: '' });
+    const block = { id: 'report-one', kind: 'report', title: 'Saved result', sources: [{ ref: 'report:r-one' }] };
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 1, results: [block] }), turn.id]);
+    const hydrated = (await listTurns(conversation.id)).find(item => item.id === turn.id)!;
+    expect(hydrated.results).toEqual([block]);
+    expect(hydrated.report).toBeNull();
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 1, results: [{ ...block, sources: [] }] }), turn.id]);
+    await expect(listTurns(conversation.id)).rejects.toThrow('invalid-turn-results');
+    await rootSql.unsafe('UPDATE harness_shared.operator_turns SET chat_state=$1::jsonb WHERE id=$2',
+      [JSON.stringify({ schemaVersion: 2, results: [block] }), turn.id]);
+    await expect(listTurns(conversation.id)).rejects.toThrow('unsupported-turn-state');
   });
 });

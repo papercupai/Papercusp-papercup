@@ -18,7 +18,7 @@
  *     watermarks, its acceptance rubrics' versions, and the scorecards graded or vetted
  *     against those rubrics.
  *  3. The portfolio read loads observations and current fingerprints in ONE query and
- *     serves an observation only while its fingerprint matches AND it is younger than
+ *     serves an observation only while its evaluator build and fingerprint match AND it is younger than
  *     {@link PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS}. The age bound covers every gate
  *     input the fingerprint does not name (spec evidence freshness, design evidence,
  *     lineage, flags). Anything else reads `stale`/`absent`, which the caller renders
@@ -31,6 +31,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { PlanAcceptanceGateOpts, PlanAcceptanceGateVerdict } from '../plan-acceptance-gate';
 import { META_ACCEPTANCE_RUBRIC_ID } from '../rubrics';
 import { activeWorkspaceId } from '../workspace-registry';
+import { getBuildInfo } from '../build-info';
 
 /** Older observations are re-evaluated even when the fingerprint still matches. */
 export const PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS = 10 * 60_000;
@@ -96,6 +97,7 @@ interface FingerprintRow {
   graded_by: string | null;
   observed_fingerprint: PlanClosureFingerprint | null;
   observed_at: Date | string | null;
+  build_sha: string | null;
 }
 
 /**
@@ -169,7 +171,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
     SELECT fp.plan_slug, fp.harness_slug, fp.plan_status, fp.matches, fp.fingerprint,
            (o.fingerprint = fp.fingerprint) AS fingerprint_matches,
            o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
-           o.fingerprint AS observed_fingerprint, o.observed_at
+           o.fingerprint AS observed_fingerprint, o.observed_at, o.build_sha
       FROM current_fp AS fp
       LEFT JOIN harness_shared.plan_closure_observations AS o
         ON o.workspace_id = ${workspaceId}
@@ -197,9 +199,10 @@ export function judgePlanClosureObservation(
   planSlug: string,
   rows: readonly (Pick<FingerprintRow,
     'matches' | 'fingerprint' | 'fingerprint_matches' | 'satisfied' | 'code' | 'skipped' | 'message' |
-    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by' | 'plan_status'>>)[],
+    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by' | 'plan_status' | 'build_sha'>>)[],
   now: Date,
   maxAgeMs = PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS,
+  evaluatorBuildSha?: string | null,
 ): PlanClosureObservationRead {
   if (rows.length === 0) {
     return { planSlug, status: 'absent', detail: `plan '${planSlug}' does not resolve, so no closure observation applies` };
@@ -213,6 +216,25 @@ export function judgePlanClosureObservation(
     return { planSlug, ...lifecycle, status: 'absent', detail: `no acceptance-gate verdict has been recorded for '${planSlug}' yet` };
   }
   const observedAt = new Date(row.observed_at);
+  // Identical plan inputs do not imply identical evaluation semantics. Older
+  // operators can still write this shared row after a newer evaluator starts.
+  // A foreign/unknown evaluator is unreadable, never a fresh repair instruction
+  // or a fresh satisfied gate. The canonical reader always supplies its identity;
+  // the optional seam keeps this pure judge usable for isolated input-only tests.
+  if (evaluatorBuildSha !== undefined) {
+    const observedBuild = row.build_sha?.trim().toLowerCase() ?? '';
+    const evaluatorBuild = evaluatorBuildSha?.trim().toLowerCase() ?? '';
+    const isSha = (sha: string) => /^[a-f0-9]{7,64}$/.test(sha);
+    if (!isSha(observedBuild) || !isSha(evaluatorBuild)
+      || !(observedBuild.startsWith(evaluatorBuild) || evaluatorBuild.startsWith(observedBuild))) {
+      return {
+        planSlug,
+        ...lifecycle,
+        status: 'stale',
+        detail: `the recorded acceptance-gate verdict for '${planSlug}' has evaluator build ${observedBuild || 'unknown'}, current evaluator ${evaluatorBuild || 'unknown'}`,
+      };
+    }
+  }
   if (row.fingerprint_matches !== true) {
     const changed = changedFingerprintKeys(row.observed_fingerprint, row.fingerprint);
     return {
@@ -260,14 +282,17 @@ export async function readPlanClosureObservations(args: {
   const rows = await readFingerprintRows(sql, args.workspaceId,
     [...args.planSlugs, ...(args.planRefs ?? []).map((ref) => ref.planSlug)]);
   const now = args.now ?? new Date();
+  const evaluatorBuildSha = getBuildInfo().sha;
   const out = new Map<string, PlanClosureObservationRead>();
   for (const planSlug of new Set(args.planSlugs)) {
-    out.set(planSlug, judgePlanClosureObservation(planSlug, rows.filter((row) => row.plan_slug === planSlug), now));
+    out.set(planSlug, judgePlanClosureObservation(planSlug, rows.filter((row) => row.plan_slug === planSlug), now,
+      PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, evaluatorBuildSha));
   }
   for (const ref of args.planRefs ?? []) {
     const qualifiedRows = rows.filter((row) => row.plan_slug === ref.planSlug && row.harness_slug === ref.harnessSlug)
       .map((row) => ({ ...row, matches: 1 }));
-    out.set(planClosureSubjectKey(ref), judgePlanClosureObservation(ref.planSlug, qualifiedRows, now));
+    out.set(planClosureSubjectKey(ref), judgePlanClosureObservation(ref.planSlug, qualifiedRows, now,
+      PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, evaluatorBuildSha));
   }
   return out;
 }

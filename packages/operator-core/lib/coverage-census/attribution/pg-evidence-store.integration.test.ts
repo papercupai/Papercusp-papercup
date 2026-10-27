@@ -19,6 +19,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createPgEvidenceStore } from './pg-evidence-store';
 import { ATTRIBUTION_ENV, resetAttributionArmingForTests, setAmbientTestContext } from './context';
@@ -114,6 +115,26 @@ afterEach(() => {
 });
 
 describe('http-route traffic', () => {
+  it('stores object details and run correlation through an unmodified postgres client', async () => {
+    const ref = await seedSurface('http-route', 'GET /api/raw-client-correlation');
+    // The ordinary fixture repairs JSON serializers. The production store also
+    // creates raw clients, so this case must exercise that independent path.
+    const raw = postgres(db.adminDsn, { max: 1, onnotice: () => {} });
+    try {
+      setEvidenceStoreForTests(createPgEvidenceStore({ getSql: () => raw }));
+      setAmbientTestContext({ file: 'raw-client-correlation.integration.test.ts', case: 'keeps run identity' });
+      recordHttpTraffic({ method: 'GET', path: '/api/raw-client-correlation', status: 'ok', httpStatus: 200 });
+      await flushTrafficEvidence();
+      const rows = await db.adminSql<{ type: string; group_id: string; calls: number }[]>`
+        SELECT jsonb_typeof(details) AS type, details->>'runGroupId' AS group_id,
+               (details->>'calls')::integer AS calls
+          FROM harness_shared.coverage_evidence WHERE surface_ref=${ref}`;
+      expect(rows).toEqual([{ type: 'object', group_id: 'run-attr-1', calls: 1 }]);
+    } finally {
+      await raw.end({ timeout: 2 });
+    }
+  });
+
   it('publishes coverage invalidation on the same injected database as its evidence', async () => {
     const ref = await seedSurface('http-route', 'GET /api/private-notification');
     const notifications: unknown[] = [];

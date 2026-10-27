@@ -710,6 +710,27 @@ describe('resolveEscalation — concurrent resolves elect ONE announcer (WI-1076
     return openEscalation(identity, { severity: 'question', summary: 'flapping condition' });
   }
 
+  it('awaits a linked card decision before recording success and leaves a refused decision open', async () => {
+    const log = new InMemoryCoordLog();
+    const opened = await openOne(log);
+    await expect(resolveEscalation({ msg_id: opened.msg_id, choice: 'yes' }, {
+      beforeResolve: async () => { throw new Error('card-needs-reconciliation'); },
+    })).rejects.toThrow('card-needs-reconciliation');
+    expect((await log.readEvents('escalations')).filter(row => row.kind === 'escalation_resolved')).toEqual([]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const pending = resolveEscalation({ msg_id: opened.msg_id, choice: 'yes' }, {
+      beforeResolve: async open => { expect(open.msg_id).toBe(opened.msg_id); started(); await gate; },
+    });
+    await entered;
+    expect((await log.readEvents('escalations')).filter(row => row.kind === 'escalation_resolved')).toEqual([]);
+    release();
+    expect(await pending).toMatchObject({ msg_id: opened.msg_id });
+    expect((await log.readEvents('escalations')).filter(row => row.kind === 'escalation_resolved')).toHaveLength(1);
+  });
+
   it('N concurrent resolves: exactly ONE returns a record, the rest report already_resolved', async () => {
     const log = new InMemoryCoordLog();
     const opened = await openOne(log);

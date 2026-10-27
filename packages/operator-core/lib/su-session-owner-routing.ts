@@ -26,6 +26,8 @@
  * (`su_session_owner_unreachable`, retryable) — never a silent wrong answer.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { readPrivateCardLink, resolveCardResponseAsync } from '@papercusp/agent-mcp';
+import { parseNativeCardCorrelationId } from './su-session-native-card-identity';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { parseLastEventId, sseResponse } from '@papercusp/sse';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
@@ -292,6 +294,9 @@ export async function serveForwardedSuSessionOp(
   payload: unknown,
   source: { fromPid: number; progress?: (value: unknown) => void } = { fromPid: 0 },
 ): Promise<ForwardedSuSessionReply> {
+  if ((payload as { request?: { op?: string } } | null)?.request?.op === 'native-card') {
+    return serveForwardedNativeCard(payload);
+  }
   if ((payload as { request?: { op?: string } } | null)?.request?.op === 'native-tool') {
     return serveForwardedNativeTool(payload, source);
   }
@@ -349,6 +354,98 @@ function hasLocalNativeToolHost(address: SuNativeToolAddress): boolean {
     identity.workspaceId === address.workspaceId && identity.advSessionId === address.advSessionId &&
     identity.ownerId === address.ownerId &&
     createHash('sha256').update(identity.nativeSessionId, 'utf8').digest('hex') === address.nativeSessionIdFingerprint;
+}
+
+/** Cards belong to a live provider callback, including its runtime generation.
+ * A descriptor-only rebuild must never accept or replay a private answer. */
+interface SuNativeCardAddress extends SuNativeToolAddress {
+  agentChatId: string;
+  runtimeGeneration: number;
+}
+export type SuNativeCardOp =
+  | { kind: 'link'; correlationId: string }
+  | { kind: 'response'; correlationId: string; action: 'submit' | 'decline' | 'cancel'; payload?: unknown };
+export type SuNativeCardResult =
+  | { kind: 'link'; target: string | null }
+  | { kind: 'response'; ok: true }
+  | { kind: 'response'; ok: false; status: number; error: string };
+
+function validNativeCardAddress(value: unknown): value is SuNativeCardAddress {
+  if (!validNativeToolAddress(value)) return false;
+  const a = value as SuNativeCardAddress;
+  return typeof a.agentChatId === 'string' && a.agentChatId.length > 0 &&
+    Number.isSafeInteger(a.runtimeGeneration) && a.runtimeGeneration >= 0;
+}
+
+function hasLocalNativeCardHost(address: SuNativeCardAddress): boolean {
+  const host = getRegisteredSuSessionHost({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
+  if (!host?.hasRuntime()) return false;
+  const d = host.descriptor(), i = d.identity;
+  return !TERMINAL_STATES.has(d.lifecycle) && d.runtimeGeneration === address.runtimeGeneration &&
+    i.workspaceId === address.workspaceId && i.advSessionId === address.advSessionId &&
+    i.agentChatId === address.agentChatId && i.ownerId === address.ownerId &&
+    createHash('sha256').update(i.nativeSessionId, 'utf8').digest('hex') === address.nativeSessionIdFingerprint;
+}
+
+function validNativeCardOp(value: unknown, address: SuNativeCardAddress): value is SuNativeCardOp {
+  const r = value as SuNativeCardOp | null;
+  if (!r || typeof r.correlationId !== 'string') return false;
+  const id = parseNativeCardCorrelationId(r.correlationId);
+  return !!id && id.advSessionId === address.advSessionId && id.runtimeGeneration === address.runtimeGeneration &&
+    (r.kind === 'link' || (r.kind === 'response' && ['submit', 'decline', 'cancel'].includes(r.action)));
+}
+
+async function localNativeCard(address: SuNativeCardAddress, request: SuNativeCardOp): Promise<SuNativeCardResult> {
+  if (!hasLocalNativeCardHost(address)) throw new SuNativeToolOwnerError('not_owner', false);
+  const expectedRunId = `pui-native:${address.advSessionId}:${address.runtimeGeneration}`;
+  if (request.kind === 'link') return { kind: 'link', target: readPrivateCardLink(request.correlationId, address.workspaceId, expectedRunId) };
+  const result = await resolveCardResponseAsync({ correlationId: request.correlationId, action: request.action,
+    payload: request.payload, expectedWorkspaceId: address.workspaceId, expectedRunId, legacyOnly: true });
+  // Validation issue objects can contain the private value. Only fixed error
+  // text and status leave the owning worker; no answer is durably stored.
+  return result.ok ? { kind: 'response', ok: true }
+    : { kind: 'response', ok: false, status: result.status, error: result.error };
+}
+
+async function serveForwardedNativeCard(payload: unknown): Promise<ForwardedSuSessionReply> {
+  const p = payload as { address?: unknown; hostId?: string; nonce?: string;
+    request?: { op?: string; body?: unknown } } | null;
+  if (!p || !validNativeCardAddress(p.address) || !validNativeCardOp(p.request?.body, p.address) ||
+      typeof p.hostId !== 'string' || typeof p.nonce !== 'string') throw new Error('malformed native card owner request');
+  if (!isLocalSuSessionOwner(p.hostId, p.nonce)) return { status: 'not_owner' };
+  if (!hasLocalNativeCardHost(p.address)) return { status: 'absent' };
+  return { status: 'ok', result: await localNativeCard(p.address, p.request!.body as SuNativeCardOp) };
+}
+
+/** The HTTP worker supplies authenticated workspace/conversation scope. Public
+ * correlation hints are checked against the durable row, never trusted alone.
+ * Only the existing owner RPC carries a private response in memory. */
+export async function routeSuNativeCard(input: {
+  workspaceId: string; agentChatId?: string; request: SuNativeCardOp;
+}): Promise<SuNativeCardResult | null> {
+  const id = parseNativeCardCorrelationId(input.request.correlationId);
+  if (!id) return null;
+  const row = await routing.deps.readDurable({ workspaceId: input.workspaceId, advSessionId: id.advSessionId });
+  if (!row || row.workspaceId !== input.workspaceId || row.advSessionId !== id.advSessionId ||
+      row.runtimeGeneration !== id.runtimeGeneration || !row.agentChatId || !row.ownerId ||
+      row.nativeSessionId === null || (input.agentChatId !== undefined && row.agentChatId !== input.agentChatId)) return null;
+  const address: SuNativeCardAddress = { workspaceId: row.workspaceId, advSessionId: row.advSessionId,
+    agentChatId: row.agentChatId, runtimeGeneration: row.runtimeGeneration, ownerId: row.ownerId,
+    nativeSessionIdFingerprint: createHash('sha256').update(row.nativeSessionId, 'utf8').digest('hex') };
+  if (!validNativeCardOp(input.request, address)) return null;
+  const owner = await routing.deps.readOwner({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
+  if (!owner || owner.pid === process.pid) {
+    if (owner && !isLocalSuSessionOwner(owner.hostId, owner.nonce)) throw new SuNativeToolOwnerError('not_owner', false);
+    return localNativeCard(address, input.request);
+  }
+  if (!isForwardableOwner(owner)) throw new SuNativeToolOwnerError('unreachable', false);
+  const outcome = await callOwnerProcess({ targetPid: owner.pid, kind: SU_SESSION_HOST_RPC_KIND,
+    payload: { address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-card', body: input.request } } });
+  if (!outcome.ok) throw new SuNativeToolOwnerError(outcome.code,
+    ['timeout', 'handler_error', 'send_failed'].includes(outcome.code));
+  const reply = outcome.result as ForwardedSuSessionReply | null;
+  if (reply?.status === 'ok') return reply.result as SuNativeCardResult;
+  throw new SuNativeToolOwnerError(reply?.status === 'absent' || reply?.status === 'not_owner' ? reply.status : 'protocol_error', false);
 }
 
 /** The MCP host installs its existing dispatcher; no meter, transaction or

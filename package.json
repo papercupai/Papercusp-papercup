@@ -102,9 +102,11 @@
     "libs/generic/sequence-patterns",
     "libs/generic/agent-roster",
     "libs/generic/hash-chain",
-    "libs/generic/merkle-log"
+    "libs/generic/merkle-log",
+    "libs/generic/ast-fingerprint"
   ],
   "scripts": {
+    "lint:new-clones": "tsx scripts/check-new-clones.mts",
     "preinstall": "node scripts/guard-shared-tree-install.mjs && npx --yes only-allow npm",
     "install:safe": "node scripts/npm-install-safe.mjs",
     "check:screenshot": "tsx libs/generic/image-blankness/src/cli.ts",
@@ -311,6 +313,8 @@
     "lint:cell-matrix": "npx tsx scripts/check-cell-live-matrix.ts",
     "lint:plane-guards": "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/cell-assessment-reality.test.ts packages/operator-core/lib/no-bespoke-state-read-guard.test.ts packages/operator-core/lib/cell-registrations.test.ts packages/operator-core/lib/declared-consumed-sweep.test.ts packages/operator-core/lib/agent-tools/coordination/holder-context-parity.test.ts packages/operator-core/lib/derived-signal-firings-probe.test.ts packages/operator-core/lib/coord/derived-signal-census.test.ts",
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",
+    "lint:fire-and-forget-classification": "bash scripts/pc-heavy.sh node scripts/check-fire-and-forget-classification.mjs",
+    "lint:fire-and-forget-classification:list": "bash scripts/pc-heavy.sh node scripts/check-fire-and-forget-classification.mjs --list --json",
     "lint:test-timing-budgets": "node scripts/check-test-timing-budgets.mjs",
     "lint:test-timing-budgets:list": "node scripts/check-test-timing-budgets.mjs --list",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
@@ -477,6 +481,7 @@
     "@assistant-ui/tap": "0.5.16",
     "axios": "^1.20.0",
     "form-data": "^4.0.6",
+    "follow-redirects": "^1.16.1",
     "brace-expansion@1": "^1.1.21",
     "brace-expansion@2": "^2.1.7",
     "minimatch@3": "^3.1.5",
@@ -515,6 +520,7 @@
     "@nx/nest": "22.6.5",
     "@nx/node": "22.6.5",
     "@nx/workspace": "22.6.5",
+    "@papercusp/host-esbuild": "npm:esbuild@0.25.0",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/adm-zip": "^0.5.8",
     "@types/cors": "^2.8.19",

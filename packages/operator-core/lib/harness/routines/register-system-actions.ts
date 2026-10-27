@@ -272,6 +272,7 @@ import './plan-run-action';
 import './blueprint-operation-action';
 // test-rubric-unification-2026-10-12 P-008 (D-008): plan-schedulable rubric re-score.
 import './rubric-rescore-action';
+import './clone-family-sweep-action';
 // spec-driven-tooling-integration-2026-10-05 P-030 (R-21): plan-schedulable independent
 // conformance review — one deduplicated review work-item per plan.
 import '../../spec-conformance/conformance-review';
@@ -745,6 +746,7 @@ import './acceptance-drain-sweep-action';
 // `draft`, terminal statuses, archived plans or scheduled-plan instances, and never
 // advances a plan to `shipped`. Seeded ACTIVE (seed-plan-drain-sweep-routine.ts).
 import './plan-drain-sweep-action';
+import './plan-anchor-freshness-action';
 // EI-18713141708830049: `system:plan-item-reflect-orphan-reconcile` — the MIRROR of
 // the sweep above, for the reflect direction (work_item terminal → plan item still
 // `todo`). That direction had a reaction rule (plan-items/reflect-rules.ts) and NO

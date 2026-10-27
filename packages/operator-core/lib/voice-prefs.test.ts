@@ -1,20 +1,76 @@
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_VOICE_PREFS } from './voice-prefs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_VOICE_PREFS, loadWorkspaceVoicePrefs, saveVoicePrefs, type VoicePrefs } from './voice-prefs';
 
-// voice-prefs.ts moved from `<papercuspRoot>/system/operator/voice-prefs.json`
-// to `harness_shared.operator_voice_prefs` (PG, migration 020) so the
-// previous file-mocking tests don't apply. The PG-backed read/save path is
-// covered by integration smoke tests in scripts (insert + GET round-trip);
-// the pure-logic mergePrefs() helper is internal and not separately tested.
-//
-// If we want a unit test for voice-prefs again, the right shape is a mock
-// of @papercusp/db-org's getOrgPg() with an in-memory tagged-template handler
-// that records the SQL call and returns the canned row. That's a heavier
-// scaffold than this module needed previously and isn't reused yet.
+// Exercise the public preference boundary; storage is a port here, so these
+// assertions make no PG, actual-host or per-user authorization claim.
+const prefsState = vi.hoisted(() => ({ value: null as Partial<VoicePrefs> | null }));
+const storage = vi.hoisted(() => ({ read: vi.fn(), write: vi.fn() }));
+vi.mock('./operator-state-pg', () => ({
+  readOperatorState: storage.read,
+  writeOperatorState: storage.write,
+}));
+vi.mock('./auth', () => ({ getSessionUser: async () => null }));
+vi.mock('./user-preferences', () => ({
+  loadUserPreferences: vi.fn(), mergeUserOverWorkspace: vi.fn(), VOICE_USER_OVERRIDE_KEYS: [],
+}));
 
-describe('voice-prefs (PG-backed)', () => {
-  it.skip('migrated to PG — see operator-state-pg.ts smoke tests', () => {
-    // intentionally empty — see comment above.
+describe('P010 host configuration boundaries', () => {
+  beforeEach(() => {
+    prefsState.value = null;
+    storage.read.mockReset().mockImplementation(async () => prefsState.value);
+    storage.write.mockReset().mockImplementation(async (_table, value: VoicePrefs) => {
+      prefsState.value = structuredClone(value);
+    });
+  });
+
+  it('defaults to 40000 with no stored settings', async () => {
+    expect((await loadWorkspaceVoicePrefs()).operatorHistoryTokenBudget).toBe(40000);
+    expect(storage.write).not.toHaveBeenCalled();
+  });
+
+  it.each([4999, 5000, 5001, 39999, 40000, 40001, 149999, 150000, 150001])(
+    'keeps the inclusive history budget boundaries on read and write (%s)', async budget => {
+      const accepted = budget >= 5000 && budget <= 150000;
+      prefsState.value = { operatorHistoryTokenBudget: budget, sttEngine: 'off' };
+      const loaded = await loadWorkspaceVoicePrefs();
+      expect(loaded.operatorHistoryTokenBudget).toBe(accepted ? budget : 40000);
+      expect(loaded.sttEngine).toBe('off');
+
+      prefsState.value = { operatorHistoryTokenBudget: 9000, sttEngine: 'off' };
+      const saved = await saveVoicePrefs({ operatorHistoryTokenBudget: budget });
+      expect(saved.operatorHistoryTokenBudget).toBe(accepted ? budget : 9000);
+      expect(saved.sttEngine).toBe('off');
+      expect(storage.write).toHaveBeenCalledExactlyOnceWith('operator_voice_prefs', saved);
+      expect((await loadWorkspaceVoicePrefs()).operatorHistoryTokenBudget).toBe(saved.operatorHistoryTokenBudget);
+    },
+  );
+
+  it.each([NaN, Infinity, -Infinity, -1, 0, undefined, null, 'not-a-budget'])(
+    'recovers invalid history settings without overwriting the last valid budget (%s)', async value => {
+      const patch = { operatorHistoryTokenBudget: value } as Partial<VoicePrefs>;
+      prefsState.value = patch;
+      expect((await loadWorkspaceVoicePrefs()).operatorHistoryTokenBudget).toBe(40000);
+      prefsState.value = { operatorHistoryTokenBudget: 12000, sttEngine: 'off' };
+      expect((await saveVoicePrefs(patch)).operatorHistoryTokenBudget).toBe(12000);
+      expect((await saveVoicePrefs({ operatorHistoryTokenBudget: 5000 })).operatorHistoryTokenBudget).toBe(5000);
+      expect((await loadWorkspaceVoicePrefs()).sttEngine).toBe('off');
+    },
+  );
+
+  it('normalizes persisted numeric settings and rejects an unknown context mode', async () => {
+    prefsState.value = { operatorHistoryTokenBudget: '5000.6', operatorContextMode: 'future' } as unknown as Partial<VoicePrefs>;
+    expect(await loadWorkspaceVoicePrefs()).toMatchObject({ operatorHistoryTokenBudget: 5001, operatorContextMode: 'compaction' });
+    prefsState.value = { operatorHistoryTokenBudget: 10000, operatorContextMode: 'window' };
+    expect(await saveVoicePrefs({ operatorHistoryTokenBudget: 10000.6, operatorContextMode: 'future' } as unknown as Partial<VoicePrefs>))
+      .toMatchObject({ operatorHistoryTokenBudget: 10001, operatorContextMode: 'window' });
+  });
+
+  it('propagates a failed settings write and preserves the previous durable budget', async () => {
+    prefsState.value = { operatorHistoryTokenBudget: 12000 };
+    storage.write.mockRejectedValueOnce(new Error('settings-write-failed'));
+    await expect(saveVoicePrefs({ operatorHistoryTokenBudget: 150000 })).rejects.toThrow('settings-write-failed');
+    expect((await loadWorkspaceVoicePrefs()).operatorHistoryTokenBudget).toBe(12000);
+    expect((await saveVoicePrefs({ operatorHistoryTokenBudget: 150000 })).operatorHistoryTokenBudget).toBe(150000);
   });
 });
 

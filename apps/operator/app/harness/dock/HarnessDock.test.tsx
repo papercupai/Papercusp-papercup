@@ -23,7 +23,11 @@ const dockWorkbenchMock = vi.hoisted(() => ({
   props: [] as DockWorkspaceProps[],
   store: { kind: 'fetch-store' },
   createFetchDockLayoutStore: vi.fn(() => ({ kind: 'fetch-store' })),
-  panels: [{ id: 'work', title: 'Work items' }, { id: 'graph', title: 'Dependency graph' }, { id: 'detail', title: 'Detail' }],
+  panels: [
+    { id: 'p-adv-work-items', title: 'Work items · papercusp (0)' },
+    { id: 'p-adv-dep-graph', title: 'p-adv-dep-graph' },
+    { id: 'p-adv-detail', title: 'Detail' },
+  ],
 }));
 
 const appMocks = vi.hoisted(() => ({
@@ -116,8 +120,12 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
   it.each(dockWorkbenchMock.panels)('fullscreens $title and restores the same mounted pane with Escape', async panel => {
     render(<HarnessDock layoutName="default" />);
     const api = { getPanel: vi.fn(id => dockWorkbenchMock.panels.find(p => p.id === id)),
-      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
+      groups: [], width: 488, height: 568,
+      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
     act(() => lastDockProps().onApiReady?.(api));
+    Object.defineProperties(screen.getByTestId('dock-fullscreen-surface'), {
+      clientWidth: { value: 488 }, clientHeight: { value: 568 },
+    });
     const draft = screen.getByRole('textbox', { name: `${panel.title} draft` });
     fireEvent.change(draft, { target: { value: 'Unsaved text survives' } });
     fireEvent.click(screen.getByRole('button', { name: `Fullscreen ${panel.title}` }));
@@ -126,6 +134,8 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
     expect(screen.getByRole('textbox', { name: `${panel.title} draft` })).toBe(draft);
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(api.exitMaximizedGroup).toHaveBeenCalledTimes(1));
+    expect(api.layout).toHaveBeenCalledWith(488, 568);
+    expect(api.layout.mock.invocationCallOrder[0]).toBeLessThan(api.exitMaximizedGroup.mock.invocationCallOrder[0]);
     expect(screen.getByTestId('dock-fullscreen-surface').style.position).not.toBe('fixed');
     expect((draft as HTMLInputElement).value).toBe('Unsaved text survives');
   });
@@ -133,13 +143,37 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
   it('restores through the visible control and clears the selected pane from URL state', async () => {
     render(<HarnessDock layoutName="default" />);
     const panel = dockWorkbenchMock.panels[0];
-    const api = { getPanel: vi.fn(() => panel), maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn() };
+    const api = { getPanel: vi.fn(() => panel), groups: [], width: 488, height: 568,
+      maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
     act(() => lastDockProps().onApiReady?.(api));
-    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen Work items' }));
+    fireEvent.click(screen.getByRole('button', { name: `Fullscreen ${panel.title}` }));
     await waitFor(() => expect(api.maximizeGroup).toHaveBeenCalledWith(panel));
-    fireEvent.click(screen.getByRole('button', { name: 'Restore Work items' }));
+    fireEvent.click(screen.getByRole('button', { name: `Restore ${panel.title}` }));
     await waitFor(() => expect(api.exitMaximizedGroup).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole('button', { name: 'Fullscreen Work items' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: `Fullscreen ${panel.title}` })).toBeTruthy();
+  });
+
+  it('keeps the fullscreen control bound to its pane when the work count changes its title', async () => {
+    const panel = dockWorkbenchMock.panels[0];
+    const originalTitle = panel.title;
+    try {
+      const view = rtlRender(<NuqsTestingAdapter hasMemory><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
+      const api = { getPanel: vi.fn(() => panel), groups: [], width: 488, height: 568,
+        maximizeGroup: vi.fn(), exitMaximizedGroup: vi.fn(), layout: vi.fn() };
+      act(() => lastDockProps().onApiReady?.(api));
+      const control = () => document.querySelector<HTMLButtonElement>(`button[data-dock-pane-id="${panel.id}"]`);
+      expect(control()).not.toBeNull();
+      fireEvent.click(control()!);
+      await waitFor(() => expect(api.maximizeGroup).toHaveBeenCalledWith(panel));
+      panel.title = 'Work items · papercusp (3)';
+      view.rerender(<NuqsTestingAdapter hasMemory><HarnessDock layoutName="default" /></NuqsTestingAdapter>);
+      expect(control()?.getAttribute('aria-label')).toBe(`Restore ${panel.title}`);
+      fireEvent.click(control()!);
+      await waitFor(() => expect(api.exitMaximizedGroup).toHaveBeenCalledTimes(1));
+      expect(control()?.getAttribute('aria-label')).toBe(`Fullscreen ${panel.title}`);
+    } finally {
+      panel.title = originalTitle;
+    }
   });
 
   it('renders the shared dock workspace with Papercusp defaults', () => {

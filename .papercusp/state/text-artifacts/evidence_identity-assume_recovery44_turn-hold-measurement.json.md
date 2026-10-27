@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery44/turn-hold-measurement.json"
+updated_at: 1792922171451
+_body: "content"
+---
+
+{"advisory":"⚠ tenant scope: harness_shared.session_turn_journal (keyed by workspace_id + harness_slug) — multi-tenant, but this filtered query has no workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER tenant's rows and read as stale/diverged state. Add: workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'. (agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope). ⚠ tenant scope: harness_shared.edit_attribution_ledger (keyed by workspace_id + harness_slug) — multi-tenant, but this filtered query has no workspace_id/harness_slug predicate — a bare slug/id filter can silently match ANOTHER tenant's rows and read as stale/diverged state. Add: workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'. (agent-insights/raw-sql-plan-slug-needs-workspace-harness-scope).","mode":"query","rowCount":1,"truncated":false,"fields":["latest_turn_end","native_edit","fixture_edit"],"elapsedMs":23,"rows":[{"latest_turn_end":"2026-10-25 09:40:43.89+00","native_edit":"2026-10-25 09:17:03.679358+00","fixture_edit":"2026-10-25 09:32:06.226819+00"}],"_meta":{"explicitFullRequest":true,"format":"json","_seeAlso":[{"tool":"work_items:claimable"},{"tool":"plans:list"},{"tool":"db:migrations"},{"tool":"testing:runs"},{"tool":"issues:list / work_items:get"},{"tool":"dev:pg_active_queries"},{"tool":"dev:pg_table_sizes"},{"tool":"dev:pg_health"}]}}

@@ -1,0 +1,316 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "020fe067772b3d90a7b783230c9ffb3beca6267d04a2a560dcc58273b966b3fa.supporting-original",
+      "sha256": "020fe067772b3d90a7b783230c9ffb3beca6267d04a2a560dcc58273b966b3fa",
+      "byteLength": 15607
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "relatedWorkItem": "EI-26812178996820105",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a16b13-a3bd-7833-ba15-c46ead699301",
+  "capturedAt": "2026-10-23T23:47:57.459334+00:00",
+  "kind": "bounded-live-handler-argument-and-source-boundary-observation",
+  "acceptance": {
+    "historicalBaselineAccepted": false,
+    "canonicalAcceptance": false,
+    "fullArgumentCensus": false,
+    "launchedRoleOrStackCensus": false
+  },
+  "route": "http://127.0.0.1:3170 via installed ptool CLI",
+  "observations": [
+    {
+      "request": {
+        "tool": "identities:get",
+        "args": {
+          "id": "su.fleet-member",
+          "repoDir": "$HOME/papercupai-workspace/papercusp"
+        },
+        "startedAt": "2026-10-23T23:45:57.933030+00:00",
+        "finishedAt": "2026-10-23T23:46:02.431041+00:00",
+        "exitCode": 5
+      },
+      "response": {
+        "ok": false,
+        "sourceKind": "identity",
+        "identity": {
+          "id": "su.fleet-member",
+          "extends": "base",
+          "version": "0.1.0",
+          "visibility": "public",
+          "description": "IDENTITY (abstract — a layer, never runnable alone): the fleet MEMBER posture — how an su operates under a fleet leader. Fills the exclusive `fleet-posture` slot with su.md's member operating loop, extracted verbatim by P-002 and made an identity by P-020; attached by fleet:launch-on-plan / fleet:join.",
+          "slots": [
+            {
+              "slot": "fleet-posture"
+            }
+          ]
+        },
+        "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-member/blueprint.yaml",
+        "contentHash": "e8c23c27c5a916fbe9c620a98c26a8506e51a6550e8eb03380ef04e551e3a136",
+        "contentHashScope": "source-document",
+        "runnable": false,
+        "errors": [
+          {
+            "level": "error",
+            "code": "attestation-missing",
+            "message": "\"su.fleet-member\" is an installed layer with no publisher attestation — an installed identity must attest its content hash (e8c23c27c5a9…)"
+          }
+        ],
+        "warnings": [],
+        "layers": [
+          {
+            "id": "base",
+            "sourceKind": "blueprint",
+            "sourcePath": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-3c1f46d55916.gsW4nl/checkout/apps/operator/dist-host/blueprints/base/blueprint.yaml",
+            "contentHash": "45cfdcd1c2de8af7af4350940efbbb23e78f5598f1c8e4c87addfcb1de903eff",
+            "slots": []
+          },
+          {
+            "id": "su.fleet-member",
+            "sourceKind": "identity",
+            "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-member/blueprint.yaml",
+            "contentHash": "e8c23c27c5a916fbe9c620a98c26a8506e51a6550e8eb03380ef04e551e3a136",
+            "slots": [
+              "fleet-posture"
+            ]
+          }
+        ]
+      },
+      "decodedResponseSha256": "83b3ad6a3fc74d4cecbc078db46e520ee4ce38889058e7adcc47f5f4add4b201",
+      "retainedStderrSha256": "870f41d5e52aff107a1cf1bd3e4b7b0b2c99e4c3681668fe9c949be6fbdc5919",
+      "responseFormat": "Decoded ptool JSON; original raw HTTP response body was not retained.",
+      "effectiveRole": "UNMEASURED for this exact invocation; do not count as a kernel-role sample."
+    },
+    {
+      "request": {
+        "tool": "identities:get",
+        "args": {
+          "id": "su.fleet-leader",
+          "repoDir": "$HOME/papercupai-workspace/papercusp"
+        },
+        "startedAt": "2026-10-23T23:46:02.431351+00:00",
+        "finishedAt": "2026-10-23T23:46:04.863070+00:00",
+        "exitCode": 5
+      },
+      "response": {
+        "ok": false,
+        "sourceKind": "identity",
+        "identity": {
+          "id": "su.fleet-leader",
+          "extends": "base",
+          "version": "0.1.0",
+          "visibility": "public",
+          "description": "IDENTITY (abstract — a layer, never runnable alone): the fleet LEADER posture — the monitoring / benching / claim-spec / kickoff / spawn-announcement craft of leading a fleet. Fills the exclusive `fleet-posture` slot with su.md's leader tiles, extracted verbatim by P-002 and made an identity by P-020; attached by fleet:take-leadership.",
+          "slots": [
+            {
+              "slot": "fleet-posture"
+            }
+          ]
+        },
+        "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-leader/blueprint.yaml",
+        "contentHash": "95283a16ed00e20ee6a921beb5c229c8638b9eb0d9c51167464c14fcfe3d113d",
+        "contentHashScope": "source-document",
+        "runnable": false,
+        "errors": [
+          {
+            "level": "error",
+            "code": "attestation-missing",
+            "message": "\"su.fleet-leader\" is an installed layer with no publisher attestation — an installed identity must attest its content hash (95283a16ed00…)"
+          }
+        ],
+        "warnings": [],
+        "layers": [
+          {
+            "id": "base",
+            "sourceKind": "blueprint",
+            "sourcePath": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-3c1f46d55916.gsW4nl/checkout/apps/operator/dist-host/blueprints/base/blueprint.yaml",
+            "contentHash": "45cfdcd1c2de8af7af4350940efbbb23e78f5598f1c8e4c87addfcb1de903eff",
+            "slots": []
+          },
+          {
+            "id": "su.fleet-leader",
+            "sourceKind": "identity",
+            "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-leader/blueprint.yaml",
+            "contentHash": "95283a16ed00e20ee6a921beb5c229c8638b9eb0d9c51167464c14fcfe3d113d",
+            "slots": [
+              "fleet-posture"
+            ]
+          }
+        ]
+      },
+      "decodedResponseSha256": "435638bd264cd8349a8696e793eec3ad8d5dacd1c1992e46f42bd6efc1423537",
+      "retainedStderrSha256": "f72e2b3387fa013e50eb401ab34a347779443f1b2a2d3157802e1d8e6412c0a7",
+      "responseFormat": "Decoded ptool JSON; original raw HTTP response body was not retained.",
+      "effectiveRole": "UNMEASURED for this exact invocation; do not count as a kernel-role sample."
+    },
+    {
+      "request": {
+        "tool": "identities:get",
+        "args": {
+          "id": "oddsmith-ops",
+          "repoDir": "$HOME/papercupai-workspace/papercusp"
+        },
+        "startedAt": "2026-10-23T23:46:04.863405+00:00",
+        "finishedAt": "2026-10-23T23:46:08.357145+00:00",
+        "exitCode": 5
+      },
+      "response": {
+        "ok": false,
+        "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"pot\",\n      \"harness\"\n    ],\n    \"path\": [\n      \"kind\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"pot\\\"|\\\"harness\\\"\"\n  }\n]"
+      },
+      "decodedResponseSha256": "7c1a3dcca627066451cf09ad2f5d7eab182bc8953746f36db1ccb155c7cbf622",
+      "retainedStderrSha256": "301a7113f9a38054c2f828d1f101d625e7f911bcc92702c714b852be546d48ba",
+      "responseFormat": "Decoded ptool JSON; original raw HTTP response body was not retained.",
+      "effectiveRole": "UNMEASURED for this exact invocation; do not count as a kernel-role sample."
+    }
+  ],
+  "sourceComparisons": [
+    {
+      "id": "su.fleet-member",
+      "installedSource": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-member/blueprint.yaml",
+      "canonicalSource": "libs/papercusp/packages/harness/blueprints/su.fleet-member/blueprint.yaml",
+      "installedVersion": "0.1.0",
+      "canonicalVersion": "0.1.2",
+      "sourceBytesEqual": false,
+      "installedSourceFileSha256": "1505e220110412452f5c622290dbf97955b8a9ad4ccbf0fc1051466db8531899",
+      "canonicalSourceFileSha256": "f2684c4c3c62494b007458b8c556db7db885ad7f42b87422cb34d81f8f967af7",
+      "installedPromptSha256": "72597f9cda7e159e49451249196dc3134368bed844e807781c4a412753e55170",
+      "canonicalPromptSha256": "72597f9cda7e159e49451249196dc3134368bed844e807781c4a412753e55170",
+      "promptBytesEqual": true,
+      "releaseIndex": {
+        "path": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/.releases/su.fleet-member/index.json",
+        "sha256": "f03d9fcf07c375de1659301a9705a0f3579a44e93fabaf84f0c4569f13b4cf5b",
+        "activeRelease": {
+          "schemaVersion": 1,
+          "id": "su.fleet-member",
+          "version": "0.1.0",
+          "contentHash": "c7d22f1da908494748ab2bbe2e40c383b39a75e5914fe1794dea8759e17778a2",
+          "artifactContentHash": "sha256:2cdcc2eb9c21508ee8cf8fe35263d7046670fdf172a2f874e6cf526705775351",
+          "source": "https://github.com/Papercusp/blueprints",
+          "installedAtMs": 1789867120416,
+          "slots": [
+            "fleet-posture"
+          ],
+          "pins": [
+            {
+              "packageKind": "blueprint",
+              "ref": "base",
+              "revision": "0.1.0",
+              "contentHash": "2593e029ac4a5c6b92641208b578dfc6bfed42b5c340ae4e387d12cc0960a8fc"
+            },
+            {
+              "packageKind": "blueprint",
+              "ref": "su.fleet-member",
+              "revision": "0.1.0",
+              "contentHash": "c7d22f1da908494748ab2bbe2e40c383b39a75e5914fe1794dea8759e17778a2"
+            }
+          ]
+        },
+        "qualification": "Lifecycle metadata was read, not authenticated as publisher attestation. Archive/root-package hashes and source-document hashes have different inputs."
+      }
+    },
+    {
+      "id": "su.fleet-leader",
+      "installedSource": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/su.fleet-leader/blueprint.yaml",
+      "canonicalSource": "libs/papercusp/packages/harness/blueprints/su.fleet-leader/blueprint.yaml",
+      "installedVersion": "0.1.0",
+      "canonicalVersion": "0.1.3",
+      "sourceBytesEqual": false,
+      "installedSourceFileSha256": "9a3fb6595ab389d14a95156ac217bec250b44db115a55ae269d24a82e2bc0bf0",
+      "canonicalSourceFileSha256": "f1a982cd4acfeade12605cd7c7a737f8fc5190940783cd0dbf0428f3fb8e446e",
+      "installedPromptSha256": "a063e39b38fcabb7a787c2fc16922bb781d896b61472fdfa5e2b3defffa1c8b2",
+      "canonicalPromptSha256": "a063e39b38fcabb7a787c2fc16922bb781d896b61472fdfa5e2b3defffa1c8b2",
+      "promptBytesEqual": true,
+      "releaseIndex": {
+        "path": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/blueprints/.releases/su.fleet-leader/index.json",
+        "sha256": "b16b66695339081290c6af1d0b73f4824de9da35827430a7a8e28454c595d7af",
+        "activeRelease": {
+          "schemaVersion": 1,
+          "id": "su.fleet-leader",
+          "version": "0.1.0",
+          "contentHash": "8306f9b6c716bff0b9984b0ed1d3ada823d0c892cf536718d1a83c124e0cd820",
+          "artifactContentHash": "sha256:cf8cf9d15a877c6b3b660ad8fd7dbda5d3aea88638826bdf9feca962a61047b5",
+          "source": "https://github.com/Papercusp/blueprints",
+          "installedAtMs": 1789867119154,
+          "slots": [
+            "fleet-posture"
+          ],
+          "pins": [
+            {
+              "packageKind": "blueprint",
+              "ref": "base",
+              "revision": "0.1.0",
+              "contentHash": "2593e029ac4a5c6b92641208b578dfc6bfed42b5c340ae4e387d12cc0960a8fc"
+            },
+            {
+              "packageKind": "blueprint",
+              "ref": "su.fleet-leader",
+              "revision": "0.1.0",
+              "contentHash": "8306f9b6c716bff0b9984b0ed1d3ada823d0c892cf536718d1a83c124e0cd820"
+            }
+          ]
+        },
+        "qualification": "Lifecycle metadata was read, not authenticated as publisher attestation. Archive/root-package hashes and source-document hashes have different inputs."
+      }
+    }
+  ],
+  "writerReferences": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/identities/get.ts",
+      "symbol": "identities:get handler",
+      "meaning": "Passes id and repoDir into the existing identity source resolver."
+    },
+    {
+      "path": "packages/operator-core/lib/agent-identities/source.ts",
+      "symbol": "localDirs / getIdentitySource / inspectIdentitySourceWithApproval",
+      "meaning": "Repository root and PAPERCUSP_HOME contribute local search roots; selected installed sources require attestation. An invalid chosen source does not imply the built-in id is absent."
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/installed-blueprints.ts",
+      "symbol": "operatorResolveExtends / availableBlueprintSources",
+      "meaning": "Existing local, installed, built-in precedence is shared."
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/identity-lint.ts",
+      "symbol": "requireAttestation / attestation-missing",
+      "meaning": "The observed refusal is an installed source trust check, not proof of a transport denial or an empty tool set."
+    },
+    {
+      "path": "packages/operator-core/lib/cupboard/blueprint-release.ts",
+      "symbol": "buildBlueprintReleaseArchive / verifyListedBlueprintRelease",
+      "meaning": "Release closure/root-package hashes and layer source-document hashes have different inputs. A source URL or an index record alone does not authenticate a missing publisher attestation."
+    }
+  ],
+  "sourceFileHashesAtReadback": {
+    "packages/operator-core/lib/agent-tools/identities/get.ts": "0e7d0248ac34cce9438142a0f86e80d2e874506f756828769174b8835f5c24d8",
+    "packages/operator-core/lib/agent-identities/source.ts": "553aee92e44b799ac052df74a4a508133b29d037e769e96edca45ae91895777f",
+    "packages/operator-core/lib/blueprint/installed-blueprints.ts": "1e6213cb1e18ca8191ba23e2ec936ac02df5d1163f098d95dc47e7b57da78439",
+    "libs/papercusp/packages/orchestrator/src/blueprint/identity-lint.ts": "f50deb8f30a6f9c333fb02008c56c021d4557f22c6424fd9c734cb8f0c0c15fe",
+    "packages/operator-core/lib/cupboard/blueprint-release.ts": "ff77917ba7b58bc8277e5f6d73d4b61d7336678856e30ff25cc6b632059ba80f"
+  },
+  "argumentBoundaryObserved": {
+    "tool": "identities:get",
+    "arguments": [
+      "id",
+      "repoDir"
+    ],
+    "result": "With repoDir set to the canonical checkout, both fleet ids selected workspace-home installed sources and refused missing attestation; oddsmith-ops returned a kind-schema refusal. This is three exact current read-only calls, not an exhaustive authorization claim.",
+    "scopeLimit": "No cross-workspace probe, role change, mode cycle, launch, personal payload, grant change, or publisher attestation creation."
+  },
+  "limits": [
+    "Source YAML differs despite matching fleet-posture prompt hashes; an exact whole-source mirror exception is not established.",
+    "The cause or author of the old unsigned installation is unmeasured. Existing release-index records do not establish that provenance.",
+    "Actual kernel-role/per-argument permission population and legal stack combinations remain open.",
+    "Source-authentication question349651, four historical vault settings, P024 independent acceptance and shipment remain open.",
+    "Current canonical source files were hashed at readback, not frozen as the executed full runtime import closure.",
+    "Original baseline, matrix, population supplement and override fixture evidence were not modified."
+  ]
+}

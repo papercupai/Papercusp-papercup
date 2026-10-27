@@ -137,6 +137,23 @@ export interface AccountPoolAvailability {
    * the count with the larger population is not necessarily the term that actually binds capacity.
    */
   accountBindingTerms?: AccountBindingTerms[];
+  /**
+   * WI-6554700010029550: each account's provider-reported subscription tier (codex `x-codex-plan-type`
+   * — `pro` / `plus` / `free`), recorded by the gateway on every response (WI-6554700010029499). A
+   * tier drop cuts an account's window capacity without any wall, pause or throttle, so a low-headroom
+   * reading cannot be explained from the counts above alone. Omitted when NO account of the provider
+   * has a tier reading (the provider does not report one), keeping those reads byte-identical.
+   */
+  accountPlans?: AccountPlanReading[];
+}
+
+/** One account's last-observed subscription tier, projected from `AccountStatusRow.rate`. */
+export interface AccountPlanReading {
+  id: string;
+  /** Lower-cased tier as the provider reported it; null = no tier reading for this account. */
+  planType: string | null;
+  /** Epoch ms `planType` was last observed; null when there is no reading. */
+  planObservedAt: number | null;
 }
 
 export type CapacityBindingCause = 'edge-throttle' | 'usage-wall' | 'rate-pause';

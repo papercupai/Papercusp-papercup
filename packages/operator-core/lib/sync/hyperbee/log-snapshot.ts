@@ -33,10 +33,21 @@ import {
 import type { OpAAD } from './hive-epoch-crypto';
 // Lazy native load only (no keychain), so still safe in the fold worker bundle.
 import { loadSodium, openOpCiphertext } from './hive-epoch-aead';
+import { operationGroupKey } from './merge-rules';
+import { stampOpHlc } from './hlc-stamp';
 
 /** Reserved table tag identifying a snapshot op. No projection is registered for
  *  it, so non-snapshot-aware readers drop it (harmless). */
 export const SNAPSHOT_TABLE_TAG = '__snapshot__';
+
+/** Snapshot seek metadata without decoded row payloads; raw ops need only their header. */
+export function summarizeOp(op: PeerLogOp): PeerLogOp {
+  if (isSnapshotOp(op)) {
+    const payload = (op.value ?? {}) as SnapshotPayload;
+    return { ...op, value: { ...payload, rows: [] } };
+  }
+  return { type: op.type, table: op.table, hbKey: op.hbKey, ts: op.ts, schema_version: op.schema_version } as PeerLogOp;
+}
 
 /** One row in a snapshot — reconstitutes a single key's current state. Usually a
  *  live `put`; a `deleted: true` row is a TOMBSTONE (EI-1688) reconstituting a key
@@ -306,6 +317,14 @@ export function buildSnapshotRows(
  * the property suite (`log-snapshot.property.test.ts`, PREFIX-REPLACEMENT FAITHFULNESS)
  * exercises this fold rather than a parallel copy of it — the two cannot drift.
  */
+export function snapshotFoldKey(row: SnapshotRow | PeerLogOp): string {
+  return operationGroupKey({
+    type: 'type' in row ? row.type : row.deleted ? 'del' : 'put',
+    table: row.table, hbKey: row.hbKey, hlc: row.hlc, ts: row.ts,
+    sourceLogKeyHex: row.author_pubkey, writerPubkey: row.author_pubkey,
+  });
+}
+
 export class SnapshotRowFolder {
   /** key → its current-state row (live put OR a `deleted` tombstone). */
   private readonly latest = new Map<string, SnapshotRow>();
@@ -351,7 +370,7 @@ export class SnapshotRowFolder {
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
-          const key = `${r.table}::${r.hbKey}`;
+          const key = snapshotFoldKey(r);
           const value = this.transformValue
             ? this.transformValue(r.value, {
                 table: r.table,
@@ -373,7 +392,7 @@ export class SnapshotRowFolder {
       return;
     }
     if (this.excludeTables.has(op.table)) return;
-    const key = `${op.table}::${op.hbKey}`;
+    const key = snapshotFoldKey(op);
     if (op.type === 'put') {
       const rowValue = this.transformValue
         ? this.transformValue(decoded, {
@@ -1726,6 +1745,8 @@ export interface SnapshotFoldWorkerLike {
     author_pubkey: string;
     ts: number;
     schema_version: number;
+    /** Fresh envelope clock allocated by the producer; captured row clocks stay unchanged. */
+    hlc?: string;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
     /** See `SnapshotPayload.ownPrefix`. */
@@ -1951,6 +1972,9 @@ async function produceLogSnapshotOffloaded(
         author_pubkey: ownLog.keyHex,
         ts: opts.now,
         schema_version: opts.schemaVersion,
+        // Raw append preserves bytes. Stamp this newly built snapshot event on the
+        // producer's clock before serialization, rather than restamping stored rows.
+        hlc: stampOpHlc({ ts: opts.now }).hlc,
         maxChunkBytes: opts.maxChunkBytes,
         excludeTables,
         // WI-10005425: byte-identical to the inline path, which marks its own-log set too.
@@ -2169,29 +2193,9 @@ export async function foldFilteredSnapshotRows(
 ): Promise<{ rows: SnapshotRow[]; excluded: Set<string>; seedIndex: number; coversUpTo: number; chunkCount: number }> {
   const excluded = new Set(opts.excludeTables ?? []);
   const folder = new SnapshotRowFolder({ excludeTables: excluded, transformValue: opts.transformValue });
-  const prior = opts.priorSnapshotHint === null ? null : await findLatestProducerSnapshot(sourceLog, {
-    readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
-    describe: 'filtered source scan',
-    ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
-  });
-  let seedIndex = 0;
-  let chunkCount = 0;
+  const { prior, seedIndex, chunkCount } = await selectFilteredSnapshotSeed(sourceLog, opts);
   let from = 0;
-  // The guard that makes the seek safe to ship rather than merely fast: seeding from a set
-  // that dropped a table THIS fold keeps would yield a silently THINNER result, strictly
-  // worse than a slow one. The from-zero fallback is always correct but costs O(history),
-  // so it must stay visible to an operator (WI-10007536: the D-174 extraction dropped this).
-  const conflict = prior ? conflictingSnapshotExclusion(prior, excluded) : null;
-  if (prior && conflict) {
-    console.error(
-      `[snapshot] filtered source scan: prior snapshot at ${prior.coversUpTo} ` +
-        `excluded table '${conflict}' which this seed keeps; folding the full source ` +
-        `instead of seeding (correct, but O(history))`,
-    );
-  }
-  if (prior && !conflict) {
-    seedIndex = prior.coversUpTo;
-    chunkCount = prior.chunkCount;
+  if (prior) {
     for (const [offset, chunk] of prior.chunks.entries()) {
       opts.onSourceBlock?.(seedIndex + offset, chunk);
       folder.add(chunk, chunk.value, seedIndex + offset);
@@ -2208,6 +2212,36 @@ export async function foldFilteredSnapshotRows(
     requireComplete: opts.requireComplete,
   });
   return { rows: folder.finish({ now: opts.now }), excluded, seedIndex, coversUpTo: seedIndex, chunkCount };
+}
+
+/** Shared exclusion and complete-set validation for materialized and index-only folds.
+ * An index caller supplies metadata-only reads so the seek cache never owns row values. */
+export async function selectFilteredSnapshotSeed(
+  sourceLog: Pick<OwnLog, 'get' | 'length'>,
+  opts: FilteredSnapshotFoldOptions,
+): Promise<{ prior: ProducerSnapshotSeed | null; seedIndex: number; chunkCount: number }> {
+  const excluded = new Set(opts.excludeTables ?? []);
+  const prior = opts.priorSnapshotHint === null ? null : await findLatestProducerSnapshot(sourceLog, {
+    readBudgetMs: opts.seekReadBudgetMs ?? PRODUCER_SNAPSHOT_SEEK_READ_BUDGET_MS,
+    describe: 'filtered source scan',
+    ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
+  });
+  // The guard that makes the seek safe to ship rather than merely fast: seeding from a set
+  // that dropped a table THIS fold keeps would yield a silently THINNER result, strictly
+  // worse than a slow one. The from-zero fallback is always correct but costs O(history),
+  // so it must stay visible to an operator (WI-10007536: the D-174 extraction dropped this).
+  const conflict = prior ? conflictingSnapshotExclusion(prior, excluded) : null;
+  if (prior && conflict) {
+    console.error(
+      `[snapshot] filtered source scan: prior snapshot at ${prior.coversUpTo} ` +
+        `excluded table '${conflict}' which this seed keeps; folding the full source ` +
+        `instead of seeding (correct, but O(history))`,
+    );
+  }
+  if (prior && !conflict) {
+    return { prior, seedIndex: prior.coversUpTo, chunkCount: prior.chunkCount };
+  }
+  return { prior: null, seedIndex: 0, chunkCount: 0 };
 }
 
 export async function produceFilteredSnapshotIntoLog(

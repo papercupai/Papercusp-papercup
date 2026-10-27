@@ -83,6 +83,8 @@ import {
   BAR_CRITIQUE_POLICY,
   DEFAULT_MIN_RESPONDERS,
   DEFAULT_MAX_RESPONDERS,
+  METHOD_REVIEW_POLICY,
+  methodReviewTarget,
   RUBRIC_VETTING_POLICY,
 } from './selection-policies';
 export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
@@ -164,6 +166,8 @@ export interface GetFeedbackRequest {
    * quietly selecting under the wrong bounds is the failure this replaces.
    */
   policy?: string;
+  /** Canonical independence target for a prospective METHOD assessment. */
+  methodReviewRubricRef?: string;
   reviewerModel?: ConsultReviewerModel;
   /** Internal testing:run constraint, included in the saved payload fingerprint. */
   nativeConsult?: import('./native-consult').NativeConsultConstraints;
@@ -240,6 +244,8 @@ export interface GetFeedbackDeps {
     pickupConfirmed?: boolean;
     /** Who will post — the fork's new identity, or the source on a conversion. */
     answeringOwnerId?: string | null;
+    /** No source candidate can repair this native target's provider capacity. */
+    targetCapacityUnavailable?: string;
     /** HOW it was reached, for the requester-facing provenance note. Optional so
      *  a PG-free or legacy binding keeps the plain delivery-count contract. */
     dispatch?: {
@@ -302,6 +308,7 @@ export async function acceptFeedbackRequestCore(
   req: GetFeedbackRequest,
   deps: Pick<GetFeedbackDeps, 'getSql' | 'open'>,
 ): Promise<AcceptedFeedbackResult | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
+  methodReviewTarget(req);
   const sql = deps.getSql();
   const fingerprint = requestFingerprint(req);
   const key = req.requestKey?.trim() || `auto:${fingerprint}`;
@@ -1096,6 +1103,7 @@ export async function getFeedbackCore(
   req: GetFeedbackRequest,
   deps: GetFeedbackDeps,
 ): Promise<GetFeedbackResult | GetFeedbackError> {
+  const methodReviewRubricRef = methodReviewTarget(req);
   const sql = deps.getSql();
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
@@ -1229,7 +1237,8 @@ export async function getFeedbackCore(
   //     The SELECT doubles as the capability probe: pgvector absent / column
   //     not migrated throws, and the leg degrades to normal routing (the
   //     per-source degrade contract) — the INSERT then also skips the column.
-  const archiveFloor = req.nativeConsult ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
+  const archiveFloor = req.nativeConsult || req.policy === METHOD_REVIEW_POLICY
+    ? 2 : req.archiveFloor ?? DEFAULT_ARCHIVE_FLOOR;
   const qVecStr = route.queryVec && route.queryVec.length > 0 && route.queryProfile
     ? JSON.stringify(route.queryVec)
     : null;
@@ -1419,6 +1428,7 @@ export async function getFeedbackCore(
   // P-014: the policy rides on the persisted snapshot so the expiry sweep can
   // recognize a review consult (rubric-vetting) and convert it to pullable work.
   if (req.policy) route.snapshot.policy = req.policy;
+  if (methodReviewRubricRef) route.snapshot.methodReviewRubricRef = methodReviewRubricRef;
   if (req.reviewerModel) route.snapshot.reviewerModel = req.reviewerModel;
   if (req.nativeConsult) route.snapshot.nativeConsult = req.nativeConsult;
   const chosenSel = selected[0] ?? null;
@@ -1677,7 +1687,7 @@ export async function getFeedbackCore(
     const seatedOwners = new Set(finalSelected.map((s) => s.candidate.ownerId));
     const hasUntriedPool = minResponders > 0 &&
       route.snapshot.candidates.some((c) => !seatedOwners.has(c.ownerId));
-    if (queued === 0 && (finalSelected.length > 1 || hasUntriedPool)) {
+    if (queued === 0 && !r.targetCapacityUnavailable && (finalSelected.length > 1 || hasUntriedPool)) {
       const failedOwner = finalSelected[0]!.candidate.ownerId;
       let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
@@ -1709,6 +1719,7 @@ export async function getFeedbackCore(
           return {
             woke: failoverReach.queued ?? failoverReach.woke ?? 0,
             answeringOwnerId: failoverReach.answeringOwnerId ?? null,
+            ...(failoverReach.targetCapacityUnavailable ? { targetCapacityUnavailable: failoverReach.targetCapacityUnavailable } : {}),
           };
         },
       );

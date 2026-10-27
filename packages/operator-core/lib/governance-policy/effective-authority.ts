@@ -68,6 +68,8 @@ export interface AuthorityTrace {
 export type EffectivePermissionDecision = {
   allowed: boolean;
   code: 'allowed' | 'invalid-request' | 'authority-unavailable' | 'authority-malformed' | 'authority-stale' | 'denied';
+  /** Detached canonical request; null only when request validation failed. */
+  request: PermissionRequest | null;
   revisions: AuthorityRevisionVector | null;
   trace: AuthorityTrace[];
   decidingAuthority?: AuthorityRef;
@@ -76,8 +78,9 @@ export type EffectivePermissionDecision = {
 
 const requiredKinds = AUTHORITY_KINDS.filter(kind => kind !== 'vault');
 const keyOf = (ref: AuthorityRef) => JSON.stringify([ref.kind, ref.id]);
+// Lone surrogates cannot be URI-encoded; Unicode mode preserves valid pairs.
 const validText = (value: unknown): value is string =>
-  typeof value === 'string' && !!value.trim() && value === value.trim() && !/[\u0000-\u001f]/.test(value);
+  typeof value === 'string' && !!value.trim() && value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
 const unique = (values: readonly string[]) => new Set(values).size === values.length;
 
 /** An unambiguous resource selector using the same policy pattern engine. */
@@ -140,21 +143,31 @@ export function evaluateEffectivePermission(
   const resourceKinds: ScopedResource['kind'][] = ['network', 'filesystem', 'store', 'account', 'recipient', 'processing'];
   if (!request || !validText(request.tool) || !validText(request.action) || !request.resource ||
       !resourceKinds.includes(request.resource.kind) || !validText(request.resource.operation) || !validText(request.resource.target)) {
-    return { allowed: false, code: 'invalid-request', revisions: null, trace: [] };
+    return { allowed: false, code: 'invalid-request', request: null, revisions: null, trace: [] };
   }
   if (request.constraints !== undefined && (!request.constraints || typeof request.constraints !== 'object' ||
       Array.isArray(request.constraints) || Object.entries(request.constraints).some(([category, values]) =>
         !GOVERNED_CATEGORIES.includes(category as GovernedCategory) || !Array.isArray(values) ||
         values.some(value => !validText(value))))) {
-    return { allowed: false, code: 'invalid-request', revisions: null, trace: [] };
+    return { allowed: false, code: 'invalid-request', request: null, revisions: null, trace: [] };
   }
+  const constraints: GovernedRequest = {};
+  for (const category of GOVERNED_CATEGORIES) {
+    const values = request.constraints?.[category];
+    if (values !== undefined) constraints[category] = [...new Set(values)].sort();
+  }
+  const trustedRequest: PermissionRequest = {
+    tool: request.tool, action: request.action,
+    resource: { kind: request.resource.kind, operation: request.resource.operation, target: request.resource.target },
+    ...(request.constraints !== undefined ? { constraints } : {}),
+  };
   const problem = snapshotProblem(snapshot);
-  if (problem) return { allowed: false, ...problem, revisions: null, trace: [] };
+  if (problem) return { allowed: false, ...problem, request: trustedRequest, revisions: null, trace: [] };
   const governed: GovernedRequest = {
-    ...request.constraints,
-    tools: [...(request.constraints?.tools ?? []), request.tool],
-    actions: [...(request.constraints?.actions ?? []), request.action],
-    resources: [...(request.constraints?.resources ?? []), resourcePermissionValue(request.resource)],
+    ...constraints,
+    tools: [...(constraints.tools ?? []), trustedRequest.tool],
+    actions: [...(constraints.actions ?? []), trustedRequest.action],
+    resources: [...(constraints.resources ?? []), resourcePermissionValue(trustedRequest.resource)],
   };
   for (const category of GOVERNED_CATEGORIES) {
     if (governed[category]) governed[category] = [...new Set(governed[category])].sort();
@@ -179,8 +192,8 @@ export function evaluateEffectivePermission(
     if (!verdict.allow && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
   }
   return decidingAuthority
-    ? { allowed: false, code: 'denied', revisions, trace, decidingAuthority }
-    : { allowed: true, code: 'allowed', revisions, trace };
+    ? { allowed: false, code: 'denied', request: trustedRequest, revisions, trace, decidingAuthority }
+    : { allowed: true, code: 'allowed', request: trustedRequest, revisions, trace };
 }
 
 /** Queue/in-flight adapters must reject a token if any authority or context moved. */
@@ -245,4 +258,54 @@ export function comparePermissionPopulations(
   const added = after.allowed.filter(atom => !before.allowed.includes(atom)).sort();
   const removed = before.allowed.filter(atom => !after.allowed.includes(atom)).sort();
   return { kind: added.length ? 'widening' : removed.length ? 'narrowing' : 'neutral', added, removed };
+}
+
+export interface PermissionChangeInput {
+  /** Host-derived current authorities and the edit action's actual target. */
+  current: AuthoritySnapshot;
+  request: PermissionRequest;
+  /** Pinned when the before-image was measured; recheck at the write boundary. */
+  expected: AuthorityRevisionVector | null | undefined;
+  before: PermissionPopulationProof;
+  after: PermissionPopulationProof;
+  /** Complete finite proofs for EVERY current platform floor, not a caller's simulation. */
+  fixedFloors: readonly { authority: AuthorityRevision; permissions: PermissionPopulationProof }[];
+}
+export interface PermissionChangeAssessment {
+  canApplyWithoutApproval: boolean;
+  requiresOwnerApproval: boolean;
+  code: 'allowed-without-approval' | 'edit-denied' | 'stale-before-state' |
+    'floor-unavailable' | 'floor-denied' | 'approval-required';
+  edit: EffectivePermissionDecision;
+  comparison: PermissionChangeComparison;
+}
+
+/**
+ * A narrowing proof never grants edit authority or overrides a fixed floor.
+ * Widening/unknown changes remain refused here: P-002 must route them through
+ * the existing sensitive-action approval seat and recheck exact owner receipts.
+ * This pure assessment neither accepts approval claims nor performs a write;
+ * its host must bind the population proofs to these revisions and hold the
+ * transaction/lease through its protected effect.
+ */
+export function assessPermissionChange(input: PermissionChangeInput, now: Date = new Date()): PermissionChangeAssessment {
+  const comparison = comparePermissionPopulations(input.before, input.after);
+  const edit = revalidateEffectivePermission(input.current, input.request, input.expected, now);
+  const refuse = (code: PermissionChangeAssessment['code']): PermissionChangeAssessment => ({
+    canApplyWithoutApproval: false, requiresOwnerApproval: code === 'approval-required', code, edit, comparison,
+  });
+  if (!edit.allowed) return refuse(edit.code === 'authority-stale' ? 'stale-before-state' : 'edit-denied');
+  const floors = input.current.policies.filter(policy => policy.kind === 'platform');
+  if (!Array.isArray(input.fixedFloors) || input.fixedFloors.length !== floors.length ||
+      input.fixedFloors.some(proof => !proof?.authority || !floors.some(floor =>
+        keyOf(floor) === keyOf(proof.authority) && floor.revision === proof.authority.revision)) ||
+      !unique(input.fixedFloors.map(proof => keyOf(proof.authority)))) return refuse('floor-unavailable');
+  for (const floor of input.fixedFloors) {
+    const withinFloor = comparePermissionPopulations(floor.permissions, input.after);
+    if (withinFloor.kind === 'unknown') return refuse('floor-unavailable');
+    if (withinFloor.kind === 'widening') return refuse('floor-denied');
+  }
+  if (comparison.kind === 'unknown' || comparison.kind === 'widening') return refuse('approval-required');
+  return { canApplyWithoutApproval: true, requiresOwnerApproval: false,
+    code: 'allowed-without-approval', edit, comparison };
 }

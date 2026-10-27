@@ -36,7 +36,8 @@ import tool from './presence';
  * documented wherever it is most useful, which is what the weight gate will keep forcing.
  */
 function callerVisibleSurface(): string {
-  const shape = (tool as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+  // WI-6554700010029664: args is a preprocess pipe (ownerId/ownerIds fold); `out` is the object.
+  const shape = (tool as { args: { out: { shape: Record<string, { description?: string }> } } }).args.out.shape;
   const argText = Object.entries(shape)
     .map(([key, field]) => `${key}: ${field?.description ?? ''}`)
     .join('\n');
@@ -56,12 +57,10 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     expect(guidance).toMatch(/scope\/pot/i);
     expect(guidance).toMatch(/(?:explicit scope|widen)/i);
     expect(guidance).toMatch(/legacy/i);
-    expect(guidance).toMatch(/ownerId.*compatibility alias/i);
-    // ownerIds is an alias now, so a bare mention proves nothing — require the
-    // guidance to actually introduce it as the alias of the bounded selector.
-    expect(guidance, 'guidance must document ownerIds as the alias for owners').toMatch(
-      /ownerIds[^\n]*compatibility alias for `owners`/i,
-    );
+    // WI-6554700010029664: ownerId/ownerIds are folded before parse (accepted, no longer
+    // advertised), so pin the BEHAVIOUR instead of their old field descriptions.
+    expect((tool as { args: { parse(v: unknown): unknown } }).args.parse({ ownerId: 'su-a' })).toEqual({ owner: 'su-a' });
+    expect((tool as { args: { parse(v: unknown): unknown } }).args.parse({ ownerIds: ['su-a'] })).toEqual({ owners: ['su-a'] });
     for (const removed of ['harness', 'plan', 'includeStale', 'include_stale']) {
       expect(guidance, `guidance must name removed ${removed}`).toContain(removed);
     }
@@ -69,14 +68,14 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
   });
 
   it('keeps removed legacy filters out of the declared schema', () => {
-    const keys = Object.keys((tool as { args: { shape: Record<string, unknown> } }).args.shape);
+    const keys = Object.keys((tool as { args: { out: { shape: Record<string, unknown> } } }).args.out.shape);
 
     expect(keys).toContain('owner');
-    expect(keys).toContain('ownerId');
-    // The canonical bounded selector and its compatibility alias must BOTH be
-    // declared — pinning the alias so it cannot be dropped silently either.
     expect(keys).toContain('owners');
-    expect(keys).toContain('ownerIds');
+    // WI-6554700010029664: the compatibility aliases are folded before parse instead of
+    // declared (tool-alias-contract FOLDED_ARG_ALIASES pins that they stay accepted).
+    expect(keys).not.toContain('ownerId');
+    expect(keys).not.toContain('ownerIds');
     expect(keys).toContain('probe_coupling_reader');
     for (const removed of ['harness', 'plan', 'includeStale', 'include_stale']) {
       expect(keys, `${removed} must remain removed`).not.toContain(removed);

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AUTHORITY_KINDS, authorityRevisionIsCurrent, comparePermissionPopulations,
+  AUTHORITY_KINDS, assessPermissionChange, authorityRevisionIsCurrent, comparePermissionPopulations,
   evaluateEffectivePermission, revalidateEffectivePermission, resourcePermissionValue,
-  type AuthorityPolicy, type AuthorityRevisionVector, type AuthoritySnapshot, type PermissionPopulationProof, type PermissionRequest,
+  type AuthorityPolicy, type AuthorityRevisionVector, type AuthoritySnapshot, type PermissionChangeInput, type PermissionPopulationProof, type PermissionRequest,
 } from './effective-authority';
 
 const request: PermissionRequest = {
@@ -24,6 +24,7 @@ function fixture(): AuthoritySnapshot {
 describe('effective authority contract (P-024)', () => {
   it.each(AUTHORITY_KINDS)('each independent %s authority can decide refusal despite all other grants', kind => {
     const snapshot = fixture();
+    expect(evaluateEffectivePermission(snapshot, request).allowed).toBe(true);
     const policy = snapshot.policies.find(policy => policy.kind === kind)!;
     policy.rules = { ...policy.rules, resources: { allow: [] } };
     const decision = evaluateEffectivePermission(snapshot, request);
@@ -119,6 +120,60 @@ describe('effective authority contract (P-024)', () => {
     expect(evaluateEffectivePermission(fixture(), { ...request, resource: { ...request.resource, target: '' } }).allowed).toBe(false);
     expect(evaluateEffectivePermission(fixture(), { ...request, constraints: { futureCategory: ['ignored'] } } as PermissionRequest).code).toBe('invalid-request');
     expect(evaluateEffectivePermission(null as unknown as AuthoritySnapshot, request).allowed).toBe(false);
+  });
+
+  it.each([
+    ['operation', 'high', '\uD800'], ['operation', 'low', '\uDFFF'],
+    ['target', 'high', '\uD800'], ['target', 'low', '\uDFFF'],
+  ] as const)('refuses resource %s containing an unpaired %s surrogate', (field, _kind, value) => {
+    const input: PermissionRequest = { ...request, resource: { ...request.resource, [field]: value } };
+    expect(evaluateEffectivePermission(fixture(), input)).toMatchObject({
+      allowed: false, code: 'invalid-request', request: null,
+    });
+    expect(revalidateEffectivePermission(fixture(), input, null)).toMatchObject({
+      allowed: false, code: 'invalid-request', request: null,
+    });
+  });
+
+  it('preserves exact resource authorization for valid non-BMP Unicode', () => {
+    const snapshot = fixture();
+    const input: PermissionRequest = {
+      ...request, resource: { kind: 'filesystem', operation: 'read', target: '/safe/\u{1F680}' },
+    };
+    snapshot.policies[0].rules!.resources = { allow: [resourcePermissionValue(input.resource)] };
+    const decision = evaluateEffectivePermission(snapshot, input);
+    expect(decision).toMatchObject({ allowed: true, request: input });
+    expect(revalidateEffectivePermission(snapshot, input, decision.revisions).allowed).toBe(true);
+    expect(evaluateEffectivePermission(snapshot, {
+      ...input, resource: { ...input.resource, target: '/safe/\u{1F680}-other' },
+    }).allowed).toBe(false);
+  });
+
+  it.each(['allowed', 'denied', 'authority-unavailable', 'authority-stale'] as const)(
+    'a %s decision retains a detached canonical snapshot of its trusted request', code => {
+      const snapshot = fixture();
+      const scopedTools = ['tool:b', 'tool:a', 'tool:a'];
+      const input: PermissionRequest = {
+        ...request, resource: { ...request.resource }, constraints: { tools: scopedTools },
+      };
+      if (code === 'denied') snapshot.policies[0].rules!.resources = { allow: [] };
+      if (code === 'authority-unavailable') snapshot.policies = snapshot.policies.slice(1);
+      const decision = code === 'authority-stale'
+        ? revalidateEffectivePermission(snapshot, input, null)
+        : evaluateEffectivePermission(snapshot, input);
+      const expected = {
+        ...request, resource: { ...request.resource }, constraints: { tools: ['tool:a', 'tool:b'] },
+      };
+      expect(decision).toMatchObject({ code, request: expected });
+      input.resource.target = 'https://changed-after-decision.example';
+      scopedTools.push('tool:changed');
+      expect(decision).toMatchObject({ request: expected });
+    },
+  );
+
+  it('an invalid request is explicit rather than represented as an authorized request snapshot', () => {
+    expect(evaluateEffectivePermission(fixture(), { ...request, action: '' }))
+      .toMatchObject({ code: 'invalid-request', request: null });
   });
 
   it('revision tokens detect context changes, policy changes, newly required policies and replay', () => {
@@ -220,5 +275,90 @@ describe('permission-change proof (D-024)', () => {
     const malformed = { ...proof(['read']), complete } as unknown as PermissionPopulationProof;
     expect(comparePermissionPopulations(malformed, proof(['read']))).toMatchObject({ kind: 'unknown' });
     expect(comparePermissionPopulations(proof(['read', 'send']), malformed)).toMatchObject({ kind: 'unknown' });
+  });
+});
+
+describe('permission-change authorization contract (P-024)', () => {
+  const proof = (allowed: string[]): PermissionPopulationProof => ({
+    populationRevision: 'manifest:1', complete: true, population: ['read', 'send'], allowed,
+  });
+  function change(): PermissionChangeInput {
+    const current = fixture();
+    return {
+      current, request,
+      expected: evaluateEffectivePermission(current, request).revisions,
+      before: proof(['read', 'send']), after: proof(['read']),
+      fixedFloors: [{ authority: { kind: 'platform', id: 'platform', revision: 'platform:1' },
+        permissions: proof(['read', 'send']) }],
+    };
+  }
+
+  it.each(['narrowing', 'neutral'] as const)('a proved %s change still needs every ordinary edit authority', kind => {
+    const input = change();
+    if (kind === 'neutral') input.after = proof(['read', 'send']);
+    expect(assessPermissionChange(input)).toMatchObject({
+      canApplyWithoutApproval: true, code: 'allowed-without-approval', comparison: { kind },
+    });
+    for (const authority of AUTHORITY_KINDS) {
+      const denied = change();
+      if (kind === 'neutral') denied.after = proof(['read', 'send']);
+      denied.current.policies.find(policy => policy.kind === authority)!.rules!.actions = { allow: [] };
+      expect(assessPermissionChange(denied), authority).toMatchObject({
+        canApplyWithoutApproval: false, requiresOwnerApproval: false, code: 'edit-denied',
+        edit: { decidingAuthority: { kind: authority } },
+      });
+    }
+  });
+
+  it('a narrowing proof cannot bypass a floor, even with an unsolicited approval claim', () => {
+    const input = change();
+    input.fixedFloors[0].permissions = proof([]);
+    expect(assessPermissionChange({ ...input, approval: true } as PermissionChangeInput)).toMatchObject({
+      canApplyWithoutApproval: false, requiresOwnerApproval: false, code: 'floor-denied',
+      comparison: { kind: 'narrowing' },
+    });
+  });
+
+  it('requires the exact complete current floor population and revisions', () => {
+    const input = change();
+    expect(assessPermissionChange({ ...input, fixedFloors: [] }).code).toBe('floor-unavailable');
+    for (const floor of [
+      { ...input.fixedFloors[0], authority: { kind: 'platform' as const, id: 'other', revision: 'platform:1' } },
+      { ...input.fixedFloors[0], authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:0' } },
+      { ...input.fixedFloors[0], permissions: { ...proof([]), complete: false } },
+      { ...input.fixedFloors[0], permissions: { ...proof([]), populationRevision: 'manifest:2' } },
+    ]) expect(assessPermissionChange({ ...input, fixedFloors: [floor] }).code).toBe('floor-unavailable');
+    const extra = { ...input.current.policies.find(policy => policy.kind === 'platform')!, id: 'extra-floor' };
+    input.current.policies = [...input.current.policies, extra];
+    input.current.required = [...input.current.required, { kind: 'platform', id: 'extra-floor' }];
+    input.expected = evaluateEffectivePermission(input.current, request).revisions;
+    expect(assessPermissionChange(input).code).toBe('floor-unavailable');
+    input.fixedFloors = [input.fixedFloors[0], input.fixedFloors[0]];
+    expect(assessPermissionChange(input).code).toBe('floor-unavailable');
+    input.fixedFloors = [input.fixedFloors[0], {
+      authority: { kind: 'platform', id: 'extra-floor', revision: extra.revision }, permissions: proof([]),
+    }];
+    expect(assessPermissionChange(input).code).toBe('floor-denied');
+  });
+
+  it.each(['widening', 'unknown'] as const)('a %s change stays refused for the exact owner-approval workflow', kind => {
+    const input = change();
+    input.before = kind === 'widening' ? proof([]) : { ...proof(['read']), complete: false };
+    expect(assessPermissionChange(input)).toMatchObject({
+      canApplyWithoutApproval: false, requiresOwnerApproval: true, code: 'approval-required',
+      comparison: { kind },
+    });
+  });
+
+  it('a before-image cannot be replayed after an authority or retained context changes', () => {
+    for (const changed of ['context', ...AUTHORITY_KINDS]) {
+      const input = change();
+      expect(assessPermissionChange(input).canApplyWithoutApproval).toBe(true);
+      if (changed === 'context') input.current.contextRevision = 'context:2';
+      else input.current.policies.find(policy => policy.kind === changed)!.revision += ':new';
+      expect(assessPermissionChange(input), changed).toMatchObject({
+        canApplyWithoutApproval: false, requiresOwnerApproval: false, code: 'stale-before-state',
+      });
+    }
   });
 });

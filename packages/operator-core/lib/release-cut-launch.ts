@@ -19,12 +19,12 @@
  * sha256 for the owner to upload.
  */
 
-import { spawn } from 'node:child_process';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { readOperatorDbEnvLocal } from '@papercusp/db-org/operator-db-env';
+import { buildServiceEnvPayloadWithTransport, escapeSystemdServiceArgument, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { serviceUnitForTask, TASK_ROOT_SLICE } from './task-manager/types';
 import { execFileViaSidecar } from './fleet/git-via-sidecar';
 
@@ -217,6 +217,15 @@ export interface CutRuntimeEnv {
    *  quiescing the operator (a fleet-affecting outage) — neither of which is necessary
    *  (EI-23917342543376581). Carrying it restores parity with the manual path. */
   headSnapshotTimeoutMs?: number;
+  /** Absolute path of the release-host env file the cut bakes its update source from
+   *  (WI-6554700010029602). bin/lib/release-host.sh reads `PAPERCUSP_RELEASE_HOST_ENV`
+   *  and defaults it to the canonical ~/.papercusp/release-host.env. That file is
+   *  PERMANENT for every already-shipped install, so a host migration cannot flip it
+   *  ahead of publication. The new host has to reach the build some other way, and
+   *  the explicit env allowlist below drops any name it does not set. Absent ⇒ the
+   *  canonical file, unchanged. Path-validated (and checked to define a host) by
+   *  checkReleaseHostEnvFile before launch; buildCutEnv only forwards it. */
+  releaseHostEnv?: string;
   /** Managed-release journal identity (P-001). release-local.sh runs its phase journal
    *  — stage receipts, reuse/reconcile decisions, restart resume — only when BOTH of
    *  these are present; absent, the cut runs UNMANAGED exactly as before, which is how
@@ -305,6 +314,13 @@ export function buildCutEnv(
     );
   }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.seedless) {
+    // Skipping the cut only reuses the seed directory. The audited Server
+    // producer separately requires an explicit, recorded seedless decision.
+    env.PAPERCUSP_ALLOW_SEEDLESS_RELEASE = '1';
+    env.PAPERCUSP_ALLOW_SEEDLESS_REASON =
+      `release:cut seedless:true source=${expectedSourceSha}; placeholder-only seed; first boot uses cold-join`;
+  }
   if (runtime.seedUuidIdempotency) {
     const { plansPath, plansSha256, sourceStoreDir, censusPath, censusSha256 } = runtime.seedUuidIdempotency;
     if (runtime.reuseSeed || runtime.seedless || !plansPath?.startsWith('/')
@@ -357,6 +373,18 @@ export function buildCutEnv(
   if (Number.isSafeInteger(headSnapshotTimeoutMs) && (headSnapshotTimeoutMs as number) > 0) {
     env.PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS = String(headSnapshotTimeoutMs);
   }
+  // Unlike the timeout above, a bad value here is fatal: silently falling back to the
+  // canonical file would bake the OLD update source into a migration candidate, and
+  // the build would succeed with nothing red.
+  if (runtime.releaseHostEnv !== undefined) {
+    const releaseHostEnv = runtime.releaseHostEnv.trim();
+    if (!releaseHostEnv || !path.isAbsolute(releaseHostEnv)) {
+      throw new Error(
+        'release_host_env_invalid — releaseHostEnv must be an absolute path; omit it to use the canonical release-host.env',
+      );
+    }
+    env.PAPERCUSP_RELEASE_HOST_ENV = releaseHostEnv;
+  }
   // A platform leg still runs the shared release-local collector. Non-Linux legs
   // must consume the already-successful Linux bytes through its existing,
   // provenance-checked salvage path; otherwise a Windows/macOS/arm64 retry
@@ -366,6 +394,57 @@ export function buildCutEnv(
   if (legs.windows) env.WITH_WINDOWS = '1';
   if (legs.arm64) env.WITH_ARM64 = '1';
   return env;
+}
+
+/** A release-host env file name: the canonical `release-host.env` or a sibling such as
+ *  `release-host-gcs.env`. */
+const RELEASE_HOST_ENV_BASENAME = /^release-host(?:[-.][A-Za-z0-9_-]+)*\.env$/;
+/** An assignment of the baked host, as release-host.sh's `set -a; . file` would export it. */
+const RELEASE_HOST_ASSIGNMENT = /^[ \t]*(?:export[ \t]+)?PAPERCUSP_RELEASE_HOST=(.*)$/;
+
+/** Validate a caller-selected release-host env file BEFORE a cut launches
+ *  (WI-6554700010029602). Returns a refusal reason, or null when the file is usable.
+ *
+ *  Fails closed on every way a wrong file could still produce a green build:
+ *    - outside `<home>/.papercusp/` (no hand-pointing a release at an arbitrary file),
+ *    - not named like a release-host env file,
+ *    - unreadable or missing (release-host.sh would silently skip it and fall through to
+ *      an EMPTY host, which the updater renders as "up to date" forever),
+ *    - defining no non-empty `https://` PAPERCUSP_RELEASE_HOST.
+ *  The reason never echoes the host value: its path segment is the shared secret
+ *  (release-host.sh "path redacted"), and refusal text lands in coord and work-items. */
+export function checkReleaseHostEnvFile(
+  filePath: string,
+  home: string,
+  readFile: (p: string) => string = (p) => fs.readFileSync(p, 'utf8'),
+): string | null {
+  const trimmed = filePath.trim();
+  const dir = path.join(home, '.papercusp');
+  if (!path.isAbsolute(trimmed) || path.normalize(trimmed) !== trimmed || path.dirname(trimmed) !== dir) {
+    return `release_host_env_invalid — releaseHostEnv must be an absolute file directly inside ${dir}/`;
+  }
+  if (!RELEASE_HOST_ENV_BASENAME.test(path.basename(trimmed))) {
+    return 'release_host_env_invalid — releaseHostEnv must be named release-host.env or release-host-<name>.env';
+  }
+  let text: string;
+  try {
+    text = readFile(trimmed);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? 'unreadable';
+    return `release_host_env_unreadable — ${trimmed} (${code}); release-host.sh would skip it and bake an EMPTY update source`;
+  }
+  let host = '';
+  for (const line of text.split(/\r?\n/)) {
+    const m = RELEASE_HOST_ASSIGNMENT.exec(line);
+    if (m) host = m[1]!.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+  }
+  if (!host) {
+    return `release_host_env_no_host — ${trimmed} defines no non-empty PAPERCUSP_RELEASE_HOST`;
+  }
+  if (!host.startsWith('https://')) {
+    return `release_host_env_no_host — ${trimmed} defines PAPERCUSP_RELEASE_HOST without an https:// scheme`;
+  }
+  return null;
 }
 
 /** The flock file papercup-staging-sync (apps/operator/bin/release/sync-staging-checkout.sh)
@@ -555,7 +634,11 @@ export interface LaunchCutResult {
  *
  * `spawnFn` is injectable so the tool handler is unit-testable without launching anything.
  */
-export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
+export function launchDetachedCut(
+  opts: LaunchCutOpts,
+  spawnFn: SpawnLike = spawn,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
   const orchestratorRoot = opts.orchestratorRoot ?? desktopRoot();
   const legs = opts.legs ?? {};
@@ -565,11 +648,46 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
     opts.channel,
     legs,
     opts.expectedSourceSha,
-    process.env.PATH ?? '',
+    environment.PATH ?? '',
     opts.runtime,
     opts.platform,
     orchestratorRoot,
   );
+  // The user manager does not inherit the operator's DB pins, and an isolated
+  // source checkout deliberately has no .env.local. Keep the live disclosure
+  // census enabled, but give it the operator's configured database. Reuse the
+  // anonymous credential transport so URLs never enter ExecStart or journald.
+  const operatorRoot = path.dirname(opts.runtime.canonicalDesktopRoot ?? canonicalDesktopRoot(environment));
+  const configured = readOperatorDbEnvLocal(path.join(operatorRoot, 'apps', 'operator', '.env.local'));
+  const childEnvironment: NodeJS.ProcessEnv = {};
+  for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'LANG',
+    'PAPERCUSP_TRANSFORMERS_MODEL_CACHE']) {
+    if (environment[key] !== undefined) childEnvironment[key] = environment[key];
+  }
+  // Resolve precedence before merging: a configured HARNESS_ADMIN_DATABASE_URL
+  // must not shadow an explicit DATABASE_URL in the receiving process.
+  const explicitAdmin = environment.HARNESS_ADMIN_DATABASE_URL || environment.DATABASE_URL;
+  const admin = explicitAdmin || configured.HARNESS_ADMIN_DATABASE_URL || configured.DATABASE_URL;
+  if (admin) {
+    childEnvironment.HARNESS_ADMIN_DATABASE_URL = admin;
+    childEnvironment.DATABASE_URL = admin;
+  }
+  const app = environment.HARNESS_DATABASE_URL || (!explicitAdmin ? configured.HARNESS_DATABASE_URL : undefined);
+  if (app) childEnvironment.HARNESS_DATABASE_URL = app;
+  const payload = buildServiceEnvPayloadWithTransport(argv.slice(-3), childEnvironment);
+  // NOTIFY_SOCKET belongs to this new unit, not the calling operator. Capture it
+  // before the exact-environment runner replaces the manager's environment, then
+  // restore only that protocol field for the cut's readiness notification.
+  const serviceCommand = [
+    ...payload.argv.slice(0, -3).map(shellSingleQuote),
+    '/usr/bin/env',
+    '"NOTIFY_SOCKET=$NOTIFY_SOCKET"',
+    ...argv.slice(-3).map(shellSingleQuote),
+  ].join(' ');
+  const launchArgv = [
+    ...argv.slice(0, -3), payload.credentialProperty!,
+    'bash', '-c', escapeSystemdServiceArgument(`exec ${serviceCommand}`),
+  ];
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,
@@ -579,19 +697,28 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
       version: opts.version,
       channel: opts.channel,
       legs,
-      argv,
+      argv: launchArgv,
       logPath: cutLogFor(opts.platform),
       donePath: cutDoneFor(opts.platform),
       operationId: opts.runtime.releaseOperationId?.trim() || null,
       taskId: opts.runtime.releaseTaskId?.trim() || null,
     };
     let stderr = '';
-    const child = spawnFn('systemd-run', argv);
+    let child: ReturnType<SpawnLike>;
+    try {
+      child = spawnFn('systemd-run', launchArgv);
+    } catch (error) {
+      payload.transport.release();
+      resolve({ ...base, reason: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     child.stderr?.on('data', (d: unknown) => (stderr += String(d)));
     child.on('error', (e: unknown) => {
+      payload.transport.release();
       resolve({ ...base, launched: false, reason: e instanceof Error ? e.message : String(e) });
     });
     child.on('close', (code: number | null) => {
+      payload.transport.release();
       if (code === 0) {
         resolve({ ...base, launched: true });
       } else {
@@ -1305,6 +1432,10 @@ export interface PreflightDeps {
   /** Run bin/smoke-target-preflight.sh for one native smoke target (WI-10004346).
    *  Default: a bounded read-only `bash <script> --platform <p>`. Tests inject. */
   runSmokeTargetPreflight?: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe;
+  /** Run the selected product's read-only model-cache predicate before launching. */
+  runModelCachePreflight?: (desktopRoot: string) => SmokeTargetProbe;
+  /** Run a mandatory source identity guard from the selected target workspace. */
+  runSourceIdentityPreflight?: (scriptPath: string, workspace: string) => SmokeTargetProbe;
 }
 
 /** Raw result of bin/smoke-target-preflight.sh. exitCode null = it did not finish
@@ -1314,13 +1445,130 @@ export interface SmokeTargetProbe {
   output: string;
 }
 
-function defaultRunSmokeTargetPreflight(scriptPath: string, platform: 'mac' | 'windows'): SmokeTargetProbe {
-  const res = spawnSync('bash', [scriptPath, '--platform', platform], {
+/** One read-only child-process probe, described once so the synchronous runner (tests,
+ *  CLIs) and the event-loop-safe async runner (the release:cut tool handler) execute the
+ *  IDENTICAL command (EI-27109514509838099). */
+export interface ProbeSpec {
+  command: string;
+  args: string[];
+  cwd?: string;
+  timeoutMs: number;
+  maxBuffer?: number;
+}
+
+/** The target workspace's mandatory source-identity guards, in report order. */
+export const SOURCE_IDENTITY_GUARDS = [
+  'check-no-owner-name-tags.mjs',
+  'check-no-box-identity.mjs',
+  'check-no-identity-literals.mjs',
+] as const;
+
+const PROBE_MAX_BUFFER = 1 << 20;
+
+export function runProbeSpecSync(spec: ProbeSpec): SmokeTargetProbe {
+  const result = spawnSync(spec.command, spec.args, {
+    ...(spec.cwd ? { cwd: spec.cwd } : {}),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 60_000,
+    timeout: spec.timeoutMs,
+    maxBuffer: spec.maxBuffer ?? PROBE_MAX_BUFFER,
   });
-  return { exitCode: res.status, output: `${res.stdout ?? ''}${res.stderr ?? ''}${res.error ? `\n${res.error.message}` : ''}` };
+  return {
+    exitCode: result.status,
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}`,
+  };
+}
+
+/** Async twin of runProbeSpecSync: same command, timeout and output cap, but the child runs
+ *  while the event loop keeps serving. A timeout, spawn failure or output overflow yields
+ *  exitCode null (unmeasured), exactly like spawnSync's status. */
+export function runProbeSpecAsync(spec: ProbeSpec): Promise<SmokeTargetProbe> {
+  return new Promise((resolve) => {
+    const maxBuffer = spec.maxBuffer ?? PROBE_MAX_BUFFER;
+    let output = '';
+    let overflow = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (exitCode: number | null, note?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ exitCode, output: note ? `${output}\n${note}` : output });
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn(spec.command, spec.args, {
+        ...(spec.cwd ? { cwd: spec.cwd } : {}),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      finish(null, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(null, `probe timed out after ${spec.timeoutMs}ms`);
+    }, spec.timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      if (overflow) return;
+      output += chunk.toString('utf8');
+      if (output.length > maxBuffer) {
+        overflow = true;
+        child.kill('SIGTERM');
+      }
+    };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.on('error', (error) => finish(null, error.message));
+    child.on('close', (code) =>
+      overflow ? finish(null, `probe output exceeded ${maxBuffer} bytes`) : finish(code),
+    );
+  });
+}
+
+export function sourceIdentityProbeSpec(scriptPath: string, workspace: string): ProbeSpec {
+  return { command: process.execPath, args: [scriptPath], cwd: workspace, timeoutMs: 30_000, maxBuffer: PROBE_MAX_BUFFER };
+}
+
+function defaultRunSourceIdentityPreflight(scriptPath: string, workspace: string): SmokeTargetProbe {
+  return runProbeSpecSync(sourceIdentityProbeSpec(scriptPath, workspace));
+}
+
+function defaultRunModelCachePreflight(root: string): SmokeTargetProbe {
+  return runProbeSpecSync(modelCacheProbeSpec(root));
+}
+
+export function modelCacheProbeSpec(root: string): ProbeSpec {
+  return { command: 'bash', timeoutMs: 10_000, args: ['-c', `
+set -e
+source "$1"
+for models_root in "$2/.cache" "$2/models" "\${PAPERCUSP_TRANSFORMERS_MODEL_CACHE:-}"; do
+  [ -n "$models_root" ] || continue
+  models_root="\${models_root%/onnx-community}"
+  papercusp_transformers_models_present "$models_root" || continue
+  ready=1
+  for model in "\${PAPERCUSP_TRANSFORMERS_MODELS[@]}"; do
+    papercusp_transformers_model_has_final_weights "$models_root/onnx-community/$model" || ready=0
+  done
+  if [ "$ready" = 1 ]; then printf 'models ready: %s\\n' "$models_root"; exit 0; fi
+done
+echo 'required embedding models missing or incomplete; stage the contract-pinned model pack into the selected checkout, or configure PAPERCUSP_TRANSFORMERS_MODEL_CACHE' >&2
+exit 1
+`, 'release-model-preflight', path.join(root, 'bin', 'lib', 'transformers-models.sh'),
+  path.resolve(root, '..', 'node_modules', '@huggingface', 'transformers')] };
+}
+
+export function smokeTargetProbeSpec(scriptPath: string, platform: 'mac' | 'windows'): ProbeSpec {
+  return { command: 'bash', args: [scriptPath, '--platform', platform], timeoutMs: 60_000 };
+}
+
+/** The detector is release machinery, so it is read from the current orchestrator tree. */
+export function smokeTargetScriptPath(orchestratorRoot?: string): string {
+  return path.join(orchestratorRoot ?? desktopRoot(), 'bin', 'smoke-target-preflight.sh');
+}
+
+function defaultRunSmokeTargetPreflight(scriptPath: string, platform: 'mac' | 'windows'): SmokeTargetProbe {
+  return runProbeSpecSync(smokeTargetProbeSpec(scriptPath, platform));
 }
 
 /**
@@ -1375,14 +1623,35 @@ export function desktopReleaseTag(version: string, channel: Channel): string {
   return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
 }
 
+/** The release-tag probe: a NETWORK read bounded at 20s — exactly the event-loop sentinel's
+ *  limit, so it must never run synchronously on a serving host (EI-27109514509838099). */
+export function remoteTagProbeSpec(monorepo: string, tag: string, remote: string): ProbeSpec {
+  return {
+    command: 'git',
+    args: ['-C', monorepo, 'ls-remote', '--refs', '--tags', remote, `refs/tags/${tag}`],
+    timeoutMs: 20_000,
+    maxBuffer: PROBE_MAX_BUFFER,
+  };
+}
+
+/** The sha `refs/tags/<tag>` points at, or null when the remote answered without it. Throws
+ *  when the probe did not succeed, so the caller reports the tag as UNMEASURED, never absent.
+ *  Probe output interleaves stderr, so only a `<sha>\trefs/tags/<tag>` line counts. */
+export function parseRemoteTagSha(probe: SmokeTargetProbe, tag: string): string | null {
+  if (probe.exitCode !== 0) {
+    const reason = probe.output.trim().split('\n').find((line) => line.trim().length > 0);
+    throw new Error(`git ls-remote exited ${probe.exitCode ?? 'unmeasured'}${reason ? `: ${reason.trim()}` : ''}`);
+  }
+  const ref = `refs/tags/${tag}`;
+  for (const line of probe.output.split('\n')) {
+    const [sha, name] = line.trim().split(/\s+/);
+    if (name === ref && sha && /^[0-9a-f]{40,64}$/.test(sha)) return sha;
+  }
+  return null;
+}
+
 function defaultRemoteTagSha(monorepo: string, tag: string, remote: string): string | null {
-  const out = execFileSync('git', ['-C', monorepo, 'ls-remote', '--refs', '--tags', remote, `refs/tags/${tag}`], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 20_000,
-  });
-  const first = out.split('\n').find((line) => line.trim().length > 0);
-  return first ? first.trim().split(/\s+/)[0] : null;
+  return parseRemoteTagSha(runProbeSpecSync(remoteTagProbeSpec(monorepo, tag, remote)), tag);
 }
 
 function readDependencyGeneration(workspace: string, identityScript: string): string {
@@ -1400,24 +1669,27 @@ function readDependencyGeneration(workspace: string, identityScript: string): st
 /**
  * Pure-ish preflight: verify the cut CAN run cleanly before firing the ~35-min build —
  * the signing key, the runtime dependency used by release-local.sh's pre-build
- * migration lint, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
+ * migration lint, the target's mandatory source identity guards, release-local.sh +
+ * the three verify scripts (RELEASE-RUNBOOK §2–4)
  * that compose under this cut, and that no cut is already in flight. Requested optional
  * legs (mac/windows) add an informational line naming their native Linux cross-build
  * producer (no VM). No heavy work, no mutation. The only network read is the exact
  * release-tag probe (`git ls-remote`), made only when `opts.release` names the release.
  */
+export interface PreflightOpts {
+  root?: string;
+  platform?: Platform;
+  orchestratorRoot?: string;
+  /** The release this cut would produce. When given, preflight also checks the exact
+   *  dogfood-pin tag on the canonical remote (EI-24611322499942803). */
+  release?: { version: string; channel: Channel; sourceSha: string };
+  /** Build-only opt-in; defers the tag probe, never signing/source gates. */
+  deferTag?: boolean;
+}
+
 export function preflightCut(
   legs: CutLegs = {},
-  opts: {
-    root?: string;
-    platform?: Platform;
-    orchestratorRoot?: string;
-    /** The release this cut would produce. When given, preflight also checks the exact
-     *  dogfood-pin tag on the canonical remote (EI-24611322499942803). */
-    release?: { version: string; channel: Channel; sourceSha: string };
-    /** Build-only opt-in; defers the tag probe, never signing/source gates. */
-    deferTag?: boolean;
-  } = {},
+  opts: PreflightOpts = {},
   deps: PreflightDeps = {},
 ): PreflightResult {
   const root = opts.root ?? desktopRoot();
@@ -1477,6 +1749,37 @@ export function preflightCut(
   // immutable generation marker required by every journalled platform leg.
   // Validate its contents before launching the detached build.
   const workspace = path.resolve(root, '..');
+  // Mirror release-local.sh's early identity gate against the frozen product,
+  // not the current orchestrator: repairing canonical source cannot repair a
+  // previously selected cut root (WI-6554700010028333). Run every guard even
+  // after a failure so preflight reports the complete set of blockers.
+  for (const script of SOURCE_IDENTITY_GUARDS) {
+    let probe: SmokeTargetProbe;
+    try {
+      probe = (deps.runSourceIdentityPreflight ?? defaultRunSourceIdentityPreflight)(
+        path.join(workspace, 'scripts', script), workspace,
+      );
+    } catch (error) {
+      probe = { exitCode: null, output: error instanceof Error ? error.message : String(error) };
+    }
+    const diagnostic = probe.output.trim().slice(0, 4_000);
+    checks.push({
+      name: `source-identity:${script}`,
+      ok: probe.exitCode === 0,
+      detail: probe.exitCode === 0
+        ? diagnostic || `${script} passed in ${workspace}`
+        : `${script} failed for selected source ${workspace} (exit ${probe.exitCode ?? 'unmeasured'}): ` +
+          (diagnostic || 'guard did not complete; source identity is not verified'),
+    });
+  }
+  const modelProbe = (deps.runModelCachePreflight ?? defaultRunModelCachePreflight)(root);
+  checks.push({
+    name: 'embedding-models',
+    ok: modelProbe.exitCode === 0,
+    detail: modelProbe.exitCode === 0
+      ? modelProbe.output.trim()
+      : `embedding models are not ready for this cut: ${modelProbe.output.trim() || 'model cache probe could not complete'}`,
+  });
   const marker = path.join(workspace, 'node_modules', '.papercusp-dependency-generation');
   try {
     const generation = (deps.readDependencyGeneration ?? readDependencyGeneration)(
@@ -1659,8 +1962,7 @@ export function preflightCut(
     });
   }
   // The legs cross-build without a VM, but their installed-upgrade SMOKE needs one.
-  // The detector is release machinery, so read it from the current orchestrator tree.
-  const smokeScript = path.join(opts.orchestratorRoot ?? desktopRoot(), 'bin', 'smoke-target-preflight.sh');
+  const smokeScript = smokeTargetScriptPath(opts.orchestratorRoot);
   const runSmoke = deps.runSmokeTargetPreflight ?? defaultRunSmokeTargetPreflight;
   for (const platform of ['mac', 'windows'] as const) {
     if (legs[platform]) checks.push(smokeTargetCheck(platform, smokeScript, exists, runSmoke));
@@ -1668,6 +1970,80 @@ export function preflightCut(
 
   const blockers = checks.filter((c) => !c.ok && !c.warnOnly).map((c) => `${c.name}: ${c.detail}`);
   return { go: blockers.length === 0, desktopRoot: root, checks, blockers };
+}
+
+function probeKey(...parts: string[]): string {
+  return parts.join('\0');
+}
+
+/**
+ * Event-loop-safe preflight for a long-lived host (EI-27109514509838099). preflightCut is
+ * synchronous, and its three source-identity guards alone measured 9.9s + 5.9s + 5.8s run
+ * back to back on 2026-10-27. Run under spawnSync on the operator's main thread, that wedged
+ * the loop past the event-loop sentinel's 20s limit, so the sentinel SIGKILLed the host
+ * mid-call and the cut never launched. This runs every child-process probe concurrently
+ * with async spawn first, then hands the measured results to the unchanged preflightCut
+ * through its deps seams. A lookup preflightCut did not anticipate fails closed as
+ * UNMEASURED; it never falls back to a blocking probe. Every tool handler must use this,
+ * never preflightCut.
+ */
+export async function preflightCutAsync(
+  legs: CutLegs = {},
+  opts: PreflightOpts = {},
+  deps: PreflightDeps = {},
+  run: (spec: ProbeSpec) => Promise<SmokeTargetProbe> = runProbeSpecAsync,
+): Promise<PreflightResult> {
+  const root = opts.root ?? desktopRoot();
+  const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+  const workspace = path.resolve(root, '..');
+  const pending = new Map<string, Promise<SmokeTargetProbe>>();
+
+  if (!deps.runSourceIdentityPreflight) {
+    for (const script of SOURCE_IDENTITY_GUARDS) {
+      const scriptPath = path.join(workspace, 'scripts', script);
+      pending.set(probeKey('identity', scriptPath, workspace), run(sourceIdentityProbeSpec(scriptPath, workspace)));
+    }
+  }
+  if (!deps.runModelCachePreflight) {
+    pending.set(probeKey('model', root), run(modelCacheProbeSpec(root)));
+  }
+  const smokeScript = smokeTargetScriptPath(opts.orchestratorRoot);
+  if (!deps.runSmokeTargetPreflight && exists(smokeScript)) {
+    for (const platform of ['mac', 'windows'] as const) {
+      if (legs[platform]) pending.set(probeKey('smoke', smokeScript, platform), run(smokeTargetProbeSpec(smokeScript, platform)));
+    }
+  }
+  if (!deps.remoteTagSha && opts.release && opts.deferTag !== true) {
+    const tag = desktopReleaseTag(opts.release.version, opts.release.channel);
+    pending.set(probeKey('tag', workspace, tag, DOGFOOD_CANONICAL_REMOTE), run(remoteTagProbeSpec(workspace, tag, DOGFOOD_CANONICAL_REMOTE)));
+  }
+
+  const keys = [...pending.keys()];
+  const settled = await Promise.all(
+    keys.map((key) =>
+      pending.get(key)!.catch((error: unknown): SmokeTargetProbe => ({
+        exitCode: null,
+        output: error instanceof Error ? error.message : String(error),
+      })),
+    ),
+  );
+  const measured = new Map(keys.map((key, i) => [key, settled[i]!]));
+  const lookup = (key: string): SmokeTargetProbe =>
+    measured.get(key) ?? {
+      exitCode: null,
+      output: 'probe was not prefetched by preflightCutAsync; refusing to run it synchronously on the event loop',
+    };
+
+  return preflightCut(legs, opts, {
+    ...deps,
+    runSourceIdentityPreflight:
+      deps.runSourceIdentityPreflight ?? ((scriptPath, ws) => lookup(probeKey('identity', scriptPath, ws))),
+    runModelCachePreflight: deps.runModelCachePreflight ?? ((r) => lookup(probeKey('model', r))),
+    runSmokeTargetPreflight:
+      deps.runSmokeTargetPreflight ?? ((scriptPath, platform) => lookup(probeKey('smoke', scriptPath, platform))),
+    remoteTagSha:
+      deps.remoteTagSha ?? ((monorepo, tag, remote) => parseRemoteTagSha(lookup(probeKey('tag', monorepo, tag, remote)), tag)),
+  });
 }
 
 // ─── Abort a leg (WI-4233) ──────────────────────────────────────────────────────

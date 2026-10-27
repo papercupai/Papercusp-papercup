@@ -152,6 +152,11 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
 
   const baseCtx: UnifiedToolContext = {
     ...ctx,
+    // Projection metadata describes the parent's result, not this child read.
+    // Inheriting it can narrow source queries before the script sees the data.
+    // projectedNext installs this child's own explicit projection afterward.
+    sourceProjection: undefined,
+    sourceMaterialization: undefined,
     // A direct facade call has no tools:invoke target argument on which the
     // projected dispatcher can carry `payloadTier:'full'`. Match that route's
     // materialization contract in the context as well: raw handlers that

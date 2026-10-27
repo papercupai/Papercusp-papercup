@@ -13,6 +13,7 @@ import { fleetScopedMiss, type FleetScopeContext } from '../../../scheduler/flee
 import { SU_RUBRIC } from '../../rubrics/su';
 import { effectiveToolCall } from './_asserts';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../../work-nature/agent-work-predicate';
 export const S41_CASES = ['independent', 'blocked', 'no-event', 'finished'] as const;
 export type S41Case = typeof S41_CASES[number];
 export const S41_ITEM = 'WI-95541';
@@ -32,7 +33,7 @@ const scope: FleetScopeContext = {
   record: {
     source: 'fleet', revision: 1, updatedBy: 'su-s41-leader', updatedAt: '2026-10-16T00:00:00Z',
     spec: { specVersion: '1.0', specId: 'widget-lane', revision: 1,
-      view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] } },
+      view: { filter: { field: 'kind', op: 'in', value: [...ISSUE_FAMILY_ROUTE_KINDS] } },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] }, states: ['open'] },
   },
 };

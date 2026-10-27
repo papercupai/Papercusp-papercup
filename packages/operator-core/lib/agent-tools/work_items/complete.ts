@@ -64,6 +64,8 @@ import { activeExternalBlockers, externalBlockerCapabilityPolicy } from '../../e
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import { lookupWorkItem } from './_lookup';
 import {
+  assessWorkItemHeldOpenTerminalTransition,
+  workItemPlanLaneTransitionRefusal,
   getWorkItem,
   getWorkItemsByIds,
   setWorkItemStateWithAliasInfo,
@@ -109,7 +111,13 @@ import {
 } from './completion-freshness';
 export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
 import { pgMechanicsLedger, readWorkItemMechanics } from './_mechanics';
-import { prefillCompletionFromMechanics, type CompletionPrefill } from './completion-prefill';
+import {
+  completionSuppliesField,
+  prefillCompletionFromMechanics,
+  prefillOptionsForDeclaredKinds,
+  type CompletionPrefill,
+  type CompletionPrefillOptions,
+} from './completion-prefill';
 export type { CompletionTreeStampProbe, CompletionTreeStampForEvidenceProbe } from './completion-freshness';
 import { claimsRemediation, evaluateCloseTerminalCriteria } from './terminal-criteria';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
@@ -127,7 +135,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v4',
+  version: 'work-items-completion-v6',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -139,6 +147,7 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
+    { key: 'plan-item-lane', description: 'Terminal transitions respect the linked plan item readiness and owner gates.' },
     {
       key: 'spec-conformance-closure',
       description: 'Linked-plan mapped requirements are declared, discharged checks pass, and drift alarms have approved deviations.',
@@ -150,6 +159,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     {
       key: 'change-kind-proof',
       description: 'A successful close carries the proof each declared change kind requires.',
+    },
+    {
+      key: 'live-service-evidence',
+      description: 'Live-service closes name a concrete service and a falsifiable runtime observation in root verification evidence.',
     },
   ],
 } as const;
@@ -276,6 +289,7 @@ import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
 import { evaluateChangeKindGate, type ChangeKindGateResult } from '../../change-kind-proof';
+import type { RefactorFactsQuery } from '../../change-kind-refactor-proof';
 import { readChangeKinds, type ChangeKindsView } from '../../work-item-change-kinds';
 import {
   attachChangeKindDeclarations,
@@ -3481,7 +3495,10 @@ async function latestTestingRunForOwner(
     if (!row) return null;
     const files = Array.isArray(row.files) ? row.files.filter((f): f is string => typeof f === 'string') : [];
     return {
-      invokedAt: new Date(row.invoked_at),
+      // The telemetry writer stamps invoked_at at dispatch settlement (EI-7040).
+      // Consumers need the invocation START to include test rows produced during
+      // the call; treating settlement as start excludes the very run we bound.
+      invokedAt: new Date(new Date(row.invoked_at).getTime() - Math.max(0, row.duration_ms ?? 0)),
       durationMs: row.duration_ms ?? null,
       workItemId: row.work_item_id ?? null,
       files,
@@ -3528,6 +3545,42 @@ async function completeOne(
   ctx: UnifiedToolContext,
   recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
 ): Promise<BulkItemResult> {
+  const phases = ctx.phases;
+  if (!phases) return completeOneTracked(it, ident, ctx, recoveredAttempt);
+  let slow = false;
+  const report = (event: 'pending' | 'progress' | 'settled'): void => {
+    try {
+      console.info(`[work-item-completion-phase] ${JSON.stringify({
+        event, workItemId: it.id,
+        traceId: ctx.requestOrigin?.mcpRequestTraceId ?? null,
+        dispatchCallId: ctx.dispatchCallId ?? null,
+        phases: phases.snapshot(),
+      })}`);
+    } catch { /* Observation must not change completion or authorize a retry. */ }
+  };
+  const timer = setTimeout(() => { slow = true; report('pending'); }, 5_000);
+  timer.unref?.();
+  const track: typeof phases.track = (phase, work) => {
+    const pending = phases.track(phase, work);
+    if (slow) report('progress');
+    return pending;
+  };
+  try {
+    return await completeOneTracked(it, ident, { ...ctx, phases: { ...phases, track } }, recoveredAttempt);
+  } finally {
+    clearTimeout(timer);
+    if (slow) report('settled');
+  }
+}
+
+async function completeOneTracked(
+  it: CompleteItem,
+  ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
+  ctx: UnifiedToolContext,
+  recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
+): Promise<BulkItemResult> {
+  const track = <T>(phase: string, work: () => Promise<T>): Promise<T> =>
+    ctx.phases ? ctx.phases.track(`completion:${phase}`, work) : work();
   // EI-20724228359175431: pull the truncation marker off BEFORE anything downstream
   // sees it (rendering, evidence extraction, the broadcast record). It is purely an
   // internal signal for the caller-facing warning below.
@@ -3559,7 +3612,7 @@ async function completeOne(
   const { value: sanitizedCompletion, stripped: nulBytesStripped } = stripNulBytesDeep(it.completion);
   if (nulBytesStripped) it.completion = sanitizedCompletion;
 
-  const existing = await getWorkItem(it.id, it.harness);
+  const existing = await track('work-item', () => getWorkItem(it.id, it.harness));
   if (existing && recoveredAttempt) {
     (await import('../../blueprint/operation-service')).assertDeferredOperationCompletionFence(recoveredAttempt, existing);
   }
@@ -3853,6 +3906,19 @@ async function completeOne(
     Boolean(effectiveState) &&
     ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some((state) => state === String(effectiveState).trim().toLowerCase());
 
+  if (closeIntentRequested && successfulClose &&
+      (existing.payload as { ownerDirectiveRecovery?: unknown } | null)?.ownerDirectiveRecovery) {
+    const { directiveRecoveryClosureError } = await import('../../owner-directive-recovery');
+    try {
+      const error = await directiveRecoveryClosureError(existing.payload,
+        ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
+      if (error) return { ok: false, id: it.id, error: 'owner_directive_still_open', message: error };
+    } catch (error) {
+      return { ok: false, id: it.id, error: 'owner_directive_verification_unavailable', retryable: true,
+        message: `Recovery directive could not be verified: ${String(error)}` };
+    }
+  }
+
   // EI-22410970761779199: the behavior-contract resolver correctly classifies a
   // `kind:'change'` item, but a completion close also knows whether this particular
   // disposition actually claims remediation. Discard/duplicate closes and closes with
@@ -3877,11 +3943,29 @@ async function completeOne(
     existing.takenAt &&
     !(typeof it.completion.duplicateOf === 'string' && it.completion.duplicateOf.trim())
   ) {
-    const mechanics = await readWorkItemMechanics(
+    const mechanics = await track('mechanics', () => readWorkItemMechanics(
       { id: it.id, harness: it.harness ?? existing.harness ?? null, assignee: existing.assignee, takenAt: existing.takenAt },
       pgMechanicsLedger(ctx.workspaceId ?? ctx.principal?.workspaceId ?? null),
-    ).catch(() => null);
-    const filled = prefillCompletionFromMechanics(it.completion, mechanics);
+    )).catch(() => null);
+    // EI-27112155694647220: a `no-code-change` close proves itself with an EMPTY filesChanged,
+    // and the claim-window ledger attributes every file the holder edited (for ANY item it
+    // holds) to this one. Filling it would turn the declared kind's own proof into a refusal,
+    // so the fill is skipped (and disclosed) when the effective declaration includes that kind.
+    // Effective kinds resolve as the change-kind gate does: declared at close, else stored.
+    // The stored read runs only when the fill could happen; a read error keeps the old fill.
+    const prefillKindIds = [...new Set([existing.id, it.id].filter((id): id is string => Boolean(id)))];
+    const prefillOptions: CompletionPrefillOptions =
+      mechanics && mechanics.filesWritten.paths.length > 0 && !completionSuppliesField(it.completion, 'filesChanged')
+        ? await prefillOptionsForDeclaredKinds({
+            declaredAtClose: it.changeKinds,
+            readStored: async () => {
+              const kindsWorkspace = (ident as { workspaceId?: string | null }).workspaceId ?? ctx.workspaceId ?? 'default';
+              const views = await track('prefill-change-kinds', () => readChangeKinds(kindsWorkspace, prefillKindIds));
+              return prefillKindIds.map((id) => views.get(id)?.current).find((k) => k && k.length > 0) ?? null;
+            },
+          })
+        : {};
+    const filled = prefillCompletionFromMechanics(it.completion, mechanics, prefillOptions);
     if (filled.prefill) {
       it.completion = filled.completion;
       completionPrefill = filled.prefill;
@@ -4087,8 +4171,9 @@ async function completeOne(
   let deferredContributions: import('./item-close-contributions').DeferredContribution[] | undefined;
   if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
-      const gate = await specTestAdequacyCompletionGate({
+      const gate = await track('spec-adequacy', () => specTestAdequacyCompletionGate({
         workItem: existing,
+        ...(ctx.phases ? { phases: ctx.phases } : {}),
         attestation: it.specAdequacy,
         workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
         completion: it.completion,
@@ -4100,7 +4185,7 @@ async function completeOne(
               ],
             }
           : {}),
-      });
+      }));
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
         const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;
@@ -4519,12 +4604,13 @@ async function completeOne(
     );
     if (planSlug) {
       try {
-        const assessment = await conformanceClosureAssessment({
+        const assessment = await track('conformance', () => conformanceClosureAssessment({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
           harnessSlug: planHarnessSlug,
           planSlug, planItemIds, completion: it.completion, item: existing,
           skipConformance: duplicateCloseCoverageException,
-        });
+          ...(ctx.phases ? { phases: ctx.phases } : {}),
+        }));
         const refusal = assessment.refusal;
         const details: ConformanceContractDetails = {
           mappedRequirements: assessment.mappedRequirements,
@@ -5275,6 +5361,18 @@ async function completeOne(
         },
         repoRoot: uiRepoRoots[0] ?? null,
         harnessSlug: existing.harness ?? null,
+        // P-004 / R-4: lazily loaded, because the clone re-scan pulls in the TypeScript compiler.
+        // Without a harness or repository root the resolver is omitted and a 'refactor' close is
+        // refused (fail closed).
+        resolveRefactorFacts: ((root, harness) =>
+          root && harness
+            ? async (query: RefactorFactsQuery) =>
+                (await import('../../change-kind-refactor-facts')).nativeRefactorFactsResolver({
+                  root,
+                  workspaceId: declarationWorkspace,
+                  harness,
+                })(query)
+            : undefined)(uiRepoRoots[0] ?? completionRoot(), existing.harness ?? null),
       },
     );
   }
@@ -5321,6 +5419,39 @@ async function completeOne(
       return { ok: false, id: it.id, error: `Cannot revalidate contribution deferral: ${String(error)}. No completion was written.` };
     }
   }
+  // Share the root-evidence check before the read-only preview boundary. Per-kind
+  // service proof cannot substitute for the evidence supporting the root label.
+  const liveServiceProofError = closeIntentRequested && !isBackedLiveServiceClaim(completionEvidenceToPersist)
+    ? `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +
+      '`testsRun`/`testResult` do not jointly cite both a concrete service/unit/process and a ' +
+      'falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). ' +
+      "Cite the live command and observation, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send."
+    : undefined;
+  setContractRequirement(
+    'live-service-evidence',
+    closeIntentRequested && completionEvidenceToPersist?.verifiedHow === 'live-service',
+    liveServiceProofError,
+  );
+  const heldOpenPreview =
+    it.validateOnly && effectiveState && !changeKindProofError
+      ? await assessWorkItemHeldOpenTerminalTransition({
+          id: it.id,
+          payload: existing.payload,
+          currentState: existing.state,
+          targetState: effectiveState,
+          by: ident.ownerId,
+          origin: existing.origin,
+        })
+      : undefined;
+  const heldOpenPreviewError =
+    heldOpenPreview && !heldOpenPreview.allowed
+      ? heldOpenPreview.refusal ?? 'held-open terminal transition refused'
+      : undefined;
+  const planLanePreviewError = it.validateOnly && closeIntentRequested && effectiveState
+    ? await workItemPlanLaneTransitionRefusal(existing, effectiveState) ?? undefined
+    : undefined;
+  setContractRequirement('plan-item-lane', closeIntentRequested, planLanePreviewError);
+  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planLanePreviewError;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5345,16 +5476,22 @@ async function completeOne(
       // P-002 / D-002: a preview must expose the same change-kind refusal as the real
       // close. The contract row alone is insufficient because callers use `ok` to decide
       // whether the identical terminal close is admissible.
-      ok: !changeKindProofError,
+      ok: !previewError,
       id: it.id,
       validationOnly: true,
       ...(deferredContributions?.length ? { deferredContributions } : {}),
-      ...(changeKindProofError ? { error: changeKindProofError, stateError: changeKindProofError } : {}),
+      ...(previewError ? { error: previewError, stateError: previewError } : {}),
+      ...(heldOpenPreview?.staleHoldOpen
+        ? { heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true } }
+        : {}),
       ...(changeKindProofError && changeKindGate.applicable && changeKindGate.outcome === 'refuse'
         ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
         : {}),
       completionAuthority,
-      countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      countsTowardBurnDown: !previewError && countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
+      // Match the real close's computed diagnostics before the persistence boundary.
+      ...(changeKindWarning ? { changeKindWarning } : {}),
+      ...(changeKindMismatchReason ? { changeKindMismatchReason } : {}),
       ...(contentIdentityPreviewWarning ? { authorityWarning: contentIdentityPreviewWarning } : {}),
       ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
       ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
@@ -5366,7 +5503,6 @@ async function completeOne(
   // artifact. Scan the persisted evidence shape for that citation, while the
   // authority judgement above remains scoped to structured verification fields.
   const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
-  const unbackedLiveServiceClose = closeIntentRequested && !isBackedLiveServiceClaim(completionEvidenceToPersist);
 
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
@@ -5449,12 +5585,8 @@ async function completeOne(
       `REJECTED — ${it.id} claims retained live-UI evidence under session scratch: ` +
       `${unretainedLiveUiPaths.join(', ')}. Copy the capture to a retained artifact path, ` +
       'verify that copy exists, and cite the retained path in the completion.';
-  } else if (unbackedLiveServiceClose) {
-    stateError =
-      `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +
-      '`testsRun`/`testResult` do not jointly cite both a concrete service/unit/process and a ' +
-      'falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). ' +
-      "Cite the live command and observation, or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+  } else if (liveServiceProofError) {
+    stateError = liveServiceProofError;
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
@@ -5646,6 +5778,10 @@ async function completeOne(
   // `state` (exactly the fix the reporter applied). Also fires when an explicit `state` write failed
   // (stateError) or landed on a non-terminal state — in every case the item is still claimable.
   const finalState = (workItem?.state ?? existing.state ?? '').toLowerCase();
+  const completionReturnedOnly = Boolean(stateError && isPlanGateRejection(stateError))
+    && !TERMINAL_WORK_ITEM_STATES.has(finalState);
+  setContractRequirement('plan-item-lane', closeIntentRequested,
+    stateError && isPlanGateRejection(stateError) ? stateError : undefined);
   // EI-18661904412177717: the warning MUST distinguish "you passed no state" from "your state
   // was not applied". The single wording ("Pass top-level `state` …") told a caller who HAD
   // passed one to do the exact thing they just did — so the natural next move is to re-send the
@@ -5668,7 +5804,7 @@ async function completeOne(
     (!finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
       ? undefined
       : stateError
-        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or choose a terminal state by intent ${terminalVocab}.`
+        ? `${completionReturnedOnly ? 'returned a completion, but it was not persisted' : 'recorded a completion'} for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or choose a terminal state by intent ${terminalVocab}.`
         : effectiveState
           ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — choose a terminal state by intent ${terminalVocab}.`
           : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`);
@@ -6229,9 +6365,17 @@ async function completeOne(
     && await getFlag(FLAGS.CODE_INTEL_PUSH_COMPLETION, ident.ownerId).catch(() => false)
     ? (await withBoundedTimeout(async signal => {
       const { getCompletionTimeBrief } = await import('../../code-intelligence/task-brief');
+      const { createReuseBriefIdentity } = await import('../../code-intelligence/reuse-brief-providers');
+      let coverageBinding: { runGroupId: string; testFiles: readonly string[] } | undefined;
       if (signal.aborted) return null;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:12344fc20ebef8d38331:1","classification":"durable","reason":"Completion brief providers include computed dispatch; their notification consequences retain the existing delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return getCompletionTimeBrief({ workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
-        harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [] }, {
+        workItem: it.id, reuse: createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+          outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes })),
+        harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [],
+        subject: { id: it.id, harness: it.harness ?? existing.harness,
+          payload: existing.payload, sourcePlanSlug: existing.sourcePlanSlug,
+          sourcePlanItemIds: existing.sourcePlanItemIds } }, {
         runs: async paths => {
           const run = await latestTestingRunForOwner(ident.ownerId, it.id, ctx.workspaceId ?? null,
             it.harness ?? existing.harness ?? null);
@@ -6243,9 +6387,15 @@ async function completeOne(
             new Date(run.invokedAt.getTime() + Math.max(0, run.durationMs ?? 0) + TEST_BINDING_WINDOW_SLACK_MS));
           if (!rows) return null;
           const groups = new Set(rows.map(row => row.runGroupId));
-          if (groups.size > 1 || groups.has(null)) return null;
+          if (groups.size !== 1 || groups.has(null)) return null;
+          coverageBinding = { runGroupId: rows[0]!.runGroupId!, testFiles: run.files };
           return rows.filter(row => paths.includes(row.filePath) && row.runGroupId)
             .map(row => ({ path: row.filePath, status: row.status, runGroupId: row.runGroupId! }));
+        },
+        coverage: async (context, signal) => {
+          if (!coverageBinding) return null;
+          const { readNativeCoverageScope } = await import('../../code-intelligence/test-coverage-map');
+          return readNativeCoverageScope(context, signal, coverageBinding);
         },
       });
     }, { timeoutMs: 6_000, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value
@@ -6266,6 +6416,9 @@ async function completeOne(
   return {
     ok: !stateNotApplied && !finishFailed,
     id: it.id,
+    ...(completionReturnedOnly
+      ? { completionEvidenceStored: false, completionReturnedOnly: true }
+      : {}),
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
     ...(deferredCompletion ? { deferredCompletion: { ...deferredCompletion, state: 'pending',

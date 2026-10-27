@@ -171,13 +171,27 @@ export async function resolveGateCodeDrift(
 }
 
 /**
+ * Anchor a repo-root-relative pathspec at the repository top. git resolves a bare
+ * pathspec against the process cwd, and the operator hosts (bg-host :3271, :3070,
+ * :3170) run with cwd `<checkout>/apps/operator`; there `packages/operator-core/...`
+ * means `apps/operator/packages/operator-core/...` and matches nothing, so the drift
+ * probe reported "no drift" for every gate-code commit (WI-6554700010030186).
+ * Pathspecs that already carry magic (`:(...)` / `:/`) are passed through untouched.
+ */
+export function topAnchoredPathspec(pathspec: string): string {
+  return pathspec.startsWith(':') ? pathspec : `:(top)${pathspec}`;
+}
+
+/**
  * Non-test source drift under `pathspecs` between two commits. null = unanswerable
  * (bad shas, no checkout, git failed); empty arrays = probed and found nothing.
+ * `pathspecs` are repo-root-relative whatever this process's cwd is.
  */
 export async function resolveSourceDrift(
   bootCommit: string | null,
   currentCommit: string | null,
   pathspecs: readonly string[],
+  read: GitRead = gitReadViaSidecar,
 ): Promise<RoutineCodeDrift | null> {
   const sha = /^[0-9a-f]{40}$/i;
   // Same argv-injection guard as resolveCommitsBehind: these become a revision range.
@@ -188,13 +202,15 @@ export async function resolveSourceDrift(
     // --no-renames on purpose: a moved file must report as D+A, because under its
     // NEW path it is genuinely absent from the booted module graph. A rename status
     // would hide that behind a similarity score and lose the severe case.
-    const stdout = await gitReadViaSidecar([
+    // `diff --name-status` prints root-relative paths regardless of cwd, so only the
+    // pathspecs need anchoring.
+    const stdout = await read([
       'diff',
       '--name-status',
       '--no-renames',
       `${bootCommit}..${currentCommit}`,
       '--',
-      ...pathspecs,
+      ...pathspecs.map(topAnchoredPathspec),
     ]);
     const changed: string[] = [];
     const addedSinceBoot: string[] = [];

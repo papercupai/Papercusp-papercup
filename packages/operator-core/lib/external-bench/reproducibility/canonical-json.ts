@@ -14,7 +14,9 @@ function sortValue(v: unknown): unknown {
   if (v === null || typeof v !== 'object') return v;
   if (Array.isArray(v)) return v.map(sortValue);
   const obj = v as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
+  // JSON may contain an own '__proto__' key. A normal object's setter
+  // would consume it, making distinct payloads hash to identical bytes.
+  const out: Record<string, unknown> = Object.create(null);
   for (const k of Object.keys(obj).sort()) {
     const val = obj[k];
     if (val !== undefined) out[k] = sortValue(val);

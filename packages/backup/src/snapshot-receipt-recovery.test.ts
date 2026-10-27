@@ -187,6 +187,31 @@ describe('snapshot receipt recovery', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('reconciles a verified tagged artifact on an orphan-swept receipt without creating another', async () => {
+    const f = producerFixture('failed');
+    f.row.error_text = "orphan-sweep: status='running' for >60min";
+    f.row.finished_at = new Date().toISOString();
+    f.row.db_dump_ok = null;
+    const release = vi.fn(async () => {});
+    configureWithSql(f.sql, async () => ({ release }));
+    f.kopia.mockResolvedValue(JSON.stringify([{
+      id: 'already-created',
+      endTime: new Date(Date.parse(f.row.started_at) + 1_000).toISOString(),
+      source: { path: root },
+      stats: { addedSize: 1, totalSize: 2 },
+    }]));
+
+    const result = await f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 });
+
+    expect(result).toMatchObject({ snapshotId: 78850, kopiaSnapshotId: 'already-created', dbDumpOk: true });
+    expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
+    const reconcile = f.queries.find(q => q.text.includes('SET kopia_snapshot_id'));
+    expect(reconcile?.text).toContain("status <> 'failed'");
+    expect(reconcile?.values).toContain('failed');
+    expect(reconcile?.values).toContain(f.row.error_text);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])('retries only a proven no-work host admission deferral on the same row (typed=%s)', async typed => {
     const f = producerFixture('failed');
     const error = 'host backup is in progress (phase guard-queued, pid 4242)';

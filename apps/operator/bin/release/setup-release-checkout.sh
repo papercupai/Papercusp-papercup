@@ -57,6 +57,7 @@
 #                             [--dependency-generation-root <dir>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
+#                             [--dependencies-only]
 #                             [--source-only]
 #                             [--source-root-mode worktree|clone]
 #                             [--spa-only]
@@ -71,12 +72,22 @@
 # default `allow-live-tree`, where a drifted submodule beats no serving operator.
 # Either way the run emits a `CANDIDATE_SOURCE_INTEGRITY ... live_tree=N` line.
 #
-# `--prepare-existing` is a dependency-only recovery mode for a clone that has
+# `--prepare-existing` is a recovery mode for a clone that has
 # already been pinned and had its submodules checked out by an earlier step. It
 # validates the existing HEAD, then skips the destructive superproject checkout,
-# clean, and submodule replacement stages while still running dependency setup.
+# clean, and submodule replacement stages while still preparing the runtime.
+# Add `--dependencies-only` to materialize dependencies and check native addons,
+# then stop before workspace builds, public assets, rootfs and SPA provisioning.
+# This preserves an exact source/dependency input for source-based verification;
+# it does not remove any outputs already present in the existing checkout.
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
+
+# EI-26824212147685395: allocation and dependency waits can outlive edits to
+# this shared checkout. Parse the whole body before executing it, as in the
+# sourced dependency-generation.sh, so Bash never resumes at an old byte offset
+# in rewritten source. Keep resource paths anchored to this script's location.
+{
 set -euo pipefail
 
 # EI-24760202132078287: usage discovery must be non-mutating, so it is handled
@@ -112,6 +123,11 @@ NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
 NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
 NODE_MODULES_GENERATION_TOKEN="${NODE_MODULES_GENERATION_TOKEN:-}"
 NODE_MODULES_WORKSPACE_DIRS=()
+# Shared by dependency capture and the pinned runtime builds below.
+RUNTIME_BUILD_WORKSPACES=(
+  "@papercusp/omp"
+  "@papercusp/sse"
+)
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 # P-008 (green-main-fast-2026-08-25) — SOURCE integrity, the peer of the
 # dependency-generation pin above. Every other leg of candidate materialization is
@@ -145,6 +161,7 @@ trap release_dependency_generation_lease_on_exit EXIT
 BUILD_SPA="0"
 SPA_ONLY="0"
 PREPARE_EXISTING="0"
+DEPENDENCIES_ONLY="0"
 SOURCE_ONLY="0"
 SOURCE_ROOT_MODE="worktree"
 REF_WAS_SET="0"
@@ -165,6 +182,7 @@ while [ $# -gt 0 ]; do
     --build-spa) BUILD_SPA="1"; shift ;;
     --spa-only) SPA_ONLY="1"; PREPARE_EXISTING="1"; BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
+    --dependencies-only) DEPENDENCIES_ONLY="1"; shift ;;
     --source-only) SOURCE_ONLY="1"; shift ;;
     --source-root-mode) SOURCE_ROOT_MODE="$2"; shift 2 ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
@@ -202,6 +220,11 @@ if [ -n "$NODE_MODULES_GENERATION_TOKEN" ] && [ -z "$NODE_MODULES_GENERATION_ID"
 fi
 if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
   echo "[setup-release] --source-only and --prepare-existing are mutually exclusive" >&2
+  exit 2
+fi
+if [ "$DEPENDENCIES_ONLY" = "1" ] \
+  && { [ "$PREPARE_EXISTING" != "1" ] || [ "$BUILD_SPA" = "1" ]; }; then
+  echo "[setup-release] --dependencies-only requires --prepare-existing and cannot build the SPA" >&2
   exit 2
 fi
 
@@ -1448,12 +1471,105 @@ record_node_modules_copy_metadata() {
   fi
 }
 
-if need_node_modules; then
+# RUNTIME DEPENDENCY CLOSURE
+configure_release_dependency_workspace_dirs() {
+  local workspace workspace_root
+  local selected=("${NODE_MODULES_WORKSPACE_DIRS[@]}")
+  RUNTIME_DEPENDENCY_WORKSPACE_DIRS=()
+  for workspace in "${RUNTIME_BUILD_WORKSPACES[@]}"; do
+    workspace_root="$(readlink -f "$INTEGRATION_ROOT/node_modules/$workspace" 2>/dev/null || true)"
+    [ -n "$workspace_root" ] && [ -d "$workspace_root/node_modules" ] || continue
+    case "$workspace_root" in
+      "$INTEGRATION_ROOT"/*)
+        RUNTIME_DEPENDENCY_WORKSPACE_DIRS+=("${workspace_root#"$INTEGRATION_ROOT"/}")
+        ;;
+      *)
+        echo "[setup-release] FATAL: runtime workspace $workspace resolves outside the integration root" >&2
+        return 1
+        ;;
+    esac
+  done
+  # No selector means full capture; do not accidentally narrow that default.
+  if [ "${#selected[@]}" -gt 0 ]; then
+    selected+=("${RUNTIME_DEPENDENCY_WORKSPACE_DIRS[@]}")
+  fi
+  dependency_generation_configure_workspace_dirs "$INTEGRATION_ROOT" "${selected[@]}"
+}
+
+validate_runtime_dependency_toolchains() {
+  local workspace_dir
+  for workspace_dir in "${RUNTIME_DEPENDENCY_WORKSPACE_DIRS[@]}"; do
+    [ -d "$DEPENDENCY_GENERATION_TREE/$workspace_dir/node_modules" ] || {
+      echo "[setup-release] FATAL: pinned dependency generation $PINNED_DEPENDENCY_GENERATION_ID is missing the package-local toolchain for $workspace_dir; select or capture a complete generation before materialization" >&2
+      return 1
+    }
+  done
+}
+# END RUNTIME DEPENDENCY CLOSURE
+
+# Source-verification preparation must satisfy the same committed-input binding
+# as dependency-generation-proof.ts, even when the caller supplied an explicit ID.
+validate_dependencies_only_input() {
+  [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
+  local input selector
+  input="$(dependency_generation_input_fingerprint_ref "$RELEASE_ROOT" "$TARGET_SHA")" || return 1
+  selector="$DEPENDENCY_GENERATION_ROOT/.inputs/$input"
+  if [ -z "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] \
+    || [ ! -f "$selector" ] \
+    || [ "$(dependency_generation_read_field "$selector" input)" != "$input" ] \
+    || [ "$(dependency_generation_read_field "$selector" identity)" != "$PINNED_DEPENDENCY_GENERATION_ID" ] \
+    || [ "$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" scope)" != 'full' ]; then
+    log "FATAL: dependencies-only committed input/generation mismatch; select a full generation published for target inputs $input"
+    return 1
+  fi
+  dependency_generation_select_prevalidated "$DEPENDENCY_GENERATION_ROOT" \
+    "$PINNED_DEPENDENCY_GENERATION_ID" "$(dependency_generation_read_field "$selector" token)"
+}
+
+# Reuse the publisher's copy-normalized records, including its cache exclusions.
+# Run after native checks, which may execute package code, before claiming ready.
+validate_dependencies_only_materialization() (
+  local work tree rel snapshot
+  work="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  snapshot="$(dependency_generation_set_fingerprint "$DEPENDENCY_GENERATION_TREE")" || return 1
+  if [ "$snapshot" != "$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" snapshot)" ]; then
+    log 'FATAL: dependencies-only published dependency generation drift'
+    return 1
+  fi
+  while IFS= read -r tree; do
+    printf '%s\n' "${tree#"$DEPENDENCY_GENERATION_TREE"/}"
+  done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_TREE") \
+    | LC_ALL=C sort > "$work/published"
+  while IFS= read -r tree; do
+    printf '%s\n' "${tree#"$RELEASE_ROOT"/}"
+  done < <(dependency_generation_enumerate_node_modules "$RELEASE_ROOT") \
+    | LC_ALL=C sort > "$work/materialized"
+  if ! cmp -s "$work/published" "$work/materialized"; then
+    log 'FATAL: dependencies-only materialized generation tree census mismatch'
+    return 1
+  fi
+  while IFS= read -r rel; do
+    for tree in "$DEPENDENCY_GENERATION_TREE/$rel" "$RELEASE_ROOT/$rel"; do
+      dependency_generation_source_records "$tree" "$work/records" || return 1
+      dependency_generation_records_projection "$work/records" \
+        | awk -F '\t' '$1 != ".papercusp-dependency-generation" && $1 != ".papercusp-source-package-lock.json"' \
+        > "$work/$( [ "$tree" = "$RELEASE_ROOT/$rel" ] && echo actual || echo expected )"
+    done
+    if [ "$(dependency_generation_read_field "$RELEASE_ROOT/$rel/.papercusp-isolated-snapshot" generation)" != "$PINNED_DEPENDENCY_GENERATION_ID" ] \
+      || ! cmp -s "$work/expected" "$work/actual"; then
+      log "FATAL: dependencies-only materialized dependency tree drift: $rel"
+      return 1
+    fi
+  done < "$work/published"
+  validate_dependencies_only_input
+)
+
+if need_node_modules || [ "$DEPENDENCIES_ONLY" = "1" ]; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
-    dependency_generation_configure_workspace_dirs \
-      "$INTEGRATION_ROOT" "${NODE_MODULES_WORKSPACE_DIRS[@]}"
+    configure_release_dependency_workspace_dirs
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
       # Lease BEFORE the full validation walk. Otherwise a retention pass can
       # remove this exact identity between selection and materialization.
@@ -1473,9 +1589,11 @@ if need_node_modules; then
     fi
     PINNED_DEPENDENCY_GENERATION_ID="$DEPENDENCY_GENERATION_ID"
     NODE_MODULES_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    validate_runtime_dependency_toolchains
     dependency_generation_apply_retention "$DEPENDENCY_GENERATION_ROOT" "$INTEGRATION_ROOT"
     log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"
   fi
+  validate_dependencies_only_input
   if pinned_dependency_generation_reuse_safe; then
     log "DEPENDENCY_GENERATION_CHECKOUT_REUSE status=hit identity=$PINNED_DEPENDENCY_GENERATION_ID trees=$PINNED_DEPENDENCY_REUSE_TREE_COUNT (all structural markers match; skipping materialization)"
   else
@@ -1534,7 +1652,10 @@ copy_up_generation_dependency_path() {
   chmod -R u+w "$tmp"
   mv "$path" "$old"
   mv "$tmp" "$path"
-  chmod -R u+w "$old" 2>/dev/null || true
+  # Retired files may still share inodes with the immutable generation. Only
+  # directories need write permission to unlink entries; chmodding files here
+  # would mutate the donor snapshot while deleting the checkout's old links.
+  find "$old" -type d -exec chmod u+rwx {} + 2>/dev/null || true
   rm -rf "$old"
 }
 
@@ -1764,11 +1885,6 @@ fi
 # setup-release-checkout-workspace-builds.test.ts: any new workspace package
 # that exposes a gitignored `main`/`require`/`default` target must be registered
 # here or that detector fails before the same class can reach deploy again.
-RUNTIME_BUILD_WORKSPACES=(
-  "@papercusp/omp"
-  "@papercusp/sse"
-)
-
 build_pinned_workspace_runtime_outputs() {
   local workspace scope package manifest integration_workspace_root release_workspace_root
   local dependency_workspace_node_modules
@@ -1839,7 +1955,9 @@ build_pinned_workspace_runtime_outputs() {
     fi
   done
 }
-build_pinned_workspace_runtime_outputs
+if [ "${DEPENDENCIES_ONLY:-0}" != "1" ]; then
+  build_pinned_workspace_runtime_outputs
+fi
 
 # 3d. Native-addon ABI guard (infra-fail-fast-build-integrity-2026-06-19 P-003) -
 # The copied node_modules (step 3) carry whatever Node ABI the
@@ -1890,6 +2008,10 @@ rebuild_stale_native_addons() {
     if (cd "$RELEASE_ROOT" && native_addon_load_check "$addon") >/dev/null 2>&1; then
       continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
     fi
+    if [ "${DEPENDENCIES_ONLY:-0}" = "1" ]; then
+      log "FATAL: dependencies-only native addon '$addon' will not load under Node ABI $node_abi; publish a native-complete generation before preparation"
+      return 1
+    fi
     log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout"
     copy_up_generation_dependency_path "$RELEASE_ROOT/node_modules/$addon"
     if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
@@ -1903,6 +2025,16 @@ rebuild_stale_native_addons() {
   return $_result
 }
 rebuild_stale_native_addons
+
+# Source-based verification admits installed dependencies but rejects unrelated
+# ignored execution inputs. Keep all dependency/native checks above this boundary;
+# a deploy's generated runtime files are deliberately prepared only below it.
+if [ "$DEPENDENCIES_ONLY" = "1" ]; then
+  validate_dependencies_only_input
+  validate_dependencies_only_materialization
+  log "SETUP_RELEASE_DEPENDENCIES_ONLY ref=$REF sha=$TARGET_SHA status=ready"
+  exit 0
+fi
 
 # 3b. Gitignored RUNTIME ASSETS under apps/operator/public --------------------
 # EI-19373176486666620. Step 1's `clean -fdqx -e node_modules` is deliberately
@@ -2073,3 +2205,4 @@ if [ "$BUILD_SPA" = "1" ]; then
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"
+}  # end self-read guard (EI-26824212147685395)

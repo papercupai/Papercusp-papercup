@@ -149,6 +149,52 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
 describe('EI-21974634479405756 — assertion command preflight', () => {
   const parkedProfile = resolve(ROOT, 'packages/operator-core/test/parked-agent-audit.live-profile.json');
 
+  it('budgets preparation before copying or native allocation', () => {
+    const { dir, invocations, result } = runAssertion('true', true, undefined, {
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 1_500_000),
+      VERIFY_TAURI_PREPARE_ESTIMATE_MS: '1200000',
+      VERIFY_TAURI_ASSERT_ESTIMATE_MS: '180000',
+      VERIFY_TAURI_BUDGET_FROM: '',
+    });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('TASK_DEADLINE_REFUSAL');
+      expect(result.stderr).toContain('knownEstimateMs=2460000');
+      expect(result.stderr).toContain('unknownTasks=0');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps a larger calibrated preparation estimate and deducts elapsed preparation', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-budget-floor.'));
+    const calibration = join(dir, 'phases.jsonl');
+    writeFileSync(calibration, JSON.stringify({ phase: 'prepare', status: 'passed', elapsedMs: 120000 }) + '\n');
+    try {
+      const result = spawnSync(process.execPath, [resolve(ROOT, 'scripts/lib/verify-tauri-deadline.mjs'),
+        'prepare', '1', '0', '0', '30'], {
+        encoding: 'utf8', timeout: 15_000, env: { ...process.env,
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 200_000),
+          VERIFY_TAURI_PREPARE_ESTIMATE_MS: '1', VERIFY_TAURI_BUDGET_FROM: calibration,
+        },
+      });
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('knownEstimateMs=240000');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['0', '-1', '1.5', 'NaN'])('rejects an invalid preparation forecast before allocating (%s)', estimate => {
+    const { dir, invocations, result } = runAssertion('true', true, undefined, {
+      VERIFY_TAURI_PREPARE_ESTIMATE_MS: estimate, VERIFY_TAURI_BUDGET_FROM: '',
+    });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('Invalid VERIFY_TAURI_PREPARE_ESTIMATE_MS');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it.each(['', '   '])('rejects a missing live-profile app workspace before native preparation (%j)', workspace => {
     const { dir, invocations, result } = runAssertion('true', true, undefined, {
       PAPERCUSP_APP_OPERATION_LIVE_PROFILE: parkedProfile,

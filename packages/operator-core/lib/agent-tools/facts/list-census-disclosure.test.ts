@@ -116,10 +116,11 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     countLiveFactsSpy.mockResolvedValue(500);
 
     const limitSchema = (
+      // WI-6554700010029664: args is a preprocess pipe (scope_ref/ref fold); `out` is the object.
       factsListTool.args as unknown as {
-        shape: { limit: { safeParse(value: unknown): { success: boolean } } };
+        out: { shape: { limit: { safeParse(value: unknown): { success: boolean } } } };
       }
-    ).shape.limit;
+    ).out.shape.limit;
     expect(limitSchema.safeParse(500).success).toBe(true);
 
     const data = await listWorkspace({ all: true, limit: 500 });

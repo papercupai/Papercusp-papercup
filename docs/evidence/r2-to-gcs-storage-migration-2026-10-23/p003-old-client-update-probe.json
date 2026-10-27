@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "r2gcs-p003-old-client-update-probe-v1",
+  "workItem": "WI-6554700010025562",
+  "planItem": "r2-to-gcs-storage-migration-2026-10-23#P-003",
+  "requirement": "R-3 falsifier: an old client silently treats an unavailable update channel as up to date",
+  "observedAt": "2026-10-27T03:10:32Z",
+  "observer": "su-52d5aa95-5b45-433c-a049-a2d44fb1ac19",
+  "legacyHost": {
+    "source": "~/.papercusp/release-host.env PAPERCUSP_UPDATE_BASE_URL (R2 public bucket; path withheld on purpose: it is the baked obscurity secret)",
+    "hostObservation": {
+      "observedAt": "2026-10-27T03:03:40Z",
+      "latestJson": "HTTP 403 text/html, Cloudflare page 'This bucket cannot be viewed ... not publicly accessible at this URL'",
+      "latestServerJson": "HTTP 403, same page"
+    }
+  },
+  "newHost": {
+    "source": "~/.papercusp/release-host-gcs.env (GCS-backed Worker release namespace, D-006)",
+    "latestJson": "HTTP 404 'Not Found' at 2026-10-27T03:03:40Z: nothing published yet; publication is a later P-003 step"
+  },
+  "oldClient": {
+    "vm": "clean (scripts/linux-test-vm/vmctl, tester@127.0.0.1:2224), reset to a pristine overlay by bin/candidate-install-upgrade-rollback.sh task 0mvq3ntdg1u8i0jk11z",
+    "installed": "papercusp-gui 0.0.26 + papercusp-server 0.0.26 amd64, the retained rollback pair from p003-package-nomination.json (GUI sha256 d022b96031f4f58007ff69da502e30b13bd26820a54395c1c08280a47aa44857, Server sha256 966509144a93d7e8b3e56cb69c77ff81b3fadd074cec29611c9e20fbba05c6f1)",
+    "health": {"service": "papercusp-operator", "sha": "2018b667", "version": "0.0.26"},
+    "probes": [
+      {
+        "request": "GET /api/updates/manifest?target=linux&arch=x86_64&current_version=0.0.26&product=gui",
+        "status": 204,
+        "xUpdateCheck": "cannot_check",
+        "xUpdateReason": "fetch_failed",
+        "bodyBytes": 0
+      },
+      {
+        "request": "GET /api/updates/manifest?target=linux&arch=x86_64&current_version=0.0.26&product=server",
+        "status": 204,
+        "xUpdateCheck": "cannot_check",
+        "xUpdateReason": "fetch_failed",
+        "bodyBytes": 0
+      }
+    ],
+    "sidecarLog": [
+      "[updates/manifest] release host <legacy-r2-host> latest.json fetch failed — serving 204: release host latest.json: 403",
+      "[updates/manifest] release host <legacy-r2-host> latest.json fetch failed — serving 204: release host latest-server.json: 403"
+    ]
+  },
+  "sourceAtBaseline": {
+    "workspaceGitHead": "faa5abc1730ded04d2dfe5fcf829edec6b7b93bb",
+    "desktopGitHead": "2018b6670687590a3e195392f44191b1f0db3103",
+    "manifestRoute": "packages/operator-core/lib/endpoint-route/routes/misc/updates-manifest.ts: fetchStaticLatest returns null only on 404 and throws on any other non-OK status; a configured host that throws yields cannotCheckResponse('fetch_failed'). A 404 falls through to the GitHub path, which also ends in cannot_check (no_token or no_candidate) for an unpublished channel; up_to_date is returned only when a found candidate equals current_version.",
+    "guiCopy": "apps/operator/app/_components/UpdateChip.tsx: check_failed renders describeCheckFailure(): \"Couldn't reach the release host (fetch_failed) — update status unknown.\"; a manual check raises toast.error(\"Couldn't check for updates\"). It never renders \"You're on the latest\" for a failed check.",
+    "serverPoller": "src-tauri/src/main.rs update_poll_heartbeat_line: check_failed logs 'update check: COULD NOT CHECK (reason=...)', never 'up to date'."
+  },
+  "signatureContinuity": {
+    "observedAt": "2026-10-27T03:08Z",
+    "verifier": "papercusp-desktop/bin/verify-tauri-signature.mjs",
+    "trustedKey": "plugins.updater.pubkey from desktop 2018b667 src-tauri/tauri.conf.json (the key the 0.0.26 client trusts); sha256 of the key string begins 5de37bce5fa95bc5, identical to the 0.0.31 source bd3cfb1a key",
+    "results": [
+      {"artifact": "Papercusp GUI_0.0.31_amd64.deb", "valid": true, "algo": "ED", "keyId": "449908a7d47d3a5d", "exitCode": 0},
+      {"artifact": "Papercusp Server_0.0.31_amd64.deb", "valid": true, "algo": "ED", "keyId": "449908a7d47d3a5d", "exitCode": 0},
+      {"artifact": "papercusp-server-seed_0.0.31_all.deb", "valid": true, "algo": "ED", "keyId": "449908a7d47d3a5d", "exitCode": 0},
+      {"artifact": "Papercusp_GUI_0.0.31_amd64.AppImage", "valid": true, "algo": "ED", "keyId": "449908a7d47d3a5d", "exitCode": 0}
+    ]
+  },
+  "verdict": {
+    "silentUpToDate": false,
+    "autoUpdateBridge": "unavailable: the legacy R2 public bucket answers 403, so 0.0.26-era clients cannot discover 0.0.31 automatically",
+    "recovery": "explicit: the user installs the signed 0.0.31 packages by hand; the packages verify against the key those clients already trust"
+  },
+  "limitations": [
+    "One live old client (Linux 0.0.26 build 2018b667). Other platforms and older builds are covered by source reading only.",
+    "The explicit recovery install with a user-data preservation check is a separate rehearsal and is not recorded here.",
+    "No publication, independent acceptance or shipment is claimed."
+  ]
+}

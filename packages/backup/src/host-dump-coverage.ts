@@ -99,7 +99,10 @@ export interface HostDumpStatus {
   elapsedSec?: unknown;
   /** Artifacts the LAST run dumped successfully, even when another artifact failed. */
   dumped?: unknown;
+  /** Per-artifact dump start and cluster identity. Absent only on legacy receipts. */
+  artifactReceipts?: unknown;
   tiersEnabled?: unknown;
+  /** Run-level identity retained for legacy receipts and diagnostics. */
   systemIdentifier?: unknown;
 }
 
@@ -185,19 +188,6 @@ export function evaluateHostDumpCoverage(input: {
   if (!status) return { covered: false, reason: 'no host-dump receipt' };
   const runOk = status.ok === true;
 
-  // Identity must be present on BOTH sides and equal. A receipt written before
-  // the identity field existed yields `undefined` here, so an old receipt
-  // degrades to "dump as before" rather than to an unproven skip.
-  const hostId = typeof status.systemIdentifier === 'string' ? status.systemIdentifier.trim() : '';
-  if (!hostId) return { covered: false, reason: 'host-dump receipt has no cluster identity' };
-  if (!targetSystemIdentifier) return { covered: false, reason: 'could not probe target cluster identity' };
-  if (hostId !== targetSystemIdentifier) {
-    return {
-      covered: false,
-      reason: `different cluster (target ${targetSystemIdentifier} != host-dump ${hostId})`,
-    };
-  }
-
   const dumped = Array.isArray(status.dumped)
     ? status.dumped.filter((d): d is string => typeof d === 'string')
     : [];
@@ -213,38 +203,69 @@ export function evaluateHostDumpCoverage(input: {
     };
   }
 
-  let artifactEpoch: number;
-  let basis: string;
-  if (runOk) {
-    artifactEpoch = finiteNumber(status.lastSuccessEpoch) ?? 0;
-    if (artifactEpoch <= 0) return { covered: false, reason: 'host-dump receipt has no success timestamp' };
-    basis = 'dumped';
-  } else {
-    // `dumped` lists only artifacts the last run completed, so a not-ok run
-    // still proves them. Date them from the run's start, the earliest moment
-    // their data could reflect, so the freshness bound stays conservative.
+  const selectedArtifact = directArtifact ? database : tieredStateArtifact;
+  let hostId = '';
+  let artifactEpoch = 0;
+  let basis = '';
+  if (status.artifactReceipts === undefined) {
+    // Legacy STATUS.json dated successful artifacts at run completion, which
+    // could make an early artifact look newer than it was. Run start is the
+    // conservative fallback for every legacy run, successful or partial.
+    hostId = typeof status.systemIdentifier === 'string' ? status.systemIdentifier.trim() : '';
     const lastRun = finiteNumber(status.lastRunEpoch);
     const elapsed = finiteNumber(status.elapsedSec);
     if (lastRun === null || lastRun <= 0 || elapsed === null || elapsed < 0) {
       return {
         covered: false,
-        reason: 'host dump last reported not-ok and the receipt lacks the run timing needed to date its dumped artifacts',
+        reason: 'legacy host-dump receipt lacks the run timing needed to date its dumped artifacts',
       };
     }
     artifactEpoch = lastRun - elapsed;
-    basis = 'dumped by a partially failed run that started';
+    if (artifactEpoch <= 0) {
+      return { covered: false, reason: 'legacy host-dump receipt has invalid run timing' };
+    }
+    basis = 'legacy run start';
+  } else {
+    if (!Array.isArray(status.artifactReceipts)) {
+      return { covered: false, reason: 'host-dump receipt has malformed artifact receipts' };
+    }
+    const artifactReceipt = status.artifactReceipts.find((entry): entry is Record<string, unknown> =>
+      Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
+        && (entry as Record<string, unknown>).artifact === selectedArtifact));
+    if (!artifactReceipt) {
+      return { covered: false, reason: `host-dump receipt has no artifact receipt for ${selectedArtifact}` };
+    }
+    hostId = typeof artifactReceipt.systemIdentifier === 'string'
+      ? artifactReceipt.systemIdentifier.trim()
+      : '';
+    const dumpStart = finiteNumber(artifactReceipt.dumpStartEpoch);
+    if (!hostId) return { covered: false, reason: 'artifact receipt has no cluster identity' };
+    if (dumpStart === null || dumpStart <= 0) {
+      return { covered: false, reason: `artifact receipt for ${selectedArtifact} has no valid dump-start timestamp` };
+    }
+    artifactEpoch = dumpStart;
+    basis = 'artifact dump start';
+  }
+
+  if (!hostId) return { covered: false, reason: 'host-dump receipt has no cluster identity' };
+  if (!targetSystemIdentifier) return { covered: false, reason: 'could not probe target cluster identity' };
+  if (hostId !== targetSystemIdentifier) {
+    return {
+      covered: false,
+      reason: `different cluster (target ${targetSystemIdentifier} != host-dump ${hostId})`,
+    };
   }
 
   const ageSec = nowEpoch - artifactEpoch;
   // A receipt from the future is a clock fault, not evidence of coverage.
   if (ageSec < 0) return { covered: false, reason: 'host-dump receipt timestamp is in the future' };
   if (ageSec > maxAgeSec) {
-    return { covered: false, reason: `host dump is stale (${ageSec}s > ${maxAgeSec}s)` };
+    return { covered: false, reason: `host dump is stale (${ageSec}s > ${maxAgeSec}s; ${basis})` };
   }
 
   return {
     covered: true,
-    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, artifact ${directArtifact ? database : tieredStateArtifact}, ${basis} ${ageSec}s ago)`,
+    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, artifact ${selectedArtifact}, ${basis} ${ageSec}s ago)`,
   };
 }
 

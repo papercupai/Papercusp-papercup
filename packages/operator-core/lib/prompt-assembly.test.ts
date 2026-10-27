@@ -585,7 +585,7 @@ describe('assembleRolePrompt — observation-rubric nudge (rubric-driven-observa
     mockTools.length = 0;
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
-    expect(out.text).toContain('## Filing an observation? Grade it against a rubric if one fits');
+    expect(out.text).toContain('Filing an observation? Grade it against a rubric if one fits');
     expect(out.text).toContain('rubrics:list');
     expect(out.text).toContain('observation.rubricRef');
     expect(out.text).toContain('EVIDENCE IS REQUIRED');
@@ -648,7 +648,7 @@ describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001
     mockTools.length = 0;
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
-    expect(out.text).toContain('## Bug + friction trip-wire (self-learning loop)');
+    expect(out.text).toContain('Bug + friction trip-wire (self-learning loop)');
     expect(out.text).toContain('improvements:capture');
     expect(out.sections.some((s) => s.name === 'friction-tripwire')).toBe(true);
   });
@@ -658,7 +658,8 @@ describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
     // Slice out just the trip-wire section to avoid false hits from a persona/catalog mention.
-    const idx = out.text.indexOf('## Bug + friction trip-wire');
+    const idx = out.text.indexOf('Bug + friction trip-wire');
+    expect(idx).toBeGreaterThanOrEqual(0);
     const after = out.text.slice(idx);
     const end = after.indexOf('\n\n---\n\n');
     const tripwire = (end >= 0 ? after.slice(0, end) : after).toLowerCase();

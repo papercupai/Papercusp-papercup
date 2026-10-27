@@ -72,6 +72,26 @@ function seedGmailMove(): void {
 }
 
 describe('WI-10006352: staged deletions the index still imports', () => {
+  it.each(['target', '-target'])('scans a staged deletion with a literal basename (%s)', async (name) => {
+    const target = `lib/${name}.ts`;
+    write(repo, target, 'export const value = 1;\n');
+    write(repo, 'lib/consumer.ts', `import { value } from './${name}';\n`);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'seed');
+    rmSync(join(repo, target));
+    git(repo, 'add', '-A', '--', target);
+
+    expect(await detectStagedDeletionsStillImported({ runGit, repoPath: repo, log })).toEqual({
+      ok: true,
+      holds: [{ path: target, importedBy: ['lib/consumer.ts'] }],
+    });
+
+    // Once the final importer is removed from the index, this deletion must be allowed.
+    write(repo, 'lib/consumer.ts', 'export {};\n');
+    git(repo, 'add', '--', 'lib/consumer.ts');
+    expect(await detectStagedDeletionsStillImported({ runGit, repoPath: repo, log })).toEqual({ ok: true, holds: [] });
+  });
+
   it('holds the deletion when the importer edit that dropped the import is NOT staged (the measured e7b60f03fe shape)', async () => {
     seedGmailMove();
     // The importer is quarantined: only the deletion reaches the index.

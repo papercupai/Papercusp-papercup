@@ -268,6 +268,15 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
       const current = currentRoute.value.account.accountId;
+      if (context.lastError?.code === 'account-unavailable') {
+        // Local admission did not contact or exhaust this credential.
+        // Re-score the pool without inventing an upstream cooldown.
+        try {
+          const next = opts.pool.active();
+          if (next.accountId === current || context.triedRouteKeys.includes(routeFor(next).key)) return null;
+          return routeFor(next);
+        } catch { return null; }
+      }
       const next = opts.pool.onExhausted(current, resolveFailoverResetAt(context));
       if (!next || next.accountId === current) return null;
       // The kernel throws `route-cycle` on an already-tried key, so decline

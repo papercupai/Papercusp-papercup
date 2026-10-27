@@ -21,6 +21,7 @@ import {
   connectExecutedMapPg,
   loadExecutedSourceMap,
   loadReuseProofs,
+  loadReuseProofFiles,
 } from '../../../../scripts/lib/executed-source-map.mjs';
 
 const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
@@ -92,6 +93,7 @@ describe('pass-proof reads against real Postgres (WI-6554700010019200)', () => {
       client,
       workspaceName: WS,
       runContext: 'green-checkpoint',
+      runnerIdentity: 'runner',
       gitDir: OWN_GIT_DIR,
     });
     expect(rows).toBe(3);
@@ -112,6 +114,7 @@ describe('pass-proof reads against real Postgres (WI-6554700010019200)', () => {
       client,
       workspaceName: WS,
       runContext: 'green-checkpoint',
+      runnerIdentity: 'runner',
       gitDir: OWN_GIT_DIR,
     });
     expect(proofs.get('src/own.test.ts')?.recordedSha).toBe(OWN_SHA);
@@ -121,10 +124,42 @@ describe('pass-proof reads against real Postgres (WI-6554700010019200)', () => {
       client,
       workspaceName: WS,
       runContext: 'green-checkpoint',
+      runnerIdentity: 'runner',
       gitDir: SIBLING_GIT_DIR,
     });
     expect(sibling.proofs.get('src/awkward.test.ts')?.recordedSha).toBe(SIBLING_SHA);
     expect(sibling.proofs.get('src/own.test.ts')?.recordedSha).toBe(NEW_SHA);
+  });
+
+  it('P005 selects runtime before newest-per-file selection and proof membership', async () => {
+    const workspaceName = '@probe/runtime-read';
+    const file = 'src/runtime.test.ts';
+    for (const [runtime, sha, at] of [
+      ['node', OLD_SHA, '2026-10-20T00:00:00Z'],
+      ['bun', NEW_SHA, '2026-10-21T00:00:00Z'],
+      [null, SIBLING_SHA, '2026-10-22T00:00:00Z'],
+    ]) {
+      await db.sql`INSERT INTO harness_shared.test_executed_sources
+        (workspace_name, test_file, recorded_sha, executed_modules, module_count,
+         recorded_at, inputs_captured, run_context, runner_identity, recorded_git_dir)
+        VALUES (${workspaceName}, ${file}, ${sha}, ${[file]}, 1,
+          ${at}, true, 'green-checkpoint', ${runtime}, ${OWN_GIT_DIR})`;
+    }
+    const options = { client, workspaceName, runContext: 'green-checkpoint', gitDir: OWN_GIT_DIR };
+    for (const [runnerIdentity, recordedSha] of [['node', OLD_SHA], ['bun', NEW_SHA]]) {
+      const loaded = await loadReuseProofs({ ...options, runnerIdentity, files: [file] });
+      expect(loaded.rows).toBe(1);
+      expect(loaded.proofs.get(file)).toMatchObject({ runnerIdentity, recordedSha });
+      expect(await loadReuseProofFiles({ ...options, runnerIdentity })).toEqual({ files: [file], rows: 1 });
+      const map = await loadExecutedSourceMap({ ...options, runnerIdentity, repoRoot: '/repo', files: [file] });
+      expect(map.map.get(join('/repo', file))?.recordedSha).toBe(recordedSha);
+    }
+    for (const runnerIdentity of [null, '', 'other-runtime']) {
+      expect(await loadReuseProofs({ ...options, runnerIdentity })).toEqual({ proofs: new Map(), rows: 0 });
+      expect(await loadReuseProofFiles({ ...options, runnerIdentity })).toEqual({ files: [], rows: 0 });
+      expect(await loadExecutedSourceMap({ ...options, runnerIdentity, repoRoot: '/repo' }))
+        .toEqual({ map: new Map(), rows: 0 });
+    }
   });
 
   it('loadExecutedSourceMap re-anchors the same awkward module paths', async () => {
@@ -134,6 +169,7 @@ describe('pass-proof reads against real Postgres (WI-6554700010019200)', () => {
       workspaceName: WS,
       repoRoot,
       gitDir: OWN_GIT_DIR,
+      runnerIdentity: 'runner',
       files: ['src/awkward.test.ts'],
     });
     expect(rows).toBe(1);

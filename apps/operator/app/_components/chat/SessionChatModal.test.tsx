@@ -3379,10 +3379,16 @@ describe('SessionChatModal', () => {
     it('exposes a close button ONLY while maximized — the backdrop it would otherwise be dismissed by is covered', async () => {
       const onClose = vi.fn();
       const { rerender } = await renderResolved(onClose);
+      // Native Quick Access must detect the real conversation, not a control
+      // whose intentional absence would falsely report that Talk never opened.
+      expect(screen.getByRole('dialog')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
       expect(screen.queryByTestId('session-chat-close')).toBeNull();
 
       nuqs.chatMax = 'window';
       rerenderOpen(rerender, onClose);
+      expect(screen.getByRole('button', { name: 'Close conversation' })).toBeTruthy();
       fireEvent.click(screen.getByTestId('session-chat-close'));
       expect(onClose).toHaveBeenCalled();
       // and it clears the mode, so reopening any session is not stuck maximized

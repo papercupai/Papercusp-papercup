@@ -15,12 +15,16 @@
 import { afterEach, afterAll, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
 import { channel } from 'node:diagnostics_channel';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   getHarnessStore,
+  getForeignHarnessStoreOwner,
   CORESTORE_OPEN_CHANNEL,
   type CorestoreOpenObservation,
   closeHarnessStore,
@@ -53,6 +57,47 @@ function tmpRoot(prefix = 'mb-cstore-'): string {
 }
 
 describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () => {
+  it('discovers a real sibling store owner without changing its lock or opening another store', async () => {
+    const opts = { workspaceRoot: tmpRoot(), harnessSlug: 'foreign-owner' };
+    const moduleUrl = pathToFileURL(join(__dirname, '../corestore.ts')).href;
+    const script = `
+      const { getHarnessStore, closeHarnessStore } = await import(${JSON.stringify(moduleUrl)});
+      const opts = ${JSON.stringify(opts)};
+      await getHarnessStore(opts);
+      process.on('message', async () => {
+        await closeHarnessStore(opts);
+        process.disconnect();
+      });
+      process.send({ ready: true });
+    `;
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    });
+    const exited = once(child, 'exit');
+    let stderr = '';
+    child.stderr!.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+    const timer = setTimeout(() => child.kill(), 30_000);
+    try {
+      const ready = await Promise.race([
+        once(child, 'message'),
+        exited.then(() => { throw new Error(`store owner exited before ready: ${stderr}`); }),
+      ]);
+      expect(ready[0]).toEqual({ ready: true });
+      const before = await readFile(harnessStoreLockPath(opts), 'utf8');
+      expect(await getForeignHarnessStoreOwner(opts)).toMatchObject({ pid: child.pid });
+      await expect(getHarnessStore(opts)).rejects.toThrow(`already open by process ${child.pid}`);
+      expect(await readFile(harnessStoreLockPath(opts), 'utf8')).toBe(before);
+      expect(child.exitCode).toBeNull();
+      child.send('close');
+      expect((await exited)[0]).toBe(0);
+      expect(await getForeignHarnessStoreOwner(opts)).toBeNull();
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await exited;
+    }
+  }, 40_000);
+
   it('distinguishes a pending native ready from a completed open', async () => {
     const root = tmpRoot();
     const opts = { workspaceRoot: root, harnessSlug: 'delayed-ready' };

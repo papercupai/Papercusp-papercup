@@ -84,6 +84,12 @@ const ROUTINES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.routines (
     id text PRIMARY KEY, target_owner_id text,
     reschedule_interval_sec integer, active boolean NOT NULL DEFAULT true)`;
+// WI-6554700010029295: the reapers' warm-dead leg reads owner-attributed tool calls
+// (the oracle's activity clock). Minimal projection for this isolated fixture.
+const TOOL_INVOCATIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+    id BIGSERIAL PRIMARY KEY, coord_owner_id text,
+    invoked_at timestamptz NOT NULL DEFAULT now())`;
 const CLAIM_NEXT_INTENT = 'work-stealing claim (claim_next)';
 
 let db: FreshPgDb;
@@ -103,6 +109,7 @@ beforeAll(async () => {
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(ROUTINES_DDL);
+  await sql.unsafe(TOOL_INVOCATIONS_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -112,7 +119,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // engineer_issues is a compatibility view of work_items in the shared schema.
-  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines`;
+  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines, harness_shared.tool_invocations`;
   await setLeaseFlag(true);
 });
 afterEach(async () => {
@@ -184,7 +191,12 @@ describe('EI-6480 — issue-family stale-lease cleanup (WORKITEM_CLAIM_LEASE on)
   it.each([
     { label: 'recent content write preserves the claim', fedAgoMin: 0, updatedAgoMin: 30, released: false },
     { label: 'bookkeeping-only write does not preserve the claim', fedAgoMin: 30, updatedAgoMin: 0, released: true },
-    { label: 'legacy NULL content clock uses the recent update fallback', fedAgoMin: null, updatedAgoMin: 0, released: false },
+    // WI-6554700010029303: a sibling's NULL fed_ts is NOT a sign of life, even with a
+    // recent updated_ts. updated_ts is bookkeeping (WI-10005935), and the sibling
+    // clause deliberately reads fed_ts alone since 2026-10-07. This case had pinned the
+    // earlier COALESCE(fed_ts, updated_ts) rule and went stale; the canonical cases
+    // are in work-items-stale-claims.integration.test.ts ('...is NOT a sign of life').
+    { label: 'legacy NULL content clock with a recent update is not a sign of life', fedAgoMin: null, updatedAgoMin: 0, released: true },
   ])('unknown holder: $label', async ({ fedAgoMin, updatedAgoMin, released }) => {
     await seedIssue('EI-CLOCK', 'bug', 'never-seen-holder', 30);
     await seedLease('EI-CLOCK', 'never-seen-holder');

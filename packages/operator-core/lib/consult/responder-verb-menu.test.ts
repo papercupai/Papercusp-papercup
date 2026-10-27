@@ -63,7 +63,7 @@ describe('the amendment request remains answerable after a cascade', () => {
 });
 
 describe('current review evidence survives the dispatch frame', () => {
-  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review']) {
+  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review', 'method-review']) {
     for (const via of ['floor', 'minimum'] as const) {
       it.each(['fork', 'convert', 'brief'] as const)(`${policy}/${via} reviews current evidence on a %s launch`, (operation) => {
         const conversationId = 'conv-current-review';
@@ -79,6 +79,11 @@ describe('current review evidence survives the dispatch frame', () => {
         expect(brief).toContain('results[0].posts');
         expect(brief).toContain('do not decline solely');
         expect(brief).toContain('Cite the evidence you actually checked');
+        if (policy === 'method-review') {
+          expect(brief).toContain('CURRENT METHOD');
+          expect(brief).toContain('does not authorize execution');
+          expect(brief).toContain('Verify reviewer independence');
+        }
         expect(brief).not.toMatch(/you answer from the transcript you inherited|Answer from the cited turns|Answer from the transcript\.|answer FROM your transcript/);
         expect(brief).toContain('ANSWER-ONLY');
         expect(brief).toContain('Do not claim work-items');

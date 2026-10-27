@@ -48,6 +48,7 @@ import { buildDurableParkReleaseContract } from './durable-park-release-contract
 import { readEventConditionReachability } from './external-condition-reachability';
 import { recordKeyFire, registerAnnouncement, settleProvingFire } from './events/await/store';
 import { requestAdmissionRecovery } from './work-item-admission-recovery';
+import { admissionActionability } from './work-items-admission';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWs: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -119,7 +120,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY, value_b64 text);
     CREATE TABLE harness_shared.routines (
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
-      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
+      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz,
+      -- requestAdmissionRecovery stamps metadata.admissionOrdinarySlot on the promoter routine
+      -- (work-item-admission-recovery.ts); without it the EI-266267 cases fail at registration.
+      metadata jsonb
     );
   `).simple();
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
@@ -430,10 +434,11 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
         WHERE workspace_id = ${WS} AND feature_id = 'WI-unreviewed-control'`;
 
       const got = await wi.claimNextWorkItem({ harness: H, assignee: 'unrelated-scheduler' });
-      if (state === 'delivered') {
-        expect(got?.id).toBe(id);
-        return;
-      }
+      // EI-26988974367709614: a delivered recovery still adds no reservation of its own, but the
+      // row's live admissionHold now removes it from opportunistic self-select in EVERY recovery
+      // state (the resume packet calls a held row non-actionable, so serving it to an unrelated
+      // scheduler only produced claim/release churn). Recovery delivers by push-assignment
+      // (deps.dispatch), and the by-id claim below still reaches the target.
       expect(got?.id).toBe('WI-unreviewed-control');
       expect(await wi.claimNextWorkItem({ harness: H, assignee: 'another-scheduler' })).toBeNull();
       const diagnosis = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'another-scheduler' });
@@ -444,6 +449,26 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
       const targeted = await wi.claimWorkItem(id, 'recovery-target', { harness: H });
       expect(targeted?.assignee).toBe('recovery-target');
       expect(targeted?.payload?._admissionRecovery).toEqual(original?._admissionRecovery);
+    },
+  );
+
+  // WI-6554700010029716: the per-id explainer read a hand-written floor list that dropped
+  // ok_admission_recovery, so a queued/held recovery row read admissible:true while self-select
+  // skipped it. Attribution and self-select must agree row for row.
+  it.each([
+    ['queued', 'admission-recovery'],
+    ['held', 'admission-recovery'],
+    ['delivered', null],
+  ] as const)(
+    'WI-6554700010029716: a %s recovery is attributed %s by the explainer, matching self-select',
+    async (state, refusedBy) => {
+      const id = `WI-recovery-explain-${state}`;
+      await seedIssue(id, { createdTs: 100, payload: { _admissionRecovery: { state, target: 'recovery-target' } } });
+      const [floor] = await wi.explainIssueClaimFloors(H, [id], { assignee: 'bee-explain' });
+      expect(floor?.refusedBy).toBe(refusedBy);
+      expect(floor?.admissible).toBe(refusedBy === null);
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-select' });
+      expect(got?.id ?? null).toBe(refusedBy === null ? id : null);
     },
   );
 
@@ -552,6 +577,48 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
     await wi.setWorkItemClaimHold('WI-unheld-later', false, { harness: H });
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' });
     expect(got?.id).toBe('WI-unheld-later');
+  });
+
+  // EI-26988974367709614 recurrence guard. Before the fix, admittedWhereSql excluded only
+  // admission='pending', so a fail-open `unreviewed` row the promoter had since HELD was
+  // self-selectable while the resume packet told its claimant not to act. Luna Max
+  // 2026-10-26: 380 such rows, claimed and released by member after member. Self-select,
+  // floor attribution and resume must now read ONE contract, row for row.
+  it('EI-26988974367709614: a held unreviewed row is skipped and attributed admission-hold; a pending-review-only row is served', async () => {
+    await seedIssue('WI-adm-held', { createdTs: 100, payload: {
+      admissionReview: { state: 'pending' },
+      admissionHold: { reason: 'claimed-duplicate', actor: 'system:work-item-admission-promoter' },
+    } });
+    await seedIssue('WI-adm-review-only', { createdTs: 200, payload: { admissionReview: { state: 'pending' } } });
+    await seedIssue('WI-adm-admitted', { createdTs: 300 });
+    await db.sql`UPDATE harness_shared.work_items SET admission = 'unreviewed'
+      WHERE workspace_id = ${WS} AND feature_id IN ('WI-adm-held', 'WI-adm-review-only')`;
+
+    // The JS contract (resume) and the SQL floor (self-select) agree on each seeded row.
+    expect(admissionActionability(await readPayload('WI-adm-held')).actionable).toBe(false);
+    expect(admissionActionability(await readPayload('WI-adm-review-only')).actionable).toBe(true);
+    const floors = await wi.explainIssueClaimFloors(H, ['WI-adm-held', 'WI-adm-review-only', 'WI-adm-admitted'], {
+      assignee: 'bee-explain',
+    });
+    const byId = new Map(floors.map((f) => [f.id, f]));
+    expect(byId.get('WI-adm-held')?.refusedBy).toBe('admission-hold');
+    expect(byId.get('WI-adm-review-only')?.admissible).toBe(true);
+    expect(byId.get('WI-adm-admitted')?.admissible).toBe(true);
+
+    // Oldest-first would serve WI-adm-held; the floor skips it and serves the two actionable rows.
+    const first = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-a' });
+    const second = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-b' });
+    expect([first?.id, second?.id]).toEqual(['WI-adm-review-only', 'WI-adm-admitted']);
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-c' })).toBeNull();
+
+    const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'bee-c' });
+    expect(diag.readyUnclaimed).toBe(0);
+    expect(diag.pendingUnclaimed).toBeGreaterThan(0);
+    expect(diag.drained).toBe(false);
+
+    // Like every self-select floor, the hold never blocks a named claim by id.
+    const named = await wi.claimWorkItem('WI-adm-held', 'bee-named', { harness: H });
+    expect(named?.assignee).toBe('bee-named');
   });
 });
 

@@ -56,6 +56,13 @@ declare const __PAPERCUSP_SIDECAR_VERSION__: string | undefined;
 declare const __PAPERCUSP_BUNDLED_SOURCE_SHA__: string | undefined;
 declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
 
+/**
+ * Which rung of the resolution ladder produced `sha`. `git` is the ONE boot-time
+ * `rev-parse` of a non-bundled host (cached for the process lifetime, so it still
+ * names the loaded code); `unresolved` always pairs with `sha: null`.
+ */
+export type BuildShaSource = 'baked' | 'env' | 'git' | 'unresolved';
+
 export interface BuildInfo {
   /** Short source SHA for the running artifact, or null if unresolved. */
   sha: string | null;
@@ -63,8 +70,26 @@ export interface BuildInfo {
   version: string;
 }
 
+/**
+ * The full resolution, including WHERE the sha came from
+ * (gate-repair-plane-on-current-build-2026-10-15 R-1). `BuildInfo` stays the plain
+ * `{ sha, version }` value other records embed; the source is a property of the resolving
+ * process, so it lives here and `getBuildInfo()` is a projection of the same cached resolution.
+ */
+export interface ResolvedBuild extends BuildInfo {
+  shaSource: BuildShaSource;
+}
+
+type ResolveBuildOptions = Parameters<typeof resolveBuild>[0];
+
 /** Pure resolver (injectable seams for tests). */
-export function resolveBuildInfo(opts: {
+export function resolveBuildInfo(opts: ResolveBuildOptions = {}): BuildInfo {
+  const { sha, version } = resolveBuild(opts);
+  return { sha, version };
+}
+
+/** Pure resolver returning the sha's source too (injectable seams for tests). */
+export function resolveBuild(opts: {
   env?: NodeJS.ProcessEnv;
   gitSha?: () => string | null;
   /** Test seam for the esbuild-baked `__PAPERCUSP_SIDECAR_VERSION__` global. */
@@ -73,7 +98,7 @@ export function resolveBuildInfo(opts: {
   bakedSha?: string | null;
   /** Test seam for the bundled-artifact guard (the real value is an esbuild global). */
   bundled?: boolean;
-} = {}): BuildInfo {
+} = {}): ResolvedBuild {
   const env = opts.env ?? process.env;
   const envVersion = env.PAPERCUSP_BUILD_VERSION?.trim();
   const bakedVersion =
@@ -86,15 +111,15 @@ export function resolveBuildInfo(opts: {
       : (typeof __PAPERCUSP_BUNDLED_SOURCE_SHA__ !== 'undefined'
         ? __PAPERCUSP_BUNDLED_SOURCE_SHA__?.trim() || null
         : null);
-  if (bakedSha) return { sha: bakedSha, version };
+  if (bakedSha) return { sha: bakedSha, shaSource: 'baked', version };
   const envSha = env.PAPERCUSP_BUILD_SHA?.trim();
-  if (envSha) return { sha: envSha, version };
+  if (envSha) return { sha: envSha, shaSource: 'env', version };
   const bundled =
     opts.bundled ??
     (typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__ === true);
   // A generated bundle with no baked SHA cannot prove what source it contains.
   // Do not report the checkout's current HEAD as if it were the loaded bytes.
-  if (bundled) return { sha: null, version };
+  if (bundled) return { sha: null, shaSource: 'unresolved', version };
   const gitSha = opts.gitSha ?? defaultGitSha;
   let sha: string | null = null;
   try {
@@ -102,7 +127,7 @@ export function resolveBuildInfo(opts: {
   } catch {
     sha = null;
   }
-  return { sha: sha || null, version };
+  return sha ? { sha, shaSource: 'git', version } : { sha: null, shaSource: 'unresolved', version };
 }
 
 /**
@@ -147,16 +172,27 @@ function defaultGitSha(): string | null {
   return resolveGitShortSha(fileURLToPath(new URL('../', import.meta.url)));
 }
 
-let cached: BuildInfo | null = null;
+let cached: ResolvedBuild | null = null;
+let cachedInfo: BuildInfo | null = null;
+
+/** The running process's full build resolution (sha + its source), resolved once and cached. */
+export function getResolvedBuild(): ResolvedBuild {
+  if (!cached) cached = resolveBuild();
+  return cached;
+}
 
 /** The running operator's build info, resolved once and cached (boot-cheap; the
  *  request path reads the cache, preserving the zero-dep /api/health contract). */
 export function getBuildInfo(): BuildInfo {
-  if (!cached) cached = resolveBuildInfo();
-  return cached;
+  if (!cachedInfo) {
+    const { sha, version } = getResolvedBuild();
+    cachedInfo = { sha, version };
+  }
+  return cachedInfo;
 }
 
 /** Test-only — clear the cache. */
 export function _resetBuildInfoForTest(): void {
   cached = null;
+  cachedInfo = null;
 }

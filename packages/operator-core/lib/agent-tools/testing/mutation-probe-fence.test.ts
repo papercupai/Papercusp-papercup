@@ -33,6 +33,7 @@ vi.mock('../locks/su-lock-store', () => ({
 import { readQueue } from '../locks/su-lock-store';
 import { runTestFilesCore } from './run';
 import { mutationProbeRefusal, testImportClosures } from './mutation-probe-fence';
+import { computeImportClosures } from './mutation-probe-closure';
 
 const readQueueMock = vi.mocked(readQueue);
 let root: string;
@@ -579,6 +580,21 @@ describe('mutationProbeRefusal narrowing', () => {
         'src/connection.ts': `${lazyNodeRequire}\n// never \`createRequire(import.meta.url)(x)\` eagerly\n`,
         'tests/db.test.ts': "import { home } from '../src/connection';\nimport { other } from '../src/other';\nexport default [home, other];\n" });
       await expect(mutationProbeRefusal(dir, ['tests/db.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+    });
+
+    it('keeps runtime SQLite builtins external while retaining local source edges', async () => {
+      const dir = checkout({ ...base,
+        'src/sqlite.ts': "import { createRequire } from 'node:module';\nconst req = createRequire(import.meta.url);\nexport const Database = process.versions.bun ? req('bun:sqlite').Database : req('node:sqlite').DatabaseSync;\n",
+        'tests/sqlite.test.ts': "import { Database } from '../src/sqlite';\nexport default Database;\n",
+        'tests/held.test.ts': "import { Database } from '../src/sqlite';\nimport { subject as mid } from '../src/mid';\nexport default [Database, mid];\n" });
+      const safe = join(dir, 'tests/sqlite.test.ts'), held = join(dir, 'tests/held.test.ts');
+      const closure = await computeImportClosures(dir, [safe, held]);
+      expect(closure.status, closure.status === 'incomplete' ? closure.reason : '').toBe('complete');
+      if (closure.status !== 'complete') return;
+      expect(closure.unfollowable.size).toBe(0);
+      expect(closure.files.get(safe)).toContain(join(dir, 'src/sqlite.ts'));
+      expect(closure.files.get(safe)).not.toContain(join(dir, 'src/subject.ts'));
+      expect(closure.files.get(held)).toContain(join(dir, 'src/subject.ts'));
     });
 
     it('follows a literal createRequire edge into the probed source and refuses', async () => {

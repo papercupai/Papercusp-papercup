@@ -11,13 +11,15 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, appendFileSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
 import { getContainerRuntimeClient, Wait } from 'testcontainers';
+import { prepareVerifierSource, prepareVerifierDependencies, verifierSourceChildEnv } from './source-preview.mjs';
+import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 
 const PG_IMAGE = 'postgres@sha256:5a65324fe84dc41709ff914e90b07f3e2f577073ed27bf917d4873aca0c9ec51';
 const MAIL_IMAGE = 'maildev/maildev@sha256:180ef51f65eefebb0e7122d8308813c1fd7bff164bc440ce5a3c2feee167a810';
@@ -609,12 +611,56 @@ export async function waitForSandboxChild(child, { runtime,
   return exitCode;
 }
 
+/** Freeze an explicitly pinned source tree before the Documenso providers start. */
+async function prepareSandboxSource(env = process.env, { signal } = {}) {
+  const sourceReceiptPath = env.VERIFY_TAURI_SOURCE_RECEIPT?.trim();
+  const sourceRef = env.VERIFY_TAURI_SOURCE_REF?.trim();
+  if (sourceReceiptPath) {
+    const sourceRoot = resolve(env.PAPERCUSP_REPO_DIR || process.cwd());
+    const childEnvironment = verifierSourceChildEnv({ root: sourceRoot, receiptPath: sourceReceiptPath, env });
+    const receipt = JSON.parse(readFileSync(sourceReceiptPath, 'utf8'));
+    childEnvironment.PAPERCUSP_REPO_DIR = sourceRoot;
+    childEnvironment.VERIFY_TAURI_SOURCE_INPUTS = receipt.testedInputs.map(input => input.path).join(',');
+    return { env: childEnvironment, cleanup() {} };
+  }
+  if (!sourceRef) return { env, cleanup() {} };
+
+  const inputs = (env.VERIFY_TAURI_SOURCE_INPUTS ?? '').split(',').map(path => path.trim()).filter(Boolean);
+  const inputsFile = env.VERIFY_TAURI_SOURCE_INPUTS_FILE?.trim();
+  if (!inputs.length && !inputsFile) {
+    throw new Error('VERIFY_TAURI_SOURCE_REF requires VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE before Documenso provider allocation');
+  }
+
+  const donor = resolve(env.PAPERCUSP_REPO_DIR || process.cwd());
+  const scratch = join(donor, '.papercusp', 'scratch');
+  mkdirSync(scratch, { recursive: true });
+  const directory = mkdtempSync(join(scratch, 'documenso-sandbox-source-'));
+  const sourceRoot = join(directory, 'invoked-source');
+  const receiptPath = join(directory, 'invoked-source-receipt.json');
+  try {
+    signal?.throwIfAborted();
+    const receipt = await prepareVerifierSource({ repo: donor, ref: sourceRef, dest: sourceRoot,
+      ...(inputs.length ? { inputs } : {}), ...(inputsFile ? { inputsFile } : {}),
+      tauriInputs: true, gitCheckout: true });
+    writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+    await prepareVerifierDependencies({ donor: committedWorkRootDependencyDonor(donor), dest: sourceRoot, receipt, env, signal });
+    signal?.throwIfAborted();
+    const childEnvironment = verifierSourceChildEnv({ root: sourceRoot, receiptPath, env });
+    childEnvironment.PAPERCUSP_REPO_DIR = sourceRoot;
+    childEnvironment.VERIFY_TAURI_SOURCE_INPUTS = receipt.testedInputs.map(input => input.path).join(',');
+    return { env: childEnvironment, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 export async function runSandbox({ image, command, signal }, { prepareImages = prepareSandboxImages } = {}) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
   const database = network + '-pg', mail = network + '-mail', app = network + '-app';
   const containers = [];
-  let directory, reaper, reaperFailure, networkCreated = false, child, stopped = false, killTimer;
+  let directory, sourcePreparation, reaper, reaperFailure, networkCreated = false, child, stopped = false, killTimer;
   const secret = () => randomBytes(32).toString('hex');
   async function runPhase(phase, operation) {
     const startedAt = Date.now();
@@ -652,7 +698,10 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
         await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker });
       }
     }
-    finally { if (directory) rmSync(directory, { recursive: true, force: true }); }
+    finally {
+      try { if (directory) rmSync(directory, { recursive: true, force: true }); }
+      finally { await sourcePreparation?.cleanup?.(); }
+    }
   }
   function stop() {
     if (stopped) return;
@@ -669,6 +718,8 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
   signal?.addEventListener('abort', stop, { once: true });
   if (signal?.aborted) stop();
   try {
+    if (stopped) return 130;
+    sourcePreparation = await runPhase('source', () => prepareSandboxSource(process.env, { signal }));
     if (stopped) return 130;
     // Image preparation must finish before any external resource allocation.
     if (!await runPhase('images', () => prepareImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
@@ -744,7 +795,7 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
     console.error('[documenso-sandbox] ' + JSON.stringify(runtime));
     if (stopped) return 130;
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,
-      env: { ...process.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
+      env: { ...sourcePreparation.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
         DOCUMENSO_TEST_RUNTIME: JSON.stringify(runtime) } });
     const exitCode = await waitForSandboxChild(child, { runtime });
     if (reaperFailure) throw reaperFailure;

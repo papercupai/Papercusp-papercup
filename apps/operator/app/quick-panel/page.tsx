@@ -6,8 +6,9 @@
  *
  * The desktop's global hotkey opens a small always-on-top window
  * (papercusp-desktop/src-tauri/src/docs_search.rs) that loads THIS route.
- * Three tabs:
- *   - Prompts (DEFAULT) — the Workflowy-style saved-prompts outline
+ * Four tabs:
+ *   - Search (DEFAULT) — live plans, people and reports with inline previews.
+ *   - Prompts — the Workflowy-style saved-prompts outline
  *     (PromptsTab.tsx), backed by harness_shared.saved_prompts.
  *   - Docs — the packaged filesystem search page, embedded same-origin
  *     (/internal/docs/search-palette.html) so the previous behavior of the
@@ -24,7 +25,7 @@
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { BookOpenText, Lightbulb, ListTree } from 'lucide-react';
+import { BookOpenText, Lightbulb, ListTree, Search } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { FLAGS } from '@papercusp/flags';
 import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
@@ -38,6 +39,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { Select } from '@/app/harness/Select';
 import { OperatorChatSidebar } from '@/app/_components/OperatorChatSidebar';
 import PromptsTab from './PromptsTab';
+import QuickAccessLauncher from './QuickAccessLauncher';
 import './quick-panel.css';
 
 const BrainstormFull = lazyWithRetry(() =>
@@ -45,7 +47,7 @@ const BrainstormFull = lazyWithRetry(() =>
 );
 
 // UI order (owner ask 2026-07-14: Brainstorm second): Prompts · Brainstorm · Docs.
-const QP_TABS = ['prompts', 'brainstorm', 'docs'] as const;
+const QP_TABS = ['search', 'prompts', 'brainstorm', 'docs'] as const;
 type QpTab = (typeof QP_TABS)[number];
 
 /** The lite registry row the harness picker needs (subset of harnessProjects.lite). */
@@ -137,7 +139,7 @@ function BrainstormPane({ queryPrefix }: { queryPrefix: string }) {
  */
 export default function QuickPanelPage({
   headerSlot,
-  chatSidebar: chatSidebarWanted = true,
+  chatSidebar: chatSidebarWanted = false,
   queryPrefix = '',
 }: { headerSlot?: ReactNode; chatSidebar?: boolean; queryPrefix?: string } = {}) {
   const enabled = useFlag(FLAGS.QUICK_PANEL);
@@ -150,7 +152,7 @@ export default function QuickPanelPage({
   const chatSidebar = chatSidebarWanted && chatSidebarFlag;
   const [tab, setTab] = useQueryState(
     `${queryPrefix}tab`,
-    parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
+    parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('search'),
   );
   // Radix mounts an inactive pane after the tab transition. A ref alone can be
   // null when the tab effect runs, so bind when the actual frame is committed.
@@ -222,6 +224,10 @@ export default function QuickPanelPage({
         onValueChange={(v) => void setTab(v as QpTab)}
       >
         <Tabs.List className="pc-qp__tabs" aria-label="Quick Panel tabs">
+          <Tabs.Trigger className="pc-qp__tab" value="search">
+            <Search size={13} aria-hidden />
+            Quick Access
+          </Tabs.Trigger>
           <Tabs.Trigger className="pc-qp__tab" value="prompts">
             <ListTree size={13} aria-hidden />
             Prompts
@@ -236,6 +242,9 @@ export default function QuickPanelPage({
           </Tabs.Trigger>
         </Tabs.List>
 
+        <Tabs.Content className="pc-qp__pane" value="search">
+          <QuickAccessLauncher queryPrefix={queryPrefix} />
+        </Tabs.Content>
         <Tabs.Content className="pc-qp__pane" value="prompts">
           <PromptsTab queryPrefix={queryPrefix} />
         </Tabs.Content>

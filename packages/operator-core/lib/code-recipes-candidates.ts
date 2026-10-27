@@ -26,6 +26,7 @@
 import type postgres from 'postgres';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { searchSimilarRecipes } from './code-recipes-search';
+import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explainDemandScore, compareDemandRank } from './demand-score';
 
 // ────────────────────────────────────────────────────────────────────────────
 // RECIPE RUBRIC (method)
@@ -195,8 +196,6 @@ const asInt = (v: number | string): number => (typeof v === 'number' ? v : parse
 const asIsoOrNull = (v: Date | string | null): string | null =>
   v == null ? null : typeof v === 'string' ? v : v.toISOString();
 
-const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
-
 /** Slugify a projected tool name to the SAME kebab shape recipe ids use (recipeSlug):
  *  lowercase, every non-alphanumeric run → "-", trimmed. So "plans:set-status" →
  *  "plans-set-status", letting a recipe id (which never contains the ":" a raw tool
@@ -226,18 +225,23 @@ export function existingToolSlugSet(
 }
 
 /** freqScore — log-saturating on run_count (run ~20× ⇒ ~1.0). See RECIPE RUBRIC. */
-function freqScore(runCount: number): number {
-  if (runCount <= 0) return 0;
-  return clamp01(Math.log1p(runCount) / Math.log1p(FREQ_SATURATION));
-}
-/** breadthScore — linear-saturating on distinct agents (≥5 ⇒ 1.0). */
-function breadthScore(distinctAgents: number): number {
-  return clamp01(distinctAgents / BREADTH_SATURATION);
-}
-/** cohesionScore — 1 tool ⇒ 0, ramps to 1.0 at COHESION_SATURATION tools. */
-function cohesionScore(toolCount: number): number {
-  if (toolCount <= 1) return 0;
-  return clamp01((toolCount - 1) / (COHESION_SATURATION - 1));
+export function recipePromotionScore(
+  signal: Pick<RecipeSignal, 'runCount' | 'distinctAgents' | 'successRate' | 'toolCount' | 'redundant'>,
+  cooccurrence?: number | null,
+): number {
+  const components = [
+    { key: 'frequency', value: logDemandScore(signal.runCount, FREQ_SATURATION), weight: W_FREQUENCY },
+    { key: 'breadth', value: linearDemandScore(signal.distinctAgents, BREADTH_SATURATION), weight: W_BREADTH },
+    { key: 'success', value: signal.successRate, weight: W_SUCCESS },
+    { key: 'cohesion', value: linearDemandScore(Math.max(0, signal.toolCount - 1), COHESION_SATURATION - 1), weight: W_COHESION },
+  ];
+  // Preserve the historical arithmetic order, optional normalization and redundancy damp.
+  let base = explainDemandScore(components).score;
+  if (cooccurrence != null) {
+    const total = W_FREQUENCY + W_BREADTH + W_SUCCESS + W_COHESION + W_COOCCUR;
+    base = (base + W_COOCCUR * clamp01(cooccurrence)) / total;
+  }
+  return signal.redundant ? 0 : clamp01(base);
 }
 
 /**
@@ -302,30 +306,21 @@ export async function recipeCandidates(
     }
 
     // Weighted rubric sum (see RECIPE RUBRIC method block above).
-    const fS = freqScore(runCount);
-    const bS = breadthScore(distinctAgents);
-    const sS = successRate;
-    const cS = cohesionScore(toolCount);
-    let base = W_FREQUENCY * fS + W_BREADTH * bS + W_SUCCESS * sS + W_COHESION * cS;
+    let cooccurrence: number | null = null;
 
     // OPTIONAL co-occurrence leg (su-eaade, D-016) — fold in only when wired; the
     // extra weight is re-normalized into the sum so the score stays 0..1.
     if (deps.toolCooccurrence) {
       try {
         const co = await deps.toolCooccurrence(toolsUsed);
-        if (co != null) {
-          const total = W_FREQUENCY + W_BREADTH + W_SUCCESS + W_COHESION + W_COOCCUR;
-          base =
-            (W_FREQUENCY * fS + W_BREADTH * bS + W_SUCCESS * sS + W_COHESION * cS + W_COOCCUR * clamp01(co)) /
-            total;
-        }
+        cooccurrence = co;
       } catch (err) {
         log(`recipeCandidates: tool-cooccurrence leg skipped (${(err as Error)?.message ?? String(err)})`);
       }
     }
 
     // Redundancy damp: trivial / name-collision ⇒ 0 (excluded); else passthrough.
-    const promotionScore = redundant ? 0 : clamp01(base);
+    const promotionScore = recipePromotionScore({ runCount, distinctAgents, successRate, toolCount, redundant }, cooccurrence);
 
     signals.push({
       id: r.id,
@@ -358,7 +353,7 @@ export async function recipeCandidates(
         // multi-tool run can clear the threshold on success+cohesion alone.
         (s.distinctAgents >= MIN_PROMOTE_DISTINCT_AGENTS || s.runCount >= MIN_PROMOTE_RUN_COUNT),
     )
-    .sort((a, b) => b.promotionScore - a.promotionScore || a.id.localeCompare(b.id))
+    .sort((a, b) => compareDemandRank({ score: a.promotionScore, id: a.id }, { score: b.promotionScore, id: b.id }))
     .slice(0, limit)
     .map((s) => ({
       id: s.id,

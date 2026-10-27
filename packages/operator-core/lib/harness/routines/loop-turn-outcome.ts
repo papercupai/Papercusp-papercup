@@ -194,11 +194,25 @@ async function getLoopRoutineRef(sql: Sql, routineId: string): Promise<LoopRouti
  * re-armed (by a racing reconcile) or cron-advanced no longer matches the guard, so this
  * never disturbs a healthy loop nor double-re-arms.
  */
-async function rearmLoopAfterDeath(sql: Sql, routineId: string, delayMs: number, now: number): Promise<boolean> {
+async function rearmLoopAfterDeath(
+  sql: Sql,
+  routineId: string,
+  delayMs: number,
+  now: number,
+  providerDerivedDeadline: boolean,
+): Promise<boolean> {
   const iso = new Date(now + delayMs).toISOString();
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.routines
-       SET next_fire_at = ${iso}::timestamptz, updated_at = now()
+       SET next_fire_at = ${iso}::timestamptz,
+           metadata = CASE WHEN ${providerDerivedDeadline}
+             THEN COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'providerRetrySchedule',
+               jsonb_build_object('nextFireAt', ${iso}, 'source', 'resume-turn-death')
+             )
+             ELSE COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule'
+           END,
+           updated_at = now()
      WHERE id = ${routineId}
        AND active = TRUE
        AND next_fire_at = 'infinity'::timestamptz
@@ -542,7 +556,9 @@ export async function handleLoopResumeTurnExit(
     } else {
       // 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).
       delayMs = computeDeathRearmMs(outcome, intervalMs, now);
-      rearmed = await rearmLoopAfterDeath(sql, routineId, delayMs, now).catch((e) => {
+      const providerDerivedDeadline =
+        (outcome.error.class === 'rate_limited' || outcome.error.class === 'usage_limit') && delayMs > intervalMs;
+      rearmed = await rearmLoopAfterDeath(sql, routineId, delayMs, now, providerDerivedDeadline).catch((e) => {
         log(`re-arm failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`);
         return false;
       });

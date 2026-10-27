@@ -3,9 +3,10 @@
 // scripts/lib/test-pass-reuse.mjs and regenerate.
 /**
  * The runner identity a selector compares proofs against: the proof format plus the
- * `process.version process.platform process.arch` of the node the task will spawn.
+ * complete runtime fingerprint of the interpreter the task will spawn. Legacy
+ * version strings cannot equal the fingerprint measured by current consumers.
  *
- * @param {string | null | undefined} nodeIdentity
+ * @param {string | null | undefined} nodeIdentity complete runtime fingerprint
  * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
@@ -25,6 +26,23 @@ export function reuseRunnerIdentity(nodeIdentity: string | null | undefined, pro
  * @returns {string | null}
  */
 export function judgedTreeProofFormat(root: string, readFile?: (file: string) => string): string | null;
+/**
+ * WI-6554700010029685: the runner-identity SCHEME the judged tree's recorder writes, read from the same
+ * recorder source as judgedTreeProofFormat.
+ *
+ * The selector runs from the gate's code, but proofs on a frozen repair lineage were written by THAT
+ * lineage's recorder. Before the runtime fingerprint (scripts/lib/runtime-compatibility.mjs, d314d294ad)
+ * the recorder wrote `<format> <process.version> <process.platform> <process.arch>`, and its skip-list
+ * consumer accepts only that string. A selector measuring the runtime fingerprint loads none of those
+ * proofs: repair head 327e4d1d of frozen candidate 8c03b5dc logged `rows=0` (or `no-runner-identity`)
+ * on every targeted task, so each repair round re-ran ~5,900 files.
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {"runtime-fingerprint" | "node-version" | null} null when the recorder is missing or its identity
+ *   cannot be classified; callers then keep the runtime-fingerprint measurement (the pre-fix behaviour).
+ */
+export function judgedTreeRunnerIdentityScheme(root: string, readFile?: (file: string) => string): "runtime-fingerprint" | "node-version" | null;
 /** @param {Record<string, string | undefined>} [env] */
 export function testReuseEnabled(env?: Record<string, string | undefined>): boolean;
 /** @param {Record<string, string | undefined>} [env] */
@@ -235,10 +253,12 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
  *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
  *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
- * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit"> }}
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit">, exclusions: Array<{ file: string, reason: string, recordedSha: string | null, judgedSha: string, evidence?: Record<string, unknown> }> }}
  *        `watch` = files the rule would have skipped but that RUN this time (the audit sample).
  *        If one of them fails, reuse could have hidden that red: reuseSoundnessAlarms turns it
  *        into an alarm.
+ *        `exclusions` (WI-6554700010026699) = one record per candidate NOT reused, keeping the
+ *        cause the exclusive counter alone discarded; per reason its count equals that counter.
  */
 export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, proofFormat, }: {
     candidates: string[];
@@ -257,6 +277,13 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     skip: string[];
     summary: Record<string, number>;
     watch: Map<string, "audit">;
+    exclusions: Array<{
+        file: string;
+        reason: string;
+        recordedSha: string | null;
+        judgedSha: string;
+        evidence?: Record<string, unknown>;
+    }>;
 };
 /**
  * P-012 alarm: the watched files (would-have-been-reused, see selectReusablePasses) that FAILED on
@@ -452,6 +479,35 @@ export function formatTestReuseLine(wsName: string, summary: Record<string, numb
     runGroupId: string | null;
     dirty: boolean;
 }): string;
+/**
+ * WI-6554700010026699 (R-3/R-4): the lines that retain one task's exclusion records.
+ *
+ * `records` holds one `TEST_PASS_REUSE_EXCLUSION <json>` line per excluded candidate. They go to
+ * the retained affected-tests journal only, because a task can exclude thousands of files.
+ * `sample` is one `TEST_PASS_REUSE_EXCLUSIONS <json>` line for stdout: the task's total, its first
+ * `sampleSize` records, and the journal path plus run group that hold the full set. A task with
+ * zero exclusions still prints its sample (`total: 0`), so the report can tell "none excluded"
+ * from a runner that predates the records (no sample line at all = not measured).
+ *
+ * @param {string} wsName
+ * @param {Array<{ file: string, reason: string, recordedSha: string | null, judgedSha: string, evidence?: Record<string, unknown> }>} exclusions
+ * @param {{ runGroupId: string | null, journal: string | null, sampleSize?: number }} where
+ * @returns {{ records: string[], sample: string }}
+ */
+export function formatReuseExclusionLines(wsName: string, exclusions: Array<{
+    file: string;
+    reason: string;
+    recordedSha: string | null;
+    judgedSha: string;
+    evidence?: Record<string, unknown>;
+}>, { runGroupId, journal, sampleSize }: {
+    runGroupId: string | null;
+    journal: string | null;
+    sampleSize?: number;
+}): {
+    records: string[];
+    sample: string;
+};
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
 export const TEST_REUSE_ENV: "AFFECTED_TEST_REUSE";
 /** The channel that carries the skip list to vitest-config (a JSON array of repo-relative paths). */
@@ -491,6 +547,8 @@ export const RECORDER_PROOF_FORMAT_FILE: "libs/test-config/src/test-pass-reuse-s
 export const LEGACY_PROOF_SAFE_DRIFT_RE: RegExp;
 /** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
 export const REUSE_SKIP_LIST_SCHEMA: 1;
+/** WI-6554700010026699 (R-4): at most this many exclusion records per task reach stdout. */
+export const REUSE_EXCLUSION_SAMPLE_PER_TASK: 5;
 export type ReuseProof = {
     recordedSha: string;
     recordedAtMs: number;

@@ -36,9 +36,10 @@
  * signals are required: at 1.26% it is rare enough to be read, which is the D-004
  * property an advisory firing on every write does not have.
  *
- * WHY BOTH SIGNALS, AND WHY NO "RESULT LINE" SUPPRESSOR. The in-flight vocabulary
- * IS the writer's own statement that the result is unread — "still running",
- * "NOT yet diagnosed", "awaiting result". The standalone phrase "in-flight" is
+ * WHY BOTH SIGNALS, AND WHY NO "RESULT LINE" SUPPRESSOR. Status vocabulary is a
+ * candidate cue, not proof by itself; historical or unrelated prose can contain
+ * the same words. A recognized run output must appear in the same clause, and
+ * "launched" also needs a run-like subject. The standalone phrase "in-flight" is
  * more ambiguous, so it only counts when attached to a run-like subject ("test run
  * is in-flight"). This avoids treating unrelated compounds such as "in-flight
  * store rebinding" as an unread run. Adding a fuzzy result-detector on top would
@@ -48,16 +49,18 @@
  *
  * WHY THE TRIGGER IS PROSE AND NOT STRUCTURAL. Half of it IS structural — "this
  * write stored zero check rows" is a fact about the note, not a guess about it.
- * The other half cannot be: nothing in the argument surface says "I launched a run
- * I have not read". D-098 had an interval to key on; there is no equivalent
+ * The other half cannot be fully structural: the argument has no run id or status
+ * field, so the advisory ties its prose cue to a recognized output reference.
+ * D-098 had an interval to key on; there is no equivalent
  * argument here, which is exactly the "wherever possible" carve-out in the filing.
  */
 
 /**
- * The writer's own admission that a result is not yet in hand.
+ * Checkpoint language that may indicate a run was just launched or is unresolved.
  *
  * Deliberately narrow. `launched` alone is far too common ("launched a fleet"),
- * which is why a run artifact is also required before anything fires.
+ * which is why a recognized run output in the same sentence, or an explicit
+ * following handle sentence, is also required before anything fires.
  */
 const IN_FLIGHT_RE =
   /\b(?:launched|in[-\s]flight|still running|not yet diagnosed|not yet read|awaiting (?:the )?results?|pending results?|results? (?:are )?pending)\b/gi;
@@ -68,10 +71,10 @@ const RUN_SUBJECT_AFTER_IN_FLIGHT_RE =
   /^\W*(?:(?:is|are|was|were|remains?|still|currently|actively)\W+){0,2}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 
 /**
- * A reference to a run whose output lives somewhere OTHER than this note — the
- * thing that makes the prose above a prediction rather than a report.
+ * A concrete execution log or tool run identifier. Arbitrary /tmp files
+ * (source diffs, read captures, and similar artifacts) are not run references.
  */
-const RUN_REF_RE = /(?:\/tmp\/\S+|\S+\.log\b|bash_id|run_in_background|bash_output)/gi;
+const RUN_REF_RE = /(?:\S+?\.(?:log|out|err|stdout|stderr)\b|\b(?:bash_id|run_in_background|bash_output)\b)/gi;
 
 /** Cap on how many matched fragments are echoed back, so the note stays one line. */
 const MAX_SIGNALS = 3;
@@ -167,6 +170,47 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
+const SENTENCE_BOUNDARY_RE = /[\n;]|[.!?](?=\s|$)/g;
+const RUN_SUBJECT_AFTER_LAUNCH_RE =
+  /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
+
+function sentenceRange(text: string, index: number, length: number): { start: number; end: number } {
+  let start = 0;
+  let end = text.length;
+  for (const boundary of text.matchAll(new RegExp(SENTENCE_BOUNDARY_RE.source, 'g'))) {
+    const boundaryStart = boundary.index ?? 0;
+    const boundaryEnd = boundaryStart + boundary[0].length;
+    if (boundaryStart < index) {
+      start = boundaryEnd;
+    } else if (boundaryStart >= index + length) {
+      end = boundaryStart;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+function isRunScopedLaunch(text: string, index: number, length: number): boolean {
+  const { start, end } = sentenceRange(text, index, length);
+  const before = text.slice(Math.max(start, index - 80), index);
+  const after = text.slice(index + length, Math.min(end, index + length + 80));
+  return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_LAUNCH_RE.test(after);
+}
+
+function runReferenceRange(text: string, index: number, length: number): { start: number; end: number } | null {
+  const range = sentenceRange(text, index, length);
+  const hasReference = (value: string) => new RegExp(RUN_REF_RE.source, RUN_REF_RE.flags).test(value);
+  if (hasReference(text.slice(range.start, range.end))) return range;
+
+  // An explicitly attached output clause names that same run. A completed
+  // run in another clause must remain unlinked, even within one sentence.
+  const separator = /^[.!?;]?\s*/.exec(text.slice(range.end))?.[0] ?? '';
+  const nextStart = range.end + separator.length;
+  if (!/^(?:handle|output|log)(?:\s*:|\s+at\b)/i.test(text.slice(nextStart))) return null;
+  const next = sentenceRange(text, nextStart, 0);
+  return hasReference(text.slice(nextStart, next.end)) ? { start: range.start, end: next.end } : null;
+}
+
 /** Negation immediately governing this status is not an unread admission.
  * Keep the match local: a completed result elsewhere must not suppress a
  * separate pending run, and `not yet read` is itself an affirmative signal. */
@@ -176,7 +220,7 @@ function isNegatedRunStatus(text: string, index: number): boolean {
   // Status phrases often put the negator before the run subject ("No jobs still
   // running"). The old check only handled a negator immediately before the
   // matched phrase, so it treated that completed-status sentence as unread.
-  const noRunSubject = /\b(?:no|zero)\s+(?:run|runs|test|tests|suite|suites|job|jobs|command|commands|process|processes|build|builds|check|checks|lint|typecheck|typechecks)(?:\s+\w+){0,2}\s+(?:(?:is|are|was|were|has|have|had)\s+)?["'`“‘]?\s*$/i;
+  const noRunSubject = /\b(?:no|zero)\s+(?:agent|agents|fleet|fleets|run|runs|test|tests|suite|suites|job|jobs|command|commands|process|processes|build|builds|check|checks|lint|typecheck|typechecks)(?:\s+\w+){0,2}\s+(?:(?:is|are|was|were|has|have|had)\s+)?["'`“‘]?\s*$/i;
   // EI-26699409305176974: inventory notes often negate coordinated subjects,
   // e.g. "No product code or runtime launched". Keep the conjunction and its
   // subjects explicit so a later affirmative clause is never swallowed.
@@ -217,22 +261,46 @@ export function describeUnreadRun(
   if (!text) return null;
 
   const inFlightText = withoutHistoricalQuotations(text);
-  const inFlight = collect(inFlightText, IN_FLIGHT_RE, true, (match) => {
-    if (isNegatedRunStatus(inFlightText, match.index) || isHypotheticalRunStatus(inFlightText, match.index)) return false;
-    if (!/^in[-\s]flight$/i.test(match[0])) return true;
-    return isRunScopedInFlight(inFlightText, match.index, match[0].length);
+  const scopedMatches = [...inFlightText.matchAll(new RegExp(IN_FLIGHT_RE.source, IN_FLIGHT_RE.flags))]
+    .filter((match) => {
+      const index = match.index ?? 0;
+      if (isNegatedRunStatus(inFlightText, index) || isHypotheticalRunStatus(inFlightText, index)) return false;
+      if (/^in[-\s]flight$/i.test(match[0]) && !isRunScopedInFlight(inFlightText, index, match[0].length)) {
+        return false;
+      }
+      if (/^launched$/i.test(match[0]) && !isRunScopedLaunch(inFlightText, index, match[0].length)) return false;
+      return true;
+    });
+  const anchoredMatches = scopedMatches.flatMap((match) => {
+    const range = runReferenceRange(inFlightText, match.index ?? 0, match[0].length);
+    return range ? [{ match, range }] : [];
   });
+  // Retain an adjacent diagnosis as signal metadata once a concrete following
+  // run admission has independently supplied the execution reference.
+  const relevantMatches = scopedMatches.filter((match) =>
+    anchoredMatches.some(({ match: anchored }) => anchored === match || (
+      /^not yet diagnosed$/i.test(match[0]) &&
+      (anchored.index ?? 0) > (match.index ?? 0) &&
+      /^[.!?\s]*(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b[^.!?\n]{0,80}$/i.test(
+        inFlightText.slice((match.index ?? 0) + match[0].length, anchored.index),
+      )
+    )),
+  );
+  const inFlight = [...new Set(relevantMatches.map((match) => match[0].trim().toLowerCase()))].slice(0, MAX_SIGNALS);
   if (inFlight.length === 0) return null;
-  const runRefs = collect(text, RUN_REF_RE, false);
+  const signalSentences = anchoredMatches.map(({ range }) => range);
+  const runRefs = collect(inFlightText, RUN_REF_RE, false, (match) =>
+    signalSentences.some(({ start, end }) => match.index >= start && match.index < end),
+  );
   if (runRefs.length === 0) return null;
 
   return {
     flagged: true,
     note:
-      'unread_run_lint: this checkpoint describes a run you launched but have not read ' +
-      `(${inFlight.join(', ')} — ${runRefs.join(', ')}) and stores no check rows, so its ` +
+      'unread_run_lint: this checkpoint describes a run as launched or still in flight ' +
+      '(' + inFlight.join(', ') + ' — ' + runRefs.join(', ') + ') and stores no check rows, so its ' +
       'status lines will reach your successor as prose it cannot tell apart from measurement. ' +
-      'Pass `checks:[{ claim, recheck }]` and OMIT `verified` — that renders the row ? PREDICTED, ' +
+      'Pass `checks:[{ claim, recheck }]` and omit `verified` — that renders the row ? PREDICTED, ' +
       'so the next holder re-measures instead of trusting it. Add `verified:"<evidence>"` only for ' +
       'a result you actually read. Advisory only; the write was kept.',
     signals: { inFlight, runRefs },

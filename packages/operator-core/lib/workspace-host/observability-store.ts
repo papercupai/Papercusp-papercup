@@ -814,6 +814,8 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
     customerWorkspaceId: string | null;
     allocation: { dbGiB: number; workspaceGiB: number } | null;
   };
+  /** Earliest creating operation's validated canary, never the current desired spec or a later request. */
+  originalCanaryAdmission?: { operationId: string; runId: string; workspaceId: string; teardownDeadlineAt: string } | null;
   recoverability?: {
     kind: 'snapshot' | 'backup' | 'none';
     label: string;
@@ -969,12 +971,30 @@ export async function readWorkspaceHostDestroyTarget(
        LIMIT 1
     ` : [];
     const storageAdmission = admissions[0];
+    const desiredSpec = host.desired_spec as WorkspaceHostDesiredSpec;
+    const awsCanary = host.target === 'aws' && Object.keys(desiredSpec.labels ?? {})
+      .some(key => ['papercusp_canary', 'papercusp_run_id', 'papercusp_workspace_id'].includes(key));
+    const originals = awsCanary ? await query<Array<{ id: string; canary: unknown }>>`
+      SELECT id, request->'canary' AS canary
+        FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${workspaceId} AND host_id = ${hostId}
+         AND action IN ('provision', 'restore')
+       ORDER BY created_at, id
+       LIMIT 1
+    ` : [];
+    const original = originals[0];
+    const canary = original?.canary as Record<string, unknown> | null | undefined;
+    const originalCanaryAdmission = original && canary && typeof canary === 'object' &&
+      typeof canary.runId === 'string' && typeof canary.workspaceId === 'string' && typeof canary.teardownDeadlineAt === 'string'
+      ? { operationId: original.id, runId: canary.runId, workspaceId: canary.workspaceId, teardownDeadlineAt: canary.teardownDeadlineAt }
+      : null;
     return {
       id: host.id,
       name: host.name,
       connectionId: host.connection_id,
       target: host.target,
       observedState: host.observed_state,
+      ...(awsCanary ? { originalCanaryAdmission } : {}),
       ...(host.hosted_customer_workspace_ids?.[0] ? { hostedCustomerWorkspaceId: host.hosted_customer_workspace_ids[0] } : {}),
       ...(storageAdmission ? { durableStorageAdmission: { operationId: storageAdmission.id,
         customerWorkspaceId: storageAdmission.customer_workspace_id, allocation: storageAdmission.allocation } } : {}),

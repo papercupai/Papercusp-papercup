@@ -178,20 +178,25 @@ export interface ScratchPlanBoundary {
  * ceiling without the boundary leaves them refused like every other plan tool. */
 export const SCRATCH_PLAN_TOOLS: readonly string[] = Object.freeze([
   'plans:new', 'plans:add-item', 'plans:set-status', 'plans:audit', 'plans:get', 'plans:set-plan-status',
+  'plan-types:list', 'plan-types:get', 'cupboard:search',
 ]);
 
 // Exact top-level keys per verb. Left out on purpose: multi-plan selectors (slugs),
 // session reads (sourceRanges, mappings), work-item references (findings, evidence,
 // verification, priorAttemptRefs, operationalBrief), rubric classes (classRef), and
-// workspace or force overrides.
+// workspace overrides. Creation may bypass topic dedup only inside the reviewer's
+// already authenticated, isolated scratch prefix; it cannot affect another plan.
 const SCRATCH_PLAN_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'plans:new': ['harness', 'slug', 'title', 'status', 'goal', 'content', 'rationale', 'verificationProfile'],
+  'plans:new': ['harness', 'slug', 'title', 'status', 'goal', 'content', 'rationale', 'verificationProfile', 'force'],
   'plans:add-item': ['harness', 'slug', 'phase', 'text', 'title', 'body', 'blockedBy', 'importance', 'deliverable', 'items', 'rationale'],
   'plans:set-status': ['harness', 'slug', 'item', 'itemIds', 'items', 'status', 'note', 'rationale', 'expectedStatus'],
   'plans:audit': ['harness', 'slug', 'phase', 'dryRun', 'items', 'summary', 'auditedSha'],
   'plans:get': ['harness', 'slug', 'items', 'itemIds', 'decisionId', 'decisions', 'decisionIds', 'mode', 'detail',
     'heading', 'include', 'includeHistory', 'shipReadiness', 'activationReadiness'],
   'plans:set-plan-status': ['harness', 'slug', 'status', 'rationale', 'expectedCurrent', 'dryRun'],
+  'plan-types:list': ['harness', 'kind', 'prefix', 'includeRetired'],
+  'plan-types:get': ['harness', 'kind', 'typeId', 'revision'],
+  'cupboard:search': ['kind', 'q', 'project', 'limit', 'cursor'],
 });
 // Keys of one batch entry. An entry's own slug and harness are checked like the top level's.
 const SCRATCH_PLAN_ENTRY_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -220,12 +225,18 @@ function withinScratchPlanBoundary(tool: string, args: unknown, boundary: Scratc
   const row = args as Record<string, unknown>;
   const keys = SCRATCH_PLAN_KEYS[tool];
   if (!keys || Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
+  // Registry definitions and public pack listings are product surfaces, not plan
+  // instances, rubrics or bound proof. The tool schemas validate their remaining
+  // argument values after these exact selector and workspace restrictions.
+  if (tool === 'plan-types:list' || tool === 'plan-types:get') return row.harness === boundary.harness;
+  if (tool === 'cupboard:search') return row.kind === 'pack';
   const scratch = (slug: unknown) => typeof slug === 'string' && slug.length > boundary.scratchPrefix.length &&
     slug.length <= 200 && slug.startsWith(boundary.scratchPrefix);
   const id = (value: unknown, re: RegExp) => value === undefined || typeof value === 'string' && re.test(value);
   const ids = (value: unknown, re: RegExp) => value === undefined ||
     Array.isArray(value) && value.length <= 200 && value.every(v => typeof v === 'string' && re.test(v));
   if (!scratch(row.slug) || row.harness !== undefined && row.harness !== boundary.harness) return false;
+  if (tool === 'plans:new' && row.force !== undefined && row.force !== true) return false;
   // A real ship call recruits an acceptance grader. The reviewer may only preview one.
   if (tool === 'plans:set-plan-status' && row.dryRun !== true) return false;
   // Item and decision selectors stay inside the named plan: bare P- and D- ids only.

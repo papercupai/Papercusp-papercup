@@ -17,6 +17,17 @@ const h = vi.hoisted(() => ({
   retractFact: vi.fn(async (_input: unknown) => true),
   broadcastSevereEvent: vi.fn(async (_ev: unknown) => true),
   broadcastSevereEventResolved: vi.fn(async (_res: unknown) => true),
+  openEscalations: [] as Array<Record<string, unknown>>,
+  openEscalation: vi.fn(async (_identity: unknown, _input: unknown) => ({})),
+  sendMessage: vi.fn(async (_identity: unknown, _input: unknown) => ({})),
+}));
+
+vi.mock('../agent-tools/coordination/escalations', () => ({
+  listEscalations: async () => h.openEscalations,
+  openEscalation: h.openEscalation,
+}));
+vi.mock('../agent-tools/coordination/messages', () => ({
+  sendMessage: h.sendMessage,
 }));
 
 vi.mock('../deployment/account-pool-store', () => ({
@@ -37,6 +48,66 @@ vi.mock('../severe-event-broadcast', () => ({
 const T0 = 1_800_000_000_000;
 const HR = 3_600_000;
 const RESET = { windowResetAt7d: T0 + 24 * HR };
+
+// WI-6554700010029499: five Codex accounts dropped Pro -> Plus and nothing noticed for ~2 days.
+describe('recordAccountWindowWithBurnAlert — plan downgrade alarm', () => {
+  beforeEach(() => {
+    h.state.pool = registerAccount({ accounts: [] }, { id: 'a1', credentialRef: 'cred-a1' }, T0 - HR);
+    h.openEscalations = [];
+    h.openEscalation.mockClear();
+    h.sendMessage.mockClear();
+  });
+  const observe = (planType: string, at: number) =>
+    recordAccountWindowWithBurnAlert('a1', { utilization: 0.1, planType }, at);
+
+  it('stores the tier on the first reading without alarming', async () => {
+    const { planTransition } = await observe('pro', T0);
+    const rate = (h.state.pool as AccountPool).accounts[0]!.rate;
+    expect(rate.planType).toBe('pro');
+    expect(rate.planObservedAt).toBe(T0);
+    expect(planTransition).toBeNull();
+    expect(h.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('opens ONE blocker escalation and ONE broadcast on the pro -> plus edge, then stays quiet', async () => {
+    await observe('pro', T0);
+    const { planTransition } = await observe('plus', T0 + 60_000);
+    expect(planTransition).toEqual({ accountId: 'a1', from: 'pro', to: 'plus', direction: 'downgrade' });
+    expect(h.openEscalation).toHaveBeenCalledTimes(1);
+    expect(h.openEscalation.mock.calls[0]![1]).toEqual(expect.objectContaining({
+      severity: 'blocker',
+      meta: expect.objectContaining({ source: 'account-plan-health', planAccountId: 'a1', fromPlan: 'pro', toPlan: 'plus' }),
+    }));
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    await observe('plus', T0 + 120_000);
+    expect(h.openEscalation).toHaveBeenCalledTimes(1);
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-open while an escalation for the account is still open', async () => {
+    h.openEscalations = [{ source: 'account-plan-health', planAccountId: 'a1' }];
+    await observe('pro', T0);
+    await observe('plus', T0 + 60_000);
+    expect(h.openEscalation).not.toHaveBeenCalled();
+    expect(h.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('an upgrade does not alarm and re-arms the next downgrade', async () => {
+    await observe('plus', T0);
+    const up = await observe('pro', T0 + 60_000);
+    expect(up.planTransition?.direction).toBe('upgrade');
+    expect(h.openEscalation).not.toHaveBeenCalled();
+    await observe('plus', T0 + 120_000);
+    expect(h.openEscalation).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unrecognised tier never alarms', async () => {
+    await observe('pro', T0);
+    const { planTransition } = await observe('mystery-tier', T0 + 60_000);
+    expect(planTransition).toBeNull();
+    expect(h.openEscalation).not.toHaveBeenCalled();
+  });
+});
 
 describe('recordAccountWindowWithBurnAlert (leg c)', () => {
   beforeEach(() => {

@@ -92,6 +92,10 @@ import {
   staleReclaimRequeueCap,
 } from './work-item-dispatch-states';
 import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
+import {
+  ACTIVITY_DEAD_MS,
+  ACTIVITY_LOOKBACK_WINDOW_MS,
+} from './agent-tools/coordination/activity-liveness-constants';
 
 type Db = Sql | TransactionSql;
 
@@ -340,6 +344,54 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
 }
 
 /**
+ * WI-6554700010029295: the WARM-DEAD holder set — owners whose process still
+ * heartbeats (so `activeSessionHolderFragment` / `parkedHolderFragment` count
+ * them alive on the presence leg alone) but whose agent has taken NO turn for
+ * longer than the oracle's `ACTIVITY_DEAD_MS`. The shared liveness oracle
+ * already classifies exactly this owner as warm-dead (`deriveSessionState`'s
+ * `activityDead` → `suspect` while it holds claims, i.e. "cleanup must
+ * reconcile"), but the reapers never did: heartbeat freshness alone kept the
+ * claim forever. Measured 2026-10-26 on fleet nonp2p-bug-drain-luna-max-0930:
+ * 33 heartbeat-fresh, loop-less members held 66 claims, the oldest ~40h, most
+ * last seen at "▶ session started" hours earlier.
+ *
+ * Mirrors the oracle's activity clock exactly — `agent_activity` ∪ owner-
+ * attributed `tool_invocations` (Codex turns can emit tool calls without a
+ * newer activity row) — and its conservative contract: an owner with NO
+ * activity inside the lookback is indistinguishable from a brand-new session
+ * and is never warm-dead. An armed engine loop stays continuation authority
+ * (EI-21431501901242395), so its owner is excluded here too.
+ *
+ * Used ONLY by the claim reapers, which subtract it from their live/parked
+ * sets; `liveHolderFragment` itself is unchanged for its other consumers.
+ */
+export function warmDeadHolderFragment(sql: Db, presenceWindowSec: number) {
+  const deadSec = Math.max(1, Math.round(ACTIVITY_DEAD_MS / 1000));
+  const lookbackSec = Math.max(deadSec, Math.round(ACTIVITY_LOOKBACK_WINDOW_MS / 1000));
+  return sql`
+      SELECT DISTINCT p.owner_id AS alias
+        FROM harness_shared.coord_presence p
+       WHERE p.heartbeat_at IS NOT NULL
+         AND (now() - p.heartbeat_at) < make_interval(secs => ${presenceWindowSec})
+         AND ( EXISTS (SELECT 1 FROM harness_shared.agent_activity aa
+                        WHERE aa.owner_id = p.owner_id
+                          AND aa.created_at > now() - make_interval(secs => ${lookbackSec}))
+            OR EXISTS (SELECT 1 FROM harness_shared.tool_invocations t
+                        WHERE t.coord_owner_id = p.owner_id
+                          AND t.invoked_at > now() - make_interval(secs => ${lookbackSec})) )
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.agent_activity aa
+                          WHERE aa.owner_id = p.owner_id
+                            AND aa.created_at > now() - make_interval(secs => ${deadSec}))
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.tool_invocations t
+                          WHERE t.coord_owner_id = p.owner_id
+                            AND t.invoked_at > now() - make_interval(secs => ${deadSec}))
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.routines r
+                          WHERE r.active = true
+                            AND r.reschedule_interval_sec IS NOT NULL
+                            AND r.target_owner_id = p.owner_id)`;
+}
+
+/**
  * WI-2689: the "briefly-parked / resumable holder" set — coord_presence rows whose
  * heartbeat is RECENT (within `parkedGraceSec`) but which fell out of the short
  * live window. A member whose loop dropped keeps a coord_presence row and beat
@@ -458,11 +510,21 @@ export async function reclaimStaleWorkItemClaims(
   const includeStalled = opts.includeStalled === true;
   const nonRequeue = WORK_ITEM_NON_REQUEUE_STATES;
   const rows = await sql<ReleasedRow[]>`
-    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    -- WI-6554700010029295: heartbeat-fresh owners with no turn past ACTIVITY_DEAD_MS
+    -- (the oracle's warm-dead) are NOT alive for claim purposes — subtract them from
+    -- both the live and the parked set so the DEAD leg frees their claims.
+    WITH warm_dead AS (${warmDeadHolderFragment(sql, parkedGraceSec)}),
+    live_holder AS (
+      SELECT lh.alias FROM (${liveHolderFragment(sql, graceSec)}) lh
+       WHERE NOT EXISTS (SELECT 1 FROM warm_dead wd WHERE wd.alias = lh.alias)
+    ),
     known_holder AS (${knownHolderFragment(sql)}),
     -- WI-2689: briefly-parked/resumable holders (recent beat, past the live window) —
     -- the DEAD leg holds these back until their beat ages past the parked grace.
-    parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
+    parked_holder AS (
+      SELECT ph.alias FROM (${parkedHolderFragment(sql, parkedGraceSec)}) ph
+       WHERE NOT EXISTS (SELECT 1 FROM warm_dead wd WHERE wd.alias = ph.alias)
+    ),
     -- Aliases of RECENTLY-terminal spawns — confirmed dead, no grace (P-003/D-004).
     -- Bounded to the last hour so the cross-join stays tiny (older terminal spawns
     -- were already grace-freed by the DEAD leg).
@@ -767,11 +829,19 @@ export async function reclaimStaleIssueClaims(
     Math.round((opts.unknownHolderFallbackMs ?? STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS) / 1000),
   );
   const released = await sql<ReleasedIssueClaim[]>`
-    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    -- WI-6554700010029295: warm-dead assignees are not alive (parity with the feature reaper).
+    WITH warm_dead AS (${warmDeadHolderFragment(sql, parkedGraceSec)}),
+    live_holder AS (
+      SELECT lh.alias FROM (${liveHolderFragment(sql, graceSec)}) lh
+       WHERE NOT EXISTS (SELECT 1 FROM warm_dead wd WHERE wd.alias = lh.alias)
+    ),
     known_holder AS (${knownHolderFragment(sql)}),
     -- WI-2689: briefly-parked/resumable assignees — held back from reaping (see the
     -- feature reaper for the churn rationale; parity so the two reapers never diverge).
-    parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
+    parked_holder AS (
+      SELECT ph.alias FROM (${parkedHolderFragment(sql, parkedGraceSec)}) ph
+       WHERE NOT EXISTS (SELECT 1 FROM warm_dead wd WHERE wd.alias = ph.alias)
+    ),
     dead AS (
       SELECT e.workspace_id, e.issue_id, e.kind,
              e.assignee AS former_assignee, e.assigned_by

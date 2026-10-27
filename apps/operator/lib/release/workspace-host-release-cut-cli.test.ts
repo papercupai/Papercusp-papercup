@@ -1,11 +1,14 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { projectByocReleaseMilestones } from '@papercusp/operator-core/lib/byoc-release-carry';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
+import { inspectRetentionTrees } from '@papercusp/operator-core/lib/storage/disk-consumer-census';
 import type { TaskReleaseJournal } from '@papercusp/operator-core/lib/task-manager/store';
 import {
   OPERATION_ID,
@@ -18,7 +21,10 @@ import {
 } from '@papercusp/operator-core/lib/workspace-host/release-stage-receipt';
 
 import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
+import { pinProtection, withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import { WORKSPACE_HOST_EVIDENCE_FILES, WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME } from './workspace-host-publication-manifest-cli';
 import {
+  acquireWorkDirLock,
   DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
   describeStepExit,
   WORKSPACE_HOST_BUILD_STAGE,
@@ -33,7 +39,9 @@ import {
   cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
+  planWorkspaceHostCutIntermediates,
   pruneWorkspaceHostCutIntermediates,
+  reclaimWorkspaceHostCutIntermediatesWithProtection,
   removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
   runWorkspaceHostReleaseCutCli,
@@ -101,7 +109,7 @@ describe('workspace host model source preflight', () => {
 });
 
 describe('workspace host source dependency preparation', () => {
-  function fixture(failPreparation: boolean) {
+  function fixture(failPreparation: boolean, selection: 'valid' | 'wrong-input' | 'failed' = 'valid') {
     const repoRoot = join(workDir, 'producer');
     const source = join(workDir, 'source');
     const cache = join(workDir, 'models');
@@ -116,19 +124,48 @@ describe('workspace host source dependency preparation', () => {
     writeFileSync(join(modelVerifier, 'transformers-models.sh'), 'exit 0\n');
     const setup = join(repoRoot, 'apps/operator/bin/release');
     mkdirSync(setup, { recursive: true });
+    const input = 'a'.repeat(64);
+    const generation = `v1-${'b'.repeat(64)}`;
+    writeFileSync(join(setup, 'dependency-generation.sh'), [
+      'set -eu',
+      'test "$1" = --integration; shift 2',
+      'case "$1" in',
+      ` --fingerprint-ref) test "$2" = "${SHA}"; echo 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${SHA} input=${input}' ;;`,
+      ` --ensure-ref) test "$2" = "${SHA}"; printf exact > "$0.prewarmed" ;;`,
+      ' --select-inputs-from)',
+      '  test -f "$0.prewarmed"; test "$3" = --lease-owner-pid; test "$4" -gt 0',
+      selection === 'failed' ? '  exit 74' :
+        `  echo 'DEPENDENCY_GENERATION_RESULT schema=1 identity=${generation} input=${selection === 'wrong-input' ? 'c'.repeat(64) : input} token=selected-token reused=true'`,
+      '  ;;',
+      ' *) exit 24 ;;',
+      'esac',
+      '',
+    ].join('\n'));
+    // Preserve the real producer's reader-mutex entrypoint/argument contract.
+    mkdirSync(join(repoRoot, 'scripts'), { recursive: true });
+    writeFileSync(join(repoRoot, 'scripts/npm-install-safe.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      "const args = process.argv.slice(2);",
+      "if (args[0] !== '--repo-root' || args[2] !== '--exec-under-lock' || args[3] !== '--') process.exit(25);",
+      "const r = spawnSync(args[4], args.slice(5), { stdio: 'inherit' });",
+      "process.exit(r.status ?? 26);",
+    ].join('\n'));
     writeFileSync(join(setup, 'setup-release-checkout.sh'), [
       'set -eu',
-      'release=; mode=; copy=',
+      'release=; mode=; copy=; generation=; token=',
       'while [ "$#" -gt 0 ]; do',
       ' case "$1" in',
       '  --release) release="$2"; shift 2 ;;',
       '  --prepare-existing) mode=prepare; shift ;;',
       '  --node-modules-copy) copy="$2"; shift 2 ;;',
+      '  --node-modules-generation-id) generation="$2"; shift 2 ;;',
+      '  --node-modules-generation-token) token="$2"; shift 2 ;;',
       '  --ref|--integration|--source-integrity) shift 2 ;;',
       '  *) exit 21 ;;',
       ' esac',
       'done',
       'test "$mode" = prepare && test "$copy" = copy || exit 22',
+      `test "$generation" = '${generation}' && test "$token" = selected-token || exit 27`,
       failPreparation ? 'exit 23' : 'printf prepared > "$release/dependencies-prepared"',
       '',
     ].join('\n'));
@@ -164,6 +201,22 @@ describe('workspace host source dependency preparation', () => {
     expect(existsSync(join(workDir, 'logs/sidecar-build.log'))).toBe(false);
     expect(existsSync(join(workDir, 'sidecar.ready.json'))).toBe(false);
     expect(readFileSync(join(source, 'unchanged-source'), 'utf8')).toBe('pinned source');
+  });
+
+  it('uses the exact source selection even when the caller inherited a different live generation', async () => {
+    vi.stubEnv('NODE_MODULES_GENERATION_ID', `v1-${'d'.repeat(64)}`);
+    vi.stubEnv('NODE_MODULES_GENERATION_TOKEN', 'live-token');
+    const { plan } = fixture(false);
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'sidecar-build' });
+    expect(readFileSync(join(workDir, 'logs/sidecar-build.log'), 'utf8')).toContain('SIDECAR_SAW_PREPARED_DEPENDENCIES');
+  });
+
+  it.each(['wrong-input', 'failed'] as const)('stops before preparation and sidecar on a %s exact selection', async (selection) => {
+    const { source, plan } = fixture(false, selection);
+    await expect(buildWorkspaceHostBundle(plan)).rejects.toMatchObject({ step: 'dependency-select', gating: false });
+    expect(existsSync(join(source, 'dependencies-prepared'))).toBe(false);
+    expect(existsSync(join(workDir, 'logs/sidecar-build.log'))).toBe(false);
+    expect(existsSync(join(workDir, 'sidecar.ready.json'))).toBe(false);
   });
 });
 
@@ -508,6 +561,453 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
   });
 });
 
+describe('workspace-host cut ownership admission', () => {
+  beforeEach(() => vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'cut-mutex')));
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+  it('admits exactly one concurrent writer and permits an idempotent release', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const attempts = await Promise.allSettled([acquireWorkDirLock(lock), acquireWorkDirLock(lock)]);
+    expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1);
+    const winner = attempts.find(result => result.status === 'fulfilled');
+    if (winner?.status !== 'fulfilled') throw new Error('missing admitted writer');
+    await winner.value(); await winner.value();
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('keeps permission-denied ownership evidence intact', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\n');
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); });
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('denied');
+    kill.mockRestore();
+    expect(readFileSync(lock, 'utf8')).toBe('123456\n');
+  });
+
+  it('admits one replacement after positively confirming a dead owner', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\n');
+    const actualKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === 123456) throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+      return actualKill(pid, signal);
+    });
+    const attempts = await Promise.allSettled([acquireWorkDirLock(lock), acquireWorkDirLock(lock)]);
+    kill.mockRestore();
+    expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n${readProcessIdentity(process.pid)}\n`);
+    for (const result of attempts) if (result.status === 'fulfilled') await result.value();
+  });
+
+  it('uses the same ownership lock through a directory alias', async () => {
+    const dir = join(workDir, 'cut'); mkdirSync(dir);
+    const alias = join(workDir, 'cut-alias'); symlinkSync(dir, alias);
+    const release = await acquireWorkDirLock(join(dir, 'release-cut.lock'));
+    await expect(acquireWorkDirLock(join(alias, 'release-cut.lock'))).rejects.toThrow('another cut');
+    await release();
+    expect(existsSync(join(alias, 'release-cut.lock'))).toBe(false);
+  });
+
+  it.each(['linux:aaaa:2', 'linux:bbbb:1'])('replaces a reused PID or prior-boot identity %s without killing its unrelated process', async current => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, '123456\nlinux:aaaa:1\n');
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const release = await acquireWorkDirLock(lock, pid => pid === process.pid ? 'linux:cccc:3' : current);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\nlinux:cccc:3\n`);
+    expect(kill).toHaveBeenCalledWith(123456, 0);
+    expect(kill.mock.calls.filter(([pid]) => pid === 123456)).toEqual([[123456, 0]]);
+    expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+    await release();
+  });
+
+  it.each(['linux:aaaa:1', null])('keeps a matching or unreadable live kernel identity %s', async current => {
+    const lock = join(workDir, 'release-cut.lock');
+    const owner = '123456\nlinux:aaaa:1\n';
+    writeFileSync(lock, owner);
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+    await expect(acquireWorkDirLock(lock, pid => pid === process.pid ? 'linux:cccc:3' : current))
+      .rejects.toThrow(current ? 'another cut' : 'unverifiable cut process identity');
+    expect(readFileSync(lock, 'utf8')).toBe(owner);
+  });
+
+  it('refuses to publish an unmeasured process identity', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    await expect(acquireWorkDirLock(lock, () => null)).rejects.toThrow('unverifiable cut process identity');
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('does not let a repeated release remove a later admission in the same process', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const first = await acquireWorkDirLock(lock);
+    await first();
+    const second = await acquireWorkDirLock(lock);
+    await first();
+    expect(existsSync(lock)).toBe(true);
+    await second();
+  });
+
+  it.each(['', '123456junk\n', '0\n', '-1\n'])('retains malformed owner %j', async text => {
+    const lock = join(workDir, 'release-cut.lock');
+    writeFileSync(lock, text);
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('unverifiable cut lock');
+    expect(readFileSync(lock, 'utf8')).toBe(text);
+  });
+
+  it('never overwrites a symlinked lock or releases a changed owner', async () => {
+    const lock = join(workDir, 'release-cut.lock');
+    const other = join(workDir, 'other-owner');
+    writeFileSync(other, '123456\n'); symlinkSync(other, lock);
+    await expect(acquireWorkDirLock(lock)).rejects.toThrow('unverifiable cut lock');
+    expect(readFileSync(other, 'utf8')).toBe('123456\n');
+    rmSync(lock);
+    const release = await acquireWorkDirLock(lock);
+    writeFileSync(lock, '654321\n');
+    await expect(release()).rejects.toThrow('owner changed');
+    expect(readFileSync(lock, 'utf8')).toBe('654321\n');
+  });
+});
+
+describe('workspace-host writer intermediate retention planning', () => {
+  const hour = 3_600_000;
+  const nowMs = 100 * hour;
+  type CensusEntry = Parameters<typeof planWorkspaceHostCutIntermediates>[0]['census']['entries'][number];
+  const entry = (name: string, bytes: number, ageHours: number): CensusEntry => ({
+    path: join(workDir, name), bytes, newestWriteMs: nowMs - ageHours * hour, dev: 1, ino: name.length,
+  });
+  const plan = (entries: ReturnType<typeof entry>[], maxBytes = 100, extra: Record<string, unknown> = {}) =>
+    planWorkspaceHostCutIntermediates({ workDir, nowMs, maxBytes, pins: [],
+      census: { entries, retained: [], inspectedNodes: entries.length, retainedRecentTrees: 0 }, ...extra });
+
+  it('evicts oldest eligible writer groups under the finite cap while retaining release evidence', () => {
+    const result = plan([entry('source', 60, 2), entry('sidecar', 60, 1), entry('publication', 10, 99)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.caps[0]).toMatchObject({ maxBytes: 100, beforeBytes: 130, overByBytes: 30 });
+    expect(result.retainedPaths).toEqual([join(workDir, 'publication')]);
+  });
+
+  it('uses the newest write across a tree and ready marker when ordering atomic groups', () => {
+    const result = plan([entry('source', 60, 2), entry('source.ready.json', 1, 0), entry('sidecar', 60, 1)]);
+    expect(result.intermediates).toEqual(['sidecar']);
+  });
+
+  it('protects a ready-marker pin across its complete group during cap selection', () => {
+    const result = plan([entry('source', 60, 2), entry('source.ready.json', 1, 2), entry('sidecar', 60, 1)], 100,
+      { pins: [{ paths: [join(workDir, 'source.ready.json')], expiresAt: new Date(nowMs + hour).toISOString() }] });
+    expect(result.intermediates).toEqual(['sidecar']);
+    expect(result.caps[0]).toMatchObject({ pinnedBytes: 61 });
+  });
+
+  it('expires old intermediates without selecting old logs, publication or unqualified children', () => {
+    const result = plan([entry('source', 10, 80), entry('source.ready.json', 1, 80), entry('sidecar', 10, 1),
+      entry('logs', 10, 99), entry('publication', 10, 99), entry('unknown', 10, 99)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.retainedPaths).toHaveLength(3);
+  });
+
+  it('uses the shared allocation union instead of double-counting hardlinks against the cap', () => {
+    const link = { dev: 1, ino: 99, bytes: 80, paths: [join(workDir, 'source/shared'), join(workDir, 'publication/shared')] };
+    const result = plan([{ ...entry('source', 90, 1), hardlinks: [link] }, { ...entry('publication', 90, 1), hardlinks: [link] }]);
+    expect(result.intermediates).toEqual([]);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 100, overByBytes: 0 });
+  });
+
+  it('unions repeated allocations within an atomic group and across retained evidence', () => {
+    const link = { dev: 1, ino: 99, bytes: 20, paths: [join(workDir, 'source/shared'), join(workDir, 'source.ready.json'), join(workDir, 'publication/shared')] };
+    const result = plan(['source', 'source.ready.json', 'publication'].map(name => ({ ...entry(name, 20, 1), hardlinks: [link] })), 25);
+    expect(result.intermediates).toEqual([]);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 20, overByBytes: 0 });
+  });
+
+  it.each(['source', 'source.ready.json'])('counts a complete retained boundary on %s and protects its whole atomic group', name => {
+    const result = plan([], 100, { census: { entries: [entry(name === 'source' ? 'source.ready.json' : 'source', 1, 90),
+      entry('sidecar', 30, 80), entry('publication', 10, 90)],
+    retained: [{ path: join(workDir, name), reason: 'symlink boundary', entry: entry(name, 90, 90) }],
+    retainedRecentTrees: 0, inspectedNodes: 10 } });
+    expect(result.intermediates).toEqual(['sidecar']);
+    expect(result.retainedPaths).toContain(join(workDir, 'source'));
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 131, pinnedBytes: 0, pinnedOverageBytes: 0 });
+  });
+
+  it.each(['foreign ownership boundary', 'protected policy root', 'unknown boundary'])('refuses unmeasured descendant allocation despite a boundary entry (%s)', reason => {
+    expect(() => plan([], 100, { census: { entries: [entry('sidecar', 30, 80)],
+      retained: [{ path: join(workDir, 'source'), reason, entry: entry('source', 1, 90) }],
+      retainedRecentTrees: 0, inspectedNodes: 10 } })).toThrow('complete, unfiltered census');
+  });
+
+  it('reports retained over-cap bytes without evicting the publication to make the cap appear satisfied', () => {
+    const result = plan([entry('publication', 200, 90), entry('source', 20, 1)]);
+    expect(result.intermediates).toEqual(['source']);
+    expect(result.caps[0]).toMatchObject({ beforeBytes: 220, overByBytes: 120 });
+    expect(result.retainedPaths).toEqual([join(workDir, 'publication')]);
+  });
+
+  it.each([{ error: 'permission denied' }, { retainedRecentTrees: 1 }, { retained: [{ path: 'unreadable', reason: 'unknown allocation' }] }])
+    ('refuses incomplete census input %j', incomplete => {
+      expect(() => plan([], 100, { census: { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0, ...incomplete } }))
+        .toThrow('complete, unfiltered census');
+    });
+
+  it('refuses duplicate and outside-root census entries', () => {
+    expect(() => plan([entry('source', 1, 1), entry('source', 1, 1)])).toThrow('invalid or duplicate');
+    expect(() => plan([entry('../source', 1, 1)])).toThrow('invalid or duplicate');
+  });
+
+  it.each([0, Infinity, 20 * 1024 ** 3 + 1])('refuses a non-finite or widened cap %s', maxBytes => {
+    expect(() => plan([], maxBytes)).toThrow('finite cap');
+  });
+
+  it.each([{ expiresAt: 'unknown', paths: ['/kept'] }, { expiresAt: new Date(nowMs + hour).toISOString(), paths: ['relative'] }])
+    ('rejects an unverifiable pin snapshot %j', pin => {
+      expect(() => plan([entry('source', 110, 80)], 100, { pins: [pin] })).toThrow('pin snapshot');
+    });
+});
+
+describe('scheduled workspace-host writer retention admission', () => {
+  beforeEach(() => {
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(workDir, 'pins'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'mutex'));
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  function fixture() {
+    const dir = join(workDir, '.papercusp/wh-release-complete');
+    mkdirSync(join(dir, 'sidecar'), { recursive: true });
+    mkdirSync(join(dir, 'extracted'));
+    mkdirSync(join(dir, 'publication/evidence'), { recursive: true });
+    writeFileSync(join(dir, 'sidecar/payload'), 'rebuildable');
+    writeFileSync(join(dir, 'sidecar.ready.json'), '{}');
+    writeFileSync(join(dir, 'extracted/payload'), 'rebuildable');
+    const result = buildResult('request');
+    const hash = (name: string) => {
+      writeFileSync(join(dir, 'publication', name), name);
+      return createHash('sha256').update(name).digest('hex');
+    };
+    result.bundle = { sha256: hash('server.tgz'), bytes: Buffer.byteLength('server.tgz') };
+    result.signature = { sha256: hash('server.tgz.minisig'), bytes: Buffer.byteLength('server.tgz.minisig') };
+    result.signingKeySha256 = hash(WORKSPACE_HOST_PUBLISHED_SIGNING_KEY_NAME);
+    result.evidence = { sbomSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.sbom), vulnerabilitiesSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.vulnerabilities),
+      summarySha256: hash('evidence/summary.json'), secretScanSha256: hash(WORKSPACE_HOST_EVIDENCE_FILES.secretScan) };
+    writeFileSync(join(dir, 'release-cut.json'), JSON.stringify({ schemaVersion: 1, taskId: TASK_ID,
+      operationId: OPERATION_ID, sourceSha: SHA, version: VERSION }));
+    writeFileSync(join(dir, 'build-result.json'), JSON.stringify(result));
+    const scanHolders = vi.fn(async () => ({ complete: true, byPath: new Map<string, string[]>() }));
+    const inspectTrees = vi.fn(async () => ({
+      entries: readdirSync(dir).map((name, index) => ({ path: join(dir, name), dev: 1, ino: index + 1,
+        bytes: name === 'sidecar' || name === 'extracted' ? 60 : name === 'publication' ? 10 : 1,
+        newestWriteMs: Date.now() - (name === 'extracted' ? 1 : 2) * 3_600_000 })),
+      retained: [], inspectedNodes: 20, retainedRecentTrees: 0, pinnedBytes: 0,
+    }));
+    const input = { repoRoot: workDir, home: workDir, dryRun: false, notAfterMs: Date.now() + 60_000, pins: [], maxBytes: 100 };
+    const run = (overrides: Partial<Parameters<typeof reclaimWorkspaceHostCutIntermediatesWithProtection>[2]> = {}) =>
+      withRetentionPinProtection(protect => reclaimWorkspaceHostCutIntermediatesWithProtection(input, protect,
+        { inspectTrees, scanHolders, ...overrides }));
+    return { dir, input, run, inspectTrees, scanHolders };
+  }
+
+  it('reuses the held pin mutex, validates completed build bytes and measures the cap after native effects', async () => {
+    const f = fixture();
+    const result = await f.run();
+    expect(result).toMatchObject({ ok: true, cuts: [{ status: 'reclaimed', selected: ['sidecar'],
+      removed: [join(f.dir, 'sidecar.ready.json'), join(f.dir, 'sidecar')],
+      caps: [{ beforeBytes: 134, afterBytes: 73, overByBytes: 0 }] }] });
+    expect(f.inspectTrees).toHaveBeenCalledTimes(2);
+    expect(f.scanHolders).toHaveBeenCalledWith([f.dir]);
+    for (const kept of ['extracted/payload', 'release-cut.json', 'build-result.json', 'publication/server.tgz']) {
+      expect(existsSync(join(f.dir, kept)), kept).toBe(true);
+    }
+    expect(existsSync(join(f.dir, 'release-cut.lock'))).toBe(false);
+  });
+
+  it('refuses a completed-build marker whose publication bytes no longer match', async () => {
+    const f = fixture();
+    writeFileSync(join(f.dir, 'publication/server.tgz'), 'corrupted');
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ status: 'failed', reason: expect.stringContaining('does not match') }] });
+    expect(f.scanHolders).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'release-cut.lock'))).toBe(false);
+  });
+
+  it.each(['operationId', 'sourceSha', 'version'])('retains a work dir with mismatched writer %s', async key => {
+    const f = fixture();
+    const stateFile = join(f.dir, 'release-cut.json');
+    writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(readFileSync(stateFile, 'utf8')), [key]: 'other' }));
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'cut state does not identify this completed build' }] });
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar'))).toBe(true);
+  });
+
+  it('does not take a live writer lock or release that writer admission', async () => {
+    const f = fixture();
+    const lock = join(f.dir, 'release-cut.lock');
+    const release = await acquireWorkDirLock(lock);
+    try {
+      expect(await f.run()).toMatchObject({ ok: true, cuts: [{ status: 'retained', reason: 'live cut holds work directory' }] });
+      expect(readFileSync(lock, 'utf8')).toBe(`${process.pid}\n${readProcessIdentity(process.pid)}\n`);
+      expect(f.inspectTrees).not.toHaveBeenCalled();
+    } finally { await release(); }
+  });
+
+  it.each([false, true])('retains intermediates when holder evidence is incomplete or occupied (%s)', async occupied => {
+    const f = fixture();
+    const result = await f.run({ scanHolders: async () => ({ complete: occupied,
+      byPath: new Map(occupied ? [[f.dir, ['123']]] : []) }) });
+    expect(result.cuts[0]).toMatchObject(occupied ? { status: 'retained', reason: 'live workspace-host holders' }
+      : { status: 'failed', reason: 'workspace-host holder scan incomplete' });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+  });
+
+  it('refuses a partial census before build verification or effects', async () => {
+    const f = fixture(); const verifyBuild = vi.fn();
+    const census = await f.inspectTrees();
+    expect(await f.run({ inspectTrees: async () => ({ ...census, error: 'partial' }), verifyBuild }))
+      .toMatchObject({ ok: false, cuts: [{ reason: expect.stringContaining('complete, unfiltered census') }] });
+    expect(verifyBuild).not.toHaveBeenCalled();
+    expect(existsSync(join(f.dir, 'sidecar'))).toBe(true);
+  });
+
+  it('accepts a real complete native census with a retained symlink group and still plans its clean sibling', async () => {
+    const f = fixture(); f.input.dryRun = true;
+    symlinkSync(join(f.dir, 'extracted/payload'), join(f.dir, 'sidecar/tool-link'));
+    const result = await f.run({ inspectTrees: inspectRetentionTrees });
+    expect(result).toMatchObject({ ok: true, cuts: [{ status: 'planned' }] });
+    expect(result.cuts[0]?.selected).toContain('extracted');
+    expect(result.cuts[0]?.selected).not.toContain('sidecar');
+    expect(result.cuts[0]?.retainedPaths).toContain(join(f.dir, 'sidecar'));
+    expect(result.cuts[0]?.caps?.[0]?.beforeBytes).toBeGreaterThan(100);
+    expect(existsSync(join(f.dir, 'sidecar/tool-link'))).toBe(true);
+  });
+
+  it('marks the cap unavailable for a real native foreign directory with allocated descendants before touching markers', async () => {
+    const f = fixture();
+    const physicalDir = realpathSync(f.dir);
+    const payload = join(physicalDir, 'extracted/payload');
+    writeFileSync(payload, Buffer.alloc(128 * 1024, 7));
+    // A read-only namespace supplies a real foreign-owned directory on this
+    // device without chown, sudo or persistent privileged fixture files. Its
+    // allocated descendant is our own fixture payload, visible through the bind.
+    let foreign = dirname(physicalDir);
+    while (statSync(foreign).uid === process.getuid?.() || statSync(foreign).dev !== statSync(physicalDir).dev) {
+      const parent = dirname(foreign);
+      if (parent === foreign) throw new Error('native fixture needs a foreign-owned ancestor on its device');
+      foreign = parent;
+    }
+    const namespace = ['--ro-bind', '/', '/', '--ro-bind', foreign, join(physicalDir, 'sidecar')];
+    const boundPayload = join(physicalDir, 'sidecar', relative(foreign, payload));
+    expect(Number(execFileSync('bwrap', [...namespace, 'stat', '-c', '%b', boundPayload], { encoding: 'utf8' }).trim())).toBeGreaterThan(0);
+    const result = await f.run({ inspectTrees: (root, options) => inspectRetentionTrees(root, { ...options, timeoutMs: 10_000,
+      spawn: (command, args) => spawn('bwrap', [...namespace, command, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }) }) });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed',
+      reason: expect.stringContaining('foreign ownership boundary'), capsMeasurement: 'unavailable',
+      retainedPaths: expect.arrayContaining([join(f.dir, 'sidecar')]) }] });
+    expect(result.cuts[0]?.caps).toBeUndefined();
+    expect(result.cuts[0]?.removed).toBeUndefined();
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted/payload'))).toBe(true);
+    expect(f.scanHolders).not.toHaveBeenCalled();
+  });
+
+  it('refuses a selected intermediate alias before deleting its ready marker', async () => {
+    const f = fixture();
+    rmSync(join(f.dir, 'sidecar'), { recursive: true });
+    symlinkSync(join(f.dir, 'extracted'), join(f.dir, 'sidecar'));
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'intermediate is an alias' }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted/payload'))).toBe(true);
+  });
+
+  it('retains named-only and aliased directories without treating their names as writer proof', async () => {
+    const f = fixture();
+    mkdirSync(join(workDir, '.papercusp/wh-release-unknown'));
+    symlinkSync(f.dir, join(workDir, '.papercusp/wh-release-alias'));
+    const result = await f.run();
+    expect(result.cuts.find(cut => cut.workDir.endsWith('unknown'))).toMatchObject({ status: 'retained', reason: 'no completed writer state' });
+    expect(result.cuts.find(cut => cut.workDir.endsWith('alias'))).toMatchObject({ status: 'retained', reason: 'unqualified directory or alias' });
+  });
+
+  it('plans dry runs without deleting the selected marker or tree', async () => {
+    const f = fixture(); f.input.dryRun = true;
+    expect(await f.run()).toMatchObject({ ok: true, cuts: [{ status: 'planned', selected: ['sidecar'] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+    expect(f.inspectTrees).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a protected atomic group while admitting its unpinned sibling', async () => {
+    const f = fixture();
+    const pins = [{ paths: [join(f.dir, 'sidecar.ready.json')], expiresAt: new Date(Date.now() + 60_000).toISOString() }];
+    const result = await withRetentionPinProtection(() => reclaimWorkspaceHostCutIntermediatesWithProtection(
+      { ...f.input, pins }, pinProtection(pins), { inspectTrees: f.inspectTrees, scanHolders: f.scanHolders }));
+    expect(result).toMatchObject({ ok: true, cuts: [{ selected: ['extracted'], removed: [join(f.dir, 'extracted')] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+  });
+
+  it.each(['physical alias pin', 'legacy lease', 'pin expired after snapshot'])('uses the same planner/effect protection for %s', async kind => {
+    const f = fixture();
+    const nowMs = kind === 'pin expired after snapshot' ? Date.now() - 5_000 : Date.now();
+    const alias = join(workDir, 'cut-alias'); symlinkSync(f.dir, alias);
+    const pins = kind === 'legacy lease' ? [] : [{ paths: [join(kind === 'physical alias pin' ? alias : f.dir, 'sidecar')],
+      expiresAt: new Date(nowMs + (kind === 'pin expired after snapshot' ? 1000 : 60_000)).toISOString() }];
+    const agentProtection = pinProtection(pins, nowMs);
+    const protection = kind === 'legacy lease' ? Object.assign((path: string) => path === join(f.dir, 'sidecar'),
+      { coversPath: pinProtection([], nowMs).coversPath }) : agentProtection;
+    const result = await withRetentionPinProtection(() => reclaimWorkspaceHostCutIntermediatesWithProtection(
+      { ...f.input, pins, nowMs }, protection, { inspectTrees: f.inspectTrees, scanHolders: f.scanHolders }));
+    expect(result).toMatchObject({ ok: true, cuts: [{ selected: ['extracted'], removed: [join(f.dir, 'extracted')],
+      capsMeasurement: 'after-effects', caps: [{ pinnedOverageBytes: 0 }] }] });
+    expect(existsSync(join(f.dir, 'sidecar.ready.json'))).toBe(true);
+    expect(existsSync(join(f.dir, 'sidecar/payload'))).toBe(true);
+  });
+
+  it.each([false, true])('preserves partial effects and marks post-effect measurement availability (failure=%s)', async measurementFails => {
+    const f = fixture(); f.input.maxBytes = 25;
+    mkdirSync(join(f.dir, 'source'));
+    writeFileSync(join(f.dir, 'source.ready.json'), '{}');
+    let inspections = 0;
+    const result = await f.run({ removeSource: () => { throw new Error('injected source removal failure'); },
+      inspectTrees: async () => {
+        if (++inspections > 1 && measurementFails) throw new Error('injected census failure');
+        return f.inspectTrees();
+      } });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed', reason: expect.stringContaining('injected source removal failure'),
+      removed: [join(f.dir, 'sidecar.ready.json'), join(f.dir, 'sidecar'), join(f.dir, 'source.ready.json')],
+      capsMeasurement: measurementFails ? 'unavailable' : 'after-effects' }] });
+    if (measurementFails) expect(result.cuts[0]?.caps).toBeUndefined();
+    else expect(result.cuts[0]?.caps?.[0]).toMatchObject({ beforeBytes: 136, afterBytes: 74 });
+    expect(existsSync(join(f.dir, 'source'))).toBe(true);
+    expect(existsSync(join(f.dir, 'extracted'))).toBe(true);
+  });
+
+  it('reports retained unpinned overage after effects instead of claiming the cap was met', async () => {
+    const f = fixture(); const census = f.inspectTrees;
+    const result = await f.run({ inspectTrees: async () => {
+      const value = await census();
+      return { ...value, entries: value.entries.map(entry => entry.path.endsWith('/publication') ? { ...entry, bytes: 200 } : entry) };
+    } });
+    expect(result).toMatchObject({ ok: false, cuts: [{ status: 'failed',
+      reason: 'workspace-host cap remains exceeded by retained unpinned bytes', caps: [{ afterBytes: 203, overByBytes: 103 }] }] });
+    expect(existsSync(join(f.dir, 'publication/server.tgz'))).toBe(true);
+  });
+
+  it('does not start a census after the admission deadline', async () => {
+    const f = fixture(); f.input.notAfterMs = Date.now() - 1;
+    expect(await f.run()).toMatchObject({ ok: false, cuts: [{ reason: 'workspace-host retention deadline exceeded' }] });
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+  });
+
+  it('names candidates never examined when the delegate deadline interrupts the discovered population', async () => {
+    const f = fixture(); f.input.notAfterMs = Date.now() - 1;
+    const other = join(workDir, '.papercusp/wh-release-z-unreached'); mkdirSync(other);
+    const result = await f.run();
+    expect(result.ok).toBe(false);
+    expect(result.notExamined).toEqual([other]);
+    expect(result.cuts).toHaveLength(1);
+    expect(f.inspectTrees).not.toHaveBeenCalled();
+  });
+});
+
 describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-C', cwd, ...args], {
@@ -526,7 +1026,22 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     mkdirSync(repo);
     git(repo, 'init', '-q');
     git(repo, 'commit', '-q', '--allow-empty', '-m', 'seed');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(workDir, 'retention-pins'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(workDir, 'retention-mutex'));
   });
+  afterEach(() => vi.unstubAllEnvs());
+
+  function pin(paths: string[], expiresAt = Date.now() + 3_600_000): void {
+    const root = join(workDir, 'retention-pins');
+    mkdirSync(root, { recursive: true });
+    const id = randomUUID();
+    const tag = 'agent-pin-' + Buffer.from(JSON.stringify({
+      version: 1, id, owner: 'release-cut-test', reason: 'retained build proof', createdAt: new Date().toISOString(),
+    })).toString('base64url');
+    writeFileSync(join(root, `lease-agent-pin-${id}.tsv`),
+      `schema=papercusp-release-retention/v1\ntag=${tag}\nexpires_ns=${BigInt(expiresAt) * 1_000_000n}\n`
+      + paths.map(path => `path=${path}\n`).join(''));
+  }
 
   function cutDir(): string {
     const dir = join(workDir, 'cut');
@@ -567,6 +1082,49 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir })).toEqual([]);
   });
 
+  it('prunes only writer groups selected by the retention planner, preserving newer intermediates and evidence', async () => {
+    const dir = cutDir();
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['sidecar', 'sidecar'] });
+    expect(removed).toEqual([join(dir, 'sidecar.ready.json'), join(dir, 'sidecar')]);
+    expect(worktrees(repo)).toHaveLength(2);
+    for (const kept of ['source', 'source.ready.json', 'extracted', 'vite-build.lock', 'publication/server.tgz', 'release-cut.json', 'logs/sign.log']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('honors pins on a selected group without broadening selection to another group', async () => {
+    const dir = cutDir();
+    pin([join(dir, 'sidecar.ready.json')]);
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['sidecar'] })).toEqual([]);
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('treats an empty selection as a no-op', async () => {
+    const dir = cutDir();
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: [] })).toEqual([]);
+    expect(existsSync(join(dir, 'sidecar.ready.json'))).toBe(true);
+    expect(worktrees(repo)).toHaveLength(2);
+  });
+
+  it('preserves the cap planner order across atomic groups', async () => {
+    const dir = cutDir();
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir, intermediates: ['extracted', 'sidecar'] }))
+      .toEqual([join(dir, 'extracted'), join(dir, 'sidecar.ready.json'), join(dir, 'sidecar')]);
+  });
+
+  it.each(['publication', 'sidecar.ready.json', '../source', '/tmp/source'])('rejects unowned or non-atomic selection %s before any removal', async child => {
+    const dir = cutDir();
+    await expect(pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir,
+      intermediates: ['source', child] as Parameters<typeof pruneWorkspaceHostCutIntermediates>[0]['intermediates'] }))
+      .rejects.toThrow('unknown workspace-host intermediate');
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'publication/server.tgz']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+    expect(worktrees(repo)).toHaveLength(2);
+  });
+
   it('falls back when git does not recognise the path, dropping only THIS registration', async () => {
     const dir = cutDir();
     const other = join(workDir, 'other');
@@ -576,6 +1134,67 @@ describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', 
     removeReleaseSourceWorktree(other, join(dir, 'source'));
     expect(existsSync(join(dir, 'source'))).toBe(false);
     expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+  });
+
+  it.each([
+    ['source', 'source.ready.json'],
+    ['source.ready.json', 'source'],
+    ['sidecar/node/bin', 'sidecar.ready.json'],
+    ['sidecar.ready.json', 'sidecar/node/bin'],
+    ['extracted/app/bin', 'extracted/app/bin'],
+    ['vite-build.lock', 'vite-build.lock'],
+  ])('keeps a live pin on %s and its paired state %s', async (pinned, paired) => {
+    const dir = cutDir();
+    pin([join(dir, pinned)]);
+
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir });
+
+    expect(existsSync(join(dir, pinned))).toBe(true);
+    expect(existsSync(join(dir, paired))).toBe(true);
+    expect(removed).not.toContain(join(dir, paired));
+    expect(existsSync(join(dir, 'publication/server.tgz'))).toBe(true);
+    if (pinned.startsWith('source')) expect(worktrees(repo)).toHaveLength(2);
+  });
+
+  it('keeps the entire intermediate set for a containing work-dir pin through a physical alias', async () => {
+    const dir = cutDir();
+    const alias = join(workDir, 'cut-alias');
+    symlinkSync(dir, alias);
+    pin([alias]);
+
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir })).toEqual([]);
+    expect(worktrees(repo)).toHaveLength(2);
+    for (const kept of ['source.ready.json', 'sidecar.ready.json', 'sidecar', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+  });
+
+  it('allows expired pins and protects only the exact sibling scope', async () => {
+    const dir = cutDir();
+    pin([join(dir, 'source')], Date.now() - 60_000);
+    pin([join(dir, 'sidecar-other')]);
+
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir });
+
+    expect(removed).toHaveLength(6);
+    expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+    expect(existsSync(join(dir, 'publication/evidence/summary.json'))).toBe(true);
+  });
+
+  it.each(['malformed', 'unreadable'])('fails closed before removing markers when a pin is %s', async kind => {
+    const dir = cutDir();
+    const root = join(workDir, 'retention-pins');
+    mkdirSync(root, { recursive: true });
+    const file = join(root, 'lease-agent-pin-invalid.tsv');
+    if (kind === 'malformed') writeFileSync(file, 'invalid pin');
+    else mkdirSync(file);
+
+    await expect(pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir }))
+      .rejects.toThrow('retention pins unreadable');
+    for (const kept of ['source', 'source.ready.json', 'sidecar', 'sidecar.ready.json', 'extracted', 'vite-build.lock']) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+    expect(worktrees(repo)).toHaveLength(2);
   });
 
   it('never deletes a registration that points at a different checkout', async () => {

@@ -9,6 +9,13 @@ import { observeFallback } from '../../degradation/fallback-observations';
 
 export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
+export interface AmendReceiptProgress {
+  phase: string;
+  phaseStartedAt: number;
+  /** Time the executor observed this phase; a status read never refreshes it. */
+  observedAt: number;
+}
+
 export interface AmendReceiptEntry {
   idempotencyKey: string;
   rubricRef: string;
@@ -17,6 +24,7 @@ export interface AmendReceiptEntry {
   finishedAt?: number;
   /** The exact JSON payload the synchronous call would have returned. */
   result?: Record<string, unknown>;
+  progress?: AmendReceiptProgress;
   error?: string;
   /** Executor identity is internal metadata used to detect a dead worker. */
   executorHost?: string;
@@ -69,13 +77,16 @@ function currentExecutorIdentity(): CurrentExecutorIdentity {
 }
 
 function asEntry(row: ReceiptRow): AmendReceiptEntry {
+  const progress = row.state === 'running' ? row.result_json?.progress as AmendReceiptProgress | undefined : undefined;
   return {
     idempotencyKey: row.idempotency_key,
     rubricRef: row.rubric_ref,
     state: row.state,
     startedAt: new Date(row.started_at).getTime(),
     ...(row.finished_at ? { finishedAt: new Date(row.finished_at).getTime() } : {}),
-    ...(row.result_json ? { result: row.result_json } : {}),
+    ...(row.state !== 'running' && row.result_json ? { result: row.result_json } : {}),
+    ...(progress && typeof progress.phase === 'string' && Number.isFinite(progress.phaseStartedAt)
+      && Number.isFinite(progress.observedAt) ? { progress } : {}),
     ...(row.error ? { error: row.error } : {}),
     ...(row.executor_host ? { executorHost: row.executor_host } : {}),
     ...(row.executor_pid ? { executorPid: row.executor_pid } : {}),
@@ -141,11 +152,20 @@ export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
   run: (onPhase: (phase: string) => void) => Promise<Record<string, unknown>>,
-  options: { onRegistered?: () => void; omittedReviewRecovery?: OmittedReviewRecovery } = {},
+  options: {
+    onRegistered?: () => void;
+    omittedReviewRecovery?: OmittedReviewRecovery;
+    /** Only dry-run previews: apply must never acquire a second connection while holding plan locks. */
+    persistPreviewProgress?: boolean;
+  } = {},
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
   const executor = currentExecutorIdentity();
+  const correlationId = randomUUID();
+  // A token fences delayed diagnostic writes from a previous attempt on this key.
+  // Reuse the receipt JSON; no separate progress row or schema is needed.
+  const initialResult = options.persistPreviewProgress ? JSON.stringify({ _progressRun: correlationId }) : null;
   // Finished previews/failures have no Decision fallback. Retain them for one
   // hour, then bound the shared table opportunistically on the next amend.
   await sql`
@@ -159,8 +179,8 @@ export async function trackAmendRun(
   `;
   const inserted = await sql<Array<{ idempotency_key: string }>>`
     INSERT INTO harness_shared.rubric_amend_receipts
-      (workspace_id, rubric_ref, idempotency_key, state, executor_host, executor_pid, executor_process_id)
-    VALUES (${workspaceId}, ${rubricRef}, ${idempotencyKey}, 'running', ${executor.host}, ${executor.pid}, ${executor.processId})
+      (workspace_id, rubric_ref, idempotency_key, state, executor_host, executor_pid, executor_process_id, result_json)
+    VALUES (${workspaceId}, ${rubricRef}, ${idempotencyKey}, 'running', ${executor.host}, ${executor.pid}, ${executor.processId}, ${initialResult}::text::jsonb)
     ON CONFLICT (workspace_id, rubric_ref, idempotency_key) DO NOTHING
     RETURNING idempotency_key
   `;
@@ -177,7 +197,7 @@ export async function trackAmendRun(
   } else if (orphaned) {
     reclaimed = await sql<Array<{ idempotency_key: string }>>`
       UPDATE harness_shared.rubric_amend_receipts
-         SET state = 'running', result_json = NULL, error = NULL, started_at = now(), finished_at = NULL,
+         SET state = 'running', result_json = ${initialResult}::text::jsonb, error = NULL, started_at = now(), finished_at = NULL,
              executor_host = ${executor.host}, executor_pid = ${executor.pid}, executor_process_id = ${executor.processId}
        WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
          AND idempotency_key = ${idempotencyKey} AND state = 'running'
@@ -189,7 +209,7 @@ export async function trackAmendRun(
   } else {
     reclaimed = await sql<Array<{ idempotency_key: string }>>`
     UPDATE harness_shared.rubric_amend_receipts
-       SET state = 'running', result_json = NULL, error = NULL, started_at = now(), finished_at = NULL
+       SET state = 'running', result_json = ${initialResult}::text::jsonb, error = NULL, started_at = now(), finished_at = NULL
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey}
        AND (state = 'failed'
@@ -223,18 +243,54 @@ export async function trackAmendRun(
     options.onRegistered?.();
     if (current.result) return current.result;
     if (current.state === 'failed') throw new Error(current.error ?? 'previous rubric amendment failed');
-    return { ok: true, pending: true, idempotencyKey, receipt: { rubricRef, idempotencyKey } };
+    return { ok: true, pending: true, idempotencyKey,
+      receipt: { rubricRef, idempotencyKey, ...(current.progress ? { progress: current.progress } : {}) } };
   }
   options.onRegistered?.();
-  // Keep phase changes in memory: writing progress through a second pool while
-  // the amendment holds plan locks can itself stall the transaction being traced.
+  // Apply keeps phase changes in memory. Preview-only publication is coalesced
+  // and detached: it cannot delay or reclassify the result. Every write checks
+  // both attempt identity and running state, including an already in-flight write.
   const startedAt = Date.now();
-  const correlationId = randomUUID();
   let phase = 'execute';
   let phaseStartedAt = startedAt;
+  let progressClosed = false;
+  let pendingProgress: AmendReceiptProgress | undefined;
+  let publication: Promise<void> | undefined;
+  const publishProgress = () => {
+    if (!options.persistPreviewProgress || publication || progressClosed || !pendingProgress) return;
+    publication = (async () => {
+      while (!progressClosed && pendingProgress) {
+        const snapshot = pendingProgress;
+        pendingProgress = undefined;
+        const updated = await sql<Array<{ idempotency_key: string }>>`
+          UPDATE harness_shared.rubric_amend_receipts
+             SET result_json = jsonb_set(result_json, '{progress}', ${JSON.stringify(snapshot)}::text::jsonb)
+           WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
+             AND idempotency_key = ${idempotencyKey} AND state = 'running'
+             AND result_json->>'_progressRun' = ${correlationId}
+          RETURNING idempotency_key
+        `;
+        if (updated.length > 0) observeFallback('bounded-operation', {
+          eligible: 1, applied: 1, reason: 'applied', scope: 'rubrics:amend:preview-progress',
+        }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
+      }
+    })().catch(() => {
+      observeFallback('bounded-operation', {
+        eligible: 1, applied: 0, reason: 'error', scope: 'rubrics:amend:preview-progress',
+      }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
+    }).finally(() => {
+      publication = undefined;
+      if (pendingProgress && !progressClosed) publishProgress();
+    });
+  };
+  const closeProgress = () => { progressClosed = true; pendingProgress = undefined; };
   const onPhase = (next: string) => {
     phase = next.slice(0, 200);
     phaseStartedAt = Date.now();
+    if (options.persistPreviewProgress && !progressClosed) {
+      pendingProgress = { phase, phaseStartedAt, observedAt: phaseStartedAt };
+      publishProgress();
+    }
   };
   const failureDetails = () => ({
     correlationId, rubricRef, idempotencyKey,
@@ -249,6 +305,7 @@ export async function trackAmendRun(
   try {
     result = await run(onPhase);
   } catch (error) {
+    closeProgress();
     const message = error instanceof Error ? error.message : String(error);
     const failedResult = { ok: false, error: message, failure: failureDetails() };
     observeTerminal(true);
@@ -258,9 +315,12 @@ export async function trackAmendRun(
              result_json = ${JSON.stringify(failedResult)}::text::jsonb, finished_at = now()
        WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
          AND idempotency_key = ${idempotencyKey} AND state = 'running'
+         AND (NOT ${options.persistPreviewProgress === true}::boolean
+           OR result_json->>'_progressRun' = ${correlationId})
     `;
     throw error;
   }
+  closeProgress();
   // A persistence failure after the amend committed must never reclassify it as
   // failed. The atomic Decision remains the source of truth for applied BARs.
   const launchFailure = reviewLaunchFailure(result);
@@ -290,6 +350,8 @@ export async function trackAmendRun(
            error = ${error}, finished_at = now()
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey}
+       AND (NOT ${options.persistPreviewProgress === true}::boolean
+         OR (state = 'running' AND result_json->>'_progressRun' = ${correlationId}))
   `;
   return result;
 }

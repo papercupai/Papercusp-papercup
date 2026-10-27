@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DIRECT_PAGE_SIZE,
   FIRST_PARTY_BACKEND,
+  main,
   GraphReadError,
   backendVersionNearBin,
   deriveFirstPartyEdges,
@@ -632,6 +633,28 @@ describe('first-party snapshot producer', () => {
     expect(parseArgs(['--first-party']).opts).toMatchObject({ firstParty: true });
     expect(parseArgs(['--first-party', '--gitnexus-bin', 'g']).error).toMatch(/--first-party excludes/);
     expect(parseArgs(['--first-party', '--edges-file', 'e.json', '--index-commit', 'abc']).error).toMatch(/--first-party excludes/);
+  });
+
+  it('P006 current producer prepares clone blob notes off-hook', async () => {
+    const src = tmp();
+    const body = `let total = 0; ${Array.from({ length: 25 }, (_, i) => `if (values[${i}] > 0) { total += values[${i}]; }`).join(' ')} return total;`;
+    write(src, { 'a.ts': `export function original(values: number[]) { ${body} }`,
+      'b.ts': `import { original } from './a'; export function copy(values: number[]) { ${body} }` });
+    const git = (...args: string[]) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t',
+      '-c', 'commit.gpgsign=false', ...args], { cwd: src, encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    expect(git('add', 'a.ts', 'b.ts').status).toBe(0);
+    expect(git('commit', '-qm', 'clone fixture').status).toBe(0);
+    const out = join(tmp(), 'clones.json');
+    // In-process main observes working-tree source; child CLI probes may load committed bytes.
+    expect(await main(['--first-party', '--source-root', src, '--out', out])).toBe(0);
+    const raw = JSON.parse(readFileSync(out, 'utf8'));
+    expect(raw.clones.schema).toBe('clone-advisory-v1');
+    const copy = raw.clones.files.find((file: { path: string }) => file.path === 'b.ts');
+    expect(copy.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(copy.notes).toHaveLength(1);
+    expect(copy.notes[0].text).toContain('2 copies; reuse original (a.ts:1)');
+    expect(copy.notes[0].sources.map((source: { path: string }) => source.path)).toEqual(['b.ts', 'a.ts']);
   });
 
   it('real CLI reports unenumerated submodules and filters index-lagged deletions', () => {

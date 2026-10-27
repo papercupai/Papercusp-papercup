@@ -1,0 +1,110 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "358439a5ac597c054c48820b5436c762917bfab9007750616d9bc603cb678db0.supporting-original",
+      "sha256": "358439a5ac597c054c48820b5436c762917bfab9007750616d9bc603cb678db0",
+      "byteLength": 5306
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "workItemId": "EI-26842368936683990",
+  "planSlug": "identity-definitions-own-policy-2026-10-17",
+  "planItemId": "P-001",
+  "scope": "Local current-source real PTY/control-socket qualification of the recorded-role carry preflight, using isolated Node children and synthetic role homes.",
+  "priorEvidence": {
+    "path": "docs/evidence/idop-p001-managed-carry-role-guard-2026-10-24.json",
+    "sha256": "adead6cc511b318a75ab7c10f0bf49f03928cbc3b6258d748f62dea02b6da741",
+    "preserved": true
+  },
+  "reused": [
+    "hostThroughPty and its existing prepareChildArgs carry preflight",
+    "prepareCodexGatewayLaunch and codexHomeLaunchReadiness",
+    "hermeticEnv and isolated PTY discovery directory",
+    "injectIntoHostWithConfirmation and injectIntoHost"
+  ],
+  "verification": {
+    "testPath": "apps/operator/lib/psu-pty-host-role-authority.integration.test.ts",
+    "testRunId": "21877984",
+    "receiptId": "795eeed1-6ad3-4399-ae02-b78b2b8300c7",
+    "receiptOutcome": "inserted",
+    "status": "pass",
+    "nativeCommandSessionId": 27111,
+    "nativeExitCode": 0,
+    "commitSha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+    "worktreeDirty": true,
+    "namedTestPath": "untracked at execution",
+    "reporterSourceCleanliness": "UNKNOWN: repeated full-tree git status capture exceeded its stdout buffer; distinct owned EI-26844224649687958 preserves that reporter defect.",
+    "harnessSlug": null,
+    "startedAt": "2026-10-24T08:00:14.814Z",
+    "finishedAt": "2026-10-24T08:00:16.232Z",
+    "counts": { "passed": 2, "failed": 0, "skipped": 0, "runnerChildSubstituted": 0 },
+    "caseTitles": [
+      "keeps the scoper predecessor alive after a privileged home repair",
+      "keeps the judge predecessor alive after a privileged home repair"
+    ],
+    "observed": [
+      "A home passing the complete recorded-role readiness check launches one real Node PTY child.",
+      "The real control socket admits the carry request.",
+      "The injected successful legacy home repair replaces only the isolated fixture's MCP authority with an SU profile; the complete SU readiness check passes.",
+      "The actual carry preflight invokes the production preparation function and records the exact restricted-role refusal.",
+      "Repair, mint and second preparation are reached once; no successor PTY is spawned and predecessor stopping never begins.",
+      "A subsequent real raw-socket request receives PREDECESSOR-ALIVE from the original child.",
+      "Teardown removes each test socket."
+    ],
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files apps/operator/lib/psu-pty-host-role-authority.integration.test.ts",
+      "nativeCommandSessionId": 86365,
+      "exitCode": 0,
+      "checked": 1,
+      "errors": 0,
+      "scope": "Named test and resolved importers; not a whole-project typecheck."
+    },
+    "diffCheckExitCode": 0
+  },
+  "sourceFiles": [
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "bytes": 895869,
+      "sha256": "cea911b4a1d3e7d64f66157cc2f8c6ba419f38e8e86538e17534f4228b70d0e1"
+    },
+    {
+      "path": "apps/operator/scripts/psu-pty-host.mjs",
+      "bytes": 906037,
+      "sha256": "bcf4af056ed7441d519b01f78b13a1da2a134e39b396ba954b0cc0745cc24711"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host-role-authority.integration.test.ts",
+      "bytes": 5250,
+      "sha256": "b260e436ef1ee2ea4647a2e3e35aaa17532d78dbc0beebaa4b27c893fc6f4aae"
+    }
+  ],
+  "archive": {
+    "root": "$HOME/.papercusp/evidence/idop-p001-carry-role-pty-20261024-v1",
+    "files": [
+      { "path": "integration.log.gz", "bytes": 56405, "sha256": "bfd7ed8435f627ed5626657169303f5312124285fe6eefbcad6d690d550f5aa4" },
+      { "path": "receipt.json", "bytes": 2645, "sha256": "409377364fed8a6dd36b37026b61895a2dcad236f2d8e0e360f560d1ff046a8e" },
+      { "path": "types.log.gz", "bytes": 995, "sha256": "a1dd848a7cd581a0ce93251d7979f075806defa1219b62e018f4a1011cba6070" }
+    ],
+    "readback": "All archived files were read back; both compressed logs exactly decode to their source logs."
+  },
+  "runtimeRoute": {
+    "reader": "dev:pipeline_position at staging :3170, sourceRuntimeOnly=true, path apps/operator/scripts/psu-launcher.mjs",
+    "runtime": "psu-pty-host",
+    "codeSource": "per-session-launch",
+    "genericDesktopNativeRoute": "Tauri shell prerequisite route; not evidence that an existing psu host loaded this launcher.",
+    "qualifiedHere": "Actual maintained hostThroughPty source executing in an isolated integration test process."
+  },
+  "limits": [
+    "Local working-tree evidence; committed-source qualification remains open.",
+    "Synthetic role signatures are never presented as authenticated server principals.",
+    "No claim that an already-running production psu host loaded the change.",
+    "The original scoper observation remains separately frozen and stopped; no subject role, home, grant or authority was changed.",
+    "Exact historical home-repair request attribution remains UNKNOWN.",
+    "Supported restoration of the original restricted caller and full P-001 population/effective-argument/historical-vault acceptance remain open.",
+    "The genuine source349651 gate, current activation audit, P-024 dependency, three milestones and shipment remain open."
+  ]
+}

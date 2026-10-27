@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10005889",
+  "scope": "Committed launcher source and controlled fixture proof only",
+  "commitSha": "7555e991067ac075b9430ae906a1a3fcc01d9e41",
+  "command": ["node", "scripts/lint-as-committed.mjs", "test:file", "--any", "--keep", "--ref=7555e991067ac075b9430ae906a1a3fcc01d9e41", "--", "apps/operator/lib/psu-launcher.test.ts"],
+  "reporter": {
+    "sink": "Explicit PAPERCUSP_TEST_RUNS_DB_URL from inherited DATABASE_URL; secret omitted",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "runGroup": "gf-p002-launcher-7555-20261026",
+    "privatePostgresWrapper": false
+  },
+  "canonicalRun": {
+    "id": 22089779,
+    "status": "pass",
+    "worktreeDirty": false,
+    "testLayer": "unit",
+    "passed": 1209,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "caseRows": 1209,
+    "priorGfDeclaredCases": 538,
+    "missingPriorDeclaredCases": [],
+    "qualification": "Compared exact caseKey values from testing:runs cases:true against binding70645 details.adequacy.testCases; each declared case has a passing case row. Passing process output was independently reconciled with the durable ledger."
+  },
+  "sourceReview": {
+    "launcherEvolution": "Tracked Codex fork bootstrap and registered-child resume; fixture uses codexSource.id:null. Preserved assertions and timeout budgets.",
+    "hostEvolution": "Reviewed seven added carry-priority lines between1c3123e14e and7555e99106: retain lastRespawnCarryRequest, exempt that exact request from supersession, update it only for the initial carry proof attempt.",
+    "namedEntriesMatchedCommitBeforeRun": 9,
+    "sourceSha256": {
+      "apps/operator/lib/mcp-proxy/budgets.mjs": "00159976718185c38d56870d3b2b2b9a8e30a221b2c345baabe8848e6e39483a",
+      "apps/operator/scripts/psu-launcher.mjs": "3c1cb2348b154ad52507a643ec52a7fb6ff3a8f34d10ae9ed125566b2f7f4147",
+      "apps/operator/scripts/psu-pty-host.mjs": "032905864641b79ebf0970a0c87d2287e5e4c389fa9f466e32d85241b64439c5",
+      "apps/operator/scripts/ptool.mjs": "1d86f974bbffa87dfce582a7df40f49fad568af335968416f774111074ad2013",
+      "apps/operator/scripts/tool-delivery.generated.mjs": "4069504393f8e8167cd3db260b2e038a44f6598fb621167b7760c9b5fa69d622",
+      "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs": "b0efbb4596c39b76365182e3814b1aa4f4c6d14e527b80e6fa352588e477efe3",
+      "packages/operator-core/lib/model-context-budget.mjs": "f51e986df2613c4ba9655a963616b3401f271f906c3950010da47d442b4f8916"
+    },
+    "testAndInlineFixture": {
+      "path": "apps/operator/lib/psu-launcher.test.ts",
+      "sha256": "7fe4405b2e1c0f541acc6163d66f6062319d88b5f5021a7a7cca3b2379e2bbd8"
+    }
+  },
+  "bindingReplacements": [
+    {"prior": 70646, "replacement": 70735, "specId": "AUTO-BAR-R-2-P-002", "specRevision": 3},
+    {"prior": 70645, "replacement": 70736, "specId": "GF-P002-source", "specRevision": 1}
+  ],
+  "bindingQualification": {
+    "method": "fromTestRun22089779; exact old sourcePaths, fixturePaths, details.adequacy and scope",
+    "independentCurrentnessBeforeRetirement": "Both replacements server-measured CURRENT; applicable dimensions current, staleReasons:[], unknownReasons:[]",
+    "recipeEquality": true,
+    "adequacyEquality": true,
+    "scopeEquality": true,
+    "retirement": "Only exact stale equivalents70646 and70645 retired after independent qualification; canonical mutation receipt confirms both retracted."
+  },
+  "governingAssessments": {
+    "r2": {"verdict": "pass", "wouldBlock": [], "evaluatorBuild": "baf13de7bf"},
+    "gf": {"verdict": "fail", "wouldBlock": ["traceability", "execution-integrity", "freshness", "disclosed-gap"], "evaluatorBuild": "9c3bd4d771"},
+    "sequencing": "Initial concurrent clause evaluations shared a plan-scoped acceptance guard. R2 completed; GF was refused before dispatch while R2 was pending. Archived that disposition in WI-10005889 checkpoint0d189724ac02; initial full-summary volatile copy expired before complete raw archival. GF was subsequently assessed alone in a fresh orchestration, not reported from the refused attempt. No certification, gate or recruitment followed either assessment."
+  },
+  "preservedEvidence": {
+    "mutationBindings": [70686, 70687, 70688, 70689, 70690, 70691, 70694],
+    "originalNative": [28326, 28545],
+    "retainedHistory": [69704, 69782]
+  },
+  "openLimits": [
+    "Actual native execution, physical actor attribution, lease/ABA history and custody remain unqualified by this unit run.",
+    "Cohort quality, independent acceptance and shipment remain open; no LIVE_GATE_OPS performed.",
+    "No psu-pty-host632 run, original-native replay or four-mutation-unit replay performed.",
+    "Version-timeout incident22085684 remains rootUNKNOWN under owned EI-27000661576726894. Later passing runs are not a root-cause fix.",
+    "Reporter incident21936773 remains rootUNKNOWN under owned EI-26900834772734276.",
+    "Existing loop is active, lastLoopTurnAt:null and rewakeGuaranteed:false/last-fire-no-loop-turn; owned EI-26984631684161013 remains open. Managed continuation does not qualify loop delivery."
+  ],
+  "continuationEvidence": [
+    "WI-10005889 checkpoint0d189724ac02",
+    "testing:runs testRunIds:[22089779] cases:true",
+    "plans:get-spec-evidence bindingIds:[70735,70736] current:true",
+    "plans:get-spec-evidence bindingIds:[70645,70646] includeRetracted:true",
+    "/tmp/gf-p002-launcher-7555-20261026.state.json",
+    "/tmp/gf-p002-launcher-7555-20261026.log"
+  ]
+}

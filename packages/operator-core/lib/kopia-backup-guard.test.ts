@@ -597,6 +597,52 @@ describe('Kopia global backup guard', () => {
     }
   });
 
+  it.each([
+    ['PROCEED', true],
+    ['SKIP', false],
+  ] as const)('waits for the parent %s acknowledgement before running the command', async (ack, shouldRun) => {
+    const { dir, env } = fixture();
+    const marker = join(dir, `ack-${ack.toLowerCase()}-command-ran`);
+    const child = spawn(
+      'bash',
+      [guard, '--mode', 'wait', '--label', 'handshake', '--', 'bash', '-c', 'touch "$MARKER"; printf "ran\\n"'],
+      {
+        env: {
+          ...env,
+          MARKER: marker,
+          KOPIA_BACKUP_GUARD_READY_FD: '3',
+          KOPIA_BACKUP_GUARD_ACK_FD: '4',
+          KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC: '2',
+          KOPIA_BACKUP_GUARD_LOG_STDERR: '1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+      },
+    );
+    let readiness = '';
+    let stdout = '';
+    let stderr = '';
+    const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    (child.stdio[3] as import('node:stream').Readable)
+      .setEncoding('utf8')
+      .on('data', (chunk: string) => { readiness += chunk; });
+
+    try {
+      await waitForOutput(() => readiness, 'KOPIA_BACKUP_GUARD_READY\n');
+      expect(existsSync(marker)).toBe(false);
+      expect(stdout).toBe('');
+      (child.stdio[4] as import('node:stream').Writable).end(`${ack}\n`);
+      expect(await closed).toBe(0);
+      expect(existsSync(marker)).toBe(shouldRun);
+      expect(stdout).toBe(shouldRun ? 'ran\n' : '');
+      if (shouldRun) expect(stderr).toContain('result=started mode=wait');
+      else expect(stderr).toContain('skipped=parent-covered');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  });
+
   it('bounds wait-mode lock acquisition with a distinct lock-timeout result', async () => {
     const { dir, env } = fixture();
     const holderReady = join(dir, 'timeout-holder-ready');

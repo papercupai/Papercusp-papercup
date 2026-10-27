@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-b",
+  "status": "partial-contributing-evidence",
+  "scope": "Isolated stored organization native reader; independent canonical tuple and access-authority snapshots",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57",
+    "sourcePinsChecked": 10,
+    "sourcePinsMatched": 10,
+    "sourcePinsStableAcrossRun": true
+  },
+  "test": {
+    "path": "packages/operator-core/lib/data-sources/documents-freshness.integration.test.ts",
+    "sha256": "9f9178d9056d3902c81fb7593a19dee0b24d16d012ec0a7198f7ba1b4d6d1380",
+    "taskId": "0mvnubbes5ljswfnxg6",
+    "exitCode": 0,
+    "testRunId": "22007798",
+    "ledgerOutcome": "inserted",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "databaseCleanup": "dropped",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/data-sources/documents-freshness.integration.test.ts",
+      "taskId": "0mvnuct7wjwaioh19ih",
+      "exitCode": 0,
+      "scope": "Named test and resolved importers; runtime closure remains unmeasured"
+    }
+  },
+  "population": {
+    "observedFieldIds": [
+      "papercusp/documents:search/organization/title",
+      "papercusp/documents:search/organization/snippet",
+      "papercusp/documents:search/organization/occurredAt",
+      "papercusp/documents:search/organization/privacy"
+    ],
+    "declaredCases": ["stored-values", "mixed-version-field", "privacy-rule-change", "epoch-replay"],
+    "executedCases": ["stored-values", "mixed-version-field", "privacy-rule-change", "epoch-replay"],
+    "unexecutedCases": [],
+    "nativeReaderCaptures": 7,
+    "nonemptyFieldObservations": 24,
+    "unknownFieldOracleResults": 24,
+    "qualifiedFieldClaims": 0
+  },
+  "findings": [
+    "Returned values matched independently read stored canonical fields under the declared projection.",
+    "A retained old title after a real in-place canonical update was detected as stale by the field oracle.",
+    "The next real reader invocation returned the updated content on the same canonical entity.",
+    "A privacy rule change altered returned privacy and the access epoch while the stored content tuple revision stayed unchanged.",
+    "Revoking the actual source ACL removed the result on the next reader invocation while the content tuple revision stayed unchanged."
+  ],
+  "limits": [
+    "The real reader supplies no candidate source/index revision witness. Each field oracle therefore remains unknown/degrade.",
+    "Canonical xmin identifies a stored Postgres tuple; it does not establish a provider revision or provider currentness.",
+    "The replay is an oracle-input mutation, not a bypass/fix-revert of production enforcement.",
+    "Native lexical engine tracing, documents:search handler/projection invocation, sealed paths and alternative paths remain unmeasured.",
+    "Other documents legs and the complete 77-field population are not discharged by this slice.",
+    "Full runtime closure, qualification labels, retrieval cost/budget populations, spec discharge, independent acceptance and shipment remain open."
+  ],
+  "artifacts": [
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-freshness-20261025-b/witness.json",
+      "sha256": "4d153910cfe3a38f5c10a5400b69385936db43eeed4ad1a8131f39da3cc02c61",
+      "bytes": 88229,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-freshness-20261025-b/native-ledger-receipt.json",
+      "sha256": "bc262260a4f7808dd325427053630d02a6c51b656bee71fd917a8d4d08fa2074",
+      "bytes": 3549,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-freshness-20261025-b/native-test.log",
+      "sha256": "00f5abd890144a0e7c2a85c5b0b2e049461bf3540c4341b1f2232b3a480165c3",
+      "bytes": 12513,
+      "completeReadbackEqual": true
+    }
+  ],
+  "qualifiedBaseline": false,
+  "rankingTreatmentAllowed": false,
+  "shipped": false
+}

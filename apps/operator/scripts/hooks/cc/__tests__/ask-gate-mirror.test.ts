@@ -13,7 +13,7 @@
  *     `spawnSync`, so the stub can actually answer) asserting the EXACT
  *     `sessions:ingest-gate-event` / `coord:escalate` request bodies for the
  *     PreToolUse open, PostToolUse close, Notification permission-wait, and
- *     Stop `<ask>`-tag mirror branches.
+ *     Stop `<ask>`-tag mirror and StopFailure permission-wait cleanup branches.
  *
  * Cardinal contract shared with every sibling cc/ hook: this hook must NEVER
  * exit non-zero. Most branches print EMPTY stdout; the Stop bounce and the
@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 
 const HOOK = join(__dirname, '..', 'ask-gate-mirror.sh');
+const INSTALLER = join(__dirname, '../../../install-standalone-mcp.sh');
 
 // ── OPERATOR-INDEPENDENT ────────────────────────────────────────────────────
 
@@ -72,6 +73,19 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     fs.writeFileSync(p, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
     return p;
   };
+
+  it('installer registers the ask-gate hook for StopFailure without a matcher', () => {
+    const installer = fs.readFileSync(INSTALLER, 'utf8');
+    const start = installer.indexOf('merge_ask_gate_hook() {');
+    const end = installer.indexOf('# Merge the desktop-guard hook', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+
+    const registration = installer.slice(start, end);
+    const stopFailureLoop = registration.split("for event in ('Notification', 'Stop', 'StopFailure'):")[1] ?? '';
+    expect(stopFailureLoop).toContain("arr.append({'hooks': [{'type': 'command', 'command': hook}]})");
+    expect(stopFailureLoop.slice(0, stopFailureLoop.indexOf('hooks[event] = arr'))).not.toContain("'matcher'");
+  });
 
   it('no PAPERCUSP_SID → exit 0, empty stdout', () => {
     const r = run(payload({ hook_event_name: 'Stop' }), {}, false);
@@ -716,6 +730,25 @@ describe('ask-gate-mirror — operator-dependent request bodies', () => {
       ownerId: 'su-test',
     });
     expect(lastCalls[0].args.text).toContain('permission');
+  });
+
+  it('StopFailure clears the notify:<session> gate without running Stop-only mirroring', async () => {
+    const r = await run({
+      hook_event_name: 'StopFailure',
+      session_id: 'sess-fail',
+      error: 'rate_limit',
+      error_details: '429 Too Many Requests',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('');
+    expect(lastCalls).toHaveLength(1);
+    expect(lastCalls[0].tool).toBe('sessions:ingest-gate-event');
+    expect(lastCalls[0].args).toMatchObject({
+      sessionId: 'sess-fail',
+      client: 'claude',
+      kind: 'cleared',
+      refId: 'notify:sess-fail',
+    });
   });
 
   it('Stop mirrors a structured <ask> tag to coord:escalate (severity:question, options mapped)', async () => {

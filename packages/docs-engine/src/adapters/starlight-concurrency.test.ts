@@ -12,6 +12,55 @@ afterEach(async () => {
 });
 
 describe('starlightContentAdapter concurrent cold reads', () => {
+  it('overlaps bounded metadata reads and preserves source order when one file is unreadable', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlight-list-concurrency-'));
+    roots.push(root);
+    const names = Array.from({ length: 40 }, (_, i) => `page-${String(i).padStart(2, '0')}.md`);
+    await Promise.all(names.map((name) => fs.writeFile(path.join(root, name),
+      `---\ntitle: Title ${name}\n---\n# Heading ${name}\n`)));
+    const unreadable = 'page-04.md';
+    const expected = (await fs.readdir(root)).filter((name) => name !== unreadable);
+    const originalReadFile = fs.readFile.bind(fs);
+    let releaseReads!: () => void;
+    let signalOverlap!: () => void;
+    const released = new Promise<void>((resolve) => { releaseReads = resolve; });
+    const overlap = new Promise<void>((resolve) => { signalOverlap = resolve; });
+    let reads = 0;
+    let active = 0;
+    let peak = 0;
+    vi.spyOn(fs, 'readFile').mockImplementation(async (...args) => {
+      if (!String(args[0]).startsWith(root + path.sep)) {
+        return originalReadFile(...args as Parameters<typeof fs.readFile>);
+      }
+      reads += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      if (reads === 2) signalOverlap();
+      try {
+        await released;
+        if (path.basename(String(args[0])) === unreadable) throw new Error('fixture read denied');
+        return await originalReadFile(...args as Parameters<typeof fs.readFile>);
+      } finally { active -= 1; }
+    });
+    const listing = starlightContentAdapter({ contentRoot: root }).listPages();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let overlapped: boolean;
+    try {
+      overlapped = await Promise.race([
+        overlap.then(() => true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 1500); }),
+      ]);
+    } finally { clearTimeout(timer); releaseReads(); }
+    const pages = await listing;
+
+    expect(overlapped, 'a blocked first file must not serialize the entire corpus').toBe(true);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(16);
+    expect(reads).toBe(names.length);
+    expect(pages.map((page) => page.slug)).toEqual(expected.map((name) => name.replace(/\.md$/, '')));
+    expect(pages.map((page) => page.title)).toEqual(expected.map((name) => `Title ${name}`));
+  });
+
   it('reports cold listing subphases without exposing file paths or content', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlight-timing-'));
     roots.push(root);

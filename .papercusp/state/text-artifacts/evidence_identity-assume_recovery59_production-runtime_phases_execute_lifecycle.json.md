@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery59/production-runtime/phases/execute/lifecycle.json"
+updated_at: 1792948679604
+_body: "content"
+---
+
+{"schemaVersion":1,"runId":"20261025T165830Z-889309","host":"main-server-Precision-7865-Tower","observedAt":"2026-10-25T16:58:40.993Z","observer":{"pid":889309,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9862429","parentPid":883146},"supervisor":{"pid":932674,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9864655","parentPid":889309},"worker":{"pid":949329,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9865575","parentPid":932674},"database":{"pid":936469,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9864825","parentPid":932674},"argv":["/home/marsh-office/.local/node25/bin/node","--import","/mnt/data/tmp/verifier-command-64fuvY/invoked-source/scripts/lib/isolated-runtime-start.mjs","--import","./scripts/lib/committed-source-loader.mjs","scripts/test-files.mjs","apps/operator/lib/psu-identity-assume-native.integration.test.ts","--testNamePattern=^uses production custody and routed responsibilities through the installed native handoff \\(native-resume\\)$"],"cwd":"/mnt/data/tmp/verifier-command-64fuvY/invoked-source","workspace":"test-runtime-0dd1134c-0ad","runtimeRoot":"/tmp/pcv/papercusp-test-runtime-6FCfxb","dataDir":"/tmp/pcv/papercusp-test-pg-UvkEpk","pgPort":45911,"ended":{"kind":"isolated-runtime-end","childPid":949329,"exitCode":0,"signal":null,"runtimeRemoved":true,"pgDataRemoved":true,"observedAt":"2026-10-25T17:00:07.452Z"}}

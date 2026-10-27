@@ -41,6 +41,7 @@ import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
   governedExecutionRuntime,
+  type GovernedExecutionAdmissionPhaseEvent,
   type GovernedExecution,
 } from '../resource-governor/execution';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -116,7 +117,11 @@ export type ExecProcessStage =
 export interface ExecProcessDeps {
   /** Observer failures must never change process lifetime or receipt settlement. */
   onStage?: (stage: ExecProcessStage) => void;
-  beginExecution?: (params: ExecParams) => Promise<GovernedExecution>;
+  onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void;
+  beginExecution?: (
+    params: ExecParams,
+    onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void,
+  ) => Promise<GovernedExecution>;
   /** Control stays local to the sidecar; AbortSignal is never serialized. */
   signal?: AbortSignal;
   onPid?: (pid: number) => void;
@@ -255,7 +260,10 @@ export function sidecarReceiptMetadata(
   return base;
 }
 
-async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
+async function beginSidecarProcessExecution(
+  params: ExecParams,
+  onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void,
+): Promise<GovernedExecution> {
   const workspaceId =
     params.workspaceId?.trim() ||
     params.env?.PAPERCUSP_WORKSPACE_ID?.trim() ||
@@ -275,7 +283,10 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
       parent,
       metadata: sidecarReceiptMetadata(params),
     },
-    { owner: params.ownerId?.trim() || params.env?.PAPERCUSP_SID?.trim() || `spawner-sidecar:${process.pid}` },
+    {
+      owner: params.ownerId?.trim() || params.env?.PAPERCUSP_SID?.trim() || `spawner-sidecar:${process.pid}`,
+      onAdmissionPhase,
+    },
     governedExecutionRuntime(workspaceId, 'agent-process'),
   );
 }
@@ -303,7 +314,11 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
 
   // WI-6554700010008488: every admission outcome (eager AND lazy) feeds the
   // owner's wedge breaker, so a pool that can no longer begin is detected.
-  const observedBegin = observeAdmission(deps.beginExecution ?? beginSidecarProcessExecution, deps.admissionHealth);
+  const beginExecution = deps.beginExecution ?? beginSidecarProcessExecution;
+  const observedBegin = observeAdmission(
+    (request) => beginExecution(request, deps.onAdmissionPhase),
+    deps.admissionHealth,
+  );
   const begin = async (request: ExecParams): Promise<GovernedExecution> => {
     reportStage('admission-start');
     try {

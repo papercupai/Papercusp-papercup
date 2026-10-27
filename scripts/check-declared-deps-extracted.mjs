@@ -99,6 +99,10 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   // React's public declarations re-export this locked transitive package. Its
   // manifest can survive while missing declarations make those exports `any`.
   { specifier: '@assistant-ui/core', declarationsOnly: true },
+  // better-sqlite3's CommonJS wrapper can import while its lazy native binding
+  // is missing. Exercise the same in-memory constructor/query used by
+  // native-addon-preflight instead of treating wrapper import as proof of health.
+  { specifier: 'better-sqlite3', nativeExercise: 'sqlite-memory-query' },
   { specifier: '@azure/identity', declarationsOnly: true },
   // Production CSS imports can retain their entry file while losing fonts.
   { specifier: '@blocknote/core/fonts/inter.css', css: true },
@@ -493,10 +497,24 @@ export function findUnextractedDeps({ repoRoot = REPO_ROOT, workspaceDirs, deps 
 }
 
 const RUNTIME_IMPORT_CHILD = `
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+let resolvedPath;
 try {
-  await import(process.argv[1]);
-  console.log('PAPERCUSP_RUNTIME_ENTRY=' + JSON.stringify({ path: fileURLToPath(import.meta.resolve(process.argv[1])) }));
+  const specifier = process.argv[1];
+  if (process.argv[2] === 'sqlite-memory-query') {
+    const require = createRequire(join(process.cwd(), 'package.json'));
+    resolvedPath = require.resolve(specifier);
+    const Database = require(specifier);
+    const db = new Database(':memory:');
+    try { db.prepare('SELECT 1').get(); }
+    finally { db.close(); }
+  } else {
+    await import(specifier);
+    resolvedPath = fileURLToPath(import.meta.resolve(specifier));
+  }
+  console.log('PAPERCUSP_RUNTIME_ENTRY=' + JSON.stringify({ path: resolvedPath }));
 } catch (error) {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IMPORT_FAILED';
   const message = error instanceof Error ? error.message : String(error);
@@ -504,15 +522,19 @@ try {
   if (code === 'ERR_MODULE_NOT_FOUND' && typeof error.url === 'string' && error.url.startsWith('file:')) {
     try { missingPath = fileURLToPath(error.url); } catch {}
   }
-  console.error(JSON.stringify({ detail: code + ': ' + message, ...(missingPath ? { code, missingPath } : {}) }));
+  console.error(JSON.stringify({
+    detail: code + ': ' + message,
+    ...(missingPath ? { code, missingPath } : {}),
+    ...(resolvedPath ? { resolvedPath } : {}),
+  }));
   process.exitCode = 1;
 }
 `;
 
-function defaultRuntimeImportProbe({ repoRoot, specifier }) {
+function defaultRuntimeImportProbe({ repoRoot, specifier, nativeExercise }) {
   const result = spawnSync(
     process.execPath,
-    ["--input-type=module", "--eval", RUNTIME_IMPORT_CHILD, specifier],
+    ["--input-type=module", "--eval", RUNTIME_IMPORT_CHILD, specifier, nativeExercise ?? ""],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -638,7 +660,8 @@ export function findUnusableRuntimeDeps({
   for (const entry of specifiers) {
     const specifier = typeof entry === 'string' ? entry : entry.specifier;
     const result = entry?.css === true ? defaultCssContentProbe({ repoRoot, specifier })
-      : entry?.declarationsOnly === true ? { ok: true } : probe({ repoRoot, specifier });
+      : entry?.declarationsOnly === true ? { ok: true }
+        : probe({ repoRoot, specifier, nativeExercise: entry?.nativeExercise });
     if (result !== true && result?.ok !== true) {
       failures.push({
         specifier,
@@ -649,6 +672,8 @@ export function findUnusableRuntimeDeps({
         ...(result?.code === 'ERR_MODULE_NOT_FOUND' && typeof result.missingPath === 'string'
           ? { code: result.code, missingPath: result.missingPath }
           : {}),
+        ...(entry?.nativeExercise ? { nativeExercise: entry.nativeExercise } : {}),
+        ...(typeof result?.resolvedPath === 'string' ? { resolvedPath: result.resolvedPath } : {}),
       });
       continue;
     }

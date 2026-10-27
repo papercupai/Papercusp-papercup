@@ -128,6 +128,10 @@ function expectNoHiddenProductWrites() {
     if (url.pathname === "/api/hosted/browser/monitoring/event") {
       expect(init).toMatchObject({ method: "POST", credentials: "include", keepalive: true });
       const event = cloudTelemetryEventSchema.parse(JSON.parse(String(init?.body)));
+      if (event.event === "cloud_feature_adoption") {
+        expect(event.properties).toEqual({ feature: "cloud_tutorial" });
+        continue;
+      }
       expect(event.event).toBe("cloud_tutorial");
       expect(event.properties).toMatchObject({ lesson_id: CLOUD_TUTORIAL_ID });
       continue;

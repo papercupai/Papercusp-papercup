@@ -19,8 +19,10 @@ and `host` (vmstat swap-in/out, meminfo swap, machine PSI, every zram device's m
 counters are cumulative, so rates come from differencing two samples.
 """
 import argparse
+import hashlib
 import json
 import os
+from pathlib import Path
 import socket
 import sys
 import time
@@ -32,6 +34,75 @@ def read(path, default=None):
             return f.read()
     except OSError:
         return default
+
+
+def memory_events(root):
+    """A direct cgroup-v2 OOM receipt. Missing/invalid input is never a zero counter."""
+    path = os.path.join(root, "memory.events")
+    out = {"path": path, "capturedAt": time.time(), "status": "unreadable", "raw": None,
+           "counters": None, "cgroupIdentity": None}
+    try:
+        identity = os.stat(root)
+        out["cgroupIdentity"] = {"device": identity.st_dev, "inode": identity.st_ino}
+        with open(path) as source:
+            out["raw"] = source.read()
+        out["status"] = "invalid"
+        after = os.stat(root)
+        if (identity.st_dev, identity.st_ino) != (after.st_dev, after.st_ino):
+            raise ValueError("cgroup replaced during counter read")
+        counters = {}
+        for line in out["raw"].splitlines():
+            fields = line.split()
+            if len(fields) != 2 or not fields[1].isascii() or not fields[1].isdigit() or fields[0] in counters:
+                raise ValueError("malformed or duplicate memory.events counter")
+            counters[fields[0]] = int(fields[1])
+        if not {"oom", "oom_kill"}.issubset(counters):
+            raise ValueError("missing required OOM counters")
+        out.update(status="read", counters=counters)
+    except (OSError, UnicodeError, ValueError) as error:
+        out["error"] = str(error)
+    return out
+
+
+def writer_identity(root=None):
+    """Current writer bytes and the original staging manifest, kept as separate evidence."""
+    script = Path(__file__).resolve()
+    if root is None:
+        root = script.parents[3] if script.parent.name == "vm" else script.parent
+    root = Path(root)
+    files = set()
+    base = root / "scripts/agent-capacity"
+    for pattern in ("*.ts", "vm/*.sh", "vm/*.py", "corpus/*"):
+        files.update(p for p in base.glob(pattern) if p.is_file() and not p.name.endswith(".test.ts"))
+    out = {"status": "read", "files": {}, "staging": {"status": "absent", "manifestSha256": None}}
+    manifest = root / "stage-writers.sha256"
+    try:
+        if manifest.exists():
+            raw = manifest.read_bytes()
+            stage = {"status": "invalid", "manifestSha256": hashlib.sha256(raw).hexdigest(),
+                     "raw": raw.decode(), "entries": {}}
+            out["staging"] = stage
+            for line in stage["raw"].splitlines():
+                sha, sep, rel = line.partition("  ")
+                if (not sep or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha) or
+                        Path(rel).is_absolute() or ".." in Path(rel).parts or not rel or rel in stage["entries"]):
+                    raise ValueError("invalid staging manifest entry")
+                stage["entries"][rel] = sha
+                files.add(root / rel)
+            if not stage["entries"]:
+                raise ValueError("empty staging manifest")
+            stage["status"] = "verified"
+        # A standalone sampler still records its own executable source identity.
+        if script.is_relative_to(root):
+            files.add(script)
+        for file in sorted(files):
+            out["files"][file.relative_to(root).as_posix()] = hashlib.sha256(file.read_bytes()).hexdigest()
+        stage = out["staging"]
+        if stage["status"] == "verified" and any(out["files"].get(k) != v for k, v in stage["entries"].items()):
+            stage["status"] = "mismatch"
+    except (OSError, UnicodeError, ValueError) as error:
+        out.update(status="unreadable", error=str(error))
+    return out
 
 
 def cgroup_pids(root):
@@ -161,7 +232,7 @@ def host_sample(proc="/proc", sys_block="/sys/block"):
 
 
 def cgroup_sample(root):
-    out = {}
+    out = {"memory_events": memory_events(root)}
     mem = read(os.path.join(root, "memory.current"))
     if mem is not None:
         out["mem"] = int(mem.strip())
@@ -186,10 +257,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cgroup", required=True, help="cgroup v2 directory, e.g. /sys/fs/cgroup/...")
     ap.add_argument("--interval", type=float, default=10.0)
-    ap.add_argument("--duration", type=float, required=True, help="seconds to sample")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--duration", type=float, help="seconds to sample")
+    ap.add_argument("--out")
     ap.add_argument("--label", default="")
+    ap.add_argument("--oom-snapshot", action="store_true", help="emit one direct OOM/writer receipt, including read failures")
     args = ap.parse_args()
+    if args.oom_snapshot:
+        print(json.dumps({"schemaVersion": "capacity-oom-receipt-v1",
+                          "memory_events": memory_events(args.cgroup), "writers": writer_identity()}))
+        return 0
+    if args.duration is None or args.out is None:
+        ap.error("--duration and --out are required when sampling")
     if not os.path.isdir(args.cgroup):
         print(f"cgroup {args.cgroup} does not exist", file=sys.stderr)
         return 2
@@ -206,6 +284,7 @@ def main():
         "mem_total_kb": mem_total_kb,
         "interval": args.interval,
         "started": time.time(),
+        "writers": writer_identity(),
     }
     deadline = time.monotonic() + args.duration
     with open(args.out, "a", buffering=1) as f:

@@ -112,7 +112,13 @@ export interface FleetLaunchCapacitySnapshot {
 
 export interface FleetLaunchGovernorEvent {
   at: number;
-  action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal';
+  /**
+   * `boot-failure` / `boot-ok` mark a governor wave whose members all died at boot
+   * with one failure fingerprint (reason = the fingerprint), or a wave that verified
+   * at least one member. They drive the deterministic-boot-failure hold
+   * (WI-6554700010029299) and are carried across transactions with the rest of history.
+   */
+  action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal' | 'boot-failure' | 'boot-ok';
   reason: string;
   transactionId?: string;
   ownerId?: string;
@@ -325,6 +331,14 @@ export interface FleetHeadcountConfig {
   compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
+  /** The named launch mode the fleet's members are launched with (only `drain`
+   * today). DRAIN is a caller overlay: before this field it lived only on the
+   * founding leader's identity, so the first leader succession dropped it and every
+   * later launch, governor top-ups included, opened AUTO-only members
+   * (WI-6554700010029298: 721 Luna Max joiners in 7 days, 0 with DRAIN). Written on
+   * the fresh-recipe persist; read by launch-on-plan and the headcount governor
+   * through `launchModeFromFleetRecipe`. */
+  mode?: 'drain';
   /** P-005 / D-030 (unified-bug-pipeline-and-honest-queue-2026-10-05): the one
    * structured form of "do not top this fleet up". Before it, the rule lived in
    * plan prose, so a successor leader inherited it silently and a fleet ran with
@@ -732,6 +746,9 @@ export function normalizeFleetHeadcountConfig(raw: FleetHeadcountConfig | Record
     if (!normalized.ok) throw new Error(normalized.error);
     config.contextSize = normalized.contextSize;
   }
+  // A hand-forged or future mode value must not reach `--mode=` argv; only the
+  // recognized fleet mode survives a read.
+  if (config.mode !== undefined && config.mode !== 'drain') delete config.mode;
   return config as FleetHeadcountConfig;
 }
 
@@ -1358,8 +1375,28 @@ async function allocateSchemeForWorkspace(workspaceId: string, sql?: Sql): Promi
  * binding if present, else a deterministic slug-hash fallback for legacy rows.
  * Always returns a real catalog scheme.
  */
-export function resolveFleetScheme(record: AgentFleetRecord): ColorScheme {
+export function resolveFleetScheme(record: Pick<AgentFleetRecord, 'colorScheme' | 'fleetSlug'>): ColorScheme {
   return schemeByName(record.colorScheme) ?? schemeForSlug(record.fleetSlug);
+}
+
+/** Resolve only the requested fleet bindings in one workspace-scoped read. */
+export async function getFleetSchemes(
+  workspaceId: string,
+  fleetSlugs: readonly string[],
+  sql?: Sql,
+): Promise<Map<string, ColorScheme>> {
+  const out = new Map<string, ColorScheme>();
+  const slugs = [...new Set(fleetSlugs.filter((slug) => slug.length > 0))];
+  if (slugs.length === 0) return out;
+  const rows = (await pg(sql).unsafe(
+    `SELECT fleet_slug, color_scheme FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND fleet_slug = ANY($2::text[])`,
+    [workspaceId, slugs],
+  )) as unknown as Array<{ fleet_slug: string; color_scheme: string | null }>;
+  for (const row of rows) {
+    out.set(row.fleet_slug, resolveFleetScheme({ fleetSlug: row.fleet_slug, colorScheme: row.color_scheme }));
+  }
+  return out;
 }
 
 /** The bound scheme for a fleet slug, or null if the fleet doesn't exist. */
@@ -1799,11 +1836,19 @@ export async function recordFleetHeadcountAttempt(opts: {
   fleetSlug: string;
   succeeded: boolean;
   error?: string | null;
+  /**
+   * Failure only: the next attempt waits at least this long, even when the
+   * exponential backoff (capped at 15 min) would retry sooner. The governor sets it
+   * when the same boot failure keeps repeating (WI-6554700010029299), so a
+   * deterministic launch refusal stops minting a dead member every 15 minutes.
+   */
+  holdMs?: number;
   now?: number;
   sql?: Sql;
 }): Promise<void> {
   const s = pg(opts.sql);
   const now = opts.now ?? Date.now();
+  const holdMs = Math.max(0, Math.floor(opts.holdMs ?? 0));
   if (opts.succeeded) {
     await s.unsafe(
       `UPDATE harness_shared.agent_fleets
@@ -1818,10 +1863,10 @@ export async function recordFleetHeadcountAttempt(opts: {
     `UPDATE harness_shared.agent_fleets
         SET headcount_backoff_ms = LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
               GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
-            headcount_next_attempt_at = $3 + LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
-              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2)),
+            headcount_next_attempt_at = $3 + GREATEST($5::bigint, LEAST(${HEADCOUNT_MAX_BACKOFF_MS},
+              GREATEST(${HEADCOUNT_INITIAL_BACKOFF_MS}, headcount_backoff_ms * 2))),
             headcount_last_error = $4, updated_at = $3
       WHERE workspace_id = $1 AND fleet_slug = $2`,
-    [opts.workspaceId, opts.fleetSlug, now, (opts.error ?? 'top-up failed').slice(0, 500)],
+    [opts.workspaceId, opts.fleetSlug, now, (opts.error ?? 'top-up failed').slice(0, 500), holdMs],
   );
 }

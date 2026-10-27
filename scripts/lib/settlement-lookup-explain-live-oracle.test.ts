@@ -88,6 +88,9 @@ describe('R-3 settlement-lookup EXPLAIN live oracle (event-wait-settlement-2026-
     const probe = readFileSync(PROBE, 'utf8');
     expect(probe).toMatch(/settlement-lookup-explain-live-oracle\.mjs/);
     expect(probe).toMatch(/judgeR3\(/);
-    expect(probe).not.toMatch(/'Execution Time'\] <= /);
+    // The probe must delegate the Execution Time threshold to judgeR3 (asserted above) and
+    // never read the field itself, so no inline comparison of any shape can creep back in.
+    // vacuous-negative-ok: deliberate absence — the probe must not touch 'Execution Time' at all; the oracle owns it
+    expect(probe).not.toMatch(/\['Execution Time'\]/);
   });
 });

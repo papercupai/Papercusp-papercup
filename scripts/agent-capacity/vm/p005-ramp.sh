@@ -71,7 +71,9 @@ reap_stale_lock() { # <tree> <log>: one reap attempt; a reap appends one line to
   git_in_tree "$1" && return 0
   rm -f "$l" && echo "$(ts) reaped $l age=${age}s" >> "$2"
 }
-ooms() { awk '$1=="oom_kill"{print $2; f=1} END{if(!f) print 0}' "$SLICE/memory.events" 2>/dev/null || echo 0; }
+oom_snapshot() {
+  python3 "$S/vm/sample-footprint.py" --cgroup "$SLICE" --oom-snapshot > "$1"
+}
 sel=()
 [ "$SELECT" = all ] || sel=(--select "$SELECT")
 # TASKS_FILE: the tasks.json the recordings were made from, when it is not the driver's default
@@ -97,11 +99,15 @@ for n in $STEPS; do
   parked=$PARKED
   [ -z "$PARKED_PER_ACTIVE" ] || parked=$(awk -v r="$PARKED_PER_ACTIVE" -v n="$n" 'BEGIN { printf "%d", r * n + 0.5 }')
   [ "$parked" = 0 ] && parked=''
-  systemd-run --user --slice=capdrv.slice --unit="hold-capdrv-$run" --collect sleep 86400 >/dev/null
+  systemd-run --user --slice=capdrv.slice --unit="hold-capdrv-$run" --collect sleep 86400 >/dev/null \
+    || { echo "RAMP_MEASUREMENT_ERROR $run UNMEASURED reason=oom-cgroup-hold"; exit 4; }
+  oom_snapshot "$FP/$run.oom-before.json" || {
+    systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true
+    echo "RAMP_MEASUREMENT_ERROR $run UNMEASURED reason=oom-before-receipt"; exit 4;
+  }
   python3 "$S/vm/sample-footprint.py" --cgroup "$SLICE" --interval 5 --duration $((DUR + 3600)) \
     --out "$FP/$run.jsonl" --label "$run" >"$FP/$run.log" 2>&1 &
   sampler=$!
-  o0=$(ooms)
   echo "RAMP_STEP_START $run n=$n $(ts)"
   [ -z "$parked" ] || echo "RAMP_STEP_PARKED $run parked=$parked release_at_sec=$PARK_RELEASE_SEC"
   t0=$(date +%s)
@@ -122,12 +128,43 @@ for n in $STEPS; do
   [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l) lock_reaps=$(wc -l < "$FP/$run.lock-reaps.log")"
   elapsed=$(($(date +%s) - t0))
   kill "$sampler" 2>/dev/null || true
+  wait "$sampler" 2>/dev/null || true
+  # The hold keeps memory.events alive until AFTER the final read. The two direct receipts
+  # sit beside the sampled JSONL so existing fp artifact collectors retain their raw evidence.
+  oom_snapshot "$FP/$run.oom-after.json" || {
+    systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true
+    echo "RAMP_MEASUREMENT_ERROR $run UNMEASURED reason=oom-after-receipt"; exit 4;
+  }
   systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true
-  o1=$(ooms)
-  verdict=$(python3 - "$CACHE/runs/$run/summary.json" "$rc" "$((o1 - o0))" "$SAT_SLOWDOWN" "$MIN_DRIVEN" "$elapsed" "$RAMP_ERROR_SEC" <<'PY'
+  verdict=$(python3 - "$CACHE/runs/$run/summary.json" "$rc" "$FP/$run.oom-before.json" "$FP/$run.oom-after.json" "$SAT_SLOWDOWN" "$MIN_DRIVEN" "$elapsed" "$RAMP_ERROR_SEC" <<'PY'
 import json, sys
-path, rc, oom, limit, min_driven = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
-elapsed, error_sec = int(sys.argv[6]), int(sys.argv[7])
+path, rc = sys.argv[1], int(sys.argv[2])
+limit, min_driven = float(sys.argv[5]), float(sys.argv[6])
+elapsed, error_sec = int(sys.argv[7]), int(sys.argv[8])
+try:
+    before, after = (json.load(open(p)) for p in sys.argv[3:5])
+    for receipt in (before, after):
+        if receipt.get("schemaVersion") != "capacity-oom-receipt-v1":
+            raise ValueError("receipt-schema")
+        if receipt["memory_events"]["status"] != "read":
+            raise ValueError("counter-unreadable")
+        writers = receipt["writers"]
+        if writers["status"] != "read" or not writers["files"] or writers["staging"]["status"] not in ("verified", "absent"):
+            raise ValueError("writer-unqualified")
+    a, b = before["memory_events"], after["memory_events"]
+    if a["cgroupIdentity"] != b["cgroupIdentity"] or not a["cgroupIdentity"]:
+        raise ValueError("cgroup-replaced")
+    if b["capturedAt"] < a["capturedAt"]:
+        raise ValueError("clock-order")
+    for key in ("oom", "oom_kill"):
+        if b["counters"][key] < a["counters"][key]:
+            raise ValueError("counter-reset")
+    if before["writers"] != after["writers"]:
+        raise ValueError("writers-changed")
+    oom = b["counters"]["oom_kill"] - a["counters"]["oom_kill"]
+except (OSError, ValueError, KeyError, TypeError) as error:
+    print(f"UNMEASURED reason=oom-{error}")
+    sys.exit()
 try:
     s = json.load(open(path))
 except Exception:
@@ -168,6 +205,7 @@ PY
 )
   echo "RAMP_STEP_END $run n=$n rc=$rc $verdict $(ts)"
   case "$verdict" in
+    UNMEASURED*) echo "RAMP_MEASUREMENT_ERROR $LABEL n=$n see $FP/$run.oom-*.json"; exit 4 ;;
     DRIVER_ERROR*) echo "RAMP_DRIVER_ERROR $LABEL n=$n see $FP/$run.driver.log"; exit 3 ;;
     SATURATED*) echo "RAMP_SATURATED $LABEL n=$n"; break ;;
     UNDERDRIVEN*) echo "RAMP_UNDERDRIVEN $LABEL n=$n"; break ;;

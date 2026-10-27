@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -46,11 +46,13 @@ it('records a real node:test child when the focused router starts without a TS l
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  assertExecutedProofOutputCustody,
   assertPrivateIntegrationEvidence,
   buildNodeTestArgs,
   canonicalMatch,
   classifyGovernedAdmissionFailure,
   collectionAttributionMarker,
+  createRouterProofCustody,
   discoverTestRoute,
   discoverVitestRoute,
   evaluateMatch,
@@ -109,6 +111,63 @@ import {
 } from '../../../../scripts/test-files.mjs';
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
+import { verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+describe('router native custody population (P002)', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'router-native-custody-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  function setup() {
+    const producer = join(root, 'producer'), packets = join(root, 'packets');
+    mkdirSync(producer);
+    const groups = [0, 1].map(index => ({ cwd: producer, runner: 'vitest',
+      routes: [{ absolute: join(producer, `file-${index}.test.ts`) }] }));
+    const out = join(producer, 'out.json');
+    const session = createRouterProofCustody(groups, { PAPERCUSP_TEST_ARTIFACT_DIR: packets,
+      PAPERCUSP_WORKSPACE_ID: 'custody-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_RUN_GROUP: 'router-fixture', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'custody-workspace',
+      PC_EXECUTED_SOURCE_MAP_OUT: out }, root);
+    return { producer, session };
+  }
+  function produce(session: ReturnType<typeof createRouterProofCustody>, id: string) {
+    const group = session.expected.find(row => row.id === id);
+    writeFileSync(group.out, '{"rows":[],"diagnostics":[]}');
+    for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(group.out + suffix);
+    session.declare(id, session.childEvidence(id));
+    session.observe(id, { status: 1, signal: null, rawStreams: {
+      complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
+    } }, 'npx', ['vitest', 'run', ...group.selected]);
+  }
+  it('retains primary/detail identity and raw failed-child streams after temporary output removal', () => {
+    const { producer, session } = setup();
+    const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));
+    for (const id of ['group-0', 'group-1', detail]) produce(session, id);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = session.finish();
+      expect(result.status).toBe('complete');
+      const contract = { identity: session.identity, expected: structuredClone(session.expected) };
+      rmSync(producer, { recursive: true });
+      const read = verifyNativeProofPacket(session.directory, result.locator, contract);
+      expect(read.manifest.expected.map(group => group.attempt)).toEqual(['primary', 'primary', 'detail']);
+      const stdout = read.manifest.groups[0].auxiliary.find(row => row.role === 'stdout')!.artifact!;
+      expect(readFileSync(join(session.directory, 'objects', stdout.ref))).toEqual(Buffer.from([0, 255, 10]));
+      expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+    } finally { log.mockRestore(); }
+  });
+  it('retains an expected group which never started instead of shrinking the population', () => {
+    const { session } = setup();
+    produce(session, 'group-0');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = session.finish();
+      expect(result.status).toBe('partial');
+      expect(result.manifest.groups.map(group => group.id)).toEqual(['group-0', 'group-1']);
+      expect(result.manifest.gaps).toContain('group-population-mismatch');
+      expect(JSON.parse(readFileSync(join(session.directory, 'expected.json'), 'utf8')).expected).toHaveLength(2);
+    } finally { log.mockRestore(); }
+  });
+});
 
 // Tests of main() are harness-scoped even when a caller invokes test:file without
 // the optional scope env. Otherwise its unscoped-run warning trips fail-on-console
@@ -130,6 +189,16 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes the maintained desktop portal assertion to its native e2e evidence config', () => {
+    expect(discoverVitestRoute('apps/operator/bin/desktop-portal-native.test.ts')).toMatchObject({
+      cwd: resolve(REPO_ROOT, 'apps/operator'),
+      config: 'vitest.e2e.config.ts',
+      requested: 'bin/desktop-portal-native.test.ts',
+    });
+    expect(discoverVitestRoute('apps/operator/bin/desktop-portal-persistence.test.ts').config)
+      .toBe('vitest.config.ts');
+  });
+
   it('keeps the explicit private receipt sink separate from product database discovery', () => {
     for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
       expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',
@@ -321,7 +390,7 @@ describe('test-files router', () => {
       warning.mockRestore();
     }
   });
-  it('keeps guarded config imports native for both collection and execution', () => {
+  it('defaults guarded imports to native and permits source-attested bundles', () => {
     const guarded = { NODE_OPTIONS: '--import=/checkout/scripts/lib/committed-source-loader.mjs' };
     expect(vitestConfigLoaderPolicy(['-t', 'selected'], guarded, [])).toEqual({
       configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
@@ -329,8 +398,10 @@ describe('test-files router', () => {
       configLoaderArgs: ['--configLoader', 'native'], vitestArgs: ['-t', 'selected'] });
     expect(vitestConfigLoaderPolicy(['--configLoader', 'runner'], {}, [])).toEqual({
       configLoaderArgs: ['--configLoader', 'runner'], vitestArgs: [] });
-    for (const loader of ['runner', 'bundle']) expect(() =>
-      vitestConfigLoaderPolicy(['--configLoader', loader], guarded, [])).toThrow('requires --configLoader native');
+    expect(vitestConfigLoaderPolicy(['--configLoader', 'bundle'], guarded, [])).toEqual({
+      configLoaderArgs: ['--configLoader', 'bundle'], vitestArgs: [] });
+    expect(() => vitestConfigLoaderPolicy(['--configLoader', 'runner'], guarded, []))
+      .toThrow('requires --configLoader native');
     expect(vitestConfigLoaderPolicy([], {}, ['--import', '/checkout/scripts/lib/committed-source-loader.mjs'])
       .configLoaderArgs).toEqual(['--configLoader', 'native']);
     expect(vitestConfigLoaderPolicy([], {}, []).configLoaderArgs).toEqual([]);
@@ -804,16 +875,26 @@ describe('test-files router', () => {
       expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: 'sources.json' }, 1, 3)
         .PC_EXECUTED_SOURCE_MAP_OUT).toBe(resolve('sources.1.json'));
       const unarmed = { PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
-      expect(perGroupVitestEnv(unarmed, 1, 3)).toBe(unarmed);
-      expect(perGroupVitestEnv({}, 1, 3)).toEqual({});
+      expect(perGroupVitestEnv(unarmed, 1, 3)).toEqual({ ...unarmed, NODE_ENV: 'test' });
+      expect(perGroupVitestEnv({}, 1, 3)).toEqual({ NODE_ENV: 'test' });
+    });
+
+    it.each([undefined, 'production', 'development'])('establishes test mode for Vitest children inherited from %s', nodeEnv => {
+      const env = Object.freeze({ NODE_ENV: nodeEnv, PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt.jsonl' });
+      const child = perGroupVitestEnv(env, 0, 1);
+      expect(child.NODE_ENV).toBe('test');
+      expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe('/tmp/receipt.jsonl');
+      expect(env.NODE_ENV).toBe(nodeEnv);
     });
 
     it('preserves each source-map group and detail rerun output through main()', async () => {
       const root = mkdtempSync(join(tmpdir(), 'source-map-groups-'));
-      const originalOut = join(root, 'sources.json');
+      const proofRoot = mkdtempSync(join(tmpdir(), 'source-map-group-proof-'));
+      const originalOut = join(proofRoot, 'sources.json');
       const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
-      const saved = { PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
+      const saved = { NODE_ENV: process.env.NODE_ENV, PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
+      process.env.NODE_ENV = 'production';
       process.env.PC_EXECUTED_SOURCE_MAP_OUT = originalOut;
       delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -829,9 +910,13 @@ describe('test-files router', () => {
         const code = await main(files, {
           repoRoot: root,
           restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
-          runVitestListImpl: async (_command: string, args: string[]) => ({ status: 0, signal: null,
-            stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false }),
+          runVitestListImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(options.env.NODE_ENV).toBe('test');
+            return { status: 0, signal: null,
+              stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false };
+          },
           runCapturedTestProcessImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            expect(options.env.NODE_ENV).toBe('test');
             const requested = args.filter(arg => arg.endsWith('.test.ts'));
             const path = options.env.PC_EXECUTED_SOURCE_MAP_OUT!;
             captures.push({ path, files: requested });
@@ -844,19 +929,21 @@ describe('test-files router', () => {
         });
         expect(code).toBe(1); // The first group's red must survive the later green groups.
         expect(captures.map(capture => capture.path)).toEqual([originalOut,
-          join(root, 'sources.detail-0.json'), join(root, 'sources.detail-1.json'),
-          join(root, 'sources.1.json'), join(root, 'sources.2.json')]);
+          join(proofRoot, 'sources.detail-0.json'), join(proofRoot, 'sources.detail-1.json'),
+          join(proofRoot, 'sources.1.json'), join(proofRoot, 'sources.2.json')]);
         for (const capture of captures) {
           expect(JSON.parse(readFileSync(capture.path, 'utf8'))).toEqual(capture.files);
           expect(logSpy.mock.calls.some(([line]) => String(line).includes(`path=${JSON.stringify(capture.path)}`))).toBe(true);
         }
         expect(JSON.parse(readFileSync(originalOut, 'utf8'))).toEqual(['a.test.ts', 'b.test.ts']);
         expect(process.env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(originalOut);
+        expect(process.env.NODE_ENV).toBe('production');
       } finally {
         logSpy.mockRestore(); errorSpy.mockRestore(); stdoutSpy.mockRestore();
         for (const [key, value] of Object.entries(saved)) {
           if (value === undefined) delete process.env[key]; else process.env[key] = value;
         }
+        rmSync(proofRoot, { recursive: true, force: true });
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -1378,7 +1465,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(progress.at(-1)).toContain('lastOutputLine=null');
       child[channel].write(' completed\npartial');
       await vi.advanceTimersByTimeAsync(10);
-      const readLine = () => JSON.parse(progress.at(-1)!.split('lastOutputLine=')[1]!);
+      const lastChildProgress = () => progress.filter(line => line.startsWith('TEST_FILE_PROGRESS ')).at(-1)!;
+      const readLine = () => JSON.parse(lastChildProgress().split('lastOutputLine=')[1]!);
       expect(readLine()).toEqual({ channel, text: 'case "quoted" completed' });
       child[channel].write('x'.repeat(20_000) + '\n');
       await vi.advanceTimersByTimeAsync(10);
@@ -1386,7 +1474,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(readLine().text).toMatch(/^partialx+…$/);
       child.emit('close', 1, null);
       expect(await pending).toMatchObject({ status: 1, timedOut: false });
-      expect(progress.at(-1)).toContain('state=finished');
+      expect(lastChildProgress()).toContain('state=finished');
       expect(readLine().text).toHaveLength(1024);
     } finally { vi.useRealTimers(); }
   });
@@ -1574,7 +1662,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(result, output).toMatchObject({ status: 1, signal: null, timedOut: false, error: null });
       expect(completed).toHaveBeenCalledTimes(1);
       expect(progress.find((line) => line.includes('state=file-completed'))).toContain('pendingFiles=[]');
-      expect(progress.at(-1)).toContain('state=finished');
+      expect(progress.filter(line => line.startsWith('TEST_FILE_PROGRESS ')).at(-1)).toContain('state=finished');
       expect(output).not.toMatch(/Timeout terminating .* worker|Failed to terminate .* worker/);
       expect(vitestRunFailed({ status: result.status, output })).toBe(true);
     } finally {
@@ -2692,6 +2780,61 @@ describe('main() — failed assertion details survive private report cleanup (EI
   });
 });
 
+describe('executed proof output custody (EI-26908539061140583)', () => {
+  let root: string;
+  let outside: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'proof-output-repo-'));
+    outside = mkdtempSync(join(tmpdir(), 'proof-output-external-'));
+    expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+    writeFileSync(join(root, '.gitignore'), '.papercusp/\nonly-report.json\n');
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+  it('refuses publishable output and an ignored JSON with publishable executable sidecars', () => {
+    for (const name of ['docs/evidence/run.json', 'only-report.json']) {
+      expect(() => assertExecutedProofOutputCustody(root, {
+        PC_EXECUTED_SOURCE_MAP_OUT: join(root, name),
+      })).toThrow('Git-ignored custody directory');
+    }
+  });
+  it('accepts external and ignored custody without changing the requested path', () => {
+    for (const path of [join(outside, 'nested/run.json'), join(root, '.papercusp/scratch/run.json')]) {
+      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: path });
+      expect(() => assertExecutedProofOutputCustody(root, env)).not.toThrow();
+      expect(env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(path);
+    }
+    expect(() => assertExecutedProofOutputCustody(root, {})).not.toThrow();
+  });
+  it('checks physical destinations when an external directory points into publishable source', () => {
+    symlinkSync(root, join(outside, 'back-to-source'), 'dir');
+    expect(() => assertExecutedProofOutputCustody(root, {
+      PC_EXECUTED_SOURCE_MAP_OUT: join(outside, 'back-to-source/run.json'),
+    })).toThrow('Git-ignored custody directory');
+  });
+  it('refuses before collection or execution and emits no measured verdict', async () => {
+    const prior = process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+    process.env.PC_EXECUTED_SOURCE_MAP_OUT = join(root, 'docs/evidence/run.json');
+    const list = vi.fn(), run = vi.fn();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await main(['some.test.ts'], { repoRoot: root,
+        runVitestListImpl: list, runCapturedTestProcessImpl: run })).toBe(2);
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(error.mock.calls.flat().join('\n')).toContain('PC_EXECUTED_SOURCE_MAP_OUT');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('TEST_FILE_RESULT');
+    } finally {
+      log.mockRestore(); error.mockRestore();
+      if (prior === undefined) delete process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+      else process.env.PC_EXECUTED_SOURCE_MAP_OUT = prior;
+    }
+  });
+});
+
 describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
   const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
 
@@ -3081,6 +3224,65 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(result.actualDemand).toBeDefined();
   });
 
+  it('distinguishes a returned child from pending governed finalization without running it again', async () => {
+    const phases: string[] = [];
+    let release!: () => void;
+    const settlement = new Promise<void>(resolve => { release = resolve; });
+    const child = vi.fn(() => ({ status: 0, stdout: 'complete' }));
+    const pending = runGovernedTestFileProcess(async (_options: unknown, callback: Function) => {
+      const result = await callback();
+      await settlement;
+      return result;
+    }, {}, child, { onPhase: (phase: string) => phases.push(phase) });
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(phases).toEqual(['governed-start', 'child-start', 'child-returned']);
+      expect(child).toHaveBeenCalledTimes(1);
+    } finally { release(); }
+    expect(await pending).toEqual({ status: 0, stdout: 'complete' });
+    expect(phases.at(-1)).toBe('governed-returned');
+  });
+
+  it('captures the owned tree after file completion while outer close is still pending', async () => {
+    vi.useFakeTimers();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const progress: string[] = [];
+    const snapshot = { status: 'measured', rootPid: child.pid, processes: [{ pid: child.pid }], truncated: false };
+    const reader = vi.fn(() => snapshot);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      files: ['a.test.ts'], env: { PATH: '/usr/bin' }, finalizationDiagnosticDelayMs: 100,
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: reader, onProgress: (line: string) => progress.push(line),
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    try {
+      child.stdout.write(' ✓ a.test.ts (1 test) 5ms\n');
+      await vi.advanceTimersByTimeAsync(99);
+      expect(reader).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reader).toHaveBeenCalledExactlyOnceWith(child.pid);
+      expect(progress.find(line => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC ')))
+        .toContain('"trigger":"file-completion-finalization"');
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      expect(await pending).toMatchObject({ status: 0, processDiagnostic: snapshot, timedOut: false });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reader).toHaveBeenCalledTimes(1);
+      const phases = progress.filter(line => line.startsWith('TEST_FILE_FINALIZATION '))
+        .map(line => JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)).phase);
+      expect(phases).toEqual(['governed-start', 'child-start', 'child-exit', 'child-close',
+        'demand-sample-start', 'demand-sample-returned', 'child-returned', 'governed-returned']);
+    } finally {
+      child.emit('close', 0, null);
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
   it.each([0, 1])('also preserves an actual synchronous Node child after finalization failure, exit %s', async (status) => {
     const origin = new Error('Node receipt finish failed');
     const run = vi.fn(() => spawnSync(process.execPath, ['-e', `process.stdout.write('child output'); process.exit(${status})`], {
@@ -3134,6 +3336,40 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(errors).toContain('original settlement stack');
     expect(errors).not.toContain('TEST_FILE_ADMISSION_ERROR');
     expect(errors).not.toContain('no test file ran');
+  });
+
+  it('settles native proof custody before reporting a measured result and refuses green when it fails', async () => {
+    const keys = ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'];
+    const saved = keys.map(key => [key, process.env[key]] as const);
+    for (const key of keys) delete process.env[key];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const finish = vi.fn(() => {
+      expect(logSpy.mock.calls.some(([line]) => String(line).startsWith('TEST_FILE_RESULT'))).toBe(false);
+      throw new Error('custody fixture budget exceeded');
+    });
+    try {
+      const code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', error: null, timedOut: false }),
+        runCapturedTestProcessImpl: async () => ({ status: 0, signal: null,
+          stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n', stderr: '', error: null, timedOut: false }),
+        createRouterProofCustodyImpl: () => ({ childEvidence: () => [], declare() {}, observe() {}, finish }),
+      });
+      expect(code).toBe(3);
+      expect(finish).toHaveBeenCalledOnce();
+      const output = logSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      const errors = errSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(output).toContain('status=passed');
+      expect(output).toContain('finalizationError=true');
+      expect(errors).toContain('phase=native-proof-custody');
+      expect(errors).toContain('custody fixture budget exceeded');
+    } finally {
+      stdout.mockRestore();
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
   });
 
   it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {

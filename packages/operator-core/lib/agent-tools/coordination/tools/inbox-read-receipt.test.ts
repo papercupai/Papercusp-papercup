@@ -119,6 +119,21 @@ beforeEach(() => {
 });
 
 describe("coord:inbox EI-2042 read-receipt write-through", () => {
+  it("records an FYI as read without replying or hiding it from a later VIEW", async () => {
+    const fyi = { ...msg("2026-07-18T10:00:00.000Z", "fyi-1"), expects: "none" };
+    M.readInbox.mockImplementation(async () => [fyi]);
+
+    const first = await callInbox();
+    expect(first.entries).toEqual([expect.objectContaining({ msg_id: "fyi-1", expects: "none" })]);
+    expect(M.writeWatermark).toHaveBeenCalledWith("owner-a", { messages_shown_ts: fyi.ts });
+    expect(M.sendMessage).not.toHaveBeenCalled();
+
+    M.readWatermark.mockImplementation(async () => ({ messages_shown_ts: fyi.ts }));
+    const second = await callInbox();
+    expect(second.entries).toEqual([expect.objectContaining({ msg_id: "fyi-1" })]);
+    expect(M.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("advances messages_shown_ts to the newest shown entry's ts", async () => {
     const a = msg("2026-07-18T10:00:00.000Z", "m1");
     const b = msg("2026-07-18T10:05:00.000Z", "m2");

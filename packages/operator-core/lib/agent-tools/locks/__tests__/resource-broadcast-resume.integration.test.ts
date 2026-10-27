@@ -18,17 +18,22 @@
  * (The old path-glob `fireNotifications(resource:<name>)` watcher-notify was
  * retired with coord:watch — coordination-substrate Phase 3; locks are
  * control-plane, D-007 — so the cycle is asserted through the kept coord
- * messages + the real cascade NOTIFY resume.) Live PG + real NOTIFY; unique
- * owner ids isolate assertions from the shared coord stream.
+ * messages + the real cascade NOTIFY resume.) Owned migrated PG + real NOTIFY;
+ * coordination reads and writes share an isolated workspace and database.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
+import { PgCoordLog } from '@papercusp/coordination/event-log';
+import { configureLocks, locksHost } from '@papercusp/locks';
+import { createOrgTestDb } from '../../../../test/_org-test-db';
+import { configureCoordLog, resetCoordLog } from '../../coordination/log';
 import {
   ensureBootstrap,
   getTxPool,
   _resetForTests,
   tryAcquireResource,
   tryReleaseResource,
+  registerResource,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
@@ -40,16 +45,29 @@ import {
 import { readInbox } from '../../coordination/messages';
 import type { AgentIdentity } from '../../coordination/identity';
 
-const RESOURCE = 'dev-server';
+// Exact fixture identities must not resolve against the host's live fleet.
+// Keep the real coordination write/read SQL and disclosure sealing intact.
+vi.mock('../../coordination/recipient-resolve', () => ({
+  resolveBestEffortAgainstRoster: async (ids: string[]) => ids,
+}));
+vi.mock('../../coordination/federation-scope', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../coordination/federation-scope')>(),
+  resolveWorkspaceHiveScope: async () => ({ kind: 'none' }),
+}));
 
-async function dbLive(): Promise<boolean> {
-  try {
-    await getTxPool()`SELECT 1`;
-    return true;
-  } catch {
-    return false;
-  }
-}
+const org = await createOrgTestDb();
+const priorLocksHost = locksHost();
+configureLocks({ ...priorLocksHost, getAdminBaseUrl: () => org.adminDsn });
+// Fail collection on setup failure instead of turning missing substrate into skips.
+await _resetForTests();
+await ensureBootstrap();
+const WORKSPACE = `res-bcast-resume-${Date.now()}`;
+const RESOURCE = `locks-test-broadcast-${Date.now()}`;
+configureCoordLog(new PgCoordLog({
+  getSql: () => org.adminSql,
+  ensureSchema: async () => {},
+  workspaceId: WORKSPACE,
+}));
 
 let seq = 0;
 const uniq = () => `${Date.now()}-${seq++}`;
@@ -59,7 +77,7 @@ const mkIdentity = (ownerId: string): AgentIdentity => ({
   ownerId,
   ownerLabel: `res:${ownerId}`,
   source: 'static-client',
-  workspaceId: null,
+  workspaceId: WORKSPACE,
   userId: null,
 });
 
@@ -81,26 +99,31 @@ const rel = (ws: string, owner: string, lockId: string) =>
     tryReleaseResource(tx, { coordinationDomain: ws, owner, lockId }),
   );
 
-describe('resource broadcast→resume cycle (P-021)', async () => {
-  const live = await dbLive();
-
-  // Prime the org PG handle (first getOrgPg() can race drizzle load).
-  beforeAll(async () => {
-    if (live) await readInbox(`warmup-${Date.now()}`).catch(() => {});
-  });
-
+describe('resource broadcast→resume cycle (P-021)', () => {
   afterAll(async () => {
-    if (live) {
+    try {
       await _resetListenersForTests();
+      const sql = getTxPool();
+      await sql`DELETE FROM agent_resource_exclusive_queue WHERE coordination_domain = ${WORKSPACE}`;
+      await sql`DELETE FROM agent_resource_locks WHERE coordination_domain = ${WORKSPACE}`;
+      await sql`DELETE FROM agent_resource_waiters WHERE coordination_domain = ${WORKSPACE}`;
+      await sql`DELETE FROM agent_resource_registry WHERE resource = ${RESOURCE}`;
+    } finally {
       await _resetForTests();
+      configureLocks(priorLocksHost);
+      resetCoordLog();
+      await org.cleanup();
     }
   });
 
-  it.skipIf(!live)(
+  it(
     'drain-start messages the holders, the parked waiter resumes on release, and back-up broadcasts',
     async () => {
       await ensureBootstrap();
-      const ws = `res-bcast-resume-ws-${uniq()}`;
+      const ws = WORKSPACE;
+      await inWorkspaceTxn(ws, 'admin', (tx) =>
+        registerResource(tx, { resource: RESOURCE, description: 'broadcast integration fixture' }),
+      );
       const u = uniq();
 
       const reqId = `bcr-R-${u}`;
@@ -147,6 +170,7 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
 
       // BROADCAST HALF — the drain-start targeted "release" message reached the holders.
       expect(sawDrainStart()).toBe(true);
+      expect((await readInbox(holderB)).some((m) => m.from === reqId && /draining/i.test(m.summary ?? ''))).toBe(true);
 
       // Drain both shared holders → the grant cascade flips R to held + NOTIFYs it.
       await rel(ws, holderA, a.lock_id);

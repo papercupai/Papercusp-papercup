@@ -440,12 +440,24 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
     },
 
     async bundleHost(): Promise<void> {
+      const { operatorArtifactSource, writeOperatorArtifactManifest } = await import('@papercusp/operator-core/lib/release/operator-artifact');
+      const sourceSha = operatorArtifactSource(cfg.releaseRoot);
       const script = path.join(cfg.releaseRoot, 'apps/operator/bin/bundle-host.sh');
       await run('bash', [script], {
         cwd: path.join(cfg.releaseRoot, 'apps/operator'),
         timeoutMs: 10 * 60_000,
       });
-      log('host bundle rebuilt from the release checkout');
+      const artifact = writeOperatorArtifactManifest({ root: cfg.releaseRoot, sourceSha,
+        entry: path.join(cfg.releaseRoot, 'apps/operator/dist-host/hono-host.mjs') });
+      // Reuse the append-only audit ledger so a later checkout clean cannot
+      // erase the writer's binding or let a changed manifest rewrite history.
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const receiptId = 'operator-artifact-' + randomUUID();
+      await getOrgPg().sql`
+        INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+        VALUES (${receiptId}, ${Date.now()}, ${DEPLOY_OWNER}, 'release.artifact.built',
+          ${sourceSha}, ${JSON.stringify(artifact)}::jsonb, ${activeWorkspaceId()})`;
+      log('host bundle rebuilt with release artifact provenance: ' + receiptId);
     },
 
     async restart(): Promise<void> {

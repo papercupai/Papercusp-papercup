@@ -52,6 +52,7 @@ import {
   type PlanItemTextDrift,
 } from './text-drift';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /**
  * How many holders get a ping for one plan write. A wholesale rewrite of a large
  * plan can legitimately touch dozens of items; past this bound the remainder is
@@ -116,7 +117,7 @@ function pairKey(workItemId: string, itemId: string): string {
   return `${workItemId}::${itemId}`;
 }
 
-const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_ITEM_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 function familyForItemKind(itemKind: string | null): 'feature' | 'issue' {
   return itemKind && ISSUE_ITEM_KINDS.has(itemKind) ? 'issue' : 'feature';

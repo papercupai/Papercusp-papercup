@@ -1,0 +1,509 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "15e89a6eac68f34db11a9ecb516df9ec10d0b81b90298f3314b03c89df0d55c7.supporting-original",
+      "sha256": "15e89a6eac68f34db11a9ecb516df9ec10d0b81b90298f3314b03c89df0d55c7",
+      "byteLength": 25061
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a16b45-7f73-7061-8dd5-244b93c1a4cb",
+  "capturedAt": "2026-10-24T00:31:53.422060+00:00",
+  "kind": "real current-session argument boundary observations; one tool and scoped caller tuple",
+  "acceptance": "OPEN",
+  "callerTuple": {
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "route": "http://127.0.0.1:3170",
+    "transport": "MCP Streamable HTTP through installed ptool CLI",
+    "authorization": "existing configured superuser credential; no credential/grant or mode changes",
+    "roleQualification": "owner identity separately verified; no role simulation counted as launched-role coverage"
+  },
+  "schemaObservation": {
+    "capturedAt": "2026-10-24T00:28:15.949Z",
+    "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+    "url": "http://127.0.0.1:3170/api/mcp?superuser=1&workspace=papercusp-workspace&harness=papercusp&client=su-4a84c93a-e530-450c-b01e-8beb7bdc670f&native_session=01a16b45-7f73-7061-8dd5-244b93c1a4cb&ctx_tier=full",
+    "kind": "supplemental MCP tools/list; not original native launch catalog",
+    "count": 1020,
+    "namesSha256": "38c46dd1f98225206556042a5ccba16ebd09c51e2918e8c67ec34a275fad09a6",
+    "selected": {
+      "name": "work_items:get",
+      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "a single work-item id (n=1 shorthand for ids:[id])",
+            "type": "string",
+            "minLength": 1
+          },
+          "attachments": {
+            "description": "Standalone one-item consented attachment read: {} lists metadata; id returns a base64 byte page (default 1024 bytes, max 2048). Canonical fixes resolve original report evidence. Expired evidence is unavailable.",
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2048
+              }
+            },
+            "additionalProperties": false
+          },
+          "ids": {
+            "description": "work-item ids for ordinary reads (1–100). With resume:true, provide one ID only; prefer the id argument for a continuation read.",
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "harness": {
+            "description": "caller harness scope; do not copy a cross-hive row's canonical harness here",
+            "type": "string",
+            "maxLength": 80
+          },
+          "detail": {
+            "description": "also return topics, thread posts (comments), outgoing links, `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded — and `priorAttempts`, the bounded prior-attempt brief (what was already tried on this item's plan lane, and what the budget OMITTED). Accepts `true`/`false`, or the aliases `'full'`/`'summary'` (some tools in this catalog use that string-enum convention instead).",
+            "type": "boolean"
+          },
+          "checksOnly": {
+            "description": "return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.",
+            "type": "boolean"
+          },
+          "checkpointOnly": {
+            "description": "standalone exact checkpoint text page for exactly one item; skips item payload and other enrichments. Pair with root-level offset (Unicode code points, default 0) and limit (default 512, hard cap 768); follow checkpointPage.nextOffset and compare checkpointContentHash across pages. checkpointPage:null means no stored checkpoint unless checkpointReadFailed is true.",
+            "type": "boolean"
+          },
+          "offset": {
+            "description": "checkpointOnly page start measured in Unicode code points; omitted means 0. The returned checkpointPage.offset is clamped to totalChars.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000000
+          },
+          "limit": {
+            "description": "checkpointOnly page size in Unicode code points; omitted means 512. Larger requests are clamped to 768 and disclosed in checkpointPage.limitClamped.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "resume": {
+            "description": "Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Pass exactly one item (prefer id; a one-element ids array is accepted, but multi-id batches are rejected). Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Checks are at results[].resume.checks.rows (an array), not resume.checks; resume.checks.omitted counts saved rows excluded by the packet budget. Do not combine with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.",
+            "type": "boolean"
+          },
+          "operationalBrief": {
+            "description": "Add `operationalBrief` per row: claim/state, blockers, last verified evidence, next action and successor residue, projected from this same read. Unmeasured fields are explicit `unknown` with a reason, never zero. Forces a complete read; not with resume or checksOnly.",
+            "type": "boolean"
+          },
+          "priorAttemptRefs": {
+            "description": "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Resolve refs back to their FULL untruncated source records. When combined with `detail:true`, this replaces the bounded `priorAttempts` brief so the response does not mix clipped history with the raw records; make a separate read if you need both views. Take refs from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "threadLimit": {
+            "description": "return a bounded oldest-first recent-comment window instead of loading the full thread; 0 explicitly suppresses thread work, positive values return up to 10 posts with a same-snapshot total. The effective window is capped at 10: a larger value is CLAMPED (not rejected) and the result reports `threadLimitClamped:{requested,applied}` — read `threadWindow.total`, not `shown`, for how many posts exist.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false,
+        "x-papercusp-call-constraint": "resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the detail record)"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "_meta": {
+        "papercusp/toolRegistryRevision": "projected-tool-registry-v1:6f8de4ff5903ffc2",
+        "papercusp/toolRegistrySource": "projected-tool-registry",
+        "papercusp/resultFormats": [
+          "json"
+        ],
+        "papercusp/servingGeneration": "serving-generation-v1:5010cfbeecc6dda5dff93b6255b27a71e4c3c8d01d797f265fb26663a8788010"
+      }
+    }
+  },
+  "schemaInputJsonSha256": "54c1c057f6d193832ee127a036995d22e8ea29cc26837d728a6dcd8d5bc384ed",
+  "schemaHashEncoding": "UTF-8 JSON without whitespace in returned property order",
+  "runtimeContainment": {
+    "currentBuildTestRoute": {
+      "id": "operator-api",
+      "source": "Committed local integration branch (staging by default), loaded by maintained staging sync",
+      "runtime": "staging-operator",
+      "route": "http://127.0.0.1:3170 after dev:pipeline_position containment check",
+      "routeFile": "apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf",
+      "isolation": "Separate port, process and checkout; database and workspace are not isolated.",
+      "prerequisites": [
+        "Containing staging commit loaded",
+        "private test identity/data for writes"
+      ],
+      "verification": "Measured :3170 build identity plus request/response on that build.",
+      "readiness": "ready"
+    },
+    "_partial": true,
+    "input": {
+      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+      "sha": null
+    },
+    "targetSha": "d6c2a6efaa111bd73e85598fbc464280b51ba47c",
+    "dirtyUncommitted": false,
+    "servingRuntimes": [
+      {
+        "method": "blob",
+        "runtime": "release-operator",
+        "role": "owner",
+        "buildSha": "d740fc3802",
+        "buildShaSource": "health",
+        "containsChange": false,
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "method": "blob",
+        "runtime": "staging-operator",
+        "role": "owner",
+        "buildSha": "3c1f46d559",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "method": "blob",
+        "runtime": "bg-host",
+        "role": "shared",
+        "buildSha": "7ccec94040",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "method": "start-after-mtime",
+        "runtime": "gateway",
+        "role": "shared",
+        "buildSha": "a0b17c632f",
+        "buildShaSource": "runtime-vintage",
+        "containsChange": false,
+        "instances": null,
+        "unknownReason": null
+      }
+    ],
+    "_projection": {
+      "kind": "bounded-payload",
+      "truncated": true,
+      "tier": "standard",
+      "forced": true,
+      "originalChars": 3581,
+      "returnedChars": 2712,
+      "omittedCount": 1,
+      "omitted": [],
+      "cursor": {
+        "kind": "scratch-page",
+        "tool": "capability:read",
+        "args": {
+          "file_path": "papercusp://scratch-spool/e31995a2d636933eacb1a21b60e33a91e25d9a1b44cb16b34d67f556469e2b24",
+          "byte_offset": 0,
+          "byte_limit": 3072
+        },
+        "bodyComplete": false
+      },
+      "next": "The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. Read it with `capability:read` byte pages (`byte_offset` + `byte_limit`, without `raw`) and follow `next_cursor` to validate and unwrap its manifest before parsing the payload; the default numbered line view can truncate a long single-line payload. However, the emitted result already carries upstream partial marker(s) (textTruncated); paging this reference cannot recover the omitted fields, rows, or text. The dev:pipeline_position result already marked a field as truncated. Re-read using that field's documented recovery handle or narrower arguments; a wider per-field limit may not exist."
+    }
+  },
+  "observations": [
+    {
+      "case": "positive",
+      "tool": "work_items:get",
+      "request": {
+        "id": "WI-6554700010017386",
+        "harness": "papercusp",
+        "threadLimit": 0,
+        "projection": {
+          "pick": [
+            "results[].id",
+            "results[].workItem.id",
+            "results[].workItem.harness",
+            "results[].workItem.assignee",
+            "results[].workItem.state"
+          ]
+        }
+      },
+      "observedNativeExitCode": 0,
+      "observationTime": {
+        "connectionStartedAt": "2026-10-24T00:26:40.680Z",
+        "qualification": "exact handler settle timestamp not retained"
+      },
+      "response": {
+        "results": [
+          {
+            "id": "WI-6554700010017386",
+            "workItem": {
+              "id": "WI-6554700010017386",
+              "harness": "papercusp",
+              "assignee": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+              "state": "open"
+            }
+          }
+        ],
+        "receipt": [
+          {
+            "id": "WI-6554700010017386",
+            "delivered": true
+          }
+        ],
+        "read": {
+          "schemaVersion": "work-items-get-read-v1",
+          "requested": 1,
+          "receiptComplete": true
+        }
+      },
+      "cliErrorText": null,
+      "stdoutSha256": "336d36117a5ccdc5603daff76a9ec8a0fdcdf2e3433b409bfebc15e238dfef80",
+      "stderrSha256": "9cfc428360aaf49b23fbe6424896c6acff068bfe0ffb145f68fd4e816a8c78a6",
+      "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/positive.stderr.gz",
+      "stderrArchiveSha256": "009dd9160102363248430cd4c0ece74fe345a2ce1219d01ae4bc64e91e4deb34",
+      "traceIds": [
+        "2d5b657b-13e3-4db6-8b82-d9c840b71789"
+      ],
+      "observedRoutes": [
+        "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "case": "all-scope",
+      "tool": "work_items:get",
+      "request": {
+        "id": "WI-6554700010017386",
+        "harness": "all",
+        "threadLimit": 0
+      },
+      "observedNativeExitCode": 1,
+      "observationTime": {
+        "connectionStartedAt": "2026-10-24T00:26:40.617Z",
+        "qualification": "exact handler settle timestamp not retained"
+      },
+      "response": null,
+      "cliErrorText": "harness_forbidden: harness:'all' is the unscoped global escape; this session is scoped to workspace \"papercusp-workspace\". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.\n",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "9b70a74ac076b514d370831fb423bd4d90eba2252c5aed9ddfd67fd83c8c87f7",
+      "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/all-scope.stderr.gz",
+      "stderrArchiveSha256": "ac0c2c5829791a0bd411326b4cbbe1156ca8c2110158f8b4c8710efdca80c938",
+      "traceIds": [
+        "2d608639-481a-4a24-96a2-18d427bcdf95"
+      ],
+      "observedRoutes": [
+        "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "case": "unknown-scope",
+      "tool": "work_items:get",
+      "request": {
+        "id": "WI-6554700010017386",
+        "harness": "idop-census-unregistered-20261024",
+        "threadLimit": 0
+      },
+      "observedNativeExitCode": 1,
+      "observationTime": {
+        "connectionStartedAt": "2026-10-24T00:26:40.640Z",
+        "qualification": "exact handler settle timestamp not retained"
+      },
+      "response": null,
+      "cliErrorText": "harness_forbidden: harness \"idop-census-unregistered-20261024\" is outside this session's hive \"papercusp\". For an ID-based work_items:get read, retry with the caller's harness \"papercusp\"; do not copy a returned row's canonical harness into this argument. Note: a WI-/F- (feature-family) id genuinely IS scoped to its owning harness, so this retry will NOT resolve a row that belongs to a different one — there is currently no cross-hive escape for a feature-family id from a hive-confined session.\n",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "20205ce2920c91ad0793555cbbf937f4c52eaeb4db770127db80fbb51703814f",
+      "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/unknown-scope.stderr.gz",
+      "stderrArchiveSha256": "65b096e6414af7f7cc156500adbd230069b3284867570ca9c6254a906a14ff73",
+      "traceIds": [
+        "13a6f756-7714-45d4-a646-dd36cf5dffe0"
+      ],
+      "observedRoutes": [
+        "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "case": "checkpoint-cap",
+      "tool": "work_items:get",
+      "request": {
+        "id": "WI-6554700010017386",
+        "harness": "papercusp",
+        "checkpointOnly": true,
+        "offset": 0,
+        "limit": 999999
+      },
+      "observedNativeExitCode": 0,
+      "observationTime": {
+        "connectionStartedAt": "2026-10-24T00:26:40.665Z",
+        "qualification": "exact handler settle timestamp not retained"
+      },
+      "response": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "id": "WI-6554700010017386",
+            "checkpointPage": {
+              "offset": 0,
+              "limit": 768,
+              "totalChars": 14133,
+              "returnedChars": 768,
+              "nextOffset": 768,
+              "text": "## Did\nFull previous checkpoint31889chars/hash7864710a2736 archived VERBATIM as thread-post1201815; readbackExact=true. Follow that archive for earlier baseline, source/activation evidence, fixtures and every prior archive pointer. D036/v71 accepts bounded installed source/stdout receipt/normal ORIENTATION ACK under existing D035. Shared installer10files/readback+7syntaxPASS, source85behavior/26isolatedinstaller historical proof unchanged. Realnative01a16ab5 record335/b05dd35a maps exact962bytepayload1512f044 to tokenbc52f4a5. Native-consumer.json/e6ce08a5 frozen. Next ordinary native cursor committed equals entire frozen pending minus__deliveryToken, no differing keys. normal-ack.json/3697452bcd23b0ec87dad46d7479047935650c43f4cd58904797f198506fe4e8 readback",
+              "limitClamped": {
+                "requested": 999999,
+                "applied": 768
+              }
+            },
+            "checkpointAgeMs": 2182469,
+            "checkpointUpdatedAtMs": 1792799424853,
+            "checkpointContentHash": "819c6caeb8a3"
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        },
+        "read": {
+          "schemaVersion": "work-items-get-read-v1",
+          "mode": "complete",
+          "requested": 1,
+          "available": 0,
+          "absent": 0,
+          "unavailable": 0,
+          "receiptComplete": true,
+          "budgetMs": 30000,
+          "elapsedMs": 449,
+          "baseReadMaxMs": 284,
+          "enrichmentMaxMs": 165,
+          "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+        },
+        "receipt": [
+          {
+            "id": "WI-6554700010017386",
+            "delivered": true
+          }
+        ],
+        "_shapeNote": {
+          "checkpointOnly": true,
+          "next": "Follow checkpointPage.nextOffset; restart from offset 0 if checkpointContentHash changes."
+        }
+      },
+      "cliErrorText": null,
+      "stdoutSha256": "42bf5cee49043776ad0f5e15f6d5b74bc73ed652848087e81607c34ab7c02c28",
+      "stderrSha256": "464821c06ee3ed2b2bbe7a52298183268cd31d65bdecd32de589840d3e91a519",
+      "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/checkpoint-cap.stderr.gz",
+      "stderrArchiveSha256": "940ce3a26221a6908852c523fa5f42c8502028486f3899ae2cee14ecd245fc53",
+      "traceIds": [
+        "6c0de823-cf31-4559-9c83-3f0366a01f2e"
+      ],
+      "observedRoutes": [
+        "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "case": "resume-conflict",
+      "tool": "work_items:get",
+      "request": {
+        "id": "WI-6554700010017386",
+        "harness": "papercusp",
+        "resume": true,
+        "checkpointOnly": true
+      },
+      "observedNativeExitCode": 1,
+      "observationTime": {
+        "connectionStartedAt": "2026-10-24T00:26:40.658Z",
+        "qualification": "exact handler settle timestamp not retained"
+      },
+      "response": null,
+      "cliErrorText": "invalid_input: invalid_args: checkpointOnly is a standalone one-item read; omit other enrichment switches — accepted args: id, attachments, ids, harness, detail, checksOnly, checkpointOnly, offset, limit, resume, operationalBrief, priorAttemptRefs, threadLimit\n",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "88ad6d2f1518a9f3d3b2d5e4c811ca088e56449360c1c30fd60a8a65ad7c18f6",
+      "stderrArchive": "$HOME/.papercusp/evidence/idop-p001-current-argument-scope-20261024-v1/resume-conflict.stderr.gz",
+      "stderrArchiveSha256": "aef8f1644d2628e952620cbc68d234321a18dacf781a284b470433cdd29ed759",
+      "traceIds": [
+        "be6ca003-edbc-4db6-8ee1-37ef9c13a8a0"
+      ],
+      "observedRoutes": [
+        "{'routeClass': 'local-direct', 'host': '127.0.0.1', 'port': 3170, 'attemptTimeoutMs': 15000}"
+      ],
+      "verification": "PASS"
+    }
+  ],
+  "sourceFileHashesAtReadback": {
+    "packages/operator-core/lib/agent-tools/work_items/get.ts": "d72a804691efb453f2ccf2694e99694e9317457c53c186ecf613e4a2841b1822",
+    "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts": "ed55d8d557dc59eeca0f38184d2b3622d1dec6884e85014d6d1a1620763877f6",
+    "packages/operator-core/lib/agent-tools/_harness-scope.ts": "9522f7a699a19eb814efdf29813fc82a9eae610381fb82297f51a92c9f62af8f",
+    "apps/operator/scripts/ptool.mjs": "cc3bccee158e25cee4bbba143d093638d884c4aa2c04a2d5831b6f3244de9ec8"
+  },
+  "writerReferences": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "lines": [
+        292,
+        314,
+        965
+      ],
+      "meaning": "Unicode code point checkpoint offsets; explicit page-size clamp and incompatible-switch refusal"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+      "lines": [
+        4484,
+        4679
+      ],
+      "meaning": "workspace-scoped all-harness and hive-confined different-harness requests refused before target dispatch"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/_harness-scope.ts",
+      "meaning": "concrete versus all harness vocabulary; transport clamp is the observed denial source"
+    }
+  ],
+  "frozenBaseline": {
+    "path": "docs/evidence/idop-p001-baseline-2026-10-22.json",
+    "sha256": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "unchanged": true
+  },
+  "verification": {
+    "observedCases": 5,
+    "passed": 5,
+    "testSuiteRun": false,
+    "method": "actual read-only CLI calls, output parsing, archive readback and source writer inspection"
+  },
+  "limits": [
+    "Only work_items:get for the current scoped caller tuple was observed; full role/identity/legal-stack/argument acceptance remains OPEN.",
+    "Supplemental MCP tools/list is not the original native launch catalog.",
+    "Exact ptool refusal text retained; raw protocol/HTTP response bodies and exact handler settle timestamps not retained.",
+    "Pipeline output is partial; only retained runtime containment fields are used. No release/gate-verdict claim.",
+    "Source hashes are at readback, not an immutable executed import closure.",
+    "No product configuration, real personal data/settings, grant, attestation, mode or fleet membership writes exercised.",
+    "Original18/22/23/rawHTTP and genuine pending source answer349651 qualifications remain.",
+    "P001 historical four-setting baseline, P024 independent acceptance, activation audit through revision73 and shipment remain open."
+  ]
+}

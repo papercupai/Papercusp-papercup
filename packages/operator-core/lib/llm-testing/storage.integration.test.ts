@@ -16,8 +16,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { validateToolDeliveryManifests, type ToolDeliveryExperiment, type ToolDeliveryRun } from '../tool-delivery-acceptance';
 
 const h = vi.hoisted(() => ({ url: '' }));
 vi.mock('../embedded-pg-discovery', () => ({
@@ -143,6 +144,50 @@ afterAll(async () => {
 });
 
 describe('persistRunReport (PG)', () => {
+  it('validates calls after a real JSONB round trip without losing argument or call ordering checks', async () => {
+    const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const definitions = [{ name: 'work_items__list', description: 'Full guidance', parameters: { type: 'object' } }];
+    const mapping: [string, string][] = [['work_items__list', 'work_items:list']];
+    const experiment: ToolDeliveryExperiment = { id: 'jsonb-regression', arms: { compactArm: 'compact', fullArm: 'full' },
+      scenarios: ['sc-1'], manifestContract: { provider: 'codex', systemSha256: hash('prompt'), sutModel: 'sut',
+        judgeModel: 'judge', scenarioHashes: { 'sc-1': 'scenario' }, canonicalBySanitized: mapping,
+        compactDefinitions: definitions, fullDefinitions: definitions } };
+    const calls = [
+      { name: 'work_items:list', input: { includeFleet: true, intent: 'first', nested: { longerKey: [2, 1], a: null } } },
+      { name: 'work_items:list', input: { limit: 2, intent: 'second' } },
+    ];
+    const turns = [{ toolCalls: calls }];
+    const [stored] = await rootSql<{ normalized: unknown }[]>`SELECT ${rootSql.json(turns)}::jsonb AS normalized`;
+    expect(JSON.stringify(stored!.normalized)).not.toBe(JSON.stringify(turns));
+    expect(stored!.normalized).toEqual(turns);
+    const manifest = (responseIndex: number) => ({ name: 'tool_definition_manifest', data: {
+      schemaVersion: 'su-tool-definitions-v1', provider: 'codex', systemSha256: hash('prompt'), responseIndex,
+      fullDefinitionsAfterUse: false, canonicalBySanitized: mapping,
+      usedCanonicalNames: responseIndex ? ['work_items:list'] : [], definitions,
+      sha256: hash(definitions), bytes: Buffer.byteLength(JSON.stringify(definitions)),
+    } });
+    const row: ToolDeliveryRun = { id: RUN_ID, scenario_id: 'sc-1', scenario_hash: 'scenario', sut_model: 'sut',
+      judge_model: 'judge', status: 'passed', variant: 'full', transcript_norm_json: stored!.normalized,
+      raw_events: [manifest(0), ...calls.flatMap((call, i) => [
+        { name: 'tool_call', data: call }, manifest(i + 1),
+      ]), { name: 'done', data: {} }] };
+    expect(validateToolDeliveryManifests(row, experiment).reason).toBeUndefined();
+    const mutations: Array<(turns: any[]) => void> = [
+      value => { value[0].toolCalls.reverse(); },
+      value => { value[0].toolCalls[0].input.nested.longerKey.reverse(); },
+      value => { value[0].toolCalls[0].input.intent = 'changed'; },
+      value => { value[0].toolCalls.pop(); },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(stored!.normalized) as any[];
+      mutate(changed);
+      expect(validateToolDeliveryManifests({ ...row, transcript_norm_json: changed }, experiment).reason)
+        .toContain('raw/normalized');
+    }
+    const changed = structuredClone(row);
+    (changed.raw_events as any[])[0].data.definitions[0].description = 'Changed definition';
+    expect(validateToolDeliveryManifests(changed, experiment).reason).toContain('frozen delivery contract');
+  });
   it('inserts the run row with the cross-source findings_count and round-trippable transcript', async () => {
     await persistRunReport(makeReport(), 'rubric-v3', 'scenhash');
     const runs = await rootSql<{ status: string; scenario_target: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown; metadata_json: unknown }[]>`

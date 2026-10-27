@@ -380,6 +380,43 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(await rubrics.getRubric('broken-r')).toBeNull();
     expect(await rubrics.listRubrics({})).toEqual([]);
   });
+
+  it('strict acceptance lookup distinguishes an unreadable existing rubric from absence', async () => {
+    await insertRubricPlan('unreadable-acceptance', { data: {
+      kind: 'acceptance', subjectPlan: 'unreadable-subject', subjectHarnessSlug: 'papercusp',
+      characteristic: 'unreadable-subject', criteria: [], ratingScale: [],
+    } });
+    await expect(rubrics.getAcceptanceRubricsForPlan('unreadable-subject', { strict: true }))
+      .rejects.toThrow('could not be decoded');
+    await expect(rubrics.getAcceptanceRubricsForPlan('absent-subject', { strict: true }))
+      .resolves.toEqual([]);
+    await expect(rubrics.getAcceptanceRubricsForPlan('unreadable-subject')).resolves.toEqual([]);
+  });
+
+  it('strict acceptance lookup reports a forward-schema contract as unreadable rather than missing', async () => {
+    const data = {
+      ...rubricData,
+      kind: 'acceptance', subjectPlan: 'forward-schema-subject', subjectHarnessSlug: 'papercusp',
+      barSetHash: 'a'.repeat(64),
+      barContract: {
+        schemaVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch', subjectPlanRevision: 1,
+        seededAt: '2026-10-26T00:00:00.000Z', seededBy: 'newer-writer',
+      },
+    };
+    await insertRubricPlan('forward-schema-acceptance', { data });
+    // Establish a readable control, then vary only the known contract version.
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan, { strict: true }))
+      .resolves.toEqual([expect.objectContaining({ rubricId: 'forward-schema-acceptance' })]);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+      SET template_data = jsonb_set(template_data, '{barContract,schemaVersion}', '2'::jsonb)
+      WHERE workspace_id=${activeWorkspaceId()} AND harness_slug='papercusp'
+        AND plan_slug='forward-schema-acceptance'`;
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan, { strict: true }))
+      .rejects.toThrow('could not be decoded');
+    await expect(rubrics.getAcceptanceRubricsForPlan(data.subjectPlan)).resolves.toEqual([]);
+    await expect(rubrics.getAcceptanceRubricsForPlan('absent-forward-schema-subject', { strict: true }))
+      .resolves.toEqual([]);
+  });
 });
 
 describe('rubric refs are workspace-unique — a slug held by two harnesses refuses (WI-6554700010008395)', () => {
@@ -2389,6 +2426,58 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('refreshes a stale stored BAR readiness Now after a canonical acceptance amendment', async () => {
+    const seeded = await seedBarContract('stale-readiness-now-after-amendment', { authorMethods: true });
+    const staleState =
+      '⚠ BAR READINESS BLOCKED (2026-10-24, after decision-added): bar_snapshot_cohort_incomplete, ' +
+      'bar_snapshot_rubric_missing, bar_snapshot_bar_set_empty. Next repair: repair seed. ' +
+      '(re-evaluated in the same write by the scope-write cascade, P-030/P-031)';
+    const staleNote = {
+      state: staleState,
+      next: 'repair seed',
+      author: 'su-test',
+      writtenAt: '2026-10-24T12:00:00.000Z',
+      eventId: null,
+      rationale: null,
+      source: 'set-now',
+    };
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET now_note = ${JSON.stringify(staleNote)}::text::jsonb,
+           now_state = ${staleNote.state}, now_next = ${staleNote.next}
+     WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Change the BAR meaning and refresh the subject plan readiness note.',
+      criterion: {
+        key: before.criteria[0]!.key,
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
+        text: 'The first outcome is absent after the amendment commits.',
+      },
+    };
+    await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+
+    const [after] = await db.adminSql<{ now_note: Record<string, unknown>; now_state: string; now_next: string }[]>`
+      SELECT now_note, now_state, now_next FROM harness_shared.harness_plans
+       WHERE workspace_id = ${seeded.workspaceId} AND harness_slug = 'papercusp' AND plan_slug = ${seeded.subject}`;
+    // Authoring METHODs repairs the old seed failures, but it does not vet the
+    // amended criteria. The refresh must replace obsolete advice with the current
+    // blocker rather than clear a contract that still needs independent vetting.
+    expect(after!.now_note).toMatchObject({ source: 'set-now' });
+    expect(after!.now_note.state).toContain('BAR READINESS BLOCKED');
+    expect(after!.now_note.state).toContain('bar_snapshot_vetting_missing');
+    for (const obsoleteCode of ['bar_snapshot_cohort_incomplete', 'bar_snapshot_rubric_missing', 'bar_snapshot_bar_set_empty']) {
+      expect(after!.now_note.state).not.toContain(obsoleteCode);
+    }
+    expect(after!.now_note.next).toContain('Vet the current acceptance-rubric criteria');
+    expect(after!.now_note.next).not.toContain('repair seed');
+    expect(after!.now_state).toBe(after!.now_note.state);
+    expect(after!.now_next).toBe(after!.now_note.next);
+  });
+
   it('authors an unstarted successor without changing the historical subject pin, and still refuses a pinned orphan', async () => {
     const seeded = await seedBarContract('successor-authoring-subject');
     await db.adminSql`UPDATE harness_shared.harness_plans SET status='superseded'
@@ -3725,10 +3814,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
 
     const snapshots = await import('./acceptance-bar-contract-snapshot');
     const originalRead = snapshots.readAcceptanceBarContractSnapshot;
-    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementationOnce(async (...args) => {
+    const phases: string[] = [];
+    const snapshotPhases: Array<string | undefined> = [];
+    const snapshotLockAvailability: boolean[][] = [];
+    const reader = vi.spyOn(snapshots, 'readAcceptanceBarContractSnapshot').mockImplementation(async (...args) => {
+      const phase = phases.at(-1);
+      snapshotPhases.push(phase);
+      snapshotLockAvailability.push(await db.adminSql.begin(async (tx) => {
+        const availability: boolean[] = [];
+        for (const slug of [seeded.rubricSlug, seeded.subject]) {
+          const [row] = await tx<{ available: boolean }[]>`SELECT pg_try_advisory_xact_lock(
+            hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+            hashtext(${planAdvisoryLockKey(seeded.workspaceId, 'papercusp', slug)})) AS available`;
+          availability.push(row!.available);
+        }
+        return availability;
+      }));
       try {
         const snapshot = await originalRead(...args);
-        await db.adminSql`SELECT pg_sleep(2)`;
+        if (phase === 'acceptance-contract-snapshot') await db.adminSql`SELECT pg_sleep(2)`;
         return snapshot;
       } finally {
         // With preparation outside the transaction the subsequent write uses
@@ -3738,8 +3842,14 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     h.shortIdleTimeoutMs = 1000;
     try {
-      const after = (await rubrics.amendRubric({ ...amendment, approvalRef }))!;
-      expect(reader).toHaveBeenCalledOnce();
+      const after = (await rubrics.amendRubric({ ...amendment, approvalRef,
+        onPhase: (phase) => phases.push(phase),
+      }))!;
+      // The second read refreshes Now after the amendment commits. Both reads
+      // must stay outside the guarded transaction and its two advisory locks.
+      expect(reader).toHaveBeenCalledTimes(2);
+      expect(snapshotPhases).toEqual(['acceptance-contract-snapshot', 'acceptance-now-readiness-refresh']);
+      expect(snapshotLockAvailability).toEqual([[true, true], [true, true]]);
       expect(after.revision).toBe(seeded.rubric.revision! + 1);
       expect(after.criteria[0]!.method).toBe(amendment.criterion.text);
       const [subject] = await db.adminSql<{ version: number }[]>`SELECT version
@@ -5084,6 +5194,33 @@ describe('template_data persistence boundary — the set-template-data door', ()
       reason: 'related_to_applier',
       eligibleWithUnrelatedApplier: true,
     });
+  });
+
+  it('METHOD review screens related sources and freshly reserved answerers with the same canonical lineage rule', async () => {
+    const seeded = await seedBarContract('method-review-native-independence');
+    const target = { rubricId: seeded.rubricSlug, applierId: 'amendment-actor' };
+    // The applier is part of the canonical population even without an audit row.
+    const sources = ['amendment-actor', 'method-independent-source'].map(ownerId => ({ ownerId, score: 0.9 }));
+    const { filterAmendmentReviewRoute } = await import('./consult/acceptance-bar-amendment-review');
+    const screen = await rubrics.resolveAcceptanceBarApproverScreen(target);
+    const route = await filterAmendmentReviewRoute({ qualified: sources, snapshot: { candidates: sources } } as never, screen.check);
+    expect(route.qualified.map(c => c.ownerId)).toEqual(['method-independent-source']);
+    expect(route.snapshot.candidates.map(c => c.ownerId)).toEqual(['method-independent-source']);
+    for (const [source, answerer] of [
+      ['amendment-actor', 'method-related-answerer'],
+      ['method-independent-source', 'method-independent-answerer'],
+    ]) {
+      // The dispatch stamp exists BEFORE the actual-answerer check/spawn. Its
+      // canonical edge follows the source, independent of a requester launcher.
+      await db.adminSql`INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, latency_contract, routing)
+        VALUES (${seeded.workspaceId}, ${`conv-${answerer}`}, 'amendment-actor', ${source!},
+          'awaiting_responder', 'current method', 'hard-blocked',
+          ${db.adminSql.json({ policy: 'method-review', methodReviewRubricRef: seeded.rubricSlug,
+            selection: { selected: [{ ownerId: source, answeringOwnerId: answerer, via: 'minimum' }] } } as never)})`;
+      const actual = await rubrics.checkAcceptanceBarApproverEligibility({ ...target, ownerId: answerer! });
+      expect(actual.eligible).toBe(source === 'method-independent-source');
+    }
   });
 
   it('P-005: the apply accepts an approval from a routed fork the applier requested, and still refuses an ordinary child', async () => {

@@ -193,12 +193,17 @@ export async function openWriterPidsMany(
     includeCwd?: boolean;
     /** Release worktrees also remain owned through a process root or executable. */
     includeProcessLinks?: boolean;
+    /** Memory mappings keep a source tree in use after its descriptors close. */
+    includeMappedFiles?: boolean;
+    /** Exact NUL-delimited environment entry -> ownership of the keyed path. */
+    environmentByPath?: Readonly<Record<string, string>>;
     /** Destructive callers must refuse missing/unreadable process evidence. */
     failClosed?: boolean;
     /** Isolated native workers may use direct proc reads; host callers stay async. */
     procIo?: {
       readdir: (path: string) => string[] | Promise<string[]>;
       readlink: (path: string) => string | Promise<string>;
+      readFile?: (path: string) => string | Promise<string>;
     };
   } = {},
 ): Promise<OpenWriterScan> {
@@ -209,6 +214,14 @@ export async function openWriterPidsMany(
   const procRoot = opts.procRoot ?? '/proc';
   const readProcDirectory = opts.procIo?.readdir ?? readdir;
   const readProcLink = opts.procIo?.readlink ?? readlink;
+  const readProcFile = opts.procIo?.readFile ?? ((path: string) => readFile(path, 'utf8'));
+  const environmentPaths = new Map<string, string[]>();
+  for (const [path, entry] of Object.entries(opts.environmentByPath ?? {})) {
+    if (!wanted.has(path) || !/^[A-Za-z_][A-Za-z0-9_]*=.+$/.test(entry) || entry.includes('\0')) {
+      return { byPath, complete: false, diagnostics: { reason: 'invalid environment holder predicate' } };
+    }
+    environmentPaths.set(entry, [...(environmentPaths.get(entry) ?? []), path]);
+  }
   let entries: string[];
   try {
     const pending = readProcDirectory(procRoot);
@@ -244,15 +257,15 @@ export async function openWriterPidsMany(
       const pidDir = join(procRoot, pid);
       const fdDir = `${pidDir}/fd`;
       const seen = new Set<string>();
+      const recordPath = (path: string): void => {
+        if (seen.has(path)) return;
+        seen.add(path);
+        const holders = byPath.get(path);
+        if (holders) holders.push(pid);
+        else byPath.set(path, [pid]);
+      };
       const record = (rawTarget: string): void => {
         const target = rawTarget.replace(/ \(deleted\)$/, '');
-        const recordPath = (path: string): void => {
-          if (seen.has(path)) return;
-          seen.add(path);
-          const holders = byPath.get(path);
-          if (holders) holders.push(pid);
-          else byPath.set(path, [pid]);
-        };
         if (wanted.has(target)) recordPath(target);
         if (opts.descendants) {
           // A descriptor can only belong to its own ancestors. Walking those
@@ -270,6 +283,49 @@ export async function openWriterPidsMany(
           const pending = readProcLink(linkPath);
           record(typeof pending === 'string' ? pending : await pending);
         } catch (err) { readFailed(err, link, linkPath); }
+      }
+      for (const name of [
+        ...(opts.includeMappedFiles ? ['maps'] : []),
+        ...(environmentPaths.size ? ['environ'] : []),
+      ]) {
+        if (expired()) return;
+        const path = `${pidDir}/${name}`;
+        try {
+          const pending = readProcFile(path);
+          const raw = typeof pending === 'string' ? pending : await pending;
+          if (name === 'environ') {
+            for (const entry of raw.split('\0')) {
+              for (const ownerPath of environmentPaths.get(entry) ?? []) recordPath(ownerPath);
+            }
+          } else {
+            for (const line of raw.split('\n')) {
+              const target = /^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/.exec(line)?.[1];
+              if (target) record(target.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(parseInt(octal, 8))));
+            }
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') {
+            // Linux get_proc_task_mm returns ESRCH once there is no userspace
+            // address space, including kernel threads and zombies. Require
+            // positive stat evidence, rather than treating an unreadable live
+            // userspace process as proof of absence. Still scan its FDs.
+            try {
+              const pending = readProcFile(`${pidDir}/stat`);
+              const raw = typeof pending === 'string' ? pending : await pending;
+              const fields = raw.slice(raw.lastIndexOf(')') + 2).trim().split(/\s+/);
+              if (raw.startsWith(`${pid} (`) && fields.length >= 7 && /^\d+$/.test(fields[6]) &&
+                  (fields[0] === 'Z' || (BigInt(fields[6]) & 0x200000n) !== 0n)) continue;
+            } catch { /* Missing identity cannot authorize ignoring ESRCH. */ }
+          }
+          if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+            // Unlike a missing cwd (kernel threads), a missing maps/environ is
+            // inconclusive while the process itself still exists.
+            try {
+              await readProcDirectory(pidDir);
+              readFailed({ code: 'MISSING_PROCESS_EVIDENCE' }, name, path);
+            } catch (gone) { readFailed(gone, name, path); }
+          } else readFailed(err, name, path);
+        }
       }
       let fds: string[];
       try {

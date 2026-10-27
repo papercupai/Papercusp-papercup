@@ -62,7 +62,14 @@ const outFile = join(outDir, 'hono-host.mjs');
 // apps/operator/bin/bundle-host.sh) took the bundle 77.05 -> 70.39 MiB. The
 // remainder is organic first-party growth, not a single leaked dependency, so
 // the budget was raised 68 -> 72 MiB. Diagnose again before the next raise.
-const HOST_BUNDLE_BUDGET_BYTES = 72 * 1024 * 1024;
+//
+// Re-baselined 2026-10-27 (gate-systems-as-designed-2026-10-27#D-006): at frozen
+// candidate 8c03b5dcd156 the bundle measured 73.19 MiB; the one leak (a 0.93 MiB
+// test fixture statically imported by tool-delivery-acceptance.ts) was removed,
+// leaving 72.30 MiB of organic first-party growth, so the budget went 72 -> 74 MiB.
+// Staging measured 76.25 MiB the same day: diagnose it (WI-6554700010030028)
+// rather than raising again.
+const HOST_BUNDLE_BUDGET_BYTES = 74 * 1024 * 1024;
 const HOST_BUNDLE_POST_TRIM_BASELINE_MB = 36.4;
 const HOST_PROCESS_COUNT = 17;
 

@@ -76,6 +76,13 @@ import {
 } from "./proxy";
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
 import { DEFAULT_KEEPALIVE_TIMEOUT_MS } from "../../bin/host-request-deadline";
+import { buildMcpUrl } from "../../scripts/ptool.mjs";
+import { CHARS_PER_TOKEN_ESTIMATE } from "@papercusp/operator-core/lib/context-doors";
+import capabilityRead from "@papercusp/operator-core/lib/agent-tools/capability/read";
+import * as payloadSpool from "@papercusp/operator-core/lib/inference-gateway/payload-spool";
+import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from "@papercusp/operator-core/lib/result-door";
+import * as scratchGc from "@papercusp/operator-core/lib/scratch-gc";
+import * as scratchReference from "@papercusp/operator-core/lib/scratch-reference";
 
 describe("shouldRetry — refused-only + in-window (no double-execution)", () => {
   it("retries when NOT connected and within the window", () => {
@@ -1657,6 +1664,405 @@ describe("MCP proxy serving-generation affinity", () => {
     expect((await request(port(proxy), listBody)).status).toBe(200);
     expect(connections).toBe(3);
   });
+
+  it("recovers a durable scratch cursor across transport loss and refreshed serving generations", async () => {
+    const { mkdirSync, mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const sandbox = mkdtempSync(join(tmpdir(), "papercusp-mcp-recovery-"));
+    const scratchRoot = join(sandbox, "scratch");
+    mkdirSync(scratchRoot, { recursive: true });
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousDoorOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    scratchGc._resetScratchUsageForTests();
+
+    const spool = payloadSpool.memoryGatewayPayloadSpool();
+    const timeoutWarning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const persistVolatile = scratchReference.persistVolatileScratchReference;
+    let volatileUri: string | null = null;
+    let volatileExpiry: string | null = null;
+    const persistSpy = vi.spyOn(scratchReference, "persistVolatileScratchReference")
+      .mockImplementation(async (uri, caller) => {
+        volatileUri = uri;
+        return persistVolatile(uri, caller, { spool });
+      });
+    const spoolFactorySpy = vi.spyOn(payloadSpool, "createGatewayPayloadSpool")
+      .mockReturnValue(spool);
+
+    let rejectPrimaryWrite: (error: Error) => void = () => {};
+    let signalPrimaryWrite: () => void = () => {};
+    const primaryWriteStarted = new Promise<void>((resolve) => {
+      signalPrimaryWrite = resolve;
+    });
+    const stalledPrimaryWrite = new Promise<void>((_resolve, reject) => {
+      rejectPrimaryWrite = reject;
+    });
+    const writerSpy = vi.spyOn(scratchGc, "writeWithScratchQuota")
+      .mockImplementation((_options, write) => {
+        signalPrimaryWrite();
+        return stalledPrimaryWrite.then(() =>
+          write(async (_phase, _subphase, operation) => operation()),
+        );
+      });
+
+    let spillPromise: Promise<any> | undefined;
+    let spillResult: any;
+    let fakeTimers = false;
+    let restoreVolatileReader: (() => void) | undefined;
+    try {
+      const marker = "mcp-recovery-spill-marker";
+      const oversizedText = marker + "\n" + Array.from(
+        { length: Math.ceil((RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE * 3) / 40) },
+        (_unused, index) => "line " + index + " of a very long result",
+      ).join("\n");
+
+      vi.useFakeTimers();
+      fakeTimers = true;
+      spillPromise = applyResultDoorAsync(
+        { content: [{ type: "text", text: oversizedText }] },
+        {
+          toolName: "capability:git-evidence",
+          workspaceId: "ws-1",
+          runId: "11111111-2222-4333-8444-555555555555",
+        },
+      );
+      await primaryWriteStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      spillResult = await spillPromise;
+      vi.useRealTimers();
+      fakeTimers = false;
+      expect(timeoutWarning).toHaveBeenCalledWith(
+        expect.stringContaining("[bounded-timeout] result-door scratch spill write exceeded 30000ms"),
+      );
+
+      const spillText = spillResult.content.find((item: { type: string; text?: string }) => item.type === "text")?.text ?? "";
+      const spillEnvelope = JSON.parse(spillText) as {
+        _projection?: { cursor?: Record<string, any> };
+      };
+      const spillMeta = spillResult._meta?.resultDoor as {
+        recoveryCursor?: Record<string, any>;
+      } | undefined;
+      const cursor = spillMeta?.recoveryCursor ?? spillEnvelope._projection?.cursor;
+      const cursorArgs = (cursor?.args ?? {}) as Record<string, unknown>;
+      expect(cursor?.kind).toBe("durable-scratch-page");
+      const cursorUri = String(cursor?.uri ?? cursor?.args?.uri ?? "");
+      expect(cursorUri).toMatch(/^papercusp:\/\/scratch-spool\/[0-9a-f]{64}$/);
+      expect(spillText).not.toContain("papercusp://scratch-memory/");
+      const stored = await scratchReference.readDurableScratchReference(
+        cursorUri,
+        { workspaceId: "ws-1" },
+        { spool },
+      );
+      volatileExpiry = stored.manifest.expiresAt;
+      expect(stored.payload.toString("utf8")).toContain(marker);
+
+      const volatileReader = vi.spyOn(scratchReference, "readVolatileScratchReference")
+        .mockImplementation(() => {
+          throw new Error("creator worker volatile cache is gone");
+        });
+      restoreVolatileReader = () => volatileReader.mockRestore();
+
+      type Worker = {
+        generation: string;
+        connectionId: number;
+      };
+      const workersBySocket = new WeakMap<net.Socket, Worker>();
+      const observations: Array<{
+        rpcId: number;
+        generation: string;
+        connectionId: number;
+        method: string;
+        toolName: string;
+        suppliedGeneration: string | null;
+      }> = [];
+      let nextConnectionId = 0;
+      let dropFirstRestartedFind = true;
+      const workerFor = (req: http.IncomingMessage): Worker => {
+        const prior = workersBySocket.get(req.socket);
+        if (prior) return prior;
+        const connectionId = ++nextConnectionId;
+        const generation = connectionId === 1
+          ? "serving-generation-v1:worker-a"
+          : connectionId === 2 || connectionId === 3
+            ? "serving-generation-v1:worker-b"
+            : connectionId % 2 === 0
+              ? "serving-generation-v1:worker-a"
+              : "serving-generation-v1:worker-b";
+        const worker = { generation, connectionId };
+        workersBySocket.set(req.socket, worker);
+        return worker;
+      };
+      const sendResult = (
+        res: http.ServerResponse,
+        id: unknown,
+        result: unknown,
+        close = false,
+      ) => {
+        res.writeHead(200, {
+          "content-type": "application/json",
+          ...(close ? { connection: "close" } : {}),
+        });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      };
+      const sendError = (
+        res: http.ServerResponse,
+        id: unknown,
+        code: string,
+        message: string,
+      ) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
+      };
+      const upstream = track(http.createServer((req, res) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          const rpc = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            id?: unknown;
+            method?: string;
+            params?: Record<string, any>;
+          };
+          const worker = workerFor(req);
+          const params = rpc.params ?? {};
+          const toolName = String(params.name ?? "");
+          const args = params.arguments ?? {};
+          const metadataGeneration = params._meta?.["papercusp/servingGeneration"];
+          const suppliedGeneration = typeof args.servingGeneration === "string"
+            ? args.servingGeneration
+            : typeof metadataGeneration === "string" ? metadataGeneration : null;
+          observations.push({
+            rpcId: Number(rpc.id),
+            ...worker,
+            method: rpc.method ?? "",
+            toolName,
+            suppliedGeneration,
+          });
+
+          if (rpc.method === "tools/list") {
+            const tool = (name: string) => ({
+              name,
+              inputSchema: { type: "object", properties: {} },
+              outputSchema: { type: "object" },
+              _meta: { "papercusp/servingGeneration": worker.generation },
+            });
+            sendResult(res, rpc.id, { tools: [tool("tools:find"), tool("tools:invoke")] });
+            return;
+          }
+          if (rpc.method !== "tools/call") {
+            sendError(res, rpc.id, "unsupported_method", "unexpected MCP method");
+            return;
+          }
+          if (
+            worker.connectionId === 2 &&
+            worker.generation === "serving-generation-v1:worker-b" &&
+            toolName === "tools:find" &&
+            dropFirstRestartedFind
+          ) {
+            dropFirstRestartedFind = false;
+            req.socket.destroy();
+            return;
+          }
+          if (metadataGeneration !== worker.generation) {
+            sendError(res, rpc.id, "stale_tool_contract", "stale_tool_contract");
+            return;
+          }
+          if (toolName === "tools:find") {
+            sendResult(res, rpc.id, {
+              servingGeneration: worker.generation,
+              hits: [{ tool: "capability:read" }],
+            });
+            return;
+          }
+          if (toolName !== "tools:invoke" || args.servingGeneration !== worker.generation) {
+            sendError(res, rpc.id, "stale_tool_contract", "stale_tool_contract");
+            return;
+          }
+          if (args.name === "capability:git-evidence") {
+            sendResult(res, rpc.id, spillResult, true);
+            return;
+          }
+          if (args.name === "capability:read") {
+            const page = await capabilityRead.handler(args.args as never, {
+              projectDir: scratchRoot,
+              workspaceId: "ws-1",
+            } as never);
+            sendResult(res, rpc.id, page);
+            return;
+          }
+          sendError(res, rpc.id, "unknown_tool", "unexpected tools:invoke target");
+        })().catch((error: unknown) => {
+          if (res.headersSent) {
+            req.socket.destroy();
+            return;
+          }
+          sendError(res, undefined, "upstream_test_error", String(error));
+        });
+      }));
+      await listen(upstream);
+      const proxy = track(createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        log: () => {},
+      }));
+      await listen(proxy);
+
+      const stableUrl = buildMcpUrl("http://127.0.0.1:" + port(proxy), {
+        client: "codex-regression",
+        nativeSessionOverride: "native-regression",
+        contextTier: "",
+        env: { PAPERCUSP_SID: "codex-regression" },
+      });
+      const stablePath = stableUrl.pathname + stableUrl.search;
+      const anonymousPath = "/api/mcp?superuser=1";
+      let rpcId = 0;
+      const stableRpcIds = new Set<number>();
+      const anonymousRpcIds = new Set<number>();
+      const sendRpc = async (path: string, method: string, params: Record<string, unknown>) => {
+        let response: Awaited<ReturnType<typeof request>>;
+        const id = ++rpcId;
+        if (path === stablePath) stableRpcIds.add(id);
+        if (path === anonymousPath) anonymousRpcIds.add(id);
+        try {
+          response = await request(
+            port(proxy),
+            JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+            path,
+            { "content-type": "application/json" },
+          );
+        } catch (error) {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          if (!("code" in normalized)) Object.assign(normalized, { code: "ECONNRESET" });
+          throw normalized;
+        }
+        if (response.status >= 500) {
+          throw Object.assign(new Error("ECONNRESET from the MCP upstream"), { code: "ECONNRESET" });
+        }
+        const envelope = JSON.parse(response.body) as {
+          result?: unknown;
+          error?: { code?: unknown; message?: unknown };
+        };
+        if (envelope.error) {
+          const code = envelope.error.code === "stale_tool_contract"
+            ? "stale_tool_contract"
+            : "ECONNRESET";
+          throw Object.assign(new Error(String(envelope.error.message ?? code)), { code });
+        }
+        return envelope.result;
+      };
+      const listTools = async (path: string) => {
+        const result = await sendRpc(path, "tools/list", {});
+        return (result as { tools: Array<Record<string, any>> }).tools;
+      };
+      const callTool = async (
+        path: string,
+        name: string,
+        args: Record<string, unknown>,
+        generation: string,
+      ) => sendRpc(path, "tools/call", {
+        name,
+        arguments: args,
+        _meta: { "papercusp/servingGeneration": generation },
+      });
+
+      const catalogA = await listTools(stablePath);
+      const invokeA = catalogA.find((tool) => tool.name === "tools:invoke");
+      const generationA = String(invokeA?._meta?.["papercusp/servingGeneration"] ?? "");
+      expect(generationA).toBe("serving-generation-v1:worker-a");
+      const foundA = await callTool(stablePath, "tools:find", { query: "capability:read" }, generationA);
+      expect((foundA as { servingGeneration: string }).servingGeneration).toBe(generationA);
+      const spillCall = await callTool(stablePath, "tools:invoke", {
+        name: "capability:git-evidence",
+        args: { query: "large audit evidence" },
+        servingGeneration: generationA,
+      }, generationA) as Record<string, any>;
+      const spillCallText = spillCall.content.find((item: { type?: string }) => item.type === "text")?.text ?? "";
+      expect(spillCallText).toContain(cursorUri);
+      expect(spillCallText).not.toContain("papercusp://scratch-memory/");
+
+      await expect(
+        callTool(stablePath, "tools:find", { query: "capability:read" }, generationA),
+      ).rejects.toMatchObject({ code: "stale_tool_contract" });
+      expect(dropFirstRestartedFind).toBe(false);
+      expect(observations.some((entry) =>
+        entry.connectionId === 2 && entry.toolName === "tools:find",
+      )).toBe(true);
+      expect(observations.some((entry) =>
+        entry.connectionId === 3 && entry.toolName === "tools:find" && entry.generation === "serving-generation-v1:worker-b",
+      )).toBe(true);
+      const failedFindId = rpcId;
+      const catalogB = await listTools(stablePath);
+      const invokeB = catalogB.find((tool) => tool.name === "tools:invoke");
+      const generationB = String(invokeB?._meta?.["papercusp/servingGeneration"] ?? "");
+      expect(generationB).toBe("serving-generation-v1:worker-b");
+      const foundB = await callTool(stablePath, "tools:find", { query: "capability:read" }, generationB);
+      expect((foundB as { servingGeneration: string }).servingGeneration).toBe(generationB);
+
+      await expect(callTool(stablePath, "tools:invoke", {
+        name: "capability:read",
+        args: cursorArgs,
+        servingGeneration: generationA,
+      }, generationA)).rejects.toMatchObject({ code: "stale_tool_contract" });
+      const refreshedCatalog = await listTools(stablePath);
+      const refreshedInvoke = refreshedCatalog.find((tool) => tool.name === "tools:invoke");
+      const refreshedGeneration = String(refreshedInvoke?._meta?.["papercusp/servingGeneration"] ?? "");
+      expect(refreshedGeneration).toBe(generationB);
+      const refreshedFind = await callTool(stablePath, "tools:find", { query: "capability:read" }, refreshedGeneration);
+      expect((refreshedFind as { servingGeneration: string }).servingGeneration).toBe(generationB);
+      const page = await callTool(stablePath, "tools:invoke", {
+        name: "capability:read",
+        args: cursorArgs,
+        servingGeneration: generationB,
+      }, generationB) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+      expect(page.isError).not.toBe(true);
+      expect(JSON.parse(page.content.find((item) => item.type === "text")!.text!)).toMatchObject({ ok: true, eof: false });
+
+      const stableAfterFailure = observations.filter((entry) =>
+        stableRpcIds.has(entry.rpcId) && entry.rpcId > failedFindId,
+      );
+      expect(stableAfterFailure.length).toBeGreaterThan(0);
+      expect(stableAfterFailure.every((entry) => entry.generation === generationB)).toBe(true);
+      expect(new Set(stableAfterFailure.map((entry) => entry.connectionId)).size).toBe(1);
+
+      const anonymousCatalog = await listTools(anonymousPath);
+      const anonymousInvoke = anonymousCatalog.find((tool) => tool.name === "tools:invoke");
+      const anonymousGeneration = String(anonymousInvoke?._meta?.["papercusp/servingGeneration"] ?? "");
+      expect(anonymousGeneration).toBe("serving-generation-v1:worker-a");
+      await expect(
+        callTool(anonymousPath, "tools:find", { query: "capability:read" }, anonymousGeneration),
+      ).rejects.toMatchObject({ code: "stale_tool_contract" });
+      expect(observations.filter((entry) => anonymousRpcIds.has(entry.rpcId)).map((entry) => entry.generation))
+        .toEqual(["serving-generation-v1:worker-a", "serving-generation-v1:worker-b"]);
+    } finally {
+      if (fakeTimers) vi.useRealTimers();
+      rejectPrimaryWrite(new Error("test cleanup"));
+      await spillPromise?.catch(() => undefined);
+      restoreVolatileReader?.();
+      writerSpy.mockRestore();
+      persistSpy.mockRestore();
+      spoolFactorySpy.mockRestore();
+      timeoutWarning.mockRestore();
+      if (volatileUri && volatileExpiry) {
+        try {
+          scratchReference.readVolatileScratchReference(volatileUri, {
+            workspaceId: "ws-1",
+            nowMs: Date.parse(volatileExpiry) + 1,
+          });
+        } catch {
+          // The expiry read evicts the test's process-local fallback entry.
+        }
+      }
+      scratchGc._resetScratchUsageForTests();
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      if (previousDoorOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createMcpProxy — forwarding + restart recovery", () => {
@@ -3009,6 +3415,80 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":"audit-recovered"}');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("tools:invoke-wrapped artifacts:load retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"found":true,"content":"artifact-tail"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "artifacts:load",
+            args: {
+              slug: "papercusp",
+              rel_path: "audits/example.json",
+              offset: 527_000,
+              max_chars: 4_000,
+            },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"found":true,"content":"artifact-tail"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-25892935669084367: tools:invoke-wrapped dev:rate_governor_status retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":"rate-governor-status-recovered"}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "dev:rate_governor_status", args: {} },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"rate-governor-status-recovered"}');
     expect(upstream.hits()).toBe(2);
   });
 
@@ -5962,7 +6442,6 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/agent-mcp/console/bootstrap-su/session-resumed",
       "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
       "/api/agent-mcp/console/bootstrap-su/session-resume-released",
-      "/api/agent-mcp/console/bootstrap-su/session-respawned",
       "/api/adv/sessions/port/delivery",
       "/api/adv/sessions/port/status",
     ]) {
@@ -5972,6 +6451,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         `rest:${path}`,
       ]);
     }
+    // WI-6554700010029903: the carry-respawn identity report is reserved but
+    // must not join the single-socket continuation FIFO.
+    const respawned = "/api/agent-mcp/console/bootstrap-su/session-respawned";
+    expect(isReservedControlPlanePath(respawned)).toBe(true);
+    expect(isReservedControlPlaneCall(ordinaryBody, respawned)).toBe(true);
+    expect(isCriticalContinuationCall(ordinaryBody, respawned)).toBe(false);
     expect(isReservedControlPlanePath("/api/tui/identity")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity/")).toBe(true);
     expect(isReservedControlPlanePath("/api/tui/identity?probe=startup")).toBe(
@@ -10252,6 +10737,143 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await checkpoint).status).toBe(200);
     expect(hits).toEqual(["held-checkpoint", "queued-checkpoint"]);
   });
+
+  it.each(["number", "string"] as const)("WI-6554700010017061: independent Codex homes progress while shared homes and unkeyed lifecycle calls stay ordered (%s)", async (idEncoding) => {
+    let releaseCompletion: () => void = () => {};
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    let releaseHome: () => void = () => {};
+    const homeGate = new Promise<void>((resolve) => { releaseHome = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    let completionSettled = false;
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      hits.push(client);
+      const gate = client === "held-completion" ? completionGate
+        : client === "held-home" ? homeGate : Promise.resolve();
+      void gate.then(() => res.end('{"ok":true}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 3,
+      maxCriticalContinuationQueue: 8,
+      criticalContinuationQueueWaitLogMs: 10,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const home = (client: string, owner: string, advSessionId: number) => {
+      const result = request(port(proxy), JSON.stringify({ owner,
+        advSessionId: idEncoding === "string" ? String(advSessionId) : advSessionId }),
+        "/api/adv/sessions/ensure-codex-home?client=" + client);
+      pending.push(result);
+      return result;
+    };
+    const queuedCount = () => logs.filter((line) => line.includes("queued critical-continuation request")).length;
+    try {
+      const completion = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "work_items:complete", arguments: { id: "WI-held" } },
+      }), "/api/mcp?client=held-completion").then((result) => {
+        completionSettled = true;
+        return result;
+      });
+      pending.push(completion);
+      await waitFor(() => hits.includes("held-completion"));
+
+      const firstHome = home("held-home", "su-home-a", 101);
+      // Home preparation must reach its upstream while an unrelated mutation is held.
+      await waitFor(() => hits.includes("held-home"));
+      const sameOwner = home("same-owner", "su-home-a", 102);
+      const sameHome = home("same-home", "su-home-b", 101);
+      await waitFor(() => queuedCount() >= 2);
+      expect((await home("independent-home", "su-home-c", 103)).status).toBe(200);
+      expect(completionSettled).toBe(false);
+      expect(hits).toEqual(["held-completion", "held-home", "independent-home"]);
+
+      releaseHome();
+      expect((await firstHome).status).toBe(200);
+      expect((await sameOwner).status).toBe(200);
+      expect((await sameHome).status).toBe(200);
+      expect(completionSettled).toBe(false);
+
+      const malformed = request(port(proxy), JSON.stringify({ owner: "su-home-a" }),
+        "/api/adv/sessions/ensure-codex-home?client=unkeyed-home");
+      const lifecycle = request(port(proxy), JSON.stringify({ advSessionId: 103 }),
+        "/api/agent-mcp/console/bootstrap-su/session-ended?client=lifecycle");
+      pending.push(malformed, lifecycle);
+      await waitFor(() => queuedCount() >= 4);
+      expect(hits).not.toContain("unkeyed-home");
+      expect(hits).not.toContain("lifecycle");
+      releaseCompletion();
+      expect((await completion).status).toBe(200);
+      expect((await malformed).status).toBe(200);
+      expect((await lifecycle).status).toBe(200);
+    } finally {
+      releaseHome();
+      releaseCompletion();
+      await Promise.allSettled(pending);
+    }
+  }, 10_000);
+
+  it("WI-6554700010029903: a carry-respawn identity report is forwarded while unkeyed continuation writes hold the critical socket", async () => {
+    let releaseHeld: () => void = () => {};
+    const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "";
+      hits.push(client);
+      const gate = client.startsWith("held-") ? heldGate : Promise.resolve();
+      void gate.then(() => res.end('{"ok":true}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 3,
+      maxCriticalContinuationQueue: 8,
+      criticalContinuationQueueWaitLogMs: 10,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const toolCall = (client: string, name: string, args: Record<string, unknown>) => {
+      const result = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args },
+      }), "/api/mcp?client=" + client);
+      pending.push(result);
+      return result;
+    };
+    try {
+      // Unkeyed loop:checkpoint is a global barrier on the critical lane: it holds the
+      // socket, and a second one queues behind it (the 2026-10-27 proxy journal shape).
+      toolCall("held-loop-checkpoint", "loop:checkpoint", { did: "x" });
+      await waitFor(() => hits.includes("held-loop-checkpoint"));
+      toolCall("queued-loop-checkpoint", "loop:checkpoint", { did: "y" });
+      await waitFor(() =>
+        logs.some((line) => line.includes("queued critical-continuation request")));
+
+      const respawned = await request(port(proxy), JSON.stringify({
+        coordOwnerId: "su-respawn", sessionId: "11111111-1111-4111-8111-111111111111",
+      }), "/api/agent-mcp/console/bootstrap-su/session-respawned?client=respawn-report");
+      expect(respawned.status).toBe(200);
+      expect(hits).toContain("respawn-report");
+      expect(hits).not.toContain("queued-loop-checkpoint");
+      expect(logs.some((line) => line.includes("session-respawned"))).toBe(false);
+    } finally {
+      releaseHeld();
+      await Promise.allSettled(pending);
+    }
+  }, 10_000);
 
   it("BYOC P-004: disjoint work-item continuations bypass a slow completion while same-item writes stay ordered", async () => {
     let releaseItemA: () => void = () => {};

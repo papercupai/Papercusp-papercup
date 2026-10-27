@@ -143,6 +143,36 @@ export function normalizeAffects(
   return [...new Set((affects ?? []).filter((s) => s !== homeSlug))];
 }
 
+/**
+ * A leading `D-NNN` + separator that a caller copied from the rendered
+ * `### D-NNN — <title>` heading into `title` itself (EI-27020408323515699).
+ * The id is ALLOCATED by the writer, so a caller-supplied one is at best a
+ * duplicate (`### D-013 — D-013 — …`) and at worst a stale guess that gives the
+ * decision a misleading id in its own heading (`### D-005 — D-004 — …`, when
+ * another writer appended D-004 in between).
+ *
+ * Separators: em dash, en dash or colon (spacing optional), or a hyphen-minus
+ * with whitespace on both sides — so `D-003-style rule` is left alone. A title
+ * that merely REFERS to another decision (`D-003 BAR amendment: …`) has no
+ * separator after the id and is kept verbatim.
+ */
+const LEADING_DECISION_ID_RE = /^\s*(D-\d{3,})(?:\s*[—–:]|\s+-(?=\s))\s*/;
+
+/**
+ * Strip ONE leading caller-supplied `D-NNN —` prefix from a decision title.
+ * Only one: a second id after the first separator (`D-005 — D-003: superseded`)
+ * is content, not a prefix. A title that would be empty after stripping is
+ * returned unchanged. `strippedId` is the removed id, or null when nothing was
+ * removed.
+ */
+export function stripLeadingDecisionId(title: string): { title: string; strippedId: string | null } {
+  const m = LEADING_DECISION_ID_RE.exec(title);
+  if (!m) return { title, strippedId: null };
+  const rest = title.slice(m[0].length);
+  if (rest.trim().length === 0) return { title, strippedId: null };
+  return { title: rest, strippedId: m[1] ?? null };
+}
+
 export function appendDecisionToBody(
   body: string,
   decisionId: string,
@@ -160,8 +190,12 @@ export function appendDecisionToBody(
   // Enforced HERE, at authorship, rather than documented as a convention:
   // the failure is silent, so the only tier that works is a structural one.
   const { body: safeBody } = normalizeDecisionBodyHeadings(decisionBody.trim());
+  // A caller-copied `D-NNN —` prefix never reaches the heading: the id is
+  // ours to allocate (EI-27020408323515699). Applied here as well as at the
+  // tool boundary so every library caller of this splice gets it.
+  const headingTitle = stripLeadingDecisionId(title).title.trim();
   const block =
-    `\n### ${decisionId} — ${title.trim()}\n` +
+    `\n### ${decisionId} — ${headingTitle}\n` +
     `Date: ${date}\n` +
     affectsLine +
     `${safeBody}${refsLine}\n`;

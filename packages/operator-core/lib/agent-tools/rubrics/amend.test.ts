@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { applyPayloadTier } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { applyResultDoor } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { safeScratchFilesystemPath } from '../../scratch-uri';
+import { readProcessIdentity } from '../../process-identity';
 
 const doorConstants = vi.hoisted(() => vi.fn());
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstants }));
@@ -26,10 +27,14 @@ const rubricsMocks = vi.hoisted(() => ({
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
 const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
 vi.mock('../plans/source', () => ({ getPlanRow: planMocks.getPlanRow }));
-const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn() }));
+const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn(), getWorkItemsByIds: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
-  type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
+  type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null; executor_host?: string; executor_pid?: number; executor_process_id?: string };
   const rows = new Map<string, Row>();
+  const progressControl = {
+    beforeWrite: undefined as (() => Promise<void>) | undefined,
+    afterWrite: undefined as (() => void) | undefined,
+  };
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     // postgres' bulk insert helper is called before its tagged statement.
     if (!Array.isArray(parts) || !('raw' in parts)) return [];
@@ -40,7 +45,8 @@ const receiptDb = vi.hoisted(() => {
       const [workspace, rubric, key] = values as string[];
       const id = `${workspace}:${rubric}:${key}`;
       if (rows.has(id)) return [];
-      rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null, result_json: null, error: null });
+      rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null,
+        result_json: values[6] ? JSON.parse(String(values[6])) : null, error: null });
       return [{ idempotency_key: key }];
     }
     if (query.includes('SELECT idempotency_key')) {
@@ -49,10 +55,25 @@ const receiptDb = vi.hoisted(() => {
       return row ? [row] : [];
     }
     if (query.includes('UPDATE harness_shared.rubric_amend_receipts')) {
+      if (query.includes('SET result_json = jsonb_set(')) {
+        await progressControl.beforeWrite?.();
+        const [snapshot, workspace, rubric, key, token] = values as string[];
+        const row = rows.get(`${workspace}:${rubric}:${key}`);
+        if (row && (!query.includes("AND state = 'running'") || row.state === 'running')
+          && (!query.includes("AND result_json->>'_progressRun'") || row.result_json?._progressRun === token)) {
+          row.result_json = { ...row.result_json, progress: JSON.parse(snapshot!) };
+          progressControl.afterWrite?.();
+          return [{ idempotency_key: key }];
+        }
+        progressControl.afterWrite?.();
+        return [];
+      }
       const failed = query.includes("SET state = 'failed'");
       const [workspace, rubric, key] = values.slice(failed ? 2 : 3) as string[];
       const row = rows.get(`${workspace}:${rubric}:${key}`);
       if (row) {
+        if (query.includes('AND (NOT') && values.at(-2) === true
+          && (row.state !== 'running' || row.result_json?._progressRun !== values.at(-1))) return [];
         row.state = failed ? 'failed' : String(values[0]);
         row.result_json = JSON.parse(String(values[1]));
         row.error = failed ? String(values[0]) : values[2] as string | null;
@@ -62,7 +83,7 @@ const receiptDb = vi.hoisted(() => {
     }
     throw new Error(`unexpected receipt SQL: ${query}`);
   });
-  return { rows, sql };
+  return { rows, sql, progressControl };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -80,7 +101,11 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
-vi.mock('../../work-items', () => ({ commentWorkItem: workItemMocks.commentWorkItem }));
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
+  commentWorkItem: workItemMocks.commentWorkItem,
+  getWorkItemsByIds: workItemMocks.getWorkItemsByIds,
+}));
 vi.mock('../../rubrics', () => ({
   AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
   amendRubric: rubricsMocks.amendRubric,
@@ -116,6 +141,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   rubricsMocks.applyRubricAmendment.mockReset();
   receiptDb.rows.clear();
+  receiptDb.progressControl.beforeWrite = undefined;
+  receiptDb.progressControl.afterWrite = undefined;
   rubricsMocks.getRubric.mockResolvedValue(undefined);
   planMocks.getPlanRow.mockResolvedValue(null);
 });
@@ -647,6 +674,7 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       dryRun: true,
       reason: 'Preview the requested amendment.',
       criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Run the focused check.' },
+      requestReview: { workItemId: 'WI-9' },
     });
 
     expect(result).toEqual({
@@ -656,6 +684,32 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       error: "no rubric 'missing-rubric' — rubrics:list to see refs",
       rubricRef: 'missing-rubric',
     });
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+  });
+
+  it('reports a retryable read failure before posting or launching an amendment review', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(
+      new Error("rubric_read_failed: could not read rubric 'active-rubric'"),
+    );
+
+    const result = await body({
+      rubricRef: 'active-rubric',
+      dryRun: true,
+      criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'Run the focused check.' },
+      requestReview: { workItemId: 'WI-9' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'rubric_read_failed',
+      rubricRef: 'active-rubric',
+      retryable: true,
+    });
+    expect(result.next).toContain('Retry');
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
   });
 
   it('refuses an unregistered instrument before posting or launching its review', async () => {
@@ -676,6 +730,29 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
     expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
     expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+  });
+
+  it('surfaces terminal dependency scope mismatch after amendment and accepts the owned pending correction', async () => {
+    rubricsMocks.rubricCompleteness.mockReturnValue({ complete: true });
+    for (const [dependencyId, state, shouldWarn] of [
+      ['WI-6554700010014915', 'done', true],
+      ['WI-6554700010023061', 'open', false],
+    ] as const) {
+      const method = `Missing detector branches remain unknown. Their implementation dependency is ${dependencyId}, assigned to the leader.`;
+      const item = { ...criterion, key: 'r-6', barKey: 'R-6', method };
+      workItemMocks.getWorkItemsByIds.mockResolvedValue([{
+        id: dependencyId, state,
+        terminalCompletionEvidence: state === 'done' ? { coverage: { checked: ['R1 scope detector', 'R9 deployment detector'] } } : null,
+      }]);
+      rubricsMocks.amendRubric.mockResolvedValue({
+        rubricId: 'acceptance-example', kind: 'acceptance', subjectHarnessSlug: 'papercusp', criteria: [item], methodRef: null,
+      });
+      const result = await body({ rubricRef: 'acceptance-example', criteria: [item], reason: 'Correct implementation dependency.', idempotencyKey: `dependency-${dependencyId}` });
+      expect(result.ok).toBe(true);
+      expect(result.methodLint).toEqual(shouldWarn ? [expect.objectContaining({
+        code: 'acceptance-method-dependency-coverage', criterionKey: 'r-6', dependencyId,
+      })] : []);
+    }
   });
 
   it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {
@@ -1250,12 +1327,41 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     rubricsMocks.amendRubric.mockReturnValue(slow.promise);
     const first = await body({ ...amendArgs, idempotencyKey: 'stranded-key' });
     expect(first.pending).toBe(true);
+    Object.assign(receiptDb.rows.get('ws-amend-test:acceptance-example:stranded-key')!, {
+      executor_host: hostname(), executor_pid: process.pid, executor_process_id: 'previous-executor-identity',
+    });
     rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue({
       decisionId: 'D-42', subjectPlan: 'example-plan',
     });
     expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'stranded-key' }))
       .toMatchObject({ state: 'committed', source: 'decision', decisionId: 'D-42' });
     slow.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+  });
+
+  it.each([
+    ['dead', 'orphaned'],
+    ['reused-pid', 'orphaned'],
+    ['live', 'running'],
+    ['unknown', 'running'],
+    ['remote', 'running'],
+  ])('reports a running preview with a %s executor as %s', async (executor, state) => {
+    const identity = readProcessIdentity(process.pid);
+    expect(identity).toBeTruthy();
+    const key = `preview-executor-${executor}`;
+    receiptDb.rows.set(`ws-amend-test:acceptance-example:${key}`, {
+      idempotency_key: key, rubric_ref: 'acceptance-example', state: 'running',
+      started_at: new Date(), finished_at: null, result_json: null, error: null,
+      executor_host: executor === 'remote' ? `${hostname()}-remote` : hostname(),
+      executor_pid: executor === 'dead' ? 99999999 : process.pid,
+      ...(executor === 'unknown' ? {} : {
+        executor_process_id: executor === 'live' ? identity! : 'previous-executor-identity',
+      }),
+    });
+    expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: key }))
+      .toMatchObject({ state, source: 'receipt', ...(state === 'orphaned' ? {
+        reclaimableAt: expect.any(Number), note: expect.stringContaining('dryRun:true again for a fresh preview'),
+      } : {}) });
+    expect(rubricsMocks.findAmendmentDecisionByKey).not.toHaveBeenCalled();
   });
 
   it('a slow amend that then fails polls to failed with the error, never to committed', async () => {
@@ -1269,6 +1375,141 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
         error: 'acceptance_bar_amendment_conflict',
       });
     });
+  });
+
+  it('reports a timestamped routing phase while the retained preview review is still pending', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce((input) => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    const startedAt = Date.now();
+    try {
+      const answered = await body(args);
+      expect(answered).toMatchObject({ pending: true, receipt: { progress: {
+        phase: 'review-route', phaseStartedAt: expect.any(Number), observedAt: expect.any(Number),
+      } } });
+      const snapshot = { ...answered.receipt.progress };
+      expect(snapshot.phaseStartedAt).toBeGreaterThanOrEqual(startedAt);
+      expect(snapshot.observedAt).toBeGreaterThanOrEqual(snapshot.phaseStartedAt);
+      const retry = await body(args);
+      expect(retry.receipt.idempotencyKey).toBe(answered.receipt.idempotencyKey);
+      expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+      expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+      expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'running' });
+      slow.resolve({ state: 'routed', conversationId: 'conv-late', next: 'retain this review' });
+      await vi.waitFor(async () => {
+        expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'previewed',
+          result: { review: { conversationId: 'conv-late' } } });
+      });
+      // The earlier response is a snapshot, not a claim about later live state.
+      expect(answered.receipt.progress).toEqual(snapshot);
+    } finally {
+      slow.resolve({ state: 'routed', conversationId: 'conv-late', next: 'retain this review' });
+    }
+  });
+
+  it('shares preview progress with a fresh status module without refreshing its observation or starting another review', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    try {
+      const answered = await body(args);
+      vi.resetModules();
+      const workerB = (await import('./amend-status')).default;
+      const read = async () => ((await workerB.handler(answered.receipt.poll.args, {} as never)) as { data: any }).data;
+      await vi.waitFor(async () => expect(await read()).toMatchObject({ state: 'running', progress: {
+        phase: 'review-route', phaseStartedAt: expect.any(Number), observedAt: expect.any(Number),
+      } }));
+      const first = await read();
+      expect(first.result).toBeUndefined();
+      expect((await read()).progress).toEqual(first.progress);
+      expect((await body(args)).pending).toBe(true);
+      expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+      slow.resolve({ state: 'routed', conversationId: 'conv-progress' });
+      await vi.waitFor(async () => expect(await read()).toMatchObject({ state: 'previewed',
+        result: { review: { conversationId: 'conv-progress' } } }));
+      expect((await read()).progress).toBeUndefined();
+    } finally { slow.resolve({ state: 'routed' }); }
+  });
+
+  it.each(['terminal', 'new-attempt'])('fences a delayed preview progress write after %s', async mode => {
+    const slow = deferred<Record<string, unknown>>();
+    const blockedWrite = deferred<void>();
+    const writeFinished = deferred<void>();
+    receiptDb.progressControl.beforeWrite = () => blockedWrite.promise;
+    receiptDb.progressControl.afterWrite = () => writeFinished.resolve();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    try {
+      const answered = await body({ ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' });
+      const row = [...receiptDb.rows.values()][0]!;
+      expect(row.result_json?._progressRun).toEqual(expect.any(String));
+      if (mode === 'terminal') {
+        slow.resolve({ state: 'routed', conversationId: 'conv-terminal' });
+        await vi.waitFor(() => expect(row.state).toBe('previewed'));
+      } else {
+        row.result_json = { _progressRun: 'new-owner-attempt', progress: { phase: 'new-phase' } };
+      }
+      const before = JSON.stringify(row.result_json);
+      blockedWrite.resolve();
+      await writeFinished.promise;
+      expect(JSON.stringify(row.result_json)).toBe(before);
+      if (mode === 'terminal') {
+        expect(await statusBody(answered.receipt.poll.args)).toMatchObject({ state: 'previewed' });
+        expect((await body({ ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' })).review)
+          .toEqual({ state: 'routed', conversationId: 'conv-terminal' });
+      } else {
+        slow.resolve({ state: 'routed', conversationId: 'conv-superseded' });
+        await vi.waitFor(() => expect(receiptDb.sql.mock.calls.some(([parts]) => Array.isArray(parts)
+          && parts.join('?').includes('SET state = ?'))).toBe(true));
+        expect(JSON.stringify(row.result_json)).toBe(before);
+      }
+    } finally {
+      blockedWrite.resolve();
+      slow.resolve({ state: 'routed' });
+      await writeFinished.promise;
+    }
+  });
+
+  it('a failed progress publication does not delay or fail the preview result', async () => {
+    const slow = deferred<Record<string, unknown>>();
+    receiptDb.progressControl.beforeWrite = async () => { throw new Error('progress storage unavailable'); };
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ approvalRequired: true, approval: {}, changes: [] });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementationOnce(input => {
+      input.onPhase?.('review-route');
+      return slow.promise;
+    });
+    const args = { ...amendArgs, dryRun: true, reviewPreviewPost: 'thread-post:42' };
+    try {
+      const answered = await body(args);
+      expect(answered.pending).toBe(true);
+      slow.resolve({ state: 'routed', conversationId: 'conv-progress-failure' });
+      await vi.waitFor(async () => expect(await statusBody(answered.receipt.poll.args)).toMatchObject({
+        state: 'previewed', result: { ok: true, review: { conversationId: 'conv-progress-failure' } },
+      }));
+      expect((await body(args)).review).toEqual({ state: 'routed', conversationId: 'conv-progress-failure' });
+    } finally { slow.resolve({ state: 'routed' }); }
+  });
+
+  it('keeps apply phase tracking off the shared progress writer', async () => {
+    const { trackAmendRun } = await import('./amend-receipts');
+    expect(await trackAmendRun('apply-progress-guard', 'acceptance-example', async onPhase => {
+      onPhase('acceptance-locked-plan-read');
+      onPhase('acceptance-write-rubric');
+      return { ok: true };
+    })).toEqual({ ok: true });
+    expect(receiptDb.sql.mock.calls.some(([parts]) => Array.isArray(parts)
+      && parts.join('?').includes('SET result_json = jsonb_set('))).toBe(false);
   });
 
   it('separate slow preview-only dry runs get fresh pollable receipts without applying the amendment', async () => {

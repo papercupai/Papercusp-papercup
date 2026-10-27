@@ -17,6 +17,7 @@ import {
   IDLE_PASS_LEASE_MS,
   IDLE_REPAIR_QUEUE_PHASE,
   claimIdleActuatorPass,
+  recordIdleActuatorStandDown,
   saveIdleActuatorEpisode,
   recordIdleQueueActuatorObservation,
   readIdleQueueActuatorWindow,
@@ -26,6 +27,7 @@ import {
 import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import { parseEscalationRecord } from './green-stall-watchdog';
 import { collectEscalationSignals } from '../harness/improvements/watchdog';
+import type { RepairLimbExecutor } from './repair-limb-executor';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -110,7 +112,8 @@ describe('idle repair-queue actuator persistence (real Postgres)', () => {
   });
 
   it('lets exactly one host run a pass per lease window', async () => {
-    expect(await claim(T0)).toEqual({ claimed: true, episode: null }); // first host, fresh row
+    // No green-checkpoint routines row is seeded here, so the lease is won but not attributed (R-2).
+    expect(await claim(T0)).toMatchObject({ claimed: true, episode: null, attributed: false }); // first host, fresh row
     expect(await claim(T0 + 1)).toEqual({ claimed: false }); // a second host the same tick
     expect(await claim(T0 + IDLE_PASS_LEASE_MS - 1)).toEqual({ claimed: false });
     expect((await claim(T0 + IDLE_PASS_LEASE_MS)).claimed).toBe(true);
@@ -120,10 +123,12 @@ describe('idle repair-queue actuator persistence (real Postgres)', () => {
     await claim(T0);
     await saveIdleActuatorEpisode(sql, { installSlug: SLUG, workspaceId: WS, nowMs: T0, episode });
     const next = await claim(T0 + IDLE_PASS_LEASE_MS);
-    expect(next).toEqual({ claimed: true, episode });
+    expect(next.claimed).toBe(true);
+    // The reader normalizes an absent retry count to 0; the writer's executor stamp is not episode state.
+    expect(next).toHaveProperty('episode', { ...episode, dispatchRetryCount: 0 });
 
     await saveIdleActuatorEpisode(sql, { installSlug: SLUG, workspaceId: WS, nowMs: T0 + 2 * IDLE_PASS_LEASE_MS, episode: null });
-    expect(await claim(T0 + 4 * IDLE_PASS_LEASE_MS)).toEqual({ claimed: true, episode: null });
+    expect(await claim(T0 + 4 * IDLE_PASS_LEASE_MS)).toMatchObject({ claimed: true, episode: null });
   });
 
   it('the stored row is self-managed, so the triage watchdog files nothing for it', async () => {
@@ -151,5 +156,87 @@ describe('idle repair-queue actuator persistence (real Postgres)', () => {
     expect((row.escalation as { candidate?: string }).candidate).toBeUndefined(); // the old raw read
     expect(parseEscalationRecord<typeof stored>(row.escalation)).toEqual(stored);
     expect(parseEscalationRecord('not json')).toBeNull();
+  });
+});
+
+// gate-repair-plane-on-current-build-2026-10-15 R-1 / R-2.
+describe('repair-limb executor attribution (real Postgres)', () => {
+  const hostA: RepairLimbExecutor = {
+    hostId: 'port-3271', processId: 'boot-a:1', executingBuild: { sha: 'aaaa111', source: 'baked' },
+  };
+  const hostB: RepairLimbExecutor = {
+    hostId: 'port-3070', processId: 'boot-b:2', executingBuild: { sha: null, source: 'unresolved' },
+  };
+  const scope = { installSlug: SLUG, workspaceId: WS };
+  const ROUTINE = 'rt-idle-queue-attribution';
+  const gateHealth = async (): Promise<Record<string, unknown> | null> => {
+    const [row] = await sql<{ gh: Record<string, unknown> | null }[]>`
+      SELECT metadata->'gate_health' AS gh FROM harness_shared.routines WHERE id = ${ROUTINE}`;
+    return row?.gh ?? null;
+  };
+
+  beforeEach(async () => {
+    await sql`DELETE FROM harness_shared.routines WHERE id = ${ROUTINE}`;
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id, metadata)
+      VALUES (${ROUTINE}, ${SLUG}, 'green-checkpoint', 'cron', '{}'::jsonb,
+              'system:green-checkpoint', TRUE, ${WS}, '{}'::jsonb)`;
+  });
+
+  it('the persisted episode row names its writer and build; an unresolved build stays null (R-1)', async () => {
+    const read = async () => {
+      const [row] = await sql<{ escalation: string }[]>`
+        SELECT escalation FROM harness_shared.harness_escalations
+         WHERE harness_slug = ${SLUG} AND phase = ${IDLE_REPAIR_QUEUE_PHASE}`;
+      return JSON.parse(row.escalation) as Record<string, unknown>;
+    };
+    await saveIdleActuatorEpisode(sql, { ...scope, nowMs: T0, episode, executor: hostA });
+    expect(await read()).toMatchObject({
+      candidate: episode.candidate, hostId: 'port-3271', processId: 'boot-a:1',
+      executingBuild: { sha: 'aaaa111', source: 'baked' },
+    });
+    await saveIdleActuatorEpisode(sql, { ...scope, nowMs: T0 + MIN, episode, executor: hostB });
+    expect(await read()).toMatchObject({ hostId: 'port-3070', executingBuild: { sha: null, source: 'unresolved' } });
+  });
+
+  it('two hosts racing one episode: one lease, the winner attributed, the loser names it (R-2)', async () => {
+    const results = await Promise.all([
+      claimIdleActuatorPass(sql, { ...scope, nowMs: T0, executor: hostA }),
+      claimIdleActuatorPass(sql, { ...scope, nowMs: T0, executor: hostB }),
+    ]);
+    const won = results.filter((r) => r.claimed);
+    expect(won).toHaveLength(1); // only the winner goes on to dispatch
+    expect(won[0]).toMatchObject({ claimed: true, attributed: true });
+    const [winner, loser] = results[0].claimed ? [hostA, hostB] : [hostB, hostA];
+    const winningClaim = { ...winner, claimedAtMs: T0 };
+    expect((await gateHealth())?.idleActuatorClaim).toEqual(winningClaim);
+
+    const stood = await recordIdleActuatorStandDown(sql, { ...scope, nowMs: T0 + 1, executor: loser });
+    expect(stood).toEqual({ recorded: true, winner: winningClaim });
+    const gh = await gateHealth();
+    expect(gh?.idleActuatorStandDown).toEqual({ ...loser, atMs: T0 + 1, winner: winningClaim });
+    expect(gh?.idleActuatorClaim).toEqual(winningClaim);
+
+    // Ticking through the same lease records once; losing to one's own pass records nothing.
+    expect((await recordIdleActuatorStandDown(sql, { ...scope, nowMs: T0 + 2 * MIN, executor: loser })).recorded)
+      .toBe(false);
+    expect((await recordIdleActuatorStandDown(sql, { ...scope, nowMs: T0 + 2 * MIN, executor: winner })).recorded)
+      .toBe(false);
+    expect((await gateHealth())?.idleActuatorStandDown).toEqual({ ...loser, atMs: T0 + 1, winner: winningClaim });
+
+    // The next lease window re-attributes to its own winner.
+    const next = await claimIdleActuatorPass(sql, { ...scope, nowMs: T0 + IDLE_PASS_LEASE_MS, executor: loser });
+    expect(next).toMatchObject({ claimed: true, attributed: true });
+    expect((await gateHealth())?.idleActuatorClaim).toEqual({ ...loser, claimedAtMs: T0 + IDLE_PASS_LEASE_MS });
+  });
+
+  it('a restart overlap on ONE host is two executors: the new process stands down to the old (R-2)', async () => {
+    const restarted = { ...hostA, processId: 'boot-c:3', executingBuild: { sha: 'cccc333', source: 'baked' as const } };
+    expect(await claimIdleActuatorPass(sql, { ...scope, nowMs: T0, executor: hostA })).toMatchObject({ claimed: true });
+    expect((await claimIdleActuatorPass(sql, { ...scope, nowMs: T0 + 1, executor: restarted })).claimed).toBe(false);
+    const stood = await recordIdleActuatorStandDown(sql, { ...scope, nowMs: T0 + 1, executor: restarted });
+    expect(stood).toEqual({ recorded: true, winner: { ...hostA, claimedAtMs: T0 } });
+    expect((await gateHealth())?.idleActuatorStandDown).toMatchObject({ hostId: hostA.hostId, processId: 'boot-c:3' });
   });
 });

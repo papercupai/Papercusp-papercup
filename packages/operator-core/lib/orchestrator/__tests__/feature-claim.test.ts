@@ -19,6 +19,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import Corestore from 'corestore';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { openOwnLog, type HeldOwnLogAppender } from '../../sync/hyperbee/peer-log';
 import {
   claimFeature,
   ClaimValidationError,
@@ -43,6 +48,9 @@ class FakeOwnLog implements ClaimOwnLog {
   }
   async append(op: PeerLogOp): Promise<void> {
     this.ops.push(op);
+  }
+  async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
+    return fn({ appendBatch: async ops => { this.ops.push(...ops); } });
   }
 }
 
@@ -105,7 +113,7 @@ describe('claimFeature — Model B advisory claim', () => {
     });
     // ...and the op's hbKey MUST equal the projection's composeKey for it.
     expect(op.hbKey).toBe(projection.composeKey(row!));
-    expect(op.hbKey).toBe('F-7/0');
+    expect(op.hbKey).toBe(`F-7/${ownLog.keyHex}/0`);
   });
 
   it('returns immediately without any merge / read-back', async () => {
@@ -144,8 +152,8 @@ describe('claimFeature — Model B advisory claim', () => {
     });
 
     // seq advances 0 → 1, so the two claims on the same feature key DISTINCTLY.
-    expect(peer.ops[0].hbKey).toBe('F-1/0');
-    expect(peer.ops[1].hbKey).toBe('F-1/1');
+    expect(peer.ops[0].hbKey).toBe(`F-1/${peer.keyHex}/0`);
+    expect(peer.ops[1].hbKey).toBe(`F-1/${peer.keyHex}/1`);
 
     const applied: OpEnvelope[] = [];
     await mergeAdmittedLogs([logFrom(peer.keyHex, peer.ops)], {
@@ -160,10 +168,10 @@ describe('claimFeature — Model B advisory claim', () => {
     // Both audit rows persist; neither overwrites the other.
     expect(applied).toHaveLength(2);
     const byKey = new Map(applied.map((op) => [op.hbKey, op]));
-    expect(byKey.get('F-1/0')).toBeDefined();
-    expect(byKey.get('F-1/1')).toBeDefined();
-    expect(projection.decodeValue(byKey.get('F-1/0')!.value)?.claimer_github_user_id).toBe(1);
-    expect(projection.decodeValue(byKey.get('F-1/1')!.value)?.claimer_github_user_id).toBe(2);
+    expect(byKey.get(`F-1/${peer.keyHex}/0`)).toBeDefined();
+    expect(byKey.get(`F-1/${peer.keyHex}/1`)).toBeDefined();
+    expect(projection.decodeValue(byKey.get(`F-1/${peer.keyHex}/0`)!.value)?.claimer_github_user_id).toBe(1);
+    expect(projection.decodeValue(byKey.get(`F-1/${peer.keyHex}/1`)!.value)?.claimer_github_user_id).toBe(2);
   });
 
   it('lwwPick (in isolation, NOT claim contention): later ts wins for a single key', async () => {
@@ -228,6 +236,46 @@ describe('claimFeature — Model B advisory claim', () => {
     });
     const op = ownLog.ops[2];
     expect(projection.decodeValue(op.value)?.seq).toBe(2);
-    expect(op.hbKey).toBe('F-9/2');
+    expect(op.hbKey).toBe(`F-9/${ownLog.keyHex}/2`);
+  });
+
+  it('allocates each concurrent claim at its actual core position while ordinary appends compete', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'p532-claim-position-'));
+    const store = new Corestore(dir);
+    try {
+      await store.ready();
+      const own = await openOwnLog(store);
+      await Promise.all([
+        ...Array.from({ length: 12 }, () => claimFeature(own, {
+          harness_slug: 'sheets', feature_id: 'F-race', claimer_github_user_id: 42,
+        })),
+        own.append({ type: 'put', table: 'presence', hbKey: 'noise', value: {},
+          ts: 1, schema_version: CURRENT_SCHEMA_VERSION, author_pubkey: own.keyHex }),
+      ]);
+      const claims: number[] = [];
+      for (let index = 0; index < own.length; index++) {
+        const op = (await own.get(index))!;
+        expect(op.hlc).toMatch(/^\d{15}:\d{5}(?::[0-9a-f]{16})?$/);
+        if (op.table !== 'claims') continue;
+        const row = projection.decodeValue(op.value)!;
+        expect(row.seq).toBe(index);
+        expect(op.hbKey).toBe(`F-race/${own.keyHex}/${index}`);
+        claims.push(row.seq);
+      }
+      expect(claims).toHaveLength(12);
+      expect(new Set(claims).size).toBe(12);
+    } finally {
+      await store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a claim handle without an append serializer before writing', async () => {
+    let wrote = false;
+    const own: ClaimOwnLog = { keyHex: 'a'.repeat(64), length: 0,
+      append: async () => { wrote = true; } };
+    await expect(claimFeature(own, { harness_slug: 'sheets', feature_id: 'F-1',
+      claimer_github_user_id: 42 })).rejects.toThrow('append_serializer');
+    expect(wrote).toBe(false);
   });
 });

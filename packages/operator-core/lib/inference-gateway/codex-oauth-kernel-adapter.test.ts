@@ -707,6 +707,27 @@ describe('codex OAuth kernel adapter — rotation, credentials, and pool discipl
     expect(pool.parkCauses).toEqual([cause]);
   });
 
+  // WI-6554700010029423: a burst 429's retry-after (measured 42-570s on gpt-6.1-sol) is not enforced
+  // upstream, so parking the account for all of it idled serviceable accounts. The park is bounded
+  // to the failover backoff (5s in this harness); a quota wall keeps its real reset.
+  it.each([
+    { transient: true, retryAfterMs: 570_000, maxParkMs: 5_000 },
+    { transient: undefined, retryAfterMs: 570_000, maxParkMs: 5_000 },
+    { transient: false, retryAfterMs: 3_600_000, maxParkMs: 3_600_000 },
+  ])('bounds the failover park of a 429 (transient: $transient) to $maxParkMs ms', async ({ transient, retryAfterMs, maxParkMs }) => {
+    const t0 = 1_800_000_000_000;
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(429, { 'retry-after': String(retryAfterMs / 1000) }, sseBody('{"error":"rate"}'))
+      : upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
+      rateReset: () => ({ resetAt: t0 + retryAfterMs, retryAfterMs, transient }),
+      extra: { now: () => t0 },
+    });
+    expect((await executeGatewayRequestKernel(h.options)).status).toBe(200);
+    expect(pool.exhaustedCalls).toEqual([{ id: 'chatgpt-a', resetAt: t0 + maxParkMs }]);
+  });
+
   it('surfaces a 503 when no account can produce a token', async () => {
     const { options } = harness(async () => upstream(200, {}, sseBody('ok')), {
       resolveAccessToken: async () => {

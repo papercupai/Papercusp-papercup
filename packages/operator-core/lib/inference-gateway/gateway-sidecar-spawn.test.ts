@@ -87,15 +87,15 @@ describe('gatewaySupervisorPort', () => {
 });
 
 describe('buildGatewaySpawnPlan', () => {
-  it('dev (real .ts on disk) → `npx tsx <sibling>/bin.ts`', () => {
+  it('dev (real .ts on disk) uses explicit Node and the resolved tsx loader', () => {
     const plan = buildGatewaySpawnPlan({
       selfPath: '/repo/packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts',
       execPath: '/usr/bin/node',
       moduleDirOverride: '/repo/packages/operator-core/lib/inference-gateway',
     });
     expect(plan.mode).toBe('dev-tsx');
-    expect(plan.cmd).toBe('npx');
-    expect(plan.args).toEqual(['tsx', '/repo/packages/operator-core/lib/inference-gateway/bin.ts']);
+    expect(plan.cmd).toBe('/usr/bin/node');
+    expect(plan.args).toEqual(['--import', expect.stringContaining('tsx'), '/repo/packages/operator-core/lib/inference-gateway/bin.ts']);
     // The divert var must NOT leak into the dev child...
     expect(plan.env).not.toHaveProperty('PAPERCUSP_GATEWAY_SIDECAR_MODE');
     // ...but parent identity MUST be re-declared to OUR pid (EI-20493378309289396):

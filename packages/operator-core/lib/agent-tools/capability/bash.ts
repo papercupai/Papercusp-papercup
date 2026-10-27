@@ -406,6 +406,21 @@ function processTableNotice(command: string): string | undefined {
   return 'Process-table output may be limited to this shell\'s PID namespace. An empty ps/pgrep/pidof/pstree result does not prove a host process is gone. Use processes:list and, when deciding cgroup lifetime, verify the recorded scope under /sys/fs/cgroup.';
 }
 
+/**
+ * WI-6554700010029664 — `cmd` is accepted because the Codex CLI's own native `shell` tool call
+ * uses "cmd" as its argument key (EI-22073622160284651: a Codex-backed agent reaching for this
+ * tool by habit typed `cmd` and was rejected). It is folded into `command` BEFORE parse instead
+ * of being a declared field, so the Claude/OMP seed (100,000 B budget) does not pay ~40 B for
+ * it on every turn. Explicit `command` wins when both are supplied.
+ */
+export function foldBashCmdAlias(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (r.cmd === undefined) return raw;
+  const { cmd, ...rest } = r;
+  return rest.command === undefined ? { ...rest, command: cmd } : rest;
+}
+
 export default defineTool({
   name: 'capability:bash',
   description:
@@ -460,22 +475,14 @@ export default defineTool({
   skipWorkspaceTx: true,
   result: bashResultSchema,
   events: { output: z.string().describe('text/plain') },
-  args: z.object({
+  // WI-6554700010029664: `cmd` folds into `command` before parse (foldBashCmdAlias) — still accepted, not advertised.
+  args: z.preprocess(foldBashCmdAlias, z.object({
     command: z
       .string()
       .min(1)
       .optional()
       .describe(
         'The bash command to run (passed to `bash -c`). Required, unless `cmd` is given. For inline Python `-c`, do not encode source line breaks as literal `\\n` inside a shell-quoted program: the shell preserves the backslash and Python raises a line-continuation SyntaxError. Use a quoted heredoc (`python3 - <<\'PY\' ... PY`) or a semicolon-delimited one-liner.',
-      ),
-    cmd: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'Alias for `command`. Accepted because the Codex CLI\'s own native `shell` tool call uses "cmd" as its ' +
-          'argument key (EI-22073622160284651: a Codex-backed agent reaching for this tool by habit typed `cmd` ' +
-          'and was rejected), so an agent used to that convention can reach for it here too. Prefer `command`.',
       ),
     description: z
       .string()
@@ -548,12 +555,12 @@ export default defineTool({
       .describe(
         'Operator-authority only. Map child environment variable names to encrypted setup:save_integration_key names, e.g. {"DEEPGRAM_API_KEY":"SIDESTAGE_DEEPGRAM_API_KEY"}. Raw values stay server-side, exist only in this child process, and are exact-value-redacted from events, results, background reads, and spill logs.',
       ),
-  }),
+  })),
   async handler(args, ctx) {
-    // command/cmd: `cmd` is accepted as an alias (see its schema description) — normalize to
-    // one local binding so every downstream use is unambiguous and `command` stays required
-    // in effect even though the schema field itself is optional to make room for the alias.
-    const command = args.command ?? args.cmd;
+    // command/cmd: `cmd` is folded into `command` before parse (foldBashCmdAlias), so
+    // `command` stays required in effect even though the schema field itself is optional
+    // to leave room for the alias.
+    const command = args.command;
     if (!command) {
       throw new Error(
         'command is required (the bash command to run, passed to `bash -c`); `cmd` is also accepted as an alias',

@@ -152,7 +152,7 @@ export const ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN =
  *  the retry helper so a transient reset that slips past the retry stops being
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+|deadlock detected';
 
 /** The pre-destructive backup hook fails closed when the filesystem cannot fit
  * the next dump. This is an intentional capacity gate, not a deterministic
@@ -564,6 +564,9 @@ const TOOL_ERROR_ARGS_PATH_PATTERN = 'invalid_args *: *([a-z_][a-z0-9_]*(\\.[a-z
  * repaired, one still failing), so the column is the field that keeps them apart.
  */
 const TOOL_ERROR_PG_COLUMN_PATTERN = 'column "([^"]+)" (of relation "[^"]+" )?does not exist';
+/** Some PG errors render a schema-qualified reference as `column wi.foo does not exist`. */
+const TOOL_ERROR_PG_UNQUOTED_COLUMN_PATTERN =
+  'column ([a-z_][a-z0-9_$]*(\\.[a-z_][a-z0-9_$]*)*) does not exist';
 /** A numeric path segment (array index), normalized to `.n`. Applied twice. */
 const TOOL_ERROR_NUMERIC_SEGMENT_PATTERN = '\\.[0-9]+(\\.|$)';
 
@@ -581,6 +584,7 @@ const JSON_CODE_RE = new RegExp(TOOL_ERROR_JSON_CODE_PATTERN);
 const UNRECOGNIZED_KEY_RE = new RegExp(TOOL_ERROR_UNRECOGNIZED_KEY_PATTERN);
 const ARGS_PATH_RE = new RegExp(TOOL_ERROR_ARGS_PATH_PATTERN);
 const PG_COLUMN_RE = new RegExp(TOOL_ERROR_PG_COLUMN_PATTERN);
+const PG_UNQUOTED_COLUMN_RE = new RegExp(TOOL_ERROR_PG_UNQUOTED_COLUMN_PATTERN);
 const NUMERIC_SEGMENT_RE = new RegExp(TOOL_ERROR_NUMERIC_SEGMENT_PATTERN, 'g');
 
 /**
@@ -612,7 +616,8 @@ export function toolErrorKeyParts(
         : column || null;
   const rawField = firstGroup(UNRECOGNIZED_KEY_RE, lower)
     ?? firstGroup(ARGS_PATH_RE, lower)
-    ?? firstGroup(PG_COLUMN_RE, lower);
+    ?? firstGroup(PG_COLUMN_RE, lower)
+    ?? firstGroup(PG_UNQUOTED_COLUMN_RE, lower)?.replace(/^([a-z_][a-z0-9_$]*\.)+/, '');
   const field = rawField == null
     ? null
     : rawField.replace(NUMERIC_SEGMENT_RE, '.n$1').replace(NUMERIC_SEGMENT_RE, '.n$1');
@@ -648,7 +653,9 @@ export function toolErrorKeyPartsSql<T>(sql: SqlTag<T>): T {
       ELSE ${column} END`;
   const rawField = sql`coalesce(substring(${lowerMsg} from ${TOOL_ERROR_UNRECOGNIZED_KEY_PATTERN}),
     substring(${lowerMsg} from ${TOOL_ERROR_ARGS_PATH_PATTERN}),
-    substring(${lowerMsg} from ${TOOL_ERROR_PG_COLUMN_PATTERN}))`;
+    substring(${lowerMsg} from ${TOOL_ERROR_PG_COLUMN_PATTERN}),
+    regexp_replace(substring(${lowerMsg} from ${TOOL_ERROR_PG_UNQUOTED_COLUMN_PATTERN}),
+      '^([a-z_][a-z0-9_$]*\\.)+', '', 'g'))`;
   // The replacement is a bound value ('.n' + backreference 1), never SQL text, so
   // its backslash cannot be re-escaped by the template layer.
   const replacement = '.n\\1';

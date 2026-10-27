@@ -11,8 +11,11 @@ import {
   assessForceRelease,
   CRITICAL_CLAIM_PROGRESS_LEASE_MS,
   forceRefusalHint,
+  OWNER_FORCE_DIRECTIVE_MAX_AGE_MS,
+  verifyOwnerForceDirective,
   WARM_IDLE_ACTIVITY_STALE_MS,
   type ForceReleaseDeps,
+  type OwnerForceDirectiveRow,
 } from './release-force-guard';
 
 const NOW = Date.parse('2026-07-11T20:00:00Z');
@@ -521,5 +524,56 @@ describe('assessForceRelease — short-form stored holder (EI-23701433507513915)
       resolveHolderOwnerId: canonical,
     });
     expect(v).toMatchObject({ allowed: true, basis: 'leads-holder-fleet' });
+  });
+});
+
+describe('verifyOwnerForceDirective (WI-6554700010029971)', () => {
+  const directive = (over: Partial<OwnerForceDirectiveRow> = {}): OwnerForceDirectiveRow => ({
+    id: 2494,
+    workspaceId: 'ws1',
+    recordedBy: 'su-caller',
+    verbatimText: 'JUST TAKE THE GATE   and any other work they had',
+    createdAtMs: NOW - min(5),
+    dispositionedAtMs: null,
+    capturedByHook: true,
+    ...over,
+  });
+  const verify = (row: OwnerForceDirectiveRow | null, callerOwnerId = 'su-caller') =>
+    verifyOwnerForceDirective(
+      { directiveId: 2494, callerOwnerId, workspaceId: 'ws1' },
+      { getDirective: async () => row, now: () => NOW },
+    );
+
+  it('accepts an open, hook-captured directive addressed to the caller and returns a normalized excerpt', async () => {
+    await expect(verify(directive())).resolves.toEqual({
+      ok: true,
+      directiveId: 2494,
+      excerpt: 'JUST TAKE THE GATE and any other work they had',
+    });
+  });
+
+  it.each([
+    ['missing', null, 'not found'],
+    ['another workspace', directive({ workspaceId: 'ws2' }), 'not found'],
+    ['agent-recorded via orders:record', directive({ capturedByHook: false }), 'agent-recorded'],
+    ['addressed to another session', directive({ recordedBy: 'su-other' }), 'addressed to su-other'],
+    ['already closed', directive({ dispositionedAtMs: NOW - min(1) }), 'already closed'],
+    ['too old', directive({ createdAtMs: NOW - OWNER_FORCE_DIRECTIVE_MAX_AGE_MS - 1 }), 'older than'],
+  ])('refuses a directive that is %s', async (_label, row, reason) => {
+    const v = await verify(row);
+    expect(v.ok).toBe(false);
+    expect(v.ok ? '' : v.reason).toContain(reason);
+  });
+
+  it('fails closed when the directive read throws', async () => {
+    const v = await verifyOwnerForceDirective(
+      { directiveId: 7, callerOwnerId: 'su-caller', workspaceId: 'ws1' },
+      { getDirective: async () => { throw new Error('pg down'); }, now: () => NOW },
+    );
+    expect(v).toMatchObject({ ok: false, reason: expect.stringContaining('could not be read') });
+  });
+
+  it('the live-holder refusal hint teaches the directiveRef path', () => {
+    expect(forceRefusalHint('su-holder')).toContain('directiveRef');
   });
 });

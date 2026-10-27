@@ -300,6 +300,29 @@ describe('buildTestEvidenceRemeasure', () => {
     expect(mixed.rootHarnessSlugs).toEqual(expect.arrayContaining(['phone-app', null]));
   });
 
+  it('counts an unstamped root and an explicit stamp of the scope harness as ONE checkout (WI-6554700010029987)', async () => {
+    // Observed on WI-10002643: one RSR-P-018-A proof stamped rootHarnessSlug 'papercusp', the
+    // other carried none. Both were listed for harness 'papercusp', so they share a checkout and
+    // must not refuse as evidence_remeasure_mixed_roots.
+    const stamped = row(1, { handBound: true, currentness: sourceStale, specId: 'S-1',
+      testPath: 'src/subject.test.ts' }) as { details: { currentMeasurement: Record<string, unknown> } };
+    stamped.details.currentMeasurement.rootHarnessSlug = 'h';
+    const unstamped = row(2, { handBound: true, currentness: sourceStale, specId: 'S-2', testPath: 'src/other.test.ts' });
+    const otherHive = row(3, { handBound: true, currentness: sourceStale, specId: 'S-3',
+      testPath: 'packages/data/src/usage.test.ts' }) as { details: { currentMeasurement: Record<string, unknown> } };
+    otherHive.details.currentMeasurement.rootHarnessSlug = 'phone-app';
+    const build = (rows: unknown[]) => buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' }, { list: vi.fn().mockResolvedValue(rows) });
+
+    const same = await build([stamped, unstamped]);
+    expect(same.plan.selected).toHaveLength(2);
+    expect(same.rootHarnessSlugs).toEqual(['h']);
+    // A genuinely different checkout is still two roots.
+    const mixed = await build([stamped, unstamped, otherHive]);
+    expect(mixed.rootHarnessSlugs).toHaveLength(2);
+    expect(mixed.rootHarnessSlugs).toEqual(expect.arrayContaining(['h', 'phone-app']));
+  });
+
   it('treats an old pending binding as abandoned only when its run and exact file ledger are absent', async () => {
     const now = Date.parse('2026-10-06T00:00:00.000Z');
     const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';

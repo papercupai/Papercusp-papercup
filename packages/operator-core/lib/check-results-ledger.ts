@@ -31,12 +31,16 @@ import {
   RUBRIC_CHECK_FRAMEWORK,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseRecordedRubricCheck,
+  parseRecordedRubricCheckSubject,
   parseTestRunExecutionDetails,
+  parseRecordedMeasurementProvenance,
   type RecordedRubricCheck,
   type RecordedRubricCheckExpect,
+  type RecordedRubricCheckSubject,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun } from './harness/improvements/observation-types';
+import { measurementProvenanceStatus, retainMeasurementProvenance } from './measurement-provenance';
 import {
   getRegisteredInstrument,
   isManualInstrumentKey,
@@ -70,9 +74,22 @@ export interface RubricCheckLedgerScope {
   commitSha?: string | null;
 }
 
-/** One ledger "file" per check, so latest-per-file is latest-per-check. */
-export function rubricCheckLedgerPath(rubricRef: string, checkId: string): string {
-  return `rubric-check/${rubricRef}/${checkId}`;
+/**
+ * One ledger "file" per check (per subject, for a subject row), so latest-per-file is
+ * latest-per-check. A subject row keeps the rubric prefix — its history stays beside the
+ * rubric's — and appends the subject, so no unscoped or other-subject row shares its file.
+ */
+export function rubricCheckLedgerPath(rubricRef: string, checkId: string, subject?: RecordedRubricCheckSubject): string {
+  return `rubric-check/${rubricRef}/${checkId}${subject ? rubricCheckSubjectSuffix(subject) : ''}`;
+}
+
+/** The file_path suffix that marks a subject row. `-` stands for an absent kind. */
+export function rubricCheckSubjectSuffix(subject: RecordedRubricCheckSubject): string {
+  return `@subject/${encodeURIComponent(subject.kind ?? '-')}/${encodeURIComponent(subject.ref)}`;
+}
+
+function sameRecordedSubject(a: RecordedRubricCheckSubject | undefined, b: RecordedRubricCheckSubject): boolean {
+  return a !== undefined && a.ref === b.ref && (a.kind ?? null) === (b.kind ?? null);
 }
 
 export function probeCheckId(criterionKey: string, childIndex: number): string {
@@ -144,6 +161,8 @@ export function probeCheckResults(
     const unit = unitByKey.get(criterionKey) ?? null;
     children.forEach((child, childIndex) => {
       const value = scalarOrNull(child.observed);
+      const provenance = parseRecordedMeasurementProvenance(child.provenance);
+      const retained = provenance ? { provenance } : {};
       // An ordering comparison (gt/gte/lt/lte) against a missing, NULL or boolean reading measured
       // nothing: the probe ran, but there was no value to compare. Record it as 'error' (unknown),
       // the same as an instrument reading of null, never as a 'fail', which grades the criterion at
@@ -151,7 +170,7 @@ export function probeCheckResults(
       const op = probePredicateOp(child);
       if (child.verdict === 'fail' && op !== null && ORDERING_OPS.has(op) && (value === null || typeof value === 'boolean')) {
         out.push({
-          check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
+          check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit, ...retained },
           verdict: 'error',
           measuredAt: child.measuredAt,
           durationMs: null,
@@ -160,7 +179,7 @@ export function probeCheckResults(
         return;
       }
       out.push({
-        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
+        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit, ...retained },
         verdict: child.verdict,
         measuredAt: child.measuredAt,
         durationMs: null,
@@ -188,6 +207,7 @@ export function instrumentCheckResult(input: {
     value: reading.value,
     unit: reading.unit,
     ...(expect ? { expect: { op: expect.op, value: expect.value } } : {}),
+    ...(reading.provenance ? { provenance: reading.provenance } : {}),
   };
   const base = { check, measuredAt: reading.measuredAt, durationMs: input.durationMs ?? null };
   if (reading.value === null) {
@@ -217,8 +237,12 @@ export async function runInstrumentChecks(input: {
   now?: () => number;
   workspaceId?: string | null;
   harnessSlug?: string | null;
+  /** Only an explicitly subject-scoped instrument consumes/stamps this identity. */
+  subject?: RecordedRubricCheckSubject;
   resolvePlatform?: NonNullable<PlatformInstrument['rescore']>['resolve'];
 }): Promise<RubricCheckResult[]> {
+  const subject = input.subject === undefined ? undefined : parseRecordedRubricCheckSubject(input.subject);
+  if (input.subject !== undefined && !subject) throw new Error('invalid_rubric_check_subject');
   const run = input.run ?? ((key: string) => runInstrument(key));
   const now = input.now ?? Date.now;
   const out: RubricCheckResult[] = [];
@@ -230,20 +254,25 @@ export async function runInstrumentChecks(input: {
     if (!instrument) continue;
     if (instrument.evaluator === 'platform' && instrument.rescore) {
       const started = now();
+      const subjectScoped = instrument.rescore.scope === 'subject';
       const measuredAt = new Date(windowEndMs).toISOString();
       const window = {
         workspaceId: input.workspaceId ?? '',
         ...(input.harnessSlug?.trim() ? { harnessSlug: input.harnessSlug.trim() } : {}),
         windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
         windowEnd: measuredAt,
+        ...(subjectScoped && subject ? { subject } : {}),
       };
       let verdict: RubricCheckVerdict = 'error';
-      let detail = 'A canonical workspace and any required rubric harness are required for a scheduled platform instrument.';
+      let detail = 'A canonical workspace and any required rubric harness/subject are required for a scheduled platform instrument.';
       let value: number | boolean | null = null;
       let unit: string | null = instrument.rescore.unit;
-      if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug)) {
+      let observed: unknown = { verdict: 'unknown', detail };
+      if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug) &&
+          (!subjectScoped || subject)) {
         try {
           const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
+          observed = result;
           verdict = result.verdict === 'unknown' ? 'error' : result.verdict;
           detail = result.detail;
           if (verdict !== 'error') {
@@ -257,13 +286,20 @@ export async function runInstrumentChecks(input: {
           }
         } catch (error) {
           detail = `Scheduled instrument unavailable: ${error instanceof Error ? error.message : String(error)}`;
+          observed = { verdict: 'unknown', detail };
         }
       }
+      const finished = now();
+      const provenance = retainMeasurementProvenance({
+        procedure: { kind: 'platform-instrument', instrumentKey: instrument.key, window },
+        result: observed, startedAt: new Date(started).toISOString(), finishedAt: new Date(finished).toISOString(),
+      });
       out.push({
         check: { id: instrumentCheckId(criterion.key), rubricRef: input.rubricRef,
-          criterionKey: criterion.key, kind: 'instrument', value, unit,
+          criterionKey: criterion.key, kind: 'instrument', value, unit, provenance,
+          ...(subjectScoped && subject ? { subject } : {}),
           ...(check.expect ? { expect: check.expect } : {}) },
-        verdict, measuredAt, durationMs: Math.max(0, now() - started), detail,
+        verdict, measuredAt, durationMs: Math.max(0, finished - started), detail,
       });
       continue;
     }
@@ -306,7 +342,7 @@ export interface RubricCheckLedgerRow {
 
 /** Build the test_runs row for one check result. Throws if the details would not read back. */
 export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: RubricCheckLedgerScope): RubricCheckLedgerRow {
-  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id);
+  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id, result.check.subject);
   const finishedAt = result.measuredAt;
   const startedAt = result.durationMs === null
     ? finishedAt
@@ -409,14 +445,21 @@ export interface LatestRubricCheckResult {
    * a passing row. Ledger-filled evidence quotes it so a verdict row still shows the measurement.
    */
   detail?: string | null;
+  provenanceStatus?: 'retained' | 'partial' | 'legacy-missing';
 }
 
 /**
  * The latest ledger row for every check of a rubric in one workspace, keyed by check id. Rows
  * whose details no longer parse are skipped rather than guessed at.
+ *
+ * Subjects (crm plan D-049): without `subject` the read is rubric-wide and every subject row is
+ * excluded, so a per-lead measurement never becomes the rubric's result. With `subject` it
+ * returns that subject's latest row per check; a check that has NO subject row for any subject
+ * is a rubric-wide check and keeps its unscoped row, but a check ever recorded per subject is
+ * never filled from another subject's row or from an unscoped one — it is simply absent.
  */
 export async function readLatestRubricCheckResults(
-  input: { rubricRef: string; workspaceId: string | null },
+  input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject },
   sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
 ): Promise<Map<string, LatestRubricCheckResult>> {
   const prefix = `rubric-check/${input.rubricRef}/`;
@@ -433,16 +476,29 @@ export async function readLatestRubricCheckResults(
     output_tail: string | null; execution_details: unknown;
   }>;
   const out = new Map<string, LatestRubricCheckResult>();
+  const own = new Map<string, LatestRubricCheckResult>();
+  const perSubjectChecks = new Set<string>();
   for (const row of rows) {
     const check = parseTestRunExecutionDetails(row.execution_details)?.check;
     if (!check || check.rubricRef !== input.rubricRef) continue;
-    out.set(check.id, {
+    const result: LatestRubricCheckResult = {
       testRunId: Number(row.id),
       check,
       status: row.status as RubricCheckVerdict,
       finishedAt: row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at),
       detail: typeof row.output_tail === 'string' && row.output_tail.length > 0 ? row.output_tail : null,
-    });
+      provenanceStatus: measurementProvenanceStatus(check.provenance),
+    };
+    if (check.subject) {
+      perSubjectChecks.add(check.id);
+      if (input.subject && sameRecordedSubject(check.subject, input.subject)) own.set(check.id, result);
+      continue;
+    }
+    out.set(check.id, result);
   }
-  return out;
+  if (!input.subject) return out;
+  for (const [checkId, result] of out) {
+    if (!own.has(checkId) && !perSubjectChecks.has(checkId)) own.set(checkId, result);
+  }
+  return own;
 }

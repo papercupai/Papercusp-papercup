@@ -1,0 +1,77 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "75f270f317c13e70f875473f8e26cf2ffc46a21456f9f4fd6edd63f046860928.supporting-original",
+      "sha256": "75f270f317c13e70f875473f8e26cf2ffc46a21456f9f4fd6edd63f046860928",
+      "byteLength": 6608
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "scope": "Real production browser session connection after exact-origin fixture correction; not full R1 acceptance.",
+  "stage": "finished",
+  "cases": [
+    {
+      "gui": "local",
+      "origin": "http://127.0.0.1:43693",
+      "url": "http://127.0.0.1:43693/desktops?ws=test-runtime-1ad15d06-975-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-1ad15d06-975-a",
+      "text": "Accounts\nPapercup\nPulse\nSPAWN ACCOUNT POOL\n\nSession steering for fleet account use.\n\n0/0\navail\n0\nClaude\n0\nCodex\n0\npaused\n0\nlimited\noff\nsteer\n★ Default starts here · Force allow-lists · Excl skips · none uses the whole pool\nNo default — using this machine’s own Claude login (~/.claude).\nNo accounts in the pool yet.\nAdd / remove accounts…\n\nUsage is the last observed provider limit signal from the inference gateway. Claude rows show Max 5h + 7d windows; Codex rows show OpenAI-compatible route usage when available.\n\nOPS\nDAO Management\nWorkspaces\nDAOs\nReports\nSupport\nSettings\nDEV\nCupboard\nGitHub\nBlue frost\n▾\nR1 machine A — running\nConnect your computer\nManage machines\nR1 machine A\n▾\nU\n25\n🎯\nPot Health\n🚫\nRead aloud\nPapercup\nTell me what you want to inspect, scan, or unblock.\nQUICK DRAFT PROMPTS\nScan workspaces\nfind active harnesses and urgent issues\nReview blockers\nsurface failing runs, audits, and pending answers\nSummarize state\nget a quick brief on what changed recently\nSend\nDesktops\nR1 machine A\nRefresh\nR1 machine A\n\nWatch your desktops and step in when you need to.\n\nMy desktop\nWorkspace disconnected\nConnect your workspace\n\nConnect the Browser workspace session below to discover its desktops.\n\nIn this workspace\n\n0 desktops · select to watch\n\nNo desktops reported.\n\nWhat's happening\n\nNo desktop activity has been reported yet.\n\nYou can step in at any time. Take control to use an app, then release control or press Escape to return to watching.\n\nBrowser workspace session outbound relay · r1-aHosted workspace connector · Scope: test-runtime-1ad15d06-975-a · Transport: WEBSOCKET · Connected\nRevoke connector\nDetach\nconnecting\n· controller\n· generation 1\n\nAuthenticated browser session · Scope: test-runtime-1ad15d06-975-a · Transport: WEBSOCKET · Waiting for session\n\nConnect to open the authenticated PTY. A detached PTY remains resumable until its idle expiry.\n \n\nTab moves between controls while observing. Shift+Tab returns to the session controls.\n\nCopy\nPaste\nCtrl-C\nTerminate\n Safe-root files\n0 entries\nList\nDownload\nUpload\n\nNo directory listing loaded.\n\nTEXT PREVIEW\nSelect a file to read it through the safe-root file plane.\nBound to connector generation 1\nOperator connection lost\nLive data is paused and actions will not save. Reconnecting automatically — the app resumes by itself once the operator is back.\nDEV",
+      "screenshot": "docs/evidence/machine-first-r1-connect-local-20261024.png"
+    },
+    {
+      "gui": "portal",
+      "origin": "http://127.0.0.1:38297",
+      "url": "http://127.0.0.1:38297/?app=desktops&ws=test-runtime-1ad15d06-975-a&desktopHost=r1-host-a&host=r1-host-a&step=operate&tab=desktops",
+      "workspace": "test-runtime-1ad15d06-975-a",
+      "text": "Home\nPapercup Chat\nChat history\nMail\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nDocs\nCloud\nCupboard\nDEV\nSupport\nSettings\nDesktops\nWORKSPACE\nR1 machine A\nR1 machine A — running\nConnect your computer\nManage machines\n⌘K\n⌘J\n⚡0 AGENTS RUNNING · 0 THINKING\n— PROCESSES\nDownload TUI\niPhone\nAndroid\nDesktops\nR1 machine A\nRefresh\nR1 machine A\n\nWatch your desktops and step in when you need to.\n\nMy desktop\nWorkspace disconnected\nConnect your workspace\n\nConnect the Browser workspace session below to discover its desktops.\n\nIn this workspace\n\n0 desktops · select to watch\n\nNo desktops reported.\n\nWhat's happening\n\nNo desktop activity has been reported yet.\n\nYou can step in at any time. Take control to use an app, then release control or press Escape to return to watching.\n\nBrowser workspace session outbound relay · r1-aHosted workspace connector · Scope: test-runtime-1ad15d06-975-a · Transport: WEBSOCKET · Connected\nRevoke connector\nConnect\nerror\n· Hosted sign-in with a selected workspace is required: hosted_auth_unavailable_in_local_mode\nConnect to open the authenticated PTY. A detached PTY remains resumable until its idle expiry.\n \n\nTab moves between controls while observing. Shift+Tab returns to the session controls.\n\nCopy\nPaste\nCtrl-C\nTerminate\n Safe-root files\n0 entries\nList\nDownload\nUpload\n\nNo directory listing loaded.\n\nTEXT PREVIEW\nSelect a file to read it through the safe-root file plane.\nResolving the hosted workspace session…",
+      "screenshot": "docs/evidence/machine-first-r1-connect-portal-20261024.png"
+    }
+  ],
+  "ws": [
+    {
+      "gui": "local",
+      "path": "/api/hosted/connectors/socket",
+      "received": [
+        {
+          "type": "session.bound"
+        }
+      ],
+      "closed": false
+    }
+  ],
+  "errors": [
+    {
+      "gui": "local",
+      "connectionWait": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: \"healthy\"\nReceived: \"unknown\"\n\nCall Log:\n- Timeout 30000ms exceeded while wait"
+    },
+    {
+      "gui": "portal",
+      "connectionWait": "Error: Timeout 30000ms exceeded while waiting on the predicate"
+    }
+  ],
+  "runtime": {
+    "release": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.machine-first-r1-gui-candidate-v12-20261024/releases/SM74kfSjUSj9zREjlSOQX-20261024064202668-4185728-37b03739",
+    "portal": "http://127.0.0.1:38297",
+    "pid": 1919558,
+    "home": "/tmp/machine-first-r1-v14-portal-home-hXi3Ox",
+    "fixture": "http://127.0.0.1:46729",
+    "localGUI": "http://127.0.0.1:43693"
+  },
+  "result": "observed",
+  "cleanup": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "workItem": "WI-6554700010016648",
+  "acceptance": "FAILED CONNECTION CASES: observed means diagnostic collection completed, not acceptance passed.",
+  "fixtureSourceHash": "a5f88810552d4ccd73b81f71dfb2c6c71fa5a60cc24154aeaeb3f02d375841dd",
+  "fixtureVerification": {
+    "typecheck": "/tmp/machine-first-r1-fixture-origins-typecheck-20261024.log",
+    "exitCode": 0,
+    "reason": "v13 lacked its exact GUI origin in the local launcher configuration; v14 uses the existing configured origin hints."
+  },
+  "trace": "docs/evidence/machine-first-r1-connect-diagnostic-20261024.zip"
+}

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "plan": "seed-miniflare-cache-census-2026-10-24",
+  "workItem": "WI-6554700010026184",
+  "requirement": "R-4",
+  "verification": "manual",
+  "pathNotation": "Resolve a leading ~/ with the evidence recorder's home directory before reading. These are evidence locators; the recorded clone HEAD and receipt hashes remain the identity checks. Missing host context is UNKNOWN.",
+  "measuredAt": "2026-10-24T09:06:28.205608+00:00",
+  "observer": "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+  "procedure": [
+    "Read the preserved clone HEAD with git rev-parse HEAD.",
+    "Read its tracked status with git status --porcelain --untracked-files=no.",
+    "Read both complete named receipt files and compute SHA256 with hashlib.sha256.",
+    "Compare the observed identities with the exact tuple in the current plan Design."
+  ],
+  "clone": {
+    "path": "/mnt/data/offload/wi-10006692-retained-bench-2026-10-08/843e2-signed-source-proof-b9958b78",
+    "expectedHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+    "observedHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+    "trackedPorcelain": "",
+    "matches": true
+  },
+  "receipts": [
+    {
+      "path": "~/.papercusp/scratch/843e2-source-proof-binding-v2-safe.json",
+      "expectedSha256": "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+      "observedSha256": "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+      "matches": true
+    },
+    {
+      "path": "~/.papercusp/scratch/843e2-source-proof-generation-publish-v2-readback-safe.json",
+      "expectedSha256": "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2",
+      "observedSha256": "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2",
+      "matches": true
+    }
+  ],
+  "result": "The named custody tuple matches at measuredAt.",
+  "priorEvidence": ["thread-post:1203765"],
+  "limits": [
+    "This records a manual observation of the named tuple at measuredAt; it is not an executable custody monitor.",
+    "Server-measuring this evidence file proves its current bytes, not the continuing state of external clone or receipt paths.",
+    "Re-read the exact external tuple at final acceptance; missing or different identities remain UNKNOWN or failed.",
+    "P-001 completion is preserved. P-002, independent current-source review and final plan acceptance remain open.",
+    "Parent original-source admission, GO and shipment remain unresolved. No release, source-store access, license activation or publication is authorized by this record."
+  ]
+}

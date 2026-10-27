@@ -59,6 +59,8 @@ import {
   type TestCaseFilterRefusalCode,
 } from './testing-case-filter';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
+import { declaredCaseTitles, mayMatchUnresolvedCaseTitle } from './testing-declared-case-titles';
+import { hasMatchingDeclaredCaseTitle } from './testing-case-filter';
 import { rubricCriterionCheckSchema, type RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
 import {
@@ -536,7 +538,12 @@ export function assertCriterionCheckPathsResolve(
   const v = selectCriterionCheckRoot(criteria, requested, REPO_ROOT, {
     allowPlannedPaths: opts.allowPlannedPaths === true,
   }).validation;
-  if (v.ok) return v;
+  if (v.ok) {
+    const caseFailures = validateCriterionTestCaseCitations(criteria, v);
+    if (caseFailures.length === 0) return v;
+    v.ok = false;
+    v.failures.push(...caseFailures);
+  }
   const parts: string[] = [];
   if (v.failures.length > 0) {
     const testsFailures = v.failures.filter((f) => f.checkKind !== 'cargo');
@@ -566,6 +573,44 @@ export function assertCriterionCheckPathsResolve(
     );
   }
   throw new Error(`invalid_args: proposeRubric: ${parts.join('\n\n')}`);
+}
+
+/** Authoring/activation preflight only. Grading still resolves actual executed cases.
+ * Root selection remains path-based; a bad title must never select a different tree.
+ * Missing planned files and computed titles cannot establish a static zero-match.
+ */
+export function validateCriterionTestCaseCitations(
+  criteria: ReadonlyArray<CheckedCriterion>,
+  validation: Pick<CriterionCheckPathValidation, 'root' | 'normalizedByKey' | 'planned'>,
+): CriterionCheckPathFailure[] {
+  const failures: CriterionCheckPathFailure[] = [];
+  const snapshots = new Map<string, ReturnType<typeof declaredCaseTitles>>();
+  for (const criterion of criteria) {
+    const check = criterion.check;
+    if (check?.kind !== 'tests') continue;
+    const selectors = check.cases ?? (check.testName ? [{ file: check.files[0]!, testName: check.testName }] : []);
+    for (const selector of selectors) {
+      const file = validation.normalizedByKey[criterion.key]?.[check.files.indexOf(selector.file)] ?? selector.file;
+      if (validation.planned.some(row => row.criterionKey === criterion.key && row.path === file)) continue;
+      const absolute = resolve(validation.root, file);
+      let snapshot = snapshots.get(absolute);
+      if (!snapshot) {
+        try { snapshot = declaredCaseTitles(absolute, readFileSync(absolute, 'utf8')); }
+        catch {
+          failures.push({ criterionKey: criterion.key, path: file, reason: 'cannot read maintained test case declarations' });
+          continue;
+        }
+        snapshots.set(absolute, snapshot);
+      }
+      if (!hasMatchingDeclaredCaseTitle(selector.testName, snapshot.titles) &&
+          !mayMatchUnresolvedCaseTitle(selector.testName, snapshot.unresolvedTitles)) {
+        failures.push({ criterionKey: criterion.key, path: file,
+          reason: `test case '${selector.testName}' matches no maintained case title. Use a complete case title or a suffix at a ' > ' hierarchy boundary; embedded tags and suite-only names do not select a case.`,
+        });
+      }
+    }
+  }
+  return failures;
 }
 
 /** One criterion's grading-time check run — the persisted shape is the ledger's
@@ -894,6 +939,8 @@ export async function evaluateCriterionProbeChecks(input: {
     const chunk = await runContinuityProbeBatch(sources.slice(start, start + CONTINUITY_PROBE_MAX_PER_WAKE), {
       dispatchTool: input.dispatchTool,
       timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
+      retainMeasurement: true,
+      now: () => Date.parse(nowIso()),
     });
     batch.results.push(...chunk.results);
     batch.truncated += chunk.truncated;
@@ -935,7 +982,8 @@ export async function evaluateCriterionProbeChecks(input: {
       status: result.status,
       executed: true,
       ...(result.observed !== undefined ? { observed: result.observed as string | number | boolean | null } : {}),
-      measuredAt: nowIso(),
+      ...(result.provenance ? { provenance: result.provenance } : {}),
+      measuredAt: result.provenance?.finishedAt ?? nowIso(),
     };
     records.set(item.key, [...(records.get(item.key) ?? []), record]);
   }

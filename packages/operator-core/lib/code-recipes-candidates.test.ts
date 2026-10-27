@@ -11,7 +11,47 @@
  * "don't regenerate an existing tool" damp never fired. The slug set fixes it.
  */
 import { describe, expect, it } from 'vitest';
-import { slugifyToolName, existingToolSlugSet } from './code-recipes-candidates';
+import { slugifyToolName, existingToolSlugSet, recipePromotionScore } from './code-recipes-candidates';
+import { compareDemandRank } from './demand-score';
+
+it('OUTCOME-P-003', () => {
+  const corpus = [
+    { id: 'b', runCount: 12, distinctAgents: 5, successRate: 1, toolCount: 3, redundant: false },
+    { id: 'a', runCount: 12, distinctAgents: 5, successRate: 1, toolCount: 3, redundant: false },
+    { id: 'solo', runCount: 3, distinctAgents: 1, successRate: 1, toolCount: 2, redundant: false },
+    { id: 'trivial', runCount: 100, distinctAgents: 8, successRate: 1, toolCount: 1, redundant: true },
+  ];
+  const replay = (rows: typeof corpus) => rows.map(row => ({ ...row, score: recipePromotionScore(row) })).sort(compareDemandRank);
+  const first = replay(corpus);
+  expect(replay([...corpus].reverse())).toEqual(first);
+  expect(first.map(row => row.id)).toEqual(['a', 'b', 'solo', 'trivial']);
+  expect(first.map(row => row.score)).toEqual([.9527440092751795, .9527440092751795, .4966021492181718, 0]);
+});
+
+// Frozen against the pre-extraction four-leg recipe formula (including its FP order).
+it('R3-CONTRACT', () => {
+  const golden = [
+    { runCount: 0, distinctAgents: 0, successRate: 0, toolCount: 3, score: .2 },
+    { runCount: 1, distinctAgents: 1, successRate: 1, toolCount: 3, score: .5283010746090859 },
+    { runCount: 3, distinctAgents: 1, successRate: 1, toolCount: 2, score: .4966021492181718 },
+    { runCount: 12, distinctAgents: 5, successRate: 1, toolCount: 3, score: .9527440092751795 },
+    { runCount: 20, distinctAgents: 5, successRate: .5, toolCount: 3, score: .8999999999999999 },
+    { runCount: 100, distinctAgents: 8, successRate: .8, toolCount: 4, score: .96 },
+  ];
+  for (const row of golden) {
+    expect(recipePromotionScore({ ...row, redundant: false })).toBe(row.score);
+    expect(recipePromotionScore({ ...row, redundant: true }, 1)).toBe(0);
+  }
+  const hot = { runCount: 12, distinctAgents: 5, successRate: 1, toolCount: 3, redundant: false };
+  expect(recipePromotionScore(hot, .6)).toBe(.8939533410626496);
+  expect(recipePromotionScore(hot, null)).toBe(.9527440092751795);
+  expect(recipePromotionScore(hot, 2)).toBe(recipePromotionScore(hot, 1));
+  expect(recipePromotionScore(hot, -1)).toBe(recipePromotionScore(hot, 0));
+  // No SQL day/call floor or SQL weights have entered recipe policy.
+  expect(recipePromotionScore({ ...hot, runCount: 3, distinctAgents: 1 })).toBeGreaterThan(.45);
+  expect(golden.map((row, id) => ({ id, score: recipePromotionScore({ ...row, redundant: false }) }))
+    .sort((a, b) => b.score - a.score).map(row => row.id)).toEqual([5, 3, 4, 1, 2, 0]);
+});
 
 describe('slugifyToolName', () => {
   it('kebab-cases a ns:verb tool name into the recipe-id (recipeSlug) shape', () => {

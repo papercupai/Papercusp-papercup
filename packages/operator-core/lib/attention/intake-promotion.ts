@@ -92,11 +92,12 @@ import {
 } from '../harness/improvements/agent-review-policy';
 import { neutralizeToolCallTags, sanitizePersistedText } from '../text-safety';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 export const INTAKE_EXECUTION_SCHEMA_VERSION = 'intake-execution-v1' as const;
 
 /** Terminal storage states — an item in one of these is not suitable work. */
 const TERMINAL_STATES = new Set(['done', 'dropped', 'resolved', 'closed']);
-const WORK_KINDS = new Set(['bug', 'change', 'task']);
+const WORK_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 export type IntakeStorageKind = 'bug' | 'change' | 'task';
 
@@ -1083,7 +1084,7 @@ export function defaultIntakePromotionDeps(options: {
           FROM harness_shared.work_items w
          WHERE w.workspace_id IN (
                  SELECT s.workspace_id FROM harness_shared.work_items s WHERE s.feature_id = ${sourceId})
-           AND w.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND w.item_kind = ANY (ARRAY[${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
            AND w.payload -> 'intakeSource' ->> 'id' = ${sourceId}
            AND w.feature_id <> ${sourceId}
          ORDER BY w.created_ts`;

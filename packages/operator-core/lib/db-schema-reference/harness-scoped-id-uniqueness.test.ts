@@ -82,7 +82,18 @@ const BASELINE: readonly string[] = [
  * reviewer can check: why this id is never cited outside its harness, or why a
  * by-id reader already refuses ambiguity.
  */
-const ALLOWLIST: Readonly<Record<string, string>> = {};
+const ALLOWLIST: Readonly<Record<string, string>> = {
+  'code_intel_research_trails.code_intel_research_trails_pkey':
+    'Per-harness state, not an item id: one research trail per (session owner, harness), and the ' +
+    'trail of an owner in harness A must not collide with the same owner in harness B (migration 1561).',
+  'plan_type_pins.plan_type_pins_pkey':
+    'plan_slug is a harness-scoped identifier by design (plans live per harness) and type_id names a ' +
+    'type-registry entry, not a row; every reader resolves a pin by (harness, plan, kind, type) (migration 1545).',
+  'sql_candidate_reviews.sql_candidate_reviews_pkey':
+    'lifecycle_id/edition_id name a SQL-candidate review within one harness; every reader filters by ' +
+    'harness_slug (sql-tool-candidate-worklist.ts) and artifact_id already carries a workspace-wide ' +
+    'UNIQUE (workspace_id, artifact_id) for the by-id lookup (migration 1579).',
+};
 
 const idx = (table: string, name: string, cols: string, where?: string): IndexCensusEntry => ({
   schema: 'harness_shared',

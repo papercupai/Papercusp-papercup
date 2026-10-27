@@ -62,9 +62,9 @@ import { loadPairFixtures } from '../packages/operator-core/lib/bash-substitutio
 import { BASH_GATE_PAIRS } from '../packages/operator-core/lib/bash-substitution/pairs';
 import { fetchSubstitutionRows } from '../packages/operator-core/lib/bash-substitution/registry';
 import {
-  diffRegistry,
   expectedRows,
   formatDrift,
+  registryCheckVerdict,
 } from '../packages/operator-core/lib/bash-substitution/registry-drift';
 import { promoteEarnedRows, seedSubstitutionRegistry } from '../packages/operator-core/lib/bash-substitution/seed';
 
@@ -108,7 +108,15 @@ async function main(): Promise<void> {
   }
 
   if (CHECK) {
-    const drifts = diffRegistry(expectedRows(fixtures), await fetchSubstitutionRows(WORKSPACE_ID));
+    const verdict = registryCheckVerdict(expectedRows(fixtures), await fetchSubstitutionRows(WORKSPACE_ID));
+    if (verdict.kind === 'unseeded') {
+      process.stdout.write(
+        `⚠ NOT CHECKED — the substitution registry has no rows for ${WORKSPACE_ID} in this database ` +
+          '(never seeded, e.g. the gate\'s private test Postgres): nothing to compare.\n',
+      );
+      process.exit(EXIT_NOT_CHECKED);
+    }
+    const drifts = verdict.kind === 'drift' ? verdict.drifts : [];
     process.stdout.write(formatDrift(drifts));
     if (drifts.length > 0) {
       process.stderr.write('\n  run `npm run seed:substitutions` to re-derive the rows from the pairs\n');

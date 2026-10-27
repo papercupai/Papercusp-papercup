@@ -120,7 +120,7 @@ const OMP_DERIVED_SEED_WIRE_BYTE_BUDGET = 100_000;
  * LOWERING IT IS ALWAYS CORRECT AND NEEDS NO CEREMONY. Raising it is an owner decision
  * under D-001, which this spine is already in breach of.
  */
-export const CORE_SPINE_WIRE_BYTE_RATCHET = 360_000;
+export const CORE_SPINE_WIRE_BYTE_RATCHET = 330_000;
 
 /** D-001's stated ceiling, for the failure message to quote. Not asserted — the spine is
  *  already over it, so asserting it would red the gate on a pre-existing, tracked debt

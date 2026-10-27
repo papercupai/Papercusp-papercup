@@ -33,9 +33,10 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.3.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, mkdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  access as accessAsync,
   mkdir as mkdirAsync,
   readdir as readdirAsync,
   stat as statAsync,
@@ -55,9 +56,20 @@ import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { withUnpinnedPath } from './storage/retention-pins';
 
 /** Serialize the final protection read and delete with storage:pin mutations. */
-async function removeUnpinnedScratchPath(path: string, dryRun = false): Promise<boolean> {
+async function removeUnpinnedScratchPath(
+  path: string,
+  dryRun = false,
+  onRmAsync?: (elapsedMs: number) => void,
+): Promise<boolean> {
   return withUnpinnedPath(path, async () => {
-    if (!dryRun) await rmAsync(path, { recursive: true, force: true });
+    if (!dryRun) {
+      const startedAt = performance.now();
+      try {
+        await rmAsync(path, { recursive: true, force: true });
+      } finally {
+        onRmAsync?.(Math.max(0, performance.now() - startedAt));
+      }
+    }
     return true;
   });
 }
@@ -341,12 +353,31 @@ function withScratchWorkspaceDataMutex<T>(
   workspaceId: string,
   operation: string,
   run: () => Promise<T>,
+  onWaiting?: (info: { owner: string; elapsedMs: number }) => void,
+  onAcquired?: (info: {
+    waitedMs: number;
+    fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
+  }) => void,
 ): Promise<T> {
   const mutexName = scratchWorkspaceDataMutexName(workspaceId);
   const lockRootDir = scratchQuotaMutexLockRoot();
+  const admissionStartedAt = performance.now();
+  const observeAdmission = onAcquired
+    ? (info: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> }) => onAcquired({
+        waitedMs: Math.max(0, performance.now() - admissionStartedAt),
+        fsMutexAdmissionMs: info.waitedMs,
+        ...(info.admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
+          : {}),
+      })
+    : undefined;
   return withFsMutex(mutexName, run, {
     intent: { subsystem: 'scratch-quota', operation, workspaceId },
     ...(lockRootDir ? { lockRootDir } : {}),
+    waitingNoticeIntervalMs: 5_000,
+    onWaiting,
+    onAcquired: observeAdmission,
   });
 }
 
@@ -370,6 +401,16 @@ function withScratchWorkspaceDataReadLease<T>(
   // ScratchWriteTimings phase. fs-mutex reports waitedMs from Date.now(), so mixing the two put
   // the lease wait on a different clock from the totalMs it is a part of.
   const admissionStartedAt = performance.now();
+  const observeAdmission = onAcquired
+    ? (info: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> }) => onAcquired({
+        waitedMs: Math.max(0, performance.now() - admissionStartedAt),
+        localWaitMs: 0,
+        fsMutexAdmissionMs: info.waitedMs,
+        ...(info.admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
+          : {}),
+      })
+    : undefined;
   return withFsMutex(mutexName, run, {
     mode: 'read',
     intent: {
@@ -382,16 +423,8 @@ function withScratchWorkspaceDataReadLease<T>(
     ...(mutexTimeoutMs != null ? { timeoutMs: mutexTimeoutMs } : {}),
     waitingNoticeIntervalMs: 5_000,
     onWaiting,
-    onAcquired: onAcquired
-      ? (info) => onAcquired({
-          waitedMs: Math.max(0, performance.now() - admissionStartedAt),
-          localWaitMs: 0,
-          fsMutexAdmissionMs: info.waitedMs,
-          ...(info.admissionSubphaseTimingsMs
-            ? { admissionSubphaseTimingsMs: { ...info.admissionSubphaseTimingsMs } }
-            : {}),
-        })
-      : undefined,
+    onAcquired: observeAdmission,
+    onTimedOut: observeAdmission,
   }).catch((error) => { throw normalizeScratchMutexTimeout(error, mutexTimeoutMs); });
 }
 
@@ -486,8 +519,7 @@ function invalidateLocalScratchUsage(workspaceId: string): void {
   const entry = usageEntry(workspaceId);
   entry.measuredAt = 0;
   entry.refreshDeferred = false;
-  entry.runBytesByPath.clear();
-  entry.runBytesValid = false;
+  invalidateRunSizeIndex(entry);
 }
 
 function adoptSharedScratchUsage(
@@ -510,8 +542,7 @@ function adoptSharedScratchUsage(
   entry.refreshDeferred = false;
   entry.sharedUpdatedAt = updatedAt;
   if (!preserveRunIndex) {
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   }
   return entry;
 }
@@ -734,6 +765,54 @@ export async function runScratchGc(opts: {
     ? undefined
     : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
 
+  // Retention comes first: marker backfill or an abandoned tree walk can exhaust a
+  // foreground caller's budget before any registered workspace reclaims expired runs.
+  for (const workspaceId of opts.workspaceRegistry) {
+    if (scratchGcBudgetExpired(budget)) break;
+    // Walk and size candidates without the workspace mutex. A retention sweep can visit many
+    // run directories, and a slow stat/readdir here must not hold up result-door reservations
+    // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
+    // mtime immediately before removing it, so a cooperating writer that started after this
+    // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
+    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
+      .filter((run) => now - run.mtimeMs > retentionMs);
+    let removed = false;
+    for (const candidate of candidates) {
+      if (scratchGcBudgetExpired(budget)) break;
+      const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
+      if (scratchGcBudgetExpired(budget)) break;
+      if (dryRun) {
+        if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
+        summary.retentionEvictions += 1;
+        summary.retentionEvictedBytes += bytes;
+        continue;
+      }
+
+      const evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
+        withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
+        let current;
+        try {
+          current = await statAsync(candidate.dir);
+        } catch {
+          return false;
+        }
+        if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
+        return removeUnpinnedScratchPath(candidate.dir);
+      }));
+      if (!evicted) continue;
+      removed = true;
+      summary.retentionEvictions += 1;
+      summary.retentionEvictedBytes += bytes;
+    }
+    if (removed) {
+      await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
+        withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
+          await removeSharedScratchQuotaState(workspaceId);
+          invalidateLocalScratchUsage(workspaceId);
+        }));
+    }
+  }
+
   if (!dryRun) {
     // Backfill: every registered workspace root that exists gets its marker, so that once the
     // workspace leaves the registry its root is provably ours. Never creates a root.
@@ -758,7 +837,7 @@ export async function runScratchGc(opts: {
     }
   }
 
-  // Step 2 (before step 1 so we don't waste work on dead workspaces): remove PROVABLY dead
+  // Step 2: remove PROVABLY dead
   // workspace roots wholesale (WI-10006512). A missing root lists as empty.
   const candidates: Array<{ workspaceId: string; dir: string; realDir: string; bytes: number }> = [];
   for (const name of await listDir(root, undefined, budget)) {
@@ -832,53 +911,6 @@ export async function runScratchGc(opts: {
     }
   }
 
-  // Step 1: retention sweep, per-workspace.
-  for (const workspaceId of opts.workspaceRegistry) {
-    if (scratchGcBudgetExpired(budget)) break;
-    // Walk and size candidates without the workspace mutex. A retention sweep can visit many
-    // run directories, and a slow stat/readdir here must not hold up result-door reservations
-    // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
-    // mtime immediately before removing it, so a cooperating writer that started after this
-    // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
-    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
-      .filter((run) => now - run.mtimeMs > retentionMs);
-    let removed = false;
-    for (const candidate of candidates) {
-      if (scratchGcBudgetExpired(budget)) break;
-      const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
-      if (scratchGcBudgetExpired(budget)) break;
-      if (dryRun) {
-        if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
-        summary.retentionEvictions += 1;
-        summary.retentionEvictedBytes += bytes;
-        continue;
-      }
-
-      const evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
-        let current;
-        try {
-          current = await statAsync(candidate.dir);
-        } catch {
-          return false;
-        }
-        if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
-        return removeUnpinnedScratchPath(candidate.dir);
-      }));
-      if (!evicted) continue;
-      removed = true;
-      summary.retentionEvictions += 1;
-      summary.retentionEvictedBytes += bytes;
-    }
-    if (removed) {
-      await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
-          await removeSharedScratchQuotaState(workspaceId);
-          invalidateLocalScratchUsage(workspaceId);
-        }));
-    }
-  }
-
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
   if (opts.enforceQuota !== false && !dryRun && !scratchGcBudgetExpired(budget)) {
     for (const workspaceId of opts.workspaceRegistry) {
@@ -920,13 +952,36 @@ async function childDirs(
   budget?: ScratchGcBudget,
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const out: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const name of await listDir(dir, diagnostics, budget)) {
+  if (scratchGcBudgetExpired(budget)) return out;
+  let entries: Dirent[];
+  try {
+    entries = await measureScratchQuotaRecoveryOperation(
+      diagnostics,
+      'readdir',
+      () => readdirAsync(dir, { withFileTypes: true }),
+    );
+  } catch (error) {
+    if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+      diagnostics.directoryReadErrors += 1;
+      rememberScratchSizeWalkErrorCode(diagnostics, error);
+    }
+    return out;
+  }
+  scratchGcBudgetExpired(budget);
+  for (const entry of entries) {
     if (scratchGcBudgetExpired(budget)) break;
-    const child = join(dir, name);
+    // Keep following directory symlinks as before, but do not stat regular files just
+    // to discover that they are not run directories.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const child = join(dir, entry.name);
     let st;
     try {
       st = await measureScratchQuotaRecoveryOperation(diagnostics, 'stat', () => statAsync(child));
-    } catch {
+    } catch (error) {
+      if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+        diagnostics.fileStatErrors += 1;
+        rememberScratchSizeWalkErrorCode(diagnostics, error);
+      }
       continue;
     }
     if (st.isDirectory()) out.push({ dir: child, mtimeMs: st.mtimeMs });
@@ -981,10 +1036,19 @@ interface ScratchUsageEntry {
   refreshDeferred: boolean;
   /** Last stable per-run sizes; request-time recovery remeasures FIFO candidates on demand. */
   runBytesByPath: Map<string, number>;
+  /** Mtimes for runs rechecked after the full workspace measurement. */
+  runMtimeByPath: Map<string, number>;
   /** False when the per-run index does not cover a stable, complete workspace measurement. */
   runBytesValid: boolean;
   /** Last observed/persisted shared-state revision; gates reuse of this process's run index. */
   sharedUpdatedAt: number | null;
+  /**
+   * The largest run the last quota eviction pass could NOT reclaim (read-only/immutable: EACCES,
+   * EPERM, EROFS). Eviction deliberately never chmods such a run, so its bytes stay charged and the
+   * quota can stay exceeded indefinitely. The refusal names it so the blocker is attributable
+   * instead of "cause unknown" (WI-6554700010029261: one 16 GB read-only run held 3.3x quota).
+   */
+  largestUnreclaimable: { path: string; bytes: number; code: string; observedAt: number } | null;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -1001,8 +1065,9 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry = {
       bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
       recovering: null, maintenanceEpoch: 0, writes: new Map(),
-      writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(), runBytesValid: false,
-      sharedUpdatedAt: null,
+      writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(),
+      runMtimeByPath: new Map(), runBytesValid: false,
+      sharedUpdatedAt: null, largestUnreclaimable: null,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
@@ -1014,10 +1079,17 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry.writeGeneration ??= 0;
     entry.refreshDeferred ??= false;
     entry.runBytesByPath ??= new Map();
+    entry.runMtimeByPath ??= new Map();
     entry.runBytesValid ??= false;
     entry.sharedUpdatedAt ??= null;
   }
   return entry;
+}
+
+function invalidateRunSizeIndex(entry: ScratchUsageEntry): void {
+  entry.runBytesByPath.clear();
+  entry.runMtimeByPath.clear();
+  entry.runBytesValid = false;
 }
 
 function scratchRunDirForFile(workspaceId: string, filePath: string): string | null {
@@ -1039,11 +1111,17 @@ function adjustCachedRunBytes(
   if (!entry.runBytesValid) return;
   const runDir = scratchRunDirForFile(workspaceId, filePath);
   if (!runDir) {
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
     return;
   }
+  // A local write changes the run directory mtime. Its byte delta is known, but the
+  // mtime marker must be revalidated before a later recovery trusts this per-run size.
+  entry.runMtimeByPath.delete(runDir);
   const next = (entry.runBytesByPath.get(runDir) ?? 0) + delta;
-  if (next <= 0) entry.runBytesByPath.delete(runDir);
+  if (next <= 0) {
+    entry.runBytesByPath.delete(runDir);
+    entry.runMtimeByPath.delete(runDir);
+  }
   else entry.runBytesByPath.set(runDir, next);
 }
 
@@ -1084,12 +1162,18 @@ async function evictWorkspaceQuotaLocked(
   let used: number;
   if (useCachedRunSizes) {
     const runListingStartedAt = performance.now();
+    const runListingErrorCount = scratchQuotaReadErrorCount(diagnostics);
     runs = await runDirsOf(wsRoot, diagnostics);
     if (diagnostics) {
       diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
       diagnostics.runsListed += runs.length;
     }
-    if (!entry.runBytesValid || entry.refreshDeferred) {
+    if (scratchQuotaReadErrorCount(diagnostics) > runListingErrorCount) {
+      // A partial run listing cannot reconcile the cached index: absent paths may be
+      // temporarily unreadable rather than deleted. Rebuild from the workspace root.
+      useCachedRunSizes = false;
+      runs = null;
+    } else if (!entry.runBytesValid || entry.refreshDeferred) {
       // A synchronous reservation may have invalidated the index while the directory listing
       // yielded. Without a complete stable index, keep the conservative full measurement.
       useCachedRunSizes = false;
@@ -1099,6 +1183,7 @@ async function evictWorkspaceQuotaLocked(
       if (unindexedRuns.length > 0) {
         const measuredRuns = new Map<string, number>();
         let canMeasureIncrementally = true;
+        const incrementalErrorCount = scratchQuotaReadErrorCount(diagnostics);
         for (const run of unindexedRuns) {
           let stats;
           try {
@@ -1107,7 +1192,11 @@ async function evictWorkspaceQuotaLocked(
               'stat',
               () => lstatAsync(run.dir),
             );
-          } catch {
+          } catch (error) {
+            if (scratchFsErrorCode(error) !== 'ENOENT' && diagnostics) {
+              diagnostics.fileStatErrors += 1;
+              rememberScratchSizeWalkErrorCode(diagnostics, error);
+            }
             canMeasureIncrementally = false;
             break;
           }
@@ -1123,14 +1212,22 @@ async function evictWorkspaceQuotaLocked(
             await sizeOfDirAsync(run.dir, undefined, undefined, 0, undefined, diagnostics),
           );
         }
-        if (!canMeasureIncrementally || !entry.runBytesValid || entry.refreshDeferred) {
+        if (
+          !canMeasureIncrementally ||
+          scratchQuotaReadErrorCount(diagnostics) > incrementalErrorCount ||
+          !entry.runBytesValid ||
+          entry.refreshDeferred
+        ) {
           // If the index changed during incremental sizing, discard the partial measurements and
           // rebuild from the workspace root. This also handles unreadable or vanished new paths.
           useCachedRunSizes = false;
           runs = null;
         } else {
-          for (const [runDir, bytes] of measuredRuns) {
-            entry.runBytesByPath.set(runDir, bytes);
+          for (const run of unindexedRuns) {
+            const bytes = measuredRuns.get(run.dir);
+            if (bytes === undefined) continue;
+            entry.runBytesByPath.set(run.dir, bytes);
+            entry.runMtimeByPath.set(run.dir, run.mtimeMs);
             newlyDiscoveredRunBytes += bytes;
           }
           // Cross-process growth changed the index. Re-measure it after this recovery settles.
@@ -1139,6 +1236,7 @@ async function evictWorkspaceQuotaLocked(
       }
     }
   }
+  if (!useCachedRunSizes) entry.runMtimeByPath.clear();
   if (useCachedRunSizes && runs) {
     const liveRuns = new Set(runs.map((run) => run.dir));
     used = entry.bytes + newlyDiscoveredRunBytes;
@@ -1150,16 +1248,23 @@ async function evictWorkspaceQuotaLocked(
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(runDir + sep))) continue;
       used -= cachedBytes;
       entry.runBytesByPath.delete(runDir);
+      entry.runMtimeByPath.delete(runDir);
       cacheChanged = true;
     }
     used = Math.max(0, used);
     if (runs.some((run) => !entry.runBytesByPath.has(run.dir))) cacheChanged = true;
   } else {
     const sizeWalkStartedAt = performance.now();
+    const sizeWalkErrorCount = scratchQuotaReadErrorCount(diagnostics);
     try {
       used = await sizeOfDirAsync(wsRoot, observedWriterBytes, runBytesByPath, 0, undefined, diagnostics);
     } finally {
       if (diagnostics) diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+    }
+    if (scratchQuotaReadErrorCount(diagnostics) > sizeWalkErrorCount) {
+      invalidateRunSizeIndex(entry);
+      entry.refreshDeferred = true;
+      throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics!);
     }
   }
   let evictions = 0;
@@ -1175,6 +1280,8 @@ async function evictWorkspaceQuotaLocked(
       }
     }
     runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    // Re-derived on every eviction pass so it names only a blocker that still exists.
+    entry.largestUnreclaimable = null;
     for (const run of runs) {
       if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.runsConsidered += 1;
@@ -1183,13 +1290,24 @@ async function evictWorkspaceQuotaLocked(
       // Symlinked tool/run directories are discovered by runDirsOf but are not traversed by
       // the workspace size walk; retain the old fallback for those paths.
       const runSizingStartedAt = performance.now();
+      const runSizingErrorCount = scratchQuotaReadErrorCount(diagnostics);
       let bytesInRun: number;
       try {
         if (useCachedRunSizes) {
           const cachedBytes = entry.runBytesByPath.get(run.dir) ?? 0;
-          // Recheck only the FIFO candidates we may delete. This catches cross-process changes
-          // to those runs without recursively sizing every run in the workspace.
-          bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes, undefined, 0, undefined, diagnostics);
+          // The full index covers runs unchanged since its measurement. Directory mtime
+          // detects later cross-process changes, so only changed candidates need a recursive
+          // file-stat walk while the exclusive data lease is held.
+          const recheckedMtime = entry.runMtimeByPath.get(run.dir);
+          const runSizeIsCurrent = recheckedMtime === undefined
+            ? run.mtimeMs <= entry.measuredAt
+            : run.mtimeMs === recheckedMtime;
+          if (runSizeIsCurrent) {
+            bytesInRun = cachedBytes;
+          } else {
+            bytesInRun = await sizeOfDirAsync(run.dir, observedWriterBytes, undefined, 0, undefined, diagnostics);
+            entry.runMtimeByPath.set(run.dir, run.mtimeMs);
+          }
           if (bytesInRun !== cachedBytes) cacheChanged = true;
           used += bytesInRun - cachedBytes;
           entry.runBytesByPath.set(run.dir, bytesInRun);
@@ -1202,6 +1320,11 @@ async function evictWorkspaceQuotaLocked(
       } finally {
         if (diagnostics) diagnostics.selectedRunSizingMs += Math.max(0, performance.now() - runSizingStartedAt);
       }
+      if (scratchQuotaReadErrorCount(diagnostics) > runSizingErrorCount) {
+        invalidateRunSizeIndex(entry);
+        entry.refreshDeferred = true;
+        throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics!);
+      }
       // A writer can join while candidate sizing yields. Preserve its run just as we do for
       // writers already present when the candidate was selected.
       if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
@@ -1209,15 +1332,84 @@ async function evictWorkspaceQuotaLocked(
       if (used <= targetBytes()) break;
       if (diagnostics) diagnostics.deleteAttempts += 1;
       const deletionStartedAt = performance.now();
+      let pinProtectionStartedAt: number | null = null;
+      let rmAsyncMs = 0;
       try {
-        if (!(await removeUnpinnedScratchPath(run.dir))) continue;
+        // Avoid waiting on the global retention-pin mutex for a candidate whose own
+        // permissions (or disappearance) already make removal impossible.
+        const preflightStartedAt = performance.now();
+        try {
+          const accessMode = fsConstants.W_OK | fsConstants.X_OK;
+          await accessAsync(dirname(run.dir), accessMode);
+          // A symlinked run directory is removed as a link; only its parent needs
+          // write/execute access. Preserve the quota walk's existing symlink fallback.
+          const candidate = await lstatAsync(run.dir);
+          if (!candidate.isSymbolicLink()) await accessAsync(run.dir, accessMode);
+        } catch (error) {
+          const code = scratchFsErrorCode(error);
+          if (code === 'ENOENT') {
+            if (diagnostics) {
+              diagnostics.deletePreflightSkips += 1;
+              diagnostics.lastDeletePreflightErrorCode = code;
+            }
+            // The size index is stale for a path that vanished after candidate selection.
+            used -= bytesInRun;
+            if (useCachedRunSizes) entry.runBytesByPath.delete(run.dir);
+            else runBytesByPath.delete(run.dir);
+            entry.runMtimeByPath.delete(run.dir);
+            cacheChanged = true;
+            continue;
+          }
+          if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
+          noteUnreclaimableRun(entry, run.dir, bytesInRun, code);
+          if (diagnostics) {
+            diagnostics.deletePreflightSkips += 1;
+            diagnostics.lastDeletePreflightErrorCode = code;
+            diagnostics.deleteErrors += 1;
+            diagnostics.lastDeleteErrorCode = code;
+          }
+          continue;
+        } finally {
+          if (diagnostics) {
+            diagnostics.deletePreflightMs += Math.max(0, performance.now() - preflightStartedAt);
+          }
+        }
+
+        pinProtectionStartedAt = performance.now();
+        if (!(await removeUnpinnedScratchPath(run.dir, false, (elapsedMs) => {
+          rmAsyncMs = elapsedMs;
+          if (diagnostics) diagnostics.rmAsyncMs += elapsedMs;
+        }))) continue;
+      } catch (error) {
+        const code = scratchFsErrorCode(error);
+        if (code !== 'EACCES' && code !== 'EPERM' && code !== 'EROFS') throw error;
+        // One read-only legacy run must not prevent reclaiming another candidate for
+        // an unrelated result write. Keep its full measured size charged: a failed
+        // recursive removal may have deleted only part of the run, never all of it.
+        // The final reservation still refuses if the remaining candidates cannot
+        // restore quota. Do not chmod immutable evidence or bypass retention pins.
+        noteUnreclaimableRun(entry, run.dir, bytesInRun, code);
+        if (diagnostics) {
+          diagnostics.deleteErrors += 1;
+          diagnostics.lastDeleteErrorCode = code;
+        }
+        continue;
       } finally {
-        if (diagnostics) diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
+        if (diagnostics) {
+          if (pinProtectionStartedAt !== null) {
+            diagnostics.pinProtectionMs += Math.max(
+              0,
+              performance.now() - pinProtectionStartedAt - rmAsyncMs,
+            );
+          }
+          diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
+        }
       }
       used -= bytesInRun;
       evictedRuns.push(run.dir);
       if (useCachedRunSizes) entry.runBytesByPath.delete(run.dir);
       else runBytesByPath.delete(run.dir);
+      entry.runMtimeByPath.delete(run.dir);
       evictions += 1;
       bytes += bytesInRun;
       if (diagnostics) {
@@ -1245,10 +1437,12 @@ async function evictWorkspaceQuotaLocked(
     entry.refreshDeferred = overlappingWrites || cacheChanged;
     if (useCachedRunSizes) {
       entry.runBytesValid = !entry.refreshDeferred;
+      if (!entry.runBytesValid) entry.runMtimeByPath.clear();
     } else if (overlappingWrites) {
-      entry.runBytesValid = false;
+      invalidateRunSizeIndex(entry);
     } else {
       entry.runBytesByPath = runBytesByPath;
+      entry.runMtimeByPath.clear();
       entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
         && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
     }
@@ -1257,12 +1451,13 @@ async function evictWorkspaceQuotaLocked(
     // reservation-based total by exactly the bytes evicted, then re-measure once writers settle.
     entry.bytes = Math.max(0, entry.bytes - bytes);
     entry.refreshDeferred = true;
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   } else {
     entry.bytes = used;
     entry.measuredAt = now();
     entry.refreshDeferred = false;
     entry.runBytesByPath = runBytesByPath;
+    entry.runMtimeByPath.clear();
     entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite)
       && (!diagnostics || (diagnostics.directoryReadErrors === 0 && diagnostics.fileStatErrors === 0));
   }
@@ -1275,15 +1470,37 @@ async function evictWorkspaceQuotaWithLock(
   targetBytes: () => number,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   now: () => number = Date.now,
-  reconcileReservations = false,
+  options: { preserveRunIndex?: boolean; expectedSharedUpdatedAt?: number | null } = {},
 ): Promise<{ used: number; evictions: number; bytes: number }> {
+  const entry = usageEntry(workspaceId);
   const reclaimed = await withScratchWorkspaceDataMutex(workspaceId, 'quota-eviction', async () => {
-    const entry = usageEntry(workspaceId);
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    if (options.preserveRunIndex) {
+      if (!entry.runBytesValid || entry.refreshDeferred) {
+        entry.refreshDeferred = true;
+        return null;
+      }
+      const sharedNow = await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-validate', () =>
+        readSharedScratchQuotaState(workspaceId));
+      if ((sharedNow?.updatedAt ?? null) !== (options.expectedSharedUpdatedAt ?? null)) {
+        invalidateRunSizeIndex(entry);
+        entry.refreshDeferred = true;
+        if (sharedNow) {
+          entry.bytes = sharedNow.bytes;
+          entry.measuredAt = sharedNow.measuredAt;
+          entry.sharedUpdatedAt = sharedNow.updatedAt;
+        } else {
+          entry.sharedUpdatedAt = null;
+        }
+        return null;
+      }
+      return evictWorkspaceQuotaLocked(workspaceId, targetBytes, true, diagnostics, now);
+    }
+
+    invalidateRunSizeIndex(entry);
     entry.refreshDeferred = false;
-    return evictWorkspaceQuotaLocked(workspaceId, targetBytes, reconcileReservations, diagnostics, now);
+    return evictWorkspaceQuotaLocked(workspaceId, targetBytes, false, diagnostics, now);
   });
+  if (!reclaimed) return { used: entry.bytes, evictions: 0, bytes: 0 };
   // Publish only after the long tree walk is complete. The exclusive data lease prevents
   // payload writers and GC from mutating the tree while the walk is in progress.
   await withScratchWorkspaceMutex(workspaceId, 'quota-eviction-state', async () => {
@@ -1438,21 +1655,14 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
   const diagnostics = newScratchQuotaRecoveryDiagnostics();
   entry.refreshDiagnostics = diagnostics;
   const targetBytes = WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES;
+  let adoptedStableRunIndex = false;
   const run = (async () => {
     try {
       const sharedAtStart = await readSharedScratchQuotaState(workspaceId);
-      // A known over-target cache needs immediate quota recovery. Keep that destructive walk
-      // inside the workspace mutex so no writer can reserve a path while FIFO candidates are
-      // being measured or deleted.
-      if (entry.bytes > targetBytes || (sharedAtStart && sharedAtStart.bytes > targetBytes)) {
-        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now);
-        return;
-      }
-
-      // A below-target refresh is read-only until its result is reconciled. Let it overlap a
-      // writer so an ordinary size walk does not hold the quota mutex for the whole tree. The
-      // shared ledger timestamp and local generation reject a mixed snapshot before it can
-      // replace a concurrent reservation.
+      // A refresh is read-only until its result is reconciled. Let it overlap a writer so a
+      // whole-workspace size walk never holds the exclusive data lease. The shared ledger
+      // timestamp and local generation reject a mixed snapshot before it can replace a
+      // concurrent reservation.
       const writeGeneration = entry.writeGeneration;
       const hasReservedWrites = () => [...entry.writes.values()].some((write) => write.reserved);
       const runBytesByPath = new Map<string, number>();
@@ -1478,7 +1688,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
       // writeGeneration, and a currently reserved write may still be changing its file.
       if (hasReservedWrites() || entry.writeGeneration !== writeGeneration) {
         entry.refreshDeferred = true;
-        entry.runBytesValid = false;
+        invalidateRunSizeIndex(entry);
         return;
       }
 
@@ -1487,14 +1697,17 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           const sharedNow = await readSharedScratchQuotaState(workspaceId);
           const sharedChanged = (sharedNow?.updatedAt ?? null) !== (sharedAtStart?.updatedAt ?? null);
           if (hasReservedWrites() || entry.writeGeneration !== writeGeneration || sharedChanged) {
-            entry.runBytesValid = false;
+            invalidateRunSizeIndex(entry);
             if (hasReservedWrites() || entry.writeGeneration !== writeGeneration || !sharedNow) {
               entry.refreshDeferred = true;
             }
             if (sharedNow) {
               entry.bytes = sharedNow.bytes;
               entry.measuredAt = sharedNow.measuredAt;
+              entry.sharedUpdatedAt = sharedNow.updatedAt;
               if (sharedNow.bytes > targetBytes) entry.refreshDeferred = true;
+            } else {
+              entry.sharedUpdatedAt = null;
             }
             return;
           }
@@ -1503,13 +1716,20 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
           entry.measuredAt = now();
           entry.refreshDeferred = false;
           entry.runBytesByPath = runBytesByPath;
+          entry.runMtimeByPath.clear();
           entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite);
+          entry.sharedUpdatedAt = sharedAtStart?.updatedAt ?? null;
+          adoptedStableRunIndex = entry.runBytesValid && !entry.refreshDeferred;
+          if (!adoptedStableRunIndex && measuredBytes > targetBytes) entry.refreshDeferred = true;
           if (measuredBytes <= targetBytes) {
             await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
           }
         }));
-      if (measuredBytes > targetBytes) {
-        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now, true);
+      if (measuredBytes > targetBytes && adoptedStableRunIndex) {
+        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now, {
+          preserveRunIndex: true,
+          expectedSharedUpdatedAt: sharedAtStart?.updatedAt ?? null,
+        });
       }
     } finally {
       entry.refreshDiagnostics = null;
@@ -1548,12 +1768,36 @@ export function _setScratchUsageForTests(
   }) + '\n', { mode: 0o600 });
   entry.sharedUpdatedAt = updatedAt;
   if (!preserveRunBytes) {
-    entry.runBytesByPath.clear();
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
   }
 }
 
 /** Test-only: forget every cached usage total. */
+/**
+ * Test-only: wait (bounded) for every in-flight usage refresh / quota recovery to settle.
+ * A refresh's `finally` can chain a fire-and-forget follow-up refresh, so awaiting the last
+ * `refreshScratchUsage` call does not prove the workspace is quiescent. Such a straggler resolves
+ * its scratch root from the environment when it runs, and can evict runs in the NEXT test's
+ * sandbox. Re-reads the entries each round because a settling refresh can start another.
+ */
+export async function _settleScratchMaintenanceForTests(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pending = [...usageState.byWorkspace.values()]
+      .flatMap((entry) => [entry.refreshing, entry.recovering])
+      .filter((task): task is Promise<void> => Boolean(task));
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolveWait) => {
+        timer = setTimeout(resolveWait, Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function _resetScratchUsageForTests(): void {
   usageState.byWorkspace.clear();
   for (const path of usageState.sharedStatePaths) {
@@ -1579,6 +1823,19 @@ export function _resetScratchUsageForTests(): void {
  * lands (just after boot) the total starts at 0, so only the single-write cap applies — the daily
  * runScratchGc quota eviction still bounds the tree.
  */
+function noteUnreclaimableRun(entry: ScratchUsageEntry, path: string, bytes: number, code: string): void {
+  if (entry.largestUnreclaimable && entry.largestUnreclaimable.bytes >= bytes) return;
+  entry.largestUnreclaimable = { path, bytes, code, observedAt: Date.now() };
+}
+
+/** Refusal suffix naming the largest run eviction could not reclaim, or '' when none was seen. */
+function unreclaimableRunSuffix(entry: ScratchUsageEntry): string {
+  const blocker = entry.largestUnreclaimable;
+  if (!blocker) return '';
+  return `; largest unreclaimable run: ${blocker.path} (${blocker.bytes} bytes, ${blocker.code}). ` +
+    'Eviction never chmods or deletes a read-only run, so its owner must relocate or remove it';
+}
+
 export function reserveScratchSpace(opts: {
   workspaceId: string;
   bytes: number;
@@ -1601,13 +1858,14 @@ export function reserveScratchSpace(opts: {
   if (used + opts.bytes > WORKSPACE_QUOTA_BYTES) {
     if (refreshDue) void refreshScratchUsage(opts.workspaceId).catch(() => {});
     throw new ScratchQuotaError(
-      `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}`,
+      `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}` +
+        unreclaimableRunSuffix(entry),
     );
   }
   entry.bytes = used + opts.bytes;
   entry.writeGeneration += 1;
   if (opts.filePath) adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, opts.bytes);
-  else entry.runBytesValid = false;
+  else invalidateRunSizeIndex(entry);
   // Start after this reservation: only later reservations can invalidate the new walk.
   // Fire-and-forget keeps both accepted and rejected reservations free of filesystem waits.
   // An untracked synchronous writer will call noteScratchWriteSettled after touching disk; defer
@@ -1620,7 +1878,7 @@ export function noteScratchWriteSettled(workspaceId: string, needsRefresh = fals
   const entry = usageEntry(workspaceId);
   entry.writeGeneration += 1;
   if (needsRefresh || entry.refreshing) {
-    entry.runBytesValid = false;
+    invalidateRunSizeIndex(entry);
     entry.refreshDeferred = true;
   }
   if (entry.refreshDeferred) {
@@ -1645,6 +1903,10 @@ export interface ScratchWriteTimings {
   quotaRecoveryMs: number;
   /** Time waiting for the shared payload-data read lease. */
   dataLeaseWaitMs?: number;
+  /** Time quota recovery waits to acquire the exclusive scratch data mutex. */
+  quotaRecoveryDataMutexWaitMs?: number;
+  /** Filesystem mutex admission time within the quota-recovery data mutex wait. */
+  quotaRecoveryDataMutexAdmissionMs?: number;
   /** Awaited shared quota-state file reads, including the revision read before publication. */
   quotaStateReadMs?: number;
   /** Awaited publication I/O (parent mkdir, temp write, rename, and failed-temp cleanup). */
@@ -1688,7 +1950,19 @@ export interface ScratchQuotaRecoveryDiagnostics {
   runsConsidered: number;
   fallbackRunSizes: number;
   deletionMs: number;
+  /** Candidate and parent W_OK|X_OK checks before retention-pin admission. */
+  deletePreflightMs: number;
+  /** Time waiting for/checking retention pins, excluding recursive removal. */
+  pinProtectionMs: number;
+  /** Recursive rmAsync time after retention-pin protection succeeds. */
+  rmAsyncMs: number;
   deleteAttempts: number;
+  /** Candidate skips caused by permission or missing-path preflight errors. */
+  deletePreflightSkips: number;
+  lastDeletePreflightErrorCode: string | null;
+  /** Candidate-local permission failures; their bytes remain charged to quota. */
+  deleteErrors: number;
+  lastDeleteErrorCode: string | null;
   runsDeleted: number;
   deletedBytes: number;
 }
@@ -1714,7 +1988,14 @@ function newScratchQuotaRecoveryDiagnostics(): ScratchQuotaRecoveryDiagnostics {
     runsConsidered: 0,
     fallbackRunSizes: 0,
     deletionMs: 0,
+    deletePreflightMs: 0,
+    pinProtectionMs: 0,
+    rmAsyncMs: 0,
     deleteAttempts: 0,
+    deletePreflightSkips: 0,
+    lastDeletePreflightErrorCode: null,
+    deleteErrors: 0,
+    lastDeleteErrorCode: null,
     runsDeleted: 0,
     deletedBytes: 0,
   };
@@ -1736,6 +2017,10 @@ function rememberScratchSizeWalkErrorCode(
   if (code && !scratchSizeWalkErrorCodes.has(diagnostics)) {
     scratchSizeWalkErrorCodes.set(diagnostics, code);
   }
+}
+
+function scratchQuotaReadErrorCount(diagnostics?: ScratchQuotaRecoveryDiagnostics): number {
+  return diagnostics ? diagnostics.directoryReadErrors + diagnostics.fileStatErrors : 0;
 }
 
 function incompleteScratchQuotaMeasurementError(
@@ -1908,6 +2193,8 @@ export async function writeWithScratchQuota(
     ...(opts.captureSubphaseTimings ? { awaitSubphaseTimingsMs: {} } : {}),
   };
   let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
+  let recoveryDataMutexWaitOwner: ScratchWriteMutexWaitOwner | undefined;
+  let emitActiveRecoveryProgress: (() => void) | undefined;
   let sharedMeasuredAt = Date.now();
   const timed = async (
     phase: 'quotaWaitMs' | 'refreshWaitMs' | 'quotaRecoveryMs' | 'writeMs',
@@ -1933,6 +2220,9 @@ export async function writeWithScratchQuota(
                 pendingWrites: entry.writes.size,
                 recoveryActive: Boolean(entry.recovering),
                 refreshActive: Boolean(entry.refreshing),
+                ...(phase === 'quotaRecoveryMs' && recoveryDataMutexWaitOwner
+                  ? { mutexWaitOwner: recoveryDataMutexWaitOwner }
+                  : {}),
                 ...(phase === 'quotaRecoveryMs' && activeRecoveryDiagnostics
                   ? { quotaRecoveryDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(activeRecoveryDiagnostics) }
                   : {}),
@@ -1945,6 +2235,7 @@ export async function writeWithScratchQuota(
             // Diagnostics must never replace a write failure or invalidate a cursor.
           }
     };
+    if (phase === 'quotaRecoveryMs' && opts.onTiming) emitActiveRecoveryProgress = emitProgress;
     const progressTimeout = opts.onTiming && phase !== 'quotaRecoveryMs'
       ? setTimeout(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
       : undefined;
@@ -1960,6 +2251,9 @@ export async function writeWithScratchQuota(
       if (progressTimeout) clearTimeout(progressTimeout);
       progressInterval?.stop();
       timings[phase] += Math.max(0, performance.now() - start);
+      if (phase === 'quotaRecoveryMs' && emitActiveRecoveryProgress === emitProgress) {
+        emitActiveRecoveryProgress = undefined;
+      }
     }
   };
   let succeeded = false;
@@ -2090,6 +2384,25 @@ export async function writeWithScratchQuota(
               true,
               diagnostics,
             );
+          }, opts.onTiming ? (info) => {
+            recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
+            emitActiveRecoveryProgress?.();
+          } : undefined, (info) => {
+            timings.quotaRecoveryDataMutexWaitMs = info.waitedMs;
+            timings.quotaRecoveryDataMutexAdmissionMs = info.fsMutexAdmissionMs;
+            if (opts.captureSubphaseTimings) {
+              const subphases = timings.awaitSubphaseTimingsMs ??= {};
+              for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
+                const key = 'quota-recovery-data-admission.' + name;
+                subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+              }
+            }
+            // Emit a clearing progress row only when a waiting owner was actually reported.
+            // An uncontended admission must not add a progress row: callers read the first
+            // timing row as the settled result and count progress rows per 5s interval.
+            const reportedWaitOwner = recoveryDataMutexWaitOwner !== undefined;
+            recoveryDataMutexWaitOwner = undefined;
+            if (reportedWaitOwner) emitActiveRecoveryProgress?.();
           });
           await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
             await writeSharedScratchQuotaState(
@@ -2288,6 +2601,14 @@ export async function writeWithScratchQuota(
         continue;
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_REQUIRED) {
+        // The in-flight out-of-lock measurement is already reconciling this stale over-quota
+        // ledger. Share it instead of starting a second recovery walk from the same snapshot.
+        const refresh = entry.refreshing;
+        if (refresh) {
+          emitLockWaitProgress();
+          await timed(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs', () => refresh);
+          continue;
+        }
         if (quotaRecoveryAttempted) {
           throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
@@ -2334,7 +2655,7 @@ export async function writeWithScratchQuota(
           // it when the ledger was fresh. The stale-ledger case still needs an async reconciliation
           // to account for changes made by another process before this reservation.
           if (reservation!.sharedStateStale) {
-            entry.runBytesValid = false;
+            invalidateRunSizeIndex(entry);
             entry.refreshDeferred = true;
           } else {
             entry.refreshDeferred = false;

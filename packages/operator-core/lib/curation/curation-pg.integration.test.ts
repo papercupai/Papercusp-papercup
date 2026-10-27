@@ -32,7 +32,18 @@ const WS = 'ws-curtest';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual,
+    withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown,
+      opts?: { lockTimeoutMs?: number; statementTimeoutMs?: number }) => h.sql.begin(async tx => {
+      if (opts?.lockTimeoutMs !== undefined) {
+        await tx`SELECT set_config('lock_timeout', ${`${opts.lockTimeoutMs}ms`}, true)`;
+      }
+      if (opts?.statementTimeoutMs !== undefined) {
+        await tx`SELECT set_config('statement_timeout', ${`${opts.statementTimeoutMs}ms`}, true)`;
+      }
+      return fn(tx as unknown as postgres.Sql);
+    }),
+  };
 });
 vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
@@ -45,6 +56,7 @@ const { BASE_INTERVAL_SECONDS } = await import('./curation-loop');
 
 let rootSql: postgres.Sql;
 let dbName: string;
+let databaseUrl: string;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();
@@ -58,7 +70,8 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  databaseUrl = u.toString();
+  rootSql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // The migration GRANTs to harness_app/harness_zero (141 idiom); create them so
   // the bare testcontainer applies 151 cleanly (the dev box / embedded-pg has them).
@@ -109,6 +122,55 @@ describe('operator_curation_log', () => {
   it('recordSurfaced with no entries is a no-op', async () => {
     await expect(recordSurfaced([], 'curator-v1')).resolves.toBeUndefined();
   });
+
+  it('curation-writer: retains the last occurrence of a signal within one tick', async () => {
+    await recordSurfaced([
+      { id: 'repeat:tick', kind: 'progress', title: 'earlier' },
+      { id: 'repeat:tick', kind: 'blocker', title: 'latest' },
+    ], 'curator-v2');
+    const [row] = await rootSql`
+      SELECT kind, title, policy_version FROM harness_shared.operator_curation_log
+       WHERE workspace_id = ${WS} AND signal_id = 'repeat:tick'
+    `;
+    expect(row).toMatchObject({ kind: 'blocker', title: 'latest', policy_version: 'curator-v2' });
+  });
+
+  it('curation-writer: bounds a real row-lock wait and preserves the earlier surfaced record', async () => {
+    await recordSurfaced([{ id: 'locked:tick', kind: 'blocker', title: 'earlier' }], 'curator-v1');
+    const holder = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+    let write: Promise<{ code: string }> | undefined;
+    let outcome: { code: string } | undefined;
+    try {
+      await holder.begin(async tx => {
+        await tx`SELECT signal_id FROM harness_shared.operator_curation_log
+          WHERE workspace_id = ${WS} AND signal_id = 'locked:tick' FOR UPDATE`;
+        write = recordSurfaced([{ id: 'locked:tick', kind: 'completion' }], 'curator-v2')
+          .then(() => ({ code: 'completed' }), error => ({ code: String(error.code) }));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          outcome = await Promise.race([
+            write,
+            new Promise<{ code: string }>(resolve => {
+              timer = setTimeout(() => resolve({ code: 'test-deadline' }), 6_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+      // Release the holder before draining even an implementation that fails to
+      // bound its wait, so the negative control cannot strand a test connection.
+      await write;
+    } finally {
+      await holder.end({ timeout: 5 });
+    }
+    expect(outcome?.code).toBe('55P03');
+    const [row] = await rootSql`
+      SELECT kind, title, policy_version FROM harness_shared.operator_curation_log
+       WHERE workspace_id = ${WS} AND signal_id = 'locked:tick'
+    `;
+    expect(row).toMatchObject({ kind: 'blocker', title: 'earlier', policy_version: 'curator-v1' });
+  }, 18_000);
 
   it('records + round-trips a title (P-003)', async () => {
     await recordSurfaced([{ id: 'blocked:wi:h#title', kind: 'blocker', title: 'W1 wedged on vendor key' }], 'curator-v1');

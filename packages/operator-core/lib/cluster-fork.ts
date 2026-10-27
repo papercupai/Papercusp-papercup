@@ -56,8 +56,8 @@ export interface StartClusterOpts {
    *  HTTP server (with reusePort so siblings share the port). */
   onWorker: () => void;
   /** Env injected into EVERY forked worker (merged over the inherited env). The
-   *  caller sets the worker contract here — `PAPERCUSP_BACKGROUND_WORKERS=0` (a
-   *  worker is request-only; the primary owns the background machinery) +
+   *  engine pins `PAPERCUSP_BACKGROUND_WORKERS=0` (a worker is request-only;
+   *  the primary owns the background machinery). The caller supplies
    *  `PAPERCUSP_EXPECTED_OPERATOR_PROCS=<processCount>` (so each worker's PG pools
    *  are sized for the whole fleet, not the box alone). */
   workerEnv?: Record<string, string>;
@@ -222,6 +222,11 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     return { role: 'worker', workerCount: 0 };
   }
 
+  // Snapshot the role contract before callbacks can mutate caller state. This
+  // applies to initial forks, crash replacements, and rolling-window refills.
+  // Request workers must never inherit the background primary's ownership.
+  const workerEnv = Object.freeze({ ...opts.workerEnv, PAPERCUSP_BACKGROUND_WORKERS: '0' });
+
   // Primary: background machinery first, then fork + supervise the request fleet.
   opts.onPrimary?.();
   const maxRespawns = opts.maxRespawns ?? workers * 5;
@@ -257,7 +262,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
       pruneRespawnWindow();
       while (byId.size < workers && respawnTimes.length < maxRespawns) {
         respawnTimes.push(now());
-        track(cluster.fork(opts.workerEnv));
+        track(cluster.fork(workerEnv));
       }
       if (byId.size < workers) scheduleRefill();
     }, delay);
@@ -268,7 +273,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
   let consecutiveBootFailures = 0; // workers that exited inside the grace window, no healthy yet
   let unbootable = false; // gave up — stop respawning
 
-  for (let i = 0; i < workers; i++) track(cluster.fork(opts.workerEnv));
+  for (let i = 0; i < workers; i++) track(cluster.fork(workerEnv));
 
   cluster.on('exit', (worker, code, signal) => {
     byId.delete(worker.id);
@@ -314,7 +319,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     }
     respawnTimes.push(now());
     log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawning (${respawnTimes.length}/${maxRespawns} in window)`);
-    track(cluster.fork(opts.workerEnv));
+    track(cluster.fork(workerEnv));
   });
 
   return {

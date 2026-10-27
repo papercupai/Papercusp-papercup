@@ -41,7 +41,7 @@ import { gcOldOperatorTurns } from '../operator-turns-gc';
 import {
   runFleetLogsGc,
   runLaunchContextGc,
-  runLintWorkRootGc,
+  runLintWorkRootsGc,
   runPapercuspWorkdirGc,
   runWindowsBuildScratchGc,
 } from '../fleet-logs-gc';
@@ -527,6 +527,7 @@ async function sessionDirGcTick(): Promise<void> {
             (r.errors.length ? `, ${r.errors.length} error(s)` : '') +
             ` (retention ${Math.round(retentionMs / 3_600_000)}h, archive ${archiveOn ? 'on' : 'off'})`,
         );
+        for (const error of r.errors) console.warn(`[session-dir-gc]   ! ${error.path}: ${error.error}`);
       } catch (e) {
         console.warn(`[session-dir-gc] tick failed: ${(e as Error)?.message ?? e}`);
       }
@@ -681,6 +682,9 @@ async function fleetLogsGcTick(): Promise<void> {
           (!result.scanComplete ? `, deferred: incomplete holder census${result.scanError ? ` (${result.scanError})` : ''}` : '') +
           (totalErrors ? `, ${totalErrors} error(s)` : ''),
       );
+      for (const dir of result.dirs) {
+        for (const error of dir.errors) console.warn(`[fleet-logs-gc]   ! ${error.path}: ${error.error}`);
+      }
 
       // Second half of the same disk-headroom concern (WI-10002015): the sweep
       // above bounds fleet-logs, a flat directory of FILES with known writers.
@@ -704,14 +708,16 @@ async function fleetLogsGcTick(): Promise<void> {
             : ''),
       );
 
-      // Lint snapshots live under tmpdir, outside the ~/.papercusp sweep. Their
-      // six-hour retention must run even if no new lint invocation arrives.
-      const lintRoots = await runLintWorkRootGc({ dryRun: false });
-      console.log(
-        `[lint-work-root-gc] removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
-          (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
-          (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
-      );
+      // Producers can relocate TMPDIR, including into checkout-local storage.
+      // Their retention must cover those roots even if no new lint starts.
+      const lintRootResults = await runLintWorkRootsGc({ dryRun: false });
+      for (const lintRoots of lintRootResults) {
+        console.log(
+          `[lint-work-root-gc] ${lintRoots.root}: removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
+            (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
+            (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
+        );
+      }
 
       // Third and last of the ~/.papercusp accumulations (WI-10002015). The two
       // sweeps above leave a hole exactly the shape of `launch-context`: the
@@ -740,6 +746,7 @@ async function fleetLogsGcTick(): Promise<void> {
               `${renders.removed}, freed ${Math.round(renders.bytesFreed / (1024 * 1024))}MB, ` +
               `held ${renders.liveHeld} in use by live session(s)`,
       );
+      for (const error of renders.errors) console.warn(`[launch-context-gc]   ! ${error.path}: ${error.error}`);
 
       // Reclaim interrupted Windows cross-build containers after 48 hours.
       // The helper checks recursive mtimes, live writers, and the linked
@@ -876,7 +883,7 @@ const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', 
 );
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
 
-// Hourly at :30 (off the :00 stampede): prune old TERMINAL
+// Every half hour at :15/:45 (off the :00 stampede): prune old TERMINAL
 // dbos.workflow_status + operation_outputs rows (R4-5 / EI-1607 defense-in-depth) —
 // 325k+ workflow rows accrue with no DBOS-native retention, bloating the system DB +
 // the scheduler/recovery scans that walk it. Default ON; only terminal statuses,

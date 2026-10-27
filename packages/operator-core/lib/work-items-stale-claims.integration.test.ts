@@ -1165,3 +1165,78 @@ describe('WI-6039 — reconcileStrandedWipWorkItems (the general already-strande
     expect(rows).toEqual([]);
   });
 });
+
+// WI-6554700010029295 recurrence guard: a holder whose PROCESS still heartbeats
+// but whose agent stopped taking turns (the oracle's warm-dead: no activity past
+// ACTIVITY_DEAD_MS = 6h, no armed loop) must not keep its claims forever. Before
+// the fix both reapers treated the fresh coord_presence beat alone as proof of
+// life, so loop-dead fleet members held claims for ~40h.
+describe('WI-6554700010029295: warm-dead holders (heartbeat fresh, no turn past ACTIVITY_DEAD_MS)', () => {
+  async function beatNow(ownerId: string): Promise<void> {
+    await sql`
+      INSERT INTO harness_shared.coord_presence VALUES (${ownerId}, now() - interval '30 seconds')
+      ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at`;
+  }
+  async function seedToolCall(ownerId: string, agoMin: number): Promise<void> {
+    await sql`
+      INSERT INTO harness_shared.tool_invocations (coord_owner_id, invoked_at)
+      VALUES (${ownerId}, now() - make_interval(mins => ${agoMin}))`;
+  }
+
+  it('releases feature + issue claims of a heartbeat-fresh owner whose last turn is 7h old', async () => {
+    const owner = 'su-warm-dead-member';
+    await seedItem('F-WARM-DEAD', owner, 8 * 60);
+    await seedIssue('EI-WARM-DEAD', 'bug', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'lifecycle', '▶ session started');
+
+    const issues = await reclaimStaleIssueClaims(sql);
+    expect(issues.released.map((r) => r.issue_id)).toContain('EI-WARM-DEAD');
+    const features = await reclaimStaleWorkItemClaims(sql);
+    const rel = features.released.find((r) => r.feature_id === 'F-WARM-DEAD');
+    expect(rel?.reason).toBe('dead');
+    expect((await statusOf('F-WARM-DEAD')).taken_by).toBeNull();
+  });
+
+  it('keeps the claim when the same owner took a turn inside the dead ceiling (2h ago)', async () => {
+    const owner = 'su-warm-idle-member';
+    await seedItem('F-WARM-IDLE', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'lifecycle', '▶ session started');
+    await seedActivity(owner, 2 * 60, 'tool', 'Edit');
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-IDLE');
+    expect((await statusOf('F-WARM-IDLE')).taken_by).toBe(owner);
+  });
+
+  it('counts owner-attributed tool calls as turns (a Codex holder with no fresh activity row)', async () => {
+    const owner = 'codex-warm-tool-calls';
+    await seedItem('F-WARM-CODEX', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'lifecycle', '▶ session started');
+    await seedToolCall(owner, 10);
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-CODEX');
+    expect((await statusOf('F-WARM-CODEX')).taken_by).toBe(owner);
+  });
+
+  it('is conservative on missing data: a heartbeat-fresh owner with NO activity in the lookback keeps its claim', async () => {
+    const owner = 'su-no-activity-evidence';
+    await seedItem('F-WARM-NODATA', owner, 8 * 60);
+    await beatNow(owner);
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-NODATA');
+    expect((await statusOf('F-WARM-NODATA')).taken_by).toBe(owner);
+  });
+
+  it('an armed engine loop still protects a warm-dead owner (continuation authority, EI-21431501901242395)', async () => {
+    const owner = 'su-warm-dead-looped';
+    await seedItem('F-WARM-LOOPED', owner, 8 * 60);
+    await beatNow(owner);
+    await seedActivity(owner, 7 * 60, 'tool', 'Edit');
+    await seedLoop(owner);
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-LOOPED');
+    expect((await statusOf('F-WARM-LOOPED')).taken_by).toBe(owner);
+  });
+});

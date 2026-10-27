@@ -16,6 +16,7 @@
 import { PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { isModelRequestId } from './observability/tracing';
 
 export interface UsageSample {
   bucketKey: string;
@@ -55,6 +56,12 @@ export interface UsageSample {
   /** Provider account that served the call, when the caller/gateway can identify it.
    *  NULL for routes without account pinning or pre-migration samples. */
   accountId?: string;
+  /** Host-authenticated request attribution. Dollar cost must still come from the
+   * provider; attaching identity never upgrades a list-price estimate to a bill. */
+  providerRequest?: {
+    gatewayRequestId: string; gatewayAttemptId: string; providerResponseId: string;
+    manifestSha256: string; assignmentId: string;
+  };
   rlRequestsLimit?: number;
   rlRequestsRemaining?: number;
   rlTokensLimit?: number;
@@ -95,6 +102,13 @@ const n = (v: number | undefined): number | null => (typeof v === 'number' && Nu
 /** Persist one usage sample (best-effort — telemetry must never break the agent path). */
 export async function recordUsageSample(sample: UsageSample): Promise<void> {
   try {
+    const request = sample.providerRequest;
+    const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && v.length <= 4096;
+    if (request && (!isModelRequestId(request.gatewayRequestId) ||
+        ![request.gatewayAttemptId, request.providerResponseId, sample.accountId, sample.runId, sample.model].every(text) ||
+        !/^[a-f0-9]{64}$/.test(request.manifestSha256) || !text(request.assignmentId) ||
+        !request.assignmentId.startsWith('bench-assignment:') || !['openai', 'anthropic'].includes(sample.provider) ||
+        sample.costUsd !== undefined && (!Number.isFinite(sample.costUsd) || sample.costUsd < 0))) return;
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
     // Cost honesty (cross-backend-cost-capture D-005): provider-reported cost wins;
@@ -122,6 +136,11 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
     // Stamp the table version on every row that does not carry provider cost; the repricer
     // treats any other stamp as stale. Provider cost is an observation and carries none.
     const priceTableVersion = costSource === 'provider' ? null : PRICE_TABLE_VERSION;
+    const usageProvenance = request ? { grain: 'request', costBound,
+      gatewayRequestId: request.gatewayRequestId, gatewayAttemptId: request.gatewayAttemptId,
+      providerResponseId: request.providerResponseId, manifestSha256: request.manifestSha256,
+      assignmentId: request.assignmentId, providerResponseIdSource: 'authenticated-gateway-provider-response' }
+      : costBound ? { costBound } : null;
     await sql`
       INSERT INTO ${sql(TABLE)}
         (workspace_id, ts, bucket_key, provider, model_class, source,
@@ -137,7 +156,7 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
         ${sample.sessionId ?? null},
         (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sample.sessionId ?? null})),
         ${sample.toolName ?? null}, ${sample.turnTrigger ?? null}, ${sample.accountId ?? null}, ${priceTableVersion},
-        ${costBound ? JSON.stringify({ costBound }) : null}::jsonb
+        ${usageProvenance ? sql.json(usageProvenance) : null}::jsonb
       )
     `;
   } catch {

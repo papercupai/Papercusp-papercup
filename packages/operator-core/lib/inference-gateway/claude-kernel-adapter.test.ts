@@ -11,7 +11,7 @@
  * as a failover. The complementary `gateway-claude-ladder.test.ts` goldens pin the
  * same seams end-to-end through the live handler; these pin them at the adapter.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { makeGatewayLaneRegistry } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -710,41 +710,44 @@ describe('claude kernel adapter', () => {
   });
 
   it('D-014: the TTFB cap is applied PER ATTEMPT, so a stall storm cannot multiply the slot-hold budget', async () => {
-    // The regression this pins: `ttfbTimeoutMs` resolves ONCE before the attempt
-    // loop, so without a per-attempt cap every one of maxAttempts gets the FULL
-    // deadline — 6 × 300s where the live handler bounds the whole ladder to 60s.
-    const budgetMs = 200;
-    const deadlineAt = Date.now() + budgetMs;
-    const { pool } = makePool([]);
-    const { options, observedErrors } = harness(
-      // Never resolves; the kernel's own TTFB deadline is what ends each attempt.
-      (_url, init) =>
-        new Promise((_resolve, reject) => {
-          init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-        }),
-      {
-        accounts: [acct('A')],
-        pool,
-        // A TTFB timeout is a transport failure, which is sibling-eligible — so
-        // the kernel really does take a second attempt to measure.
-        siblingEgressAvailable: () => true,
-        policy: { ttfbTimeoutMs: 60_000, ttfbCapMs: () => deadlineAt - Date.now(), maxAttempts: 2 },
-      },
-    );
-    await expect(executeGatewayRequestKernel(options)).rejects.toThrow(/TTFB exceeded/);
+    vi.useFakeTimers();
+    try {
+      // Scale the request's 200ms retry budget down to a deterministic test clock.
+      // A 150ms per-attempt ceiling leaves 50ms for the retry after attempt one.
+      const budgetMs = 200;
+      const deadlineAt = Date.now() + budgetMs;
+      const { pool } = makePool([]);
+      const { options, observedErrors } = harness(
+        // Never resolves; the kernel's own TTFB deadline is what ends each attempt.
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+        {
+          accounts: [acct('A')],
+          pool,
+          // A TTFB timeout is a transport failure, which is sibling-eligible — so
+          // the kernel really does take a second attempt to measure.
+          siblingEgressAvailable: () => true,
+          policy: { ttfbTimeoutMs: 150, ttfbCapMs: () => deadlineAt - Date.now(), maxAttempts: 2 },
+        },
+      );
 
-    // The kernel's error names the deadline it actually armed.
-    const armed = observedErrors.map((m) => Number(/TTFB exceeded (\d+)ms/.exec(m)?.[1]));
-    expect(armed).toHaveLength(2);
-    // Never the raw 60s deadline: the budget is what binds.
-    expect(armed[0]).toBeLessThanOrEqual(budgetMs);
-    // THE ASSERTION: attempt 2 gets only what the budget has LEFT. Under the
-    // once-resolved behaviour both attempts arm the identical value, so this
-    // comparison is what fails against it.
-    expect(armed[1]).toBeLessThan(armed[0]!);
-    // And the floor holds — an at-deadline retry gets a brief attempt, never a
-    // 0ms abort (the `Math.max(1, …)` at gateway.ts:4144).
-    expect(armed[1]).toBeGreaterThanOrEqual(1);
+      // Attach the rejection observer before advancing fake time so Vitest does
+      // not record the expected timeout as a run-level unhandled rejection.
+      const rejected = expect(executeGatewayRequestKernel(options)).rejects.toThrow(/TTFB exceeded/);
+      await vi.advanceTimersByTimeAsync(budgetMs);
+      await rejected;
+
+      // The kernel's error names the deadline it actually armed.
+      const armed = observedErrors.map((m) => Number(/TTFB exceeded (\d+)ms/.exec(m)?.[1]));
+      expect(armed).toEqual([150, 50]);
+      // The floor holds — an at-deadline retry gets a brief attempt, never a
+      // 0ms abort (the `Math.max(1, …)` at gateway.ts:4144).
+      expect(armed[1]).toBeGreaterThanOrEqual(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('D-014: a lane that passes NO cap is unaffected — the deadline stays the resolved one', async () => {

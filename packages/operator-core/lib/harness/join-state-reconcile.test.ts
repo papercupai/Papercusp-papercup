@@ -267,3 +267,50 @@ describe('ensureJoinStatesReconciledOnce (boot trigger)', () => {
     }
   });
 });
+
+// WI-6554700010029282: on the dev box a stale dogfood join record
+// (~/.papercusp/join-state/papercup.json, shared by every operator under $HOME)
+// re-registered the packaged server's dogfood harness on every boot, even with
+// PAPERCUSP_DISABLE_DOGFOOD_HIVE=1, and boot-all then opened the dev fleet's Corestore.
+describe('reconcileJoinStates dogfood-hive kill switch (WI-6554700010029282)', () => {
+  const DOGFOOD_WS = 'papercusp-workspace';
+
+  it('ignores the dogfood join record (both spellings) in the dogfood workspace when the switch is set', async () => {
+    vi.stubEnv('PAPERCUSP_DISABLE_DOGFOOD_HIVE', '1');
+    try {
+      const states = [js('papercup', '/clones/papercup'), js('papercusp', '/clones/papercusp'), js('shop', '/clones/shop')];
+      const { opts, calls } = fakes(states, [], ['/clones/papercup', '/clones/papercusp', '/clones/shop']);
+      const r = await reconcileJoinStates({ ...opts, workspaceId: DOGFOOD_WS });
+      expect(r.dogfoodDisabled).toEqual(['papercup', 'papercusp']);
+      expect(r.reregistered).toEqual(['shop']);
+      expect(calls.registry.map((p) => p.slug)).toEqual(['shop']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('still re-registers the dogfood join record when the switch is unset', async () => {
+    vi.stubEnv('PAPERCUSP_DISABLE_DOGFOOD_HIVE', '');
+    try {
+      const { opts, calls } = fakes([js('papercup', '/clones/papercup')], [], ['/clones/papercup']);
+      const r = await reconcileJoinStates({ ...opts, workspaceId: DOGFOOD_WS });
+      expect(r.dogfoodDisabled).toEqual([]);
+      expect(r.reregistered).toEqual(['papercup']);
+      expect(calls.registry.map((p) => p.slug)).toContain('papercup');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('leaves a same-named join record in another workspace alone', async () => {
+    vi.stubEnv('PAPERCUSP_DISABLE_DOGFOOD_HIVE', '1');
+    try {
+      const { opts } = fakes([js('papercup', '/clones/papercup')], [], ['/clones/papercup']);
+      const r = await reconcileJoinStates(opts);
+      expect(r.dogfoodDisabled).toEqual([]);
+      expect(r.reregistered).toEqual(['papercup']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

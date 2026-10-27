@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { AdmissionIdempotencyConflictError, Governor } from './admission';
 import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } from './queue';
 
@@ -226,6 +227,45 @@ describe('PgWorkItemAdmissionQueueStore', () => {
       state: 'cancelled',
     });
   });
+
+  it('attributes a real PostgreSQL statement timeout during cancellation to the terminal UPDATE', async () => {
+    const first = instance('cancel-phase');
+    await first.governor.admit({ idempotencyKey: 'real-pg-cancel-phase', admissionClass: 'agent' });
+
+    await db.sql.unsafe(`
+      CREATE OR REPLACE FUNCTION harness_shared.pause_governor_cancel_probe()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.payload->'resource_governor'->>'state' = 'cancelled' THEN
+          PERFORM pg_sleep(20);
+        END IF;
+        RETURN NEW;
+      END;
+      $$`).simple();
+    await db.sql.unsafe(`
+      CREATE TRIGGER pause_governor_cancel_probe
+      BEFORE UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.pause_governor_cancel_probe()`).simple();
+
+    try {
+      const startedAt = Date.now();
+      let timeout: unknown;
+      try {
+        await first.governor.cancel('real-pg-cancel-phase', 'integration probe');
+      } catch (error) {
+        timeout = error;
+      }
+
+      expect(timeout).toBeInstanceOf(OrgTxnTimeoutError);
+      expect(timeout).toMatchObject({ pgCode: '57014' });
+      expect((timeout as Error).message).toContain(
+        '[phase: resource-governor.cancel.terminal-update]',
+      );
+    } finally {
+      await db.sql.unsafe('DROP TRIGGER IF EXISTS pause_governor_cancel_probe ON harness_shared.work_items').simple();
+      await db.sql.unsafe('DROP FUNCTION IF EXISTS harness_shared.pause_governor_cancel_probe()').simple();
+    }
+  }, 30_000);
 
   it('reclaims an expired lease, rejects its stale token, and expires overdue queued work', async () => {
     const clock = { now: 20_000 };

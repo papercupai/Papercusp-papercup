@@ -96,7 +96,16 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('documents_search_workspace_required');
     const tx = ctx.tx!;
     const legs = new Set(args.legs ?? LEGS);
-    const user = await getSessionUserOrDefault();
+    // Hono GUI calls carry their cookie identity in the dispatch context;
+    // ambient next/headers is unavailable there and falls back to default.
+    const principal = ctx.principal;
+    if (principal?.kind === 'user' && (principal.trust !== 'verified' ||
+        principal.workspaceId !== workspaceId || !principal.slug?.trim())) {
+      throw new Error('documents_search_user_principal_invalid');
+    }
+    const user = principal?.kind === 'user'
+      ? { id: principal.slug }
+      : await getSessionUserOrDefault();
     const agentOwnerId = disclosureSubject(ctx);
     const limit = args.limit ?? 10;
     const results: Array<Record<string, unknown>> = [];

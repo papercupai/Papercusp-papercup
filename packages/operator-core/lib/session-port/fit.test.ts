@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { estimatePortableTokens, fitPortableTurns, type SessionPortSummarizer } from './fit';
+import { estimatePortableTokens, fitPortableTurns, inspectPortableTurnFit, type SessionPortSummarizer } from './fit';
 import type { PortableTurn } from './types';
 
 const turns = (count: number, words = 500): PortableTurn[] => Array.from({ length: count }, (_, i) => ({
@@ -69,8 +69,18 @@ describe('fitPortableTurns', () => {
   });
 
   it('fails honestly when the latest atomic group cannot fit', async () => {
+    const oversized = turns(2, 5_000);
+    const preview = inspectPortableTurnFit({ turns: oversized, availableTokens: 100 });
+    expect(preview).toMatchObject({
+      feasible: false,
+      fidelity: 'summary-tail',
+      reason: expect.stringMatching(/latest required atomic/),
+      summaryChunks: null,
+    });
+    expect(preview.minimumRequiredTokens).toBeGreaterThan(100);
+    expect(preview.latestAtomicGroupEstimatedTokens).toBeGreaterThan(100);
     await expect(fitPortableTurns({
-      turns: turns(2, 5_000),
+      turns: oversized,
       availableTokens: 100,
       summarizer: async () => ({ text: 'small', model: 'm', provider: 'p' }),
     })).rejects.toThrow(/latest required atomic/);

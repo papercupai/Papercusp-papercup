@@ -38,6 +38,7 @@ import { getLoopStatuses } from '../../harness/routines/loop';
 import type { LifecycleBackoffInfo, LoopStatus } from '../../harness/routines/loop';
 import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
 import { isLeaderPresentSessionState } from '../../fleet/leader-presence';
+import { defaultFleetStaffingReadDeps } from '../../fleet/fleet-staffing-read';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
@@ -434,6 +435,7 @@ export default defineTool({
       headcountTargetResult,
       headcountCurrentResult,
       everMembersResult,
+      governorFlagResult,
     ] = await Promise.all([
       listFleetRosterDiagnosed({
         fleetSlug,
@@ -474,6 +476,11 @@ export default defineTool({
         fallback: new Set<string>(),
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:everMembers',
+      }),
+      withBoundedTimeout(defaultFleetStaffingReadDeps().governorFlagOn(), {
+        fallback: null,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:headcountGovernorFlag',
       }),
     ]);
     // A leader can be present in another fleet's labelled roster when it leads
@@ -568,6 +575,7 @@ export default defineTool({
       ...(headcountTargetResult.degraded ? ['headcountTarget'] : []),
       ...(headcountCurrentResult.degraded ? ['headcountCurrent'] : []),
       ...(everMembersResult.degraded ? ['everMembers'] : []),
+      ...(governorFlagResult.degraded || governorFlagResult.value == null ? ['headcountGovernorFlag'] : []),
       // Only a genuinely-failed attestation is its own degraded leg: when the
       // roster leg already failed, this one was never attempted and reporting it
       // would name the wrong cause.
@@ -587,6 +595,11 @@ export default defineTool({
           workspace: workspaceId,
           fleet: fleetSlug,
           ...(args.harness ? { harness: args.harness } : {}),
+        },
+        governance: {
+          governorFlagOn: governorFlagResult.value,
+          controlState: fleet.controlState ?? null,
+          leaderOwnerId: fleet.leaderOwnerId ?? null,
         },
       },
     );

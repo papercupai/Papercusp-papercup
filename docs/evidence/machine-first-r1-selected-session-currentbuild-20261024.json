@@ -1,0 +1,184 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "b12e58e28994ed9d688686f02758d13afb51a0fab377ffa1b4e66e34973d1683.supporting-original",
+      "sha256": "b12e58e28994ed9d688686f02758d13afb51a0fab377ffa1b4e66e34973d1683",
+      "byteLength": 6982
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": "machine-first-selected-session-acceptance-v1",
+  "recordedAt": "2026-10-24T08:03:25.218409+00:00",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "workItem": "WI-6554700010016648",
+  "scope": "Current immutable local-mode Portal and source local operator GUI; selected-machine session reads and actual PTY startup only.",
+  "result": "selected-session-read-pass",
+  "fullR1Accepted": false,
+  "shipmentVerified": false,
+  "fixture": "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts",
+  "topology": "Two separately enrolled source operator processes on one OS host with a private hosted handler and isolated PG. No paid machine provisioned.",
+  "candidate": {
+    "release": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.machine-first-r1-session-candidate-20261024/releases/qVahiXvTXFkvxlgH9NQAV-20261024080006860-1772033-4e4c989c",
+    "buildLog": "/tmp/machine-first-r1-portal-session-build-v3-20261024.log",
+    "taskId": "0mvm3nhyn1arxun810h",
+    "exitCode": 0,
+    "portalRootSourceSha256": {
+      "apps/host/src/web-runtime.ts": "9f8bd81d92af82f06f39f4434d52f9af9e2bd84caa9ea2e355ef8845e18db24f",
+      "tests/web-runtime-auth.test.ts": "d83d9c396b2eb2ceb21c2614add5d9ed263b563f3d666efa73c0f78bc80b1aa2",
+      "tests/operator-passthrough.test.ts": "b68fce1006013aab5ce1f14ee2e8db6b889f9d8a11fa0ec50062bcd476161827"
+    }
+  },
+  "sessions": [
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "expectedWorkspace": "test-runtime-05309fd0-e2d-a",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-a"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-b",
+      "expectedWorkspace": "test-runtime-05309fd0-e2d-b",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-b"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "mode": "query",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-a"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "mode": "referer",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-a"
+        }
+      }
+    },
+    {
+      "gui": "local",
+      "host": "r1-host-a",
+      "expectedWorkspace": "test-runtime-05309fd0-e2d-a",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-a"
+        }
+      }
+    },
+    {
+      "gui": "local",
+      "host": "r1-host-b",
+      "expectedWorkspace": "test-runtime-05309fd0-e2d-b",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-05309fd0-e2d-b"
+        }
+      }
+    }
+  ],
+  "connections": [
+    {
+      "gui": "portal",
+      "health": "offline",
+      "events": [
+        {
+          "type": "session.bound"
+        },
+        {
+          "type": "pty.ready"
+        },
+        {
+          "type": "pty.exit",
+          "code": 255
+        }
+      ],
+      "screenshot": "docs/evidence/machine-first-r1-selected-session-portal-20261024.png",
+      "observedFailure": "Missing /var/lib/papercusp/hosted-pty-ssh/id_ed25519 and refused loopback SSH port22; PTY opened then exited255."
+    },
+    {
+      "gui": "local",
+      "health": "offline",
+      "events": [
+        {
+          "type": "session.bound"
+        },
+        {
+          "type": "pty.ready"
+        },
+        {
+          "type": "pty.exit",
+          "code": 255
+        }
+      ],
+      "screenshot": "docs/evidence/machine-first-r1-selected-session-local-20261024.png",
+      "observedFailure": "Missing /var/lib/papercusp/hosted-pty-ssh/id_ed25519 and refused loopback SSH port22; PTY opened then exited255."
+    }
+  ],
+  "pageErrors": [],
+  "portalProcessCleanup": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "sourceOperatorHashesAtStart": {
+    "apps/operator/bin/host-app.ts": "88e883103ca017e39f7a6045fd593179501565281d9c29b8f950de5c8f6809cd",
+    "apps/operator/bin/hosted-handler.ts": "4280a7899febdcfac54dc447527671bcbd17c3fbd1c25a4c731ef35a5c55496d",
+    "packages/operator-core/lib/workspace-host/local-machine-operator-transport.ts": "dba505d5c30a25286d7792a83efbfa076f8dc6fbc192098053bd7027b3ac9749",
+    "packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts": "feee70d21f1b3afb9f5f4cb6984183908fc1c3634457e532b275260b89caf7e4",
+    "packages/operator-core/lib/workspace-host/hosted-session-host.ts": "f6eb17aa03dd0dc11e313f4dd9844eb6c30d3abd065794eb884b2183b374bbdd",
+    "packages/operator-core/lib/workspace-host/hosted-operator-http.ts": "8fc3785445f7ece174fdc084a1d18c769103dc59409044a74d67bf63e419d9b4",
+    "packages/operator-core/lib/workspace-host/operator-relay-client.ts": "8ef6b427d9e43456ff44395452ed22374d725f7a61303ce51aa638a0706d2ef9",
+    "packages/operator-core/lib/endpoint-route/routes/hosted-cli/index.ts": "9cb602590405819f08463ec7efc4bb81bbdf9e45441b20026a7205e82ec0faad",
+    "packages/operator-core/lib/endpoint-route/routes/hosted-cli/store.ts": "f8bff2eb115a5c45316629f29f357b3b8484b6abca71ef91e261db49f94ebba6",
+    "packages/operator-core/lib/workspace-context-middleware.ts": "fe97211d2fef0e27d2c5e3963223deb65b53b295b05fef22a9598d56938d66c9",
+    "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts": "a5f88810552d4ccd73b81f71dfb2c6c71fa5a60cc24154aeaeb3f02d375841dd"
+  },
+  "sourceDriftAtReceipt": [],
+  "nativePtySource": {
+    "path": "packages/operator-core/lib/pty-bridge.ts",
+    "sha256": "6ebec5af98beb9f3c78af305d1df6a3de28508dab33d7eb4b5ec71d2d77aa985",
+    "proof": "/tmp/machine-first-r1-native-pty-source-green-20261024.log",
+    "result": "NATIVE_PTY_SERIALIZATION_PASS",
+    "canonicalCommittedSuitePending": true
+  },
+  "artifactSha256": {
+    "docs/evidence/machine-first-r1-selected-session-portal-20261024.png": "a1607fbb4906a3fd829bc4e2c868bea06313d5a64266919816e83cc989ec34cb",
+    "docs/evidence/machine-first-r1-selected-session-local-20261024.png": "0600302ce5f91eb0b63486a8d8930feabd15e4176942212d990f491556e684d3"
+  },
+  "retainedRawReceipt": "/tmp/machine-first-r1-session-served-v16-20261024.json",
+  "retainedTrace": "/tmp/machine-first-r1-session-served-v16-20261024.zip",
+  "limits": [
+    "Session-read passing does not certify full R1 or independent acceptance.",
+    "Desktop pixels, agent launch, agent continuity and unavailable-machine acceptance remain open.",
+    "Hosted default SSH account bootstrap is absent from this process-only fixture. Use an isolated runtime with real SSH bootstrap for full continuity checks.",
+    "Final-release evidence and external publisher authorization remain separate."
+  ]
+}

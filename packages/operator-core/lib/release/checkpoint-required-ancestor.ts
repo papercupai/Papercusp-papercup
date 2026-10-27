@@ -58,6 +58,7 @@ export interface FrozenLineageLaunchCas {
   reason:
     | 'no-frozen-queue'
     | 'repair-head-match'
+    | 'candidate-match'
     | 'queue-unreadable'
     | 'queue-appeared'
     | 'queue-disappeared'
@@ -69,7 +70,7 @@ export interface FrozenLineageLaunchCas {
   checkoutHead: string | null;
   mismatchedIdentityFields: FrozenLineageIdentityField[];
   queueDecision: FrozenRepairQueueDecision['kind'] | null;
-  selectionSource: 'live-repair-head';
+  selectionSource: 'live-repair-head' | 'live-frozen-candidate';
   sanctionedRoute: string;
   detail: string;
 }
@@ -98,13 +99,17 @@ export function assessFrozenLineageLaunchCas(
   checkoutHead: string | null,
 ): FrozenLineageLaunchCas {
   const liveIdentity = livePreflight.frozenLineageIdentity ?? null;
-  const route = sanctionedRoute(liveIdentity ?? expectedIdentity);
+  const originalCandidate = livePreflight.queueDecision === 'test-candidate';
+  const selectionSource = originalCandidate ? 'live-frozen-candidate' as const : 'live-repair-head' as const;
+  const route = originalCandidate && liveIdentity
+    ? `Re-read the ready-to-test queue and select its original candidate ${liveIdentity.candidate} from revision ${liveIdentity.queueRevision}; preserve admitted repairHead ${liveIdentity.repairHead} for verification after the original verdict.`
+    : sanctionedRoute(liveIdentity ?? expectedIdentity);
   const base = {
     expectedIdentity,
     liveIdentity,
     checkoutHead,
     queueDecision: livePreflight.queueDecision,
-    selectionSource: 'live-repair-head' as const,
+    selectionSource,
     sanctionedRoute: route,
   };
 
@@ -143,6 +148,17 @@ export function assessFrozenLineageLaunchCas(
     };
   }
 
+  if (originalCandidate && (
+    livePreflight.candidateSource !== 'frozen-repair-queue' ||
+    livePreflight.candidate !== liveIdentity.candidate ||
+    livePreflight.repairQueue?.phase !== 'ready-to-test'
+  )) {
+    return {
+      ...base, allowed: false, reason: 'queue-not-runnable', mismatchedIdentityFields: [],
+      detail: `frozen_lineage_launch_refused:queue-not-runnable: original candidate selection lacks an authoritative ready-to-test queue. ${route}`,
+    };
+  }
+
   const marker = {
     candidate: liveIdentity.candidate,
     repairHead: liveIdentity.repairHead,
@@ -155,7 +171,7 @@ export function assessFrozenLineageLaunchCas(
   const policy = evaluateFrozenLineagePolicy(
     {
       operation: 'canonical-verification',
-      selectionSource: 'live-repair-head',
+      selectionSource,
       checkoutHead,
       expectedIdentity,
     },
@@ -170,11 +186,11 @@ export function assessFrozenLineageLaunchCas(
           ? 'queue-identity-mismatch'
           : 'checkout-head-mismatch',
       mismatchedIdentityFields: policy.mismatchedIdentityFields,
-      sanctionedRoute: policy.sanctionedRoute,
+      sanctionedRoute: route,
       detail:
         `frozen_lineage_launch_refused:${policy.reason}: captured ${identityText(expectedIdentity)}; ` +
         `live ${identityText(liveIdentity)}; effective checkout HEAD=${checkoutHead ?? 'unmeasured'}. ` +
-        policy.sanctionedRoute,
+        route,
     };
   }
 
@@ -193,7 +209,7 @@ export function assessFrozenLineageLaunchCas(
   return {
     ...base,
     allowed: true,
-    reason: 'repair-head-match',
+    reason: originalCandidate ? 'candidate-match' : 'repair-head-match',
     mismatchedIdentityFields: [],
     detail: `verified ${identityText(liveIdentity)} immediately before spawn`,
   };

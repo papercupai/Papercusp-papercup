@@ -16,6 +16,7 @@ export function makeCaller(harness: string, runId: string) {
     harnessSlug: harness,
     runId,
     role: 'su',
+    principal: { kind: 'agent', slug: `test:${runId}`, workspaceId: DEFAULT_WORKSPACE_ID },
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
     requestedFormat: 'json',

@@ -66,6 +66,61 @@ describe('userManagerBusReachable — can `systemd-run --user` reach a user mana
 });
 
 describe('harmless bounded scope preflight (EI-25807722383059921)', () => {
+  const unit = 'pc-current123.scope';
+  const cgroupPath = `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/${unit}`;
+  const properties = `Id=${unit}\nControlGroup=${cgroupPath}\nActiveState=active\nTransient=yes\n`;
+  const fakeChild = () => Object.assign(new EventEmitter(), { stdout: new PassThrough(),
+    stderr: new PassThrough(), kill: vi.fn() });
+
+  it('uses the existing scope only when the manager agrees with the kernel, after draining stdout', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
+    const pending = probeTransientScopeSupport({ spawnFn, platform: 'linux', existingScope: { unit, cgroupPath } });
+    expect(spawnFn).toHaveBeenCalledWith('systemctl', expect.arrayContaining(['show', '--', unit]),
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }));
+    child.emit('exit', 0);
+    child.stdout.end(properties);
+    await once(child.stdout, 'end');
+    child.emit('close', 0);
+    await expect(pending).resolves.toEqual({ ok: true });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    properties.replace(cgroupPath, '/foreign/pc-current123.scope'),
+    properties.replace('Transient=yes', 'Transient=no'),
+    properties.replace('ActiveState=active', 'ActiveState=inactive'),
+    properties.replace(`Id=${unit}`, 'Id=pc-other123.scope'),
+    properties + 'Transient=yes\n',
+  ])('retains a real launch probe when existing manager evidence disagrees: %s', async output => {
+    const attestation = fakeChild();
+    const launch = fakeChild();
+    const spawnFn = vi.fn().mockReturnValueOnce(attestation).mockReturnValueOnce(launch);
+    const pending = probeTransientScopeSupport({ spawnFn: spawnFn as unknown as typeof spawn,
+      platform: 'linux', existingScope: { unit, cgroupPath } });
+    attestation.stdout.end(output);
+    await once(attestation.stdout, 'end');
+    attestation.emit('close', 0);
+    await Promise.resolve();
+    expect(spawnFn.mock.calls[1]?.[0]).toBe('systemd-run');
+    launch.emit('exit', 1);
+    await expect(pending).resolves.toMatchObject({ ok: false });
+  });
+
+  it('shares the original deadline instead of giving an attestation another probe budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
+      const pending = probeTransientScopeSupport({ spawnFn, platform: 'linux', timeoutMs: 100,
+        existingScope: { unit, cgroupPath } });
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toMatchObject({ ok: false });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('probes under the supplied env and reports a disconnected transport before any workload is selected', async () => {
     const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
     const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
@@ -294,6 +349,21 @@ describe('transient service payload escaping', () => {
     expect(taskDeadlineEnv(-5)).toEqual({});
     expect(taskDeadlineEnv(Number.POSITIVE_INFINITY)).toEqual({});
     expect(taskDeadlineEnv(Number.NaN)).toEqual({});
+  });
+
+  it('preserves an earlier inherited deadline including expiry, and only tightens a later deadline', () => {
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '1100000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '1100000' });
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' });
+    expect(taskDeadlineEnv(600, 1000000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '2000000' }))
+      .toEqual({ [TASK_DEADLINE_EPOCH_MS_ENV]: '1600000' });
+    const built = buildTaskScopeArgvWithTransport(['node', 'test.mjs'], { unit: 'pc-yield123.scope', slice: 'papercusp-test.slice',
+      runtimeMaxSec: 600, env: { [TASK_DEADLINE_EPOCH_MS_ENV]: '999000' } });
+    try {
+      expect(readFileSync(built.transport!.sourcePath, 'utf8').split('\0'))
+        .toContain(`${TASK_DEADLINE_EPOCH_MS_ENV}=999000`);
+    } finally { built.transport?.release(); }
   });
 
   it('folds the deadline into an exact-env payload without displacing the caller env', () => {

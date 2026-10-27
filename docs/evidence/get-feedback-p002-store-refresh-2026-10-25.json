@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "spec": "GF-P002-source@1",
+  "commitSha": "516492c6fcba63c255bbe9270a97cc92ca4b6da8",
+  "reason": "Named source drift since prior clean run22028759: adv-sessions.ts adds exact workspace/cwd/plan cleanup binding checks. The other three named source files, the test and direct fixture helper are unchanged.",
+  "runGroup": "gf-p002-store-refresh-20261025-1792966804089",
+  "testFile": "packages/operator-core/lib/session-port/store.integration.test.ts",
+  "driver": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=516492c6fcba63c255bbe9270a97cc92ca4b6da8 -- packages/operator-core/lib/session-port/store.integration.test.ts",
+  "reporterSink": "Explicit resolveScriptPgUrl().url outside private test PG; credentials not retained. Canonical inserted receipts verified by test:file.",
+  "state": "/tmp/gf-p002-store-refresh-20261025.state.json",
+  "log": "/tmp/gf-p002-store-refresh-20261025.log",
+  "logSha256": "ce76666d0187279d0568061b4e6122a52a97ba698636de837ea3d7e577b5d8e3",
+  "startedAt": "2026-10-25T22:20:04.090Z",
+  "finishedAt": "2026-10-25T22:22:41.519Z",
+  "exit": 0,
+  "proof": {
+    "testRunId": 22071099,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "oldTestRunId": 22028759,
+    "oldBinding": 70203,
+    "replacement": 70619,
+    "caseTriplesEqual": true,
+    "declaredCases": [
+      "session-port atomic attempt lifecycle (real PG) > verifies a conversion through the real source, target, committed bootstrap and native delivery rows",
+      "session-port atomic attempt lifecycle (real PG) > serializes two bootstraps to one target, replays the receipt, and links a terminal retry"
+    ],
+    "recipeEqual": true,
+    "adequacyEqual": true,
+    "independentCurrentness": "current",
+    "sourceFingerprint": "sha256-file-set-v1:4b073217f099484e99693b15be9b18214d4f368900c9ed6e86eb6029fd67a377",
+    "testFingerprint": "sha256-file-set-v1:f9721f96c3d16fae95d1c012ca8296ced1d01dc5fc9440c469c8c071e4adc0cb",
+    "fixtureFingerprint": "sha256-file-set-v1:3227bd4b539c01d9549d5cc56c403aeb428303bee02abf3c53800a33037a14e0"
+  },
+  "ordering": "Verified clean canonical execution and complete old/new case triples; bound70619 with the same recipe and adequacy; independently measured all applicable dimensions CURRENT; then withdrew only stale70203. Private Postgres shut down cleanly.",
+  "bindingNoteCorrection": "The initial refresh observation names adv-sessions/agent-launch-core generically. Exact committed comparison shows only adv-sessions.ts changed; agent-launch-core.ts is unchanged and remains part of the four-file measurement recipe.",
+  "preservedBindings": [28326, 28545, 69704, 69782, 37986],
+  "remaining": {
+    "governingVerdict": "fail",
+    "blockingCriteria": ["traceability", "execution-integrity", "freshness", "disclosed-gap"],
+    "coreIntegration": "69875 remains stale. Current get-feedback-core.ts and integration test have uncommitted method-review context changes; a prior-commit replay would not qualify those bytes.",
+    "backendMutationProof": "68733/69319/69322 remain separate unresolved freshness work. consult-dispatch.ts and its test also have uncommitted method-review changes; no duplicate probe was launched.",
+    "reporter": "EI-26900834772734276 remains owned/open; original21936773 timeout root cause UNKNOWN. Existing diagnostics were read, not replayed.",
+    "loopDelivery": "EI-26984631684161013 remains owned/open. Existing release-pump evidence was already sent once to the live gate owner; this turn performed no LIVE_GATE_OPS."
+  },
+  "limits": "Committed source and real private-PG fixture proof only. Native actor attribution, complete backend matrix, source-plan lease ABA, custody/admission/approval, cohort quality, independent acceptance and verified shipment remain open. This artifact does not claim that the changed cleanup behavior itself has been accepted or shipped."
+}

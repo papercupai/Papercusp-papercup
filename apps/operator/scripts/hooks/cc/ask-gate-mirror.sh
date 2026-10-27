@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude hook — the owner-gate CAPTURE + MIRROR layer (P-001 of
-# owner-inbox-single-pane-2026-07-17). One script, FOUR hook_event_name
+# owner-inbox-single-pane-2026-07-17). One script, FIVE hook_event_name
 # branches (same combined-script shape as workitem-verify-nudge.sh), each
 # registered as its own settings.json entry:
 #
@@ -50,6 +50,10 @@
 #          an action, and silently ending here strands the session.
 #       4. neither → allow, empty stdout, exactly like every sibling Stop
 #          hook in this directory.
+#   • StopFailure — Claude's API/runtime failure terminal event replaces Stop
+#     for errors such as rate limits. Best-effort-clear the same
+#     `notify:<session_id>` permission gate, then exit without transcript parsing
+#     or the Stop-only ask/bounce behavior.
 #
 # Deliberately SYNCHRONOUS (unlike the per-tool-call activity/lock hooks,
 # which MUST be fire-and-forget because they run on every single tool call):
@@ -887,6 +891,16 @@ if name == 'Notification':
     if harness:
         args['harness'] = harness
     call_tool('sessions:ingest-gate-event', args)
+    sys.exit(0)
+
+# ── StopFailure: an error terminal replaces Stop; clear the permission wait ───
+if name == 'StopFailure':
+    call_tool('sessions:ingest-gate-event', {
+        'sessionId': session_id or owner,
+        'client': 'claude',
+        'kind': 'cleared',
+        'refId': 'notify:' + (session_id or owner),
+    }, timeout=2, retries=1, label='stop-failure-notify-clear')
     sys.exit(0)
 
 # ── Stop: ask-mirror + bounce ───────────────────────────────────────────────────

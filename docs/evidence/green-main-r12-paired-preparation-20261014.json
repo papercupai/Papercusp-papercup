@@ -3683,6 +3683,151 @@
     "recurrenceGuard": "Run both existing maintained identity guards after future evidence appends; do not add exceptions."
   },
   "currentNativeNpmLifecycleDiagnostics20261022": {
+    "committedClause2Verification20261023": {
+      "workItemId": "WI-6554700010020304",
+      "guardWorkItemId": "WI-6554700010020339",
+      "status": "clean-committed-native-oracle-qualified-adequacy-blocked",
+      "sourceCommit": "5db8d8ce8ec339e9d36877bc3cb4065ab5ebf6de",
+      "sourcePins": {
+        "scripts/lib/budgeted-task-scheduler.d.mts": "7d9a66e361cb7835497a6ea35b254a4cd70ec5ae119d77913456e74ce3194350",
+        "scripts/lib/budgeted-task-scheduler.mjs": "fbc90517648883fd79fab36052a697a3056d41dad1d1aec567c6523864ba94fe",
+        "scripts/lib/vitest-startup-trace.mjs": "3c7d603da96c33bb87179c952b32e56426605d445b04531f7738a7c57f545a78",
+        "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts": "704a8a6d52717081cbd6861ba5674e3479c133fbd6f9ffaec28c0dc23af2eae4"
+      },
+      "mutation": {
+        "command": "bash scripts/mutation-probe.sh --file scripts/lib/budgeted-task-scheduler.mjs --mutate 's@  const pin = persist\\(Buffer\\.from\\(JSON\\.stringify\\(receipt\\)\\), \"receipt\\.json\"\\);@  for (const span of receipt.processTrace.npmLifecycle.spans) { span.script = \"unobserved coordinated script\"; span.argv = [\"-c\", span.script]; }\\n$&@' --test 'test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts --testNamePattern=\"native npm lifecycle diagnostics\"' --relocation overlay --expect caught",
+        "probeInvocationId": "15da2af5-2014-4c65-9280-4627c77fb226",
+        "phases": [
+          {
+            "phase": "baseline",
+            "ledgerRowId": 21804156,
+            "passed": 16,
+            "failed": 0,
+            "exitCode": 0
+          },
+          {
+            "phase": "copy-baseline",
+            "ledgerRowId": 21804184,
+            "passed": 16,
+            "failed": 0,
+            "exitCode": 0
+          },
+          {
+            "phase": "mutant",
+            "ledgerRowId": 21804186,
+            "passed": 11,
+            "failed": 5,
+            "exitCode": 1
+          }
+        ],
+        "perPhase": {
+          "explicitUnselected": 320,
+          "requestedFiles": 1,
+          "executedFiles": 1,
+          "matchedFiles": 1,
+          "childSubstituted": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "provenance": "stamped"
+        },
+        "containment": {
+          "status": "contained",
+          "overlays": 1,
+          "uncovered": 0,
+          "failedOverlays": 0
+        },
+        "result": {
+          "verdict": "caught",
+          "mutantParse": "ok",
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "probeExitCode": 0
+        },
+        "trackedSubjectUnchanged": true,
+        "failedScenario": "The four sh lifecycle outcomes and configured Bash fail when returned script and argv are changed together; eleven rejection controls pass.",
+        "log": {
+          "ref": ".papercusp/scratch/bash-44bd020b-8cd.log",
+          "sha256": "b3793d2f76639fd7e8f99a971a1113b8e8e78ac7572344c266614cdd572a977c",
+          "byteLength": 456256
+        }
+      },
+      "clause": {
+        "planSlug": "adhoc-work-item-specs",
+        "workItemId": "WI-6554700010020188",
+        "specId": "adhoc.WI-6554700010020188.native-npm-lifecycle-diagnostics",
+        "revision": 2,
+        "contentHash": "7b20041e8763630fff842cbd1dc2d94d9e0e6c68fd72910cf6c2f1f61071b836",
+        "testBindingId": 66149,
+        "mutationBindingId": 66150,
+        "scenarioId": "native-npm-shell-identity",
+        "recordedTestLayer": "unit",
+        "readback": {
+          "currentBindings": [
+            66149,
+            66150
+          ],
+          "measurementStatus": "measured",
+          "staleReasons": [],
+          "unknownReasons": []
+        },
+        "adequacy": {
+          "scope": "exact current diagnostic binding cohort, not full-plan acceptance",
+          "classRef": "plan-class-feature-ship",
+          "verdict": "fail",
+          "wouldBlock": [
+            "disclosed-gap"
+          ]
+        }
+      },
+      "limits": [
+        "Historical proof and bindings retain their original source pins. This cohort does not reinterpret assertion-free timeout row21802587 as a caught mutant.",
+        "Original twelve fixture skips and the320unselected current-file cases remain unqualified. Original per-step streams/reports, ordered-chain/no-skip acceptance and full runtime/import/dependency/environment closure are outside this proof.",
+        "Engineer archive review, D020/P006, six forms, P018, P028, P031/D045 and full-plan shipment remain open. No LIVE_GATE_OPS or deploy action was performed."
+      ]
+    },
+    "exitDiagnosticsPreparation20261023": {
+      "workItemId": "EI-26745201467046472",
+      "status": "verified-detector-repair-original-timeout-cause-unknown",
+      "change": "Emit node-exit-start before delegating exit listeners. A handshake-driven real child blocks inside an exit listener and is killed; the maintained regression requires authenticated entry evidence and no completed-exit event. The normal exit control preserves captured binary output and terminal evidence. Native fixture failures now include bounded root-process phase and load-limit observations.",
+      "sourcePins": {
+        "scripts/lib/vitest-startup-trace.mjs": "3c7d603da96c33bb87179c952b32e56426605d445b04531f7738a7c57f545a78",
+        "packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts": "e20686c8aa0dad4370f27b1eb23cfcdb2168ecc13e90a875811458b340a5735b"
+      },
+      "focused": {
+        "runId": "58105d0c-554c-4d36-a6b4-71064634e9ac",
+        "passed": 2,
+        "explicitUnselected": 19,
+        "exitCode": 0,
+        "childSubstituted": 0
+      },
+      "compatibility": {
+        "passed": 38,
+        "explicitUnselected": 319,
+        "requestedFiles": 2,
+        "executedFiles": 2,
+        "matchedFiles": 2,
+        "exitCode": 0,
+        "childSubstituted": 0,
+        "provenance": "unknown after global HEAD movement; bounded local compatibility only",
+        "log": {
+          "ref": ".papercusp/scratch/bash-be3990fb-7f5.log",
+          "sha256": "5d293117d9905da9ab56de49c3c04301d6d0deeb96a899f115860081611c6a4e",
+          "byteLength": 137570
+        }
+      },
+      "typecheck": {
+        "engine": "tsc-cli",
+        "scopedFiles": 2,
+        "errors": 0,
+        "exitCode": 0,
+        "serviceFallback": "30s service response timeout; no resource attribution"
+      },
+      "limits": [
+        "Two bounded diagnostic probes exited normally and did not reproduce the original npm timeout.",
+        "The original assertion-free npm20s timeout and the earlier separate node15s fixture timeout remain open with unknown causes. A detector repair is not a root-cause fix.",
+        "No full336-case green result, operational acceptance, runtime closure or shipment is claimed."
+      ]
+    },
     "scenarioPathQualification20261022": {
       "workItemId": "WI-6554700010020304",
       "status": "named-diagnostics-path-qualified-overall-adequacy-still-fails",
@@ -4445,5 +4590,5 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Child0304 now retains clean committed clause@2 baseline/mutation proof and current bindings65173/65174. Adequacy still fails correct-layer and disclosed-gap: reconcile the canonical clause's missing test-layer declaration and successful scenario path proof without relabelling native unit provenance or erasing disclosures. Continue the parent source and acceptance requirements for authentic per-step streams/reports, EI-26674110593853508 reader compatibility and full runtime closure. Preserve historical proof pins, original twelve fixture skips, engineer archive review, D020/P006, six forms, P018, P028 and P031/D045; the full plan remains unshipped."
+  "next": "Current diagnostic clause@2 bindings66149/66150 retain clean same-source native baseline and caught mutation proof. The exact current cohort fails adequacy only on disclosed-gap; do not change the unit layer or erase disclosures. Continue parent acceptance for authentic per-step streams/reports, original ordered chains and full runtime/import/dependency/environment closure, re-reading moved reader evidence before reuse. Original fixture skips, engineer archive review, D020/P006, six forms, P018, P028, P031/D045 and full shipment remain open. The original native fixture timeout causes remain unknown despite the verified exit-start detector repair."
 }

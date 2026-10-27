@@ -285,6 +285,10 @@ export interface SuLaunchSpecRecord {
   headless?: boolean;
   /** Native SQLite binding, persisted on the exact ADV launch row. */
   codexSqliteHome?: string;
+  /** Native conversation ancestry, independent of the child's launch authority. */
+  nativeFork?: { advSessionId: number; nativeSessionId: string; ownerId: string };
+  /** Exact ledger directory selected by this session's launch envelope. */
+  turnProvenanceDir?: string;
   fleet: { slug: string | null; role: string | null } | null;
   /** Resolved launch binding and the last artifact/state receipts (P-008). */
   stack?: string[];
@@ -309,11 +313,12 @@ export interface SelectedIdentityPin {
 /** Recover only a verified, previously delivered prompt when a pinned source
  * has moved and a missing Codex home needs its instructions restored. No new
  * activation is implied by replaying the immutable launch artifact. */
-export function pinnedSuRecoveryPrompt(record: SuLaunchSpecRecord): {
+export function pinnedSuRecoveryPrompt(record: SuLaunchSpecRecord, options: { allowUnselected?: boolean } = {}): {
   promptText: string;
   specificationRevision: string;
 } | null {
-  if (!record.selectedIdentity || !record.specificationArtifact || !record.specificationRevision) return null;
+  if ((!record.selectedIdentity && !options.allowUnselected) ||
+      !record.specificationArtifact || !record.specificationRevision) return null;
   const artifact = replayAgentSpecification(record.specificationArtifact);
   if (artifact.specificationRevision !== record.specificationRevision) {
     throw new Error('pinned SU recovery artifact does not match the launch receipt');
@@ -519,6 +524,12 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     loopArmed: r.loopArmed === true,
     ...(typeof r.headless === 'boolean' ? { headless: r.headless } : {}),
     ...(typeof r.codexSqliteHome === 'string' ? { codexSqliteHome: r.codexSqliteHome } : {}),
+    ...(r.nativeFork && typeof r.nativeFork === 'object'
+      && Number.isSafeInteger((r.nativeFork as Record<string, unknown>).advSessionId)
+      && typeof (r.nativeFork as Record<string, unknown>).nativeSessionId === 'string'
+      && typeof (r.nativeFork as Record<string, unknown>).ownerId === 'string'
+      ? { nativeFork: r.nativeFork as SuLaunchSpecRecord['nativeFork'] } : {}),
+    ...(typeof r.turnProvenanceDir === 'string' ? { turnProvenanceDir: r.turnProvenanceDir } : {}),
     fleet:
       r.fleet && typeof r.fleet === 'object'
         ? {

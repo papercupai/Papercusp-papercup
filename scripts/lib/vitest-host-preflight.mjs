@@ -6,7 +6,7 @@
 // vitest-host-preflight.mjs) after vitest has resolved the run's files and before any test
 // executes, and calls `hostPreflight`. A repository without this file runs no preflight.
 //
-// The one papercusp policy behind it is the restricted-write fence: refuse to execute code a
+// The runtime preflight policy is the restricted-write fence: refuse to execute code a
 // session holding an active personal disclosure wrote, from a process that has the network.
 // testing:run and the raw router already apply it; this is the door for `npx vitest` and the
 // per-workspace vitest runs `npm run test:affected` starts.
@@ -15,6 +15,33 @@ import {
   formatVitestRestrictedHoldRefusal,
   runVitestRootPreflight,
 } from './restricted-hold-preflight.mjs';
+
+/** Keep native config imports behind the committed-source loader before Vitest
+ * can transform them. Shared by the router and direct native fixture producers.
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string[]} [execArgv]
+ */
+export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = process.execArgv) {
+  let selected = null;
+  const remaining = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--configLoader') selected = args[++i] ?? '';
+    else if (arg.startsWith('--configLoader=')) selected = arg.slice('--configLoader='.length);
+    else remaining.push(arg);
+  }
+  const guarded = `${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs');
+  if (guarded && selected !== null && !['native', 'bundle'].includes(selected)) {
+    throw new Error('committed-source config requires --configLoader native or bundle; runner transforms bypass its source boundary');
+  }
+  // Bundles retain Vite's dependency census. The committed-source loader checks
+  // every inline source-map input against HEAD and refuses dirty/unverifiable
+  // bundles; keep that guard installed. Native remains the default because it
+  // can substitute HEAD bytes in a dirty shared config.
+  if (guarded && selected === null) selected = 'native';
+  return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
+}
 
 /**
  * Contract (owned by libs/test-config/src/host-preflight-global-setup.ts):

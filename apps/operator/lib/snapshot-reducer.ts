@@ -26,6 +26,7 @@ import type { VersionedSnapshot } from '@papercusp/tooldef';
 import type { SnapshotEnvelope } from './use-state-snapshots';
 
 export type SnapshotWireEvent =
+  | { kind: 'reset' }
   | { kind: 'snapshot'; env: SnapshotEnvelope }
   | { kind: 'delta'; delta: SnapshotDelta };
 
@@ -33,6 +34,7 @@ export function reduceSnapshotEvent(
   byRun: Map<string, SnapshotEnvelope>,
   event: SnapshotWireEvent,
 ): Map<string, SnapshotEnvelope> {
+  if (event.kind === 'reset') return new Map();
   if (event.kind === 'snapshot') {
     const { env } = event;
     const existing = byRun.get(env.runId);
@@ -48,6 +50,7 @@ export function reduceSnapshotEvent(
   const applied = applySnapshotDelta(base as VersionedSnapshot, delta);
   if (!applied) return byRun; // version gap → keep stale; the next full / reconnect heals
   const next = new Map(byRun);
-  next.set(delta.runId, { runId: applied.runId, version: applied.version, snapshot: applied.snapshot });
+  next.set(delta.runId, { runId: applied.runId, ...(base.workspaceId === undefined ? {} : { workspaceId: base.workspaceId }),
+    version: applied.version, snapshot: applied.snapshot });
   return next;
 }

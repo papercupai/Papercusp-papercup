@@ -202,9 +202,53 @@ describe('su-session owner routing across cluster workers (WI-10003879)', () => 
     await op(b, { op: 'set-owner-record', owner });
   }, 30_000);
 
-  it('falls back to local service once the owner worker is gone', async () => {
+  it.each(['claude', 'codex'])('delivers %s private forms and URL completion to their real owning worker', async backend => {
+    let opened = await op(a, { op: 'open-private-card', backend });
+    expect(opened.error).toBeUndefined();
+    await op(b, { op: 'set-owner-record', owner: opened.owner });
+    await op(b, { op: 'set-card-record', record: opened.record });
+    let card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
+    const input = { workspaceId: target.workspaceId, agentChatId: 'native-card-chat', request: {
+      kind: 'response', correlationId: card.correlationId, action: 'submit', payload: { value: 'private-response' } } };
+    expect(await op(b, { op: 'private-card-route', input: { ...input, agentChatId: 'foreign-chat' } })).toBeNull();
+    expect(await op(b, { op: 'private-card-route', input: { ...input, workspaceId: 'foreign-workspace' } })).toBeNull();
+    expect((await op(a, { op: 'private-card-state' })).answer).toBeNull();
+    expect(await op(b, { op: 'private-card-route', input })).toEqual({ kind: 'response', ok: true });
+    const state = await op(a, { op: 'private-card-state' });
+    const answer = backend === 'claude' ? state.answer : state.answer.result;
+    expect(answer).toMatchObject({ action: 'accept', content: { apiKey: 'private-response' } });
+    expect(JSON.stringify(state.events)).not.toContain('private-response');
+    expect((await op(b, { op: 'private-card-route', input }))).toMatchObject({ ok: false, status: 404 });
+    expect((await op(b, { op: 'private-card-state' })).answer).toBeNull();
+
+    opened = await op(a, { op: 'open-private-card', backend, url: true });
+    expect(opened.error).toBeUndefined();
+    card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
+    expect(JSON.stringify(opened.events)).not.toContain('PRIVATE_NATIVE');
+    const link = { workspaceId: target.workspaceId, request: { kind: 'link', correlationId: card.correlationId } };
+    expect(await op(b, { op: 'private-card-route', input: link }))
+      .toEqual({ kind: 'link', target: 'https://auth.example/?code=PRIVATE_NATIVE' });
+    expect(await op(b, { op: 'private-card-route', input: { ...link, request: {
+      kind: 'response', correlationId: card.correlationId, action: 'decline' } } }))
+      .toEqual({ kind: 'response', ok: true });
+    expect(await op(b, { op: 'private-card-route', input: link })).toEqual({ kind: 'link', target: null });
+    const declined = (await op(a, { op: 'private-card-state' })).answer;
+    expect(backend === 'claude' ? declined : declined.result).toMatchObject({ action: 'decline' });
+    await op(b, { op: 'set-owner-record', owner });
+  }, 30_000);
+
+  it('falls back for ordinary session reads but never for native cards once the owner worker is gone', async () => {
+    const opened = await op(a, { op: 'open-private-card', backend: 'claude', url: true });
+    expect(opened.error).toBeUndefined();
+    const card = opened.events.find((event: any) => event.type === 'card' && event.phase === 'opened').card;
+    await op(b, { op: 'set-card-record', record: opened.record });
+    await op(b, { op: 'set-owner-record', owner: opened.owner });
     a.child.kill('SIGKILL');
     await once(a.child, 'exit');
+    const privateResult = await op(b, { op: 'private-card-route', input: { workspaceId: target.workspaceId,
+      request: { kind: 'link', correlationId: card.correlationId } } });
+    expect(privateResult).toMatchObject({ error: expect.stringContaining('su_native_tool_owner_owner_gone') });
+    await op(b, { op: 'set-owner-record', owner });
     const snap = await op(b, { op: 'route', request: { op: 'snapshot' } });
     expect(snap.servedBy).toBe(`local:${b.pid}`);
     expect(snap.status).toBe(404);

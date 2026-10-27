@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { measureBootOperatorArtifact, writeOperatorArtifactManifest } from "../../../packages/operator-core/lib/release/operator-artifact.ts";
 
 const SCHEMA_VERSION = "bundle-host-freshness-v2";
 
@@ -107,9 +108,17 @@ function sourceIdentity(repoRoot) {
 // Walk package boundaries only (including nested/workspace node_modules), not
 // caches or every dependency file; package-content integrity is npm's job.
 function dependencyIdentity(repoRoot, entry) {
-  const installedLock = join(repoRoot, "node_modules", ".package-lock.json");
-  if (!existsSync(installedLock))
-    throw new Error(`installed dependency lock is missing: ${installedLock}`);
+  const installedLockPath = (modules) => {
+    const ordinary = join(modules, ".package-lock.json");
+    if (existsSync(ordinary)) return ordinary;
+    // Committed shadows retain the source install's lock without giving npm
+    // a mutable cache describing the wrong topology. Still measure every real
+    // package manifest and resolution below; the link alone establishes no proof.
+    const shadow = join(modules, ".papercusp-installed-package-lock.json");
+    return existsSync(shadow) && lstatSync(shadow).isSymbolicLink() ? shadow : null;
+  };
+  if (!installedLockPath(join(repoRoot, "node_modules")))
+    throw new Error(`installed dependency lock is missing: ${join(repoRoot, "node_modules", ".package-lock.json")}`);
   const rows = [];
   const seen = new Set();
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -119,12 +128,11 @@ function dependencyIdentity(repoRoot, entry) {
       return;
     }
     const actual = realpathSync(modules);
+    const lock = installedLockPath(actual);
     rows.push({
       path: modules,
       actual,
-      lockSha256: existsSync(join(actual, ".package-lock.json"))
-        ? digest(join(actual, ".package-lock.json"))
-        : null,
+      lockSha256: lock ? digest(lock) : null,
     });
     if (seen.has(actual)) return;
     seen.add(actual);
@@ -226,16 +234,31 @@ function normalizedInputs(values) {
     throw new Error(`bundle does not exist: ${outfile}`);
   if (!lstatSync(outfile).isFile())
     throw new Error(`bundle is not a regular file: ${outfile}`);
+  const source = sourceIdentity(repoRoot);
+  const builtFrom = values['source-sha'];
+  if (builtFrom !== undefined &&
+      (!/^[a-f0-9]{7,64}$/.test(builtFrom) || !source.headSha.startsWith(builtFrom)))
+    throw new Error('build source HEAD mismatch');
   return {
-    source: sourceIdentity(repoRoot),
+    source,
     entry: realpathSync(entry),
     outfile: realpathSync(outfile),
     manifest,
   };
 }
 
+function isOperatorHost(inputs) {
+  return inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs");
+}
+
 function stamp(values) {
   const inputs = normalizedInputs(values);
+  // The maintained staging build must carry the same compiler-input-to-bundle
+  // provenance as a release build, before the fresh process starts. A source
+  // freshness stamp alone cannot identify the bytes loaded by that process.
+  const artifact = isOperatorHost(inputs) ? writeOperatorArtifactManifest({
+    root: inputs.source.repoRoot, entry: inputs.outfile, sourceSha: inputs.source.headSha,
+  }) : null;
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   const outputTree = outputTreeIdentity(inputs.outfile, inputs.manifest);
   const record = {
@@ -246,6 +269,8 @@ function stamp(values) {
     outfile: inputs.outfile,
     dependencies,
     outputTree,
+    ...(artifact ? { artifact: { sourceSha: artifact.sourceSha,
+      bundleSha256: artifact.bundleSha256, manifestSha256: artifact.manifestSha256 } } : {}),
     stampedAt: new Date().toISOString(),
   };
   const tmp = `${inputs.manifest}.tmp.${process.pid}`;
@@ -269,6 +294,13 @@ function check(values) {
     throw new Error("freshness manifest entry mismatch");
   if (record.outfile !== inputs.outfile)
     throw new Error("freshness manifest outfile mismatch");
+  if (isOperatorHost(inputs)) {
+    const artifact = measureBootOperatorArtifact(inputs.outfile, inputs.source.headSha);
+    if (artifact.status !== "measured" || record.artifact?.sourceSha !== artifact.sourceSha
+      || record.artifact?.bundleSha256 !== artifact.bundleSha256
+      || record.artifact?.manifestSha256 !== artifact.manifestSha256)
+      throw new Error("freshness manifest boot-artifact mismatch");
+  }
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
   if (record.dependencies?.sha256 !== dependencies.sha256)
     throw new Error("freshness manifest installed-dependency mismatch");

@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
   dumpSize: 16_384,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
   stdinWrites: [] as string[],
+  ackWrites: [] as string[],
   writeStreamPaths: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
   unlinkCalls: [] as string[],
@@ -54,6 +55,7 @@ const h = vi.hoisted(() => ({
   holdGuardOpen: false,
   pendingGuard: null as EventEmitter | null,
   pendingGuardReady: null as EventEmitter | null,
+  pendingGuardAck: null as EventEmitter | null,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -71,7 +73,9 @@ function fakeChild() {
   child.stdout = mkStream();
   child.stderr = mkStream();
   const guardReady = mkStream();
-  child.stdio = [null, child.stdout, child.stderr, guardReady];
+  const guardAck = mkStream();
+  guardAck.end = vi.fn((chunk: string) => { h.ackWrites.push(String(chunk)); });
+  child.stdio = [null, child.stdout, child.stderr, guardReady, guardAck];
   const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
   stdin.write = vi.fn((chunk: string) => { h.stdinWrites.push(String(chunk)); });
   child.stdin = stdin;
@@ -97,19 +101,18 @@ vi.mock('node:child_process', () => ({
         if (h.holdGuardOpen) {
           h.pendingGuard = child;
           h.pendingGuardReady = ready;
+          h.pendingGuardAck = child.stdio[4] as EventEmitter;
           return;
         }
         ready.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+        setImmediate(() => child.emit('close', h.closeCodes.pg_dump ?? 0));
+        return;
       }
       if (cmd === 'gzip' && h.gzipStdinError) {
         const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write', errno: -32 });
         (child.stdin as unknown as EventEmitter).emit('error', err);
       }
-      // The guard process is the mocked boundary around pg_dump. Preserve the
-      // existing outcome controls so the assertions still exercise pg_dump's
-      // success/failure branches after adding the real cross-process wrapper.
-      const closeCodeKey = cmd === h.guardBin ? 'pg_dump' : cmd;
-      child.emit('close', h.closeCodes[closeCodeKey] ?? 0);
+      child.emit('close', h.closeCodes[cmd] ?? 0);
     });
     return child;
   }),
@@ -221,6 +224,7 @@ beforeEach(() => {
   h.dumpSize = 16_384;
   h.closeCodes = { pg_dump: 0, gzip: 0 };
   h.stdinWrites = [];
+  h.ackWrites = [];
   h.writeStreamPaths = [];
   h.renameCalls = [];
   h.unlinkCalls = [];
@@ -236,6 +240,7 @@ beforeEach(() => {
   h.holdGuardOpen = false;
   h.pendingGuard = null;
   h.pendingGuardReady = null;
+  h.pendingGuardAck = null;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -329,9 +334,11 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(c.detached).toBe(process.platform !== 'win32');
     expect(c.env?.KOPIA_BACKUP_GUARD_LOG_STDERR).toBe('1');
     expect(c.env?.KOPIA_BACKUP_GUARD_READY_FD).toBe('3');
+    expect(c.env?.KOPIA_BACKUP_GUARD_ACK_FD).toBe('4');
+    expect(c.env?.KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC).toBe('1805');
     expect(c.env?.KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC).toBe('900');
     expect(h.spawnCalls.find((call) => call.cmd === h.guardBin)?.stdio).toEqual([
-      'ignore', 'pipe', 'pipe', 'pipe',
+      'ignore', 'pipe', 'pipe', 'pipe', 'pipe',
     ]);
   });
 
@@ -366,10 +373,12 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
       expect(h.pendingGuard).not.toBeNull();
 
       const delays = () => timeoutSpy.mock.calls.map(([, delay]) => Number(delay));
-      expect(delays()).toContain(905_000); // separate guard-readiness backstop
+      expect(delays()).toContain(1_805_000); // bounded flock wait plus migration-readiness backstop
       expect(delays()).not.toContain(900_000); // pg_dump has not acquired the lock
 
       h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      for (let i = 0; i < 20 && h.ackWrites.length === 0; i += 1) await Promise.resolve();
+      expect(h.ackWrites).toEqual(['PROCEED\n']);
       expect(delays()).toContain(900_000);
       h.pendingGuard!.emit('close', 0);
       h.pendingGuard = null;
@@ -379,6 +388,67 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
       h.pendingGuard = null;
       h.holdGuardOpen = false;
       timeoutSpy.mockRestore();
+    }
+  });
+
+  it('reacquires and rechecks coverage after READY before ACKing the guard', async () => {
+    h.holdGuardOpen = true;
+    let allowReady!: () => void;
+    const beforeGuardWait = vi.fn(async () => {});
+    const onGuardReady = vi.fn(async () => {
+      await new Promise<void>((resolve) => { allowReady = resolve; });
+      h.hostCoverageCovered = true;
+    });
+    try {
+      const pending = runPreSnapshotHook(ctx, { beforeGuardWait, onGuardReady });
+      for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+      expect(h.pendingGuard).not.toBeNull();
+      expect(beforeGuardWait).toHaveBeenCalledOnce();
+
+      h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      for (let i = 0; i < 20 && !onGuardReady.mock.calls.length; i += 1) await Promise.resolve();
+      expect(onGuardReady).toHaveBeenCalledOnce();
+      expect(h.ackWrites).toEqual([]);
+
+      allowReady();
+      for (let i = 0; i < 30 && h.ackWrites.length === 0; i += 1) await Promise.resolve();
+      expect(h.ackWrites).toEqual(['SKIP\n']);
+      h.pendingGuard!.emit('close', 0);
+      h.pendingGuard = null;
+      await expect(pending).resolves.toMatchObject({ ok: true, skipped: expect.stringContaining('no host-dump receipt') });
+    } finally {
+      h.pendingGuard?.emit('close', 1);
+      h.pendingGuard = null;
+      h.holdGuardOpen = false;
+    }
+  });
+
+  it('waits for a late READY callback to settle after the guard exits, preventing an orphaned lock', async () => {
+    h.holdGuardOpen = true;
+    let finishAcquire!: () => void;
+    const onGuardReady = vi.fn(() => new Promise<void>((resolve) => { finishAcquire = resolve; }));
+    try {
+      const pending = runPreSnapshotHook(ctx, { onGuardReady });
+      for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+      expect(h.pendingGuard).not.toBeNull();
+
+      h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      for (let i = 0; i < 20 && !onGuardReady.mock.calls.length; i += 1) await Promise.resolve();
+      expect(onGuardReady).toHaveBeenCalledOnce();
+      h.pendingGuard!.emit('close', 1); // models the READY watchdog killing the guard
+      h.pendingGuard = null;
+
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      finishAcquire();
+      await expect(pending).resolves.toMatchObject({ ok: false });
+      expect(h.ackWrites).toEqual([]);
+    } finally {
+      h.pendingGuard?.emit('close', 1);
+      h.pendingGuard = null;
+      h.holdGuardOpen = false;
     }
   });
 
@@ -404,6 +474,8 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
       expect(forwarded()).toEqual([`${waiting}\n`]);
 
       h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      for (let i = 0; i < 20 && h.ackWrites.length === 0; i += 1) await Promise.resolve();
+      expect(h.ackWrites).toEqual(['PROCEED\n']);
       h.pendingGuard!.emit('close', 0);
       h.pendingGuard = null;
       await expect(pending).resolves.toMatchObject({ ok: true });

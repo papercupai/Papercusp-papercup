@@ -162,6 +162,7 @@ export async function rescoreRubric(
   }
   const rubric = { ...stored, criteria: live.criteria };
   const rubricRef = rubric.rubricId;
+  const harnessSlug = rubric.subjectHarnessSlug ?? input.harnessSlug;
   const readLatest = deps.readLatest ?? readLatestRubricCheckResults;
   const executable = rubric.criteria.filter((c) => ledgerCheckBindings(c) !== null);
 
@@ -170,12 +171,12 @@ export async function rescoreRubric(
 
   const results: RubricCheckResult[] = [
     ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId,
-      ...(rubric.subjectHarnessSlug ? { harnessSlug: rubric.subjectHarnessSlug } : {}) })),
+      ...(harnessSlug ? { harnessSlug } : {}) })),
   ];
   const probeErrors: string[] = [];
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');
   if (probeCriteria.length > 0) {
-    const harness = rubric.subjectHarnessSlug ?? input.harnessSlug ?? undefined;
+    const harness = harnessSlug ?? undefined;
     const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness, undefined, workspaceId);
     const evaluateProbes = deps.evaluateProbes ?? evaluateCriterionProbeChecks;
     // One evaluation per criterion. The evaluator fails closed for a whole batch (right for a
@@ -196,7 +197,7 @@ export async function rescoreRubric(
   const testRunIds = results.length > 0
     ? await (deps.record ?? ((r, s) => recordRubricCheckResults(r, s, getOrgPg().sql as never)))(results, {
         workspaceId,
-        harnessSlug: rubric.subjectHarnessSlug ?? input.harnessSlug ?? null,
+        harnessSlug: harnessSlug ?? null,
       })
     : [];
 

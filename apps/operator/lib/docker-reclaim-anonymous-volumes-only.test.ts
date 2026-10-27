@@ -40,7 +40,7 @@
  * mutated COPY outside the tree (CLAUDE.md mutation-probe tier 2) — never by
  * mutating the shared tree, where the git-sync sweep can commit the mutant.
  */
-import { existsSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, lstatSync, linkSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -171,7 +171,7 @@ describe('Podman stores use the existing guarded image policy', () => {
     for (const name of ['docker', 'rootless', 'rootful']) mkdirSync(join(root, 'stores', name), { recursive: true });
     executable('docker', '[[ "${DOCKER_UP:-0}" == 1 ]] || exit 1\nif [[ "$1" == info ]]; then [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/stores/docker"; exit 0; fi\nprintf "docker %s\\n" "$*" >>"$FIXTURE_LOG"\n');
     executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
-    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\n');
+    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\nexit "${FIXTURE_NATIVE_EXIT:-0}"\n');
     executable('df', 'if [[ "$*" == *--output=avail* ]]; then echo "${FIXTURE_AVAILABLE:-100000000000}"; else echo 100000000000; fi\n');
     const env = { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_ROOT: root, FIXTURE_LOG: log,
       PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'), PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
@@ -190,7 +190,9 @@ describe('Podman stores use the existing guarded image policy', () => {
       prepare?.(f);
       const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
         env: { ...f.env, ...overrides } });
-      return { output, calls: f.calls() };
+      const receipts = output.split('\n').filter(line => line.startsWith('[docker-reclaim] store-receipt '))
+        .map(line => JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)));
+      return { output, calls: f.calls(), receipts };
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   };
 
@@ -297,5 +299,67 @@ describe('Podman stores use the existing guarded image policy', () => {
     const result = runFixture({ PODMAN_DOWN: '1' });
     expect(result.calls).toEqual([]);
     expect(result.output).toContain('podman-rootful unreachable');
+  });
+
+  it('measures configured physical stores including root inodes and reports unrelated cap residue', () => {
+    let expectedBytes = 0;
+    const result = runFixture({ CONTAINER_STORE_MAX_BYTES: '1' }, f => {
+      const root = join(f.root, 'stores/rootless');
+      const bulk = join(root, 'bulk'); writeFileSync(bulk, Buffer.alloc(16_384));
+      expectedBytes = (lstatSync(root).blocks + lstatSync(bulk).blocks) * 512;
+    });
+    const receipt = result.receipts.find(r => r.store === 'podman-rootless');
+    expect(receipt).toMatchObject({ maxBytes: 1, measurementComplete: true, complete: false,
+      status: 'unprotected-overage', nativeFailures: 0, pinnedBytes: 0 });
+    expect(receipt.afterBytes).toBe(expectedBytes);
+    expect(receipt.unprotectedOverageBytes).toBe(receipt.afterBytes - 1);
+    expect(receipt.physicalRoot).toContain('/stores/rootless');
+  });
+
+  it('deduplicates aliases by physical store identity before native commands', () => {
+    const result = runFixture({}, f => { f.env.FIXTURE_ALIAS = join(f.root, 'stores/rootless'); });
+    expect(result.calls).toEqual(['rootless image prune -af --filter until=168h']);
+    expect(result.receipts.map(r => r.status)).toEqual(['within-cap', 'duplicate-store']);
+  });
+
+  it('reports native failure independently of residual size while preserving timer compatibility', () => {
+    const result = runFixture({ FIXTURE_NATIVE_EXIT: '23' });
+    expect(result.receipts).toHaveLength(2);
+    expect(result.receipts.every(r => r.status === 'native-failed' && r.nativeFailures === 1 && !r.complete)).toBe(true);
+    expect(result.receipts.every(r => r.measurementComplete && r.unprotectedOverageBytes === 0)).toBe(true);
+  });
+
+  it('keeps exact pin allocation separate from sibling bulk and hardlink aliases', () => {
+    let pinnedBytes = 0; let totalBytes = 0;
+    const result = runFixture({ CONTAINER_STORE_MAX_BYTES: '1' }, f => {
+      const root = join(f.root, 'stores/rootless');
+      const child = join(root, 'pinned'); mkdirSync(child);
+      const file = join(child, 'evidence'); writeFileSync(file, Buffer.alloc(8192));
+      linkSync(file, join(root, 'outside-link'));
+      writeFileSync(join(root, 'bulk'), Buffer.alloc(32_768));
+      // A symlink out of the store contributes its own inode, never its target.
+      const outside = join(f.root, 'outside'); writeFileSync(outside, Buffer.alloc(65_536));
+      const alias = join(root, 'outside-symlink'); symlinkSync(outside, alias);
+      pinnedBytes = (lstatSync(child).blocks + lstatSync(file).blocks) * 512;
+      totalBytes = (lstatSync(root).blocks + lstatSync(child).blocks + lstatSync(file).blocks
+        + lstatSync(join(root, 'bulk')).blocks + lstatSync(alias).blocks) * 512;
+      pin(f, child);
+    });
+    const receipt = result.receipts.find(r => r.store === 'podman-rootless');
+    expect(receipt).toMatchObject({ status: 'pinned-unrelated-overage', complete: false,
+      measurementComplete: true, beforeBytes: totalBytes, afterBytes: totalBytes, pinnedBytes });
+    expect(receipt.unprotectedOverageBytes).toBe(totalBytes - pinnedBytes);
+    expect(result.calls.every(call => !call.startsWith('rootless '))).toBe(true);
+  });
+
+  it('accepts only pin-explained overage while leaving a whole pinned store untouched', () => {
+    const result = runFixture({ CONTAINER_STORE_MAX_BYTES: '1' }, f => {
+      writeFileSync(join(f.root, 'stores/rootless/evidence'), Buffer.alloc(8192));
+      pin(f, join(f.root, 'stores/rootless'));
+    });
+    const receipt = result.receipts.find(r => r.store === 'podman-rootless');
+    expect(receipt).toMatchObject({ status: 'pinned-overage', complete: true, unprotectedOverageBytes: 0 });
+    expect(receipt.pinnedBytes).toBe(receipt.afterBytes);
+    expect(result.calls.every(call => !call.startsWith('rootless '))).toBe(true);
   });
 });

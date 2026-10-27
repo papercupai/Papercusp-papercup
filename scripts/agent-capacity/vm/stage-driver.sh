@@ -40,6 +40,23 @@ for m in "${mods[@]}"; do
   [ -z "$extra" ] || { echo "STAGE_ERROR $f imports $extra- not a leaf module, so the VM copy would not resolve; stage its closure or drop the import"; exit 2; }
 done
 
+# Bind the bytes being copied, including working-tree edits, to their VM paths. A checkout
+# SHA alone identifies neither these measurement writers nor their staged operator-core copies.
+manifest=$(mktemp) || exit 2
+trap 'rm -f "$manifest"' EXIT
+{
+  for f in "${ts[@]}" "$S"/corpus/* "$S"/vm/*.sh "$S"/vm/*.py; do
+    sha=$(sha256sum "$f") || exit 2
+    printf '%s  %s\n' "${sha%% *}" "$f"
+  done
+  for m in "${mods[@]}"; do
+    sha=$(sha256sum "packages/operator-core/$m.ts") || exit 2
+    printf '%s  scripts/node_modules/@papercusp/operator-core/%s.ts\n' "${sha%% *}" "$m"
+  done
+} > "$manifest" || { echo "STAGE_ERROR writer manifest"; exit 2; }
+manifest_sha=$(sha256sum "$manifest") || exit 2
+manifest_sha=${manifest_sha%% *}
+
 ssh_vm() { gcloud compute ssh "$VM" --project="$PROJECT" --zone="$ZONE" --command="$1"; }
 scp_vm() { gcloud compute scp --project="$PROJECT" --zone="$ZONE" --quiet "$@"; }
 NM=capacity/scripts/node_modules/@papercusp/operator-core
@@ -53,4 +70,8 @@ scp_vm "$S"/vm/*.sh "$S"/vm/*.py "$VM:capacity/$S/vm/" || { echo "STAGE_ERROR co
 for m in "${mods[@]}"; do
   scp_vm "packages/operator-core/$m.ts" "$VM:$NM/$m.ts" || { echo "STAGE_ERROR copy $m"; exit 4; }
 done
+scp_vm "$manifest" "$VM:capacity/stage-writers.sha256" || { echo "STAGE_ERROR copy writer manifest"; exit 4; }
+ssh_vm "cd ~/capacity && printf '%s  stage-writers.sha256\n' '$manifest_sha' | sha256sum -c - && sha256sum -c stage-writers.sha256" \
+  || { echo "STAGE_ERROR writer verification"; exit 5; }
+echo "STAGE_WRITERS vm=$VM manifestSha256=$manifest_sha"
 echo "STAGE_OK vm=$VM scripts=${#ts[@]} operatorCore=${#mods[@]}${mods[*]:+ (${mods[*]})}"

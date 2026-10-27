@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"601e7abe-09bc-4370-84d0-3d7656b4e2f2","pid":2953226,"ppid":2953223,"atMs":1792906705298,"loadId":1,"url":"file:///mnt/data/offload/papercusp-r2gcs-p003-bf337a33/libs/test-config/src/git-read-worker.mjs","scope":"node-sync-load-hook"}

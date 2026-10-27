@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   type SuSessionEvent,
 } from '@papercusp/chat-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SU_EXEC_FORK_ROUTES } from './__fixtures__/su-execution-parity';
 
 import type { PuiSuSessionBinding } from './launch-agent';
 import {
@@ -23,6 +24,31 @@ const CLAUDE_SESSION_A = '11111111-2222-4333-8444-555555555555';
 const CLAUDE_SESSION_B = '99999999-aaaa-4bbb-8ccc-dddddddddddd';
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
+
+it('SU-EXEC R-7 acceptance contract', async () => {
+  const routes = SU_EXEC_FORK_ROUTES.filter(row => row.provider === 'claude');
+  expect(routes.map(row => row.execution).sort()).toEqual(['programmatic', 'pty']);
+  for (const route of routes) {
+    expect(route).toMatchObject({ support: 'supported', qualification: 'unknown' });
+    expect(route.route).toBe(route.execution === 'pty' ? '--fork-session' : 'fork_from');
+    expect(route.files.length).toBeGreaterThan(0);
+    for (const file of route.files) expect(readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
+    if (route.execution === 'programmatic') expect(route.cases).toHaveLength(2);
+    const adapter = createClaudeSuSessionAdapter(binding(), runtime(), {
+      agentChatId: `r7-${route.execution}`, register: false, executionKind: route.execution,
+    });
+    try {
+      expect(adapter.host.descriptor().capabilities.commands.fork).toMatchObject({ state: 'conditional', implementation: 'native' });
+      const dispatch = adapter.host.startCommand(command(adapter, { type: 'fork', commandId: `fork-${route.execution}` }));
+      await expect(dispatch.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'fork_requires_launcher', retryable: true } });
+      expect(adapter.host.descriptor().identity.ownerId).toBe('su-claude-pui');
+    } finally { adapter.dispose(); }
+  }
+  expect(routes.find(row => row.execution === 'programmatic')?.cases).toEqual([
+    'claude native fork leaves pending question, queued input and accepted wake exclusively with parent',
+    'claude native fork refuses changed lineage and removes unregistered history',
+  ]);
+});
 
 afterEach(() => {
   globalThis.fetch = originalFetch;

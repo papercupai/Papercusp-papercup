@@ -662,6 +662,9 @@ export interface CitationDeps {
    *  roots included). Lets `measureCitationBlobsAtHead` group citations by repository.
    *  Optional: injected deps without it are measured from their working-tree bytes. */
   locate?: (rel: string) => string | null;
+  /** The same admission/precedence decision, with its owning repository retained.
+   * Declaration readers need this identity for canonical containment and native context. */
+  locateRepository?: (rel: string) => { repoRoot: string; absolutePath: string } | null;
 }
 
 /**
@@ -1455,10 +1458,11 @@ export function repoCitationDeps(
     return abs === root || abs.startsWith(rootWithSep) ? abs : null;
   };
 
-  const within = (rel: string): string | null => {
+  const locateRepository = (rel: string): { repoRoot: string; absolutePath: string } | null => {
+    if (path.isAbsolute(rel) || rel.includes('\\') || rel.split('/').includes('..')) return null;
     const inRepo = contained(repoRoot, rel);
     // In-repo always wins, so a sibling can never shadow a real monorepo file.
-    if (inRepo !== null && fs.existsSync(inRepo)) return inRepo;
+    if (inRepo !== null && fs.existsSync(inRepo)) return { repoRoot, absolutePath: inRepo };
     const first = rel.split('/')[0];
     if (first) {
       // Computed lazily: the overwhelmingly common in-repo citation pays no scan.
@@ -1466,7 +1470,7 @@ export function repoCitationDeps(
       const siblingParent = siblings.get(first);
       if (siblingParent !== undefined) {
         const inWorkspace = contained(siblingParent, rel);
-        if (inWorkspace !== null) return inWorkspace;
+        if (inWorkspace !== null) return { repoRoot: path.join(siblingParent, first), absolutePath: inWorkspace };
       }
     }
     // Registered project roots are explicit admission, so nested app checkouts do
@@ -1474,12 +1478,13 @@ export function repoCitationDeps(
     // cited. The selected root and direct siblings retain precedence above.
     for (const registeredRoot of admittedRegisteredRoots) {
       const inRegisteredRoot = contained(registeredRoot, rel);
-      if (inRegisteredRoot !== null && fs.existsSync(inRegisteredRoot)) return inRegisteredRoot;
+      if (inRegisteredRoot !== null && fs.existsSync(inRegisteredRoot)) return { repoRoot: registeredRoot, absolutePath: inRegisteredRoot };
     }
     // A genuine miss still reports against the repo, so `file_not_found` names the
     // path the caller actually wrote rather than a sibling guess.
-    return inRepo;
+    return inRepo === null ? null : { repoRoot, absolutePath: inRepo };
   };
+  const within = (rel: string): string | null => locateRepository(rel)?.absolutePath ?? null;
   return {
     statFile: (rel) => {
       const abs = within(rel);
@@ -1515,6 +1520,7 @@ export function repoCitationDeps(
       return repo ? await gitCitationBlobShaAt(repo, auditedSha) : null;
     },
     locate: (rel) => within(rel),
+    locateRepository,
     isTracked: (rel) => {
       const abs = within(rel);
       if (!abs) return null;

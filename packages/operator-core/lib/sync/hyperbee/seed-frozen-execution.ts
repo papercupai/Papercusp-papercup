@@ -1,22 +1,16 @@
 /** D-177's private execution binding. Reuses the release publisher's input and
  * tree fingerprints; npm's ephemeral hidden lock is deliberately not an input. */
 import { createHash } from 'node:crypto';
-import { execFile, execFileSync } from 'node:child_process';
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { lstat, open, readdir, readFile, realpath, type FileHandle } from 'node:fs/promises';
+import { constants, readFileSync, type BigIntStats } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve, posix } from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
+import { bindFrozenDependencyGeneration, type DependencyLockEntry as LockEntry } from '../../dependency-generation-proof';
 
-// Pure census helpers may be imported under a synchronous-only subprocess mock.
-// Reuse git-batch's typed memoized wrapper; promisify only when shell is called.
-let execMemo: typeof execFile.__promisify__ | null = null;
-const exec = ((...args: unknown[]) =>
-  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
-const HEX = /^[0-9a-f]{64}$/;
 const SECURITY_NAMES = new Set(['hypercore', 'hyperbee', 'hypercore-crypto',
   'sodium-native', 'sodium-universal', 'sodium-javascript']);
 // The provider imports Corestore before this module. Hash the security modules
@@ -30,6 +24,7 @@ export const SEED_EXECUTION_PATHS = ['packages/operator-core/lib/sync/hyperbee/r
   'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts',
   'apps/operator/lib/release/cut-seed-cli.ts',
   'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
+  'packages/operator-core/lib/dependency-generation-proof.ts',
   'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
   'apps/operator/bin/release/dependency-generation.sh',
   'scripts/check-lockfile-census.mjs',
@@ -58,28 +53,53 @@ export interface SeedFrozenExecution {
     integrity: string; files: { path: string; sha256: string }[] }[];
   directBlobs: { path: string; sha256: string }[];
 }
-interface LockEntry { name?: string; version?: string; link?: boolean; optional?: boolean;
-  resolved?: string; integrity?: string }
 interface PackageRow { path: string; name: string; version: string; entry: LockEntry }
-
-async function shell(root: string, script: string, ...args: string[]) {
-  const result = await exec('bash', ['-euo', 'pipefail', '-c',
-    'source "$1"; shift; ' + script, 'seed-frozen-execution',
-    join(root, 'apps/operator/bin/release/dependency-generation.sh'), ...args],
-  { maxBuffer: 64 * 1024 * 1024 });
-  return result.stdout.trimEnd();
-}
-function fields(text: string): Map<string, string> {
-  const result = new Map<string, string>();
-  for (const line of text.trim().split('\n')) {
-    const at = line.indexOf('=');
-    if (at <= 0 || result.has(line.slice(0, at))) throw new Error('invalid dependency marker');
-    result.set(line.slice(0, at), line.slice(at + 1));
-  }
-  return result;
-}
 const safe = (path: string) => path.length > 0 && !path.startsWith('/')
   && !path.split('/').some(p => !p || p === '.' || p === '..') && !/[\x00-\x1f\\]/.test(path);
+
+/** Miniflare writes tooling metadata, not an installed package. Admit only its
+ * identified shape, and never expose its contents (including JSON parser errors).
+ * The generation binder separately fingerprints these bytes before and after. */
+async function assertMiniflareToolingCache(root: string, path: string) {
+  const directory = join(root, path), parent = dirname(directory), member = join(directory, 'cf.json');
+  const same = (a: BigIntStats, b: BigIntStats) =>
+    (['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'] as const).every(key => a[key] === b[key]);
+  const exactMembers = async () => {
+    const names = await readdir(directory);
+    if (names.length !== 1 || names[0] !== 'cf.json') throw new Error();
+  };
+  let directoryHandle: FileHandle | undefined, fileHandle: FileHandle | undefined;
+  try {
+    const parentBefore = await lstat(parent, { bigint: true });
+    const directoryBefore = await lstat(directory, { bigint: true });
+    if (!parentBefore.isDirectory() || !directoryBefore.isDirectory()) throw new Error();
+    directoryHandle = await open(directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (!same(directoryBefore, await directoryHandle.stat({ bigint: true }))) throw new Error();
+    await exactMembers();
+    const fileBefore = await lstat(member, { bigint: true });
+    if (!fileBefore.isFile() || fileBefore.nlink !== 1n) throw new Error();
+    fileHandle = await open(member, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const assertIdentity = async () => {
+      if (!same(parentBefore, await lstat(parent, { bigint: true })) ||
+          !same(directoryBefore, await lstat(directory, { bigint: true })) ||
+          !same(directoryBefore, await directoryHandle!.stat({ bigint: true })) ||
+          !same(fileBefore, await lstat(member, { bigint: true })) ||
+          !same(fileBefore, await fileHandle!.stat({ bigint: true }))) throw new Error();
+    };
+    await assertIdentity();
+    const bytes = await fileHandle.readFile('utf8');
+    await assertIdentity();
+    await exactMembers();
+    await assertIdentity();
+    const value: unknown = JSON.parse(bytes);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+  } catch {
+    throw new Error(`invalid Miniflare tooling cache: ${path}`);
+  } finally {
+    await Promise.all([fileHandle?.close(), directoryHandle?.close()]);
+  }
+}
 
 /** Package paths come from the complete generation tree census, including nested
  * installations. Workspace links bind to the committed link target's metadata. */
@@ -90,18 +110,20 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     ?? locks.find(lock => lock.path === 'package-lock.json');
   let workspaceDirs = new Set<string>();
   if (rootLock && Object.keys(rootLock.packages).some(path => path && !path.startsWith('node_modules/'))) {
-    // Reuse the maintained lock census's authority rule: a root workspace's
-    // historical local lock is subsumed, including its package-local installs.
+    // Reuse the maintained lock census's workspace classification. Root entries
+    // win over historical workspace-local locks; those locks can still bind a
+    // physically installed nested dependency omitted from the root graph.
     // Dynamic URL import keeps this source-only helper independent of JS typings.
     const appRoot = resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url)));
     const censusUrl = pathToFileURL(resolve(appRoot, '../../scripts/check-lockfile-census.mjs'));
     const { rootWorkspaceDirs } = await import(censusUrl.href);
     workspaceDirs = rootWorkspaceDirs({ packages: rootLock.packages });
   }
-  const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string }>();
+  const expected = new Map<string, { entry: LockEntry; lock: typeof locks[number]; key: string;
+    required: boolean }>();
   const installedTreePrefixes = trees.map(tree => `${tree}/`);
   for (const lock of [...locks].sort((a, b) => a.path.length - b.path.length)) {
-    if (lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path))) continue;
+    const supplemental = lock !== rootLock && workspaceDirs.has(posix.dirname(lock.path));
     for (const [key, entry] of Object.entries(lock.packages)) {
       if (!key.includes('node_modules/')) continue;
       if (!safe(key)) throw new Error('invalid committed package path');
@@ -113,22 +135,25 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
       // obligations. Entries inside any published tree still require an exact
       // lock match below.
       if (!installedTreePrefixes.some(prefix => path.startsWith(prefix))) continue;
-      expected.set(path, { entry, lock, key });
+      if (supplemental && expected.has(path)) continue;
+      // A subsumed local lock is evidence for an actual installed package, not
+      // an obligation to install its vestigial graph. Never replace a root pin.
+      expected.set(path, { entry, lock, key, required: !supplemental });
     }
   }
   const actual = new Map<string, PackageRow>();
-  const exclude = async (path: string, requireMetadata = false) => {
+  const exclude = async (path: string, metadataMode: 'optional' | 'required' | 'none' = 'optional') => {
     let metadata: { name?: unknown; version?: unknown } | undefined;
-    try {
+    try { if (metadataMode !== 'none') {
       const file = join(root, path, 'package.json');
       if (!(await lstat(file)).isFile()) throw new Error('excluded metadata must be a regular file');
       metadata = JSON.parse(await readFile(file, 'utf8'));
-    } catch (error) {
+    } } catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
     // npm aliases retain the real package name in package.json; directory names
     // (and their reify leftovers) may differ. Report those exact metadata bytes.
-    if (requireMetadata && (typeof metadata?.name !== 'string' || !metadata.name
+    if (metadataMode === 'required' && (typeof metadata?.name !== 'string' || !metadata.name
         || typeof metadata.version !== 'string' || !metadata.version)) {
       throw new Error(`excluded reify entry metadata mismatch: ${path}`);
     }
@@ -138,9 +163,14 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
   const scan = async (nm: string) => {
     for (const name of (await readdir(join(root, nm))).sort()) {
       if (name.startsWith('.')) {
+        if (name === '.mf') {
+          const path = `${nm}/${name}`;
+          await assertMiniflareToolingCache(root, path);
+          await exclude(path, 'none'); continue;
+        }
         const leftover = ROOT_TOOLING.has(name) ? null : REIFY_LEFTOVER.exec(name);
         if (!ROOT_TOOLING.has(name) && !leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}`);
-        await exclude(`${nm}/${name}`, Boolean(leftover)); continue;
+        await exclude(`${nm}/${name}`, leftover ? 'required' : 'optional'); continue;
       }
       const names: string[] = [];
       if (name.startsWith('@')) {
@@ -148,7 +178,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
           if (!child.startsWith('.')) { names.push(`${name}/${child}`); continue; }
           const leftover = REIFY_LEFTOVER.exec(child);
           if (!leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}/${child}`);
-          await exclude(`${nm}/${name}/${child}`, true);
+          await exclude(`${nm}/${name}/${child}`, 'required');
         }
       } else names.push(name);
       for (const name of names) {
@@ -176,8 +206,8 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     }
   };
   for (const tree of trees) await scan(tree);
-  for (const [path, { entry }] of expected) {
-    if (!actual.has(path) && !entry.optional) throw new Error(`non-optional committed package missing: ${path}`);
+  for (const [path, { entry, required }] of expected) {
+    if (!actual.has(path) && required && !entry.optional) throw new Error(`non-optional committed package missing: ${path}`);
   }
   excludedEntries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return [...actual.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -259,68 +289,20 @@ export async function verifySeedSecurityPackage(root: string, row: PackageRow,
  * compare copies using the publisher's existing copy-normalized record projection. */
 export async function bindSeedFrozenDependencies(root: string, sourceCommit: string,
   options: { readLoadedModulePaths?: () => string[] } = {}) {
-  const marker = fields(await readFile(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8'));
-  const dependencyGeneration = marker.get('identity') ?? '';
-  if (!/^v1-[0-9a-f]{64}$/.test(dependencyGeneration)) throw new Error('invalid frozen dependency generation');
-  const generationRoot = await shell(root, 'dependency_generation_resolve_root "$1"', root);
-  const generation = join(generationRoot, dependencyGeneration);
-  const dependencyInputSha256 = await shell(root, 'dependency_generation_input_fingerprint_ref "$1" "$2"', root, sourceCommit);
-  if (!HEX.test(dependencyInputSha256)) throw new Error('invalid committed dependency input fingerprint');
-  const selector = fields(await readFile(join(generationRoot, '.inputs', dependencyInputSha256), 'utf8'));
-  const publication = fields(await readFile(join(generation, '.papercusp-dependency-generation'), 'utf8'));
-  if (selector.get('input') !== dependencyInputSha256 || selector.get('identity') !== dependencyGeneration ||
-      publication.get('identity') !== dependencyGeneration || publication.get('scope') !== 'full' ||
-      marker.get('source') !== publication.get('source')) throw new Error('frozen dependency input/generation mismatch');
-  await shell(root, 'dependency_generation_select_prevalidated "$1" "$2" "$3"', generationRoot,
-    dependencyGeneration, selector.get('token') ?? '');
-  const assertSnapshot = async () => {
-    const result = await shell(root, 'dependency_generation_set_fingerprint "$1"', join(generation, 'tree'));
-    if (!HEX.test(result) || result !== publication.get('snapshot')) throw new Error('published dependency generation drift');
-    return result;
-  };
-  const dependencyGenerationSnapshotSha256 = await assertSnapshot();
-  const trees = (await shell(root, 'dependency_generation_enumerate_node_modules "$1"', join(generation, 'tree')))
-    .split('\n').filter(Boolean).map(path => relative(join(generation, 'tree'), path).split('\\').join('/')).sort();
-  if (!trees.includes('node_modules') || trees.some(tree => !safe(tree))) throw new Error('invalid generation tree census');
-  const materialized = (await shell(root, 'dependency_generation_enumerate_node_modules "$1"', root))
-    .split('\n').filter(Boolean).map(path => relative(root, path).split('\\').join('/')).sort();
-  if (JSON.stringify(trees) !== JSON.stringify(materialized)) throw new Error('materialized generation tree census mismatch');
-  const projection = async (tree: string) => shell(root,
-    'record=$(mktemp); trap \'rm -f "$record" "$record.unsorted"\' EXIT; ' +
-    'dependency_generation_source_records "$1" "$record"; ' +
-    'dependency_generation_records_projection "$record" | ' +
-    'awk -F "\\t" \'$1 != ".papercusp-dependency-generation" && $1 != ".papercusp-source-package-lock.json"\'', tree);
-  const projections: [string, string][] = [];
-  const links: string[] = [];
-  for (const tree of trees) {
-    const isolated = fields(await readFile(join(root, tree, '.papercusp-isolated-snapshot'), 'utf8'));
-    if (isolated.get('generation') !== dependencyGeneration) throw new Error('materialized dependency pin mismatch');
-    const original = await projection(join(generation, 'tree', tree));
-    if (await projection(join(root, tree)) !== original) throw new Error(`materialized dependency tree drift: ${tree}`);
-    projections.push([tree, hash(original)]);
-    for (const line of original.split('\n')) {
-      const [path, kind] = line.split('\t');
-      if (kind === 'l') links.push(posix.join(tree, path));
-    }
-  }
-  const manifest = await shell(root, 'dependency_generation_input_manifest_ref "$1" "$2" | LC_ALL=C sort', root, sourceCommit);
-  const locks: { path: string; packages: Record<string, LockEntry> }[] = [];
-  for (const line of manifest.split('\n')) {
-    const [path, digest] = line.split('\t');
-    if (!safe(path) || !HEX.test(digest)) throw new Error('invalid committed dependency manifest');
-    const bytes = await readFile(join(root, path));
-    if (hash(bytes) !== digest) throw new Error('committed dependency input changed');
-    if (/\/(package-lock|npm-shrinkwrap)\.json$/.test('/' + path)) {
-      const lock = JSON.parse(bytes.toString());
-      if (!lock.packages || typeof lock.packages !== 'object') throw new Error('committed lock packages map required');
-      locks.push({ path, packages: lock.packages });
-    }
-  }
+  const binding = await bindFrozenDependencyGeneration(root, sourceCommit);
+  const { trees, links, locks } = binding;
   const excludedEntries: SeedExcludedEntry[] = [];
   const packages = await readSeedInstalledPackages(root, trees, locks, excludedEntries);
   const linkTargets = await Promise.all(links.map(async path =>
     relative(root, await realpath(join(root, path))).split('\\').join('/')));
-  assertSeedExcludedModules(excludedEntries, linkTargets);
+  const leftovers = excludedEntries.filter(entry => REIFY_LEFTOVER.test(posix.basename(entry.path))
+    && !ROOT_TOOLING.has(posix.basename(entry.path)));
+  // npm leftovers can retain their own bin links. Only inert links wholly inside
+  // the same leftover are allowed: tooling/external aliases and cross-leftover
+  // targets still fail, and the actual loaded-module census below is unchanged.
+  assertSeedExcludedModules(excludedEntries, linkTargets.filter((target, index) =>
+    !leftovers.some(entry => links[index].startsWith(entry.path + '/')
+      && target.startsWith(entry.path + '/'))));
   const security = packages.filter(row => SECURITY_NAMES.has(row.name));
   for (const name of ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal']) {
     if (!security.some(row => row.name === name)) throw new Error(`required security package missing: ${name}`);
@@ -328,17 +310,13 @@ export async function bindSeedFrozenDependencies(root: string, sourceCommit: str
   const securityPackages = [];
   for (const row of security) securityPackages.push(await verifySeedSecurityPackage(root, row));
   assertSeedLoadedSecurityFiles(root, securityPackages, LOADED_SECURITY_FILES);
-  await assertSnapshot();
-  for (const [tree, digest] of projections) {
-    if (hash(await projection(join(root, tree))) !== digest) throw new Error('materialized dependency tree changed while binding');
-  }
+  await binding.assertUnchanged();
   const installedPackages = packages.map(({ path, name, version }) => ({ path, name, version }));
   const loadedModulePaths = options.readLoadedModulePaths?.() ?? [];
   assertSeedExcludedModules(excludedEntries, loadedModulePaths);
-  return { dependencyInputSha256, dependencyGeneration, dependencyGenerationSnapshotSha256, installedPackages,
+  return { ...binding.identity, installedPackages,
     excludedEntries, excludedEntryCount: excludedEntries.length, loadedModulePaths,
-    installedPackagesSha256: hash(JSON.stringify(installedPackages)),
-    materializedTreesSha256: hash(JSON.stringify(projections)), securityPackages };
+    installedPackagesSha256: hash(JSON.stringify(installedPackages)), securityPackages };
 }
 
 export function assertSeedLoadedSecurityFiles(root: string, packages: SeedFrozenExecution['securityPackages'],

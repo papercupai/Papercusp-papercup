@@ -1,6 +1,6 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption } from '../../plan-verification-profile';
+import { EXECUTABLE_PROOF_CRITERIA, executableProofExemption, isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import type { PlanClassRubricRef } from '../../plan-class-refs';
 import {
   hasMatchingDeclaredCaseTitle,
@@ -203,8 +203,14 @@ export interface SpecEvidenceForAdequacy {
   supportingBindingIds?: number[];
 }
 
+function causalPairKey(row: SpecEvidenceForAdequacy): string | null {
+  const pairs = detailsOf(row).causalPairIds;
+  return pairs?.length === 1 ? pairs[0]! : null;
+}
+
 function logicalEvidenceReferenceKey(row: SpecEvidenceForAdequacy): string {
-  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+    causalPairKey(row)]);
 }
 
 function proofIdentity(row: SpecEvidenceForAdequacy): string {
@@ -261,7 +267,10 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     const targeted = row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample'
       ? detailsOf(row).targeted ?? null
       : null;
-    return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
+    // A whole-file run can repair several independent original failures. Each
+    // pair remains one claim, while a later append still corrects that pair.
+    return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+      targeted, causalPairKey(row)]);
   };
   const newer = (row: T, index: number, prior: { row: T; index: number }): boolean => {
     const rowTs = appendTimestamp(row);
@@ -377,7 +386,8 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     return { key, registrationKey, plane, sources, execution };
   };
   const logicalKey = (row: T) =>
-    JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+    JSON.stringify([row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef,
+      causalPairKey(row)]);
   const anchors = new Map<string, { id: number; scope: NonNullable<ReturnType<typeof identity>> }>();
   for (const row of rows) {
     const scope = identity(row);
@@ -403,7 +413,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
   }
   // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
   // changes only that metadata, the newest immutable row must retain the union from
-  // earlier rows for the same proof; otherwise latestLogicalEvidence silently hides
+  // earlier rows for the same proof and causal pair; otherwise latestLogicalEvidence silently hides
   // coverage the unchanged run already established. A new run or changed fingerprint
   // remains a new proof identity and starts a new metadata set.
   const reconciled = latest.map((row) => {
@@ -1388,6 +1398,7 @@ function scorecardBindingEvidence(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rows: SpecEvidenceForAdequacy[],
   rerunRecipe: SpecTestAdequacyRerunRecipe,
+  disclosedGapPopulation: { raw: SpecEvidenceForAdequacy[]; active: SpecEvidenceForAdequacy[] },
 ): { ratings: typeof ratings; table: string } {
   // One immutable binding can reach this presentation layer through multiple
   // evidence projections. Their rendered descriptions may differ, but they must
@@ -1407,7 +1418,7 @@ function scorecardBindingEvidence(
         rating.evidence,
       ).replace(
         ratingRerunProbeText(criterion as AdequacyCriterion, rerunRecipe),
-        ratingRerunProbeReference(criterion as AdequacyCriterion, rerunRecipe),
+        ratingRerunProbeReference(criterion as AdequacyCriterion, rerunRecipe, disclosedGapPopulation),
       ),
     }])) as typeof ratings,
     table: references.length > 0
@@ -2575,18 +2586,46 @@ function ratingRerunProbeText(
 function ratingRerunProbeReference(
   criterion: AdequacyCriterion,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
+  disclosedGapPopulation: { raw: SpecEvidenceForAdequacy[]; active: SpecEvidenceForAdequacy[] },
 ): string {
   // A shared recipe alone is not an executable criterion-local probe. Reuse the
   // judge-readable evidence instrument with the SAME immutable row selectors,
   // rather than repeating the large replay fingerprint payload in every rating.
   const { harness, slug, specIds, bindingIds, evidenceRefs } = rerunRecipe.args;
+  // The universal gap check reads beyond the selected proof, including older
+  // metadata rows whose disclosures remain attached to the active logical proof.
+  // Pin that raw population for this criterion and explain its active projection;
+  // neither the selected row count nor the raw history count is the active census.
+  const population = criterion === 'disclosed-gap' ? disclosedGapPopulation : undefined;
+  const ids = population?.raw.map((row) => row.id);
+  // Renewals can cite a withdrawn predecessor that listSpecEvidence excludes.
+  // Keep those explicit citations readable in the audit probe without adding
+  // withdrawn proof to the evaluator's active evidence population.
+  const predecessorBindingIds = population
+    ? [...new Set(population.raw.flatMap((row) => {
+        const renewal = row.details.renewal;
+        if (!renewal || typeof renewal !== 'object' || Array.isArray(renewal)) return [];
+        const priorBindingId = (renewal as Record<string, unknown>).priorBindingId;
+        return typeof priorBindingId === 'number' && Number.isSafeInteger(priorBindingId) && priorBindingId > 0
+          ? [priorBindingId]
+          : [];
+      }))].sort((a, b) => a - b)
+    : [];
+  const probeBindingIds = population
+    ? ids!.every((id) => Number.isSafeInteger(id) && id! > 0)
+      ? [...new Set([...(ids as number[]), ...predecessorBindingIds])].sort((a, b) => a - b)
+      : undefined
+    : bindingIds;
+  const probeEvidenceRefs = population
+    ? [...new Set(population.raw.map((row) => row.evidenceRef))].sort()
+    : evidenceRefs;
   const args = {
     ...(harness !== undefined ? { harness } : {}),
     slug,
     specIds,
-    ...(bindingIds !== undefined
-      ? { bindingIds, ...(bindingIds.length > 0 ? { includeRetracted: true } : {}) }
-      : { evidenceRefs }),
+    ...(probeBindingIds !== undefined
+      ? { bindingIds: probeBindingIds, ...(probeBindingIds.length > 0 ? { includeRetracted: true } : {}) }
+      : { evidenceRefs: probeEvidenceRefs }),
     detail: 'full',
     limit: 1_000,
   };
@@ -2596,6 +2635,15 @@ function ratingRerunProbeReference(
     `specFingerprint=${JSON.stringify(rerunRecipe.selection.specFingerprint)}; ` +
     'compare details, fingerprints, currentness, testRunExecution and testRunProvenance with this criterion\'s claim. ' +
     'Require bounded.truncatedByLimit=false before treating the read as complete. ' +
+    (predecessorBindingIds.length > 0
+      ? `Read explicit renewal predecessor bindingIds=${JSON.stringify(predecessorBindingIds)} as retained history. ` +
+        'Exclude withdrawn rows before applying activeSpecEvidence. The following counts describe the evaluator\'s non-withdrawn population. '
+      : '') +
+    (population
+      ? `Apply activeSpecEvidence to these clause rows: ${population.raw.length} raw binding(s), ${population.active.length} active logical binding(s); ` +
+        `active bindingIds=${JSON.stringify(population.active.map((row) => row.id).filter((id) => Number.isSafeInteger(id)).sort((a, b) => a! - b!))}. ` +
+        'Retain raw history when checking disclosures attached to the same proof or an unverified replacement; do not equate raw row count with the active census. '
+      : '') +
     `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`
   );
 }
@@ -2659,8 +2707,9 @@ function appendRatingRerunProbes(
  *  36 — explicitly registered source BAR named cases can establish shared suite coverage only.
  *  37 — files-only source BARs accept complete shared suites, rejecting filtered or skipped whole-file proof.
  *  38 — non-automated work-item census proof without test bytes does not require executable fixture evidence.
+ *  39 — evidence-kind/plane compliance cannot turn unexercised layer reachability into a positive pass.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 38;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 39;
 
 /** One key on which a fixture-free review fails to pair with the binding it cites. */
 export type FixtureAbsencePairingKey =
@@ -2892,7 +2941,7 @@ function mutationTargetScenarioMatchesMeasuredCase(
   const target = detailsOf(mutation).targeted;
   if (typeof target !== 'string') return false;
   const targetRequirement = mutationTargetRequirement(clause);
-  if (targetRequirement.selfTarget !== null) return clause.falsifier === null;
+  if (targetRequirement.selfTarget !== null) return targetRequirement.acceptedTargets.includes(target);
   if (!targetRequirement.acceptedTargets.includes(target)) return false;
 
   const requiredScenarios = clause.falsifier?.requiredScenarios ?? [];
@@ -2939,10 +2988,9 @@ function mutationTargetMatchesMeasuredCase(
     .map(normalizedTarget));
 
   if (targetRequirement.selfTarget !== null) {
-    // Preserve the legacy identity fallback only when there is no structured falsifier to align.
-    // For an explicit falsifier, an own-specId target identifies the clause but names no canonical
-    // scenario, so it cannot prove that the measured failure exercises that falsifier.
-    return clause.falsifier === null && targetsOnRun.size <= 1;
+    // No declared scenarios: the clause itself is the target, including prose-only falsifiers.
+    // The caller still requires an exact measured failing case and its current passing baseline.
+    return targetRequirement.acceptedTargets.includes(target) && targetsOnRun.size <= 1;
   }
   if (!mutationTargetScenarioMatchesMeasuredCase(clause, mutation, caseTitle)) return false;
 
@@ -3242,7 +3290,7 @@ export function evaluateSpecTestAdequacy(input: {
     (row) =>
       row.evidenceKind !== 'operational' &&
       !(row.evidenceKind === 'coverage-census' &&
-        clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0 &&
+        isNonAutomatedBehaviorClass(clause.behaviorClass) && clause.requiredTestLayers.length === 0 &&
         !fixtureUseRequired && row.testRunId === null && row.testRunExecution == null &&
         row.fingerprints.testFingerprint === null &&
         row.currentness?.provenance === 'server-measured' &&
@@ -3758,10 +3806,13 @@ export function evaluateSpecTestAdequacy(input: {
         `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
         planeBindings,
       );
-  const parts = [
+  const reachabilityParts = [
     layerRating,
     sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
     scenarioRating,
+  ].filter((part): part is CorrectLayerEvidencePart => part !== null);
+  const parts = [
+    ...reachabilityParts,
     evidenceKindRating,
     planeRating,
   ]
@@ -3770,7 +3821,9 @@ export function evaluateSpecTestAdequacy(input: {
     ? 'fail'
     : parts.some((part) => part.rating === 'unknown')
       ? 'unknown'
-      : parts.every((part) => part.rating === 'not-applicable')
+      // Evidence requirements remain blockers, but satisfying them does not exercise
+      // a test layer, suite or path. Preserve N/A when none of those duties applies.
+      : reachabilityParts.every((part) => part.rating === 'not-applicable')
         ? 'not-applicable'
         : 'pass';
   ratings['correct-layer'] = {
@@ -4247,7 +4300,7 @@ export function evaluateSpecTestAdequacy(input: {
     ...exactEvidence,
     ...disclosedGapRows,
     ...freeFormNoteRows,
-  ], rerunRecipe);
+  ], rerunRecipe, { raw: exactDisclosedGapMatches, active: activeDisclosedGapEvidence });
   const replayInstructions =
     `Replay instructions: execute the card-level rerunRecipe (${rerunRecipe.evaluator}) once with its stored args. ` +
     'Compare each returned criterion rating with this card and the current evidence. Replay remeasures currentness at replay time, so freshness-dependent ratings can differ after evidence changes. ' +

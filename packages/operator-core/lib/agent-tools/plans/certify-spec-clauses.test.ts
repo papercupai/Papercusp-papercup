@@ -24,8 +24,12 @@ const resourceAcquire = vi.hoisted(() => vi.fn());
 const resourceRelease = vi.hoisted(() => vi.fn());
 vi.mock('../locks/su-lock-store', async (original) => ({
   ...(await original<typeof import('../locks/su-lock-store')>()),
-  tryAcquireResource: (...args: unknown[]) => resourceAcquire(...args),
-  tryReleaseResource: (...args: unknown[]) => resourceRelease(...args),
+  acquireSharedResourceAtomic: (...args: unknown[]) => resourceAcquire(...args),
+  releaseSharedResourceAtomic: (...args: unknown[]) => resourceRelease(...args),
+  readResourceQueue: async () => ({
+    holders: [{ owner: 'restart-owner', owner_label: 'restart', mode: 'exclusive', status: 'held' }],
+    draining: false,
+  }),
 }));
 vi.mock('../locks/in-workspace-txn', () => ({
   inWorkspaceTxn: async (_domain: string, _owner: string, run: (tx: unknown) => Promise<unknown>) => run({}),
@@ -57,8 +61,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       },
     }),
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
-      const tx = ((strings: TemplateStringsArray | string[]) => {
+      const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
+        if (sql.includes('b.id = ANY')) return { bindingIds: values[0] };
+        const selection = values.find((value): value is { bindingIds: number[] } =>
+          !!value && typeof value === 'object' && 'bindingIds' in value);
+        if (sql.includes('FROM harness_shared.spec_evidence_bindings b') && selection)
+          return Promise.resolve(h.rows.filter(row => selection.bindingIds.includes(Number(row.id))));
         return Promise.resolve(sql.includes('provisional') ? [] : h.rows);
       }) as unknown;
       return fn(tx);
@@ -254,7 +263,7 @@ function bindingRow(
   };
 }
 
-const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active') =>
+const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active'): Awaited<ReturnType<typeof listSpecClauses>>[number] =>
   ({
     planSlug: h.planSlug,
     specId,
@@ -280,7 +289,7 @@ const clause = (specId: string, lifecycleStatus: 'active' | 'draft' = 'active') 
     acceptedAt: lifecycleStatus === 'draft' ? null : '2026-09-20T00:01:00.000Z',
     acceptanceRef: lifecycleStatus === 'draft' ? null : 'D-003',
     sourceBar: null,
-  }) as never;
+  });
 
 let root = '';
 let bound: { sourceFingerprint: string; testFingerprint: string | null };
@@ -331,11 +340,11 @@ beforeEach(async () => {
   h.leaseHeld = false;
   resourceAcquire.mockReset().mockImplementation(async () => {
     h.leaseHeld = true;
-    return { ok: true, lock_id: 'certification-lease', fence_seq: 0, reused: false };
+    return { ok: true, lock_id: 'certification-lease', expires_ts: new Date(Date.now() + 60_000), reused: false };
   });
   resourceRelease.mockReset().mockImplementation(async () => {
     h.leaseHeld = false;
-    return { ok: true, waiters: {} };
+    return { released: 1, expired: false };
   });
   completionGate.mockResolvedValue({ ok: true, applicable: true, checked: ['SPEC-PASS@1'] });
   h.planSlug = PLAN;
@@ -402,6 +411,101 @@ afterEach(() => {
 });
 
 describe('plans:certify-spec-clauses', () => {
+  describe('mechanical proof without judgment cards', () => {
+    async function mechanicalClause(): Promise<Awaited<ReturnType<typeof listSpecClauses>>[number]> {
+      const standard = await getRubric('spec-test-adequacy');
+      const sourceBar = { rubricSlug: 'mechanical-bar', rubricRevision: 1, barSetHash: 'bars',
+        barKey: 'R-1', barHash: 'bar-1', evidencePlane: 'tree' as const };
+      getRubric.mockImplementation(async (slug: string) => slug === sourceBar.rubricSlug ? {
+        ...standard, rubricId: sourceBar.rubricSlug, revision: 1, kind: 'acceptance', barSetHash: 'bars',
+        criteria: [{ ...standard.criteria[0], barKey: 'R-1', barHash: 'bar-1', evidencePlane: 'tree',
+          check: { kind: 'tests', files: ['test/reconnect.test.ts'] } }],
+      } : standard);
+      return { ...clause('SPEC-PASS'), sourceBar };
+    }
+
+    function calibrateMutant() {
+      const mutant = h.rows.find(row => row.id === 2)!;
+      const execution = mutant.test_run_execution_details as Record<string, unknown>;
+      const mutation: import('@papercusp/test-config/mutation-descriptor').MutationDescriptor = {
+        schemaVersion: 1, probeInvocationId: 'certify-mechanical', leg: 'mutant', mode: 'copy-out',
+        subjectPath: 'src/reconnect.ts', mutateExpression: 's/false/true/', againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-false\n+true', mutantDiffTruncated: false,
+        testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64),
+      };
+      mutant.test_run_execution_details = { ...execution, mutation };
+      mutant.mutation_execution_details = mutant.test_run_execution_details;
+      mutant.mutation_baseline_id = 99;
+      mutant.mutation_baseline_status = 'pass';
+      mutant.mutation_baseline_execution_details = { ...execution, mutationPhase: 'baseline',
+        passed: 1, failed: 0, failedCaseTitles: undefined, passedCaseTitles: [CASE_TITLE],
+        mutation: { ...mutation, leg: 'baseline' } };
+    }
+
+    it('rejects descriptorless historical proof even when the legacy evaluator passes it', async () => {
+      const selected = await mechanicalClause();
+      listClauses.mockResolvedValue([selected]);
+      const historical = await replayViaEvaluator({ harness: 'papercusp', slug: PLAN,
+        classRef: 'plan-class-feature-ship', specIds: ['SPEC-PASS'], specRevision: 1,
+        specFingerprint: SPEC_FINGERPRINT, replaySnapshot: true, detail: 'full' });
+      expect(historical).toMatchObject({ rows: [{ verdict: 'pass', evaluationMode: 'judgment' }] });
+
+      const result = await certify({ specIds: ['SPEC-PASS'] });
+      expect(result).toMatchObject({ ok: true, counts: { filed: 0, notPassing: 1, mechanicallyVerified: 0 },
+        clauses: [{ verdict: 'fail', card: { status: 'not-passing' },
+          mechanicalProof: { caughtMutantBindingIds: [], gaps: [expect.stringContaining('verified calibration linkage')] } }] });
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(dispatchTool).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('returns calibrated ledger verification without filing or replaying a card (dryRun=%s)', async dryRun => {
+      listClauses.mockResolvedValue([await mechanicalClause()]);
+      calibrateMutant();
+      const result = await certify({ specIds: ['SPEC-PASS'], dryRun });
+      expect(result).toMatchObject({ ok: true, counts: { passing: 1, filed: 0, notPassing: 0, mechanicallyVerified: 1 },
+        clauses: [{ verdict: 'pass', card: { status: 'not-required', reason: 'mechanical-test-adequacy' },
+          mechanicalProof: { passingTestBindingIds: { 'test/reconnect.test.ts': 4 },
+            caughtMutantBindingIds: [2], gaps: [] } }] });
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(dispatchTool).not.toHaveBeenCalled();
+    });
+
+    it.each(['missing-test', 'missing-mutant', 'stale-source'])(
+      'keeps %s proof non-passing without scorecard creation', async defect => {
+        listClauses.mockResolvedValue([await mechanicalClause()]);
+        calibrateMutant();
+        if (defect === 'missing-test') h.rows = h.rows.filter(row => row.evidence_kind !== 'test');
+        if (defect === 'missing-mutant') h.rows = h.rows.filter(row => row.id !== 2);
+        if (defect === 'stale-source') await writeSubject('export const ackedEventsReplayed = true;\n');
+        const result = await certify({ specIds: ['SPEC-PASS'] });
+        expect(result).toMatchObject({ counts: { filed: 0, notPassing: 1, mechanicallyVerified: 0 },
+          clauses: [{ verdict: 'fail', card: { status: 'not-passing' } }] });
+        expect(captureImprovement).not.toHaveBeenCalled();
+      },
+    );
+
+    it('files only the judgment clause in a mixed mechanical and legacy evaluation', async () => {
+      const mechanical = await mechanicalClause();
+      const legacy = clause('SPEC-LEGACY');
+      h.rows.push(...h.rows.filter(row => row.spec_id === 'SPEC-PASS').map(row => ({
+        ...row, id: Number(row.id) + 20, spec_id: legacy.specId,
+        evidence_ref: `${row.evidence_ref}:legacy`, binding_fingerprint: `${row.binding_fingerprint}:legacy`,
+        details: { ...(row.details as Record<string, unknown>), adequacy: {
+          ...((row.details as { adequacy: Record<string, unknown> }).adequacy), targeted: 'spec-legacy',
+        } },
+      })));
+      calibrateMutant();
+      listClauses.mockImplementation(async input =>
+        [mechanical, legacy].filter(row => !input.specIds || input.specIds.includes(row.specId)));
+      const result = await certify({});
+      expect(result).toMatchObject({ ok: true, counts: { passing: 2, filed: 1, mechanicallyVerified: 1 },
+        clauses: [{ specId: 'SPEC-PASS', card: { status: 'not-required' } },
+          { specId: 'SPEC-LEGACY', card: { status: 'filed' } }] });
+      expect(captureImprovement).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('staging runtime lease', () => {
     it.each([false, true])('refuses before evaluation or filing while a restart owns staging (dryRun=%s)', async (dryRun) => {
       resourceAcquire.mockResolvedValueOnce({
@@ -446,15 +550,14 @@ describe('plans:certify-spec-clauses', () => {
 
       expect(result.counts, JSON.stringify(result)).toMatchObject({ filed: 2, refused: 0 });
       expect(resourceAcquire).toHaveBeenCalledOnce();
-      expect(resourceAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      expect(resourceAcquire).toHaveBeenCalledWith(expect.objectContaining({
         coordinationDomain: 'papercusp-host-global',
         resource: 'staging-server',
         owner: 'su-certifier',
-        mode: 'shared',
         ttlSec: (certifyTool.timeoutSec ?? 0) + 60,
       }));
       expect(resourceRelease).toHaveBeenCalledOnce();
-      expect(resourceRelease).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      expect(resourceRelease).toHaveBeenCalledWith(expect.objectContaining({
         owner: 'su-certifier', lockId: 'certification-lease',
       }));
       expect(h.leaseHeld).toBe(false);
@@ -555,6 +658,36 @@ describe('plans:certify-spec-clauses', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ specIds: ['SPEC-PASS'], replaySnapshot: true });
+  });
+
+  it('certifies and replays only the exact pinned cohort despite a later same-ref binding', async () => {
+    h.rows.push({
+      ...bindingRow({ id: 6, specId: 'SPEC-PASS', evidenceKind: 'test', evidenceRef: 'test:pass', outcome: 'passed' }, bound),
+      test_run_worktree_dirty: true,
+    });
+    const unselected = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+    expect(unselected.counts).toMatchObject({ passing: 0, filed: 0 });
+
+    const bindingIds = [1, 2, 4, 5];
+    const result = await certify({ specIds: ['SPEC-PASS'], bindingIds });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: true, counts: { passing: 1, filed: 1, refused: 0 },
+    });
+    expect(result.clauses![0]).toMatchObject({ measurementEvidence: {
+      selectedBindings: 4, bindings: bindingIds.map(bindingId => expect.objectContaining({ bindingId })),
+    } });
+    expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ bindingIds, replaySnapshot: true });
+    const observation = asStructuredObservation((captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation)!;
+    expect(observation.rerunRecipe?.args).toMatchObject({ bindingIds });
+    expect((await replayViaEvaluator(observation.rerunRecipe!.args!))).toMatchObject({
+      ok: true, rows: [{ verdict: 'pass', measurementEvidence: { selectedBindings: 4 } }],
+    });
+  });
+
+  it('an explicitly empty binding cohort cannot widen into all available proof', async () => {
+    const result = await certify({ specIds: ['SPEC-PASS'], bindingIds: [] });
+    expect(result).toMatchObject({ ok: false, evaluator: { ok: false, error: 'selection_empty' } });
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it('keeps a draft clause in the exact replay when includeDraft:true was used for grading', async () => {
@@ -998,11 +1131,16 @@ describe('certifyPassingRef (plans:evaluate-spec-test-adequacy → plans:certify
     expect(ref!.args).toEqual({ ...live, classRef: 'plan-class-feature-ship' });
   });
 
-  it('is withheld when nothing passes, the class is not active, or the read is pinned or replayed', () => {
+  it('preserves exact binding IDs in a live certification referral', () => {
+    const ref = certifyPassingRef({ ...live, bindingIds: [7] }, ctx);
+    expect(ref?.args).toMatchObject({ bindingIds: [7] });
+    expect(certifyTool.args.safeParse(ref!.args).success).toBe(true);
+  });
+
+  it('is withheld when nothing passes, the class is not active, or the clause is pinned or replayed', () => {
     expect(certifyPassingRef(live, { ...ctx, passingCount: 0 })).toBeUndefined();
     expect(certifyPassingRef(live, { ...ctx, classRefSource: 'retired-acceptance-rubric' })).toBeUndefined();
     expect(certifyPassingRef(live, { ...ctx, classRefSource: 'work-item-completion-attestation' })).toBeUndefined();
-    expect(certifyPassingRef({ ...live, bindingIds: [7] }, ctx)).toBeUndefined();
     expect(certifyPassingRef({ ...live, replaySnapshot: true }, ctx)).toBeUndefined();
     expect(certifyPassingRef({ ...live, specRevision: 3 }, ctx)).toBeUndefined();
   });

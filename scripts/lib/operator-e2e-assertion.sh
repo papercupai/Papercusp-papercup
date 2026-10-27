@@ -36,7 +36,11 @@ fi
 # for 7-10 days. setsid gives the dev server its own process group (a background
 # job is never a group leader, so setsid does not fork and $! is that group's
 # id); cleanup signals the whole group.
+# The assertion can inherit a production host environment. Vite's dev server
+# must use development transforms: React refresh otherwise emits hook calls
+# without the runtime wrapper. Scope this to Vite so Playwright keeps its env.
 env -u PORT \
+  NODE_ENV=development \
   OPERATOR_E2E_PORT="$requested_port" \
   PAPERCUSP_BIND_HOST=127.0.0.1 \
   PAPERCUSP_ENABLE_HMR=1 \

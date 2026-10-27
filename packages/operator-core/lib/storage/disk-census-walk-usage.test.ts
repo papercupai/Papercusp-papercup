@@ -97,11 +97,23 @@ describe('runDiskConsumerCensusOnce device usage', () => {
     expect(result.failures).toEqual([]);
     expect(events).toEqual(['stat /mnt/x', 'du /mnt/x', 'stat /mnt/x']);
     expect(result.runs[0]).toMatchObject({ usedBytes: 610 * GIB, attributedBytes: 590 * GIB, unattributedBytes: 20 * GIB });
+    expect(result.runs[0]?.complete).toBe(true);
   });
 
   it('keeps the resolved numbers when statDevice is null', async () => {
     const result = await runDiskConsumerCensusOnce({ ...base, statDevice: null, runDu: async () => duRun(490 * GIB) });
     expect(result.runs[0]).toMatchObject({ usedBytes: 500 * GIB, unattributedBytes: 10 * GIB });
+  });
+
+  it.each([1, null])('marks a walk incomplete when du exits with status %s', async (exitCode) => {
+    const result = await runDiskConsumerCensusOnce({
+      ...base,
+      statDevice: null,
+      runDu: async () => ({ ...duRun(490 * GIB), exitCode }),
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0]).toMatchObject({ complete: false });
   });
 
   it('falls back to the resolved numbers when statfs fails around the walk', async () => {

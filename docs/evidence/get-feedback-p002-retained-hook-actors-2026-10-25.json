@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "retained-record-evidence-supplement",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "governingDecision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+  "observedAt": "2026-10-25T09:49:09Z",
+  "status": "Bounded hook-payload actor correlation; no full native acceptance or lease-transition verdict.",
+  "originalCensus": {
+    "path": "docs/evidence/get-feedback-p002-native-call-census-2026-10-25.json",
+    "sha256": "4f6a3d44a267053d01eed7e1487ad0a3be2e9c4b7cbeb04a2661f51fbc191e20",
+    "unchanged": true
+  },
+  "identities": {
+    "sourceOwnerId": "su-0dd61ff4-d577-4fe7-9f60-ea00a582bfea",
+    "answererOwnerId": "su-3cf167ac-da89-444f-b45f-4605d51bf16d",
+    "answererNativeSessionId": "01a170e5-3c39-7962-a712-c2812561f04c",
+    "answererAdvSessionId": 51916,
+    "conversationId": "conv-request-c713ac82ffc39be484e4d6e566f284fd78b816afd192e52a406155ecd6ad979f"
+  },
+  "query": {
+    "tool": "dev:pg_query",
+    "workspaceId": "papercusp-workspace",
+    "from": "2026-10-25T02:30:14.763Z",
+    "to": "2026-10-25T02:37:13.087293Z",
+    "sql": "SELECT id, tool_name, args_json->>'owner' AS reported_owner, args_json->>'session_id' AS reported_native, args_json->>'adv_session_id' AS reported_adv, args_json->>'kind' AS activity_kind, args_json->>'phase' AS activity_phase, (args_json ? '_truncated' OR args_json ? 'truncated') AS marked_truncated FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-3cf167ac-da89-444f-b45f-4605d51bf16d' AND invoked_at >= '2026-10-25T02:30:14.763Z'::timestamptz AND invoked_at <= '2026-10-25T02:37:13.087293Z'::timestamptz AND tool_name IN ('activity:report','journal:record-turn') ORDER BY invoked_at,id",
+    "maxRows": 20,
+    "returnedRows": 6,
+    "truncated": false,
+    "positiveControlSql": "SELECT id,tool_name FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-3cf167ac-da89-444f-b45f-4605d51bf16d' AND id=44214170",
+    "positiveControl": {
+      "id": 44214170,
+      "tool": "consult:reply",
+      "status": "passed",
+      "returnedRows": 1,
+      "truncated": false
+    }
+  },
+  "payloadObservations": {
+    "rowIds": [44213849, 44213903, 44213939, 44214041, 44214171, 44214242],
+    "activityReportRowIds": [44213849, 44213903, 44213939, 44214041, 44214171],
+    "journalRecordTurnRowId": 44214242,
+    "everyReportedOwner": "su-3cf167ac-da89-444f-b45f-4605d51bf16d",
+    "everyReportedNativeSession": "01a170e5-3c39-7962-a712-c2812561f04c",
+    "everyMarkedTruncated": false,
+    "lifecycleRow": {
+      "id": 44213849,
+      "kind": "lifecycle",
+      "reportedAdvSessionId": 51916
+    },
+    "postPhaseActivityRows": [44213903, 44213939, 44214041, 44214171],
+    "scope": "All six selected hook payloads explicitly identify the answerer. None of these six names the source owner or source native incarnation. This is not an absence claim about database writes or unrecorded actions."
+  },
+  "currentWriterInspection": {
+    "scope": "Current named source bytes were read and clean when inspected; equivalence to the historical runtime's loaded bytes is not established here.",
+    "files": {
+      "packages/operator-core/lib/agent-tools/activity/report.ts": "dd68bcfd348ab12fd665147e2908fd4da2b7a7ab26666084c413ce19d154901a",
+      "packages/operator-core/lib/agent-tools/journal/record-turn.ts": "9a48ff321ffe506014300e165f8b2812bb9e2691588c19ac0884d69865fe8d37",
+      "packages/operator-core/lib/plan-items/activity-claim-renewal.ts": "932db505875fa7685bddccb66b60d0128f4514d1dcf7662b2f6580dc90ed51b1",
+      "packages/operator-core/lib/plan-items/claims.ts": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "packages/operator-core/lib/consult/native-consult.ts": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+    },
+    "findings": [
+      "activity:report prefers its explicit owner argument before the context fallback. Caller attribution alone therefore does not establish the hook payload's owner; these six retained payloads were read separately.",
+      "The activity-renewal subscriber passes its owner into renewOwnerActivityClaims. The SQL renewal predicate requires owner equality; session-end claim release also filters by owner.",
+      "Reacquiring a plan lane as the same owner regenerates claim_id. Matching owner identity does not establish continuity of a lease incarnation.",
+      "captureNativeConsultBoundary explicitly describes sequential endpoints, not atomic transition or actor history.",
+      "The inspected fleet-assignment change-feed emits owner-scoped notifications, excludes lease-only renewals, and does not persist old/new claim values. That feed cannot supply the missing historical ABA proof."
+    ]
+  },
+  "separateNativeAttempt": {
+    "requestKey": "gf-p002-live-claude-to-codex-20261025-v1",
+    "conversationId": "conv-request-2bc06eb059d482446c2c05170bc5539b51aa70b324d9a141256afdc6f731647b",
+    "servingBuild": "1777870c66",
+    "servingEnvironment": "staging",
+    "constraints": {
+      "sourceBackend": "claude",
+      "targetBackend": "codex",
+      "sourceState": "live",
+      "requireSourcePlanClaims": true
+    },
+    "result": "no_qualified_responder",
+    "reason": "below_floor",
+    "wakesUsed": 0,
+    "wakeAttempted": false,
+    "responder": null,
+    "qualification": "Unmeasured native matrix cell; no answering session was launched and no native pass is claimed. This does not prove that a healthy Claude source or an expert cannot exist. Do not repeat the unchanged request."
+  },
+  "preserved": {
+    "originalOperationalBindings": [28326, 28545],
+    "additionalNativeBindings": [69704, 69782],
+    "reporterGap": "EI-26900834772734276: original21936773 timeout root cause remains unknown;68733 is not requalified.",
+    "capacityArtifact": "docs/evidence/get-feedback-p002-capacity-source-proof-2026-10-25.json",
+    "capacityArtifactCommit": "c3e46d1b1de710e8f31419d7c1476aca24a73ecb",
+    "capacityArtifactSha256": "2916f814e43cb8a13595ac239e39c2458d31176091d5db125fd2b3d53891f9c9"
+  },
+  "remaining": [
+    "Complete source lease-transition and actor history, including mutate-then-revert, is not established.",
+    "Other native matrix cells, source proof, cohorts, custody, admission, approval, independent acceptance and shipment remain open.",
+    "This file is an evidence supplement, not a new test execution or a canonical operational test-run receipt."
+  ]
+}

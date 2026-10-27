@@ -15,6 +15,7 @@
  */
 import type { ResumeTarget } from '../agent-launch-core';
 import type { TranscriptStreamKey } from '../session-transcript-remat';
+import type { SessionPortEvidenceSpan } from '../session-port/service';
 
 export interface ConsultResumeTranscriptCheck {
   available: boolean;
@@ -155,6 +156,7 @@ export async function probeConsultResumeTranscript(
 export async function checkConsultSessionPortTranscript(
   target: ResumeTarget,
   transcript: ConsultResumeTranscriptCheck,
+  evidenceSpan?: SessionPortEvidenceSpan,
 ): Promise<ConsultResumeTranscriptCheck> {
   if (target.role != null) {
     return { available: false, detail: 'session-port protocol v1 requires a plain tracked SU source' };
@@ -165,12 +167,17 @@ export async function checkConsultSessionPortTranscript(
     return { available: false, detail: 'session-port preflight requires an exact supported native transcript' };
   }
   try {
-    const [{ readStableLiveJsonl }, { adaptNativeSessionJsonl }] = await Promise.all([
+    if (evidenceSpan && evidenceSpan.sessionId !== nativeId) {
+      throw new Error('consult evidence span must name the exact tracked source session');
+    }
+    const [{ readStableLiveJsonl }, { adaptNativeSessionJsonl }, { selectSessionPortEvidenceSpan }] = await Promise.all([
       import('../session-port/source'),
       import('../session-port/native-adapter'),
+      import('../session-port/service'),
     ]);
     const stable = await readStableLiveJsonl(transcript.transcriptPath);
-    adaptNativeSessionJsonl(agent as 'claude' | 'codex' | 'omp', stable.bytes.toString('utf8'), nativeId);
+    const adapted = adaptNativeSessionJsonl(agent as 'claude' | 'codex' | 'omp', stable.bytes.toString('utf8'), nativeId);
+    if (evidenceSpan) selectSessionPortEvidenceSpan(adapted.turns, evidenceSpan);
     return { available: true, detail: 'exact source passed session-port transcript validation' };
   } catch (e) {
     return { available: false, detail: `session-port transcript preflight refused: ${(e as Error)?.message ?? String(e)}` };

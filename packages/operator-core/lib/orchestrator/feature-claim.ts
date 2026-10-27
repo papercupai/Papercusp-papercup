@@ -15,11 +15,11 @@
  *   2. Returns immediately `{ claimed: true }` — no awaiting convergence.
  *
  * `feature_claims` is an APPEND-ONLY per-attempt audit history. Each claim
- * op is keyed `<feature_id>/<seq>` where `seq = ownLog.length` — so each
+ * op is keyed `<feature_id>/<claimer_pubkey>/<seq>` where `seq = ownLog.length` — so each
  * claim a peer makes occupies a DISTINCT key (its own log's seq advances)
  * and every claim row persists as its own audit row. There is no
- * cross-author key collision on this path: two peers claiming the same
- * feature get different seqs → different keys → both rows survive the
+ * cross-author key collision on this path: different authors qualify their
+ * own sequences, even when equal → different keys → both rows survive the
  * read-merge, nothing is clobbered. "Who currently holds feature F" is a
  * SEPARATE derived read (the latest `claimed_at` row for F), not an
  * LWW winner-takes-the-key. Claims are advisory — the real authority is
@@ -33,7 +33,8 @@
  */
 
 import { CURRENT_SCHEMA_VERSION } from '../sync/hyperbee/schema-version';
-import type { PeerLogOp } from '../sync/hyperbee/peer-log';
+import type { PeerLogOp, HeldOwnLogAppender } from '../sync/hyperbee/peer-log';
+import { stampOpHlc } from '../sync/hyperbee/hlc-stamp';
 import {
   CLAIMS_TABLE_TAG,
   _testing as featureClaimsProjection,
@@ -47,6 +48,8 @@ import {
  * `feature_claims.seq`). The booted handle's `ownLog` satisfies this.
  */
 export interface ClaimOwnLog {
+  /** Allocate the event's sequence and append while all other appends wait. */
+  withAppendsHeld?<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T>;
   /** Append one op to the peer's OWN single-writer log. */
   append(op: PeerLogOp): Promise<void>;
   /** 64-char lowercase hex hypercore key. Doubles as the claimer pubkey. */
@@ -85,8 +88,8 @@ export class ClaimValidationError extends Error {
  * Append one advisory claim to the peer's own log + return immediately.
  *
  * The appended op's value is a `FeatureClaimRow` and its `hbKey` is the
- * feature-claims projection's `composeKey(row)` (`<feature_id>/<seq>`, with
- * `seq = ownLog.length`), so the existing projection materializes it to PG
+ * feature-claims projection's `composeKey(row)` (author-qualified, with
+ * `seq = ownLog.length` captured under the append hold), so the projection materializes it to PG
  * on the next read-merge with no new projection logic. Because `seq`
  * advances per append, every claim is a DISTINCT append-only audit row;
  * claims do not collide cross-author, so this never clobbers another peer's
@@ -104,37 +107,23 @@ export async function claimFeature(
   }
 
   const ts = opts.now_ms ?? Date.now();
-  // Single-writer append-only log: the seq this claim will occupy is the
-  // current length. The feature_claims projection PKs on
-  // (workspace, harness, feature_id, seq), so this keeps each claim a
-  // distinct append-only row, exactly as the projection expects.
-  const seq = ownLog.length;
-
-  // The projection's `writeToPg` only inserts rows whose `harness_slug`
-  // matches the registered projection's harness, so the row must carry the
-  // real slug (not a placeholder) to round-trip PG.
-  const row: FeatureClaimRow = {
-    harness_slug: opts.harness_slug,
-    feature_id: opts.feature_id,
-    seq,
-    claimer_pubkey: ownLog.keyHex,
-    claimer_github_user_id: opts.claimer_github_user_id,
-    claimed_at: ts,
-    // Advisory self-claim: this peer is asserting it is working the feature.
-    outcome: 'won',
-    schema_version: CURRENT_SCHEMA_VERSION,
-  };
-
-  const op: PeerLogOp = {
-    type: 'put',
-    table: CLAIMS_TABLE_TAG,
-    hbKey: featureClaimsProjection.composeKey(row),
-    value: row,
-    ts,
-    schema_version: CURRENT_SCHEMA_VERSION,
-    author_pubkey: ownLog.keyHex,
-  };
-
-  await ownLog.append(op);
+  if (!Number.isSafeInteger(ts) || ts < 0) throw new ClaimValidationError('now_ms');
+  if (!/^[0-9a-f]{64}$/.test(ownLog.keyHex)) throw new ClaimValidationError('keyHex');
+  if (!ownLog.withAppendsHeld) throw new ClaimValidationError('append_serializer');
+  await ownLog.withAppendsHeld(async held => {
+    const seq = ownLog.length;
+    if (!Number.isSafeInteger(seq) || seq < 0) throw new ClaimValidationError('seq');
+    const row: FeatureClaimRow = {
+      harness_slug: opts.harness_slug, feature_id: opts.feature_id, seq,
+      claimer_pubkey: ownLog.keyHex, claimer_github_user_id: opts.claimer_github_user_id,
+      claimed_at: ts, outcome: 'won', schema_version: CURRENT_SCHEMA_VERSION,
+    };
+    const op: PeerLogOp = stampOpHlc({
+      type: 'put', table: CLAIMS_TABLE_TAG, hbKey: featureClaimsProjection.composeKey(row),
+      value: row, ts, schema_version: CURRENT_SCHEMA_VERSION, author_pubkey: ownLog.keyHex,
+    });
+    // Calling ownLog.append inside its hold would deadlock; use the held appender.
+    await held.appendBatch([op]);
+  });
   return { claimed: true };
 }

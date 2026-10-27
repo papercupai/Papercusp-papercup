@@ -48,6 +48,45 @@ import {
   type StageAttemptContext,
 } from '../../../sync/hyperbee/stage-stall-log';
 
+/**
+ * WI-6554700010029664 — `ownerId` / `ownerIds` (the roster row field names) are folded into
+ * the canonical `owner` / `owners` selectors BEFORE parse instead of being declared as
+ * sibling schema fields. Declared, they cost ~95 B of compact schema on every seeded turn
+ * (coord:presence is a seed tool; the seed has a 100,000 B budget) while only ever meaning
+ * owner/owners. Still accepted, never advertised — same pattern as plans:items'
+ * `normalizePlansItemsArgs`. The "pass one, not both" refusals that used to live in the
+ * superRefine are raised HERE, because once folded the schema can no longer see which
+ * spelling the caller used.
+ */
+export function normalizePresenceOwnerAliases(raw: unknown, ctx: z.RefinementCtx): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (r.ownerId === undefined && r.ownerIds === undefined) return raw;
+  const has = (v: unknown): boolean => (Array.isArray(v) ? v.length > 0 : Boolean(v));
+  const conflict = (path: string, message: string): unknown => {
+    ctx.addIssue({ code: 'custom', path: [path], message });
+    return raw;
+  };
+  if (has(r.owner) && has(r.ownerId)) {
+    return conflict('ownerId', 'Pass owner (the canonical selector) OR ownerId (the compatibility alias), not both.');
+  }
+  if (has(r.owners) && has(r.ownerIds)) {
+    return conflict('ownerIds', 'Pass owners (the canonical bounded selector) OR ownerIds as its compatibility alias, not both.');
+  }
+  if ((has(r.owner) || has(r.ownerId)) && has(r.ownerIds)) {
+    return conflict(
+      'ownerIds',
+      'Pass owner (or ownerId as its compatibility alias) for one target OR ownerIds (the compatibility alias for owners) for a bounded target set, not both.',
+    );
+  }
+  const { ownerId, ownerIds, ...rest } = r;
+  return {
+    ...rest,
+    ...(rest.owner === undefined && ownerId !== undefined ? { owner: ownerId } : {}),
+    ...(rest.owners === undefined && ownerIds !== undefined ? { owners: ownerIds } : {}),
+  };
+}
+
 export default defineTool({
   name: 'coord:presence',
   description:
@@ -165,7 +204,9 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
+  // WI-6554700010029664: `ownerId` / `ownerIds` are folded into owner / owners before parse
+  // (normalizePresenceOwnerAliases) instead of being advertised — still accepted.
+  args: z.preprocess(normalizePresenceOwnerAliases, z.object({
     scope: z
       .enum(['hive', 'workspace', 'all'])
       .optional()
@@ -183,12 +224,6 @@ export default defineTool({
       .describe(
         'TARGETED lookup: return ONLY the row(s) matching this agent id/label (exact, else a substring either-way) — and INCLUDE it even if `ended`. The replacement for the removed `include_stale` full dump: use it to inspect/wake ONE specific dead agent, never to expand the whole stale roster.',
       ),
-    ownerId: z
-      .string()
-      .optional()
-      .describe(
-        'Compatibility alias for `owner` for callers using the roster row field name; normalized to the canonical `owner` selector before lookup. Pass `owner` OR `ownerId`, not both, and do not combine either with `owners`.',
-      ),
     owners: z
       .array(z.string().min(1))
       .min(1)
@@ -202,14 +237,6 @@ export default defineTool({
       .optional()
       .describe(
         'Diagnostic-only, SUPERUSER-only probe: runs the relation reader without the normal roster/expansion path and stores per-stage timings in private invocation metadata. Returns no peer data.',
-      ),
-    ownerIds: z
-      .array(z.string().min(1))
-      .min(1)
-      .max(50)
-      .optional()
-      .describe(
-        'Compatibility alias for `owners` for callers using the roster row field name (mirrors the ownerId → owner singular alias). Normalized to the canonical `owners` selector before lookup. Pass `owners` OR `ownerIds`, not both, and do not combine either with `owner`/`ownerId`.',
       ),
     include_detail: z
       .boolean()
@@ -236,36 +263,14 @@ export default defineTool({
         "CHEAP UNCHANGED-READ (poll-storm guard): pass the `etag` from your PRIOR coord:presence read. If the roster's identity+state (intent / plan / claimed lane / await / fleet membership — NOT liveness) is unchanged, you get back a ~100B `{ unchanged:true, etag, as_of }` instead of the full 20KB roster. Read once, then re-read with `since:<etag>` and only pay the full payload when it actually changed. Liveness (live↔parked, lastActiveSecAgo) is deliberately NOT tracked by the etag — re-read WITHOUT `since:` right before you actually dispatch.",
       ),
   }).superRefine((args, issue) => {
-    if (args.owner && args.ownerId) {
-      issue.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['ownerId'],
-        message: 'Pass owner (the canonical selector) OR ownerId (the compatibility alias), not both.',
-      });
-    }
-    if ((args.owner || args.ownerId) && args.owners?.length) {
+    if (args.owner && args.owners?.length) {
       issue.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['owners'],
         message: 'Pass owner (or ownerId as its compatibility alias) for one target OR owners for a bounded target set, not both.',
       });
     }
-    if ((args.owner || args.ownerId) && args.ownerIds?.length) {
-      issue.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['ownerIds'],
-        message:
-          'Pass owner (or ownerId as its compatibility alias) for one target OR ownerIds (the compatibility alias for owners) for a bounded target set, not both.',
-      });
-    }
-    if (args.owners?.length && args.ownerIds?.length) {
-      issue.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['ownerIds'],
-        message: 'Pass owners (the canonical bounded selector) OR ownerIds as its compatibility alias, not both.',
-      });
-    }
-  }),
+  })),
   result: z
     .object({
       summary: z.unknown().optional(),
@@ -458,8 +463,8 @@ export default defineTool({
     }
     // Keep the public compatibility alias at the boundary: all downstream snapshot
     // and scope code consumes the canonical `owner`/`owners` selectors only.
-    const owner = args.owner ?? args.ownerId;
-    const owners = args.owners ?? args.ownerIds;
+    const owner = args.owner;
+    const owners = args.owners;
     // F-M2 (workspace-data-isolation-leaks): scope=all (EVERY workspace's roster) is an
     // admin/Mug view — gate it behind superuser. A non-SU caller asking for 'all' is
     // downgraded to 'workspace' (its own), so a bee can't snoop other workspaces' agents.

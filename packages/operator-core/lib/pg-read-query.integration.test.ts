@@ -14,6 +14,7 @@
  *   npx vitest run --config vitest.integration.config.ts lib/pg-read-query.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
@@ -119,6 +120,60 @@ describe('pgReadQuery (real PG)', () => {
       truncated: false,
       fields: ['n'],
     });
+  });
+
+  it('counts closed source items once when multiple bugs cite one item (EI-26805167986752964)', async () => {
+    const cutoff = '2026-10-24T04:45:54.342531Z';
+    const day = 86_400_000;
+    const closeAt = Date.parse(cutoff) - 20 * day;
+    const source = (feature_id: string, overrides: Record<string, unknown> = {}) => ({
+      workspace_id: 'papercusp-workspace', harness_slug: 'papercusp', feature_id,
+      item_kind: 'change', status: 'done', lane: null, title: '', summary: '',
+      source_plan_slug: 'citation-fixture', created_ts: closeAt - day, closed_ts: closeAt,
+      payload: { _completionEvidence: { filesChanged: ['src/example.ts'] } }, ...overrides,
+    });
+    const bug = (feature_id: string, cited: string, overrides: Record<string, unknown> = {}) =>
+      source(feature_id, {
+        item_kind: 'bug', status: 'open', title: `Follow-up to ${cited}`, summary: cited,
+        created_ts: closeAt + day, closed_ts: null, ...overrides,
+      });
+    const fixture = [
+      source('WI-100001'), source('WI-100002'),
+      bug('EI-200001', 'WI-100001'), bug('EI-200002', 'WI-100001'),
+      // The second source stays uncited: outside-window, cross-tenant and
+      // observation records cannot turn it into a hit.
+      bug('EI-200003', 'WI-100002', { created_ts: closeAt + 15 * day }),
+      bug('EI-200004', 'WI-100002', { created_ts: closeAt - day }),
+      bug('EI-200005', 'WI-100002', { workspace_id: 'foreign-workspace' }),
+      bug('EI-200006', 'WI-100002', { harness_slug: 'foreign-harness' }),
+      bug('EI-200007', 'WI-100002', { lane: 'observation' }),
+      source('WI-100003', { closed_ts: Date.parse(cutoff) - 13 * day }),
+      source('WI-100004', { closed_ts: Date.parse(cutoff) - 45 * day }),
+      source('WI-100005', { payload: { _completionEvidence: { filesChanged: [] } } }),
+      source('WI-100006', { workspace_id: 'foreign-workspace' }),
+      source('WI-100007', { harness_slug: 'foreign-harness' }),
+    ];
+    const query = readFileSync(new URL('../../../scripts/work-item-citation-proxy.sql', import.meta.url), 'utf8');
+    const records = JSON.stringify(fixture).replaceAll("'", "''");
+    const fixtureQuery = query.replace('WITH inputs AS (', `WITH fixture_work_items AS (
+      SELECT * FROM jsonb_to_recordset('${records}'::jsonb) AS w(
+        workspace_id text, harness_slug text, feature_id text, item_kind text,
+        status text, lane text, title text, summary text, source_plan_slug text,
+        created_ts bigint, closed_ts bigint, payload jsonb)
+    ), inputs AS (`).replaceAll('harness_shared.work_items', 'fixture_work_items');
+    const result = await pgReadQuery(fixtureQuery, { client: db.adminSql });
+    expect(result.rows).toMatchObject([{
+      workspace_id: 'papercusp-workspace', harness_slug: 'papercusp',
+      item_kind: 'change', plan_bound: true, closed_items: 2, cited_items: 1, citation_pct: 50,
+    }]);
+    expect(result.rows).toHaveLength(1);
+    // postgres-js Date values carry milliseconds, even when SQL retains microseconds.
+    expect(new Date(result.rows[0]!.cutoff as string).getTime()).toBe(Date.parse(cutoff));
+    // A plausible wrong implementation produces three joined rows and 33.33%,
+    // even though exactly two source items closed. Prove the regression catches it.
+    const joinedDenominator = fixtureQuery.replaceAll('count(DISTINCT s.feature_id)', 'count(*)');
+    const control = await pgReadQuery(joinedDenominator, { client: db.adminSql });
+    expect(control.rows[0]).toMatchObject({ closed_items: 3, cited_items: 1, citation_pct: 33.33 });
   });
 
   it('rolls back real DML when its driver result arrives after the caller deadline', async () => {

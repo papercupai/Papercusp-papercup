@@ -98,6 +98,8 @@ import {
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
   redInflowRepairItemSql,
+  admissionHoldExclusionSql,
+  isAdmissionHoldActive,
 } from './work-items-admission';
 import {
   WorkItemIdAmbiguousError,
@@ -1458,6 +1460,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
                  -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -1597,6 +1600,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  -- denominator not).
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -1724,6 +1728,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
                  AND ${admittedWhereSql(sql)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${admissionRecoveryExclusionSql(sql, 'payload')}
+                 AND ${admissionHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
                  AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
@@ -1825,13 +1830,7 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
-import {
-  ISSUE_FAMILY_ROUTE_KINDS,
-  agentWorkCategoryWhereSql,
-  audienceWhereSql,
-  issueFamilyRouteSql,
-  type WorkAudienceFilter,
-} from './work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql, audienceWhereSql, issueFamilyRouteSql, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -2008,7 +2007,7 @@ export async function getWorkItemDetail(
  * (participants are router-assigned by consult:get_feedback), so critique
  * recorded per D-049 (learning-loop-backlog-triage-2026-08-22) lands as
  * work-item comments instead. Mirrors the consult predicate clause for clause:
- * only posts with a non-null author OUTSIDE `excludeAuthors` (the emitter and
+ * only non-empty posts with a non-automation author OUTSIDE `excludeAuthors` (the emitter and
  * the vetted rubric's author — the parties whose "critique" would be
  * self-review) count; distinct qualifying authors become the critics list.
  * Work-item threads have no 'decline' post kind, so there is no declinePosts
@@ -2037,8 +2036,12 @@ export async function readVettingWorkItemCritique(
   const critics = new Set<string>();
   let critiquePosts = 0;
   for (const post of detail.posts) {
-    const author = post.author_id;
-    if (!author || excluded.has(author)) continue;
+    const author = post.author_id?.trim();
+    if (!author || excluded.has(author) || !post.body?.trim()) continue;
+    // Lifecycle comments share this thread with the review. Their authors are
+    // independent of the rubric author, but they did not critique the rubric.
+    // The release reaper predates the system:* author convention.
+    if (/^system(?:$|[-_:/.])/i.test(author) || author === 'release-request-sweep' || author === 'substrate') continue;
     critiquePosts += 1;
     critics.add(author);
   }
@@ -2261,7 +2264,7 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
   const ws = issuesScopeWorkspace();
   const scoped = (sql: OrgSql) => sql`
           workspace_id = ${ws}
-      AND item_kind IN ('bug', 'change', 'task')
+      AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
       AND ${f.harness ? issueHarnessClause(sql, f.harness) : sql`TRUE`}
       AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}
@@ -2517,7 +2520,7 @@ const WORK_ITEM_SEARCH_COVERAGE_SOURCE = 'work_items:search';
  * selects from `harness_shared.harness_features_consolidated`, which is a VIEW
  * (`pg_class.relkind='v'`) defined as
  *   `SELECT …, embedding, embedding_mode, … FROM harness_shared.work_items
- *      WHERE item_kind <> ALL (ARRAY['bug','change','task'])`
+ *      WHERE item_kind <> ALL (ARRAY[...ISSUE_FAMILY_ROUTE_KINDS])`
  * — the SAME physical table and the SAME `embedding` column the issue-family
  * source reads. So one surface honestly covers both legs.
  *
@@ -2642,7 +2645,7 @@ export async function searchWorkItems(
      * generic kind) was previously inexpressible: you got one exact kind, or
      * both families. `family: 'feature'` is exactly the predicate the
      * `harness_features_consolidated` compat view applies
-     * (`item_kind <> ALL('bug','change','task')`, i.e. {@link familyOf}), which
+     * (`item_kind <> ALL(...ISSUE_FAMILY_ROUTE_KINDS)`, i.e. {@link familyOf}), which
      * is what lets a caller searching that view delegate here without changing
      * which rows it can see.
      *
@@ -3576,20 +3579,8 @@ async function isStaleHoldOpenAndCleared(
   /** The row's `origin` — a peer-written ('remote') row's holder is never judged here (WI-10005916). */
   origin?: string | null,
 ): Promise<boolean> {
+  if (!(await isStaleHoldOpenReadOnly(id, heldOpen, origin))) return false;
   try {
-    const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
-      import('./work-items-hold-open'),
-      import('./coord-liveness-config'),
-    ]);
-    const cfg = await readCoordLivenessConfig();
-    const { sql } = getOrgPg();
-    const expired = await isHoldOpenExpired(sql, heldOpen.by, heldOpen.at, {
-      graceMs: cfg.reclaimGraceMs,
-      parkedGraceMs: cfg.reclaimParkedGraceMs,
-      holdOpenGraceMs: cfg.holdOpenGraceMs,
-      origin,
-    });
-    if (!expired) return false;
     // Lift it for real — not just "ignore it this once". Leaving the stamp in place would keep
     // the item excluded from claim_next/scheduler self-select (the `_claimHold` half of the
     // hold), which is the other half of the same bug. leaseOnly: an automated liveness lift
@@ -3611,6 +3602,75 @@ async function isStaleHoldOpenAndCleared(
     );
     return false;
   }
+}
+
+async function isStaleHoldOpenReadOnly(
+  id: string,
+  heldOpen: { by: string; reason: string | null; at: string | null },
+  origin?: string | null,
+): Promise<boolean> {
+  try {
+    const [{ isHoldOpenExpired }, { readCoordLivenessConfig }] = await Promise.all([
+      import('./work-items-hold-open'),
+      import('./coord-liveness-config'),
+    ]);
+    const cfg = await readCoordLivenessConfig();
+    const { sql } = getOrgPg();
+    return await isHoldOpenExpired(sql, heldOpen.by, heldOpen.at, {
+      graceMs: cfg.reclaimGraceMs,
+      parkedGraceMs: cfg.reclaimParkedGraceMs,
+      holdOpenGraceMs: cfg.holdOpenGraceMs,
+      origin,
+    });
+  } catch (e: unknown) {
+    console.warn(
+      '[hold-open] liveness check for ' + id + ' (holder ' + heldOpen.by +
+      ') could not run; hold stays enforced: ' + (e instanceof Error ? e.message : String(e)),
+    );
+    return false;
+  }
+}
+
+export interface WorkItemHeldOpenTerminalAssessment {
+  allowed: boolean;
+  staleHoldOpen: boolean;
+  refusal?: string;
+}
+
+/** Read-only held-open eligibility shared by complete previews and the terminal state writer. */
+export async function assessWorkItemHeldOpenTerminalTransition(input: {
+  id: string;
+  payload: unknown;
+  currentState: string | null | undefined;
+  targetState: string;
+  by?: string | null;
+  force?: boolean;
+  origin?: string | null;
+}): Promise<WorkItemHeldOpenTerminalAssessment> {
+  const heldOpen = readWorkItemHeldOpenBy(input.payload);
+  if (
+    input.force ||
+    !heldOpen ||
+    input.by === heldOpen.by ||
+    isSettledWorkItemState(input.currentState ?? '') ||
+    !isSettledWorkItemState(input.targetState)
+  ) {
+    return { allowed: true, staleHoldOpen: false };
+  }
+  const refusal =
+    "work_item '" + input.id + "' is HELD OPEN by " + heldOpen.by +
+    (heldOpen.reason ? ' ("' + heldOpen.reason + '")' : '') +
+    " — closing it into '" + input.targetState + "' requires the holder. " +
+    "If this is your own hold, clear it first without force: " +
+    "work_items:hold_open { id: '" + input.id + "', clear: true } — no force needed, then close normally. " +
+    "If the hold is STALE (holder gone/finished), CLEAR it first: " +
+    "work_items:hold_open { id: '" + input.id + "', clear: true, force: true, reason: '<why it is stale>' } " +
+    "(leader override — audited, and the holder is notified), then close normally. " +
+    "To close PAST the hold without clearing it: work_items:set_state { id: '" + input.id +
+    "', state: '" + input.targetState + "', force: true } — NOTE work_items:complete does NOT accept a force arg, " +
+    "so passing one there is silently ignored. Otherwise coordinate with the holder (coord:send).";
+  const staleHoldOpen = await isStaleHoldOpenReadOnly(input.id, heldOpen, input.origin);
+  return { allowed: staleHoldOpen, staleHoldOpen, refusal };
 }
 
 /**
@@ -3917,19 +3977,33 @@ export async function selfHealAuthorOriginIfStranded(
   return rows.length > 0;
 }
 
-/** Lifecycle.setState — feature → status; issue → state. The requested state is
- *  normalized onto the family's native vocabulary first (EI-24); an unmappable
- *  state throws a typed error naming the valid set.
- *
- * Completion-integrity gate (work-item-completion-integrity-2026-07-01 WI-1403,
- * contract C-1): a transition INTO a terminal state (feature: passed|deprecated;
- * issue: resolved|closed) must carry both `opts.by` (the claiming principal) and
- * `opts.completionRef` (a completion summary / commit / coord / plan-item
- * reference — any non-empty evidence string). Reject otherwise, so a bare/
- * anonymous flip — e.g. a watchdog dedup marker — can never masquerade as a
- * genuine completion. `opts.skipCompletionGate` is a narrow, explicit bypass for
- * TRUSTED internal restore / system-sweep paths that are not completions at all
- * (mirrors `setIssueState`'s identical gate/bypass shape). */
+/** Read-only plan-lane verdict shared by completion preview and the state writer.
+ * A sole block attributed to this work-item can clear after its external blockers
+ * resolve; preview must preserve that exception as well as genuine owner gates. */
+export async function workItemPlanLaneTransitionRefusal(wi: WorkItem, state: string): Promise<string | null> {
+  const normalized = normalizeWorkItemState(wi.family, state);
+  if (normalized.ok) state = normalized.state;
+  const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked' && state !== 'needs-human';
+  const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
+  if (!isUnblockingTransition && !isCompletingTransition) return null;
+  const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+  const block = await planItemLaneBlockReason(wi).catch(() => null);
+  const attributedBlockCanClear = block?.effectiveStatus === 'blocked'
+    && block.blockAttributedToWorkItemId === wi.id && activeExternalBlockers(wi.payload).length === 0;
+  if (!block || block.effectiveStatus === 'done' || block.effectiveStatus === 'dropped' || attributedBlockCanClear) return null;
+  const verb = isUnblockingTransition ? 'unblocking' : 'completing';
+  const stateDesc = isUnblockingTransition ? 'is blocked, and its' : 'is not settled, and its';
+  return `work_item '${wi.id}' ${stateDesc} linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
+    `effectively '${block.effectiveStatus}' (${block.reason}) — ${verb} it into '${state}' now would race ` +
+    `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
+    `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
+    `wrong), override with work_items:set_state { id: '${wi.id}', state: '${state}', force: true } ` +
+    '— NOTE work_items:complete does NOT accept a `force` arg, so passing one there is silently ignored (WI-4530).';
+}
+
+/** Lifecycle.setState normalizes family vocabulary and requires authenticated
+ * completion evidence for a terminal transition. skipCompletionGate is reserved
+ * for trusted internal restore/system-sweep paths that are not completions. */
 export async function setWorkItemState(
   id: string,
   state: string,
@@ -4310,8 +4384,25 @@ export async function setWorkItemState(
   // prose, so a well-meaning peer (or a dup-close audit) closed them as stale —
   // the hold is now a FIELD this chokepoint enforces (complete + set_state both
   // route through here). The holder closing their own held item is NOT gated.
+  const heldOpenTransition = await assessWorkItemHeldOpenTerminalTransition({
+    id,
+    payload: wi.payload,
+    currentState: wi.state,
+    targetState: state,
+    by: opts.by,
+    force: opts.force,
+    origin: wi.origin,
+  });
+  if (!heldOpenTransition.allowed) throw new Error(heldOpenTransition.refusal);
+  if (heldOpenTransition.staleHoldOpen) {
+    const heldOpen = readWorkItemHeldOpenBy(wi.payload)!;
+    if (!(await isStaleHoldOpenAndCleared(id, heldOpen, wi.harness ?? undefined, wi.origin))) {
+      throw new Error(heldOpenTransition.refusal);
+    }
+  }
   const heldOpen = readWorkItemHeldOpenBy(wi.payload);
   if (
+    !heldOpenTransition.staleHoldOpen &&
     !opts.force &&
     heldOpen &&
     opts.by !== heldOpen.by &&
@@ -4415,35 +4506,8 @@ export async function setWorkItemState(
     }
   }
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
-    const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
-    const block = await planItemLaneBlockReason(wi).catch(() => null);
-    // The plan item can be blocked solely because its latest note mirrors this
-    // work-item's own external blocker. Clearing that blocker transitions the
-    // work-item before the post-transition plan reflection runs, so refusing here
-    // would make the two safe writes circular. Open that one edge only when the
-    // guard proves the plan-side block is attributed to this same item and no
-    // active typed external blocker remains on the work-item.
-    const attributedBlockCanClear =
-      block?.effectiveStatus === 'blocked' &&
-      block.blockAttributedToWorkItemId === id &&
-      activeExternalBlockers(wi.payload).length === 0;
-    if (
-      block &&
-      block.effectiveStatus !== 'done' &&
-      block.effectiveStatus !== 'dropped' &&
-      !attributedBlockCanClear
-    ) {
-      const verb = isUnblockingTransition ? 'unblocking' : 'completing';
-      const stateDesc = isUnblockingTransition ? `is blocked, and its` : `is not settled, and its`;
-      throw new Error(
-        `work_item '${id}' ${stateDesc} linked plan-item ${block.planSlug}#${block.itemId} is STILL ` +
-          `effectively '${block.effectiveStatus}' (${block.reason}) — ${verb} it into '${state}' now would race ` +
-          `ahead of that plan gate. Verify the plan item's blockers are actually resolved first ` +
-          `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
-          `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
-          `— NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530).`,
-      );
-    }
+    const refusal = await workItemPlanLaneTransitionRefusal(wi, state);
+    if (refusal) throw new Error(refusal);
   }
   // ── D-019 / P-007 (WI-37958): the REFUSING tier of the live-drive acceptance ──
   // The WARN tier lives at work_items:complete (`liveDriveEvidenceWarning`). It cannot
@@ -6069,7 +6133,14 @@ export async function claimWorkItem(
       return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = ${claimPayloadWithReviewRevision},
-             taken_by = ${assignee}, taken_at = now(),
+             taken_by = ${assignee},
+             -- Refreshing a continuous claim must preserve the interval that
+             -- attributes earlier edits to this holder. A new holder still
+             -- starts a new interval, including after release/reclaim.
+             taken_at = CASE
+               WHEN taken_by = ${assignee}
+                 OR (taken_by IS NOT NULL AND taken_by <> '' AND position(taken_by in ${assignee}) = 1)
+               THEN COALESCE(taken_at, now()) ELSE now() END,
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale
              -- last_progress_at); a re-claim by the SAME agent (including a
@@ -6091,6 +6162,7 @@ export async function claimWorkItem(
          -- park even though ordinary named claims may intentionally bypass that floor.
          AND ${agentReviewAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${agentReviewAdmission ? admissionRecoveryExclusionSql(sql, 'target.payload') : sql`TRUE`}
+         AND ${agentReviewAdmission ? admissionHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -6624,6 +6696,8 @@ export function featureClaimFloorPredicatesSql(sql: OrgSql, opts: ClaimFloorsOpt
     claimState: sql`(CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])`,
     claimHold: sql`COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`,
     admissionRecovery: admissionRecoveryExclusionSql(sql, 'payload'),
+    // EI-26988974367709614: a row the live admission promoter HELD is not actionable.
+    admissionHold: admissionHoldExclusionSql(sql, 'payload'),
     intakeStage: intakeStageClaimFloorSql(sql, 'payload'),
     // Canary instruments remain excluded only at self-select, not placement.
     canary: sql`COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'`,
@@ -7390,6 +7464,15 @@ export function isClaimHoldParked(payload: unknown): boolean {
   return String((payload as Record<string, unknown>)._claimHold) === 'true';
 }
 
+/**
+ * JS twin of the `admission-hold` self-select floor for claimable-event guards
+ * (EI-26988974367709614). Exposed here, beside {@link isAdmissionRecoveryReserved}, because
+ * work-items-events.ts reaches the admission module only through this file (import cycle).
+ */
+export function isAdmissionHoldReserved(payload: unknown): boolean {
+  return isAdmissionHoldActive(payload);
+}
+
 /** JS twin of {@link admissionRecoveryExclusionSql} for claimable-event guards. */
 export function isAdmissionRecoveryReserved(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object') return false;
@@ -7535,7 +7618,7 @@ export async function reconcileEventExternalBlockers(
       workspaceId: row.workspace_id,
       featureId: row.feature_id,
       harnessSlug: row.harness_slug ?? null,
-      family: ['bug', 'change', 'task'].includes(String(row.item_kind)) ? 'issue' : 'feature',
+      family: (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind)) ? 'issue' : 'feature',
       status: outcome.restored ? 'open' : row.status,
       holder: normalizeTakenBy(row.taken_by),
       restored: outcome.restored,
@@ -7641,7 +7724,7 @@ export async function clearExternalBlockersOnLockedRow(
   const activeRemaining = blockers.filter((blocker) => blocker.status === 'active').length;
   if (cleared.length === 0) return { changed: false, restored: false, cleared, activeRemaining };
 
-  const issueFamily = ['bug', 'change', 'task'].includes(String(row.item_kind));
+  const issueFamily = (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind));
   const autoBlockedIssue =
     issueFamily && String(row.status ?? '').toLowerCase() === 'blocked' && payload.held_open_reason === 'blocked';
   const restoreIssue = autoBlockedIssue && activeRemaining === 0;
@@ -7887,7 +7970,7 @@ export async function readHeldUnresolvedDepBlockers(args: {
         ON d.workspace_id = 'default'
        AND d.dep_type = 'blocks'
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.workspace_id = ${args.workspaceId}
@@ -7937,7 +8020,7 @@ export async function readHeldDependencyEscapeContext(args: {
     WITH refused AS (
       SELECT feature_id, item_kind, harness_slug,
              CASE
-               WHEN item_kind IN ('bug', 'change', 'task') THEN feature_id
+               WHEN item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN feature_id
                ELSE harness_slug || '#' || feature_id
              END AS dependency_ref
         FROM harness_shared.work_items
@@ -7958,7 +8041,7 @@ export async function readHeldDependencyEscapeContext(args: {
       JOIN harness_shared.work_items wi
         ON wi.workspace_id = ${activeWorkspaceId()}
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.taken_by = ANY(${memberRefs}::text[])
@@ -8757,7 +8840,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     const issuePoolRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
-       WHERE wi.item_kind IN ('bug', 'change', 'task')
+       WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
@@ -8792,7 +8875,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
     const issueReadyRows = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.work_items wi
-       WHERE wi.item_kind IN ('bug', 'change', 'task')
+       WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND wi.workspace_id = ${issueWs}
          AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
          AND (wi.taken_by IS NULL OR btrim(wi.taken_by) = '' OR lower(btrim(wi.taken_by)) = 'unassigned')
@@ -8831,6 +8914,8 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- WI-2797: a claim-held item is likewise pending-but-gated — same floor the claim applies.
          AND ${claimHoldExclusionSql(sql)}
          AND ${admissionRecoveryExclusionSql(sql)}
+         -- EI-26988974367709614: a promoter-held fail-open row — same floor the claim applies.
+         AND ${admissionHoldExclusionSql(sql)}
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
@@ -8944,6 +9029,39 @@ export interface ClaimFloorAttribution {
  * the claim path cannot silently reach consumers unclassified. Keep it the complete set —
  * a floor with no entry here also reports `detail: null` to every caller.
  */
+/**
+ * WI-6554700010029716: the per-id explainer's floor inventory, in the claim path's
+ * first-refusal order. Each label names the `ok_*` column of
+ * {@link issueClaimBarFloorColumnsSql} it reads, so attribution is DERIVED from one list
+ * instead of a hand-written check per floor. The hand-written list dropped
+ * `ok_admission_recovery`: self-select skipped queued/held recovery rows while this
+ * explainer called them admissible. `get-next-floor-registry.test.ts` pins that every
+ * column the claim bar enforces (`ISSUE_CLAIM_FLOORS`) has a label here.
+ */
+export const ISSUE_FLOOR_ATTRIBUTION = [
+  ['not-claimable-status', 'ok_status'],
+  ['already-taken', 'ok_untaken'],
+  ['origin', 'ok_origin'],
+  ['admission-pending', 'ok_admission'],
+  ['live-gate-ops', 'ok_live_gate_ops'],
+  ['observation-lane', 'ok_observation'],
+  ['needs-owner-action', 'ok_needs_owner_action'],
+  ['agent-review', 'ok_agent_review'],
+  ['external-blocker', 'ok_external_blocker'],
+  ['claim-hold', 'ok_claim_hold'],
+  ['admission-recovery', 'ok_admission_recovery'],
+  ['admission-hold', 'ok_admission_hold'],
+  ['plan-lane-reserved', 'ok_plan_lane'],
+  ['federation-detector', 'ok_federation'],
+  ['loop-noise', 'ok_loop_noise'],
+  ['already-completed', 'ok_completed'],
+  ['watchdog-recovery-window', 'ok_watchdog_recovery'],
+  ['cross-machine-rig', 'ok_rig'],
+  ['blocked-dep', 'ok_no_blocker'],
+  ['cooldown', 'ok_cooldown'],
+  ['stop-line', 'ok_stop_line'],
+] as const;
+
 export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-found': 'no such work-item in this harness/workspace',
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
@@ -8958,6 +9076,14 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'agent-review':
     'payload.agentReview is pending/revision-requested, or payload.implementationReadiness is enrolled without a ready verdict — reserved to review/validation until approved',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
+  'admission-recovery':
+    'payload._admissionRecovery.state is queued/held — an original-item admission recovery reserves this row for its ' +
+    'requested target while the admission promoter screens it; the promoter delivers it to that target ' +
+    '(EI-266267). Still claimable by id.',
+  'admission-hold':
+    'payload.admissionHold is set — the live admission promoter held this fail-open row (protected twin, claimed ' +
+    'canonical, or recurrence guard) and resume forbids acting on it; the promoter lifts it on promote/merge ' +
+    '(EI-26988974367709614). Still claimable by id.',
   'claim-hold':
     'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
     'assuming a row is unattributed: `held_open_by`/`held_open_reason` (a liveness-bound LEASE, work_items:hold_open) or ' +
@@ -9046,6 +9172,7 @@ export function issueClaimBarFloorColumnsSql(
     (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
     (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
     (${admissionRecoveryExclusionSql(sql)})                               AS ok_admission_recovery,
+    (${admissionHoldExclusionSql(sql)})                                   AS ok_admission_hold,
     (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
       claimantFleetSlug,
       claimSpecReferencesFleet,
@@ -9128,6 +9255,8 @@ export async function explainIssueClaimFloors(
       ok_agent_review: boolean;
       ok_external_blocker: boolean;
       ok_claim_hold: boolean;
+      ok_admission_recovery: boolean;
+      ok_admission_hold: boolean;
       ok_plan_lane: boolean;
       ok_federation: boolean;
       ok_loop_noise: boolean;
@@ -9156,7 +9285,7 @@ export async function explainIssueClaimFloors(
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
        AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
-       AND wi.item_kind IN ('bug', 'change', 'task')
+       AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND wi.feature_id = ANY(${[...ids]}::text[])`;
 
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -9171,27 +9300,14 @@ export async function explainIssueClaimFloors(
     const r = byId.get(id);
     // Preserve the claim path's first-refusal order while allowing reports to
     // see independent floors hidden behind it. One inventory drives both views.
-    const floorChecks: readonly (readonly [string, boolean])[] = r ? [
-      ['not-claimable-status', r.ok_status],
-      ['already-taken', r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))],
-      ['origin', r.ok_origin],
-      ['admission-pending', r.ok_admission],
-      ['live-gate-ops', r.ok_live_gate_ops],
-      ['observation-lane', r.ok_observation],
-      ['needs-owner-action', r.ok_needs_owner_action],
-      ['agent-review', r.ok_agent_review],
-      ['external-blocker', r.ok_external_blocker],
-      ['claim-hold', r.ok_claim_hold],
-      ['plan-lane-reserved', r.ok_plan_lane],
-      ['federation-detector', r.ok_federation],
-      ['loop-noise', r.ok_loop_noise],
-      ['already-completed', r.ok_completed],
-      ['watchdog-recovery-window', r.ok_watchdog_recovery],
-      ['cross-machine-rig', r.ok_rig],
-      ['blocked-dep', r.ok_no_blocker],
-      ['cooldown', r.ok_cooldown],
-      ['stop-line', r.ok_stop_line],
-    ] : [['not-found', false]];
+    const floorChecks: readonly (readonly [string, boolean])[] = r
+      ? ISSUE_FLOOR_ATTRIBUTION.map(([label, column]) => [
+          label,
+          column === 'ok_untaken'
+            ? r.ok_untaken || !!(r.taken_by && opts.scopeHeldBy?.includes(r.taken_by))
+            : r[column],
+        ] as const)
+      : [['not-found', false]];
     const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
     const refusedBy = failedFloors[0] ?? null;
     const failOpenExclusion = asAdmissionFailOpenExclusion(r?.admission_fail_open_exclusion);
@@ -9631,6 +9747,9 @@ export async function claimNextIssueWorkItem(
           -- opportunistically-claim) — still directly claimable by id.
           AND ${claimHoldExclusionSql(tx)}
           AND ${admissionRecoveryExclusionSql(tx)}
+          -- EI-26988974367709614: never self-select a row the live admission promoter HELD;
+          -- resume forbids acting on it. The promoter lifts the hold on promote/merge.
+          AND ${admissionHoldExclusionSql(tx)}
           -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
           -- "never enters the work queue" (only the Observations pane + Scout digest read it).
           AND ${observationLaneExclusionSql(tx)}
@@ -10109,6 +10228,9 @@ export async function releaseWorkItem(
   opts: {
     harness?: string;
     expectedAssignee?: string;
+    /** Internal managed-takeover release: keep the caller's subscriptions
+     * paused for return. Accepted only under its durable exact pause marker. */
+    retainPausedCallerBindings?: { ownerId: string; transitionKey: string };
     /** EI-15019 (default true — unchanged for every existing caller): pass false for
      *  an INTERNAL claim-then-immediate-release round-trip (e.g. claim-spec-store.ts's
      *  tier-3 quarantine of a spec-mismatched issue) that never exposed any observable
@@ -10141,6 +10263,15 @@ export async function releaseWorkItem(
     phase: 'work_items:release:read-preflight',
   });
   if (!wi) return null;
+  if (opts.retainPausedCallerBindings) {
+    const retained = opts.retainPausedCallerBindings;
+    const { readAssumeCallerPause } = await import('./session-assume-pause');
+    const pause = await readAssumeCallerPause(retained.ownerId);
+    if (!pause || pause.transitionKey !== retained.transitionKey ||
+        opts.expectedAssignee !== retained.ownerId || wi.assignee !== retained.ownerId) {
+      throw new Error('assume-caller-pause-required');
+    }
+  }
   if (hasResourceGovernorReceiptPayload(wi.payload)) {
     throw new ResourceGovernorReleaseRequiredError(id);
   }
@@ -10171,7 +10302,7 @@ export async function releaseWorkItem(
       await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: wi.assignee });
     }
     if (released && wasClaimed) {
-      await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
+      if (!opts.retainPausedCallerBindings) await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
       // P-009: the agent has put this work DOWN — clear its goal stamp so later
       // calls are not attributed to a goal it no longer holds. Only when the
       // released item is the one currently stamped: a release of some OTHER item
@@ -10244,7 +10375,7 @@ export async function releaseWorkItem(
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
     await emitReleased(released);
-    if (released) {
+    if (released && !opts.retainPausedCallerBindings) {
       await withOrgTxnTimeoutPhase(
         'work_items:release:retire-lifecycle-bindings',
         () => retireLifecycleBindingsForWorkItem(released),
@@ -10295,7 +10426,7 @@ export async function releaseWorkItem(
     });
   }
   await emitReleased(released);
-  if (released) await retireLifecycleBindingsForWorkItem(released);
+  if (released && !opts.retainPausedCallerBindings) await retireLifecycleBindingsForWorkItem(released);
   return released;
 }
 
@@ -10333,7 +10464,7 @@ export async function setWorkItemSwarmAffinity(
       UPDATE harness_shared.work_items
          SET swarm_affinity = ${swarm}, updated_ts = ${Date.now()}
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       RETURNING swarm_affinity`;
     if (!rows[0]) return null;
     return { id, harness: wi.harness, swarmAffinity: rows[0].swarm_affinity };
@@ -10363,7 +10494,7 @@ export async function getWorkItemSwarmAffinity(
     const rows = await sql<{ swarm_affinity: string | null }[]>`
       SELECT swarm_affinity FROM harness_shared.work_items
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) LIMIT 1`;
     return { id, harness: wi.harness, swarmAffinity: rows[0]?.swarm_affinity ?? null };
   }
   const { sql } = getOrgPg();
@@ -10435,7 +10566,7 @@ export async function setWorkItemPriority(
       UPDATE harness_shared.work_items
          SET feature_order = ${ordIssue}, updated_ts = ${Date.now()}
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       RETURNING feature_order`;
     if (!rows[0]) return null;
     return { id, harness: wi.harness, priority: rows[0].feature_order, applicable: true };
@@ -10525,7 +10656,7 @@ export async function bumpWorkItemPriority(
       SELECT MIN(feature_order) AS min_ord, MAX(feature_order) AS max_ord
         FROM harness_shared.work_items
        WHERE workspace_id = ${issueWs}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND feature_id <> ${id}`;
     const minI = extI[0]?.min_ord ?? null;
     const maxI = extI[0]?.max_ord ?? null;
@@ -10563,7 +10694,7 @@ export async function getWorkItemPriority(
     const rows = await sql<{ feature_order: number | null }[]>`
       SELECT feature_order FROM harness_shared.work_items
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task') LIMIT 1`;
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) LIMIT 1`;
     return { id, harness: wi.harness, priority: rows[0]?.feature_order ?? null, applicable: true };
   }
   const { sql } = getOrgPg();

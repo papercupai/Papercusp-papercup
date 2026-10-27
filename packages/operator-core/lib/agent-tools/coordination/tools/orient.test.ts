@@ -35,11 +35,26 @@ import { createPhaseTracker } from '@papercusp/tooldef';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 import * as fallbackObservations from '../../../degradation/fallback-observations';
 
-// Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
-// targeted presence read at the module seam; dedicated tests inject a value.
+// Unit handler cases do not own an org PG pool. Keep the root SU receipt's
+// presence and adv-session reads at module seams; dedicated tests inject values.
 vi.mock('../presence', async (original) => ({
   ...(await original<typeof import('../presence')>()),
   getPresence: vi.fn(async () => null),
+}));
+vi.mock('../../../adv-sessions', () => ({
+  latestAdvSessionByCoordOwner: vi.fn(async () => null),
+}));
+const orgPgSqlMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...original,
+    getOrgPg: vi.fn(() => ({ sql: orgPgSqlMock }) as unknown as ReturnType<typeof original.getOrgPg>),
+  };
+});
+vi.mock('../../../memory/session-epoch-ledger', () => ({
+  currentSessionEpoch: vi.fn(async () => 0),
+  stampSurfaced: vi.fn(async () => true),
 }));
 
 describe('coord:orient component receipt', () => {
@@ -1975,6 +1990,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     }
   });
 
+  it('keeps the bounded-operation correlation ID out of coord:inbox arguments', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+
+    const result = await composeOrient({}, call, 'me');
+    const inboxCall = calls.find((entry) => entry.name === 'coord:inbox');
+
+    expect(result.ok).toBe(true);
+    expect(inboxCall?.args).toMatchObject({ limit: 10, max_body_chars: 300 });
+    expect(inboxCall?.args).not.toHaveProperty('__correlationId');
+  });
+
   it('folds the handler-injected GOAL portfolio on full and monitor orientations', async () => {
     for (const args of [{}, { mode: 'monitor' as const }]) {
       const { call } = fakeCall({ ...CORE });
@@ -2287,20 +2313,23 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.find(({ name }) => name === 'coord:inbox')?.args).toMatchObject({ limit: 3 });
   });
 
-  it('joins the orient inbox fallback observation to the nested inbox correlation id', async () => {
+  it('joins the orient inbox fallback observation to its correlation id', async () => {
     const observed = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
     try {
-      const { call, calls } = fakeCall({ ...CORE });
+      const { call } = fakeCall({ ...CORE });
       await composeOrient({}, call, 'me');
 
-      const inboxArgs = calls.find(({ name }) => name === 'coord:inbox')?.args as Record<string, unknown>;
-      expect(inboxArgs.__correlationId).toMatch(
+      const observation = observed.mock.calls.find(
+        ([mechanism, decision]) => mechanism === 'bounded-operation' && decision.scope === 'orient:coord:inbox',
+      );
+      const correlationId = observation?.[2]?.correlationId;
+      expect(correlationId).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
       );
       expect(observed).toHaveBeenCalledWith(
         'bounded-operation',
         expect.objectContaining({ scope: 'orient:coord:inbox', reason: 'applied' }),
-        expect.objectContaining({ correlationId: inboxArgs.__correlationId }),
+        expect.objectContaining({ correlationId }),
       );
     } finally {
       observed.mockRestore();
@@ -2458,10 +2487,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.map((c) => c.name)).toEqual([
       'memory:search',
       'fleet:assignments',
+      'coord:inbox',
       // EI-19452326548245557: issue lane from the claim oracle, feature lane from the list.
       'work_items:claimable',
       'work_items:list',
-      'coord:inbox',
       'work_items:observe',
       'coord:whoami',
       'coord:plan-events',
@@ -5218,18 +5247,18 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
     });
   });
 
-  it('caps the final declare-intent wait to the remaining aggregate budget after sequential folds', async () => {
+  it('caps the final declare-intent wait to the remaining aggregate budget after parallel core reads', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const startedAtMs = Date.now();
-    const deadlineAtMs = startedAtMs + 17_500;
+    const deadlineAtMs = startedAtMs + 14_500;
     const delay = <T>(value: T, ms: number): Promise<T> =>
       new Promise((resolve) => setTimeout(() => resolve(value), ms));
     let declareStartedAtMs: number | undefined;
     const { call } = fakeCall({
       ...CORE,
-      // These individually healthy legs consume 15s in composeOrient's sequential
-      // backlog → inbox fold, leaving less than the final leg's normal 8s budget.
+      // The inbox and backlog reads start concurrently, so their 7.5s waits overlap.
+      // The 14.5s aggregate deadline leaves only 7s for the final leg.
       'work_items:claimable': () => delay({ claimable: [] }, 7_500),
       'coord:inbox': () => delay({ summary: { total: 0 }, entries: [] }, 7_500),
       'memory:search': () => ({ hits: [] }),
@@ -5248,7 +5277,8 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       await vi.advanceTimersByTimeAsync(deadlineAtMs - startedAtMs);
       const { result, resolvedAtMs } = await resultPromise;
 
-      expect(declareStartedAtMs).toBeGreaterThanOrEqual(startedAtMs + 15_000);
+      expect(declareStartedAtMs).toBeGreaterThanOrEqual(startedAtMs + 7_500);
+      expect(declareStartedAtMs).toBeLessThan(startedAtMs + 8_000);
       expect(deadlineAtMs - declareStartedAtMs!).toBeLessThan(8_000);
       expect(resolvedAtMs).toBeLessThanOrEqual(deadlineAtMs);
       expect(result.intentDeclared).toBe(false);

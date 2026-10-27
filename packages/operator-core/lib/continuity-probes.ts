@@ -15,6 +15,8 @@ import { decode } from '@papercusp/result-encoding';
 import { checkAgainstJsonSchema } from './json-schema-validation';
 import { classifyProjectionBody, parseProjection } from './result-projection';
 import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
+import { fitMeasurementProvenance, retainMeasurementProvenance } from './measurement-provenance';
+import type { RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
@@ -600,6 +602,7 @@ export interface ContinuityProbeResult {
   status: 'fresh' | 'stale' | 'error' | 'unknown';
   executed: boolean;
   observed?: unknown;
+  provenance?: RecordedMeasurementProvenance;
   diagnostic?: {
     code: string;
     message: string;
@@ -705,6 +708,9 @@ function continuityProbeTimeoutLabel(probe: ContinuityProbe, name: string): stri
 
 export interface ContinuityProbeDispatchContext {
   dispatchTool?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+  /** Rubric measurements retain context; ordinary wake probes keep their small envelope. */
+  retainMeasurement?: boolean;
+  now?: () => number;
   /**
    * Per-probe dispatch budget. Defaults to CONTINUITY_PROBE_TIMEOUT_MS, which is
    * sized for the wake/orient replay path where every probe sits on a turn's
@@ -779,6 +785,14 @@ async function runOne(
   }
   const timeoutMs = ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS;
   const args = probeDispatchArgs(probe, timeoutMs);
+  const startedAt = new Date(ctx.now?.() ?? Date.now()).toISOString();
+  const clockColumn = '__papercusp_measurement_transaction_at_v1';
+  // Native columns stay native (not row_to_json, which rounds large integers).
+  // The clock is PostgreSQL's original transaction time used by now() windows.
+  const wrappedClock = ctx.retainMeasurement && probe.kind === 'sql' && !probe.sql.includes(clockColumn);
+  if (wrappedClock && probe.kind === 'sql') {
+    args.sql = `SELECT "__pc_data".*, transaction_timestamp()::text AS "${clockColumn}" FROM (${probe.sql.trim().replace(/;\s*$/, '')}) AS "__pc_data"`;
+  }
   const dispatched = await withBoundedTimeout(
     (signal) => dispatchTool(name, args, signal),
     {
@@ -807,7 +821,20 @@ async function runOne(
       diagnostic: { code: 'tool_error', message: `read-only probe ${name} returned an error${toolErrorExcerpt(result)}` },
     };
   }
-  const decoded = decodeToolResult(dispatched.value);
+  let decoded = decodeToolResult(dispatched.value);
+  let transactionAt: string | undefined;
+  if (wrappedClock && decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
+    const body = decoded as Record<string, unknown>;
+    if (Array.isArray(body.rows)) {
+      const rows = body.rows.map(row => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+        const { [clockColumn]: clock, ...original } = row as Record<string, unknown>;
+        if (typeof clock === 'string' && Number.isFinite(Date.parse(clock))) transactionAt = new Date(clock).toISOString();
+        return original;
+      });
+      decoded = { ...body, rows, ...(Array.isArray(body.fields) ? { fields: body.fields.filter(field => field !== clockColumn) } : {}) };
+    }
+  }
   // WI-10005537: the budget bounds what the predicate JUDGES, not the whole tool
   // body. The body is already materialized by the time we get here, so charging
   // it bought no protection; it only refused a healthy probe whenever the read
@@ -829,11 +856,16 @@ async function runOne(
     };
   }
   const observed = observedScalar(verdict.actual);
+  const finishedAt = new Date(ctx.now?.() ?? Date.now()).toISOString();
   return {
     ...base,
     status: verdict.matches ? 'fresh' : 'stale',
     executed: true,
     ...(observed !== undefined ? { observed } : {}),
+    ...(ctx.retainMeasurement ? { provenance: retainMeasurementProvenance({
+      procedure: probe, result: decoded, startedAt, finishedAt,
+      ...(transactionAt ? { transactionAt } : {}), needsTransactionClock: probe.kind === 'sql',
+    }) } : {}),
   };
 }
 
@@ -858,6 +890,20 @@ export async function runContinuityProbeBatch(
   const completed = await mapWithConcurrency(selected, CONTINUITY_PROBE_CONCURRENCY, (source) => runOne(source, ctx));
   const executed = completed.filter((result) => result.executed).length;
   const results = [...completed];
+  if (ctx.retainMeasurement) {
+    // Metadata must not make a previously executable rubric batch lose children.
+    // Shrink diagnostics/descriptor snapshots first; digests/scalars/windows stay.
+    while ((jsonBytes(results) ?? Infinity) > CONTINUITY_PROBE_BATCH_MAX_BYTES) {
+      let reduced = false;
+      for (const result of results) {
+        if (!result.provenance) continue;
+        const before = jsonBytes(result.provenance) ?? Infinity;
+        const fitted = fitMeasurementProvenance(result.provenance, Math.max(512, Math.floor(before / 2)));
+        if ((jsonBytes(fitted) ?? Infinity) < before) { result.provenance = fitted; reduced = true; }
+      }
+      if (!reduced) break;
+    }
+  }
   let resultBudgetTruncated = 0;
   while ((jsonBytes(results) ?? Number.POSITIVE_INFINITY) > CONTINUITY_PROBE_BATCH_MAX_BYTES && results.length > 0) {
     results.pop();

@@ -61,6 +61,9 @@ pub fn answer_summary(
     let Some(payload) = payload else {
         return "Answered".to_string();
     };
+    if matches!(card.presentation, CardPresentation::Text { sensitive: true, .. }) {
+        return "Private answer submitted".to_string();
+    }
     // pui-chat-first-ux D-028: a tool approval's three answers, by option id.
     if card.approval.is_some() {
         let picks = payload.get("picks").and_then(|p| p.as_array());
@@ -129,6 +132,7 @@ pub enum CardPresentation {
     Text {
         placeholder: Option<String>,
         multiline: bool,
+        sensitive: bool,
     },
     Date {
         min: Option<String>,
@@ -163,6 +167,7 @@ impl CardPresentation {
                     .get("multiline")
                     .and_then(|m| m.as_bool())
                     .unwrap_or(false),
+                sensitive: v.get("sensitive").and_then(|s| s.as_bool()).unwrap_or(false),
             },
             "date" => Self::Date {
                 min: v.get("min").and_then(|m| m.as_str()).map(str::to_string),
@@ -211,6 +216,10 @@ pub struct OpenCard {
     pub prompt: String,
     pub presentation: CardPresentation,
     pub fallback_text: Option<String>,
+    /// Validated local link only; the provider target is never on the wire.
+    pub secure_link: Option<String>,
+    /// Only the server schema can opt into submitting an empty value/selection.
+    pub allow_empty: bool,
     /// The wire `details` field: shown only behind the details toggle.
     pub details: Option<String>,
     /// The wire `approval` field: present on a tool-approval card, drawn the
@@ -302,6 +311,10 @@ fn parse_open_card(
         .unwrap_or("")
         .to_string();
     let presentation = CardPresentation::from_json(v.get("presentation"));
+    let expected_link = format!("/api/ui/cards/{}/link", correlation_id);
+    let secure_link = v.get("presentation").and_then(|p| p.get("link")).and_then(|l| l.as_str())
+        .filter(|link| *link == expected_link && correlation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .map(str::to_string);
     let fallback_text = v
         .get("fallbackText")
         .and_then(|t| t.as_str())
@@ -332,6 +345,8 @@ fn parse_open_card(
         prompt,
         presentation,
         fallback_text,
+        secure_link,
+        allow_empty: v.get("presentation").and_then(|p| p.get("allowEmpty")).and_then(|v| v.as_bool()).unwrap_or(false),
         details,
         approval,
         allow_decline,
@@ -486,6 +501,9 @@ impl CardState {
     /// collapses to one summary line at once and takes no further input until
     /// the server closes it or the answer fails to send.
     pub fn mark_answered(&mut self, correlation_id: &str, summary: String, key: KeyCode) {
+        if self.focused().is_some_and(|card| matches!(card.presentation, CardPresentation::Text { sensitive: true, .. })) {
+            self.input.clear();
+        }
         self.answered = Some(AnsweredCard {
             correlation_id: correlation_id.to_string(),
             summary,
@@ -721,7 +739,7 @@ impl CardState {
                     .iter()
                     .filter_map(|&i| options.get(i).map(|o| o.id.clone()))
                     .collect();
-                if picks.is_empty() {
+                if picks.is_empty() && !head.allow_empty {
                     // Nothing toggled — treat the highlighted row as the pick so
                     // Enter on a fresh checkbox still commits something.
                     let opt = options.get(self.sel)?;
@@ -730,12 +748,11 @@ impl CardState {
                 Some(CardResponse::SubmitPicks(picks))
             }
             CardPresentation::Text { .. } | CardPresentation::Date { .. } => {
-                let trimmed = self.input.trim();
-                if trimmed.is_empty() {
+                if self.input.is_empty() && !head.allow_empty {
                     return None;
                 }
                 Some(CardResponse::SubmitValue(serde_json::Value::String(
-                    trimmed.to_string(),
+                    self.input.clone(),
                 )))
             }
             CardPresentation::Slider { .. } => {
@@ -913,6 +930,47 @@ mod tests {
     }
 
     #[test]
+    fn su_exec_p007_private_submit_preserves_bytes_and_redacts_summary() {
+        let mut state = CardState::default();
+        let data = serde_json::json!({ "runId": "private", "workspaceId": "ws", "version": 1,
+            "snapshot": { "openCards": [{ "correlationId": "private", "prompt": "Credential",
+                "presentation": { "kind": "text", "sensitive": true }, "createdAt": 1.0 }] } });
+        state.apply_snapshot(SnapshotEnvelope::from_json(&data.to_string()).unwrap());
+        state.input = "  PRIVATE_VALUE  ".into();
+        assert_eq!(state.submit(), Some(CardResponse::SubmitValue(serde_json::json!("  PRIVATE_VALUE  "))));
+        let summary = answer_summary(state.focused().unwrap(), "submit", Some(&serde_json::json!({ "value": "  PRIVATE_VALUE  " })));
+        assert_eq!(summary, "Private answer submitted");
+        state.mark_answered("private", summary, KeyCode::Enter);
+        assert!(state.input.is_empty());
+    }
+
+    #[test]
+    fn su_exec_p007_secure_link_must_belong_to_its_card() {
+        let mut data = serde_json::json!({ "correlationId": "auth-id", "prompt": "Authenticate",
+            "presentation": { "kind": "radio", "link": "/api/ui/cards/auth-id/link" } });
+        assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_some());
+        data["presentation"]["link"] = serde_json::json!("https://external.example/private");
+        assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_none());
+        data["correlationId"] = serde_json::json!("su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        data["presentation"]["link"] = serde_json::json!("/api/ui/cards/su-card.79.1.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/link");
+        assert!(parse_open_card(&data, "run", Some("ws")).unwrap().secure_link.is_some());
+    }
+
+    #[test]
+    fn su_exec_p007_schema_opt_in_preserves_empty_form_answers() {
+        for kind in ["text", "checkbox"] {
+            let mut state = CardState::default();
+            let data = serde_json::json!({ "runId": "form", "version": 1, "snapshot": { "openCards": [{
+                "correlationId": "empty", "prompt": "Empty allowed", "presentation": { "kind": kind,
+                    "allowEmpty": true, "options": [{ "id": "0", "label": "one" }] } }] } });
+            state.apply_snapshot(SnapshotEnvelope::from_json(&data.to_string()).unwrap());
+            let expected = if kind == "text" { CardResponse::SubmitValue(serde_json::json!("")) }
+                else { CardResponse::SubmitPicks(vec![]) };
+            assert_eq!(state.submit(), Some(expected));
+        }
+    }
+
+    #[test]
     fn slider_nudge_and_submit() {
         let data = serde_json::json!({
             "runId": "r", "version": 1,
@@ -1015,6 +1073,8 @@ mod tests {
                     .collect(),
             },
             fallback_text: None,
+            secure_link: None,
+            allow_empty: false,
             details: None,
             approval: None,
             allow_decline: true,

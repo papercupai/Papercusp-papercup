@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveTaskReportExpectation } from '../../../../scripts/lib/executed-source-map.mjs';
 
 // lib/__tests__ → lib → operator-core → packages → <repo root>
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -42,12 +43,13 @@ interface Emitted {
   guards: Set<string>;
 }
 
-function runPrintAffected(extra: string[]): Emitted {
+function runPrintAffected(extra: string[], gate = false): Emitted {
   const r = spawnSync(
     'node',
     [AFFECTED_TESTS, '--changed-paths', CHANGED, '--print-affected', ...extra],
     {
       cwd: REPO_ROOT,
+      env: { ...process.env, GREEN_CHECKPOINT: gate ? '1' : '0' },
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
       timeout: 300_000,
@@ -96,10 +98,28 @@ function scriptRunsVitestDirectly(dir: string, script: string): boolean {
   const pkgPath = join(REPO_ROOT, dir, 'package.json');
   if (!existsSync(pkgPath)) return false;
   const text: string = JSON.parse(readFileSync(pkgPath, 'utf8'))?.scripts?.[script] ?? '';
-  return /(^|[\s;&|])vitest(\s|$)/.test(text);
+  return !/[;&|]/.test(text) && /(^|\s)vitest(\s|$)/.test(text);
 }
 
 describe('affected-tests.mjs --coverage passthrough (P-009 part a)', () => {
+  it('instruments supported gate tasks without an opt-in flag and reports unsupported tasks', () => {
+    const run = runPrintAffected([], true);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.cmds.length).toBeGreaterThan(0);
+    let measured = 0;
+    for (const { workspace, command } of run.cmds) {
+      const parsed = parseCommand(command)!;
+      const supported = !run.guards.has(`${workspace}::${parsed.script}`)
+        && scriptRunsVitestDirectly(parsed.dir, parsed.script)
+        && resolveTaskReportExpectation({ wsDir: join(REPO_ROOT, parsed.dir),
+          command: JSON.parse(readFileSync(join(REPO_ROOT, parsed.dir, 'package.json'), 'utf8')).scripts[parsed.script] }).expectsReport;
+      expect(command.includes('-- --coverage'), command).toBe(supported);
+      if (supported) measured++;
+    }
+    expect(measured).toBeGreaterThan(0);
+    expect(run.stderr).toContain('COVERAGE_PASSTHROUGH');
+    expect(run.stderr).toContain('COVERAGE_SKIPPED');
+  });
   it('accepts --coverage instead of rejecting it as an unknown flag', () => {
     const run = runPrintAffected(['--coverage']);
     expect(run.status, `--coverage was rejected:\n${run.stderr}`).toBe(0);

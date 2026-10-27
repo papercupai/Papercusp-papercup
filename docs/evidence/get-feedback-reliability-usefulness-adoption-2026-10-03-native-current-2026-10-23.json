@@ -1,0 +1,405 @@
+{
+  "schemaVersion": "get-feedback-native-acceptance-v1",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005891",
+  "requesterId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "status": "native delivery and typed answer verified; bounded source lease endpoints measured; full acceptance remains open",
+  "request": {
+    "work_item_id": "WI-10005891",
+    "harness": "papercusp",
+    "nativeConsult": {
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "sourceState": "live",
+      "requireSourcePlanClaims": true,
+      "request_key": "gf-r6-20261023-codexlive-leased-codex-v1",
+      "question": "Which concrete receipts and checks distinguish a recoverable consult acknowledgement from a completed isolated answering session, and prove that the answer session used the exact selected source transcript?",
+      "tried": "Verified one current-build isolated Codex delivery, exact native kickoff checksum, a substantive typed answer and its native-authored CLI recovery chain. Preserved the original historical cohort and matrix evidence separately.",
+      "observed": "The prior trial's routing-time source snapshot explicitly measured an empty plan-claim census. Its consult:reply ledger row binds the answering native session through query:native_session, with no native MCP per-call fingerprint. Those observations leave the nonempty source plan-lease and physical actor boundary unproved.",
+      "decision_at_stake": "Determine whether an available live Codex source holding a measured nonexpired plan lease can yield an isolated substantive answer without confusing source ownership with the answering actor. Retain exact native receipt, source lease endpoints and caller evidence; classify any unavailable or unmeasured case explicitly."
+    }
+  },
+  "conversationId": "conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77",
+  "threadId": "thr-conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77",
+  "acceptanceReceipt": {
+    "verdict": "accepted",
+    "state": "routing",
+    "pending": true,
+    "rawPath": "/tmp/gf-native-leased-request-20261023.json",
+    "meaning": "Accepted work only; not a launched, delivered or answered session."
+  },
+  "runtimePreflight": {
+    "testClass": "operator-api",
+    "readiness": "ready",
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "a0b17c632f",
+    "containsNativeConsultSource": true,
+    "isolation": "Separate current-build port/process/checkout; database and workspace shared. Exact requester and request key scope the trial.",
+    "rawPath": "/tmp/gf-native-route-20261023.json"
+  },
+  "initialProgressObservation": {
+    "state": "awaiting_responder",
+    "sourceOwnerId": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+    "dispatchAttempts": [],
+    "scope": "First authoritative state read after acceptance; no successful answering dispatch observed in this read."
+  },
+  "sourceBefore": {
+    "status": "measured",
+    "capturedAt": "2026-10-23T00:29:05.638Z",
+    "completedAt": "2026-10-23T00:29:05.928Z",
+    "sourceOwnerId": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+    "sourceAdvSessionId": 44024,
+    "sourceNativeSessionId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+    "snapshot": {
+      "kind": "live-jsonl",
+      "sha256": "a9581cd7f7258a37cca02470781b2b23e7412787ab7f2546998155cec3de9a3e",
+      "completeBytes": 3586542,
+      "highWaterBytes": 3586542,
+      "archiveRelpath": null,
+      "fileIdentity": {
+        "path": "/home/builduser/.papercusp/su-codex-homes/session-44024/sessions/2026/10/15/rollout-2026-10-15T00-49-11-01a13de4-8aa4-7602-a68a-e5169d0fa42a.jsonl",
+        "inode": 67551128,
+        "links": 1,
+        "device": 66307
+      }
+    },
+    "planClaims": {
+      "checked": [
+        {
+          "workspaceId": "papercusp-workspace",
+          "harnessSlug": "papercusp",
+          "planSlug": "desktop-portal-interface-adoption-2026-10-11",
+          "itemId": "P-001",
+          "claimId": "440e49d9-e397-4db3-8173-de045b1e3531",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "acquiredTs": "2026-10-22T23:37:53.579Z",
+          "expiresTs": "2026-10-23T00:43:14.710Z",
+          "lastActivityTs": "2026-10-23T00:23:14.710Z",
+          "expired": false
+        },
+        {
+          "workspaceId": "papercusp-workspace",
+          "harnessSlug": "papercusp",
+          "planSlug": "desktop-portal-interface-adoption-2026-10-11",
+          "itemId": "P-005",
+          "claimId": "b102af3e-b9e6-4af9-8907-ab72223718de",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "acquiredTs": "2026-10-22T23:37:53.868Z",
+          "expiresTs": "2026-10-23T00:43:14.710Z",
+          "lastActivityTs": "2026-10-23T00:23:14.710Z",
+          "expired": false
+        }
+      ],
+      "truncated": false,
+      "scope": "Exact-workspace source-owner plan-claim endpoints across harnesses, including lapsed leases. These recorded leases were nonexpired at the completed observation."
+    },
+    "scope": "Sequential source and claim endpoint reads; not an atomic snapshot or transition/actor/wake history. Neither unchanged endpoints nor a distinct answering identity alone proves noninterference."
+  },
+  "replyWait": {
+    "awaitId": 351671,
+    "event": "consult:reply:conv-request-dddf6609a0424d3379dfd2b408b65e90faa579c2dce26af081b72c624213ff77",
+    "timeoutAt": "2026-10-23T00:34:42.697Z",
+    "onTimeout": "wake",
+    "nextAction": "No further reply wait for this closed consultation. Continue remaining acceptance evidence from the saved work-item checkpoint.",
+    "status": "fired and handled in the same turn",
+    "deliveryId": 948782,
+    "deliveryAcknowledged": true
+  },
+  "relatedEvidence": {
+    "nativeActorSupplement": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-actors-2026-10-23.json",
+      "sha256": "a8090077f2f569f43fdee628b13b47d1d83415fa7fe6a830c68a3c5e1b7201a2",
+      "scope": "Finite recorded native action inventory, three exact CLI post/caller-row joins, retained source prefix and the source's own task-timeout wake. Legacy source MCP calls were served by d740fc3802 and have no nativeSession audit; exact source lease transition/actor history and exhaustive system effects remain unproven."
+    },
+    "previousNativeTrial": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-22.json",
+      "sha256": "4a50f94ac0c15b8dcbf1b0ad6f89f885d6533bf83d11b0cfa058e76345989b47",
+      "scope": "Verified native-authored CLI answer chain with an empty source plan-claim census; no nonempty-lease credit."
+    },
+    "historicalCohort": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+      "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3"
+    },
+    "historicalNative": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-09.json",
+      "sha256": "0bca8b0cbaeedd2c55cfe88e45ed4a6349a897a4fa006bb164434f3196a0d703"
+    }
+  },
+  "remainingMatrixTrials": {
+    "claude-source-isolated-fork": {
+      "requestKey": "gf-r6-20261023-claudeended-claude-v1",
+      "conversationId": "conv-request-51630f2be4628b0b7a8528a85454e46d9af5a18d39a2af7e4fea3fbf3d59d8b1",
+      "constraints": { "sourceBackend": "claude", "targetBackend": "claude", "sourceState": "ended" },
+      "requestRawPath": "/tmp/gf-native-claude-fork-request-20261023.json",
+      "classification": "unavailable in this bounded dispatcher trial; not passed",
+      "terminalDispatchState": "no_launchable_responder",
+      "walks": [
+        { "at": "2026-10-23T00:44:27.903Z", "sourceOwnerId": "su-8d592b6e-8b67-4ff7-a9d4-d8da7d77d698", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "account-walled" },
+        { "at": "2026-10-23T00:44:28.810Z", "sourceOwnerId": "su-140262a0-4827-4da8-974c-27ca4dd8b733", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "account-walled" },
+        { "at": "2026-10-23T00:44:30.843Z", "sourceOwnerId": "su-3051dcc0-ef9b-46f2-94c5-489c0cf8d0f5", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "account-walled" },
+        { "at": "2026-10-23T00:44:40.167Z", "sourceOwnerId": "su-13f8badc-4608-4a5f-b67d-2ffeeb8d9a2b", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "account-walled" },
+        { "at": "2026-10-23T00:44:43.925Z", "sourceOwnerId": "su-1d1eb8d6-c987-4ede-a7d2-6587afea6058", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "source-context-critical" },
+        { "at": "2026-10-23T00:44:53.466Z", "sourceOwnerId": "su-2d6ed4d2-9888-462e-965d-885843efcf40", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "account-walled" },
+        { "at": "2026-10-23T00:45:04.138Z", "sourceOwnerId": "su-79c22582-ab9f-4042-930b-b5b244cdab0a", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "source-context-critical" },
+        { "at": "2026-10-23T00:45:19.346Z", "sourceOwnerId": "su-9825afe8-f252-48dc-aa9b-6b22b23aadc7", "dispatched": false, "allowedRanks": "claude/fable, claude/opus", "reason": "source-context-critical" }
+      ],
+      "closure": { "outcome": "cant_help", "state": "closed_cant_help", "postId": 1197791, "rawPath": "/tmp/gf-native-claude-fork-close-20261023.json" },
+      "wait": { "awaitId": 351739, "cancelled": true, "reason": "Bounded unavailable outcome recorded and consultation closed." },
+      "scope": "Measured persisted dispatcher classifications for this request. This is not a fresh upstream quota probe or a universal claim about every Claude source, account or future attempt. No native delivery or answer credit."
+    },
+    "claude-source-isolated-codex-conversion": {
+      "requestKey": "gf-r6-20261023-claudeended-codex-v1",
+      "conversationId": "conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace",
+      "constraints": { "sourceBackend": "claude", "targetBackend": "codex", "sourceState": "ended" },
+      "requestRawPath": "/tmp/gf-native-claude-convert-request-20261023.json",
+      "classification": "native user-prompt delivery and substantive typed answer verified; lifecycle and actor residue remain open",
+      "dispatch": { "at": "2026-10-23T00:45:34.264Z", "sourceOwnerId": "su-8d592b6e-8b67-4ff7-a9d4-d8da7d77d698", "answeringOwnerId": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33", "operation": "convert", "agent": "codex", "modelAlias": "sol", "dispatched": true },
+      "registryObservation": {
+        "answeringAdvSessionId": 50137,
+        "answeringNativeSessionId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+        "portId": "a3c8ab35-bbaf-4cc8-97bc-32d999f711fb",
+        "portStatus": "pending",
+        "sourceHash": "5ac6282aa1afa7695480f62dd52b02023275bd948f7284d1637e23eb9f5b4b31",
+        "renderedHash": "d33644912626b8e154014d31e2803c1df8e26fcedd2d1487802763022980fce8",
+        "normalizedHash": "0c0b6310c4955d32ccdd88e81fd6f5d1d3bf2b01078564a17deb8fcb0d8a59e5",
+        "targetModel": "gpt-5.6-sol"
+      },
+      "sourceBefore": {
+        "sourceNativeSessionId": "3ca5c586-e804-424d-b3c2-6f7329bf404a",
+        "capturedAt": "2026-10-23T00:43:58.954Z",
+        "completedAt": "2026-10-23T00:43:59.577Z",
+        "snapshotKind": "archive-manifest",
+        "snapshotSha256": "5ac6282aa1afa7695480f62dd52b02023275bd948f7284d1637e23eb9f5b4b31",
+        "completeBytes": 3794744,
+        "archiveRelpath": "projects/-home-builduser-papercupai-workspace-papercusp/3ca5c586-e804-424d-b3c2-6f7329bf404a.jsonl",
+        "planClaims": [],
+        "planClaimCensusTruncated": false,
+        "scope": "Recorded routing-time endpoints; no nonempty lease or comprehensive actor/transition claim."
+      },
+      "nativeReceipt": {
+        "nativeRef": "/home/builduser/.papercusp/su-codex-homes/session-50137/sessions/2026/10/22/rollout-2026-10-22T20-45-19-01a16638-22c5-7891-98ae-864ac76f19f4.jsonl",
+        "userPromptLine": 8,
+        "userPromptLineSha256": "9d0e03c3b478405a46dba79774a2d28c9c3d94ae87abbd271e8d9f5543729ef8",
+        "exactRenderedHashInUserPrompt": true,
+        "exactSourceSessionInUserPrompt": true,
+        "scope": "Direct native JSONL witness proves the carried prompt persisted. Registry port_status was still pending in the independent read; no delivered registry status is invented."
+      },
+      "typedAnswer": {
+        "postId": 1197793,
+        "kind": "answer",
+        "authorId": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33",
+        "createdAt": "2026-10-23T00:47:34.847Z",
+        "readInFull": true,
+        "evidence": [
+          { "session_id": "3ca5c586-e804-424d-b3c2-6f7329bf404a", "turn_idx": 3 },
+          { "session_id": "3ca5c586-e804-424d-b3c2-6f7329bf404a", "turn_idx": 5 }
+        ]
+      },
+      "physicalCallAudit": {
+        "mechanism": "Native exec calls ptool consult:reply and consult:close through exec_command, draining yielded shell handles.",
+        "replyCall": { "line": 58, "callId": "call_6b360dbda6804ab7894f86b09749a900", "lineSha256": "ec6ceb9fd08e14bab53928408a1a5476080b6b5afa606567eb0ea85162dfd24f" },
+        "replyResult": { "line": 61, "lineSha256": "e0c9e90e3a0e7b1df97ac1ae08edcbbf5615ab3935705f0a9dc60967159e8e10", "postId": 1197793 },
+        "closeCall": { "line": 65, "callId": "call_c53fd68e6ddb4ac5b02c6b31a320f1b0", "lineSha256": "8e522d71048943ecd4b1dda9cfccfc06d360ad4224292d803801779e91f9542e" },
+        "closeResult": { "line": 68, "lineSha256": "b54485fcc3425713ccb5c46246fe55e80b9db083d4bd003022d86d8d25b4acd0", "postId": 1197794 },
+        "replyInvocationId": 43264526,
+        "closeInvocationId": 43264702,
+        "ledgerServingBuildSha": "e6412a947a",
+        "nativeSession": { "binding": "bound", "carrier": "query:native_session", "candidateAdvSessionId": 50137, "valueFingerprint": "6d466f9ad8e365262e7f9d160b90370c0c56d1ad9be61b2d88b601acede3cf67", "callIdFingerprint": null },
+        "scope": "Observed native-authored CLI calls and matching session-bound ledger receipts. Native MCP per-call fingerprint and exhaustive actor census remain unmeasured."
+      },
+      "closure": { "state": "closed_answered", "closedAt": "2026-10-23T00:47:54.689Z", "postId": 1197794, "closedBy": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33", "scope": "Answerer-authored outcome; not a requester adoption decision." },
+      "lifecycleResidue": {
+        "ownedWorkItem": "EI-26729602306520405",
+        "assignee": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+        "observation": "A second answering dispatch receipt was recorded at 2026-10-23T00:48:05.634Z, after the recorded terminal close.",
+        "secondAnsweringOwnerId": "su-2893f6eb-d0c8-4b93-9e15-35d34efa9a64",
+        "taskEvidence": {
+          "taskId": "0mvk93c6j1o0hzgo6s5",
+          "registeredAt": "2026-10-23T00:47:38.452324Z",
+          "registrationWriter": "completeSyncEnrolment calls registerTask after spawn has returned the child handle; registration before close therefore establishes an already-created child.",
+          "terminalState": "stranded",
+          "endedAt": "2026-10-23T01:02:27.029492Z",
+          "terminalReason": "Reaper stopped the task because this consult was closed_answered.",
+          "correctionRef": "EI-26729602306520405#comment:1197912"
+        },
+        "repairVerification": {
+          "baseline": "Four new regression checks failed against the unchanged production source.",
+          "behavior": "An optional beforeSpawn predicate runs after install-lease acquisition and before task enrollment/process creation; a closed consult returns a skipped attempt. Already-started answerers survive consult closure during kickoff proof.",
+          "spawner": { "testRunId": 21798096, "passed": 152, "failed": 0, "skipped": 0, "log": "/tmp/gf-late-spawn-green-final-20261023.log" },
+          "dispatcher": { "testRunId": 21798072, "passed": 144, "failed": 0, "skipped": 0, "log": "/tmp/gf-late-spawn-green-20261023.log" },
+          "scope": "Local working-tree tests, worktreeDirty:true; no committed, deployed, native-isolation or shipment claim. The earlier combined run exposed an overly strict test assertion about idempotent lease release; the corrected spawner suite then passed in full."
+        },
+        "scope": "This child existed before the consult closed; the later dispatch receipt records settlement after close. The hypothesis that an install wait caused a late process start in this historical trial is rejected. A separate deterministic regression demonstrates that closure during the install wait can still create a child; the owned item repairs that latent race while preserving already-started answerers."
+      },
+      "replyWait": { "awaitId": 351741, "event": "consult:reply:conv-request-d6a47cbf3bdd8848418b9a9d139ee0dd81d2c182efdbdfb05aca919487a29ace", "timeoutAt": "2026-10-23T00:49:57.108Z", "onTimeout": "wake", "status": "fired; answer handled", "deliveryId": 948967 },
+      "requesterReview": {
+        "reviewedBy": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+        "answerPostId": 1197793,
+        "decision": "partially adopted",
+        "adopted": "Distinguish a substantive typed answer from terminal consult closure; preserve the exact selected source, native answerer and typed evidence tuples.",
+        "qualifications": [
+          "Terminal consult closure does not establish physical answering-process termination.",
+          "Matching source references and native seed/answer evidence support this bounded source-grounded answer, not exhaustive actor/non-MCP/transition noninterference."
+        ],
+        "recordRef": "WI-10005891#comment:1197924",
+        "originalCohortCredit": 0
+      },
+      "nextAction": "Advance the still-open physical-call/actor/transition evidence. Preserve the timing correction, locally verified install-wait repair and qualified requester review; do not launch another copy of this answered trial."
+    }
+  },
+  "stillOpen": [
+    "Native MCP per-call witness and comprehensive actor/non-MCP/transition attribution",
+    "Lease endpoint timestamp changes have no actor attribution; identity preservation alone does not prove noninterference",
+    "Original cohort shortfall, independent acceptance and exact final shipment"
+  ],
+  "scope": "Separate dated native trial edition with verified delivered seed and substantive CLI-authored answer, nonempty source lease endpoints and a recorded requester correction. Full matrix, original cohort, independent acceptance and shipment remain open.",
+  "successfulDispatch": {
+    "at": "2026-10-23T00:29:45.394Z",
+    "sourceOwnerId": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+    "answeringOwnerId": "su-44a492fb-b5a0-47ca-b5c9-cf24eb321439",
+    "operation": "convert",
+    "agent": "codex",
+    "modelAlias": "sol",
+    "verified": true
+  },
+  "nativeDelivery": {
+    "answeringAdvSessionId": 50125,
+    "answeringNativeSessionId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+    "portId": "5e4dcf43-475e-4633-8755-e63c58186921",
+    "portStatus": "delivered",
+    "sourceHash": "a9581cd7f7258a37cca02470781b2b23e7412787ab7f2546998155cec3de9a3e",
+    "renderedHash": "833475d3eeb4b9af5797eaea263bfa9afdfcf1ad3e6c96195791a818c647bf4f",
+    "normalizedHash": "b77e2d7555dcaf60faad2206355ae99e374bb25459dddca3efc5e7ac9865ab05",
+    "targetModel": "gpt-5.6-sol",
+    "persistenceProof": {
+      "persisted": true,
+      "nativeRef": "/home/builduser/.papercusp/su-codex-homes/session-50125/sessions/2026/10/22/rollout-2026-10-22T20-29-38-01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf.jsonl",
+      "renderedHash": "833475d3eeb4b9af5797eaea263bfa9afdfcf1ad3e6c96195791a818c647bf4f"
+    },
+    "nativeUserPrompt": {
+      "line": 8,
+      "lineSha256": "dfd7085c71a66335dda116d2e82fbf15d78ffcc61ad99b9b4586763f44ceb3f3",
+      "renderedHashPresent": true,
+      "selectedSourceSessionPresent": true
+    }
+  },
+  "typedAnswer": {
+    "postId": 1197725,
+    "kind": "answer",
+    "authorId": "su-44a492fb-b5a0-47ca-b5c9-cf24eb321439",
+    "createdAt": "2026-10-23T00:32:49.914Z",
+    "bodyChars": 2718,
+    "readInFull": true,
+    "evidence": [
+      {
+        "session_id": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+        "turn_idx": 3
+      },
+      {
+        "session_id": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+        "turn_idx": 4
+      },
+      {
+        "session_id": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+        "turn_idx": 8
+      }
+    ]
+  },
+  "physicalCallAudit": {
+    "classification": "native-authored ptool CLI reply; session-bound ledger witness, native MCP per-call fingerprint unmeasured",
+    "nativeOuterCall": {
+      "line": 52,
+      "callId": "call_fc537d6bf268476ab4027fceddd5a475",
+      "name": "exec",
+      "lineSha256": "1a9a2af33fd1ddb1cb229e8ca41d8d9000538f763be23531fd850723f0679701",
+      "mechanism": "exec_command runs ptool consult:reply with quoted stdin JSON"
+    },
+    "nativeResult": {
+      "line": 72,
+      "callId": "call_95520aade78248379fde90d9873ccbf4",
+      "lineSha256": "8dd40f9cacd3afe07fa320cdce3eb180ac1b63af0d966db22f188b17f5125ba7",
+      "containsSuccessfulPostReceipt": 1197725
+    },
+    "ledger": {
+      "id": 43258685,
+      "toolName": "consult:reply",
+      "status": "ok",
+      "servingBuildSha": "e6412a947a",
+      "nativeSession": {
+        "binding": "bound",
+        "carrier": "query:native_session",
+        "candidateAdvSessionId": 50125,
+        "valueFingerprint": "415c6b8f06bf0d9c91f02c5f3a69df0b42ca5af5bc6117d6f21cbcd678c14191",
+        "callIdFingerprint": null
+      },
+      "nativeSessionFingerprintMatchesAnswerer": true
+    },
+    "scope": "Positive evidence for this observed CLI call. No exhaustive actor, non-MCP, system-action, wake or mutate-then-revert census is claimed."
+  },
+  "sourceAfter": {
+    "observedAt": "2026-10-23T00:38:31.607Z",
+    "scope": "Only the same two previously observed source plan-claim endpoints; not a complete source-owner census or a mutation history.",
+    "checked": [
+      {
+        "itemId": "P-001",
+        "claimId": "440e49d9-e397-4db3-8173-de045b1e3531",
+        "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+        "livenessMode": "availability",
+        "ttlSec": 1200,
+        "expired": false,
+        "expiresTs": "2026-10-23T00:54:49.105596Z",
+        "lastActivityTs": "2026-10-23T00:34:49.105597Z"
+      },
+      {
+        "itemId": "P-005",
+        "claimId": "b102af3e-b9e6-4af9-8907-ab72223718de",
+        "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+        "livenessMode": "availability",
+        "ttlSec": 1200,
+        "expired": false,
+        "expiresTs": "2026-10-23T00:54:49.105713Z",
+        "lastActivityTs": "2026-10-23T00:34:49.105713Z"
+      }
+    ],
+    "comparison": {
+      "claimIdsAndOwnersPreserved": true,
+      "changedFields": [
+        "expiresTs",
+        "lastActivityTs"
+      ],
+      "attribution": "Unmeasured: these endpoint observations do not identify the actor that advanced timestamps or exclude intermediate mutation."
+    }
+  },
+  "qualityReview": {
+    "classification": "partial usefulness; prior-trial context misapplied",
+    "useful": "Distinguishes recoverable routing/delivery acknowledgement from a typed substantive answer and correctly limits session binding as physical actor proof.",
+    "contradictedPassage": "the source snapshot had an empty plan-claim census",
+    "correction": "The request explicitly attributes the empty census to the prior trial. This trial's persisted sourceBefore includes nonexpired P-001/P-005 leases. The answer's inference that the current trial cannot exercise a nonempty lease is rejected.",
+    "requesterDecision": "Adopt the acknowledgement/completion distinction. Use independently measured current-trial receipts and lease endpoints; reject the empty-current-census inference. Keep native per-call and comprehensive transition/actor evidence unmeasured.",
+    "originalCohortCredit": false
+  },
+  "closure": {
+    "outcome": "answered",
+    "state": "closed_answered",
+    "postId": 1197747,
+    "requesterCorrectionRecorded": true,
+    "rawPath": "/tmp/gf-native-leased-close-20261023.json",
+    "scope": "Closes this consultation with a structured, qualified answer; does not close the work-item or acceptance plan."
+  },
+  "publication": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json",
+    "locatorValues": "redacted-display-only",
+    "resolution": "Native paths are redacted display references, not local filesystem paths. Resolve retained transcripts by their native session IDs and source-byte SHA256 witnesses; original locator strings are pinned below.",
+    "sourceDocumentSha256": "4e126c50d1d2d7b122ec68ea8b50aedeaebda2250a94e5b6977728c9625e48b9",
+    "originalLocatorSha256": {
+      "/sourceBefore/snapshot/fileIdentity/path": "f2ff679f2345e87a65cbcc908c706ddca482cd29c94d10b648b770bf0a73fced",
+      "/remainingMatrixTrials/claude-source-isolated-codex-conversion/sourceBefore/archiveRelpath": "dc056624a534ad39524afd3d3c077908a5b238dd289d097538ef4416e8c74f9f",
+      "/remainingMatrixTrials/claude-source-isolated-codex-conversion/nativeReceipt/nativeRef": "3f554a813dd356b7461f4747484a6b5017377eeade887c33245a93c13c73b45a",
+      "/nativeDelivery/persistenceProof/nativeRef": "8e1412a7adc70a25e295d86e60a7a43fdac224b2e8568e96265cf4794d94cbf0"
+    }
+  }
+}

@@ -25,19 +25,27 @@
  */
 import { normalizeRepoPath } from './frozen-candidate-repair-queue';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
+import { COMMIT_MESSAGE_FORMAT, readCommitAgents } from '../harness/git-sync/git-sync-attribution';
 
 /** One commit sitting above the frozen candidate. */
 export interface DriftCommit {
   sha: string;
-  /** From the `Papercusp-Agent:` trailer ONLY. null ⇒ unattributed, never guessed. */
+  /** From the `Papercusp-Agent:` trailer ONLY. null ⇒ unattributed, never guessed. The
+   *  first author when a multi-author commit names several. */
   agent: string | null;
+  /** Every `Papercusp-Agent:` author, when the commit names more than one. */
+  agents?: string[];
   /** Repo-relative paths the commit touched. */
   paths: string[];
 }
 
+/** The `--format` for {@link parseDriftCommits}: the sha, then the delimited message. */
+export const DRIFT_COMMIT_LOG_FORMAT = `%x00%H%n${COMMIT_MESSAGE_FORMAT}`;
+
 export interface DriftFindingPath {
   path: string;
-  commits: Array<{ sha: string; agent: string | null }>;
+  /** `agents` lists every author of a multi-author commit; `agent` is its first. */
+  commits: Array<{ sha: string; agent: string | null; agents?: string[] }>;
 }
 
 export interface FrozenCandidateDriftFinding {
@@ -70,7 +78,7 @@ export function detectFrozenCandidateDrift(input: {
   const failing = new Set(marker.failingPaths.map(normalizeRepoPath).filter((p) => p.length > 0));
   if (failing.size === 0) return undefined;
 
-  const byPath = new Map<string, Array<{ sha: string; agent: string | null }>>();
+  const byPath = new Map<string, DriftFindingPath['commits']>();
   for (const commit of commitsAboveCandidate) {
     for (const raw of commit.paths) {
       const path = normalizeRepoPath(raw);
@@ -78,7 +86,9 @@ export function detectFrozenCandidateDrift(input: {
       const rows = byPath.get(path) ?? [];
       // A commit can list a path once; guard anyway so a duplicated entry cannot inflate
       // the count that answers "did this plan work".
-      if (!rows.some((r) => r.sha === commit.sha)) rows.push({ sha: commit.sha, agent: commit.agent });
+      if (!rows.some((r) => r.sha === commit.sha)) {
+        rows.push({ sha: commit.sha, agent: commit.agent, ...(commit.agents ? { agents: commit.agents } : {}) });
+      }
       byPath.set(path, rows);
     }
   }
@@ -92,8 +102,8 @@ export function detectFrozenCandidateDrift(input: {
   let unattributedCommits = 0;
   for (const { commits } of paths) {
     for (const c of commits) {
-      if (c.agent) matched.add(c.agent);
-      else unattributedCommits += 1;
+      if (!c.agent) unattributedCommits += 1;
+      for (const agent of c.agents ?? (c.agent ? [c.agent] : [])) matched.add(agent);
     }
   }
   const agents = [...matched].sort();
@@ -113,7 +123,7 @@ export function detectFrozenCandidateDrift(input: {
     ...paths.map(
       ({ path, commits }) =>
         `  - ${path} — ${commits
-          .map((c) => `${c.sha.slice(0, 12)} (${c.agent ?? 'unattributed'})`)
+          .map((c) => `${c.sha.slice(0, 12)} (${c.agents?.join(', ') ?? c.agent ?? 'unattributed'})`)
           .join(', ')}`,
     ),
     '',
@@ -146,7 +156,10 @@ export function detectFrozenCandidateDrift(input: {
 }
 
 /**
- * Parse `git log <candidate>..<branch> --format=... --name-only` output into commits.
+ * Parse `git log <candidate>..<branch> --format=${DRIFT_COMMIT_LOG_FORMAT} --name-only` output
+ * into commits. A block without the message delimiters is read in the older
+ * `%(trailers:key=Papercusp-Agent)` shape, which lost the agent on 81% of git-sync commits
+ * (WI-6554700010029864: their trailers were split across paragraphs).
  *
  * Exported so the parser is testable without a repository — the shape it consumes is the
  * one the sweep action produces, and a parser that silently mis-splits would report a
@@ -156,22 +169,15 @@ export function parseDriftCommits(raw: string): DriftCommit[] {
   const out: DriftCommit[] = [];
   for (const block of raw.split('\x00').map((b) => b.trim())) {
     if (!block) continue;
-    const lines = block.split('\n');
-    const sha = (lines.shift() ?? '').trim();
+    const nl = block.indexOf('\n');
+    const sha = (nl === -1 ? block : block.slice(0, nl)).trim();
     if (!/^[0-9a-f]{7,64}$/.test(sha)) continue;
-    let agent: string | null = null;
-    const paths: string[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const trailer = /^Papercusp-Agent:\s*(\S+)/.exec(trimmed);
-      if (trailer) {
-        agent = trailer[1];
-        continue;
-      }
-      paths.push(trimmed);
-    }
-    out.push({ sha, agent, paths });
+    const { agents, rest } = readCommitAgents(nl === -1 ? '' : block.slice(nl + 1));
+    const paths = rest
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    out.push({ sha, agent: agents[0] ?? null, ...(agents.length > 1 ? { agents } : {}), paths });
   }
   return out;
 }

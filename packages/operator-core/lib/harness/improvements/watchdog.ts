@@ -43,6 +43,7 @@ import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, probeAll, recordProbeResults, type ProbeResult } from '../../service-health';
 import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
+import { POOL_SHED_STARVATION_BOUND_MS } from '../../dbos/routines-queue-classification';
 import { checkMigrationDrift } from '../../migration-drift';
 import {
   checkSchemaObjectDrift,
@@ -114,6 +115,11 @@ export type WatchdogSource =
   // visible signal for the loop-wake-rate-limit-robustness class (P1b — agent-insights/
   // loop-wake-turn-deaths-recorded-as-delivered):
   | 'loop-stalled'
+  // WI-6554700010029793: ONE active routine overdue past max(30min, its interval) while the
+  // engine keeps firing OTHER routines in the same workspace — the per-routine starvation
+  // shape (EI-27084758447422793) that 'routine-engine-death' (every routine overdue) cannot see.
+  // See collectRoutineStarvationSignals.
+  | 'routine-starvation'
   // an ACTIVE agent-insight runbook citing repo files that no longer exist
   // (learning-system-audit P-051 — insight-staleness.ts):
   | 'insight-staleness'
@@ -3103,6 +3109,93 @@ export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSi
   return routineFailureSignalsFromRows(rows);
 }
 
+/** One starved routine, as read by collectRoutineStarvationSignals. */
+export interface RoutineStarvationRow {
+  install_slug: string;
+  name: string;
+  target_role: string | null;
+  /** Seconds since the routine's next_fire_at came due. */
+  overdue_secs: number;
+  /** reschedule_interval_sec — set for loop routines, null for cron/interval triggers. */
+  interval_sec: number | null;
+  /** Sum of routine_pool_shed_events.shed_count since the routine came due (context only). */
+  shed_since_due: number;
+}
+
+/** Pure: starved-routine rows → one signal per routine, keyed by install_slug:name. */
+export function routineStarvationSignalsFromRows(rows: RoutineStarvationRow[]): WatchdogSignal[] {
+  return rows.map((r) => {
+    const mins = Math.round(r.overdue_secs / 60);
+    const cadence = r.interval_sec ? `loop interval ${r.interval_sec}s` : 'cron/interval trigger';
+    const shed =
+      r.shed_since_due > 0
+        ? `The pool-shed floor recorded ${r.shed_since_due} shed routine fire(s) in this workspace since it came due, so the shed path is the first suspect (EI-27084758447422793).`
+        : 'No pool-shed events were recorded since it came due, so the skip comes from a path other than the pool-shed floor.';
+    return {
+      source: 'routine-starvation' as const,
+      key: `routine-starvation:${r.install_slug}:${r.name}`,
+      title: `Routine ${r.name} (${r.install_slug}) is starved: ~${mins}min overdue while other routines fire`,
+      body:
+        `Watchdog signal (routine-starvation): the active routine '${r.name}' (harness ${r.install_slug}, ` +
+        `target ${r.target_role ?? 'unknown'}, ${cadence}) has been due for ~${mins}min, past the ` +
+        `max(30min, 1 interval) bound, while the routines engine fired at least one other routine in this ` +
+        `workspace after it came due. The engine is alive; this one routine is being skipped. ${shed} ` +
+        `Read routinesTickImpl's skip paths in packages/operator-core/lib/dbos/routines-workflow.ts.`,
+      severity: 'major' as const,
+      kind: 'bug' as const,
+      // Origin scope (P-032): a routine belongs to ONE harness (its install_slug).
+      scope: `harness:${r.install_slug}`,
+    };
+  });
+}
+
+/**
+ * routine-starvation (WI-6554700010029793): an ACTIVE routine whose next_fire_at is older than
+ * max(floor, its loop interval) while ANOTHER routine in the same workspace fired after it came
+ * due. The engine-death detector (red-queen/engine-death.ts) fires only when EVERY active routine
+ * is overdue, so it cannot see one routine starved while others keep firing. That was the
+ * 2026-10-26 shape: the pool-shed floor skipped the pr-drill green-checkpoint for ~100min while
+ * critical routines fired (EI-27084758447422793). This is the independent alarm in case the
+ * engine's own starvation bound (POOL_SHED_STARVATION_BOUND_MS) regresses or another skip path
+ * appears.
+ *
+ * Scoped to THIS host's workspace for the same reason as the engine-death sentinel (EI-14375):
+ * another tenant's idle routines say nothing about this engine. Parked loops ('infinity') and a
+ * null next_fire_at are excluded, because neither has a measurable overdue age. When the whole
+ * engine dies, the EXISTS term fails and this goes quiet while routine-engine-death takes over.
+ */
+export async function collectRoutineStarvationSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
+  const floorSec = Math.round(POOL_SHED_STARVATION_BOUND_MS / 1000);
+  const rows = await sql<RoutineStarvationRow[]>`
+    SELECT r.install_slug,
+           r.name,
+           r.target_role,
+           EXTRACT(EPOCH FROM (now() - r.next_fire_at))::float8 AS overdue_secs,
+           r.reschedule_interval_sec AS interval_sec,
+           (SELECT COALESCE(sum(e.shed_count), 0)::int
+              FROM harness_shared.routine_pool_shed_events e
+             WHERE e.workspace_id = r.workspace_id
+               AND e.at >= r.next_fire_at) AS shed_since_due
+      FROM harness_shared.routines r
+     WHERE r.workspace_id = ${workspaceId}
+       AND r.active = true
+       AND r.next_fire_at IS NOT NULL
+       AND r.next_fire_at <> 'infinity'::timestamptz
+       AND r.next_fire_at < now() - make_interval(secs => GREATEST(${floorSec}::int, COALESCE(r.reschedule_interval_sec, 0)))
+       AND EXISTS (
+         SELECT 1 FROM harness_shared.routines o
+          WHERE o.workspace_id = r.workspace_id
+            AND o.id <> r.id
+            AND o.last_fired_at > r.next_fire_at)
+     -- Oldest-due first with a total-order tiebreak, so membership under the cap is stable
+     -- across ticks and an absent key means the routine fired again, never crowded out.
+     -- The cap sits above the workspace's active-routine count (348 across all tenants,
+     -- measured 2026-10-27).
+     ORDER BY r.next_fire_at ASC, r.install_slug ASC, r.name ASC
+     LIMIT 500`;
+  return routineStarvationSignalsFromRows(rows);
+}
+
 interface LoopStalledRow {
   id: string;
   name: string;
@@ -4572,6 +4665,14 @@ export async function defaultPapercuspCollectors(
     { name: 'papercusp-migration-content-drift', collect: () => collectMigrationContentDriftSignals() },
     { name: 'papercusp-schema-object-drift', collect: () => collectSchemaObjectDriftSignals() },
     { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
+    // WI-6554700010029793: one routine starved while the engine fires others (the shape
+    // routine-engine-death cannot see). Source declared so a THROWN tick stays attributable
+    // and is never counted as a quiet, auto-closing one.
+    {
+      name: 'papercusp-routine-starvation',
+      source: 'routine-starvation',
+      collect: () => collectRoutineStarvationSignals(getOrgPg().sql, workspaceId),
+    },
     { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },

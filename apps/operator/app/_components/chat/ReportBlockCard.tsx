@@ -5,7 +5,7 @@
  * hydration is operator chrome and enters through the package's item renderer
  * seam; plan/item layout and interaction remain shared with the portal.
  */
-import { useMemo, type ReactNode } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseAsString, useQueryState } from 'nuqs';
@@ -13,7 +13,6 @@ import { fetchSyncQuery } from '@papercusp/sync';
 import { parseGoalOwnerReportSnapshot, type GoalOwnerReportRefV1, type ReportBlock } from '@papercusp/chat-protocol';
 import {
   ReportBlockCard as SharedReportBlockCard,
-  type ReportBlockRenderContext,
   type ReportBlockCardProps as SharedReportBlockCardProps,
   type ResolvedGoalOwnerReport,
 } from '@papercusp/chat-cards';
@@ -83,13 +82,15 @@ function PinnedReportBlockCard(props: SharedReportBlockCardProps): ReactNode {
     )} />;
 }
 
-function RichItemText({
-  context,
+// Status and virtual-row position updates must not parse unchanged Markdown.
+// Pass text rather than the shared renderer's freshly allocated context object.
+const RichItemText = memo(function RichItemText({
+  text,
   harnessSlug,
   planSlug,
   onWorkRefActivate,
 }: {
-  context: ReportBlockRenderContext;
+  text: string;
   harnessSlug?: string;
   planSlug?: string | null;
   onWorkRefActivate?: (ref: ReportWorkRef) => void;
@@ -124,10 +125,10 @@ function RichItemText({
   );
   return (
     <ReactMarkdown remarkPlugins={REPORT_REMARK_PLUGINS} components={components}>
-      {withHardBreaks(context.item.text)}
+      {withHardBreaks(text)}
     </ReactMarkdown>
   );
-}
+});
 
 export function ReportBlockCard({
   report,
@@ -145,7 +146,7 @@ export function ReportBlockCard({
       canDrillIn={canDrillIn}
       renderItemText={(context) => (
         <RichItemText
-          context={context}
+          text={context.item.text}
           harnessSlug={harnessSlug}
           planSlug={planSlug}
           onWorkRefActivate={onWorkRefActivate}

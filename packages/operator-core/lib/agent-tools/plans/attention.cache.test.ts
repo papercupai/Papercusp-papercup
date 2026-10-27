@@ -20,6 +20,8 @@ const M = vi.hoisted(() => ({
   // WI-3348: the request-ALS workspace observed INSIDE each open-questions read.
   seenConversationsWs: [] as Array<string | undefined>,
   groupsOverride: null as unknown[] | null,
+  openEscalations: [] as unknown[],
+  openQuestions: [] as unknown[],
   inboxByWorkspace: new Map<string, unknown[]>(),
   ackedByWorkspace: new Map<string, Set<string>>(),
   seenInboxWs: [] as Array<string | undefined>,
@@ -46,7 +48,7 @@ vi.mock("../../attention/sources", async (orig) => {
 });
 // Every other source → empty (no PG in the unit env).
 vi.mock("../coordination/escalations", () => ({
-  listEscalations: vi.fn(async () => []),
+  listEscalations: vi.fn(async () => M.openEscalations),
 }));
 vi.mock("../coordination/conversations", async () => {
   const { currentRequestWorkspaceId } = await import("../../workspace-als");
@@ -55,7 +57,7 @@ vi.mock("../coordination/conversations", async () => {
     // pin the read to the resolved workspace, not the caller's ambient ALS).
     listConversationsWithTopics: vi.fn(async () => {
       M.seenConversationsWs.push(currentRequestWorkspaceId());
-      return [];
+      return M.openQuestions;
     }),
     conversationsScopeWorkspace: vi.fn(() => currentRequestWorkspaceId() ?? "default"),
   };
@@ -153,6 +155,8 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.readAllPlans.mockClear();
   M.groupsOverride = null;
+  M.openEscalations.length = 0;
+  M.openQuestions.length = 0;
   M.inboxByWorkspace.clear();
   M.ackedByWorkspace.clear();
   M.seenInboxWs.length = 0;
@@ -170,6 +174,43 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it.each(['coord_open_escalations', 'coord_conversations'])(
+    'refreshes a second owner question on its %s source write',
+    async (table) => {
+      const workspace = 'ws-adjacent-owner-questions';
+      M.openEscalations.push({
+        msg_id: 'choice', from: 'su-asker', severity: 'question',
+        summary: 'Choose a route', ts: new Date().toISOString(),
+        options: [{ id: 'continue', label: 'Continue' }],
+      });
+      const { bridgeTriggerEvent } = await import('../../sync-sse');
+      const { registerCacheTagEcaRule, _refreshCacheEcaForTests } = await import('../../events/cache-eca-rule');
+      setFlagOverridesForTest({ [CACHE_LAYER]: true, 'papercusp-cache-tag-eca': true });
+      await _refreshCacheEcaForTests();
+      registerCacheTagEcaRule();
+      const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups).map(row => row.id);
+      expect(await refs()).toContain('coord-escalation:choice');
+      M.openEscalations.push({
+        msg_id: 'question', from: 'su-asker', severity: 'question',
+        summary: 'A second owner question', conversationId: 'conversation-2',
+        ts: new Date().toISOString(),
+      });
+      M.openQuestions.push({
+        id: 'conversation-2', kind: 'question', state: 'open',
+        title: 'A second owner question', asker_id: 'su-asker',
+        harness_slug: null, created_ts: new Date().toISOString(),
+      });
+      // The projection event must invalidate this aggregate independently of
+      // the append-heavy coord log's separately debounced notification.
+      bridgeTriggerEvent(`harness_shared.${table}.changed`, {
+        workspace_id: workspace, op: 'INSERT', id: 'question',
+      });
+      await expect.poll(refs).toContain('coord-escalation:question');
+      expect(await refs()).toContain('coord-escalation:choice');
+      expect(await refs()).not.toContain('conversation:conversation-2');
+    },
+  );
+
   it('refreshes the real attention handler through the production PG bridge and reaction action', async () => {
     const workspace = 'ws-inbox-production-bridge';
     M.inboxByWorkspace.set(workspace, ['selected', 'neighbor'].map(msg_id => ({

@@ -36,7 +36,7 @@ import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
-import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
+import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
 import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
@@ -61,6 +61,19 @@ const ACCEPTANCE_BAR_CONTRACT_REFUSAL_NEXT =
 const PROPOSE_RUBRIC_INVALID_ARGS_PREFIX = 'invalid_args: proposeRubric:';
 const PROPOSE_RUBRIC_INVALID_ARGS_NEXT =
   'Correct the rubric input described in the error, then retry. For off-scale criterion instructions, use the rubric’s effective ratingScale or revise the procedure prose.';
+
+function rubricReadFailedRefusal(error: unknown, rubricRef: string) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith('rubric_read_failed:')) return null;
+  return {
+    ok: false as const,
+    code: 'rubric_read_failed',
+    error: message,
+    rubricRef,
+    retryable: true,
+    next: 'Retry the same amendment after rubric reads recover; this failure does not establish that the rubric is missing.',
+  };
+}
 
 function proposeRubricInvalidArgsRefusal(error: unknown): {
   ok: false;
@@ -223,6 +236,9 @@ const AMEND_REVIEW_PRESERVE_PATHS = [
   'receipt.registered',
   'receipt.rubricRef',
   'receipt.idempotencyKey',
+  'receipt.progress.phase',
+  'receipt.progress.phaseStartedAt',
+  'receipt.progress.observedAt',
   'review.state',
   'review.conversationId',
   'review.previewPostRef',
@@ -294,7 +310,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'Preview without applying. Prefer requestReview:{workItemId} to post approval and start review in one call; manual reviewPreviewPost remains supported.',
+        'Preview only. requestReview:{workItemId} posts approval and starts review in one call; reviewPreviewPost remains supported.',
       ),
     reviewPreviewPost: z
       .string()
@@ -315,14 +331,14 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
         'dryRun only: the server posts preview.approval on this work-item and opens the routed review in the same call.',
       ),
     reviewEvidencePost: z.string().trim().regex(/^thread-post:[1-9][0-9]*$/).optional().describe(
-      'dryRun with retained reviewPreviewPost only: your later non-empty local verification-evidence post on that same thread. After an ended reviewer objection, requests an independent re-review of the unchanged preview; retries with this evidence reuse its review.',
+      'dryRun + retained reviewPreviewPost only: later non-empty local verification evidence on that thread. After an ended reviewer objection, requests an independent re-review of the unchanged preview; retries reuse that review.',
     ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      'Routed-review backend/model and optional effort; required with reviewPreviewPost. The pair must match a workspace expert-model allowlist entry. Unavailable choices return a structured refusal and are never substituted.',
+      'Review backend/model and optional effort; required with reviewPreviewPost. Must match the workspace expert-model allowlist; unavailable pairs are refused, never substituted.',
     ),
     criteria: z
       .array(amendmentCriterionSchema)
@@ -336,7 +352,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
       .optional()
       .describe(
-        'change one acceptance criterion structural evidence plane through the canonical BAR amendment transaction',
+        "Set a criterion's evidence plane through the BAR amendment transaction.",
       ),
     criterion: z
       .object({
@@ -358,13 +374,13 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       })
       .optional()
       .describe(
-        "Set one grading class (P-008); upgrade-only. Marking 'violatable' tightens grading and preserves status/ratifier; downgrades require rubrics:propose with classDowngradeReason.",
+        "P-008 class update; upgrade-only. 'violatable' tightens grading and preserves status/ratifier; downgrades use rubrics:propose with classDowngradeReason.",
       ),
     methodRef: z
       .string()
       .max(200)
       .optional()
-      .describe('set/replace the agent-insights runbook slug for the rubric-level method'),
+      .describe('Set the agent-insights runbook slug for the rubric method.'),
     classRef: z
       .string()
       .trim()
@@ -372,7 +388,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(120)
       .optional()
       .describe(
-        'Bind a missing class or repeat it while preserving BARs/criteria. With a non-empty reason, general/investigation may strengthen to a coding class; prior class and compositions are retained. Other replacements are refused.',
+        'Bind a missing class or repeat it, preserving BARs/criteria. With a reason, general/investigation may strengthen to coding; prior class/compositions remain. Other replacements are refused.',
       ),
     composes: z
       .array(z.string().trim().min(1))
@@ -635,21 +651,33 @@ export default defineTool({
         ? await reviewReceiptKey(args, identity, previewSource)
         : 'preview-' + randomUUID();
       let registered = false;
-      const receipt = () => ({
+      let progress: { phase: string; phaseStartedAt: number } | undefined;
+      const receipt = (includeProgress = false) => ({
         idempotencyKey: receiptKey, rubricRef: args.rubricRef, registered,
         poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
+        // A foreground snapshot; shared status carries its separately published
+        // observation. Never refresh a retained snapshot's timestamp on replay.
+        ...(includeProgress && progress ? { progress: { ...progress, observedAt: Date.now() } } : {}),
       });
-      const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
+      // notify-classification: {"classification":"durable","reason":"Tracked amendment preview can request an independent review; preserve that terminal handoff obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      const run = trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
+        const reportPhase = (phase: string) => {
+          onPhase(phase);
+          progress = { phase, phaseStartedAt: Date.now() };
+        };
         // A preview must enforce the same instrument admission as apply before
         // spending a reviewer turn on a patch the authoring guard will refuse.
+        reportPhase('preview-instrument-audit');
         const instrumentAudit = await auditAmendInstrumentBindings(input);
         const instrumentRefusal = instrumentAudit ? unregisteredInstrumentRefusal(instrumentAudit) : null;
         if (instrumentRefusal) return { ...instrumentRefusal, dryRun: true };
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
         try {
+          reportPhase('preview-build');
           preview = await previewAcceptanceBarAmendment(input);
         } catch (error) {
-          const refusal = noLiveDischargeMappingRefusal(error) ?? acceptanceBarContractRefusal(error);
+          const refusal = rubricReadFailedRefusal(error, args.rubricRef) ??
+            noLiveDischargeMappingRefusal(error) ?? acceptanceBarContractRefusal(error);
           if (refusal) return { ...refusal, dryRun: true };
           throw error;
         }
@@ -677,6 +705,7 @@ export default defineTool({
         }
         let previewPostRef = args.reviewPreviewPost;
         if (!previewPostRef && args.requestReview) {
+          reportPhase('preview-post-approval');
           const posted = await postPreviewApproval(args.requestReview, preview.approval, identity);
           if (!('ref' in posted)) return { ...posted, dryRun: true, preview };
           previewPostRef = posted.ref;
@@ -684,6 +713,7 @@ export default defineTool({
         let review: Awaited<ReturnType<typeof openAcceptanceBarAmendmentReview>>;
         try {
           review = await openAcceptanceBarAmendmentReview({
+            onPhase: reportPhase,
             rubricRef: args.rubricRef,
             previewPostRef: previewPostRef!,
             preview,
@@ -705,6 +735,7 @@ export default defineTool({
         return { ok: true, dryRun: true, preview, review };
       }, {
         onRegistered: () => { registered = true; },
+        persistPreviewProgress: true,
         omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
       });
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
@@ -720,7 +751,7 @@ export default defineTool({
             dryRun: true,
             pending: true,
             idempotencyKey: receiptKey,
-            receipt: receipt(),
+            receipt: receipt(true),
             note:
               'The preview reached its foreground response deadline and continues server-side. Poll rubrics:amend-status with this receipt; dryRun does not apply the amendment.',
           };
@@ -828,6 +859,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
     rubric = await amendRubric(input);
   } catch (error) {
     const refusal =
+      rubricReadFailedRefusal(error, rubricRef) ??
       noLiveDischargeMappingRefusal(error) ??
       acceptanceBarContractRefusal(error) ??
       acceptanceBarApprovalRequiredRefusal(error) ??
@@ -840,7 +872,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
   const completeness = rubricCompleteness(rubric);
   // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).
   const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
-  const methodLint = rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+  const methodLint = rubric.kind === 'acceptance' ? await lintAcceptanceMethods(rubric.criteria, rubric.subjectHarnessSlug ?? undefined) : [];
   // acceptance-runtime-plane P-004: same non-blocking vetting finding as rubrics:propose.
   const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];
   // Push-on-write (push-audit 2026-07-26): the Rubrics pane + trend read these.

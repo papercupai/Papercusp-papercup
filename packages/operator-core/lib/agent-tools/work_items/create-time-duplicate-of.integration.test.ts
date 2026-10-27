@@ -204,4 +204,57 @@ describe('work_items:create stamps the typed duplicate-of verdict at filing time
     expect(await occurrencesOn(foreign.workItem.id)).toEqual([]);
     expect(await occurrencesOn(closed.workItem.id)).toEqual([]);
   });
+
+  it('keeps independent work under different explicit parents distinct despite a HARD-band match', async () => {
+    const installed = await file('P536 installed composition', { kind: 'change' });
+    const helper = await file('P537 maintained helper', { kind: 'change' });
+    const canonical = await file('Independently author and freeze P536 installed VM-copy composition oracle', {
+      kind: 'change', parent: installed.workItem.id,
+    });
+
+    // EI-26922584654907839: the real filing's measured semantic-hard score.
+    screen.next = { hard: [hardMatch(canonical.workItem.id, 0.9139014158815572)], soft: [] };
+    const independent = await file('Independently author and freeze P537 maintained helper oracle', {
+      kind: 'change', parent: helper.workItem.id,
+    });
+    expect(independent.duplicateOf).toBeUndefined();
+    expect((await verdict(independent.workItem.id))?.duplicate_of).toBeNull();
+    const [saved] = await sql<{ candidates: unknown }[]>`
+      SELECT payload->'dedupCandidates' AS candidates FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${independent.workItem.id}`;
+    expect(saved?.candidates).toEqual([
+      { id: canonical.workItem.id, method: 'semantic-hard', similarity: 0.9139014158815572 },
+    ]);
+    expect(await occurrencesOn(canonical.workItem.id)).toEqual([]);
+    const edges = await sql`
+      SELECT rel FROM harness_shared.coord_links
+       WHERE src_ref = ${independent.workItem.id} AND rel = 'duplicates'`;
+    expect(edges).toHaveLength(0);
+
+    // A real repeat within the SAME declared scope still gets the typed verdict.
+    screen.next = { hard: [hardMatch(canonical.workItem.id, 0.97)], soft: [] };
+    const repeat = await file('Repeat installed composition oracle', {
+      kind: 'change', parent: installed.workItem.id,
+    });
+    expect(repeat.duplicateOf).toEqual({ id: canonical.workItem.id, confidence: 0.97 });
+    expect((await verdict(repeat.workItem.id))?.duplicate_source).toBe('create-match');
+  });
+
+  it('keeps a child distinct from its top-level parent while retaining same-scope hard candidates', async () => {
+    const parent = await file('Runtime composition', { kind: 'change' });
+    screen.next = { hard: [hardMatch(parent.workItem.id, 0.99)], soft: [] };
+    const child = await file('Runtime composition independent acceptance', {
+      kind: 'change', parent: parent.workItem.id,
+    });
+    expect(child.duplicateOf).toBeUndefined();
+    expect((await verdict(child.workItem.id))?.duplicate_of).toBeNull();
+    expect(await occurrencesOn(parent.workItem.id)).toEqual([]);
+
+    // The higher-scoring parent must not hide an eligible sibling candidate.
+    screen.next = { hard: [hardMatch(parent.workItem.id, 0.99), hardMatch(child.workItem.id, 0.95)], soft: [] };
+    const sibling = await file('Repeat runtime composition acceptance', {
+      kind: 'change', parent: parent.workItem.id,
+    });
+    expect(sibling.duplicateOf).toEqual({ id: child.workItem.id, confidence: 0.95 });
+  });
 });

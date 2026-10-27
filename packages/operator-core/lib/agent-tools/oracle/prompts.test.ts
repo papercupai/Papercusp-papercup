@@ -20,9 +20,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const buildMemoryContextBlockMock = vi.fn<(opts: unknown) => Promise<string | null>>();
-const { loadPersonaMock } = vi.hoisted(() => ({ loadPersonaMock: vi.fn(() => {
-  throw new Error('prompt-assembly: oracle.persona.md not found (runtime-only image)');
-}) }));
+const { loadPersonaMock } = vi.hoisted(() => ({ loadPersonaMock: vi.fn<() => string>() }));
 
 // This suite owns memory placement, not the independently-covered tool catalog.
 // Keep the real playbook reader while simulating pruned persona assets and isolating catalog registration
@@ -56,10 +54,12 @@ vi.mock('../../memory/injection', () => ({
 
 import { composeOraclePrompt, readOracleConfig } from './prompts';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
+import { RolePromptUnavailableError } from '../../prompt-assembly';
 const personaCallsDuringImport = loadPersonaMock.mock.calls.length;
 
 beforeEach(() => {
   loadPersonaMock.mockClear();
+  loadPersonaMock.mockImplementation(() => { throw new RolePromptUnavailableError('oracle', 'persona'); });
   vi.mocked(readOperatorState).mockImplementation(async (key: string) => {
     if (key === 'operator_oracle_prompt') return { content: 'You are the Oracle.' };
     if (key === 'operator_oracle_memory') return { content: '' };
@@ -81,9 +81,18 @@ describe('runtime-only Oracle boot asset closure', () => {
   });
   it('fails explicitly only when an unconfigured Oracle actually needs the missing persona', async () => {
     vi.mocked(readOperatorState).mockResolvedValue(null);
-    await expect(readOracleConfig()).rejects.toThrow(/oracle.persona.md not found/);
+    await expect(readOracleConfig()).rejects.toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', role: 'oracle', document: 'persona' });
     expect(loadPersonaMock).toHaveBeenCalledWith('oracle');
     expect(writeOperatorState).not.toHaveBeenCalled();
+  });
+  it('enables the default after content is installed, without a negative config cache', async () => {
+    const state = new Map<string, { content: string }>();
+    vi.mocked(readOperatorState).mockImplementation(async (key: string) => state.get(key) ?? null);
+    vi.mocked(writeOperatorState).mockImplementation(async (key, value) => { state.set(key, value as { content: string }); });
+    await expect(readOracleConfig()).rejects.toBeInstanceOf(RolePromptUnavailableError);
+    loadPersonaMock.mockReturnValue('SYNTHETIC INSTALLED ORACLE');
+    expect((await readOracleConfig()).prompt).toBe('SYNTHETIC INSTALLED ORACLE');
+    expect(writeOperatorState).toHaveBeenCalledWith('operator_oracle_prompt', { content: 'SYNTHETIC INSTALLED ORACLE' });
   });
 });
 

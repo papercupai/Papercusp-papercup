@@ -190,7 +190,7 @@ function markerAttributionIds(afterMarker: string): string[] | null {
 /**
  * `itemId` — when supplied, an occurrence explicitly attributed to OTHER items is
  * skipped (see MARKER_ITEM_ATTRIBUTION). Omitted ⇒ unchanged behaviour, which is
- * what the item's-own-text and Decision paths continue to use.
+ * what the item's-own-text path continues to use.
  */
 function findOwnerGateMarker(text: string | null | undefined, itemId?: string | null): string | null {
   if (!text) return null;
@@ -304,6 +304,31 @@ function findNowOwnerGateMarker(nowText: string, itemId: string, allItemIds: rea
   }
   const mentionsAnotherItem = allItemIds.some((id) => id !== itemId && itemMentioned(nowText, id));
   return mentionsAnotherItem ? null : findOwnerGateMarker(nowText, itemId);
+}
+
+/** A Decision's itemRefs describe its whole scope, not every restriction in its
+ * prose. Attribute each marker locally; preserved restrictions about another
+ * subject must not become new gates on the implementation item (EI-26939203566923309).
+ * Unqualified gate clauses still apply to the Decision's referenced items. */
+function findDecisionOwnerGateMarker(text: string, itemId: string, itemText: string): string | null {
+  for (const segment of markerScopeSegments(text)) {
+    const mentionedIds = segment.match(/\bP-\d{3,}\b/gi) ?? [];
+    if (mentionedIds.length > 0 && !mentionedIds.some((id) => id.toUpperCase() === itemId.toUpperCase())) continue;
+    // Only a separately named subject proves preservation is unrelated. Bare
+    // approval/execution/status restrictions still gate the referenced item.
+    const preservation = /^no change to\s+(?:owner-gated|hard-deferred)\s+/i.exec(segment);
+    const subject = preservation
+      ? /^([A-Z][\p{L}\p{N}_-]*(?:\s+[A-Z][\p{L}\p{N}_-]*)*)\s+(?:ask|lane|work)\b/u.exec(segment.slice(preservation[0].length))
+      : null;
+    if (mentionedIds.length === 0 && subject && !new RegExp(`\\b${escapeRegExp(subject[1])}\\b`, 'i').test(itemText)) {
+      const laterMarker = findOwnerGateMarker(segment.slice(preservation![0].length + subject[0].length), itemId);
+      if (laterMarker) return laterMarker;
+      continue;
+    }
+    const marker = findOwnerGateMarker(segment, itemId);
+    if (marker) return marker;
+  }
+  return null;
 }
 
 export interface PlanItemStamp {
@@ -514,7 +539,7 @@ export async function planItemLaneBlockReason(
       const nowMarker = findNowOwnerGateMarker(nowText, li.id, allItemIds);
       const decisionMarker = decisions
         .filter((d) => d.itemRefs.includes(li.id))
-        .map((d) => findOwnerGateMarker(d.title) ?? findOwnerGateMarker(d.body))
+        .map((d) => findDecisionOwnerGateMarker(d.title, li.id, li.text) ?? findDecisionOwnerGateMarker(d.body, li.id, li.text))
         .find((m): m is string => Boolean(m));
       return ownMarker ?? nowMarker ?? decisionMarker ?? null;
     };

@@ -51,6 +51,7 @@ export default defineTool({
       decisionId: z.string().optional(),
       ageSec: z.number().optional(),
       reclaimableAt: z.number().optional(),
+      progress: z.object({ phase: z.string(), phaseStartedAt: z.number(), observedAt: z.number() }).optional(),
     })
     .passthrough(),
   async handler(args) {
@@ -58,21 +59,28 @@ export default defineTool({
     const receipt = await getAmendReceipt(args.rubricRef, args.idempotencyKey);
     // A worker can die after the amendment commits but before it updates the
     // receipt. In that case the atomic Decision outranks a stranded "running".
-    if (receipt?.state === 'running' && !args.idempotencyKey.startsWith('preview-')) {
-      const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);
-      if (decision) {
-        return reply({
-          state: 'committed', source: 'decision', decisionId: decision.decisionId,
-          subjectPlan: decision.subjectPlan,
-          note: 'Committed; read the new revision with rubrics:get.',
-        });
+    if (receipt?.state === 'running') {
+      const preview = args.idempotencyKey.startsWith('preview-');
+      if (!preview) {
+        const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);
+        if (decision) {
+          return reply({
+            state: 'committed', source: 'decision', decisionId: decision.decisionId,
+            subjectPlan: decision.subjectPlan,
+            note: 'Committed; read the new revision with rubrics:get.',
+          });
+        }
       }
+      // Preview workers have the same executor identity and can die too;
+      // only the committed Decision lookup is specific to apply receipts.
       if (isRunningReceiptOrphaned(receipt)) {
         return reply({
           state: 'orphaned', source: 'receipt',
           ageSec: Math.round((Date.now() - receipt.startedAt) / 1000),
           reclaimableAt: Date.now(),
-          note: 'The recorded executor is no longer running; retry rubrics:amend with the same key to reclaim it now.',
+          note: preview
+            ? 'The recorded executor is no longer running; issue rubrics:amend with dryRun:true again for a fresh preview.'
+            : 'The recorded executor is no longer running; retry rubrics:amend with the same key to reclaim it now.',
         });
       }
     }
@@ -83,6 +91,7 @@ export default defineTool({
         ageSec: Math.round(((receipt.finishedAt ?? Date.now()) - receipt.startedAt) / 1000),
         ...(receipt.result ? { result: receipt.result } : {}),
         ...(receipt.error ? { error: receipt.error } : {}),
+        ...(receipt.progress ? { progress: receipt.progress } : {}),
       });
     }
     const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);

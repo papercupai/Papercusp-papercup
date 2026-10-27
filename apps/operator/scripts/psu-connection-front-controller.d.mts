@@ -147,7 +147,7 @@ export function normalizeHostedProfile(input: any): {
     kind: string;
     origin: string;
 };
-export function defaultPsuConnectionStorePath(home?: string): string;
+export function defaultPsuConnectionStorePath(home: any): string;
 export function loadPsuConnectionStore(path?: string): {
     version: string;
     profiles: any;

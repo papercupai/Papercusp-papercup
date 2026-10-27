@@ -2,16 +2,46 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/code-intel-symbol-snapshot.mjs and regenerate.
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]> }} input
+ * `censusOnly` retains resolution and completeness guards while omitting brief
+ * proof objects that the source-population collector does not consume.
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean, censusOnly?: boolean, callCensusSink?: (call: {path: string, line: number, column: number}, targetPath: string | null, index: number) => void }} input
  */
-export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages }: {
+export function parseSymbolSnapshot({ files, readSource, resolveModule, workspacePackages, includeCallCensus, censusOnly }: {
     files: string[];
     readSource: (path: string) => string | null;
     resolveModule: (importer: string, specifier: string) => string | null;
     workspacePackages?: Array<[string, string[]]>;
+    includeCallCensus?: boolean;
+    censusOnly?: boolean;
+    callCensusSink?: (call: {
+        path: string;
+        line: number;
+        column: number;
+    }, targetPath: string | null, index: number) => void;
 }): {
-    schema: string;
-    knowledge: string;
+    units: Map<any, any>;
+    symbols: Map<any, any>;
+    stats: {
+        files: number;
+        skippedFiles: number;
+        unresolvedCalls: number;
+        resolvedCalls: number;
+        truncated: boolean;
+    };
+    immediateCalls: any[];
+};
+/** Resolve only after the complete, ordered file population is assembled.
+ * Parsing can run in bounded threads without resolving against partial exports.
+ * @param {Parameters<typeof parseSymbolSnapshot>[0] & { callCensusSink?: (call: {path: string, line: number, column: number}, targetPath: string | null, index: number) => void, parsed?: ReturnType<typeof parseSymbolSnapshot> }} input
+ */
+export function buildSymbolSnapshot(input: Parameters<typeof parseSymbolSnapshot>[0] & {
+    callCensusSink?: (call: {
+        path: string;
+        line: number;
+        column: number;
+    }, targetPath: string | null, index: number) => void;
+    parsed?: ReturnType<typeof parseSymbolSnapshot>;
+}): {
     limitations: string[];
     stats: {
         files: number;
@@ -21,6 +51,10 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule, workspac
         truncated: boolean;
     };
     symbols: any[];
+    callCensus?: any[] | undefined;
+    schema: string;
+    knowledge: string;
 };
 /** Reuse the dependency producer's resolver by deriving one synthetic import through it. */
 export function relativeSymbolModule(importer: any, specifier: any, fileSet: any): string | null;
+export function isSymbolSnapshotSourcePath(path: string): boolean;

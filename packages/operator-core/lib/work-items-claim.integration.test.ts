@@ -632,7 +632,21 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
   it('re-claiming by the same assignee is idempotent', async () => {
     await seedFeature('F-3');
     expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    // A continuous hold is the provenance interval for edits made before a
+    // claim-time brief refresh. A refresh must not move that interval's start.
+    const [before] = await db.sql<{ taken_at: string }[]>`
+      UPDATE harness_shared.harness_features_consolidated
+      SET taken_at = now() - interval '1 minute' WHERE feature_id = 'F-3'
+      RETURNING taken_at::text`;
     expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    const [after] = await db.sql<{ taken_at: string }[]>`
+      SELECT taken_at::text FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-3'`;
+    expect(after.taken_at).toBe(before.taken_at);
+    expect(await wi.releaseWorkItem('F-3', { harness: H, expectedAssignee: 'agA' })).not.toBeNull();
+    expect((await wi.claimWorkItem('F-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    const [reclaimed] = await db.sql<{ taken_at: string }[]>`
+      SELECT taken_at::text FROM harness_shared.harness_features_consolidated WHERE feature_id = 'F-3'`;
+    expect(new Date(reclaimed.taken_at).getTime()).toBeGreaterThan(new Date(before.taken_at).getTime());
   });
 
   // bug-drain-200k (2026-07-21, EI-18218648001542437 / migration 655): the ISSUE-family
@@ -669,7 +683,18 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     it('re-claiming an issue by the same assignee is idempotent', async () => {
       await seedIssue('EI-race-3');
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+      const [before] = await db.sql<{ taken_at: string }[]>`
+        UPDATE harness_shared.work_items SET taken_at = now() - interval '1 minute'
+        WHERE feature_id = 'EI-race-3' RETURNING taken_at::text`;
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+      const [after] = await db.sql<{ taken_at: string }[]>`
+        SELECT taken_at::text FROM harness_shared.work_items WHERE feature_id = 'EI-race-3'`;
+      expect(after.taken_at).toBe(before.taken_at);
+      expect(await wi.releaseWorkItem('EI-race-3', { harness: H, expectedAssignee: 'agA' })).not.toBeNull();
+      expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+      const [reclaimed] = await db.sql<{ taken_at: string }[]>`
+        SELECT taken_at::text FROM harness_shared.work_items WHERE feature_id = 'EI-race-3'`;
+      expect(new Date(reclaimed.taken_at).getTime()).toBeGreaterThan(new Date(before.taken_at).getTime());
     });
 
     it('claims an admission-pending issue durably dispatched by the current fleet leader', async () => {

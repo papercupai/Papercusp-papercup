@@ -1,16 +1,17 @@
 /**
  * D-105/D-107/D-112 workspace-host artifact publication.
  *
- * Operator-authenticated uploads land create-only in the existing Cupboard R2
- * bucket. Public GET/HEAD remain indistinguishable from missing until a
+ * Operator-authenticated uploads land create-only through the private storage
+ * port. Public GET/HEAD remain indistinguishable from missing until a
  * create-only finalization marker binds the bundle, detached signature,
  * manifest, signing key, and trust receipts to one verified digest.
- * Large server bundles use a private immutable part plan plus native R2
+ * Large server bundles use a private immutable part plan plus resumable
  * multipart state, keeping every Worker request bounded while preserving the
  * exact content-addressed server.tgz key consumed by finalization and readers.
  */
 
-import { isHexSha256, sha256Hex } from '@papercusp/artifact-registry';
+import { isHexSha256, sha256Hex, type ObjectMetadata, type ObjectBody,
+  type ObjectStore, type ObjectPutOptions, type MultipartUpload, type UploadedPart } from '@papercusp/artifact-registry';
 import {
   deriveWorkspaceHostCanonicalArtifactUrls,
   validateWorkspaceHostImageArtifact,
@@ -471,7 +472,7 @@ function multipartPartReceiptMatches(
 function parseCompletionParts(
   value: unknown,
   plan: readonly MultipartPartPlan[],
-): { parts: R2UploadedPart[]; error: string | null } {
+): { parts: UploadedPart[]; error: string | null } {
   if (!isRecord(value) || !Array.isArray(value.parts)) {
     return { parts: [], error: 'parts must be an array' };
   }
@@ -481,7 +482,7 @@ function parseCompletionParts(
   if (value.parts.length !== plan.length) {
     return { parts: [], error: 'completion must include every planned part exactly once' };
   }
-  const parts: R2UploadedPart[] = [];
+  const parts: UploadedPart[] = [];
   for (let index = 0; index < value.parts.length; index += 1) {
     const candidate = value.parts[index];
     if (!isRecord(candidate)) return { parts: [], error: `parts[${index}] must be an object` };
@@ -519,7 +520,7 @@ function metadataFor(
 }
 
 function descriptorFromObject(
-  object: Pick<R2Object, 'size' | 'customMetadata'> | null,
+  object: Pick<ObjectMetadata, 'size' | 'customMetadata'> | null,
   file: WorkspaceHostArtifactFile,
   bundleSha256: string,
 ): StoredFileDescriptor | null {
@@ -542,7 +543,7 @@ function descriptorFromObject(
 }
 
 function descriptorMatches(
-  object: Pick<R2Object, 'size' | 'customMetadata'> | null,
+  object: Pick<ObjectMetadata, 'size' | 'customMetadata'> | null,
   file: WorkspaceHostArtifactFile,
   bundleSha256: string,
   expected: StoredFileDescriptor,
@@ -552,19 +553,18 @@ function descriptorMatches(
 }
 
 async function putCreateOnly(
-  bucket: R2Bucket,
+  bucket: ObjectStore,
   key: string,
   body: ArrayBuffer | Uint8Array | string,
-  options: R2PutOptions,
+  options: ObjectPutOptions,
 ): Promise<'created' | 'exists'> {
   try {
-    // The installed Workers types model conditional PUT as R2Object, while the
-    // runtime may surface an unsatisfied precondition as null or an exception.
+    // Providers can surface an unsatisfied precondition as null or an exception.
     // Handle both and adjudicate the race from a fresh HEAD.
     const result = (await bucket.put(key, body, {
       ...options,
       onlyIf: { etagDoesNotMatch: '*' },
-    })) as R2Object | null;
+    })) as ObjectMetadata | null;
     return result ? 'created' : 'exists';
   } catch (error) {
     if (await bucket.head(key)) return 'exists';
@@ -1110,7 +1110,7 @@ async function initiateMultipartArtifact(c: Context<{ Bindings: Env }>): Promise
     });
   }
 
-  let upload: R2MultipartUpload;
+  let upload: MultipartUpload;
   try {
     upload = await c.env.ARTIFACTS.createMultipartUpload(key, {
       httpMetadata: { contentType: CONTENT_TYPE['server.tgz'] },
@@ -1508,7 +1508,7 @@ async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise
   // authoritative post-commit view and is also what every replay/finalization
   // path adjudicates. Validating the transient return object produced a false
   // `multipart_completed_object_mismatch` after all parts had committed green.
-  let completed: R2Object | null;
+  let completed: ObjectMetadata | null;
   try {
     completed = await c.env.ARTIFACTS.head(key);
   } catch (error) {
@@ -1673,7 +1673,7 @@ async function serveArtifact(
   headers.set('x-content-type-options', 'nosniff');
   if (object!.httpEtag) headers.set('etag', object!.httpEtag);
 
-  const body = !headOnly && 'body' in object! ? (object as R2ObjectBody).body : null;
+  const body = !headOnly && 'body' in object! ? (object as ObjectBody).body : null;
   return new Response(body, { status: 200, headers });
 }
 

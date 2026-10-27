@@ -35,6 +35,7 @@ import {
   type DependencyPolicyFinding,
 } from '@papercusp/operator-core/lib/scheduler/dependency-invariants';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '@papercusp/operator-core/lib/work-nature/agent-work-predicate';
 /** A node as the graph needs it. A structural subset of the list's row — same corpus (D-003). */
 export interface DepGraphItem {
   id: string;
@@ -274,7 +275,7 @@ export const DEP_GRAPH_NODE_BUDGET = 300;
 /** Blocker statuses that no longer gate. PER FAMILY — the two lists genuinely differ. */
 const FEATURE_TERMINAL = new Set(['passed', 'deprecated', 'done', 'dropped']);
 const ISSUE_TERMINAL = new Set(['resolved', 'closed', 'done', 'dropped']);
-const ISSUE_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * Is this blocker satisfied (terminal)?

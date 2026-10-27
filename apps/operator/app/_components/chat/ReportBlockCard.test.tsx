@@ -17,6 +17,7 @@ import { goalOwnerReportFixture } from '../../../../../packages/operator-core/te
 import type { ReactElement } from 'react';
 
 const fetchSyncQuery = vi.hoisted(() => vi.fn());
+const reportMarkdownParses = vi.hoisted(() => vi.fn());
 const render = (ui: ReactElement) => rtlRender(<NuqsTestingAdapter searchParams="">{ui}</NuqsTestingAdapter>);
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -33,6 +34,17 @@ vi.mock('@papercusp/sync', () => ({
     error: null,
   }),
 }));
+
+vi.mock('./remark-work-refs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./remark-work-refs')>();
+  return {
+    ...original,
+    remarkWorkRefs: (...args: Parameters<typeof original.remarkWorkRefs>) => {
+      reportMarkdownParses();
+      return original.remarkWorkRefs(...args);
+    },
+  };
+});
 
 import { ReportBlockCard } from './ReportBlockCard';
 import type { ReportBlock } from '@papercusp/chat-protocol';
@@ -102,6 +114,28 @@ describe('REPORT-PINNED-DETAIL-P003 operator expansion', () => {
 });
 
 describe('ReportBlockCard', () => {
+  it('reuses unchanged report markdown across status refreshes while updating text and link authority', () => {
+    reportMarkdownParses.mockClear();
+    const firstActivate = vi.fn();
+    const nextActivate = vi.fn();
+    const makeReport = (status: string, text = 'See **WI-37945**'): ReportBlock => ({
+      plans: [{ title: 'Progress', items: [{ id: 'P-001', text, status }] }],
+    });
+    const { rerender } = rtlRender(<ReportBlockCard report={makeReport('wip')} harnessSlug="papercusp" onWorkRefActivate={firstActivate} />);
+    const initialParses = reportMarkdownParses.mock.calls.length;
+    expect(initialParses).toBeGreaterThan(0);
+    rerender(<ReportBlockCard report={makeReport('done')} harnessSlug="papercusp" onWorkRefActivate={firstActivate} />);
+    expect(reportMarkdownParses).toHaveBeenCalledTimes(initialParses);
+    expect(screen.getByTitle('done')).toBeTruthy();
+
+    rerender(<ReportBlockCard report={makeReport('done', 'Updated **WI-6601**')} harnessSlug="papercusp" onWorkRefActivate={nextActivate} />);
+    expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses);
+    expect(screen.queryByLabelText('WI-37945')).toBeNull();
+    fireEvent.click(screen.getByLabelText('WI-6601'));
+    expect(nextActivate).toHaveBeenCalledWith({ id: 'WI-6601', kind: 'work-item', planSlug: undefined });
+    expect(firstActivate).not.toHaveBeenCalled();
+  });
+
   it('renders the title, plan titles, statuses, summary, and item rows', () => {
     render(<ReportBlockCard report={report} />);
     expect(screen.getByText('Fleet status')).toBeTruthy();

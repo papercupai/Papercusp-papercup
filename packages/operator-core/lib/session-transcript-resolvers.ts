@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { Sql } from 'postgres';
 import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
-import type { ClosedCodexSessionPopulation } from './interactive-usage/ingest-adapters';
+import type { ClosedCodexSessionPopulation, ClosedClaudeSessionPopulation } from './interactive-usage/ingest-adapters';
 import { codexToolCallArgsRaw } from './transcript-wire';
 
 class CodexSourceProofError extends Error {
@@ -34,14 +34,19 @@ class CodexSourceProofError extends Error {
 
 /** One stable, complete host-owned source for both token and monetary proofs. */
 async function readCompleteCodexSource(binding: { nativeSessionId: string; codexHome: string }) {
-  const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
   const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
   if (!file) throw new CodexSourceProofError('identity-usage-incomplete', 'the host native transcript is unavailable');
-  const root = path.join(await fs.realpath(binding.codexHome), 'sessions');
+  return readCompleteNativeSource(binding.codexHome, 'sessions', file);
+}
+
+/** Shared physical byte proof for both maintained native CLI formats. */
+async function readCompleteNativeSource(home: string, directory: 'sessions' | 'projects', file: string) {
+  const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
+  const root = path.join(await fs.realpath(home), directory);
   // The maintained container wrapper relocates the host-issued home itself.
   // Resolve that capability root, while refusing links below it: a rollout
   // cannot redirect the proof to a different file inside or outside the home.
-  const relative = path.relative(path.resolve(binding.codexHome, 'sessions'), file);
+  const relative = path.relative(path.resolve(home, directory), file);
   const realFile = await fs.realpath(file);
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) ||
       realFile !== path.join(root, relative)) {
@@ -75,6 +80,236 @@ type ClosedCodexSourceSubtotal = Extract<ClosedCodexSessionPopulation, { ok: tru
 };
 export type ClosedCodexSessionUsage = ClosedCodexSourceSubtotal |
   (Extract<ClosedCodexSessionPopulation, { ok: false }> & { readonly knownSubtotal?: ClosedCodexSourceSubtotal });
+
+type ClosedClaudeSourceSubtotal = Extract<ClosedClaudeSessionPopulation, { ok: true }> & {
+  readonly file: string; readonly sourceSha256: string;
+};
+export type ClosedClaudeSessionUsage = ClosedClaudeSourceSubtotal |
+  (Extract<ClosedClaudeSessionPopulation, { ok: false }> & { readonly knownSubtotal?: ClosedClaudeSourceSubtotal });
+
+/** All native sources in one issued Claude home, including earlier carries.
+ * Non-transcript sidecars are not usage. Unknown or subagent JSONL sources
+ * keep accounting incomplete until their identity/attribution is supported. */
+async function listClaudeRuntimeSources(home: string) {
+  const found: { nativeSessionId: string; file: string; sourceStamp: string }[] = [];
+  let entries = 0;
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    const children = await fs.readdir(dir, { withFileTypes: true });
+    entries += children.length;
+    if (entries > 5000) throw new Error('native source directory census exceeds its bound');
+    for (const child of children) {
+      const file = join(dir, child.name);
+      if (child.isDirectory() && depth < 5) { await walk(file, depth + 1); continue; }
+      if (!child.isFile()) throw new Error('native source directory contains a link or unbounded subtree');
+      if (!child.name.endsWith('.jsonl')) continue;
+      const match = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(child.name);
+      if (!match || depth !== 1) throw new Error('native source directory contains an unidentified transcript');
+      const stat = await fs.lstat(file, { bigint: true });
+      if (!stat.isFile()) throw new Error('native source census changed file kind');
+      found.push({ nativeSessionId: match[1].toLowerCase(), file,
+        sourceStamp: [file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':') });
+    }
+  };
+  await walk(join(home, 'projects'), 0);
+  if (!found.length || found.length > 1000 || new Set(found.map(s => s.nativeSessionId)).size !== found.length) {
+    throw new Error('native source census is empty or ambiguous');
+  }
+  return found.sort((a, b) => a.nativeSessionId.localeCompare(b.nativeSessionId));
+}
+
+async function readClosedClaudeSourceUsage(sql: Sql, binding: { workspaceId: string; nativeSessionId: string; claudeConfigDir: string },
+  file: string): Promise<ClosedClaudeSessionUsage> {
+  const fail = (detail: string): ClosedClaudeSessionUsage => ({ ok: false, detail });
+  try {
+    const source = await readCompleteNativeSource(binding.claudeConfigDir, 'projects', file);
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
+    const offset = Number(frontier?.byte_offset), sourceBytes = Buffer.byteLength(source.transcript);
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
+        !Number.isSafeInteger(offset) || offset < 0 || offset > sourceBytes) {
+      return fail('the canonical ingest frontier must identify verified native source bytes');
+    }
+    const { closedClaudeSessionPopulation } = await import('./interactive-usage/ingest-adapters');
+    const input = { file: source.file, fileGeneration: frontier.parser_state.fileGeneration ?? 0, nativeSessionId: binding.nativeSessionId };
+    const population = offset === sourceBytes ? closedClaudeSessionPopulation({ ...input, transcript: source.transcript }) :
+      fail('the canonical ingest frontier does not cover the entire native source');
+    if (!await source.unchanged()) return fail('the native source changed while reconciling its frontier');
+    if (population.ok) return { ...population, file: source.file, sourceSha256: source.sourceSha256 };
+    // Locate an earlier message closure inside the atomic frontier. The same
+    // strict parser validates that whole prefix; it never turns a subtotal
+    // into completeness or invents a synthetic native turn.
+    let start = 0, consumedBytes = 0, closedEnd = 0;
+    while (start < source.transcript.length) {
+      const end = source.transcript.indexOf('\n', start);
+      if (end < 0) break;
+      const line = source.transcript.slice(start, end); consumedBytes += Buffer.byteLength(line + '\n');
+      if (consumedBytes > offset) break;
+      let record: { type?: unknown; message?: { stop_reason?: unknown } };
+      try { record = JSON.parse(line); } catch { break; }
+      if (!record || typeof record !== 'object' || Array.isArray(record)) break;
+      if (record.type === 'assistant' && typeof record.message?.stop_reason === 'string') closedEnd = end + 1;
+      start = end + 1;
+    }
+    if (!closedEnd) return population;
+    const known = closedClaudeSessionPopulation({ ...input, transcript: source.transcript.slice(0, closedEnd) });
+    return known.ok ? { ok: false, detail: population.detail,
+      knownSubtotal: { ...known, file: source.file, sourceSha256: source.sourceSha256 } } : population;
+  } catch { return fail('the complete native source and canonical frontier could not be verified'); }
+}
+
+/** Source-bound Claude message usage. Exact home/session comes from the
+ * enrolled host. This supplies tokens and identities, never provider bills. */
+export async function readClosedClaudeSessionUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly claudeConfigDir: string;
+}): Promise<ClosedClaudeSessionUsage> {
+  const binding = { ...input };
+  try {
+    if ([binding.workspaceId, binding.nativeSessionId, binding.claudeConfigDir].some(v => typeof v !== 'string' || !v.trim())) {
+      throw new Error('missing native binding');
+    }
+    const census = await listClaudeRuntimeSources(binding.claudeConfigDir);
+    const source = census.find(s => s.nativeSessionId === binding.nativeSessionId);
+    if (!source) throw new Error('exact native source unavailable');
+    const usage = await readClosedClaudeSourceUsage(sql, binding, source.file);
+    return JSON.stringify(census) === JSON.stringify(await listClaudeRuntimeSources(binding.claudeConfigDir)) ? usage :
+      { ok: false, detail: 'the native source census changed while verifying usage' };
+  } catch { return { ok: false, detail: 'the exact host-owned native source could not be verified' }; }
+}
+
+type ClaudeMessageEvidenceBinding = {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly claudeConfigDir: string;
+  readonly nativeMessageId: string; readonly messageRecordIndex: number; readonly sourceSha256: string;
+};
+type ClaudeEvidenceRecord = {
+  type?: unknown; sessionId?: unknown; uuid?: unknown; parentUuid?: unknown; timestamp?: unknown;
+  message?: { role?: unknown; id?: unknown; stop_reason?: unknown; content?: unknown };
+};
+
+/** Share the canonical complete-source/frontier proof with usage accounting.
+ * A Claude message is a measured provider identity, never a synthetic turn. */
+async function readClosedClaudeMessageSource(sql: Sql, binding: ClaudeMessageEvidenceBinding) {
+  if ([binding.workspaceId, binding.nativeSessionId, binding.claudeConfigDir, binding.nativeMessageId]
+      .some(v => typeof v !== 'string' || !v.trim()) || !/^[a-f0-9]{64}$/.test(binding.sourceSha256) ||
+      !Number.isSafeInteger(binding.messageRecordIndex) || binding.messageRecordIndex < 0) return null;
+  const census = await listClaudeRuntimeSources(binding.claudeConfigDir);
+  const entry = census.find(row => row.nativeSessionId === binding.nativeSessionId);
+  if (!entry) return null;
+  const source = await readCompleteNativeSource(binding.claudeConfigDir, 'projects', entry.file);
+  const population = await readClosedClaudeSessionUsage(sql, binding);
+  if (!population.ok || population.file !== source.file || population.sourceSha256 !== source.sourceSha256 ||
+      source.sourceSha256 !== binding.sourceSha256 || !population.nativeMessageIds.includes(binding.nativeMessageId)) return null;
+  const records: ClaudeEvidenceRecord[] = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+  const message = records[binding.messageRecordIndex];
+  const messageAt = typeof message?.timestamp === 'string' ? Date.parse(message.timestamp) : NaN;
+  if (message?.type !== 'assistant' || message.sessionId !== binding.nativeSessionId ||
+      message.message?.role !== 'assistant' || message.message.id !== binding.nativeMessageId ||
+      typeof message.message.stop_reason !== 'string' || !Number.isFinite(messageAt)) return null;
+  const ordinals = new Map<string, number>();
+  for (const [index, record] of records.entries()) {
+    if (typeof record.uuid !== 'string' || !record.uuid.trim()) continue;
+    if (ordinals.has(record.uuid)) return null;
+    ordinals.set(record.uuid, index);
+  }
+  const ancestor = (recordIndex: number, descendantIndex = binding.messageRecordIndex) => {
+    if (!Number.isSafeInteger(recordIndex) || recordIndex < 0 || recordIndex >= descendantIndex) return false;
+    let index = descendantIndex;
+    while (index >= recordIndex) {
+      const record = records[index];
+      if (record?.sessionId !== binding.nativeSessionId || typeof record.uuid !== 'string' || ordinals.get(record.uuid) !== index) return false;
+      if (index === recordIndex) return true;
+      const parent = typeof record.parentUuid === 'string' ? ordinals.get(record.parentUuid) : undefined;
+      if (parent === undefined || parent >= index) return false;
+      index = parent;
+    }
+    return false;
+  };
+  if (!await source.unchanged() || JSON.stringify(census) !== JSON.stringify(await listClaudeRuntimeSources(binding.claudeConfigDir))) return null;
+  return { ...source, records, ancestor, messageAt };
+}
+
+/** Exact user text on the native ancestry of a completed Claude message.
+ * Provider consumption and host task termination require separate evidence. */
+export async function readClosedClaudeMessageInput(sql: Sql, input: ClaudeMessageEvidenceBinding & {
+  readonly recordIndex: number; readonly contentIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeMessageId: string;
+  messageRecordIndex: number; completedAt: string; recordIndex: number; recordUuid: string; contentIndex: number; at: string; text: string } | null> {
+  const binding = { ...input };
+  if (![binding.recordIndex, binding.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) return null;
+  try {
+    const source = await readClosedClaudeMessageSource(sql, binding);
+    if (!source || !source.ancestor(binding.recordIndex)) return null;
+    const record = source.records[binding.recordIndex], content = record.message?.content;
+    const block = Array.isArray(content) ? content[binding.contentIndex] : undefined;
+    const text = typeof content === 'string' && binding.contentIndex === 0 ? content :
+      block?.type === 'text' && typeof block.text === 'string' ? block.text : null;
+    const at = typeof record.timestamp === 'string' ? Date.parse(record.timestamp) : NaN;
+    if (record.type !== 'user' || record.message?.role !== 'user' || !text ||
+        !Number.isFinite(at) || at > source.messageAt || !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeMessageId: binding.nativeMessageId, messageRecordIndex: binding.messageRecordIndex, completedAt: new Date(source.messageAt).toISOString(),
+      recordIndex: binding.recordIndex, recordUuid: record.uuid as string, contentIndex: binding.contentIndex,
+      at: new Date(at).toISOString(), text };
+  } catch { return null; }
+}
+
+/** One unambiguous native tool_use/tool_result pair on the ancestry of a
+ * later completed Claude message. Retain errors and block output verbatim. */
+export async function readClosedClaudeMessageToolResult(sql: Sql, input: ClaudeMessageEvidenceBinding & {
+  readonly callRecordIndex: number; readonly callContentIndex: number;
+  readonly resultRecordIndex: number; readonly resultContentIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeMessageId: string;
+  messageRecordIndex: number; completedAt: string; callRecordIndex: number; callContentIndex: number; callRecordUuid: string;
+  resultRecordIndex: number; resultContentIndex: number; resultRecordUuid: string; callMessageId: string;
+  callId: string; name: string; arguments: string; output: string | unknown[];
+  isError: boolean | null; calledAt: string; at: string } | null> {
+  const binding = { ...input };
+  if (![binding.callRecordIndex, binding.callContentIndex, binding.resultRecordIndex, binding.resultContentIndex]
+      .every(n => Number.isSafeInteger(n) && n >= 0) || binding.callRecordIndex >= binding.resultRecordIndex) return null;
+  try {
+    const source = await readClosedClaudeMessageSource(sql, binding);
+    if (!source || !source.ancestor(binding.resultRecordIndex) || !source.ancestor(binding.callRecordIndex, binding.resultRecordIndex)) return null;
+    const call = source.records[binding.callRecordIndex], result = source.records[binding.resultRecordIndex];
+    const request = Array.isArray(call.message?.content) ? call.message.content[binding.callContentIndex] : undefined;
+    const response = Array.isArray(result.message?.content) ? result.message.content[binding.resultContentIndex] : undefined;
+    if (call.type !== 'assistant' || call.message?.role !== 'assistant' || typeof call.message.id !== 'string' || !call.message.id.trim() ||
+        call.message.id === binding.nativeMessageId || result.type !== 'user' || result.message?.role !== 'user' ||
+        request?.type !== 'tool_use' || typeof request.id !== 'string' || !request.id.trim() ||
+        typeof request.name !== 'string' || !request.name.trim() || !request.input || typeof request.input !== 'object' || Array.isArray(request.input) ||
+        response?.type !== 'tool_result' || response.tool_use_id !== request.id ||
+        !(typeof response.content === 'string' || Array.isArray(response.content)) ||
+        response.is_error !== undefined && typeof response.is_error !== 'boolean') return null;
+    const blocks = source.records.flatMap(record => Array.isArray(record.message?.content) ? record.message.content : []);
+    if (blocks.filter(block => block?.type === 'tool_use' && block.id === request.id).length !== 1 ||
+        blocks.filter(block => block?.type === 'tool_result' && block.tool_use_id === request.id).length !== 1) return null;
+    const calledAt = typeof call.timestamp === 'string' ? Date.parse(call.timestamp) : NaN;
+    const at = typeof result.timestamp === 'string' ? Date.parse(result.timestamp) : NaN;
+    if (!Number.isFinite(calledAt) || !Number.isFinite(at) || at < calledAt || at > source.messageAt || !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeMessageId: binding.nativeMessageId, messageRecordIndex: binding.messageRecordIndex, completedAt: new Date(source.messageAt).toISOString(),
+      callRecordIndex: binding.callRecordIndex, callContentIndex: binding.callContentIndex, callRecordUuid: call.uuid as string,
+      resultRecordIndex: binding.resultRecordIndex, resultContentIndex: binding.resultContentIndex, resultRecordUuid: result.uuid as string,
+      callMessageId: call.message.id, callId: request.id, name: request.name, arguments: JSON.stringify(request.input),
+      output: response.content, isError: response.is_error ?? null, calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
+  } catch { return null; }
+}
+
+/** Complete physical source census, bracketed across every session read.
+ * The authenticated host must separately establish process termination. */
+export async function readClosedClaudeRuntimeUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly claudeConfigDir: string;
+}): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedClaudeSessionUsage }[] }> {
+  const binding = { ...input };
+  try {
+    if ([binding.workspaceId, binding.claudeConfigDir].some(v => typeof v !== 'string' || !v.trim())) throw new Error('missing runtime binding');
+    const census = await listClaudeRuntimeSources(binding.claudeConfigDir);
+    const sessions: { nativeSessionId: string; usage: ClosedClaudeSessionUsage }[] = [];
+    for (const source of census) sessions.push({ nativeSessionId: source.nativeSessionId,
+      usage: await readClosedClaudeSourceUsage(sql, { ...binding, nativeSessionId: source.nativeSessionId }, source.file) });
+    return { complete: JSON.stringify(census) === JSON.stringify(await listClaudeRuntimeSources(binding.claudeConfigDir)) &&
+      sessions.every(source => source.usage.ok), sessions };
+  } catch { return { complete: false, sessions: [] }; }
+}
 
 /** Complete session token census from native bytes plus the atomic ingest
  * frontier. Never promotes estimated/list-price costs to provider bills.

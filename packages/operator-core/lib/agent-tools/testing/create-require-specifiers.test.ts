@@ -43,6 +43,24 @@ describe('createRequireSpecifiers (EI-24556278753778650)', () => {
       .toEqual({ status: 'ok', specifiers: ['./d'] });
   });
 
+  it('treats dynamic .resolve as path-only but still refuses a dynamic load', () => {
+    const cssResolver = analyse([
+      'function defaultCssContentProbe({ repoRoot, specifier }: { repoRoot: string; specifier: string }) {',
+      "  return createRequire(join(repoRoot, 'package.json')).resolve(specifier);",
+      '}',
+    ].join('\n'));
+    expect(cssResolver).toEqual({ status: 'ok', specifiers: [] });
+
+    const resolveThenLoad = analyse([
+      'const req = createRequire(import.meta.url);',
+      'function load({ specifier }: { specifier: string }) {',
+      '  const path = req.resolve(specifier);',
+      '  return req(path);',
+      '}',
+    ].join('\n'));
+    expect(resolveThenLoad).toMatchObject({ status: 'unfollowable' });
+  });
+
   it('ignores a runtime typeof feature check and follows its guarded loader without treating cache reads as loads', () => {
     const result = analyse([
       "const require = (typeof createRequire === 'function'",

@@ -21,6 +21,7 @@ import {
   deriveQueenAlive,
   infraStatus,
   infraSummary,
+  infraMcpProxyMetric,
   infraCritAmbientOnly,
   evaluateHostPressure,
   statusSeverity,
@@ -718,6 +719,34 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   });
   it('warn on ANY MCP-proxy hard failure — ends the "transient is normal" culture (visible, sub-page)', () => {
     expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: 1, total: 1 }) }))).toBe('warn');
+  });
+  it('warns and names valid MCP admission sheds without treating one as a page', () => {
+    const shed = infra({ mcpProxy: mcpProxy({
+      shed: 2,
+      byKind: { shed_max_in_flight: 1, shed_ordinary_queue_full: 1 },
+    }) });
+    expect(infraStatus(shed)).toBe('warn');
+    expect(infraSummary(shed, false)).toContain(
+      'MCP PROXY ADMISSION SHEDDING: 2 valid agent request(s) refused before forwarding/1h (max-in-flight=1, ordinary-queue-full=1)',
+    );
+    expect(infraMcpProxyMetric(shed.mcpProxy)).toEqual({ value: '2 shed/1h', tone: 'warn' });
+  });
+  it('keeps admission sheds visible when PG is unreadable and below critical severity at high counts', () => {
+    const shed = infra({ pg: null, mcpProxy: mcpProxy({ shed: 99 }) });
+    expect(infraStatus(shed)).toBe('warn');
+    expect(infraSummary(shed, false)).toContain('PG unreadable; MCP PROXY ADMISSION SHEDDING: 99');
+    expect(infraMcpProxyMetric(shed.mcpProxy)).toEqual({ value: '99 shed/1h', tone: 'warn' });
+  });
+  it('keeps all independently actionable MCP counts in the Infra metric', () => {
+    expect(infraMcpProxyMetric(mcpProxy({
+      hardFailures: 1,
+      shed: 2,
+      criticalContinuationQueueStalls: 1,
+      criticalContinuationQueueMaxWaitMs: 600_000,
+    }))).toEqual({
+      value: '1 critical continuation wait(s) ≥5m observed in the last hour (max 600s), 1 fail/1h, 2 shed/1h',
+      tone: 'crit',
+    });
   });
   it('crit at/above MCP_PROXY_HARD_FAIL_CRIT hard failures — a regression that pages', () => {
     expect(infraStatus(infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }))).toBe('crit');

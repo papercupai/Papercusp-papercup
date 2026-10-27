@@ -77,6 +77,14 @@ describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
     Object.entries(env).filter(([key, value]) => HOST_HANDOFF_ENV_KEYS.includes(key) && value.length > 0),
   );
 
+  it.each(['scoper', 'judge'])('retains the recorded %s authority across serialized adoption', (role) => {
+    const successor: Record<string, string> = { PAPERCUSP_AGENT_ROLE: 'su' };
+    const carried = carryEnv({ PAPERCUSP_SID: 'su-original', PAPERCUSP_AGENT_ROLE: role });
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+    expect(successor.PAPERCUSP_AGENT_ROLE).toBe(role);
+    expect(successor.PAPERCUSP_SID).toBe('su-original');
+  });
+
   it('retains the original launching actor for a fleetless headless successor', () => {
     const carried = carryEnv({
       PAPERCUSP_SID: 'su-original',
@@ -152,6 +160,35 @@ describe('headless host-code adoption (WI-6554700010016005)', () => {
     const before = { PAPERCUSP_AGENT: 'codex', ...route };
     expect(adopt(before)).toMatchObject(before);
   });
+});
+
+describe('host-code handoff turn provenance ledger (WI-6554700010025387)', () => {
+  const adopt = (before: Record<string, string>) => {
+    const carried = Object.fromEntries(Object.entries(before)
+      .filter(([key, value]) => HOST_HANDOFF_ENV_KEYS.includes(key) && value.length > 0));
+    const successor: Record<string, string> = { PAPERCUSP_HOME: '/workspace/scoped-home' };
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+    return successor;
+  };
+
+  it.each(['codex', 'claude'])('preserves the explicit shared ledger for a %s successor', (agent) => {
+    const ledger = '/shared-control-plane/turn-provenance';
+    const successor = adopt({
+      PAPERCUSP_AGENT: agent,
+      PAPERCUSP_TURN_PROVENANCE_DIR: ledger,
+      UNRELATED_SECRET: 'must-not-cross-the-handoff',
+    });
+
+    expect(successor.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(ledger);
+    expect(successor.PAPERCUSP_HOME).toBe('/workspace/scoped-home');
+    expect(successor.UNRELATED_SECRET).toBeUndefined();
+  });
+
+  it.each<Record<string, string>>([{}, { PAPERCUSP_TURN_PROVENANCE_DIR: '' }])(
+    'leaves the default ledger selection intact when no override is supplied (%j)', (before) => {
+      expect(adopt(before).PAPERCUSP_TURN_PROVENANCE_DIR).toBeUndefined();
+    },
+  );
 });
 
 describe('host-code handoff mutex identity', () => {

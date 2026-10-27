@@ -107,8 +107,61 @@ export interface AdmissionTerms {
   inFlight: number | null;
 }
 
+/**
+ * The gateway OUTCOME leg: what the gateway actually did with requests over a recent
+ * window (WI-6554700010029776). The pool and admission legs are both point-in-time
+ * readings of capacity; neither sees the gateway refusing requests — the gateway can
+ * shed hundreds an hour while every pool row reads serviceable and admission has
+ * spare slots. This leg is the only one that measures refusals that already happened.
+ */
+export interface GatewayOutcomeTerms {
+  windowMinutes: number;
+  /** `shed` + `upstream-429` in the window. */
+  refused: number;
+  /** `ok` in the window. Client cancellations count in neither. */
+  served: number;
+  /** Distinct callers that saw at least one refusal. */
+  refusedOwners: number;
+  /** The caller with the most refusals, or null when nothing was refused. */
+  topRefusedOwner: { ownerId: string | null; refused: number } | null;
+}
+
+/** Refusals below this count are noise, whatever their share. */
+export const GATEWAY_REFUSAL_MIN_COUNT = 10;
+/** Refused share of (refused + served) at or above which refusals bind. */
+export const GATEWAY_REFUSAL_MIN_SHARE = 0.05;
+/** A caller holding at least this share of the refusals makes them caller-concentrated. */
+export const GATEWAY_REFUSAL_CONCENTRATED_SHARE = 0.8;
+
 const POOL_WRITER = 'poolVerdictByProvider() @ lib/deployment/account-pool-store.ts';
 const ADMISSION_WRITER = 'buildCapacityReport() @ lib/fleet/capacity-dispatch.ts (gateway /stats)';
+const OUTCOME_WRITER = 'summarizeGatewayProviderOutcomes() @ lib/inference-gateway/gateway-request-outcome-store.ts';
+
+function refusalShare(o: GatewayOutcomeTerms): number {
+  const total = o.refused + o.served;
+  return total > 0 ? o.refused / total : 0;
+}
+
+/** Are refusals in the window frequent enough to bind? */
+export function gatewayRefusalsBinding(o: GatewayOutcomeTerms): boolean {
+  return o.refused >= GATEWAY_REFUSAL_MIN_COUNT && refusalShare(o) >= GATEWAY_REFUSAL_MIN_SHARE;
+}
+
+function describeRefusals(provider: AccountProvider, o: GatewayOutcomeTerms): string {
+  const pct = Math.round(refusalShare(o) * 1000) / 10;
+  const base =
+    `the gateway refused ${o.refused} '${provider}' request(s) and served ${o.served} in the last ` +
+    `${o.windowMinutes}m (${pct}% refused) across ${o.refusedOwners} caller(s)`;
+  const top = o.topRefusedOwner;
+  if (top && o.refused > 0 && top.refused / o.refused >= GATEWAY_REFUSAL_CONCENTRATED_SHARE) {
+    return (
+      `${base}; ${top.refused} of them came from ONE caller (${top.ownerId ?? 'unattributed'}), so the ` +
+      `refusals are concentrated in that caller's routing (e.g. pinned to walled accounts), not a ` +
+      `fleet-wide lack of headroom — fix that caller's account routing`
+    );
+  }
+  return base;
+}
 
 /**
  * Merge the account-pool rollup (P-002) with the gateway admission snapshot into the ONE
@@ -124,6 +177,9 @@ const ADMISSION_WRITER = 'buildCapacityReport() @ lib/fleet/capacity-dispatch.ts
  *                                hard zero right now, where pacing still passes traffic).
  *   3. `pacing-policy`         — this system pacing itself off a projection. NOTHING is
  *                                walled; see rule 1 in the module docblock.
+ *   3b. `gateway-shed`         — no point-in-time leg binds, yet the gateway measurably
+ *                                refused requests in the recent window (shed + upstream 429
+ *                                over GATEWAY_REFUSAL_MIN_COUNT and _MIN_SHARE).
  *   4. `none`                  — no measured blocker. Check `unknown` before believing it.
  *
  * Pure over its inputs, so the cell, the tool surface and any future panel derive from
@@ -134,10 +190,31 @@ export function deriveCapacityVerdict(input: {
   /** The P-002 rollup for THIS provider, or `null` when no rows / the read failed. */
   pool: ProviderPoolVerdict | null;
   admission: AdmissionTerms;
+  /**
+   * The gateway outcome window for THIS provider, or `null` when it could not be read.
+   * Required on purpose: an omitted leg must be an explicit `null` (⇒ UNMEASURED), never
+   * a silently-absent one that lets the verdict read as a measured green.
+   */
+  outcomes: GatewayOutcomeTerms | null;
 }): CanonicalCapacityVerdict {
-  const { provider, pool, admission } = input;
+  const { provider, pool, admission, outcomes } = input;
   const unknown: string[] = [];
   const evidence: CapacityEvidence[] = [];
+
+  // ── The gateway OUTCOME leg. Unreadable is UNMEASURED, never "no refusals".
+  if (!outcomes) {
+    unknown.push(
+      `gateway outcomes: the '${provider}' refusal rate could not be read, so refusals are UNMEASURED — not zero`,
+    );
+  }
+  evidence.push({
+    signal: 'gateway.refusedRecent',
+    value: outcomes ? outcomes.refused : null,
+    writer: OUTCOME_WRITER,
+    means: outcomes
+      ? `${describeRefusals(provider, outcomes)}`
+      : 'gateway refusals (shed + upstream 429) were not measured on this read',
+  });
 
   // ── The POOL leg.
   if (!pool) {
@@ -275,6 +352,8 @@ export function deriveCapacityVerdict(input: {
     );
   }
 
+  const refusing = outcomes != null && gatewayRefusalsBinding(outcomes);
+
   // 3. PACING. Reported as a policy, never as a wall — the plan's whole thesis.
   if (pool && pool.binding === 'pacing-policy') {
     return at(
@@ -283,7 +362,25 @@ export function deriveCapacityVerdict(input: {
       `'${provider}' is under a burn PACING PROJECTION, not a provider wall — ${pool.pacing} account(s) are ` +
         `paced by this system's own burn governor off a projected exhaustion, and NOTHING is measurably walled. ` +
         `No provider reset is coming, because there is nothing to reset. Relieve it by changing the pacing ` +
-        `policy (or accepting the burn), never by waiting.`,
+        `policy (or accepting the burn), never by waiting.` +
+        (refusing ? ` Meanwhile ${describeRefusals(provider, outcomes!)}.` : ''),
+    );
+  }
+
+  // 3b. GATEWAY REFUSALS. Neither point-in-time leg names a blocker, yet the gateway
+  //     measurably turned requests away in the window. Ranked below pacing (pacing names
+  //     its own remedy and already carries the refusal note) and above `none`, because
+  //     reporting `none` here is the measured-green-while-shedding this leg exists to stop.
+  //     `atCapacity` only when NOTHING was served: refusals alongside served traffic mean
+  //     the lane still dispatches, just not for every caller.
+  if (refusing) {
+    return at(
+      'gateway-shed',
+      outcomes!.served === 0,
+      `'${provider}' has no point-in-time blocker (no wall, admission open, no pacing), but ` +
+        `${describeRefusals(provider, outcomes!)}. Do NOT read this lane as a measured green. Look at which ` +
+        `accounts the refused requests were routed to (gateway_request_outcomes.selected_account_id) before ` +
+        `launching more work on it.`,
     );
   }
 

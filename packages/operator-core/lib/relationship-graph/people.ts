@@ -121,6 +121,53 @@ export async function getPeople(sql: Sql, workspaceId: string, ids: readonly str
   return out;
 }
 
+/** Collector input only: source observations do not establish verified product
+ * identity, communication consent, a fit rating or permission to read telemetry. */
+export type PersonQualificationEvidence = {
+  status: 'available'; person: PersonView;
+  sources: Array<{
+    recordId: string; evidenceRef: string; dataSourceId: string | null;
+    provider: string | null; observedAt: string | null;
+    title: string | null; selfReportedUseCase: string | null;
+  }>;
+} | { status: 'unknown'; reason: 'person_unavailable' | 'source_records_unavailable' };
+
+/** Reuse canonical membership rather than looking up a lead again by email.
+ * Bound the read and fail closed on missing/stale membership; never present a
+ * partial set as the evidence for a complete assessment. The caller supplies
+ * its already-authorized graph workspace, exactly as for getPeople. */
+export async function readPersonQualificationEvidence(sql: Sql, workspaceId: string, id: string): Promise<PersonQualificationEvidence> {
+  if (!id.startsWith('PER-')) return { status: 'unknown', reason: 'person_unavailable' };
+  const entity = await getCanonicalEntity(sql, workspaceId, PERSON_DATATYPE, id);
+  if (!entity || entity.payload.canonical !== true) return { status: 'unknown', reason: 'person_unavailable' };
+  const members = strings(entity.payload.memberRecordIds);
+  if (!members.length || members.length > 100 || new Set(members).size !== members.length) {
+    return { status: 'unknown', reason: 'source_records_unavailable' };
+  }
+  const rows = await sql<Array<{ feature_id: string; payload: Record<string, unknown> | null }>>`
+    SELECT feature_id, payload FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND item_kind = ${PERSON_DATATYPE} AND nature = 'record'
+       AND feature_id = ANY(${sql.array(members)}::text[])
+       AND payload->>'personId' = ${entity.id}
+       AND NOT (payload ? 'retiredAt') AND NOT (payload ? 'mergedInto')
+     ORDER BY feature_id LIMIT 101`;
+  if (rows.length !== members.length || rows.some(row => !members.includes(row.feature_id))) {
+    return { status: 'unknown', reason: 'source_records_unavailable' };
+  }
+  return { status: 'available', person: personView(entity), sources: rows.map(row => {
+    const payload = row.payload ?? {};
+    const extensions = payload.extensions as Record<string, unknown> | undefined;
+    const signup = extensions?.['papercusp-signups'] as Record<string, unknown> | undefined;
+    const reported = signup?.selfReported as Record<string, unknown> | undefined;
+    return {
+      recordId: row.feature_id, evidenceRef: `work-item:${row.feature_id}`,
+      dataSourceId: str(payload.dataSourceId), provider: str(payload.provider),
+      observedAt: str(payload.observedAt), title: str(payload.title),
+      selfReportedUseCase: payload.provider === 'papercusp-signups' ? str(reported?.useCase)?.slice(0, 500) ?? null : null,
+    };
+  }) };
+}
+
 export interface MergePeopleResult {
   /** The surviving person. Every merged id now resolves to it through people:get. */
   person: PersonView;

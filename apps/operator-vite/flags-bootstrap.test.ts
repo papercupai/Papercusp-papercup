@@ -9,7 +9,7 @@
  * plugin that is dropped from a build by any other means passes, and one that
  * leaks into a build fails.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveConfig } from 'vite';
 import {
   FLAGS_BOOTSTRAP_URL,
@@ -20,6 +20,71 @@ import {
 } from './flags-bootstrap';
 
 const PLUGIN_NAME = 'papercusp-flags-bootstrap';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe('optional HTML bootstrap availability', () => {
+  const html = '<html><head></head><body></body></html>';
+
+  it.each(['flags', 'workspace'] as const)('serves HTML when the %s request never answers', async kind => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const stalled = async (_url: string, init?: RequestInit) => {
+      signal = init?.signal;
+      return new Promise<never>(() => {});
+    };
+    const result = kind === 'flags'
+      ? seedIndexHtmlWithFlags(html, stalled)
+      : seedIndexHtmlWithWorkspace(html, '/', 'http://localhost', stalled);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await result).toBe(html);
+    expect(signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['flags', 'workspace'] as const)('bounds a %s response whose JSON body never finishes', async kind => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const stalledBody = async (_url: string, init?: RequestInit) => {
+      signal = init?.signal;
+      return { ok: true, json: () => new Promise<never>(() => {}) };
+    };
+    const result = kind === 'flags'
+      ? seedIndexHtmlWithFlags(html, stalledBody)
+      : seedIndexHtmlWithWorkspace(html, '/', 'http://localhost', stalledBody);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await result).toBe(html);
+    expect(signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reads both seeds from the isolated API target and clears successful deadlines', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_API_TARGET', 'http://127.0.0.1:4321');
+    const fetchImpl = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => url.endsWith('/api/workspaces') ? { current: 'isolated-workspace' } : { flags: {} },
+    }));
+    vi.stubGlobal('fetch', fetchImpl);
+    const transform = flagsBootstrapPlugin.transformIndexHtml as {
+      handler: (html: string, context: { originalUrl: string }) => Promise<string>;
+    };
+    const result = await transform.handler(html, { originalUrl: '/cloud-workspaces' });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:4321/api/flags/bootstrap',
+      'http://127.0.0.1:4321/api/workspaces',
+    ]);
+    expect(result).toContain('window.__PAPERCUSP_FLAGS__');
+    expect(result).toContain('window.__PAPERCUSP_WS__="isolated-workspace"');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('dev workspace identity before React mounts', () => {
   const html = '<html><head></head><body><script type="module" src="/src/main.tsx"></script></body></html>';

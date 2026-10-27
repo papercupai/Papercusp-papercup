@@ -41,6 +41,38 @@ export function resolveScopeRefAlias(scope: FactScope, args: ScopeRefAliasArgs):
   return args.scopeRef;
 }
 
+/**
+ * WI-6554700010029664 — `scope_ref` and `ref` are folded into `scopeRef` BEFORE parse
+ * (wrap the tool's args in `z.preprocess(foldScopeRefAliases, …)`) instead of being
+ * declared as sibling schema fields. Declared, they cost ~60 B of compact schema on
+ * every seeded turn (facts:list and facts:retract are both seed tools, and the seed
+ * has a 100,000 B budget) while only ever meaning `scopeRef`. Still accepted, never
+ * advertised — same pattern as plans:items' `normalizePlansItemsArgs`.
+ *
+ * Precedence is {@link resolveScopeRefAlias}'s: a non-blank `scopeRef` wins, then
+ * `scope_ref`, then `ref`. `harness` stays a declared field because it only means
+ * scopeRef when scope is 'harness'.
+ */
+const FOLDED_SCOPE_REF_ALIASES = ['scope_ref', 'ref'] as const;
+
+export function foldScopeRefAliases(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (!FOLDED_SCOPE_REF_ALIASES.some((key) => r[key] !== undefined)) return raw;
+  const rest: Record<string, unknown> = { ...r };
+  const nonBlank = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '';
+  let scopeRef = rest.scopeRef;
+  for (const key of FOLDED_SCOPE_REF_ALIASES) {
+    const value = rest[key];
+    delete rest[key];
+    // A non-string alias value is carried into scopeRef (when nothing else filled it) so the
+    // schema still REJECTS it with a type error instead of the fold silently dropping it.
+    const wrongType = value !== undefined && value !== null && typeof value !== 'string';
+    if (!nonBlank(scopeRef) && (nonBlank(value) || (scopeRef === undefined && wrongType))) scopeRef = value;
+  }
+  return scopeRef === undefined ? rest : { ...rest, scopeRef };
+}
+
 export async function resolveScopeRefFromCtx(
   scope: FactScope,
   scopeRef: string | null | undefined,

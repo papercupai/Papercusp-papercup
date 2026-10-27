@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 986,
+  "count": 990,
   "tools": [
     {
       "name": "ablation:report",
@@ -327,7 +327,7 @@
           "POST"
         ]
       },
-      "description": "Route an agent LIVE (no respawn) through the inference gateway — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id. `account` = a pool account id, or reserved `auto` to suppress the session's launch-time static pin and restore gateway selection/failover. `hard:true` is valid only for a named account and NEVER fails over off it; named pins are soft by default. Effective on the NEXT model call and durable across gateway restarts. Reaches sessions whose launch path forwards `x-papercusp-owner` (fresh and resumed `auto`/pool-account sessions). A `--account=default` session deliberately bypasses the gateway and CANNOT be dynamically re-pinned — respawn it instead. Returns {ok, ownerId, pin}.",
+      "description": "Route an agent through the inference gateway. `agent` is the target owner id; `account` is a pool account or `auto` for selection/failover. Named pins are soft unless hard:true. Ordinary pins apply on the next model call without respawn and refuse gateway-free default sessions. Explicit account:auto + recoverQuota:true can recover a measured default-route Codex quota wall through its managed host, retaining owner and native conversation without replaying a prompt. Requires a current quota-recovery-reroute host; accepted is not verified pickup. Pins are durable across gateway restarts.",
       "capabilities": [
         "harness:write"
       ],
@@ -353,7 +353,7 @@
       ],
       "guidance": {
         "when": "Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.",
-        "notWhen": "Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.",
+        "notWhen": "Steering NEW spawns fleet-wide — accounts:set-session-override. A default route needs explicit account:auto + recoverQuota:true and a measured Codex quota wall; ordinary pinning still refuses it.",
         "chaining": "gateway:status (pick an account with headroom) → accounts:pin { agent, account } → gateway:owner_report { agent } (confirm it took) → accounts:unpin to revert."
       }
     },
@@ -4093,7 +4093,7 @@
           "POST"
         ]
       },
-      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.",
+      "description": "Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result or readable file for lines holding every term; view_lines reads around a hit. Opaque papercusp://scratch-spool and papercusp://scratch-memory references support exact byte pages only, not query, view_lines, content_indexes, or evidence_class. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or an opaque scratch reference URI.",
       "capabilities": [
         "capability:fs-read"
       ],
@@ -4155,9 +4155,9 @@
         "judge"
       ],
       "guidance": {
-        "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.",
+        "when": "Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
         "notWhen": "To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.",
-        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around)."
+        "chaining": "capability:read → capability:edit (exact string replace) or capability:write (overwrite). Readable spill file: query → view_lines (follow read_around)."
       }
     },
     {
@@ -7424,7 +7424,7 @@
           "POST"
         ]
       },
-      "description": "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, unack, escalation, escalation_resolved, escalation_reopened, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`). This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read messages, acks, and handoffs addressed to you or broadcast. `limit` bounds a priority-ranked window (not newest-first); `coord:orient.inboxLimit` maps to it. Default: what fits one result. Ambient broadcasts require include_ambient. Repeats collapse (`repeat_count`, `first_seen_ts`); ignore resolved:true alarms; follow superseded_by corrections. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, unack, escalation, escalation_resolved, escalation_reopened, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. `recent` holds msg_ids into `entries`. An inbox read (also via coord:orient) clears the unread-mail reminder; FYIs (expects:none) need no reply. Reading does not fulfill ack/answer/action requests. This is a VIEW: re-reading does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -11312,6 +11312,24 @@
       }
     },
     {
+      "name": "dev:sql_tool_candidates",
+      "http": {
+        "path": "/api/agent-tools/dev/sql_tool_candidates",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bounded typed SQL tool opportunity worklist: scores, corpus coverage, decision history and source evidence references. Read-time source authority is mandatory; unavailable authority returns content-free UNKNOWN.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Discover repeated SQL demand in one harness for reviewed tool proposals. Coverage and unsupported residue accompany scores; candidates are advisory.",
+        "notWhen": "To execute SQL, assert substitution equivalence, or deploy a proposed tool. For recipe opportunities use recipes:candidates."
+      }
+    },
+    {
       "name": "dev:stall_waker_status",
       "http": {
         "path": "/api/agent-tools/dev/stall_waker_status",
@@ -14326,7 +14344,7 @@
           "POST"
         ]
       },
-      "description": "FIRE git-sync NOW — run the git-sync routine action once on demand instead of waiting for the ≤3-min cron tick. Mutating fires must execute on the background-worker host; a request-only operator refuses before entering git-sync, while dryRun:true remains a read-only preview everywhere. The response distinguishes a LOCAL commit from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. The manual lever git-sync otherwise lacks (only routines:set cron/pause exists). Same action a cron tick runs (lock, content-guard, attribution). release:deploy fires this first, then follows the normal publication/gate path.",
+      "description": "FIRE git-sync NOW — run its routine action once on demand. Mutations require the background-worker host; a request-only operator refuses, while dryRun:true previews everywhere. A LOCAL commit differs from CONFIRMED origin egress: on bridged/commit-only hives, status:'committed' + remote_egress.confirmed:false means wait for git-sync:egressed:<sha> or verify the remote ref before claiming delivery. Uses the scheduled action's lock, content guard and attribution. release:deploy fires this before the normal publication/gate path.",
       "capabilities": [
         "operator:write"
       ],
@@ -14348,7 +14366,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You need the latest work COMMITTED right now — before a (force-)deploy or gate run, or to recover when git-sync is lagging/wedged. (git-sync also auto-runs every ~3 min; this just fires it on demand.) Use dryRun:true first when you only need to inspect the selected checkout.",
-        "notWhen": "Do not fire it through a request-only operator (:3070/:3170 on the canonical dev box); route the mutation to the background-worker MCP host. To retune the cadence or pause git-sync, use routines:set. To deploy, release:deploy (which already fires git-sync first).",
+        "notWhen": "A request-only operator cannot execute the mutation locally. Through the standard MCP proxy, provide target with the explicit environment, exact loaded build SHA and install root to resolve its background worker. Missing or ambiguous workers refuse without substitution. To retune cadence use routines:set; to deploy use release:deploy.",
         "chaining": "git-sync:run { dryRun:true } → review preview → git-sync:run → release:deploy { op:status } → op:trigger / op:force (now shipping current staging)."
       }
     },
@@ -14949,7 +14967,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
+      "description": "Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins authorized intent, decisions, specs and recorded proof using plan+item or file_path+name/line1; gaps remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded families. Exact/renamed use AST equality; near uses calibrated shape similarity; semantic uses calibrated relevance or unknown. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.",
       "capabilities": [
         "intel:read"
       ],
@@ -15010,9 +15028,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.",
-        "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
-        "chaining": "op:\"context\" → op:\"impact\" for the change radius → op:\"trace\", target:\"name\" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:\"health\" reports index freshness; lsp:query handles references/diagnostics."
+        "when": "Who calls X: callers; what X calls: callees. Reuse: similar with name, file_path/line1 or snippet; clones with bounded paths. Read coverage and freshness.",
+        "notWhen": "Use lsp:query for references, implementations, diagnostics and rename; rg for literals; state/log tools for runtime diagnosis.",
+        "chaining": "context → impact → trace with target for forward paths. Bound paths for discovery/reuse. Ambiguous similar names need file_path/line1. health reports index freshness."
       }
     },
     {
@@ -21143,7 +21161,7 @@
           "POST"
         ]
       },
-      "description": "Fetch canonical persons by PER- id from the workspace relationship graph. A merged-away id resolves to its survivor (the returned person.id is the survivor). Pass `id` or `ids`. Returns { ok, results:[{ ok, id, person? | error }], counts }. Read-only.",
+      "description": "Fetch canonical persons by PER- id from the workspace relationship graph. A merged-away id resolves to its survivor (the returned person.id is the survivor). Pass `id` or `ids`. Optional includeQualificationEvidence adds bounded cited source observations for a collector; these are not a score, verified product identity or communication consent. Returns { ok, results:[{ ok, id, person?, qualificationEvidence? | error }], counts }. Read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -22603,9 +22621,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
+        "when": "Trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
         "notWhen": "Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.",
-        "chaining": "plans:add-decision → optionally plans:set-now referencing the new D-NNN in **State:**."
+        "chaining": "Declare refs/itemRefs:[\"P-NNN\"] for the items this decision governs; sharing a plan or mentioning an ID in prose does not establish applicability. affects:[planSlug] is broader plan context. plans:add-decision → graph:query { op:\"evidence\", plan, item } to inspect applicability; optionally plans:set-now referencing the new D-NNN in **State:**."
       }
     },
     {
@@ -22679,7 +22697,7 @@
       "guidance": {
         "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
         "notWhen": "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
-        "chaining": "Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts."
+        "chaining": "Before writing a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass symbols or paths as anchors (code links). Name/import similarity is not ownership. Use graph:query { op:\"evidence\", plan, item } to inspect exact linked specs and proof; missing declarations need explicit anchors/specs. plans:add-item → plans:set-specs → plans:set-status when work starts."
       }
     },
     {
@@ -23110,7 +23128,7 @@
           "POST"
         ]
       },
-      "description": "Bind test, fixture, coverage-census, mutation/counterexample, check, manual or operational proof to an immutable spec revision and work item. For fromTestRun, omit canonicalTestPath for local/Playwright rows; supply it only for a cargo test's defining .rs file or an unavailable mutation-probe mirror's copy-out run. Supply fixturePaths/fixtureGlobs BEFORE the first bind when calibration is needed; include the test file for inline fixtures. fixtureCalibrated run evidence adds direct relative first-party test-support imports; transitive, external and non-imported inputs need an explicit recipe. Missing recipes leave calibration unknown; adding one after binding is refused. details.adequacy.fixtureCalibrated=true requires paths; fixtureFree=true is no independent absence proof. Repository evidence uses measurement for server hashing and bounded source/test remeasurement; opaque evidence supplies caller-attested sourceFingerprint. Exact replays are idempotent; changed fingerprints append history. retract requires row id and reason; stamped history remains but default reads exclude it.",
+      "description": "Bind proof to exact workItem/spec revision. fromTestRun: canonicalTestPath only for cargo's defining .rs or unavailable copy-out mirror, never ordinary local/Playwright rows. FIRST bind must declare fixturePaths/fixtureGlobs (include inline-fixture test); calibration adds direct relative first-party support imports only, so declare transitive/external/non-imported inputs. Late recipe changes refuse; absent recipe leaves calibration unknown. fixtureCalibrated needs paths; fixtureFree alone proves no absence. Repo measurement hashes/rechecks files; opaque proof uses sourceFingerprint. Exact replays dedupe; changed fingerprints append. Retract by row id/reason; history remains, hidden by default.",
       "capabilities": [
         "plans:write"
       ],
@@ -23173,7 +23191,7 @@
       "guidance": {
         "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (amend → vet → attest → bind → cards → grade).",
         "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
-        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+        "chaining": "plans:get-specs → bind exact workItemId/specId/specRevision/fromTestRun/sourcePaths/fixturePaths → plans:get-spec-evidence current → graph:query evidence. Declare calibration inputs on FIRST bind (also inline fixtures). Only qualifying newer clean verification.check.files runs autobind; newer failure/error withdraws that file’s support. Unrelated passes do not supply missing links."
       }
     },
     {
@@ -23184,7 +23202,7 @@
           "POST"
         ]
       },
-      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'mint' launches a confined reviewer; op 'resume' recovers that exact reviewer in place; op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision.",
+      "description": "Blind gap review before acceptance. op 'brief' returns the owner's source turns only; 'mint' launches a confined reviewer; 'resume' recovers that exact reviewer; 'replace' recruits an independent replacement for an ended, posted inconclusive review while preserving its history; 'post' records the reviewer's outcome; 'dispose' maps gaps to plan items or accepted risks.",
       "capabilities": [
         "plans:write"
       ],
@@ -23203,7 +23221,7 @@
       "guidance": {
         "when": "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
         "notWhen": "Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.",
-        "chaining": "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
+        "chaining": "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, outcome, gaps }. Use inconclusive when product access or verification is incomplete. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
       }
     },
     {
@@ -23214,7 +23232,7 @@
           "POST"
         ]
       },
-      "description": "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+      "description": "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; bindingIds pins the exact proof cohort, including through replay. evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
       "capabilities": [
         "coord:write"
       ],
@@ -23714,7 +23732,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.",
+        "when": "During implementation or before work-item completion for spec-covered behavior.",
         "notWhen": "Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.",
         "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete."
       }
@@ -24386,7 +24404,7 @@
       "guidance": {
         "when": "Starting a plan: plans:new { slug, title, content }. Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner's approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged. Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design \"### Bar-to-work map for this plan\". Fill \"## Existing infrastructure reused\" and \"## Third-party libraries\" (scaffolded; or notApplicable).",
         "notWhen": "Existing plan: plans:set-content / set-now / add-decision / add-item.",
-        "chaining": "Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact on the symbols it changes; pass anchors (code links)."
+        "chaining": "Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass anchors (code links)."
       }
     },
     {
@@ -26253,7 +26271,7 @@
       "guidance": {
         "when": "Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.",
         "notWhen": "Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools. Changing the behavior of a sourceBar-pinned AUTO-BAR projection — amend the canonical rubric with rubrics:amend.",
-        "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify."
+        "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify. Author the requirement verification.check.files with exact maintained tests for automatic ledger reconciliation; specIds/revisions and explicit item/code anchors establish ownership, never symbol-name similarity. Bind the first exact test run with sourcePaths and fixturePaths so later autobind can retain its measured recipe."
       }
     },
     {
@@ -29513,7 +29531,7 @@
       "guidance": {
         "when": "After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.",
         "notWhen": "Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
-        "chaining": "`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity."
+        "chaining": "`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. Retire only with `retireAllowed` and exact identity."
       }
     },
     {
@@ -29591,7 +29609,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
+      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Existing reports you may not read return `access_denied`; missing ids return `not_found`.",
       "capabilities": [
         "reports:read"
       ],
@@ -31412,7 +31430,7 @@
           "POST"
         ]
       },
-      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; acceptance, vetting links, terminal, and force remain emit-only metadata. Use scorecards:emit to file the validated result.",
+      "description": "Return a rubric grading skeleton or an explicit eligibility-only identity preflight. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; file the result with scorecards:emit.",
       "capabilities": [
         "coord:read"
       ],
@@ -31439,9 +31457,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.",
+        "when": "Before grading/emitting a rubric scorecard. For reviewer identity preflight use { rubricRef, eligibilityOnly:true } yourself: it returns your graderEligibility and current rubric identity even when acceptance BAR proof is unready, without a grading skeleton or evidence validation. ok:true is not clearance; unknown, disqualified, author, or absent identity cannot grant canEmitGrading. Ordinary skeleton/ratings requests retain BAR readiness gates. Use the same `subject` and observation window on evaluate and emit.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
-        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
+        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating."
       }
     },
     {
@@ -31975,6 +31993,36 @@
       "guidance": {
         "when": "You are near your compaction limit AND at a clean stopping point (a finished unit of work — tests green, an edit landed, a decision logged).",
         "notWhen": "Mid-task — reach a stopping point first. To change WHEN this fires — config:set-compaction-limit."
+      }
+    },
+    {
+      "name": "sessions:continue-released-operation",
+      "http": {
+        "path": "/api/agent-tools/sessions/continue-released-operation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Hook-only recovery door: turn a genuine owner prompt delivered to a released accepted-operation worker into one fresh, separately receipted base-SU continuation. Model clients are refused.",
+      "capabilities": [
+        "capability:terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Only from the first-party UserPromptSubmit OWNER branch after orders:capture has durably recorded the exact turn.",
+        "notWhen": "Never call from a model, an active operation claim, or an ordinary SU session."
       }
     },
     {
@@ -32708,7 +32756,7 @@
           "POST"
         ]
       },
-      "description": "What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the 6-hourly census; flags stale, missing and coverage-gap devices. Read-only.",
+      "description": "What is filling each watched disk (/ and /mnt/data here): every directory ≥1 GiB to depth 6, large files, Postgres and Docker, plus unattributed bytes, each with its size and 24h growth. From the hourly census (minute 35); flags stale, missing and coverage-gap devices. Read-only.",
       "capabilities": [
         "storage:read"
       ],
@@ -33618,6 +33666,80 @@
       }
     },
     {
+      "name": "testing:record-native-check",
+      "http": {
+        "path": "/api/agent-tools/testing/record-native-check",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Execute a registered native operational check and record it in test_runs with before/after runtime witnesses, so a live-plane binding can read environment-current. Pass exactly one arm. consultReceiptMatrix:{evidenceFile} re-verifies a committed get-feedback receipt matrix against the operator database in one read-only snapshot; gateRepairPlane:{reading} takes a gate-repair-plane R-6/R-7 live reading.",
+      "capabilities": [
+        "testing:run"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A live-plane acceptance bar needs a runtime-witnessed operational row and a registered native check covers it.",
+        "notWhen": "Not for Vitest (testing:run) or importing an already-completed artifact (testing:record-run evidenceFile).",
+        "chaining": "Bind the returned testRunIds with plans:bind-spec-evidence, details.evidencePlane matching the bar."
+      }
+    },
+    {
       "name": "testing:record-run",
       "http": {
         "path": "/api/agent-tools/testing/record-run",
@@ -34166,7 +34288,7 @@
       "guidance": {
         "when": "You know (or just discovered via tools:find) the exact name of a tool that is NOT in your loaded set and you want to call it once — the universal way to reach the long tail of the catalog. A tool new on staging but not yet on main: add build: 'staging' (no deploy wait).",
         "notWhen": "When the tool IS already in your loaded set / core spine — call it directly (lower overhead, the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a direct call whenever the tool is reachable.",
-        "chaining": "tools:find(\"<intent>\") → take the top hit's name + argSchema + servingGeneration → tools:invoke({ name, args: {…}, servingGeneration }). The dispatcher refuses a different/unknown generation before target execution."
+        "chaining": "tools:find(\"<intent>\") → call the top hit through tools:invoke({ name, args }). The MCP transport fences dispatch using the `papercusp/servingGeneration` metadata from tools/list; do not require the optional `servingGeneration` argument, which legacy callable schemas may reject."
       }
     },
     {
@@ -36828,6 +36950,44 @@
         "when": "A work-item reads as held by an orphan / stalled peer but work_items:release{force:true} refused (not_holder or force_unauthorized) — you have no authority to force-reclaim a LIVE holder's claim. This is the sanctioned next step instead of hand-rolling a ping-then-reclaim protocol.",
         "notWhen": "The holder is already dead/stale by presence, or you lead their fleet / hold queen authority — work_items:release{force:true} already succeeds in those cases, so don't wait out a deadline. A live peer genuinely progressing the item → coordinate directly (coord:send), not a reclaim request against active work.",
         "chaining": "work_items:release{force:true} refused → work_items:request_release → (holder releases/declines early, or the release-request-sweep fires the announced consequence at the deadline) → work_items:claim."
+      }
+    },
+    {
+      "name": "work_items:review-admission",
+      "http": {
+        "path": "/api/agent-tools/work_items/review-admission",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Request admission review on the exact original item while preserving custody and parks. Never assigns or wakes an executor.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An authenticated custodian or current same-fleet leader needs review without changing execution custody.",
+        "notWhen": "Assignment, claim release, reopening, policy overrides or executor pickup."
       }
     },
     {

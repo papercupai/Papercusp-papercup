@@ -16,6 +16,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { synthesizeStateOfHive } from '../../scout/corpus-digest';
 import { buildStateOfHiveReaders } from '../../scout/corpus-digest-deps';
+import { readSqlToolOpportunityLane } from '../../scout/sql-tool-opportunity-lane';
+import { harnessArg } from '../_harness-scope';
 
 const DEFAULT_PER_CATEGORY = 20;
 const MAX_PER_CATEGORY = 100;
@@ -41,19 +43,25 @@ export default defineTool({
   args: z.object({
     /** Max patterns returned per category (default 20, max 100). */
     perCategory: z.number().int().positive().max(MAX_PER_CATEGORY).optional(),
+    sqlCandidates: z.boolean().optional().describe('Pull current SQL tool opportunities as an ephemeral sibling of the digest. Requires a concrete harness and fresh source authority.'),
+    harness: harnessArg,
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     const readers = buildStateOfHiveReaders();
     const digest = await synthesizeStateOfHive(readers, {
       nowMs: Date.now(),
       perCategory: args.perCategory ?? DEFAULT_PER_CATEGORY,
     });
+    // Outside the digest: never enters snapshots, previous refs or cycle artifacts.
+    const sqlToolOpportunities = args.sqlCandidates
+      ? await readSqlToolOpportunityLane(ctx, { harness: args.harness, limit: args.perCategory ?? DEFAULT_PER_CATEGORY })
+      : undefined;
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ ok: true, digest }),
+          text: JSON.stringify({ ok: true, digest, ...(sqlToolOpportunities ? { sqlToolOpportunities } : {}) }),
         },
       ],
     };

@@ -283,12 +283,12 @@ export async function resolveWorkItemReleaseRequest(
              END,
              'release_request_resolved_at', ${resolvedAt}::bigint
            ) || CASE
-             WHEN ${consequenceJobJson}::jsonb IS NOT NULL
+             WHEN ${consequenceJobJson}::text::jsonb IS NOT NULL
                AND NOT (COALESCE(status, '') = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
              THEN jsonb_build_object(
                'release_request_consequence_outbox',
                COALESCE(payload->'release_request_consequence_outbox', '{}'::jsonb)
-                 || jsonb_build_object(${opts.consequenceJob?.id ?? null}::text, ${consequenceJobJson}::jsonb)
+                 || jsonb_build_object(${opts.consequenceJob?.id ?? null}::text, ${consequenceJobJson}::text::jsonb)
              )
              ELSE '{}'::jsonb
            END,
@@ -452,7 +452,7 @@ export async function settleReleaseRequestConsequence(
              '{release_request_consequence_outbox}',
              CASE
                WHEN jsonb_typeof(payload->'release_request_consequence_outbox') = 'object'
-                 THEN payload->'release_request_consequence_outbox' - ${row.job.id}
+                 THEN (payload->'release_request_consequence_outbox') - ${row.job.id}::text
                ELSE '{}'::jsonb
              END,
              true

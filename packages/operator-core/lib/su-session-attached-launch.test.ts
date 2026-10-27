@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
   resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
   callOwner: vi.fn(), forwardable: vi.fn(),
+  forkParent: vi.fn(), nativeHandle: vi.fn(),
 }));
 // WI-10003879: the cross-worker relay is proven for real in
 // su-session-owner-routing.integration.test.ts; here only the launch's
@@ -26,10 +27,11 @@ vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
 vi.mock('./adv-sessions', async (orig) => ({
   ...(await orig<typeof import('./adv-sessions')>()),
   getAdvSession: vi.fn(),
+  getAdvSessionInWorkspace: mocks.forkParent,
   markAdvSessionEnded: mocks.ended,
   setAdvSessionPid: mocks.pid,
 }));
-vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
+vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: mocks.nativeHandle }));
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
 vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));
 vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist,
@@ -81,6 +83,74 @@ afterEach(() => {
 });
 
 describe('attached launch authority', () => {
+  it('does not coalesce a fork request into a different in-flight launch', async () => {
+    let release!: (value: unknown) => void;
+    mocks.chat.mockReturnValueOnce(new Promise(done => { release = done; }));
+    const first = launchAttachedSuSession(request(), { ...input, agent_chat_id: 'busy-fork-chat' });
+    await vi.waitFor(() => expect(mocks.chat).toHaveBeenCalled());
+    const second = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'busy-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ code: 'fork_target_busy' });
+    release({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
+    expect((await first).status).toBe(200);
+    expect(mocks.engine.mock.calls[0][3].forkFrom).toBeUndefined();
+  });
+
+  it('routes a tracked Claude parent to the production structured fork engine', async () => {
+    mocks.forkParent.mockResolvedValue({ id: 17, sessionId: 'parent-native' });
+    const handle = { backend: 'claude', sessionId: 'parent-native', ownerId: 'parent-owner',
+      configDir: '/parent/claude', exactResumeSupported: true };
+    mocks.nativeHandle.mockReturnValue(handle);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'new-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(response.status).toBe(200);
+    expect(mocks.engine.mock.calls[0][3].forkFrom).toEqual({ advSessionId: 17, nativeSession: handle });
+    expect(mocks.forkParent).toHaveBeenCalledWith(17, 'workspace');
+  });
+
+  it('refuses an unavailable fork source before child bootstrap', async () => {
+    mocks.forkParent.mockResolvedValue(null);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'missing-fork-chat',
+      fork_from: { advSessionId: 17, nativeSessionId: 'parent-native' } });
+    expect(response.status).toBe(503);
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it.each([null, '', 'sdk', ['pty', 'programmatic']].map(execution_kind => ({ execution_kind })))('refuses invalid explicit execution $execution_kind before looking up or starting an engine', async ({ execution_kind }) => {
+    const response = await launchAttachedSuSession(request(), { ...input, execution_kind });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_execution_kind', retryable: false });
+    expect(mocks.chat).not.toHaveBeenCalled();
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it('refuses explicit PTY on the structured door instead of coalescing or converting it', async () => {
+    await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'selection-coalesce' });
+    mocks.engine.mockClear();
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'selection-coalesce', execution_kind: 'pty' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'unsupported_execution_kind', retryable: false });
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { descriptor: { executionKind: 'pty' }, code: 'unsupported_execution_kind' },
+    { descriptor: { executionKind: '' }, code: 'invalid_saved_execution_kind' },
+    { descriptor: {}, code: 'unknown_existing_execution_kind' },
+  ])('preserves existing selection with typed $code rather than replacing its runtime', async ({ descriptor, code }) => {
+    mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, descriptor });
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: `selection-${code}` });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code, retryable: false });
+    expect(mocks.rehydrate).not.toHaveBeenCalled();
+    expect(mocks.resume).not.toHaveBeenCalled();
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
   it.each([
     { agent: 'codex', selected: 'gpt-5.6-terra:xhigh', expected: 'gpt-5.6-terra:xhigh' },
     { agent: 'claude', selected: 'sonnet:high', expected: 'sonnet[1m]:high' },
@@ -138,7 +208,7 @@ describe('attached launch authority', () => {
   });
 
   it('does not conceal a lost executor by creating another session', async () => {
-    mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18 });
+    mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, terminalBin: 'pui-structured-claude' });
     mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false, descriptor: { lifecycle: 'ready' } }) });
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const response = await launchAttachedSuSession(request(), input);
@@ -162,7 +232,7 @@ describe('attached launch authority', () => {
     const options = { agentChatId: chatId, model: 'saved-model', accountRoute: 'saved-account',
       carry: 'cold', modes: ['auto'], runtimeGeneration: 4 };
     const beforeReady = vi.fn(), onExit = vi.fn(), release = vi.fn();
-    mocks.read.mockResolvedValue({ backend: agent, harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
+    mocks.read.mockResolvedValue({ backend: agent, harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', terminalBin: `pui-structured-${agent}` });
     mocks.rehydrate.mockResolvedValue(restored);
     mocks.resume.mockResolvedValue({ boot: { ...boot, agent }, binding, nativeSession: native,
       options, beforeReady, onExit, release, exact: true });
@@ -218,7 +288,7 @@ describe('attached launch authority', () => {
 
     it('recomputes the identity from the saved directory on resume', async () => {
       mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }] });
-      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', cwd: fresh });
+      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', cwd: fresh, terminalBin: 'pui-structured-claude' });
       mocks.rehydrate.mockResolvedValue({ snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) });
       mocks.resume.mockResolvedValue({ boot: { ...boot, cwd: fresh }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
         binding: { operation: 'attached', backend: 'claude', advSessionId: 18, ownerId: 'su-engine', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null },
@@ -260,7 +330,7 @@ describe('attached launch authority', () => {
     };
     const resumeInput = (chatId: string) => ({ ...input, agent_chat_id: chatId });
     const savedRecord = { backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine',
-      descriptor: { runtimeGeneration: 4 } };
+      terminalBin: 'pui-structured-claude', descriptor: { runtimeGeneration: 4 } };
 
     it('retries once after a startup timeout and attaches a replacement at the next generation', async () => {
       const { host, emitted } = restoredHost();

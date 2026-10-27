@@ -656,15 +656,22 @@ export async function drainOutboxOnce(
 
   // EI-22138988923269437 (priority lane): two independently-bounded scans —
   // `priority` (the small OUTBOX_PRIORITY_TABLES set) and `rest` (every other
-  // table, unchanged flat FIFO, INCLUDING a forward-compat table_name this
+  // table, flat FIFO within the lane, INCLUDING a forward-compat table_name this
   // build's CDC_CAPTURED_TABLES registry doesn't know about yet — same
   // UnknownOutboxTableError skip-with-log path as before) — unioned, then
-  // ORDER BY priority-flag DESC, id ASC LIMIT batch. Because priority rows are
+  // ordered with reserved capacity for both lanes. Because priority rows are
   // fetched by their OWN query (never competing with `rest`'s id ordering to
   // even be CONSIDERED), they are included in the final LIMIT regardless of
   // how old a bulk backfill sitting in `rest` is — that alone fixes the filed
   // defect (a bulk backfill head-of-line-blocking coordination traffic).
   //
+  // EI-26693340901418619: strict priority starves product/plan rows whenever
+  // coordination alone fills the batch. Reserve a quarter for the rest lane
+  // (at least one for batch > 1), with priority first in the reserved portion.
+  // Unused capacity is filled from either lane, so a single busy lane still
+  // drains the full batch. A one-row batch retains priority-first behavior.
+  const restReservation = batch > 1 ? Math.max(1, Math.floor(batch / 4)) : 0;
+
   // Deliberately NOT per-non-priority-table-fair: an earlier version of this
   // fix additionally capped EVERY registered CDC table to an equal share of
   // `batch` (dividing by the full static table count, ~20), which regressed
@@ -672,7 +679,7 @@ export async function drainOutboxOnce(
   // "respects the batch limit" test: batch=2 against one busy table now drained
   // only 1/pass). That broader non-priority-vs-non-priority fairness was never
   // part of the filed defect — only coordination-vs-backfill was — so it was
-  // removed rather than tuned; `rest` keeps the ORIGINAL flat semantics.
+  // removed rather than tuned; the two lanes each retain flat FIFO semantics.
   //
   // `priority`'s own `LIMIT batch` needs mig 1095's
   // (workspace_id, harness_slug, table_name, drained_at, id) index to stay a
@@ -724,9 +731,22 @@ export async function drainOutboxOnce(
       SELECT * FROM priority
       UNION ALL
       SELECT * FROM rest
+    ),
+    ranked AS (
+      SELECT combined.*,
+             row_number() OVER (
+               PARTITION BY (table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[]))
+               ORDER BY id
+             ) AS lane_rank
+        FROM combined
     )
-    SELECT * FROM combined
-    ORDER BY (table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[])) DESC, id
+    SELECT id, table_name, op, key, row, ts, op_hlc FROM ranked
+    ORDER BY CASE WHEN lane_rank <= CASE
+               WHEN table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[])
+                 THEN ${batch - restReservation}::int
+               ELSE ${restReservation}::int
+             END THEN 0 ELSE 1 END,
+             (table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[])) DESC, id
     LIMIT ${batch}`,
   );
 

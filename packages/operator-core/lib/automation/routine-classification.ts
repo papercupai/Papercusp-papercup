@@ -365,6 +365,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'Recruits or re-dispatches an independent grader, which can launch a model session',
   },
   'system:plan-drain-sweep': { spend: 'none', why: 'Applies deterministic plan status transitions; no model or agent launch' },
+  'system:plan-anchor-freshness': { spend: 'none', why: 'Checks current declarations and persists grouped code-link notices; no model or agent launch' },
   'system:acceptance-drain-sweep': { spend: 'none', why: 'Files claimable work items for plans the ship gate is holding; bounded reads plus work-item writes, no model or agent launch' },
 
   // ── free system work ─────────────────────────────────────────────────────

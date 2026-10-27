@@ -74,16 +74,15 @@ function isPreflightSkip(tick: GenerationPreflightTick, reason: GenerationPrefli
 }
 
 /**
- * Consecutive dedup-preflight skips counted back from the newest tick. Throttle
- * skips in between are passed over (they say nothing about the corpus); any
- * other tick ends the run.
+ * Consecutive dedup-preflight skips counted back from the newest tick. Other
+ * gated ticks are passed over because no Scout cycle ran to provide corpus
+ * evidence. A ran or error tick ends the trailing skip run.
  */
 export function leadingDedupSkips(ticksNewestFirst: readonly GenerationPreflightTick[]): number {
   let n = 0;
   for (const tick of ticksNewestFirst) {
-    if (isPreflightSkip(tick, 'admission-throttle-deep')) continue;
-    if (!isPreflightSkip(tick, 'dedup-saturated')) break;
-    n += 1;
+    if (tick.status !== 'gated') break;
+    if (isPreflightSkip(tick, 'dedup-saturated')) n += 1;
   }
   return n;
 }

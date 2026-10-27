@@ -30,6 +30,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBuiltin } from 'node:module';
+import * as ts from 'typescript';
 import {
   isLiveCodeAt,
   probeStringLiteralBlindness,
@@ -74,7 +75,7 @@ function collectSourceFiles(dir: string, acc: string[] = []): string[] {
  */
 function isThirdPartyBare(spec: string): boolean {
   if (spec.startsWith('.') || spec.startsWith('/')) return false;
-  if (spec.startsWith('node:') || isBuiltin(spec)) return false;
+  if (spec.startsWith('node:') || spec.startsWith('bun:') || isBuiltin(spec)) return false;
   if (spec.startsWith('@papercusp/')) return false;
   return true;
 }
@@ -111,9 +112,32 @@ function createRequireSpecifiers(src: string, fileName = 'source.ts'): string[] 
   const bind = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*createRequire\s*\(/g;
   const names = new Set<string>();
   for (let m = bind.exec(code); m; m = bind.exec(code)) if (live(m.index)) names.add(m[1]);
+  // The exact guarded free-require branch is bundled by esbuild. Its matching
+  // createRequire branch serves unbundled ESM only. Do not turn that fallback
+  // into a false missing-runtime-package alarm (AWS SDK/viem client factories).
+  const bundledFallbacks = new Set<number>();
+  if (!names.has('require')) {
+    const file = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node) => {
+      if (ts.isConditionalExpression(node) && ts.isBinaryExpression(node.condition)
+        && node.condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+        && ts.isTypeOfExpression(node.condition.left)
+        && node.condition.left.expression.getText(file) === 'require'
+        && ts.isStringLiteral(node.condition.right) && node.condition.right.text === 'function'
+        && ts.isCallExpression(node.whenTrue) && node.whenTrue.expression.getText(file) === 'require'
+        && ts.isCallExpression(node.whenFalse) && names.has(node.whenFalse.expression.getText(file))) {
+        const a = node.whenTrue.arguments[0], b = node.whenFalse.arguments[0];
+        if (a && b && ts.isStringLiteral(a) && ts.isStringLiteral(b) && a.text === b.text)
+          bundledFallbacks.add(node.whenFalse.getStart(file));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
   for (const name of names) {
     const call = new RegExp(`\\b${name}\\s*\\(\\s*['"]([^'"]+)['"]`, 'g');
-    for (let m = call.exec(code); m; m = call.exec(code)) if (live(m.index)) specs.push(m[1]);
+    for (let m = call.exec(code); m; m = call.exec(code))
+      if (live(m.index) && !bundledFallbacks.has(m.index)) specs.push(m[1]);
   }
 
   return specs;
@@ -184,6 +208,15 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
     expect(createRequireSpecifiers(live, 'planted.ts').sort()).toEqual(['left-pad', 'right-pad']);
   });
 
+  it('distinguishes bundled free-require fallbacks from runtime-only or mismatched loaders', () => {
+    const guarded = "const sdk = createRequire(import.meta.url); const a = typeof require === 'function' ? require('aws-client') : sdk('aws-client');";
+    expect(createRequireSpecifiers(guarded)).toEqual([]);
+    expect(createRequireSpecifiers(guarded.replace("require('aws-client')", "require('other-client')"))).toEqual(['aws-client']);
+    expect(createRequireSpecifiers("const sdk = createRequire(import.meta.url);sdk('aws-client');")).toEqual(['aws-client']);
+    expect(isThirdPartyBare('bun:sqlite')).toBe(false);
+    expect(isThirdPartyBare('better-sqlite3')).toBe(true);
+  });
+
   // NEGATIVE CONTROL (WI-10004152): a loader quoted in a comment, string or
   // template literal is documentation or a fixture, not a loader.
   it('ignores a createRequire loader that appears only in a comment, string or template', () => {
@@ -195,7 +228,9 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
   });
 
   it('every createRequire third-party dep is copied into the .deb sidecar', () => {
-    const script = readFileSync(BUILD_SCRIPT, 'utf8');
+    const script = readFileSync(BUILD_SCRIPT, 'utf8')
+      + '\n' + readFileSync(join(REPO_ROOT, 'papercusp-desktop/bin/lib/host-runtime-closure.sh'), 'utf8')
+      + '\n' + readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), 'utf8');
     const copied = copiedPackages(script);
 
     const missing = [...found.entries()]

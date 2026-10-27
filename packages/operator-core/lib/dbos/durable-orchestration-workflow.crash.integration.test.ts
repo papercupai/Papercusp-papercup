@@ -68,7 +68,11 @@ interface Scenario {
   revoke?: string;
 }
 
-function runChild(mode: 'crash' | 'recover', scenario: Scenario) {
+function runChild(mode: 'crash' | 'recover' | 'code', scenario: Scenario) {
+  // Fail before process launch with a named precondition instead of an opaque child exit.
+  expect(dsn, 'private DBOS database must be prepared before launching the child').toBeTruthy();
+  expect(scenario.runKey, 'durable run key is required').toBeTruthy();
+  expect(scenario.script, 'durable script source is required').toBeTruthy();
   return spawnSync(process.execPath, ['--import', 'tsx', childPath], {
     cwd: packageRoot,
     env: {
@@ -80,7 +84,7 @@ function runChild(mode: 'crash' | 'recover', scenario: Scenario) {
       DURABLE_CRASH_TARGET: scenario.crashTarget,
       DURABLE_CRASH_REVOKE: mode === 'recover' ? (scenario.revoke ?? '') : '',
     },
-    timeout: 150_000,
+    timeout: mode === 'code' ? 240_000 : 150_000,
     encoding: 'utf8',
   });
 }
@@ -126,6 +130,28 @@ async function crashThenRecover(scenario: Scenario) {
 const key = (label: string) => label + '-' + randomBytes(4).toString('hex');
 
 describe('durable tool orchestration survives real producer death (P-019)', () => {
+  it('code:run returns before its two-minute script completes and recovers the original terminal result (MC-P026-SCRIPT)', async () => {
+    const runKey = key('code-two-minute');
+    const script = '/*' + 'large script '.repeat(2500) + `*/
+      const first = await tools.call('probe:read', { phase: 'before' });
+      await tools.call('runtime:sleep', { ms: 120000 });
+      const last = await tools.call('probe:after', { phase: 'after' });
+      return { first: first.tool, last: last.tool };`;
+    const child = runChild('code', { runKey, script, crashTarget: '' });
+    expect(child.status, child.stdout + '\n' + child.stderr).toBe(0);
+    const line = child.stdout.split('\n').find(row => row.startsWith('DURABLE_CODE_OUTCOME '));
+    expect(line, child.stdout).toBeDefined();
+    const proof = JSON.parse(line!.slice('DURABLE_CODE_OUTCOME '.length));
+    expect(proof.admissionElapsedMs).toBeLessThan(50_000);
+    expect(proof.elapsedMs).toBeGreaterThanOrEqual(120_000);
+    expect(proof.result).toMatchObject({ ok: true, durableRun: {
+      workflowId: proof.workflowId, status: 'SUCCESS', outcome: { status: 'succeeded',
+        summary: { first: 'probe:read', last: 'probe:after' } },
+    } });
+    expect((await calls(runKey)).map(row => row.tool)).toEqual(['probe:read', 'probe:after']);
+    expect((await stepNames(runKey)).filter(name => name === 'tool:0:probe:read')).toHaveLength(1);
+  }, 300_000);
+
   it('reuses recorded steps and recorded time, and resumes the pending registered-idempotent write', async () => {
     const scenario: Scenario = {
       runKey: key('resume'),

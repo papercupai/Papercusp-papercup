@@ -367,6 +367,11 @@ describe('parsePapercuspTrailers (deterministic-commit-workitem-attribution P-00
     expect(parsePapercuspTrailers(body)).toEqual({ agent: 'a', workItems: ['WI-9'] });
   });
 
+  it('keeps the FIRST agent as primary and lists every author of a multi-author commit (WI-6554700010029864)', () => {
+    const body = 'subj\n\nPapercusp-Agent: a\nPapercusp-Agent: b\nPapercusp-Agent: a\nPapercusp-Work-Item: WI-1, WI-2';
+    expect(parsePapercuspTrailers(body)).toEqual({ agent: 'a', agents: ['a', 'b'], workItems: ['WI-1', 'WI-2'] });
+  });
+
   it('round-trips the exact trailer lines run-git-sync writes', () => {
     // mirrors the `-m` values commitAttributedGroups pushes onto `git commit`.
     const body = ['s', '', 'Papercusp-Agent: ag', 'Papercusp-Work-Item: WI-1, WI-2'].join('\n');

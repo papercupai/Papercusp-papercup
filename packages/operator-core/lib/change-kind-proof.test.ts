@@ -22,6 +22,20 @@ import {
   type ChangeKindGateResult,
 } from './change-kind-proof';
 import type { ChangeKindsView } from './work-item-change-kinds';
+import type { ChangeKindProofDeps } from './change-kind-proof';
+
+/** Facts under which FULL_PROOF.refactor holds (the full refactor matrix is change-kind-refactor-proof.test.ts). */
+const PASSING_REFACTOR_DEPS: ChangeKindProofDeps = {
+  resolveRefactorFacts: async () => ({
+    landingCommit: 'b'.repeat(40),
+    landingParent: 'a'.repeat(40),
+    beforeRuns: [{ id: 11, filePath: 'x/a.test.ts', commitSha: 'a'.repeat(40), status: 'pass', worktreeDirty: false }],
+    afterRuns: [{ id: 21, filePath: 'x/a.test.ts', commitSha: 'b'.repeat(40), status: 'pass', worktreeDirty: false }],
+    changedFiles: ['x/a.ts'],
+    touchedMembers: [{ member: 'x/a.ts#f', coveringFiles: ['x/a.test.ts'] }],
+    findingStillReported: false,
+  }),
+};
 
 const AFTER_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) + 3_600_000).toISOString();
 const BEFORE_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) - 3_600_000).toISOString();
@@ -84,6 +98,16 @@ const FULL_PROOF: Record<ChangeKind, ChangeKindEvidence> = {
     testsRun: 'testing:run { files: ["packages/operator-core/lib/change-kind-proof.test.ts"] }',
     testResult: '41 passed',
   },
+  // P-004 (code-cleanup-campaigns-2026-10-26): its facts come from PASSING_REFACTOR_DEPS below.
+  refactor: {
+    kind: 'refactor',
+    landingCommit: 'b'.repeat(40),
+    beforeRuns: [11],
+    afterRuns: [21],
+    finding: 'clone-family:abc123',
+    typecheck: 'LINT_TSC_RESULT status=clean',
+    behaviouralStrands: 'exit 0, no strands',
+  },
   config: { kind: 'config', readBack: 'config:get change-kind.cutover returned 2026-10-18T04:00:00.000Z' },
   'test-only': {
     kind: 'test-only',
@@ -109,6 +133,46 @@ function missingFor(r: Extract<ChangeKindGateResult, { outcome: 'refuse' }>, kin
   expect(m, `no missing-proof entry for ${kind}: ${r.error}`).toBeDefined();
   return m!.missing.join(' | ');
 }
+
+describe('root completion proof representations', () => {
+  it.each(['logic', 'test-only'] as const)('accepts command and result arrays for %s', async (kind) => {
+    const result = await evaluateChangeKindGate(input({
+      kinds: [kind],
+      root: {
+        testsRun: ['npm run test:file -- first.test.ts', 'npm run test:file -- second.test.ts'],
+        testResult: ['2 passed', '0 failed'],
+      },
+    }));
+    expect(result).toMatchObject({ applicable: true, outcome: 'pass', kinds: [kind] });
+  });
+
+  it('refuses a failing result anywhere in an accepted result array', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: { testsRun: ['npm run test:file -- first.test.ts'], testResult: ['2 passed', '1 failed'] },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testResult` reporting a passing run');
+  });
+
+  it('refuses an empty command array even when the result passes', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: { testsRun: [], testResult: '2 passed' },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testsRun` naming the test command');
+  });
+
+  it('does not turn non-string command entries into proof', async () => {
+    const result = expectRefused(await evaluateChangeKindGate(input({
+      kinds: ['test-only'],
+      root: {
+        testsRun: ['npm run test:file -- first.test.ts', 7] as unknown as string[],
+        testResult: '2 passed',
+      },
+    })));
+    expect(missingFor(result, 'test-only')).toContain('`testsRun` naming the test command');
+  });
+});
 
 describe('R-2 — a successful close lacking a declared kind\'s catalog proof is refused, naming each missing proof', () => {
   it('a ui-declared close citing only Vitest is refused for the missing real-app run artifact', async () => {
@@ -240,6 +304,41 @@ describe('R-2 — a successful close lacking a declared kind\'s catalog proof is
       await evaluateChangeKindGate(input({ kinds: ['logic'], root: { testsRun: 'testing:run { files }', testResult: '40 passed, 1 failed' } })),
     );
     expect(missingFor(r, 'logic')).toContain('`testResult` reporting a passing run');
+  });
+
+  it.each([
+    '5 PASS, 0 FAIL, 0 SKIP',
+    '5 passed, 0 failed',
+    '5 passed, 0 failures',
+    '5 pass, 0 fail',
+    'PASS suite\nTests: 5 passed, 0 FAIL',
+    '5 passed, 0 FAIL; integration: 2 passed, 0 FAIL',
+  ])('accepts an explicit zero-failure summary: %s', async (testResult) => {
+    for (const kind of ['logic', 'test-only'] as const) {
+      const proof = { testsRun: 'testing:run { files: ["a.test.ts"] }', testResult };
+      for (const over of [{ root: proof }, { kindEvidence: [{ kind, ...proof }] }]) {
+        const r = await evaluateChangeKindGate(input({ kinds: [kind], ...over }));
+        expect(r, `${kind}: ${testResult}`).toMatchObject({ applicable: true, outcome: 'pass' });
+      }
+    }
+  });
+
+  it.each([
+    '5 passed, 1 fail',
+    '5 PASS, 1 FAILED',
+    '5 passed, 2 failures',
+    '5 PASS, 10 FAIL',
+    '5 passed, 0 FAIL; integration: 1 FAIL',
+    '5 passed, 0 failed\nFAIL a.test.ts',
+    '5 passed; FAIL',
+  ])('refuses a positive failure count or unqualified failure: %s', async (testResult) => {
+    for (const kind of ['logic', 'test-only'] as const) {
+      const proof = { testsRun: 'testing:run { files: ["a.test.ts"] }', testResult };
+      for (const over of [{ root: proof }, { kindEvidence: [{ kind, ...proof }] }]) {
+        const r = expectRefused(await evaluateChangeKindGate(input({ kinds: [kind], ...over })));
+        expect(missingFor(r, kind)).toContain('`testResult` reporting a passing run');
+      }
+    }
   });
 
   it.each(['config', 'docs'] as const)('a %s close without a read-back is refused', async (kind) => {
@@ -390,11 +489,25 @@ describe('D-003 — claims taken before the cutover close with a warning', () =>
     );
     expect(missingFor(r, 'logic')).toContain('`testsRun`');
   });
+
+  // D-006 (code-cleanup-campaigns-2026-10-26): a declared 'refactor' close is refused on missing
+  // proof whatever the claim's start time. With no facts resolver wired the proof cannot be
+  // established, so the gate must fail closed, even for a claim that predates the cutover and
+  // even when the entry itself names every field.
+  it('refuses a pre-cutover declared refactor close when its proof cannot be resolved (D-006)', async () => {
+    const r = expectRefused(
+      await evaluateChangeKindGate(
+        input({ kinds: ['refactor'], kindEvidence: [FULL_PROOF.refactor], claimStartedAt: BEFORE_CUTOVER }),
+      ),
+    );
+    expect(missingFor(r, 'refactor').length).toBeGreaterThan(0);
+  });
 });
 
 describe('R-6 — a close that owes no reason and carries every catalog proof for each declared kind lands', () => {
   it.each(CHANGE_KINDS.map((k) => [k] as const))('a single-kind %s close with its full proof passes', async (kind) => {
-    const r = await evaluateChangeKindGate(input({ kinds: [kind], kindEvidence: [FULL_PROOF[kind]] }));
+    const deps = kind === 'refactor' ? PASSING_REFACTOR_DEPS : {};
+    const r = await evaluateChangeKindGate(input({ kinds: [kind], kindEvidence: [FULL_PROOF[kind]] }), deps);
     expect(r).toEqual({ applicable: true, outcome: 'pass', kinds: [kind] });
   });
 

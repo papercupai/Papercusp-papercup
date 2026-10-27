@@ -85,6 +85,29 @@ function catalogRowMatches(row: CatalogRow, query: string): boolean {
   return matchesField || keyTemplateMatchesQuery(row.key, query);
 }
 
+/**
+ * WI-6554700010029664 — `pattern` / `query` are folded into `q` BEFORE parse instead of being
+ * declared as sibling schema fields: declared, they cost ~80 B of compact schema on every
+ * seeded turn (events:catalog is a seed tool; the seed has a 100,000 B budget) while only ever
+ * meaning `q`. Still accepted, never advertised — same pattern as plans:items'
+ * `normalizePlansItemsArgs`. Precedence is unchanged: `q`, then `pattern`, then `query`.
+ */
+const CATALOG_QUERY_ALIASES = ['pattern', 'query'] as const;
+
+export function normalizeCatalogQueryAliases(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (!CATALOG_QUERY_ALIASES.some((key) => r[key] !== undefined)) return raw;
+  const rest: Record<string, unknown> = { ...r };
+  let q = rest.q;
+  for (const key of CATALOG_QUERY_ALIASES) {
+    const value = rest[key];
+    delete rest[key];
+    if (q === undefined && value !== undefined) q = value;
+  }
+  return q === undefined ? rest : { ...rest, q };
+}
+
 export default defineTool({
   name: 'events:catalog',
   description:
@@ -103,22 +126,15 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  args: z.object({
+  // WI-6554700010029664: `pattern` / `query` fold into `q` before parse (not advertised).
+  args: z.preprocess(normalizeCatalogQueryAliases, z.object({
     q: z
       .string()
       .max(200)
       .optional()
-      .describe('Case-insensitive substring over family, key, await example, description, emitter, provenance, and sugar.'),
-    pattern: z
-      .string()
-      .max(200)
-      .optional()
-      .describe('Compatibility alias for `q`; prefer the canonical `q` key. If both are supplied, `q` wins.'),
-    query: z
-      .string()
-      .max(200)
-      .optional()
-      .describe('Compatibility alias for `q`; prefer the canonical `q` key. If multiple aliases are supplied, `q` wins.'),
+      .describe(
+        'Case-insensitive substring over family, key, await example, description, emitter, provenance, and sugar. Also accepted, folded into q before parse (q wins): pattern, query.',
+      ),
     limit: z
       .number()
       .int()
@@ -156,7 +172,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('default true — also fold in event families declared by INSTALLED packs/plugins (`provides.events`), each tagged `provenance: "installed:<unit>"`. Pass false for the builtin registry only.'),
-  }),
+  })),
   async handler(args, ctx) {
     // ── The INSTALLED tier (P-006 / D-003: events are a dependency axis). Installed
     // units declare the key families they provide; fold them over the builtin registry
@@ -186,7 +202,7 @@ export default defineTool({
     // EI-22384286586185001: older callers used the generic `query` spelling.
     // Keep `q` canonical while accepting both compatibility aliases; canonical
     // input wins when more than one spelling is supplied.
-    const query = (args.q ?? args.pattern ?? args.query)?.trim().toLowerCase();
+    const query = args.q?.trim().toLowerCase();
 
     let rows = renderCatalog(installedUnits);
 

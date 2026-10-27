@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-contract-fixture-repair",
+  "editionDate": "2026-10-25",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "repairWorkItemId": "WI-6554700010028734",
+  "decisionRef": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-037",
+  "phase": "clean-committed-verified-and-qualified",
+  "scope": "Real SQL contract and controlled dispatch-fixture repair. Native execution, original operational proof, whole P002 acceptance and shipment remain open.",
+  "testPath": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+  "rootCause": {
+    "origin": "The integration fixture leaves readCitedTurns on the ambient default and provides no indexed source rows after the production dispatcher added the exact-citation conversion gate.",
+    "symptoms": [
+      "Eligible source refuses exact cited turns unreadable.",
+      "Cyclic and missing source controls stop before graph/file preflight.",
+      "Old no-launch assertions also omit the governed fresh cited-turn brief fallback."
+    ],
+    "distinguishingTest": "Hold b29ba662fe production source bytes fixed; run the old fixture, then the maintained fixture with the real isolated SQL reader, exact cited rows, governed brief assertions and a foreign-workspace-only negative control.",
+    "alternativeHypothesis": "The dispatcher cannot convert a healthy supported source even with readable exact evidence.",
+    "actualObservation": "Old committed fixture: 5 pass and 3 fail. Repaired local fixture: 9 pass and 0 fail. The healthy source converts; cyclic/nonplain/missing conversion rejects and readable evidence permits a distinct brief; foreign-workspace-only evidence launches neither.",
+    "recurrenceGuard": "The maintained integration file now calls the production SQL cited-turn reader; source fixtures include exact indexed evidence and a foreign-workspace-only refusal control."
+  },
+  "before": {
+    "testRunId": 22007863,
+    "commitSha": "b29ba662fea3cc949ff6a0e4aa1a39ba852f8c40",
+    "group": "gf-p002-contract-calibrated-20261025-1792933373093",
+    "passed": 5,
+    "failed": 3,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "log": "/tmp/gf-p002-contract-calibrated-20261025.log",
+    "state": "/tmp/gf-p002-contract-calibrated-20261025.state.json"
+  },
+  "localVerification": {
+    "testRunId": 22009144,
+    "commitSha": "b29ba662fea3cc949ff6a0e4aa1a39ba852f8c40",
+    "group": "gf-p002-contract-fixture-repair-20261025-1792934019908",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": true,
+    "collectionFailed": false,
+    "testSha256": "61006138b43b8fa8cad6062942abc3938122695192d727c68d58309ae86fc778",
+    "command": "node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+    "log": "/tmp/gf-p002-contract-fixture-repair-20261025.log",
+    "state": "/tmp/gf-p002-contract-fixture-repair-20261025.state.json",
+    "sourceUnchangedFromBefore": true,
+    "limitation": "This is dirty working-tree functional verification. It is not eligible for promotion to clean committed proof."
+  },
+  "productionSha256": {
+    "packages/operator-core/lib/consult/consult-dispatch.ts": "72786492538dc89ae80754f6dbc7855e6f390246fe284afb466248aed3a9d726",
+    "packages/operator-core/lib/consult/get-feedback-core.ts": "96b8fe7d3ee070465fc63e4ebdf683a302374c218d071298bdaf902297054bba",
+    "packages/operator-core/lib/consult/get-feedback-prod.ts": "0a69bd18a8583e8bde58c857f02a3291addb65e4fbf25c5dc9c4566370f2c63f"
+  },
+  "cleanVerification": {
+    "testRunId": 22017375,
+    "commitSha": "23a1fa6f7c80081f93317c3209fd9736dfcb4cd2",
+    "group": "gf-p002-contract-clean-repair-20261025-1792937439330",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "testSha256": "61006138b43b8fa8cad6062942abc3938122695192d727c68d58309ae86fc778",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs --ref=23a1fa6f7c80081f93317c3209fd9736dfcb4cd2 --any test:file -- packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+    "log": "/tmp/gf-p002-contract-clean-repair-20261025.log",
+    "state": "/tmp/gf-p002-contract-clean-repair-20261025.state.json",
+    "exitCode": 0,
+    "handleDrained": true,
+    "privatePgShutdownVerified": true,
+    "receiptSemantics": "The maintained committed wrapper supplies a private per-run receipt file, test:file validates its inserted ledger receipt, and the wrapper deletes that receipt directory after completion. Canonical durable row22017375 was independently read with all nine passing case identities.",
+    "sourceAndFixtureComparison": {
+      "sourcePaths": 8,
+      "fixturePaths": 16,
+      "declaredPathEntries": 24,
+      "changedFromRunCommit": [],
+      "method": "SHA256 working bytes against the exact run commit; realpath and recorded gitlinks resolve SQL and libs/test-config symlink inputs into the pinned libs/papercusp submodule."
+    },
+    "qualifiedBinding": 70148,
+    "bindingFingerprint": "0bb57e9b7008303a7428fbfd8b4dfe95fa9b529df40788485df597cb4b9de779",
+    "independentCurrentness": {
+      "overall": "current",
+      "spec": "current",
+      "source": "current",
+      "test": "current",
+      "fixture": "current",
+      "testRun": "current",
+      "rubric": "not-applicable",
+      "environment": "not-applicable",
+      "coverageEvidence": "not-applicable",
+      "staleReasons": [],
+      "unknownReasons": []
+    },
+    "limitation": "This qualified real-SQL and controlled-launch fixture proof does not establish physical native delivery, full dependency freshness, current native acceptance or shipment."
+  },
+  "oracleEvolution": {
+    "retainedIntent": [
+      "Four public request-schema/recovery/catalog cases.",
+      "Eligible source conversion with a distinct answering identity."
+    ],
+    "changedOracles": [
+      "Cyclic conversion still rejects its graph, then readable indexed evidence authorizes a fresh quoted brief.",
+      "Nonplain conversion still rejects its role, then readable indexed evidence authorizes a fresh quoted brief.",
+      "Missing-file conversion still rejects preflight, then readable indexed evidence authorizes a fresh quoted brief."
+    ],
+    "added": "Foreign-workspace-only cited evidence refuses both conversion and brief and launches nothing.",
+    "warning": "Eight historical case titles remain, but three old no-launch oracles have changed. Do not claim all eight historical behaviors are unchanged."
+  },
+  "history": {
+    "pendingBinding": 45201,
+    "originGroup": "122cf4ed-bbf7-40c0-af99-b430ec17bf69",
+    "replacementGroup": "3f48f225-aee7-4ab6-a0c2-c6508bbb4add",
+    "dirtyHistoricalRun": 21247296,
+    "datedCleanRun": 21938564,
+    "datedBindings": [
+      68339,
+      69331
+    ],
+    "withdrawnThisUnit": [45201, 68339, 69331, 45198],
+    "newBindingsThisUnit": [70148],
+    "additionalPendingDuplicate": "A subsequent full governing fixture assessment exposed45198. Exact canonical read confirmed the same contract test, two-source recipe, null run and pending/unexecuted/uncollected state. Clean22017375/current70148 covers that source union and calibrated cases;45198 was then withdrawn separately.",
+    "limitation": "Exact pending and dated source-stale rows were withdrawn only after clean22017375 and independently current70148 qualification. Their history remains. Neither dirty21247296/local22009144 nor failed22007863 is promoted; D037 records the three changed historical oracles."
+  },
+  "calibration": {
+    "reader": "readIndexedConsultCitedTurns(db.sql, workspaceId, sessionId, turnIndices)",
+    "table": "Private projection of migration501 session_turns read columns and composite primary key; production SQL filters workspace (plus governed default), exact session and requested indices.",
+    "sourceShapes": [
+      "eligible",
+      "cyclic",
+      "non-plain",
+      "missing",
+      "unreadable"
+    ],
+    "launchBoundary": "spawnHeadless and verifyResumeStarted remain controlled fixtures.",
+    "firstBindMustInclude": [
+      "Original source union from45201/68339/69331 plus actual tool/catalog entrypoints.",
+      "Inline fixture test, shared PG helper and supporting schema/runner inputs.",
+      "Migrations834 and1225 plus production501 calibration reference.",
+      "Relevant package manifests and lockfile."
+    ],
+    "limit": "This does not calibrate physical native delivery, current source custody or the complete worker-Vite dependency graph."
+  },
+  "preserved": {
+    "priorCalibrationBinding": 70065,
+    "priorCalibrationRun": 22006045,
+    "priorArtifact": "docs/evidence/get-feedback-p002-evidence-span-fixture-calibration-2026-10-25.json",
+    "priorArtifactSha256": "72480bcc4a2febcfdb1c2f47f4826b952f62bdbf23bad3ca69eab0af81cc9fee",
+    "originalNativeBindings": [
+      28326,
+      28545
+    ],
+    "supplementaryNativeBindings": [
+      69704,
+      69782
+    ],
+    "backendMutationBinding": 68733,
+    "reporterWorkItem": "EI-26900834772734276",
+    "reporterRootCause": "unknown",
+    "fixtureDragBug": "EI-26955691110246544"
+  },
+  "postQualificationAssessment": {
+    "evaluatorBuild": "34e5b38da4",
+    "specId": "GF-P002-source",
+    "revision": 1,
+    "verdict": "fail",
+    "ratings": {
+      "traceability": "unknown",
+      "fixture-calibration": "pass",
+      "falsifiability": "pass",
+      "correct-layer": "pass",
+      "oracle-independence": "pass",
+      "execution-integrity": "unknown",
+      "freshness": "fail",
+      "plan-class-risk-floor": "pass",
+      "disclosed-gap": "fail"
+    },
+    "draggingBindingIds": {
+      "traceability": [28326, 28545],
+      "execution-integrity": [28326, 28545],
+      "freshness": [28326, 28545, 68733, 69305, 69319, 69322, 69327, 69329, 69332, 69338, 69614],
+      "disclosed-gap": [69704, 69782, 70065, 70148]
+    },
+    "limitation": "This is the emitted governing assessment after the four exact withdrawals. Fixture calibration now passes; whole source acceptance still fails on the other four named criteria. Disclosed native limitations are retained."
+  },
+  "next": "Close the fixture-repair child with the clean committed run and root-cause verification, then resume parent WI-10005889/P002 from a current governing source assessment. Preserve original native/backend proof and actor/lease/custody/cohort/whole-acceptance/final-shipment limits."
+}

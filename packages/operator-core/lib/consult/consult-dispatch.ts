@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Sql } from 'postgres';
 import { evidenceIncarnationOwnedBy } from '../session-port/source';
+import type { SessionPortEvidenceSpan } from '../session-port/service';
 import {
   buildAgentLaunchCommand,
   injectLaunchedByArg,
@@ -63,6 +64,7 @@ import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { analyzeCodexRolloutFile, type CodexRolloutOverflowAnalysis } from '../events/await/codex-rollout-overflow';
 import {
   resolveExpertModelAllowlist,
   normalizeExpertModelAllowlist,
@@ -330,6 +332,7 @@ export type DispatchSkipReason =
   | 'first-turn-rejected'
   | 'first-turn-provider-error'
   | 'answering-owner-stamp-failed'
+  | 'approval-ineligible'
   | 'consult-closed';
 
 export interface ConsultDispatchAttempt {
@@ -356,6 +359,8 @@ export interface ConsultDispatchAttempt {
 
 export interface ConsultDispatchResult {
   dispatched: boolean;
+  /** Native target capacity is independent of the selected source transcript. */
+  targetCapacityUnavailable?: string;
   /**
    * The coord identity that will ANSWER — what the consult row must record as
    * its responder, so the answering session's first `consult:reply` has a
@@ -461,6 +466,130 @@ export function resolveConsultBackendAvailability(
   };
 }
 
+/** The gateway `/stats` fields the psu launcher refuses a Codex auto-route launch on. */
+export interface CodexGatewayPoolStats {
+  codexHealthyAccounts?: unknown;
+  codexTotalAccounts?: unknown;
+  codexEarliestRecoveryAt?: unknown;
+  codexUnserviceableCause?: unknown;
+}
+
+export interface CodexGatewayLaunchRefusal {
+  failureReason: 'account-walled' | 'account-routing-unavailable';
+  routeReason: string;
+  recoveryAt: number | null;
+}
+
+/**
+ * Would the psu launcher REFUSE a Codex auto-route launch on these gateway stats?
+ *
+ * The local account-pool view (`anyAccountAvailable`) cannot see the gateway's own
+ * exclusions (credential quarantine, upstream reachability, other routing
+ * restrictions), so it read "headroom" while every launched convert died at boot
+ * with "REFUSING TO LAUNCH — Codex auto-route has no serviceable accounts"
+ * (WI-6554700010029514). This answers from the SAME snapshot the launcher refuses
+ * on, so the router skips a rank the launcher would refuse instead of burning a
+ * spawn and recording an avoidable launch failure. It mirrors only the launcher's
+ * `refuse` outcomes of `codexAutoPoolVerdict` (warn/proceed both launch); the parity
+ * test pins it to that function so the two predicates cannot drift again.
+ */
+/** The first-turn fields the dispatcher judges an answering session by, for every agent. */
+type FirstTurnAnalysis = NonNullable<ReturnType<ConsultDispatchDeps['analyzeClaudeTranscript']>>;
+
+/**
+ * Map a Codex rollout analysis onto the first-turn fields Claude ranks are judged
+ * by (WI-6554700010029533). The kickoff proof is persisted before the check runs,
+ * so the newest `task_started` is the answering session's own kickoff turn. Until
+ * that turn ends there is no reply yet. A usage limit is an account wall, an
+ * overflow is a context-limit rejection and any other error is a transient
+ * provider error. A clean or aborted ending is a reply, and the dispatch stands.
+ */
+export function codexFirstTurnAnalysis(analysis: CodexRolloutOverflowAnalysis | null): FirstTurnAnalysis | null {
+  if (!analysis) return null;
+  const outcome = analysis.currentTurnOutcome;
+  const evidence = analysis.currentTurnErrorEvidence;
+  return {
+    assistantTurnsSinceLastPrompt: outcome === null ? 0 : 1,
+    trailingAccountWallTurns: outcome === 'usage-limit' ? 1 : 0,
+    lastAccountWallEvidence: outcome === 'usage-limit' ? evidence : null,
+    trailingContextLimitTurns: outcome === 'context-overflow' ? 1 : 0,
+    lastContextLimitEvidence: outcome === 'context-overflow' ? evidence : null,
+    trailingMissingToolReferenceTurns: 0,
+    lastMissingToolReferenceName: null,
+    trailingProviderErrorTurns: outcome === 'error' ? 1 : 0,
+    lastProviderErrorEvidence: outcome === 'error' ? evidence : null,
+  };
+}
+
+export function codexGatewayLaunchRefusal(
+  stats: CodexGatewayPoolStats | null | undefined,
+  now: number,
+): CodexGatewayLaunchRefusal | null {
+  if (!stats || typeof stats !== 'object') return null;
+  const healthy = stats.codexHealthyAccounts;
+  const total = stats.codexTotalAccounts;
+  const hasRecovery = Object.prototype.hasOwnProperty.call(stats, 'codexEarliestRecoveryAt');
+  const raw = stats.codexEarliestRecoveryAt;
+  // Speak only from the complete stats contract, exactly as the launcher does:
+  // an incomplete or legacy snapshot is unknown, never a wall.
+  if (healthy !== 0 || typeof total !== 'number' || !Number.isInteger(total) || total <= 0 || !hasRecovery ||
+      (raw !== null && (typeof raw !== 'number' || !Number.isFinite(raw)))) return null;
+  const count = '0 of ' + total;
+  if (stats.codexUnserviceableCause === 'upstream-unreachable') {
+    return {
+      failureReason: 'account-routing-unavailable',
+      routeReason: 'codex gateway reports fresh upstream transport failures across accounts (' + count + ' serviceable)',
+      recoveryAt: null,
+    };
+  }
+  const recovery = typeof raw === 'number' ? raw : null;
+  if (stats.codexUnserviceableCause === 'temporary-cooldown') return null;
+  // A recovery horizon already in the past is a possibly-stale snapshot: the launcher launches.
+  if (recovery !== null && recovery <= now) return null;
+  return {
+    failureReason: 'account-walled',
+    routeReason: 'codex gateway reports no serviceable accounts (' + count + ')' +
+      (recovery !== null ? '; earliest recovery ' + new Date(recovery).toISOString() : ''),
+    recoveryAt: recovery,
+  };
+}
+
+/** Read the live gateway's `/stats`; undefined (fail-open, like the launcher) on any failure. */
+export async function readCodexGatewayPoolStats(fetchImpl: typeof fetch = fetch): Promise<CodexGatewayPoolStats | undefined> {
+  const base = 'http://127.0.0.1:' + (Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788);
+  try {
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(1_000) : undefined;
+    const res = await fetchImpl(base + '/stats', signal ? { signal } : undefined);
+    if (!res.ok) return undefined;
+    const body = await res.json() as unknown;
+    return body && typeof body === 'object' ? body as CodexGatewayPoolStats : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Narrow an available Codex auto-route verdict by the gateway's own launch refusal.
+ * Pure over its inputs so the production probe and its tests share one decision.
+ */
+export function applyCodexGatewayRefusal(
+  verdict: BackendAvailability,
+  provider: 'claude' | 'codex',
+  stats: CodexGatewayPoolStats | null | undefined,
+  now: number,
+): BackendAvailability {
+  if (provider !== 'codex' || !verdict.available || verdict.accountRoute !== 'auto') return verdict;
+  const refusal = codexGatewayLaunchRefusal(stats, now);
+  if (!refusal) return verdict;
+  return {
+    available: false,
+    accountRoute: 'auto',
+    failureReason: refusal.failureReason,
+    routeReason: refusal.routeReason,
+    detail: refusal.routeReason + '; automatic launch was not attempted because the launcher would refuse it',
+  };
+}
+
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   captureNativeBoundary?: typeof captureNativeConsultBoundary;
@@ -468,7 +597,9 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   readDispatchChoice?: (workspaceId: string, conversationId: string) => Promise<{
     reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+    methodReview?: { rubricId: string; applierId: string };
   }>;
+  checkApprover?: typeof import('../rubrics').checkAcceptanceBarApproverEligibility;
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
   isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
   resolveResumeTarget: typeof resolveResumeTarget;
@@ -477,10 +608,11 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   checkResumeTranscript: (
     target: ResumeTarget,
   ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
-  /** Port-only role/graph preflight; a refusal leaves native fork ranks intact. */
+  /** Port-only role/graph/exact-span preflight; native fork ranks stay intact. */
   checkPortTranscript: (
     target: ResumeTarget,
     transcript: { available: boolean; detail: string; transcriptPath?: string },
+    evidenceSpan: SessionPortEvidenceSpan,
   ) => Promise<BackendAvailability>;
   /**
    * Read a Claude transcript's tail for provider "Tool reference … not found"
@@ -500,6 +632,12 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     'trailingAccountWallTurns' | 'lastAccountWallEvidence' |
     'trailingProviderErrorTurns' | 'lastProviderErrorEvidence'
   > | null;
+  /**
+   * Read a Codex answering session's rollout (its kickoff proof's native ref) so
+   * its first turn is judged like a Claude rank's (WI-6554700010029533). Null when
+   * unreadable.
+   */
+  analyzeCodexRollout: (rolloutPath: string) => CodexRolloutOverflowAnalysis | null;
   /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
   sleepMs: (ms: number) => Promise<void>;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
@@ -564,6 +702,29 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   ) => Promise<CitedTranscriptTurn[]>;
 }
 
+/** Match the router's admitted corpus without reading another tenant's turns.
+ * Keep duplicate rows visible: the dispatcher rejects ambiguous citations. */
+export async function readIndexedConsultCitedTurns(
+  sql: Sql,
+  workspaceId: string,
+  sessionId: string,
+  turnIndices: readonly number[],
+): Promise<CitedTranscriptTurn[]> {
+  const wanted = [...new Set(turnIndices)].filter((i) => Number.isSafeInteger(i) && i >= 0);
+  if (wanted.length === 0) return [];
+  const rows = await sql<{ turn_idx: number; speaker: string; ts: Date | string | null; text: string }[]>`
+    SELECT turn_idx, speaker, ts, text FROM harness_shared.session_turns
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+       AND session_id = ${sessionId} AND turn_idx = ANY(${wanted}::int[])
+     ORDER BY turn_idx`;
+  return rows.map((r) => ({
+    turn_idx: r.turn_idx,
+    speaker: r.speaker,
+    ts: r.ts == null ? null : new Date(r.ts).toISOString(),
+    text: r.text ?? '',
+  }));
+}
+
 async function defaultReadCitedTurns(
   workspaceId: string,
   sessionId: string,
@@ -572,19 +733,8 @@ async function defaultReadCitedTurns(
   const wanted = [...new Set(turnIndices)].filter((i) => Number.isSafeInteger(i) && i >= 0);
   if (wanted.length === 0) return [];
   const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql as unknown as Sql;
-  const rows = await sql<{ turn_idx: number; speaker: string; ts: Date | string | null; text: string }[]>`
-    SELECT turn_idx, speaker, ts, text FROM harness_shared.session_turns
-     WHERE workspace_id = ${workspaceId} AND session_id = ${sessionId} AND turn_idx = ANY(${wanted}::int[])
-     ORDER BY turn_idx`;
-  if (rows.length > 0) {
-    return rows.map((r) => ({
-      turn_idx: r.turn_idx,
-      speaker: r.speaker,
-      ts: r.ts == null ? null : new Date(r.ts).toISOString(),
-      text: r.text ?? '',
-    })).filter((t) => t.text.trim());
-  }
+  const rows = await readIndexedConsultCitedTurns(getOrgPg().sql as unknown as Sql, workspaceId, sessionId, wanted);
+  if (rows.length > 0) return rows.filter((t) => t.text.trim());
   const { readArchivedSessionTurns } = await import('../session-archive-read');
   const archived = await readArchivedSessionTurns(sessionId, undefined, undefined, { turnIndices: wanted });
   return (archived?.turns ?? []).map((t) => ({ turn_idx: t.turn_idx, speaker: t.speaker, ts: t.ts, text: t.text }))
@@ -620,6 +770,7 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
     model: r.model,
     verified: r.verified,
     detail: clip(r.detail),
+    ...(r.targetCapacityUnavailable ? { targetCapacityUnavailable: clip(r.targetCapacityUnavailable) } : {}),
     attempts: r.attempts.map((a) => ({
       rank: a.rank,
       agent: a.agent,
@@ -1092,11 +1243,17 @@ async function defaultProbeBackendAvailable(
       });
     }
     const pool = poolForProvider(await loadAccountPool(workspaceId), provider);
-    return resolveConsultBackendAvailability(provider, {
+    const verdict = resolveConsultBackendAvailability(provider, {
       gatewayOn: true,
       poolAccountCount: pool.accounts.length,
       poolHasHeadroom: pool.accounts.length > 0 ? anyAccountAvailable(pool, Date.now()) : null,
     });
+    // The local pool view cannot see gateway-side exclusions; ask the gateway the
+    // same question the launcher will (WI-6554700010029514).
+    if (provider === 'codex' && verdict.available && verdict.accountRoute === 'auto') {
+      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), Date.now());
+    }
+    return verdict;
   } catch (e) {
     return {
       available: false,
@@ -1210,6 +1367,8 @@ export async function dispatchConsultResponder(
     conversationId: string;
     reviewerModel?: ConsultReviewerModel;
     nativeConsult?: NativeConsultConstraints;
+    /** Canonical screen rebuilt from the persisted target on every dispatch. */
+    checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
     /** Router-matched transcript turns; exact native session wins over the
      * owner's newest session so the routed evidence and carried source agree. */
     evidence?: ConsultDispatchEvidenceRef[];
@@ -1240,12 +1399,13 @@ export async function dispatchConsultResponder(
         { coordOwnerId: target.ownerId, agent: target.agent }, sessionId);
     },
     checkResumeTranscript: defaultCheckResumeTranscript,
-    checkPortTranscript: async (target, transcript) => {
+    checkPortTranscript: async (target, transcript, evidenceSpan) => {
       const { checkConsultSessionPortTranscript } = await import('./resume-transcript-preflight');
-      return checkConsultSessionPortTranscript(target, transcript);
+      return checkConsultSessionPortTranscript(target, transcript, evidenceSpan);
     },
     isConsultOpen: defaultIsConsultOpen,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+    analyzeCodexRollout: analyzeCodexRolloutFile,
     buildAgentLaunchCommand,
     injectLaunchedByArg,
     buildConsoleEnvelope,
@@ -1300,6 +1460,10 @@ async function walkConsultDispatch(
   });
 
   try {
+    if (opts.checkApprover) {
+      const verdict = await opts.checkApprover(opts.sourceOwnerId);
+      if (verdict.eligible !== true) return give(`method_review_source_ineligible: ${verdict.reason}`);
+    }
     // WI-10003198: a source whose launches keep failing is not launched again
     // until its cool-down ends. Checked first: it is the cheapest refusal, and
     // everything after it (resolve, preflight, pressure, walls) is wasted on a
@@ -1469,10 +1633,52 @@ async function walkConsultDispatch(
         : 'the expert-model allowlist resolved empty — no model is allowed to answer consults');
     }
 
+    // Every native rank uses this one target backend. A provider-capacity
+    // refusal cannot be repaired by selecting another source transcript.
+    let nativeCapacity: BackendAvailability | null = null;
+    if (opts.nativeConsult) {
+      nativeCapacity = await d.probeBackendAvailable(opts.nativeConsult.targetBackend, ctx.workspaceId);
+      if (!nativeCapacity.available) {
+        for (const rank of ranks) attempts.push({
+          rank: rank.rank, agent: rank.agent, model: rank.model, operation: null,
+          outcome: 'skipped', reason: nativeCapacity.failureReason ?? 'account-walled',
+          ...(nativeCapacity.accountRoute ? { accountRoute: nativeCapacity.accountRoute } : {}),
+          ...(nativeCapacity.routeReason ? { accountRouteReason: nativeCapacity.routeReason } : {}),
+          detail: nativeCapacity.detail,
+        });
+        const detail = `native target ${opts.nativeConsult.targetBackend} capacity unavailable: ${nativeCapacity.detail}`;
+        return { ...give(detail), targetCapacityUnavailable: detail };
+      }
+    }
+
     // Every conversion rank ports the same exact source. Check once, before any
     // launch, and retain the refusal on each affected rank for the next-expert
     // cascade. Provider walls and native fork eligibility remain independent.
     let portTranscript: BackendAvailability | null = null;
+    // Both port preflight and a fresh brief ground themselves in the same
+    // exact cited rows. Cache failures too: another model cannot repair this
+    // source. Partial/foreign/duplicate rows never authorize either operation.
+    let citedTurns: CitedTranscriptTurn[] | null = null;
+    let citedTurnsFailure: string | null = null;
+    const readCitedSource = async (): Promise<{ turns: CitedTranscriptTurn[] | null; failure: string | null }> => {
+      if (!evidenceSource || citedTurns !== null || citedTurnsFailure !== null) {
+        return { turns: citedTurns, failure: citedTurnsFailure };
+      }
+      try {
+        const wanted = [...new Set(evidenceSource.evidence.map((ref) => ref.turn_idx))];
+        const rows = await d.readCitedTurns(ctx.workspaceId, evidenceSource.sessionId, wanted);
+        if (rows.length !== wanted.length || new Set(rows.map((row) => row.turn_idx)).size !== wanted.length ||
+            rows.some((row) => !wanted.includes(row.turn_idx) || !row.text.trim())) {
+          citedTurnsFailure = `exact cited turns are not all readable for ${evidenceSource.sessionId} (${wanted.join(', ')})`;
+        } else {
+          citedTurns = rows;
+        }
+      } catch (e) {
+        citedTurnsFailure = `reading the cited turns of ${evidenceSource.sessionId} failed: ` +
+          `${(e as Error)?.message ?? String(e)}`;
+      }
+      return { turns: citedTurns, failure: citedTurnsFailure };
+    };
     // P-002 / D-008: ranks the session port skips ON PURPOSE. When nothing else
     // dispatches, each is retried as a fresh session briefed with cited turns.
     const briefRanks: AllowedExpertModel[] = [];
@@ -1538,7 +1744,8 @@ async function walkConsultDispatch(
         continue;
       }
 
-      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      const capacity = nativeCapacity ?? await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      nativeCapacity = null; // Later ranks recheck capacity after a launch may change it.
       if (!capacity.available) {
         attempts.push({
           rank: rank.rank,
@@ -1558,7 +1765,17 @@ async function walkConsultDispatch(
       if (operation === 'convert') {
         if (!portTranscript) {
           try {
-            portTranscript = await d.checkPortTranscript(target, transcript);
+            const cited = await readCitedSource();
+            portTranscript = cited.failure || !cited.turns
+              ? { available: false, detail: cited.failure ?? 'no cited turns' }
+              : await d.checkPortTranscript(target, transcript, {
+                  sessionId: evidenceSource!.sessionId,
+                  turnIndices: [...new Set(evidenceSource!.evidence.map((ref) => ref.turn_idx))],
+                  contextTurns: 2,
+                  evidenceTurns: cited.turns.map((row) => ({
+                    turnIdx: row.turn_idx, timestamp: row.ts, speaker: row.speaker, text: row.text,
+                  })),
+                });
           } catch (e) {
             portTranscript = { available: false,
               detail: `session-port transcript preflight failed: ${(e as Error)?.message ?? String(e)}` };
@@ -1567,6 +1784,10 @@ async function walkConsultDispatch(
         if (!portTranscript.available) {
           attempts.push({ rank: rank.rank, agent: rank.agent, model: rank.model,
             operation, outcome: 'skipped', reason: 'conversion-unavailable', detail: portTranscript.detail });
+          // A fresh answering session can still quote indexed evidence when
+          // native porting is impossible. Keep attribution and explicit native
+          // trials fail-closed; the brief loop rechecks capacity and closure.
+          if (!briefAttributionContested && !opts.nativeConsult) briefRanks.push(rank);
           continue;
         }
       }
@@ -1612,8 +1833,6 @@ async function walkConsultDispatch(
     // P-002 / D-008: the expert cannot be forked or converted on purpose, so
     // launch a FRESH session under its own identity, briefed with the expert's
     // cited turns. Every brief rank leaves a recorded outcome (R-12).
-    let citedTurns: CitedTranscriptTurn[] | null = null;
-    let citedTurnsFailure: string | null = null;
     for (const rank of briefRanks) {
       const base = { rank: rank.rank, agent: rank.agent, model: rank.model, operation: 'brief' as const };
       if (!evidenceSource) {
@@ -1621,19 +1840,7 @@ async function walkConsultDispatch(
           detail: 'a cited-turn brief needs router-matched transcript turns; no evidence span was supplied' });
         continue;
       }
-      if (citedTurns === null && citedTurnsFailure === null) {
-        try {
-          citedTurns = await d.readCitedTurns(ctx.workspaceId, evidenceSource.sessionId,
-            evidenceSource.evidence.map((ref) => ref.turn_idx));
-          if (citedTurns.length === 0) {
-            citedTurnsFailure = `no text is readable for the cited turns of ${evidenceSource.sessionId} ` +
-              `(${evidenceSource.evidence.map((ref) => ref.turn_idx).join(', ')})`;
-          }
-        } catch (e) {
-          citedTurnsFailure = `reading the cited turns of ${evidenceSource.sessionId} failed: ` +
-            `${(e as Error)?.message ?? String(e)}`;
-        }
-      }
+      const { turns: citedTurns, failure: citedTurnsFailure } = await readCitedSource();
       if (citedTurnsFailure || !citedTurns || citedTurns.length === 0) {
         attempts.push({ ...base, outcome: 'skipped', reason: 'evidence-span-unavailable',
           detail: citedTurnsFailure ?? 'no cited turns' });
@@ -1727,6 +1934,7 @@ async function launchAnsweringSession(
     citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
+    checkApprover?: import('./acceptance-bar-amendment-review').AmendmentReviewerScreen;
   },
   ctx: ConsultDispatchContext,
   d: ConsultDispatchDeps,
@@ -1847,6 +2055,17 @@ async function launchAnsweringSession(
         'answering-owner-stamp-failed',
         'could not persist the answering identity before spawn; no session was launched',
       );
+    }
+  }
+  if (opts.checkApprover) {
+    try {
+      // The reservation above writes source→answerer before this fresh canonical
+      // read. Do not reuse a preselection closure: its lineage cache predates it.
+      if (!opts.onAnsweringOwner) return failed('approval-ineligible', 'method review requires a durable answering-owner reservation');
+      const verdict = await opts.checkApprover(answeringOwnerId);
+      if (verdict.eligible !== true) return failed('approval-ineligible', `method_review_answerer_ineligible: ${verdict.reason}`);
+    } catch (error) {
+      return failed('approval-ineligible', `method_review_answerer_screen_failed: ${String(error)}`);
     }
   }
   // The answer-owner stamp is async too. Close can win while it is writing, so
@@ -2027,10 +2246,14 @@ async function launchAnsweringSession(
   // the check did not run. A silent record reads exactly like a fork whose first
   // reply was judged clean, which hid a dead-on-arrival fork (WI-10006676).
   let firstTurnUncheckedReason: string | null = null;
-  if (rank.agent === 'claude' && !(typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl'))) {
+  // WI-6554700010029533: Codex ranks are judged too. Their kickoff proof names the
+  // rollout, and a Codex convert walled by a usage limit on its first turn otherwise
+  // held its cascade slot until bounded pickup recovery (measured 13-27 min).
+  const judgesFirstTurn = rank.agent === 'claude' || rank.agent === 'codex';
+  if (judgesFirstTurn && !(typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl'))) {
     firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
   }
-  if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
+  if (judgesFirstTurn && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
     let rejection: {
       turns: number; tool: string | null; contextEvidence?: string; accountEvidence?: string; providerEvidence?: string;
     } | null = null;
@@ -2041,9 +2264,11 @@ async function launchAnsweringSession(
     let readable = true;
     let replied = false;
     for (let poll = 0; ; poll += 1) {
-      let analysis: ReturnType<ConsultDispatchDeps['analyzeClaudeTranscript']> = null;
+      let analysis: FirstTurnAnalysis | null = null;
       try {
-        analysis = d.analyzeClaudeTranscript(answeringTranscript);
+        analysis = rank.agent === 'codex'
+          ? codexFirstTurnAnalysis(d.analyzeCodexRollout(answeringTranscript))
+          : d.analyzeClaudeTranscript(answeringTranscript);
       } catch {
         analysis = null;
       }
@@ -2236,6 +2461,7 @@ export function makeConsultReachDispatcher(
   pickupConfirmed: boolean;
   answeringOwnerId: string | null;
   dispatch: ConsultDispatchResult;
+  targetCapacityUnavailable?: string;
 }> {
   return async (opts) => {
     // The routed consult's saved snapshot is the authority on later reply,
@@ -2245,6 +2471,11 @@ export function makeConsultReachDispatcher(
       : deps.readReviewerModel ? { reviewerModel: await deps.readReviewerModel(ctx.workspaceId, opts.conversationId), nativeConsult: null }
       : await readPersistedDispatchChoice(ctx.workspaceId, opts.conversationId);
     const { reviewerModel, nativeConsult } = choice;
+    const methodReview = 'methodReview' in choice ? choice.methodReview : undefined;
+    const checkApprover = methodReview ? async (ownerId: string) => {
+      const check = deps.checkApprover ?? (await import('../rubrics')).checkAcceptanceBarApproverEligibility;
+      return check({ ...methodReview, ownerId });
+    } : undefined;
     // Initial getFeedbackProd binds workspace ranks itself. Later decline and
     // expiry writers construct a new dispatcher, so load that same workspace
     // setting here instead of comparing the saved choice against the seed.
@@ -2263,6 +2494,7 @@ export function makeConsultReachDispatcher(
         conversationId: opts.conversationId,
         ...(reviewerModel ? { reviewerModel } : {}),
         ...(nativeConsult ? { nativeConsult } : {}),
+        ...(checkApprover ? { checkApprover } : {}),
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
@@ -2285,6 +2517,7 @@ export function makeConsultReachDispatcher(
       woke: pickupConfirmed ? 1 : 0,
       pickupConfirmed,
       answeringOwnerId: dispatch.answeringOwnerId,
+      ...(dispatch.targetCapacityUnavailable ? { targetCapacityUnavailable: dispatch.targetCapacityUnavailable } : {}),
       dispatch,
     };
   };
@@ -2335,15 +2568,23 @@ export async function continueCascadeDispatchProd(
 
 async function readPersistedDispatchChoice(workspaceId: string, conversationId: string): Promise<{
   reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
+  methodReview?: { rubricId: string; applierId: string };
 }> {
   const { getOrgPg } = await import('@papercusp/db-org');
-  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown }>>`
-    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult
+  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown;
+    method_rubric: string | null; requester_id: string }>>`
+    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult,
+           routing->>'methodReviewRubricRef' AS method_rubric, requester_id
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
   `;
   const nativeConsult = row?.native_consult == null ? null : nativeConsultConstraintsSchema.parse(row.native_consult);
-  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult };
+  const { methodReviewTarget } = await import('./selection-policies');
+  const rubricId = methodReviewTarget({ policy: row?.policy ?? undefined,
+    methodReviewRubricRef: row?.method_rubric ?? undefined });
+  if (rubricId && !row?.requester_id?.trim()) throw new Error('method_review_requester_missing');
+  const methodReview = rubricId ? { rubricId, applierId: row!.requester_id } : undefined;
+  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult, ...(methodReview ? { methodReview } : {}) };
   if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY) {
     throw new Error('reviewer model exists outside an authorized review policy');
   }

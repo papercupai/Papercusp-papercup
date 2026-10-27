@@ -1113,7 +1113,7 @@ if (roots.size) {
   const { retainCommittedWorkRoot } = await import(pathToFileURL(helper).href);
   for (const root of roots) {
     const marker = JSON.parse(readFileSync(join(root, '.git', 'lint-as-committed-owner.json'), 'utf8'));
-    retainCommittedWorkRoot(root, marker.sha, scratch);
+    await retainCommittedWorkRoot(root, marker.sha, scratch);
     process.stdout.write(`MUTATION_PROBE_SOURCE_RETAINED ${JSON.stringify({ root, sha: marker.sha })}\n`);
   }
 }
@@ -1415,9 +1415,12 @@ sandbox_vite_temp_dirs() {
 # shows a read-only refusal, name the sandbox as the cause and the route around it.
 sandbox_readonly_hint() {
   local log_file="$1" label="$2" hits
-  [ "$DELETES_ACK" -eq 1 ] || return 0
+  # Return success only when a sandbox refusal was observed. The baseline
+  # callers use the diagnostic; run_guard also uses it to invalidate scored
+  # legs before an assertion about the wrong exception can become a catch.
+  [ "$DELETES_ACK" -eq 1 ] || return 1
   hits="$(grep -E 'EROFS|Read-only file system' "$log_file" 2>/dev/null | head -5)"
-  [ -n "$hits" ] || return 0
+  [ -n "$hits" ] || return 1
   log "SANDBOX READ-ONLY WRITE: the $label tried to WRITE outside the --sandbox-root sandbox, and the read-only / refused it (EROFS). This is the SANDBOX, not your guard — nothing was measured:
 $hits
 
@@ -1431,6 +1434,7 @@ $hits
       verified marker through, so the router reuses that lease:
           --test 'node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <path>'
       If the guard itself writes elsewhere, point it at \$TMPDIR or under $SANDBOX_ROOT."
+  return 0
 }
 
 if [ "$DELETES_ACK" -eq 1 ]; then
@@ -1759,16 +1763,16 @@ NODE
     1) MUTATION_DESCRIPTOR_READER_REQUIRED=1 ;;
     0) MUTATION_DESCRIPTOR_READER_REQUIRED=0 ;;
     '')
-      # Explicit health overrides remain the compatibility/testing escape
-      # hatch. An ambient operator selection is the intended runtime and must
-      # refuse an unbindable proof before any guard leg runs.
+      # An explicit health URL selects the intended reader just like an
+      # operator-selected runtime. If it cannot be read, durable/bindable
+      # evidence must stop before any guard leg. Only the legacy fallback keeps
+      # its compatibility behavior; READER_REQUIRED=0 is the explicit opt-out.
       # An explicit PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never is the documented
       # override ("always|never overrides the check", above): the caller chose a
       # deliberately unbound probe, so an INFERRED requirement must not refuse it
       # (WI-6554700010017564). An explicit READER_REQUIRED=1 still wins and is
       # refused as a contradiction in build_mutation_descriptor.
       if [ "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" != "never" ] &&
-         [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "override" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "legacy-default" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "operator-discovery" ]; then
         MUTATION_DESCRIPTOR_READER_REQUIRED=1
@@ -1787,16 +1791,45 @@ mutation_descriptor_reader_ready() {
     *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
   esac
   url="$MUTATION_DESCRIPTOR_READER_HEALTH_URL"
-  reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
-    -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+  # A restarting reader is not an absent one: the staging :3170 operator
+  # restarts on every staging advance, and for those seconds it refuses the
+  # connection, times out, or its proxy answers 5xx. A single read then
+  # refused a whole proof run as reader-unavailable (EI-27128359939578808).
+  # Retry exactly those transient answers within a bounded budget; any other
+  # answer (a 2xx/4xx, an unreadable file:// URL) is final on the first read.
+  local wait_sec="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC:-120}"
+  local retry_sec="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC:-5}"
+  case "$wait_sec" in ''|*[!0-9]*) die "PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC must be a whole number of seconds (got: '$wait_sec')" ;; esac
+  case "$retry_sec" in ''|*[!0-9]*|0) die "PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC must be a positive whole number of seconds (got: '$retry_sec')" ;; esac
+  local deadline=$(( $(date +%s) + wait_sec )) attempt=0 transient
+  while :; do
+    attempt=$((attempt + 1))
+    reader_curl_exit=0
+    reader_http="$(curl -sS -m 3 --max-filesize 65536 -o "$SCRATCH/reader-health.body" \
+      -w '%{http_code}\t%{time_total}' "$url" 2>"$SCRATCH/reader-health.err")" || reader_curl_exit=$?
+    transient=0
+    case "$reader_curl_exit:${reader_http%%$'\t'*}" in
+      7:*|28:*|52:*|56:*) transient=1 ;;   # refused, timed out, empty reply, reset
+      0:5??) transient=1 ;;                # the reader's proxy answered 5xx
+    esac
+    [ "$transient" -eq 1 ] && [ "$(date +%s)" -lt "$deadline" ] || break
+    printf 'MUTATION_PROBE_READER_RETRY attempt=%s curl_exit=%s http=%s url=%s retry_in=%ss\n' \
+      "$attempt" "$reader_curl_exit" "${reader_http%%$'\t'*}" "$url" "$retry_sec" >&2
+    sleep "$retry_sec"
+  done
   sha="$(MPD_READER_BODY="$SCRATCH/reader-health.body" MPD_READER_HTTP="$reader_http" \
-    MPD_READER_CURL_EXIT="$reader_curl_exit" node --input-type=module - <<'NODE'
+    MPD_READER_CURL_EXIT="$reader_curl_exit" MPD_READER_ATTEMPTS="$attempt" MPD_READER_URL="$url" \
+    node --input-type=module - <<'NODE'
 import { readFileSync } from 'node:fs';
 const [httpStatus, elapsedSeconds] = (process.env.MPD_READER_HTTP ?? '').split('\t');
 const curlExit = Number(process.env.MPD_READER_CURL_EXIT);
+const attempts = Number(process.env.MPD_READER_ATTEMPTS);
+// A file:// transfer has no response code: curl reports 000 for a file it read
+// successfully, so only an HTTP(S) reader is held to a 2xx status.
+const fileUrl = /^file:/i.test(process.env.MPD_READER_URL ?? '');
 let reason = curlExit === 0 ? null : 'curl-error';
 let sha = null;
-if (!reason && !/^2\d\d$/.test(httpStatus ?? '')) reason = 'http-error';
+if (!reason && !/^2\d\d$/.test(httpStatus ?? '') && !(fileUrl && httpStatus === '000')) reason = 'http-error';
 if (!reason) {
   try {
     const health = JSON.parse(readFileSync(process.env.MPD_READER_BODY, 'utf8'));
@@ -1805,7 +1838,7 @@ if (!reason) {
   } catch { reason = 'invalid-json'; }
 }
 console.error('MUTATION_PROBE_READER_HTTP_JSON=' + JSON.stringify({
-  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, reason, sha,
+  curlExit, httpStatus: httpStatus || null, elapsedSeconds: elapsedSeconds || null, attempts, reason, sha,
 }));
 if (sha) process.stdout.write(sha);
 NODE
@@ -2145,6 +2178,18 @@ run_guard() {
     if [ -n "$contain_stamp" ]; then
       contain_report_leaks "$phase" "$contain_stamp"
     fi
+    # EI-26951876523801680: a test can reach an assertion while its child
+    # census/build failed on the sandbox, then assert about that wrong error.
+    # Reporter assertion evidence does not make that a semantic measurement.
+    # Baseline failures already refuse unconditionally at their call sites;
+    # invalidate every other failed leg here, including historical snapshots.
+    if [ "$phase" != baseline ] && [ "$phase" != copy-baseline ] &&
+        [ "$rc" -ne 0 ] && sandbox_readonly_hint "$output" "$label"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s guard_exit=%d sandbox_readonly=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label failed after a sandbox read-only write refusal; its assertion failure cannot establish a mutation verdict. Move the child write under the declared sandbox root or TMPDIR before rerunning."
+    fi
     # The committed-source loader can replace the intentional overlay in a
     # test-spawned child with HEAD. Its router notice means this leg measured
     # different bytes, even when a parent module-load control sees the overlay.
@@ -2154,6 +2199,16 @@ run_guard() {
       printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d child_source_substituted=yes phase=%s\n' \
         "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
       die "the $label run substituted committed source in a test-spawned child. This leg did not exercise the requested source bytes; neither caught nor survived is established. Keep the committed-source boundary and use a guard that directly exercises the subject."
+    fi
+    # The private integration verifier freezes HEAD before starting its worker.
+    # That route can discard an overlay without a childSubstituted notice: the
+    # worker sees an already-clean snapshot. Refuse even a clean baseline here,
+    # since the same guard would silently discard the subsequent mutant.
+    if grep -Eq '^TEST_FILE_VERIFIER_SOURCE[[:space:]].*ref=[0-9a-f]{40}([[:space:]]|$)' "$output"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d verifier_source_refrozen=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label run froze committed verifier source; preservation of the requested mutation is unproved. Neither caught nor survived is established. Keep the verifier boundary and use a guard that directly exercises the subject."
     fi
     # 124 is `timeout`'s own "I killed it" status; 137 is what it returns when
     # --kill-after had to escalate to SIGKILL (MEASURED 2026-09-20 — NOT 124, as

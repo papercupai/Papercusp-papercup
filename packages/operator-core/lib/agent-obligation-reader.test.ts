@@ -1011,3 +1011,28 @@ describe('consultation reporting retirement', () => {
     expect(read.degradedSources.some(source => source.includes('consult reconciliation'))).toBe(false);
   });
 });
+
+describe('bounded obligation source reads', () => {
+  it('keeps plan placement and owner-directive failures explicit when controlled reads exceed their deadline', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const delay = () => new Promise<void>(resolve => setTimeout(resolve, 80));
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', goalId: 'goal-1', now: NOW, sourceTimeoutMs: 20,
+      deps: deps({
+        planSlugs: vi.fn(async () => { await delay(); return ['plan-a']; }),
+        ownerDirectives: vi.fn(async () => { await delay(); return []; }),
+      }),
+    });
+
+    const placement = read.agenda.evaluations.find(row => row.ruleId === 'goal-plan-placement');
+    const directives = read.agenda.evaluations.find(row => row.ruleId === 'owner-directive-disposition');
+    expect(placement).toMatchObject({ status: 'unknown' });
+    expect(placement?.measurementFailure?.detail).toContain('plan context');
+    expect(directives).toMatchObject({ status: 'unknown' });
+    expect(directives?.measurementFailure?.detail).toContain('owner directives');
+    expect(read.degradedSources).toEqual(expect.arrayContaining([
+      expect.stringContaining('plan context'),
+      expect.stringContaining('owner directives'),
+    ]));
+  });
+});

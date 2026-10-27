@@ -78,6 +78,13 @@ export type Enforcer =
   /** nothing deletes it (keep / review classes). */
   | { kind: 'none' };
 
+/** R-5 membership is independent of attribution and deletion permission. An
+ * unresolved mixed parent is retained, but cannot disappear from acceptance. */
+export type RetentionAcceptance =
+  | { kind: 'disposable'; owner: string; provenance: string[] }
+  | { kind: 'protected'; reason: string; provenance: string[] }
+  | { kind: 'unresolved'; reason: string; provenance: string[] };
+
 export interface RetentionClass {
   id: string;
   title: string;
@@ -86,8 +93,11 @@ export interface RetentionClass {
   roots: string[];
   /** non-path census keys this class owns, matched by prefix (`docker:`, `postgres:`). */
   stores?: string[];
+  /** Explicit R-5 partition. Optional for caller-supplied policies; absence is
+   * an acceptance failure, never an inferred protected/disposable scope. */
+  acceptance?: RetentionAcceptance;
   keep: KeepRule;
-  /** Allocated-byte ceiling per physical root for age/count collectors. Pins
+  /** Allocated-byte ceiling per physical root for the owning collector. Pins
    * count toward usage but remain exempt from eviction. */
   maxBytes?: number;
   /** every enforcer that acts on the class; the first is primary. */
@@ -109,6 +119,8 @@ export const AGENT_MAX_AGE_HOURS = 3 * DAY;
 /** Default per-root ceiling. Lease collectors keep their live/archive guards
  * and report protected overage; native managers own their admission limits. */
 export const AGENT_ROOT_MAX_BYTES = 20 * 1024 ** 3;
+/** Existing native package-cache janitor's per-root high-water mark. */
+export const PACKAGE_CACHE_ROOT_MAX_BYTES = 8 * 1024 ** 3;
 export function retentionRootSizeCap(cls: RetentionClass): number | undefined {
   return cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
     ? cls.maxBytes : undefined;
@@ -178,6 +190,15 @@ const AGENT_DEFAULT_RULE: KeepRule = {
   buildDirMaxAgeHours: BUILD_DIR_MAX_AGE_HOURS,
 };
 
+const disposable = (owner: string, ...provenance: string[]): RetentionAcceptance =>
+  ({ kind: 'disposable', owner, provenance });
+const protectedScope = (reason: string, ...provenance: string[]): RetentionAcceptance =>
+  ({ kind: 'protected', reason, provenance });
+const unresolved = (reason: string, ...provenance: string[]): RetentionAcceptance =>
+  ({ kind: 'unresolved', reason, provenance });
+const STORAGE_AUTHORITY = 'plan:disk-durable-headroom-2026-10-15#D-018';
+const STANDING_OWNER = 'papercusp/packages/operator-core/lib/storage/disk-reclaim.ts';
+
 /**
  * The policy. Order does not matter (specificity decides), but classes are
  * grouped: protected owner/system data first, then agent classes with an
@@ -188,6 +209,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Protected: owner data (D-002) ────────────────────────────────────────
   {
     id: 'owner-data-mnt',
+    acceptance: protectedScope('Owner backups, recordings and data are explicitly outside automatic deletion.', STORAGE_AUTHORITY),
     title: 'Owner backups, recordings and project data on /mnt/data',
     origin: 'owner',
     roots: [
@@ -208,6 +230,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'cold-tier',
+    acceptance: protectedScope('Owner archive volumes accept deliberate moves only (R-7).', STORAGE_AUTHORITY),
     title: 'The HDD cold tier (/mnt/cold-a, /mnt/cold-b) and its move logs',
     origin: 'system',
     roots: ['/mnt/cold-a', '/mnt/cold-b'],
@@ -217,6 +240,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'owner-home',
+    acceptance: protectedScope('Owner projects and personal application data.', STORAGE_AUTHORITY),
     title: 'Owner projects and app data in the home directory',
     origin: 'owner',
     roots: [
@@ -244,6 +268,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Protected: system ────────────────────────────────────────────────────
   {
     id: 'swap',
+    acceptance: protectedScope('Active swap files are explicit system exclusions (D-002).', STORAGE_AUTHORITY),
     title: 'Swap files',
     origin: 'system',
     roots: ['/swap.img', '/mnt/data/swapfile'],
@@ -252,6 +277,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'os',
+    acceptance: protectedScope('Operating-system/package stores are not agent run roots.', STORAGE_AUTHORITY),
     title: 'Operating system, packages and system logs',
     origin: 'system',
     roots: ['/usr', '/opt', '/boot', '/snap', '/root', '/srv', '/var/lib/snapd', '/var/lib/apt', '/var/lib/dpkg', '/var/lib/flatpak', '/var/log', '/var/cache', '/var/tmp', '/var/lib/waydroid', '/home/linuxbrew', '/tmp/systemd-private-*', '/mnt/data/tmp/systemd-private-*'],
@@ -260,6 +286,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'snap-download-cache',
+    acceptance: protectedScope('System package downloads; owned by snapd rather than an agent run.', 'papercusp/packages/operator-core/lib/storage/snap-cache-retention.ts'),
     title: 'Snapd download cache',
     origin: 'system',
     roots: ['/var/lib/snapd/cache'],
@@ -271,6 +298,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'postgres-cluster',
+    acceptance: protectedScope('Live database files; retention operates on rows.', STORAGE_AUTHORITY, 'papercusp/packages/operator-core/lib/storage/table-retention.ts'),
     title: 'Native Postgres cluster',
     origin: 'system',
     roots: ['/var/lib/postgresql'],
@@ -280,6 +308,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'live-databases',
+    acceptance: protectedScope('Live workspace database files.', STORAGE_AUTHORITY, 'papercusp/packages/operator-core/lib/workspace-registry.ts'),
     title: 'Embedded Postgres data directories and hive databases',
     origin: 'system',
     roots: ['~/.papercusp-workspaces/.shared/embedded-pg-data', '~/.papercusp/hives/*/db'],
@@ -288,6 +317,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'hyperbee-store',
+    acceptance: protectedScope('Live product stores are explicitly protected.', STORAGE_AUTHORITY),
     title: 'Workspace Hyperbee/Corestore data',
     origin: 'system',
     roots: ['~/.papercusp-workspaces/*/.papercusp/*/hyperbee', '~/.papercusp-workspaces/*/.papercusp/*/hyperbee-scoped'],
@@ -296,6 +326,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'toolchains-and-tool-state',
+    acceptance: unresolved('Mixed tool state may contain credentials, toolchains and generated caches; needs writer-scoped children.', STORAGE_AUTHORITY),
     title: 'Toolchains and per-tool state (rustup, cargo, codex, claude, local libs)',
     origin: 'system',
     roots: ['~/.rustup', '~/.cargo', '~/.codex', '~/.claude', '~/.local/lib', '~/.local/share', '~/.local/bin', '~/.nvm', '~/.bun', '~/go', '~/.gradle'],
@@ -304,6 +335,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'user-caches',
+    acceptance: unresolved('Per-tool cache attribution alone does not prove non-agent scope or a finite owner cap.', STORAGE_AUTHORITY),
     title: 'Per-tool caches under ~/.cache',
     origin: 'system',
     roots: ['~/.cache'],
@@ -313,6 +345,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Protected: live agent/platform state ────────────────────────────────
   {
     id: 'source-checkouts',
+    acceptance: unresolved('Whole checkouts are mixed; only separately classified generated children may expire.', 'papercusp/packages/operator-core/lib/workspace-root.ts'),
     title: 'Git checkouts under the configured Papercusp workspace root',
     origin: 'agent',
     roots: [`${WORKSPACE_ROOT_TOKEN}/*`],
@@ -321,6 +354,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'workspace-state',
+    acceptance: unresolved('Live workspace parent includes product state and disposable descendants.', 'papercusp/packages/operator-core/lib/workspace-registry.ts'),
     title: 'Registered workspace state (~/.papercusp-workspaces/<ws>)',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/.shared', '~/.papercusp-workspaces/*/.papercusp'],
@@ -329,6 +363,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-home-state',
+    acceptance: unresolved('Mixed credentials, live platform stores and run output require narrow writer-owned children.', STORAGE_AUTHORITY),
     title: 'Platform state under ~/.papercusp',
     origin: 'agent',
     roots: ['~/.papercusp', '~/.papercusp/pot-git', '~/.papercusp/hives', '~/.local/state/papercusp'],
@@ -337,6 +372,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'gitnexus-index',
+    acceptance: unresolved('Live index attribution does not establish acceptance exclusion for every child.', STORAGE_AUTHORITY),
     title: 'GitNexus code index',
     origin: 'agent',
     roots: ['/mnt/data/gitnexus'],
@@ -346,6 +382,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Agent classes with an existing scheduled enforcer ────────────────────
   {
     id: 'tmp-scratch',
+    acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Shared agent scratch (/tmp and its data-disk alias)',
     origin: 'agent',
     roots: ['/mnt/data/tmp', '/tmp'],
@@ -355,16 +392,19 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'container-storage',
+    acceptance: disposable('papercusp/bin/reclaim-docker-disk.sh', 'papercusp/bin/reclaim-docker-disk.sh'),
     title: 'Docker and Podman storage (build cache, images, volumes, containers)',
     origin: 'agent',
     roots: ['/var/lib/docker', '/var/lib/containers'],
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '82700371c9f1c7369e2627008e7298b095fac34f3aaed956bc823cdbe55bce79' }],
-    note: 'Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
+    maxBytes: AGENT_ROOT_MAX_BYTES,
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '5025a9e6f3f6cb1f320e9d05bb4d3b90f8e2d16a92f3444f031ded2c64342767' }],
+    note: 'The native owner discovers DockerRootDir and both Podman GraphRoots, deduplicates physical stores, and reports allocated-byte cap residue; these default roots are not an exhaustive inventory. Native references, named volumes and pins remain protected. Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {
     id: 'papercusp-scratch',
+    acceptance: disposable(STANDING_OWNER, 'papercusp/packages/operator-core/lib/scratch-gc.ts'),
     title: 'Tool and agent scratch under ~/.papercusp/scratch',
     origin: 'agent',
     roots: ['~/.papercusp/scratch'],
@@ -377,6 +417,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'session-dirs',
+    acceptance: disposable('papercusp/packages/operator-core/lib/session-dir-gc.ts', 'papercusp/packages/operator-core/lib/session-dir-gc.ts'),
     title: 'Per-session agent dirs (Claude config, MCP config, Codex homes)',
     origin: 'agent',
     roots: [
@@ -393,6 +434,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'fleet-logs',
+    acceptance: disposable('papercusp/packages/operator-core/lib/fleet-logs-gc.ts', 'papercusp/packages/operator-core/lib/fleet-logs-gc.ts'),
     title: 'Headless fleet session logs and launch-context renders',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/*/.papercusp/fleet-logs', '~/.papercusp/launch-context'],
@@ -402,14 +444,17 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'package-caches',
+    acceptance: disposable('papercusp/packages/operator-core/lib/storage/package-cache-retention.ts', 'papercusp/packages/operator-core/lib/storage/package-cache-retention.ts'),
     title: 'npm, bun and pnpm package caches',
     origin: 'agent',
     roots: ['~/.npm', '~/.bun/install/cache', '~/.local/share/pnpm/store'],
     keep: { kind: 'native', manager: 'npm/bun/pnpm', rule: 'native cache cleanup once the configured high-water mark is crossed' },
+    maxBytes: PACKAGE_CACHE_ROOT_MAX_BYTES,
     enforcers: [{ kind: 'existing', ref: 'papercusp/packages/operator-core/lib/storage/package-cache-retention.ts', schedule: 'telemetry-retention routine' }],
   },
   {
     id: 'sidecar-failed-stages',
+    acceptance: disposable('papercusp/papercusp-desktop/bin/lib/sidecar-stage-state.js prune', 'papercusp/papercusp-desktop/bin/lib/sidecar-stage-state.js'),
     title: 'Failed desktop sidecar build stages',
     origin: 'agent',
     roots: ['~/.local/state/papercusp/sidecar-failed-stages'],
@@ -422,6 +467,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'vh-release-runs',
+    acceptance: disposable('papercusp/libs/generic/verification-harness/src/runner.ts pruneRunsWithReport', 'papercusp/libs/generic/verification-harness/src/runner.ts:runHarness'),
     title: 'Verification-harness release runs',
     origin: 'agent',
     roots: ['~/.local/state/verification-harness/release-local', '/mnt/data/offload/verification-harness/release-local'],
@@ -437,6 +483,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'vh-isolated-runs',
+    acceptance: disposable('papercusp/libs/generic/verification-harness/src/runner.ts pruneEvidenceRoot', 'papercusp/libs/generic/verification-harness/src/runner.ts'),
     title: 'Verification-harness isolated integration runs',
     origin: 'agent',
     roots: [
@@ -456,6 +503,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Agent classes the standing reclaim enforces ──────────────────────────
   {
     id: 'release-cut-worktrees',
+    acceptance: disposable('papercusp/packages/operator-core/lib/release-cut-reclaim.ts', 'papercusp/packages/operator-core/lib/agent-tools/release/cut.ts'),
     title: 'Release-cut worktrees',
     origin: 'agent',
     roots: [`${WORKSPACE_ROOT_TOKEN}/papercusp-relcut-*`, `${WORKSPACE_ROOT_TOKEN}/papercup-relcut-*`],
@@ -466,19 +514,21 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'cargo-target-slots',
+    acceptance: disposable('papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh'),
     title: 'Private overflow Cargo target slots',
     origin: 'agent',
     roots: ['/mnt/data/cargo-target/.papercusp-target-slots'],
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '689b5f70267a30f78cda18495ef29fc9e73e2e415c52b09357623394facaa13e' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '7ff1ac08f1dbc5c80e1149caf27d9ebbea09e8bc4052733afcdd69c2c9fa1fdd' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
     note: 'The native owner eagerly removes every eligible dead private slot, oldest first; a 20 GiB cap receipt counts retained live/leased/recent roots and interrupted deletions. Protected overage is reported, never permission to bypass the owner guards.',
   },
   {
     id: 'repo-scratch',
+    acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'In-tree agent scratch, tmp and tool caches under a checkout’s .papercusp',
     origin: 'agent',
     roots: [
@@ -497,6 +547,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'agent-evidence',
+    acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Evidence, test-evidence and artifact bundles under ~/.papercusp',
     origin: 'agent',
     roots: ['~/.papercusp/evidence', '~/.papercusp/test-evidence', '~/.papercusp/artifacts'],
@@ -506,6 +557,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-home-run-dirs',
+    acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Per-run agent output at the top of ~/.papercusp (plan-item, work-item or date-stamped names)',
     origin: 'agent',
     roots: [...HOME_RUN_DIR_PATTERNS],
@@ -516,6 +568,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-home-release-dirs',
+    acceptance: unresolved('Release work dirs may contain retained evidence/source; writer-owned disposable children are not yet proven.', 'papercusp/apps/operator/lib/release/workspace-host-release-cut-cli.ts:workspaceHostCutPaths'),
     title: 'Workspace-host release-cut work dirs at the top of ~/.papercusp',
     origin: 'agent',
     roots: ['~/.papercusp/wh-release-*'],
@@ -524,6 +577,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'workspace-db-dumps',
+    acceptance: disposable(STANDING_OWNER, 'papercusp/packages/backup/src/hook.ts:runPreSnapshotHook'),
     title: 'Per-workspace embedded Postgres dumps',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/*/db-dumps'],
@@ -532,22 +586,25 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'workspace-restores',
+    acceptance: unresolved('Restore copies require native restore/promotion guards; app snapshot writer scope is not qualified.', 'papercusp/packages/backup/src/workspace-backup.ts:restoreToClone', 'papercusp/packages/backup/src/restored-clone-cleanup.ts:sweepRestoredClones'),
     title: 'Restore staging dirs and app snapshots in a workspace',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/*/.restored', '~/.papercusp-workspaces/*/.papercusp/apps-snap-*'],
-    keep: AGENT_DEFAULT_RULE,
-    enforcers: [{ kind: 'standing-reclaim' }],
+    keep: { kind: 'keep', reason: 'mixed restore/app snapshot roots; use the restore owner liveness and promotion proofs, never generic parent expiry' },
+    enforcers: [{ kind: 'none' }],
   },
   {
     id: 'unregistered-workspaces',
+    acceptance: unresolved('Registry absence does not prove disposable contents; live DB/product descendants stay protected.', 'papercusp/packages/operator-core/lib/workspace-registry.ts', STANDING_OWNER),
     title: 'Workspace roots no longer in the workspace registry',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/*'],
-    keep: { kind: 'lease', record: 'an entry in the workspace registry', graceHours: 14 * DAY },
-    enforcers: [{ kind: 'standing-reclaim', via: 'papercusp/packages/operator-core/lib/workspace-registry.ts readRegistry' }],
+    keep: { kind: 'keep', reason: 'mixed workspace parent; registry absence cannot authorize deleting live database or product descendants' },
+    enforcers: [{ kind: 'none' }],
   },
   {
     id: 'offload-work-copies',
+    acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Per-work-item copies moved to /mnt/data/offload',
     origin: 'agent',
     roots: [
@@ -565,6 +622,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Agent-generated, no safe automatic rule yet: report, never delete ───
   {
     id: 'offload-other',
+    acceptance: unresolved('Mixed VM disks, ingests and copies; approved VM run copies need writer provenance.', STORAGE_AUTHORITY),
     title: 'Other /mnt/data/offload entries (VM disks, root-disk copy, ingests)',
     origin: 'agent',
     roots: ['/mnt/data/offload'],
@@ -573,6 +631,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'mnt-build-infra',
+    acceptance: unresolved('Mixed live generations, registries, VM archives and build output.', STORAGE_AUTHORITY),
     title: 'Build, dependency, registry and VM archives on /mnt/data',
     origin: 'agent',
     roots: [
@@ -591,6 +650,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-backups',
+    acceptance: unresolved('Backup index and writer contract are required before any retention change.', STORAGE_AUTHORITY),
     title: 'Workspace backups on the cold tier and retained legacy path',
     origin: 'agent',
     roots: ['/mnt/data/papercusp-backups', '/mnt/cold-a/papercusp-backups'],
@@ -599,6 +659,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'staging-generations',
+    acceptance: unresolved('Live generations and disposable predecessors need the serving-generation owner contract.', STORAGE_AUTHORITY),
     title: 'Staging operator checkout generations',
     origin: 'agent',
     roots: [`${WORKSPACE_ROOT_TOKEN}/papercusp-staging.generations`],
@@ -607,6 +668,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'vh-other-state',
+    acceptance: unresolved('VM base images and approved run copies must be distinguished by their writer.', 'papercusp/libs/generic/verification-harness/src/runner.ts'),
     title: 'Other verification-harness state (VM archives)',
     origin: 'agent',
     roots: ['~/.local/state/verification-harness'],
@@ -615,6 +677,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'agent-clones-and-backups',
+    acceptance: unresolved('Unrecorded consumers, backups and release copies cannot share a deletion unit.', STORAGE_AUTHORITY),
     title: 'Ad-hoc clones, store backups and retired mirrors',
     origin: 'agent',
     roots: [
@@ -640,6 +703,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // census reports their size, but every class here is keep or review.
   {
     id: 'owner-macos-vm',
+    acceptance: protectedScope('Owner VM disks, recovery images and backup source are explicitly protected.', STORAGE_AUTHORITY),
     title: 'The macOS VM: OSX-KVM disk, recovery images and the ~/macos-vm backup source',
     origin: 'owner',
     roots: ['/mnt/backup/offload/macos-vm', '~/macos-vm'],
@@ -652,6 +716,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'db-dumps',
+    acceptance: protectedScope('Backup custody belongs to the database backup writer.', STORAGE_AUTHORITY, 'papercusp/packages/backup/src/host-dump-coverage.ts:DEFAULT_HOST_PG_DUMP_DIR'),
     title: 'Papercusp database dumps on the cold-a volume and retained legacy tree',
     origin: 'system',
     roots: ['/mnt/cold-a/Backup/db-dumps', '/mnt/backup/db-dumps'],
@@ -660,6 +725,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'backup-offload-other',
+    acceptance: unresolved('Offload copies include symlink targets and audit inputs with unresolved consumers.', STORAGE_AUTHORITY),
     title: 'Other /mnt/backup/offload entries (home-dir copies, audit inputs)',
     origin: 'agent',
     roots: ['/mnt/backup/offload'],
@@ -668,6 +734,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'backup-agent-trees',
+    acceptance: unresolved('Evidence/targets await the explicit backup-tree owner ruling; not an R5 exclusion.', 'work-item:WI-6554700010010388', STORAGE_AUTHORITY),
     title: 'Agent build, test and evidence trees on /mnt/backup',
     origin: 'agent',
     roots: [
@@ -706,6 +773,52 @@ export function retentionPolicyForWorkspaceRoot(
 /** Keep the ceilings alongside the existing policy, rather than maintaining a
  * second root registry. Owners of native/lease classes enforce their own limits. */
 export const RETENTION_POLICY: readonly RetentionClass[] = retentionPolicyForWorkspaceRoot();
+
+/** Enumerate every declared root and non-path store, including mixed and
+ * protected classes. Metadata does not grant deletion or attest runtime caps. */
+export function retentionAcceptancePopulation(policy: readonly RetentionClass[] = RETENTION_POLICY) {
+  return policy.flatMap((cls) => [
+    ...cls.roots.map((scope) => ({ classId: cls.id, scopeKind: 'root' as const, scope, acceptance: cls.acceptance })),
+    ...(cls.stores ?? []).map((scope) => ({ classId: cls.id, scopeKind: 'store' as const, scope, acceptance: cls.acceptance })),
+  ]);
+}
+
+/** Acceptance is fail-closed even when the operational policy is structurally
+ * valid: an unresolved parent is a non-pass, never an implicit exemption. */
+export function validateRetentionAcceptance(policy: readonly RetentionClass[] = RETENTION_POLICY): string[] {
+  const problems = validatePolicy(policy);
+  for (const cls of policy) {
+    const membership = cls.acceptance;
+    if (!membership) {
+      problems.push(`${cls.id}: missing R5 acceptance partition`);
+      continue;
+    }
+    if (!Array.isArray(membership.provenance) || !membership.provenance.length ||
+        membership.provenance.some((ref) => typeof ref !== 'string' || !ref.trim())) {
+      problems.push(`${cls.id}: R5 partition requires source/authority provenance`);
+    }
+    if (membership.kind === 'disposable') {
+      const owners = cls.enforcers.flatMap((enforcer) => enforcer.kind === 'existing' ? [enforcer.ref]
+        : enforcer.kind === 'standing-reclaim' ? [enforcer.via ?? STANDING_OWNER] : []);
+      if (!membership.owner?.trim() || !owners.includes(membership.owner)) {
+        problems.push(`${cls.id}: R5 disposable owner must name an enrolled enforcer`);
+      }
+      if (!Number.isSafeInteger(cls.maxBytes) || (cls.maxBytes ?? 0) <= 0) {
+        problems.push(`${cls.id}: R5 disposable root requires a finite allocated-byte cap`);
+      }
+      if (cls.origin !== 'agent' || cls.keep.kind === 'keep' || cls.keep.kind === 'review') {
+        problems.push(`${cls.id}: R5 disposable scope lacks an agent deletion rule`);
+      }
+    } else if (membership.kind === 'protected' || membership.kind === 'unresolved') {
+      if (!membership.reason?.trim()) problems.push(`${cls.id}: R5 partition requires a reason`);
+      if (isDeletableRule(cls.keep)) problems.push(`${cls.id}: R5 ${membership.kind} parent cannot authorize deletion`);
+      if (membership.kind === 'unresolved') problems.push(`${cls.id}: unresolved R5 scope: ${membership.reason}`);
+    } else {
+      problems.push(`${cls.id}: invalid R5 acceptance partition`);
+    }
+  }
+  return problems;
+}
 
 // ── Matching ───────────────────────────────────────────────────────────────
 
@@ -892,8 +1005,8 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
     ids.add(cls.id);
     if (!cls.keep) problems.push(`${cls.id}: no keep rule`);
     if (cls.maxBytes !== undefined && (!Number.isSafeInteger(cls.maxBytes) || cls.maxBytes <= 0 ||
-        cls.origin !== 'agent' || !['max-age', 'newest', 'lease'].includes(cls.keep.kind))) {
-      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count/lease class`);
+        cls.origin !== 'agent' || !['max-age', 'newest', 'lease', 'native'].includes(cls.keep.kind))) {
+      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count/lease/native class`);
     }
     if (cls.roots.length === 0 && (cls.stores ?? []).length === 0) problems.push(`${cls.id}: no roots`);
     if (cls.enforcers.length === 0) problems.push(`${cls.id}: no enforcer entry`);

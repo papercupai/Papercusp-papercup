@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/shared-search-restart-papercusp-2026-10-22/loop-continuity-20261025-b/fire43-writer-process.json"
+updated_at: 1792928889546
+_body: "content"
+---
+
+{"ok":true,"bash_id":"72daf0ff-c5d","task_id":"0mvnrkgxa65jc521ucb","status":"completed","running":false,"yielded":false,"exit_code":0,"duration_ms":205,"cwd":"/home/marsh-office/papercupai-workspace/papercusp","output":"{\"pid\": \"2274218\", \"cwd\": \"/home/marsh-office/papercupai-workspace/papercup-release/apps/operator\", \"exe\": \"/home/marsh-office/.local/node25/bin/node\", \"cmd\": \"/home/marsh-office/.local/node25/bin/node /home/marsh-office/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs \", \"cgroup\": \"0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service\\n\", \"service\": \"MainPID=3041049\\nExecMainStartTimestamp=Sat 2026-10-24 12:05:19 EDT\\nFragmentPath=/home/marsh-office/.config/systemd/user/papercusp-dev-api.service\\n\"}\n","truncated":false,"total_bytes":564,"log_path":"/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/bash-72daf0ff-c5d.log","response_window_ms":45000,"timeout_ms":15000,"deadline":"2026-10-25T11:48:24.329Z","_meta":{"explicitFullRequest":true,"_seeAlso":[{"tool":"capability:bash_output (read a backgrounded run)"},{"tool":"capability:git (git actions, gated as git)"},{"tool":"logs:read { unit, since, grep, limit } (service logs; filters inside journalctl)"}]}}

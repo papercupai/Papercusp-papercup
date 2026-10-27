@@ -34,7 +34,9 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'dream-dependencies-import' | 'dream-observation-import' | 'dream-journal-dependencies-import' |
   'dream-action-journal' | 'dream-gym-journal' | 'dream-workspace-transaction' | 'dream-observation-read' |
   'dream-observation-flags' | 'dream-observation-routines' | 'dream-observation-gym' |
-  'dream-observation-governors' | 'dream-observation-activity' | 'dream-observation-spend';
+  'dream-observation-governors' | 'dream-observation-activity' | 'dream-observation-spend' |
+  'testing-runs-rollup' | 'testing-runs-latest-rows' | 'testing-runs-history-rows' |
+  'testing-runs-source-omissions' | 'testing-runs-foreground-run' | 'testing-runs-case-results';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;
   startedAt: number;

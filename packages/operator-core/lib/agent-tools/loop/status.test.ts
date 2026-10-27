@@ -238,7 +238,8 @@ describe('loop:status owner-scoped argument contract (EI-21137205137669557)', ()
       guidance?: { when?: string };
       args: {
         safeParse: (value: unknown) => { success: boolean };
-        shape: { ownerId?: { description?: string }; harness?: { description?: string } };
+        // WI-6554700010029664: args is a preprocess pipe (owner → ownerId fold); `out` is the object.
+        out: { shape: { ownerId?: { description?: string }; harness?: { description?: string } } };
       };
     };
 
@@ -260,8 +261,8 @@ describe('loop:status owner-scoped argument contract (EI-21137205137669557)', ()
     expect(tool().description).toMatch(/accepted and ignored/i);
     expect(tool().guidance?.when).toMatch(/ignores `harness`/i);
     // The canonical sentence loop:end already uses, kept verbatim across the family.
-    expect(tool().args.shape.harness?.description).toMatch(/Accepted for compatibility and IGNORED/);
-    expect(tool().args.shape.harness?.description).toMatch(/keyed by owner, not by harness/);
+    expect(tool().args.out.shape.harness?.description).toMatch(/Accepted for compatibility and IGNORED/);
+    expect(tool().args.out.shape.harness?.description).toMatch(/keyed by owner, not by harness/);
   });
 });
 
@@ -329,6 +330,28 @@ describe('loop:status rewake verdict (P-013)', () => {
       ...armed,
       lastWakeStatus: 'parked',
       lastWakeError: 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
+    });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-parked' });
+  });
+
+  // WI-6554700010030084: a cold reset ends the session it was delivered to; SessionEnd hygiene then
+  // drops the reset's own (host-accepted) row. That drop is not an undelivered fire.
+  it('does not read a cold reset dropped by its own SessionEnd as a parked fire', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'dropped',
+      lastWakeError: 'standing inbox-wake await cancelled before delivery after the psu host had accepted this delivery; the host-owned commit is not an undelivered wake (WI-1062047, WI-6554700010030084)',
+    });
+    const out = await run();
+    expect(out.rewake).toEqual({ rewakeGuaranteed: true, reason: null });
+  });
+
+  it('still reads a drop the host never accepted as last-fire-parked', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      ...armed,
+      lastWakeStatus: 'dropped',
+      lastWakeError: 'standing inbox-wake await cancelled before delivery (WI-1062047)',
     });
     const out = await run();
     expect(out.rewake).toEqual({ rewakeGuaranteed: false, reason: 'last-fire-parked' });

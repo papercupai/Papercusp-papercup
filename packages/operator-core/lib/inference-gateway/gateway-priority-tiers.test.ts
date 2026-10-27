@@ -294,6 +294,10 @@ test('tier-aware shedding: an AIMD storm shrinks the bottom band first, holds ti
       // aggressive AIMD so a handful of 429s trips multiple decreases quickly
       aimd: { floor: 1, decreaseThreshold: 2, decreaseFactor: 0.5, increaseEvery: 100 },
       internalRetryDeadlineMs: 50, // shed fast so the storm requests resolve quickly
+      // Absorb is default-on and a retry-budget-exhausted shed now enters it too: with a 50ms slot
+      // budget under the upstream's 1s retry-after, each re-acquire cannot dispatch and the caller is
+      // held until the 60s absorb deadline. Pin absorb OFF so this case measures tier shedding only.
+      requestAbsorbMs: 0,
       priorityTiers: tiersDep({ caps: { 1: 16, 2: 13, 3: 13, 4: 13 }, tier1Reserve: 3 }),
     },
   );

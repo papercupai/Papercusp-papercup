@@ -23,7 +23,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getOrgPg, generated, typedSql } from '@papercusp/db-org';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 
 const t = generated.harnessTextArtifactsInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
@@ -123,6 +123,26 @@ export async function saveTextArtifact(slug: string, relPath: string, content: s
     await mirrorToDisk(slug, key, content);
   }
   await notifyTextArtifactChange(slug, key);
+}
+
+/** Conditional writes reuse the canonical artifact row; null means create-only.
+ * Callers must read PG, never the best-effort disk mirror, before comparing.
+ */
+export async function compareAndSwapTextArtifact(slug: string, relPath: string,
+  expectedContent: string | null, content: string): Promise<boolean> {
+  const key = normalizeRelPath(relPath), workspaceId = activeWorkspaceId();
+  const { db } = getOrgPg();
+  const values = { content, updatedAt: Date.now(), workspaceId };
+  const rows = expectedContent === null
+    ? await db.insert(t).values({ harnessSlug: slug, relPath: key, ...values })
+      .onConflictDoNothing().returning({ content: t.content })
+    : await db.update(t).set(values).where(and(eq(t.harnessSlug, slug), eq(t.relPath, key),
+      eq(t.content, expectedContent), or(eq(t.workspaceId, workspaceId), eq(t.workspaceId, ''))))
+      .returning({ content: t.content });
+  if (!rows.length) return false;
+  await mirrorToDisk(slug, key, content);
+  await notifyTextArtifactChange(slug, key);
+  return true;
 }
 
 export async function appendTextArtifact(slug: string, relPath: string, suffix: string): Promise<void> {

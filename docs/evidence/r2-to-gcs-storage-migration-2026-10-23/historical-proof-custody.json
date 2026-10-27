@@ -1,0 +1,455 @@
+{
+  "schemaVersion": "r2gcs-historical-proof-custody-v1",
+  "workItem": "EI-26908539061140583",
+  "archive": {
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/evidence/EI-26908539061140583/b41a4997a07186e79f292153d57a7e8e1457f85afe0087974922ca97701b9d38",
+    "manifest": {
+      "name": "sha256.json",
+      "sha256": "b41a4997a07186e79f292153d57a7e8e1457f85afe0087974922ca97701b9d38"
+    },
+    "tar": {
+      "name": "original-proof.tar",
+      "sha256": "437a69a04a9242cd29b4b2ba9c0001bb6e833a52ccee16060e963fa9008622a6"
+    },
+    "custody": {
+      "name": "custody.json",
+      "sha256": "d9bef3a91857e96c45157a748d640003995e99ea3dc19be9493009480b6010ff"
+    },
+    "nativeCustody": {
+      "name": "custody-native.json",
+      "sha256": "ca3b449d4e1351e0779af3482ff2df059b55e867db23b43526dd764b86ae4d9c"
+    },
+    "untrackedCustody": {
+      "name": "untracked-custody-c686ccf0755b1e7446aa79a793ccc8aaac54ea3cd14d61641cad5842baa9e9b3.json",
+      "sha256": "c686ccf0755b1e7446aa79a793ccc8aaac54ea3cd14d61641cad5842baa9e9b3",
+      "originals": 8149,
+      "byteLength": 9622747
+    },
+    "retainedArtifactDirectory": "retained",
+    "trackedOriginals": 2362
+  },
+  "readerAccess": {
+    "reader": {
+      "module": "scripts/lib/budgeted-task-scheduler.mjs",
+      "export": "readNativeArtifactBytes"
+    },
+    "originalsVerified": 2362,
+    "retainedPinsRead": 15428,
+    "evaluatorReferencesVerified": 2922,
+    "nativeArtifactsRead": 10140,
+    "eligibleGeneratedFiles": 2349,
+    "untrackedOriginalsRead": 8149,
+    "untrackedOriginalBytesRead": 9622747,
+    "qualifications": {
+      "newExecutionReceipt": false,
+      "orderedChainQualified": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false
+    },
+    "indexPathBase": "archive.root",
+    "artifactPathBase": "archive.retainedArtifactDirectory",
+    "lookup": {
+      "trackedFile": "custody.json files[].path -> artifact",
+      "rawReport": "custody.json reports[].artifact",
+      "evaluator": "custody.json reports[].evaluatorArtifacts.entries[].artifact",
+      "nativeArtifact": "custody-native.json populations[].files[].artifact",
+      "untrackedOriginal": "archive.untrackedCustody.name files[].path -> artifact"
+    },
+    "validation": "Verify each index hash against archive pins before following an artifact descriptor. Read the referenced bytes with readNativeArtifactBytes(file, descriptor.byteLength, byteLimit), then compare SHA-256 to descriptor.sha256. Original report and codeRef bytes are unchanged; retained evaluator mappings were checked against the original report location, id, codeRef, digest and byte length.",
+    "scope": "Historical exact-byte access only; missing codeRef observations remain partial."
+  },
+  "bindingCensus": {
+    "scope": "Active evidence bindings returned for the migration plan; each immutable binding ID was read with its complete currentMeasurement",
+    "plan": "r2-to-gcs-storage-migration-2026-10-23",
+    "harness": "papercusp",
+    "count": 19,
+    "truncatedByLimit": false,
+    "bindings": [
+      {
+        "id": 68235,
+        "currentMeasurement": null
+      },
+      {
+        "id": 68244,
+        "currentMeasurement": null
+      },
+      {
+        "id": 68247,
+        "currentMeasurement": null
+      },
+      {
+        "id": 68711,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/gcs-object-store.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/content-address.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "libs/generic/artifact-registry/src/gcs-object-store.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 68715,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/gcs-object-store.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/content-address.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "libs/generic/artifact-registry/src/gcs-object-store.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 68891,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "scripts/publish-workspace-host-artifacts.test.ts"
+          ],
+          "sourcePaths": [
+            "scripts/lib/workspace-host-gcs-publication.mjs",
+            "scripts/publish-workspace-host-artifacts.mjs"
+          ],
+          "fixturePaths": [
+            "scripts/publish-workspace-host-artifacts.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 68894,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "scripts/publish-workspace-host-artifacts.test.ts"
+          ],
+          "sourcePaths": [
+            "scripts/lib/workspace-host-gcs-publication.mjs",
+            "scripts/publish-workspace-host-artifacts.mjs"
+          ],
+          "fixturePaths": [
+            "scripts/publish-workspace-host-artifacts.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 68965,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/gcs-storage.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/routes/creator-drafts.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/self-describing-artifacts.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/gcs-storage.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69021,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/gcs-storage.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/routes/creator-drafts.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/self-describing-artifacts.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/gcs-storage.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69022,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/gcs-storage.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/routes/creator-drafts.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/self-describing-artifacts.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/gcs-storage.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69023,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/gcs-storage.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/routes/creator-drafts.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/self-describing-artifacts.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/gcs-storage.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69024,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/workspace-host-artifacts.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/env.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69025,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/workspace-host-artifacts.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/env.ts",
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-credentials.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/operator-public/src/__tests__/fake-d1.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69026,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/papercusp-publish/src/archive-storage.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/papercusp-publish/src/r2-archive.ts",
+            "libs/generic/artifact-registry/src/gcs-object-store.ts",
+            "libs/generic/artifact-registry/src/object-store.ts"
+          ],
+          "fixturePaths": [
+            "apps/papercusp-publish/src/archive-storage.test.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69448,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "apps/operator-public/src/routes/workspace-host-artifacts.test.ts"
+          ],
+          "sourcePaths": [
+            "apps/operator-public/src/routes/index.ts",
+            "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+            "libs/generic/artifact-registry/src/gcs-test-provider.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69449,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/blob-store.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/content-address.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69450,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/registry.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/registry.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69515,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/blob-store.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/content-address.ts"
+          ],
+          "fixturePaths": [
+            "libs/generic/artifact-registry/src/blob-store.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      },
+      {
+        "id": 69516,
+        "currentMeasurement": {
+          "kind": "repo-files",
+          "testPaths": [
+            "libs/generic/artifact-registry/src/blob-store.test.ts"
+          ],
+          "sourcePaths": [
+            "libs/generic/artifact-registry/src/blob-store.ts",
+            "libs/generic/artifact-registry/src/content-address.ts"
+          ],
+          "fixturePaths": [
+            "libs/generic/artifact-registry/src/blob-store.test.ts"
+          ],
+          "schemaVersion": 1
+        }
+      }
+    ],
+    "declaredMeasurementPayloadReferences": [],
+    "unknownWorktreeBindings": [
+      69515,
+      69516
+    ],
+    "limitations": [
+      "Bindings 68235, 68244 and 68247 declare no currentMeasurement; no source or fixture census is inferred for them.",
+      "This census records declared measurement dependencies, not runtime closure or a new currentness qualification."
+    ]
+  },
+  "reports": [
+    {
+      "name": "gcs-unit-executed.json",
+      "evaluatorCustody": "partial",
+      "missingCodeRefOccurrences": 54,
+      "nativeFiles": 2553
+    },
+    {
+      "name": "gcs-unit2-executed.json",
+      "evaluatorCustody": "partial",
+      "missingCodeRefOccurrences": 24,
+      "nativeFiles": 2552
+    },
+    {
+      "name": "worker-routes-executed.group-1.json",
+      "evaluatorCustody": "partial",
+      "missingCodeRefOccurrences": 648,
+      "nativeFiles": 2803
+    },
+    {
+      "name": "worker-routes-executed.group-2.json",
+      "evaluatorCustody": "retained",
+      "missingCodeRefOccurrences": 0,
+      "nativeFiles": 2232
+    }
+  ],
+  "qualifications": {
+    "newExecutionReceipt": false,
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "state": {
+    "trackedOriginalsRemoved": false,
+    "trackedGeneratedFilesRemoved": 2349,
+    "trackedGeneratedFilesRemaining": 0,
+    "untrackedGeneratedFilesRemoved": 8149,
+    "untrackedGeneratedFilesRemaining": 0,
+    "supportingEvidenceDocumentsRetained": 13,
+    "readerRelocationQualified": true,
+    "notes": [
+      "Original raw bytes and compiler-emitted paths remain unchanged in external custody.",
+      "The original codeRef equality check remains enforced. Retained hash-addressed artifacts do not invent missing historical references.",
+      "All 2349 manifest-ordered generated sidecars, including four pending native-process files, were removed after per-batch source/archive hash rechecks. The 13 supporting evidence documents remain in source.",
+      "Post-removal readback through readNativeArtifactBytes verified 2362 archived originals, 15428 retained pins, 2922 exact evaluator references and 10140 native artifacts. Historical missing codeRef observations remain partial.",
+      "The lint enumerators also include untracked source files. All 8149 additional generated reports and sidecars were removed under exact file claims after source and external byte verification; a separate post-removal readback verified all 8149 retained originals totaling 9622747 bytes. The external untracked custody index includes ten module blobs absent from the earlier indexes.",
+      "Supporting evidence documents remain in source. Original P003 qualification remains pending."
+    ]
+  }
+}

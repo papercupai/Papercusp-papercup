@@ -38,6 +38,7 @@ import { resolveCodexModel, resolveCodexModelSelection } from './model-context-b
 import { isSuAgent, SU_AGENTS } from './su-agents';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
+import { ISSUE_FAMILY_ROUTE_KINDS, type IssueFamilyRouteKind } from './work-nature/agent-work-predicate';
 export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
@@ -204,6 +205,17 @@ export function resolveLaunchMode(opts: {
     instructions: opts.instructionsFact,
     ownerDirected: drain.ownerDirected,
   });
+}
+
+/**
+ * The member launch mode a fleet's persisted recipe declares (`config.mode`).
+ * Member-shaped on purpose: the founding caller's subject, instructions and
+ * owner-directed provenance are personal to that identity, so a recipe replay
+ * carries only the mode itself (WI-6554700010029298).
+ */
+export function launchModeFromFleetRecipe(config: { mode?: unknown } | null | undefined): LaunchMode | null {
+  if (!config || config.mode !== 'drain') return null;
+  return normalizeLaunchMode({ mode: 'drain' }, { fleetRole: 'member' });
 }
 
 /** A resume/fork target fully resolved to the exact session to act on. */
@@ -486,7 +498,9 @@ export async function resolveResumeTarget(ref: {
     // Exact native UUID pins are never replaced by the logical owner's older
     // adv_sessions.session_id. session_turns supplies owner METADATA only.
     sessionId: nativeSessionId,
-    ompThreadId: row.ompThreadId,
+    // OMP transcript readers use this alias ahead of sessionId. Keep the
+    // selected incarnation here; binding below still identifies the current row.
+    ompThreadId: row.agent === 'omp' ? nativeSessionId : row.ompThreadId,
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     workspaceId: row.workspaceId?.trim() || null,
@@ -914,7 +928,7 @@ export interface MemberSpec {
   /** Inline brief TEXT for this member — composed to a launch-context file by the tool when set. */
   brief?: string;
   /** Per-member claim-lane restriction — seeds this member's claim spec (bee-level, overrides the fleet spec). */
-  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+  claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
   headless?: boolean;
   addDir?: string[];
   allowSubagents?: boolean;
@@ -978,7 +992,7 @@ export const memberSpecSchema = z
         "Inline brief TEXT for this member — becomes its own first turn / composed launch context. Use instead of `launchContext` when you have the text, not a file. Takes precedence over this member's `perMemberLaunchContext` entry.",
       ),
     claimKinds: z
-      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .array(z.enum(['feature', 'chunk', ...ISSUE_FAMILY_ROUTE_KINDS]))
       .min(1)
       .max(5)
       .optional()
@@ -1001,7 +1015,7 @@ export const memberSpecSchema = z
  */
 export type FleetMemberDefaults = Omit<MemberLaunchOpts, 'fleetSlug' | 'harness' | 'plan'> & {
   carry?: 'warm' | 'cold';
-  claimKinds?: Array<'feature' | 'chunk' | 'bug' | 'change' | 'task'>;
+  claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
 };
 
 /**
@@ -1383,6 +1397,9 @@ export async function claimAgentLaunch(opts: {
     await sql`
       DELETE FROM harness_shared.agent_launch_idempotency
        WHERE launched_at < ${now - LAUNCH_CLAIM_TTL_MS}
+         -- Takeover uncertainty is a durable execution fence, not an ordinary
+         -- launch cache entry. Age alone never proves that its writer exited.
+         AND NOT (summary ? 'sessionAssume')
     `;
     const won = await sql<Array<{ idempotency_key: string }>>`
       INSERT INTO harness_shared.agent_launch_idempotency AS existing
@@ -2186,33 +2203,10 @@ export async function probeFreshLaunchSessions({
       SELECT s.id,
              s.session_id,
              s.coord_owner_id,
-             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
-                        WHERE t.workspace_id = ${workspaceId}
-                          AND t.coord_owner_id = s.coord_owner_id
-                          AND t.status = 'ok'
-                          AND t.call_origin = 'agent'
-                          -- Owner IDs survive a same-owner successor launch. Never
-                          -- credit the predecessor's calls to this new session.
-                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))
-                          AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS successful_calls,
-             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
-                        WHERE t.workspace_id = ${workspaceId}
-                          AND t.coord_owner_id = s.coord_owner_id
-                          AND t.tool_name = 'scheduler:get_next'
-                          AND t.call_origin = 'agent'
-                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))), 0) AS scheduler_calls,
-             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
-                        WHERE t.workspace_id = ${workspaceId}
-                          AND t.coord_owner_id = s.coord_owner_id
-                          AND t.tool_name = 'scheduler:get_next'
-                          AND t.call_origin = 'agent'
-                          AND t.status = 'ok'
-                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))), 0) AS successful_scheduler_calls,
-             (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
-                FROM harness_shared.tool_invocations t
-               WHERE t.workspace_id = ${workspaceId}
-                 AND t.coord_owner_id = s.coord_owner_id
-                 AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))) AS ms_since_last_signal,
+             calls.successful_calls,
+             calls.scheduler_calls,
+             calls.successful_scheduler_calls,
+             calls.ms_since_last_signal,
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
                         AND p.owner_id = s.coord_owner_id) AS has_presence,
@@ -2238,12 +2232,40 @@ export async function probeFreshLaunchSessions({
                LIMIT 1) AS claimed_work_item_id,
              s.launch_spec,
              s.launch_argv
-        FROM harness_shared.adv_sessions s
-       WHERE s.workspace_id = ${workspaceId}
-         AND s.first_seen_at >= to_timestamp(${since / 1000})
-         AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
-       ORDER BY s.first_seen_at ASC
-       LIMIT 50`;
+        FROM (
+          -- Select this launch's cohort before the cap and history work. Older
+          -- unrelated registrations must not crowd out an expected owner.
+          SELECT s.*
+            FROM harness_shared.adv_sessions s
+           WHERE s.workspace_id = ${workspaceId}
+             AND s.first_seen_at >= to_timestamp(${since / 1000})
+             AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
+             AND (${!expectedOwnerIds?.length}
+                  OR s.coord_owner_id = ANY (${expectedOwnerIds ?? []}::text[]))
+           ORDER BY s.first_seen_at ASC
+           LIMIT 50
+        ) s
+        CROSS JOIN LATERAL (
+          SELECT count(*) FILTER (
+                   WHERE t.status = 'ok' AND t.call_origin = 'agent'
+                     AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))
+                 ) AS successful_calls,
+                 count(*) FILTER (
+                   WHERE t.tool_name = 'scheduler:get_next' AND t.call_origin = 'agent'
+                 ) AS scheduler_calls,
+                 count(*) FILTER (
+                   WHERE t.tool_name = 'scheduler:get_next' AND t.call_origin = 'agent'
+                     AND t.status = 'ok'
+                 ) AS successful_scheduler_calls,
+                 EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000 AS ms_since_last_signal
+            FROM harness_shared.tool_invocations t
+           WHERE t.workspace_id = ${workspaceId}
+             AND t.coord_owner_id = s.coord_owner_id
+             -- Owner IDs survive a same-owner successor launch. Never credit
+             -- the predecessor's calls to this new session.
+             AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))
+        ) calls
+       ORDER BY s.first_seen_at ASC`;
     // session_briefs.control_state is a launch-time snapshot, not the live
     // wake contract. It can remain `none` after loop:arm has installed an
     // active loop (the EI-225344 false-pruning incident). Reuse the shared
@@ -2258,9 +2280,8 @@ export async function probeFreshLaunchSessions({
         .filter((ownerId): ownerId is string => typeof ownerId === 'string' && ownerId.length > 0),
     )];
     const selfWakeByOwner = await fetchSelfWake(ownerIds);
-    const wanted = expectedOwnerIds?.length ? new Set(expectedOwnerIds) : null;
     const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
-    return Promise.all(rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map(async (r) => {
+    return Promise.all(rows.map(async (r) => {
       const expected = r.coord_owner_id ? expectedByOwner.get(r.coord_owner_id) : undefined;
       const actual = launchAttestationFromLedger(r.launch_spec, r.launch_argv);
       const attestationDiffs: FreshLaunchAttestationDiff[] = [];

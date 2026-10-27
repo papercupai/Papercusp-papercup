@@ -14,9 +14,10 @@
  * that captures the environment each leg actually received. No mocks.
  */
 
-import { spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { type AddressInfo, connect, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseMutationInvocationDescriptor } from '@papercusp/test-config/mutation-descriptor';
@@ -100,7 +101,9 @@ function probe(args: string[], env: Record<string, string | undefined>, script =
   const r = spawnSync('bash', [script, ...args], {
     encoding: 'utf8',
     timeout: 90_000,
-    env: { ...process.env, ...env },
+    // A refused reader is final on the first read unless a case opts into the
+    // restart-retry budget (EI-27128359939578808), so these cases stay fast.
+    env: { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '0', ...env },
   });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
@@ -384,6 +387,9 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${join(dir, 'no-such-health.json')}`,
+      // An explicit HEALTH_URL now REQUIRES the reader (3f9bb0a4d3), so the
+      // withheld/unbound path these auto cases pin needs the explicit opt-out.
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR: '{"stale":"caller value"}',
     });
 
@@ -412,6 +418,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
     });
 
@@ -444,6 +451,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
     });
 
@@ -495,6 +503,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
       const result = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
         PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
         PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
       });
       return { ...result, legs: legs(log) };
@@ -522,6 +531,157 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(after.legs.every((l) => l.descriptor !== null && parseMutationInvocationDescriptor(JSON.parse(l.descriptor)))).toBe(true);
   });
 });
+
+// EI-27128359939578808: the staging :3170 reader restarts on every staging
+// advance. One refused read used to refuse the whole proof run, so the
+// preflight retries refused/timed-out connections and 5xx answers within
+// PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC, and treats every other answer
+// as final. The reader here is a real HTTP server in a separate process.
+describe('mutation-probe.sh reader preflight survives a restarting reader', () => {
+  const children: ChildProcess[] = [];
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill('SIGKILL');
+  });
+
+  /** A free loopback port, released before the reader process binds it. */
+  async function freePort(): Promise<number> {
+    const server = createNetServer();
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    await new Promise<void>((done) => server.close(() => done()));
+    return port;
+  }
+
+  /**
+   * A reader that answers its Nth request with `responses[N-1]` — `'drop'` closes
+   * the connection with no reply (a reader mid-restart), a number is that HTTP
+   * status — and the health body once the list is exhausted. Resolves listening.
+   */
+  async function startReader(opts: { responses: Array<'drop' | number>; sha: string }): Promise<{ port: number; hits: string }> {
+    const port = await freePort();
+    const script = join(dir, 'reader-server.cjs');
+    const hits = join(dir, 'reader-hits.log');
+    writeFileSync(script, `const http = require('http'); const fs = require('fs');
+const o = ${JSON.stringify({ ...opts, port })};
+let n = 0;
+http.createServer((req, res) => {
+  n += 1; fs.appendFileSync(${JSON.stringify(hits)}, n + '\\n');
+  const r = o.responses[n - 1];
+  if (r === 'drop') { req.socket.destroy(); return; }
+  if (typeof r === 'number') { res.writeHead(r); res.end('restarting'); return; }
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, service: 'papercusp-operator', sha: o.sha }));
+}).listen(o.port, '127.0.0.1');
+setTimeout(() => process.exit(0), 80000);
+`);
+    children.push(spawn(process.execPath, [script], { stdio: 'ignore' }));
+    for (let i = 0; i < 100 && !(await isListening(port)); i += 1) await new Promise((r) => setTimeout(r, 50));
+    return { port, hits };
+  }
+
+  const hitCount = (hits: string) => (existsSync(hits) ? readFileSync(hits, 'utf8').trim().split('\n').filter(Boolean).length : 0);
+
+  /** A reader superproject whose libs/test-config gitlink carries the real descriptor parser. */
+  function makeParserReader(): { reader: string; sha: string } {
+    const reader = join(dir, 'reader');
+    initRepo(reader);
+    const sub = join(reader, 'libs', 'test-config');
+    initRepo(sub);
+    mkdirSync(join(sub, 'src'));
+    writeFileSync(join(sub, 'src', 'mutation-descriptor.ts'),
+      readFileSync(resolve(__dirname, '../../../../../libs/test-config/src/mutation-descriptor.ts')));
+    git(sub, ['add', 'src/mutation-descriptor.ts']);
+    git(sub, ['commit', '-qm', 'reader with parser']);
+    git(reader, ['add', 'libs/test-config']);
+    git(reader, ['commit', '-qm', 'reader with parser gitlink']);
+    return { reader, sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) };
+  }
+
+  const readerJson = (out: string) =>
+    JSON.parse(out.match(/^MUTATION_PROBE_READER_HTTP_JSON=(.+)$/m)![1]!) as { attempts: number; sha: string | null };
+
+  it('retries a dropped connection and a 5xx answer, then binds the proof to the reader that came back', async () => {
+    const { reader, sha } = makeParserReader();
+    const { port, hits } = await startReader({ responses: ['drop', 503], sha });
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: reader,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '30',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC: '1',
+    });
+
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/^MUTATION_PROBE_READER_RETRY attempt=1 curl_exit=(52|56) /m);
+    expect(out).toMatch(/^MUTATION_PROBE_READER_RETRY attempt=2 curl_exit=0 http=503 /m);
+    expect(readerJson(out)).toMatchObject({ sha, attempts: 3 });
+    expect(hitCount(hits)).toBe(3);
+    expect(out).toMatch(/mutation descriptor on: deployed reader [0-9a-f]+ parses execution_details\.mutation/);
+    const seen = legs(log);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((leg) => leg.descriptor !== null
+      && parseMutationInvocationDescriptor(JSON.parse(leg.descriptor)))).toBe(true);
+  });
+
+  it('treats a non-transient answer (404) as final on the first read', async () => {
+    const { port, hits } = await startReader({ responses: [404, 404, 404], sha: 'abcdef1234' });
+    const { file } = makeSubjectRepo();
+    const { recorder } = makeRecorder();
+    const started = Date.now();
+    const { out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '30',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC: '1',
+    });
+
+    expect(out).not.toContain('MUTATION_PROBE_READER_RETRY');
+    expect(readerJson(out)).toMatchObject({ attempts: 1, sha: null });
+    expect(hitCount(hits)).toBe(1);
+    expect(out).toContain("the deployed reader's build sha is unreadable");
+    expect(Date.now() - started).toBeLessThan(25_000);
+  });
+
+  it('gives up when the reader stays down past the wait budget', async () => {
+    const port = await freePort();
+    const { file } = makeSubjectRepo();
+    const { recorder } = makeRecorder();
+    const { out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '2',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_RETRY_SEC: '1',
+    });
+
+    expect(out).toMatch(/^MUTATION_PROBE_READER_RETRY attempt=1 curl_exit=7 /m);
+    expect(readerJson(out).attempts).toBeGreaterThanOrEqual(2);
+    expect(readerJson(out).sha).toBeNull();
+    expect(out).toContain("the deployed reader's build sha is unreadable");
+  });
+
+  it('refuses a malformed wait budget instead of guessing one', () => {
+    const { file } = makeSubjectRepo();
+    const { recorder } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:1/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC: '2m',
+    });
+
+    expect(code, out).not.toBe(0);
+    expect(out).toContain('PAPERCUSP_MUTATION_DESCRIPTOR_READER_WAIT_SEC must be a whole number of seconds');
+  });
+});
+
+function isListening(port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const socket = connect(port, '127.0.0.1');
+    socket.once('connect', () => { socket.destroy(); done(true); });
+    socket.once('error', () => done(false));
+  });
+}
 
 function makeSubjectRepoAt(repo: string): { file: string } {
   initRepo(repo);

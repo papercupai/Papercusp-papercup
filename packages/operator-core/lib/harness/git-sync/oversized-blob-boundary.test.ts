@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -9,6 +10,11 @@ import {
   findOversizedDirtyFiles,
   type RunGit,
 } from './run-git-sync';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
 
 // G22 (test-coverage-gap): existing oversized tests use sizes clearly over the
 // limit (e.g. 2048 vs 1024). None pin the EXACT boundary. The comparison is
@@ -34,6 +40,42 @@ const runGit: RunGit = async (args) => {
   }
   return { code: 0, stdout: '', stderr: '' };
 };
+
+describe('dirty-file size guards — bounded filesystem work', () => {
+  it.each(['oversized', 'bulk'] as const)('%s sizes multiple files without serial per-file waits or unbounded fan-out', async (mode) => {
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const sizedFile = await actual.lstat(join(dir, 'over'));
+    const paths = Array.from({ length: 19 }, (_, i) => `candidate-${i}`);
+    const status: RunGit = async () => ({ code: 0,
+      stdout: paths.map(path => `?? ${path}\0`).join(''), stderr: '' });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started = 0;
+    let inFlight = 0;
+    let peak = 0;
+    vi.mocked(lstat).mockImplementation(async () => {
+      started++;
+      peak = Math.max(peak, ++inFlight);
+      await gate;
+      inFlight--;
+      return sizedFile;
+    });
+    const scanning = mode === 'oversized'
+      ? findOversizedDirtyFiles(status, dir, MAX)
+      : findBulkDirtyExcess(status, dir, MAX);
+    try {
+      await vi.waitFor(() => expect(started).toBeGreaterThan(0));
+      expect(inFlight).toBe(16);
+      expect(started).toBe(16);
+    } finally {
+      release();
+      await scanning;
+      vi.mocked(lstat).mockImplementation(actual.lstat);
+    }
+    expect(peak).toBe(16);
+    expect((await scanning).map(file => file.path)).toEqual(paths);
+  });
+});
 
 describe('findOversizedDirtyFiles — exact maxBytes boundary (strict >, not >=)', () => {
   it('excludes only files strictly OVER maxBytes; a file AT the limit is committed', async () => {

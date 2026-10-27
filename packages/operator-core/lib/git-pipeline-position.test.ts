@@ -538,7 +538,18 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
   it('uses an exact bundle-SHA mismatch instead of deployed containment and keeps unreadable identity unknown', async () => {
     const mismatchedBundle = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
     expect(mismatchedBundle.acceptedSource?.deployedContains).toBe(true);
-    expect(mismatchedBundle.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    // A checkout host runs exactly the commit it reports, so an exact SHA mismatch
+    // there proves the accepted bytes are absent, whatever the deployed artifact holds.
+    expect(mismatchedBundle.acceptedSource?.runtimeContainment['staging-operator']).toBe(false);
+    // bg-host bundles the DIRTY canonical tree, so its baked-SHA mismatch proves neither
+    // presence nor absence (EI-26757598115757583): it must stay unknown for that reason,
+    // never inherit the deployed artifact's `true` and never claim `false`.
+    const mismatchedBgHost = mismatchedBundle.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host');
+    expect(mismatchedBgHost).toMatchObject({
+      containsChange: null, method: null, unknownReason: { code: 'insufficient-data' },
+    });
+    expect(mismatchedBgHost?.unknownReason?.detail).toMatch(/uncommitted source/);
+    expect(mismatchedBundle.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
     const unknown = await readAccepted({ runtimeBlob: null });
     expect(unknown.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
     expect(unknown.acceptedSource?.runtimeContainment['staging-operator']).toBeNull();
@@ -560,11 +571,17 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     const result = await readAccepted({ moveMtime: true, runtimeBlob: 'e'.repeat(40), startedAtMs: 2000 });
     expect(result.acceptedSource?.matches).toBe(true);
     expect(result.acceptedSource?.deployedContains).toBe(true);
-    // The health-reported bundle SHA is independent of path mtime and still
+    // A health-reported checkout SHA is independent of path mtime and still
     // proves that this exact accepted source is absent from the loaded build.
-    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host'))
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'staging-operator'))
       .toMatchObject({ containsChange: false, method: 'blob' });
-    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    expect(result.acceptedSource?.runtimeContainment['staging-operator']).toBe(false);
+    // bg-host's baked SHA cannot prove absence from a dirty canonical bundle
+    // (EI-26757598115757583), and the moved mtime must not supply a time-based
+    // answer in its place: it stays unknown for the mismatch reason.
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host'))
+      .toMatchObject({ containsChange: null, method: null, unknownReason: { code: 'insufficient-data' } });
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
     expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'gateway')?.method).toBe('start-after-mtime');
     expect(result.acceptedSource?.runtimeContainment.gateway).toBeNull();
   });
@@ -3599,6 +3616,7 @@ describe('computeStages: position x health', () => {
       passedAtRepairHeadCount: 0,
       stillBrokenCount: 0,
       stillBrokenNeedsRunCount: 0,
+      unmeasuredCount: 0,
       changedBetweenRefs: null,
       // P-003 replaced the `postSuiteMeasured` tri-state with a two-value reading derived
       // from whether a leg measurement exists at all. `not-recorded` is the fixture value

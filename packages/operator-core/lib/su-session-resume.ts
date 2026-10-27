@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { selectSuSessionExecution } from '@papercusp/chat-protocol';
 /** Restore PUI's structured engines through the existing SU configuration and
  * keyed resume lease. No new session, credential store or launch registry. */
 import { existsSync } from 'node:fs';
@@ -52,6 +53,11 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     || saved.identity.agentChatId !== record.agentChatId || saved.identity.harnessSlug !== record.harnessSlug) {
     throw new Error('Saved session identity does not match the resume target');
   }
+  const execution = selectSuSessionExecution({ provider: record.backend, operation: 'existing',
+    supportedKinds: ['programmatic'],
+    ...(Object.prototype.hasOwnProperty.call(saved, 'executionKind') ? { savedKind: saved.executionKind } : {}),
+    legacyKind: row.terminalBin === `pui-structured-${record.backend}` ? 'programmatic' : undefined });
+  if (!execution.ok) throw Object.assign(new Error(execution.refusal.message), { code: execution.refusal.code });
   stage?.('resume-read-launch-spec');
   const spec = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(record.ownerId));
   if (!spec || spec.agent !== record.backend || spec.workspaceId !== record.workspaceId

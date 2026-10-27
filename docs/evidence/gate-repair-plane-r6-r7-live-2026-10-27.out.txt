@@ -1,0 +1,8 @@
+# sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 -f docs/evidence/gate-repair-plane-r6-r7-live-2026-10-27.sql
+# started=2026-10-27T12:44:31Z finished=2026-10-27T12:44:31Z psql_rc=0 (timestamps below render in the host's local zone, -04:00)
+r6-subject|845672|green_checkpoint_repair_latency|2026-10-27 08:02:06.943085-04|gate-repair-plane-r6-proof-2026-10-27-stamped|port-3271|3faacb0a3b|baked|ready-to-test|0199f22e2c41a1bddd3593220cdde14579aef005|
+r6-marker-records-by-build|f579aa4d8b|56|2026-10-27 06:00:45.954428-04|2026-10-27 07:46:00.165988-04
+r6-marker-records-by-build|3faacb0a3b|21|2026-10-27 08:02:06.943085-04|2026-10-27 08:32:06.683028-04
+r7-partition|port-3170|f|f|174|2026-10-27 00:06:13.578-04|2026-10-27 08:43:39.172-04
+# git grep -c gate-repair-plane-r6-proof-2026-10-27-stamped <rev> -- packages/operator-core/lib/release/idle-repair-queue-actuator.ts
+# 3faacb0a3b rc=0 (contains the marker) | f579aa4d8b rc=1 (lacks it) | main d740fc3802 rc=1 (lacks it)

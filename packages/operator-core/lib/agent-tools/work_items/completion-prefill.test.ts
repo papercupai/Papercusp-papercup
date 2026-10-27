@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { testVerdict, type WorkItemMechanics } from './_mechanics';
-import { completionSuppliesField, prefillCompletionFromMechanics } from './completion-prefill';
+import {
+  completionSuppliesField,
+  NO_CODE_CHANGE_PREFILL_SKIP_REASON,
+  prefillCompletionFromMechanics,
+  prefillOptionsForDeclaredKinds,
+} from './completion-prefill';
 
 const verificationOf = (c: object) => (c as { verification?: Record<string, unknown> }).verification ?? {};
 
@@ -133,5 +138,73 @@ describe('completion prefill — never overrides a supplied value', () => {
     expect(completionSuppliesField({ testsRun: '  ' }, 'testsRun')).toBe(false);
     expect(completionSuppliesField({ verification: { filesChanged: [] } }, 'filesChanged')).toBe(false);
     expect(completionSuppliesField({ verification: { testResult: 'ok' } }, 'testResult')).toBe(true);
+  });
+});
+
+// EI-27112155694647220: a no-code-change close proves itself with an EMPTY filesChanged list,
+// and the claim-window ledger attributes every file the holder edited (for ANY item it holds)
+// to the item being closed. Filling that list made the declared kind's own proof a refusal.
+describe('completion prefill — a no-code-change close keeps its empty filesChanged (EI-27112155694647220)', () => {
+  const skip = { skipFilesChanged: { reason: NO_CODE_CHANGE_PREFILL_SKIP_REASON } };
+
+  it('skipFilesChanged leaves an explicit [] empty, still fills tests, and discloses the skip', () => {
+    const input = { summary: 'no change needed', verification: { filesChanged: [] as string[] } };
+    const { completion, prefill } = prefillCompletionFromMechanics(input, mechanics(), skip);
+    expect(verificationOf(completion).filesChanged).toEqual([]);
+    expect(prefill?.fields).toEqual(['testsRun', 'testResult']);
+    expect(prefill?.skipped).toEqual([{ field: 'filesChanged', reason: NO_CODE_CHANGE_PREFILL_SKIP_REASON, ledgerPaths: 2 }]);
+    expect(prefill?.note).toContain('Did not fill filesChanged (2 path(s) in the claim window)');
+  });
+
+  it('a skip with nothing else to fill still returns the disclosure and leaves the input untouched', () => {
+    const input = { summary: 'x', verification: { testsRun: 'mine', testResult: 'green' } };
+    const { completion, prefill } = prefillCompletionFromMechanics(input, mechanics(), skip);
+    expect(completion).toBe(input);
+    expect(prefill?.fields).toEqual([]);
+    expect(prefill?.skipped?.[0]?.field).toBe('filesChanged');
+  });
+
+  it('CONTROL: without the option the same close is back-filled from the claim window', () => {
+    const input = { summary: 'no change needed', verification: { filesChanged: [] as string[] } };
+    const { completion, prefill } = prefillCompletionFromMechanics(input, mechanics());
+    expect(verificationOf(completion).filesChanged).toEqual(['lib/a.ts', 'lib/a.test.ts']);
+    expect(prefill?.fields).toContain('filesChanged');
+    expect(prefill?.skipped).toBeUndefined();
+  });
+
+  it('CONTROL: the skip discloses nothing when the ledger has no paths to fill', () => {
+    const m = mechanics({ filesWritten: { paths: [], total: 0, truncated: false, outsideRepo: 0 } });
+    const { prefill } = prefillCompletionFromMechanics({ verification: { testsRun: 'a', testResult: 'b' } }, m, skip);
+    expect(prefill).toBeNull();
+  });
+
+  it('kinds declared at close decide, without reading the stored declaration', async () => {
+    let reads = 0;
+    const readStored = async () => {
+      reads += 1;
+      return ['logic'];
+    };
+    await expect(prefillOptionsForDeclaredKinds({ declaredAtClose: ['no-code-change'], readStored })).resolves.toEqual(skip);
+    await expect(prefillOptionsForDeclaredKinds({ declaredAtClose: ['logic'], readStored })).resolves.toEqual({});
+    expect(reads).toBe(0);
+  });
+
+  it('with nothing declared at close, the stored declaration decides', async () => {
+    await expect(
+      prefillOptionsForDeclaredKinds({ declaredAtClose: undefined, readStored: async () => ['no-code-change'] }),
+    ).resolves.toEqual(skip);
+    await expect(prefillOptionsForDeclaredKinds({ declaredAtClose: [], readStored: async () => ['config'] })).resolves.toEqual({});
+    await expect(prefillOptionsForDeclaredKinds({ declaredAtClose: null, readStored: async () => null })).resolves.toEqual({});
+  });
+
+  it('a stored-declaration read error keeps the ordinary fill', async () => {
+    await expect(
+      prefillOptionsForDeclaredKinds({
+        declaredAtClose: null,
+        readStored: async () => {
+          throw new Error('pool exhausted');
+        },
+      }),
+    ).resolves.toEqual({});
   });
 });

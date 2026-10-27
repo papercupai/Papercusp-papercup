@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
+import { observeIsolatedWorkerLifetime } from '../test/isolated-integration-proof';
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
@@ -96,7 +97,7 @@ describe('private PostgreSQL pool admission', () => {
 });
 
 describe('isolated PostgreSQL mutation evidence', () => {
-  it.each([true, false])('keeps committed-source receipts optional across the private runtime (configured=%s)', async configured => {
+  it.each([true, false])('keeps committed-source receipts and router deadlines optional across the private runtime (configured=%s)', async configured => {
     const directory = mkdtempSync(join(tmpdir(), 'private-pg-source-audit-'));
     const auditPath = join(directory, 'load-receipts.jsonl');
     const noticePath = join(directory, 'source-notices.jsonl');
@@ -104,9 +105,11 @@ describe('isolated PostgreSQL mutation evidence', () => {
     if (configured) {
       env.PAPERCUSP_COMMITTED_SOURCE_AUDIT = auditPath;
       env.PAPERCUSP_COMMITTED_SOURCE_NOTICES = noticePath;
+      env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '5400000';
     } else {
       delete env.PAPERCUSP_COMMITTED_SOURCE_AUDIT;
       delete env.PAPERCUSP_COMMITTED_SOURCE_NOTICES;
+      delete env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
     }
     env.PAPERCUSP_SUBSTRATE_IPC_SOCKET = '/ambient/operator.sock';
     const child = `
@@ -114,6 +117,9 @@ describe('isolated PostgreSQL mutation evidence', () => {
       assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
       assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_AUDIT, ${JSON.stringify(configured ? auditPath : undefined)});
       assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES, ${JSON.stringify(configured ? noticePath : undefined)});
+      assert.equal(process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS, ${JSON.stringify(configured ? '5400000' : undefined)});
+      const { testFileRunTimeoutMs, defaultTestFileRunTimeoutMs } = await import('./scripts/test-files.mjs');
+      assert.equal(testFileRunTimeoutMs(), ${configured ? '5400000' : 'defaultTestFileRunTimeoutMs(1)'});
       await import('./scripts/lib/pg-url.mjs');
       // Exercise the real substitution/notice writer without editing shared
       // source: the next loader offers dirty bytes for a tracked module. The
@@ -157,7 +163,8 @@ describe('isolated PostgreSQL mutation evidence', () => {
     }
   }, 200_000);
 
-  it('preserves reporter provenance while replacing ambient product endpoints and identity', async () => {
+  it.each(['explicit', 'workspace-id', 'workspace'] as const)(
+    'preserves reporter provenance from %s while replacing ambient product endpoints, identity and automatic orchestration', async scopeSource => {
     const reporterScope = {
       PAPERCUSP_TEST_RUN_HARNESS: 'reporter-harness',
       PAPERCUSP_TEST_RUN_WORKSPACE: 'reporter-workspace',
@@ -173,27 +180,44 @@ describe('isolated PostgreSQL mutation evidence', () => {
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1',
     };
     const child = `
+      (async () => {
+      const reporter = await import('./libs/test-config/src/admin-test-runs-reporter.ts');
+      const { resolveTestRunWorkspaceId } = { ...reporter.default, ...reporter };
       const keys = ${JSON.stringify(Object.keys(probe))};
       const provenance = Object.fromEntries(keys.map(key => [key, process.env[key]]));
       const reporterKeys = ${JSON.stringify(['PAPERCUSP_TEST_RUN_HARNESS', 'PAPERCUSP_TEST_RUN_WORKSPACE'])};
       const reporterScope = Object.fromEntries(reporterKeys.map(key => [key, process.env[key]]));
       const privateDatabase = new URL(process.env.HARNESS_ADMIN_DATABASE_URL).port !== '5432';
       console.log('TEST_PROVENANCE_ENV_RESULT=' + JSON.stringify({
-        provenance, reporterScope, privateDatabase,
+        provenance, reporterScope, privateDatabase, ledgerWorkspace: resolveTestRunWorkspaceId(),
         isolatedWorkspace: process.env.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-'),
         reporterWorkspaceDiffersFromProduct: process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== process.env.PAPERCUSP_WORKSPACE_ID,
         ambientSocketRemoved: process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET === undefined,
         ambientEndpointReplaced: process.env.PAPERCUSP_OPERATOR_URL !== 'http://ambient.invalid:3070',
+        backgroundPolicy: {
+          orchestrator: process.env.PAPERCUSP_DBOS_ORCHESTRATOR,
+          harnesses: process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES,
+          routines: process.env.PAPERCUSP_DBOS_ROUTINES,
+          timers: process.env.PAPERCUSP_DBOS_TIMERS,
+          autoloop: process.env.PAPERCUSP_DBOS_AUTOLOOP,
+        },
       }));
+      })().catch(error => { console.error(error); process.exitCode = 1; });
     `;
     const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-      '--isolated-runtime', '--', process.execPath, '-e', child], {
+      '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '-e', child], {
       cwd: root,
       env: { ...process.env, ...probe, ...reporterScope,
-        PAPERCUSP_WORKSPACE_ID: 'ambient-workspace',
+        PAPERCUSP_TEST_RUN_WORKSPACE: scopeSource === 'explicit' ? reporterScope.PAPERCUSP_TEST_RUN_WORKSPACE : undefined,
+        PAPERCUSP_WORKSPACE_ID: scopeSource === 'workspace' ? undefined : scopeSource === 'workspace-id' ? 'reporter-workspace' : 'ambient-workspace',
+        PAPERCUSP_WORKSPACE: scopeSource === 'workspace' ? 'reporter-workspace' : 'lower-priority-workspace',
         PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/ambient/operator.sock',
         PAPERCUSP_OPERATOR_URL: 'http://ambient.invalid:3070',
         HARNESS_ADMIN_DATABASE_URL: 'postgresql://unused@localhost:5432/ambient',
+        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: '*',
+        PAPERCUSP_DBOS_ROUTINES: '1',
+        PAPERCUSP_DBOS_TIMERS: '1',
+        PAPERCUSP_DBOS_AUTOLOOP: '1',
       },
       timeout: 180_000,
       maxBuffer: 8 * 1024 * 1024,
@@ -201,9 +225,10 @@ describe('isolated PostgreSQL mutation evidence', () => {
     const line = stdout.split('\n').find(line => line.startsWith('TEST_PROVENANCE_ENV_RESULT='));
     expect(line).toBeDefined();
     expect(JSON.parse(line!.slice('TEST_PROVENANCE_ENV_RESULT='.length))).toEqual({
-      provenance: probe, reporterScope, privateDatabase: true, isolatedWorkspace: true,
+      provenance: probe, reporterScope, privateDatabase: true, ledgerWorkspace: 'reporter-workspace', isolatedWorkspace: true,
       reporterWorkspaceDiffersFromProduct: true,
       ambientSocketRemoved: true, ambientEndpointReplaced: true,
+      backgroundPolicy: { orchestrator: '1', harnesses: 'none', routines: '0', timers: '0', autoloop: '0' },
     });
     const dataDir = stdout.match(/booting throwaway PG[^\n]*\(datadir ([^\)]+)\)/)?.[1];
     expect(dataDir).toBeDefined();
@@ -213,18 +238,22 @@ describe('isolated PostgreSQL mutation evidence', () => {
 
 describe('isolated PostgreSQL signal cleanup', () => {
   it.each(['supervisor', 'process-group'] as const)('finishes owned cleanup after SIGINT to %s', async target => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-pg-signal-lifecycle-'));
     const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '-e',
       "console.log('SIGNAL_CLEANUP_WORKER_READY');setInterval(() => {}, 1000)"], {
       // Keep owned PG process/I/O observations in assertion failures; elapsed
       // stage receipts alone cannot distinguish a checkpoint from a deadlock.
       cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
-      detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe'],
+      // Proof mode reports the owned lifecycle to its actual parent channel.
+      detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    // Admission waits for the real observer to pin the worker and owned PG.
+    const observation = observeIsolatedWorkerLifetime(child, root, evidenceDir);
     let output = '';
     let errors = '';
-    child.stdout.on('data', chunk => { output += chunk; });
-    child.stderr.on('data', chunk => { errors += chunk; });
+    child.stdout!.on('data', chunk => { output += chunk; });
+    child.stderr!.on('data', chunk => { errors += chunk; });
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, fail) => {
       child.once('error', fail);
       child.once('close', (code, signal) => done({ code, signal }));
@@ -236,6 +265,8 @@ describe('isolated PostgreSQL signal cleanup', () => {
         await new Promise(done => setTimeout(done, 100));
       }
       expect(output, errors.slice(-1500)).toContain('SIGNAL_CLEANUP_WORKER_READY');
+      expect(observation.observationError).toBeUndefined();
+      expect(observation.lifecycle).toBeDefined();
       if (target === 'process-group') process.kill(-child.pid!, 'SIGINT');
       else child.kill('SIGINT');
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -248,15 +279,23 @@ describe('isolated PostgreSQL signal cleanup', () => {
         .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
         .find(row => row.stage === 'complete');
       expect(receipt, output.slice(-2000) + errors.slice(-500)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      expect(observation.observationError).toBeUndefined();
+      expect(observation.ended).toMatchObject({
+        childPid: observation.lifecycle.worker.pid, runtimeRemoved: true, pgDataRemoved: true,
+      });
       expect(existsSync(receipt.dataDir)).toBe(false);
       expect(existsSync(receipt.runtimeRoot)).toBe(false);
     } finally {
-      if (!finished && child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
-        const timer = setTimeout(() => {
-          try { target === 'process-group' ? process.kill(-child.pid!, 'SIGKILL') : child.kill('SIGKILL'); } catch { /* already closed */ }
-        }, 5000);
-        await closed.finally(() => clearTimeout(timer));
+      try {
+        if (!finished && child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGTERM');
+          const timer = setTimeout(() => {
+            try { target === 'process-group' ? process.kill(-child.pid!, 'SIGKILL') : child.kill('SIGKILL'); } catch { /* already closed */ }
+          }, 5000);
+          await closed.finally(() => clearTimeout(timer));
+        }
+      } finally {
+        rmSync(evidenceDir, { recursive: true, force: true });
       }
     }
   }, 220_000);

@@ -16,7 +16,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: {} })),
 }));
-vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
+vi.mock('./source', () => ({
+  getPlanRow: vi.fn(),
+  // The start gate resolves the plan's pot scope; keep it PG-free and identity-shaped.
+  resolvePlanScope: vi.fn(async (o?: { workspaceId?: string; harnessSlug?: string }) => ({
+    workspaceId: o?.workspaceId ?? 'default',
+    harnessSlug: o?.harnessSlug ?? 'web',
+  })),
+}));
 vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'web' })) }));
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
@@ -31,6 +38,12 @@ vi.mock('../../plan-types/pins', async (importOriginal) => ({
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
   readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+}));
+// plan-start-gate wraps its checks in withPinnedPlanTypes, which reads the plan's
+// type pins from PG. Same pass-through seam as set-plan-status.test.ts.
+vi.mock('../../plan-types/pins', async (original) => ({
+  ...(await original<typeof import('../../plan-types/pins')>()),
+  withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
 }));
 
 import { getPlanRow } from './source';

@@ -1,10 +1,11 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type postgres from 'postgres';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { dbRefOriginLookup, isOwnerTurnVerdict } from '../../activation-item-provenance';
 import { astGrepFacade, type AstGrepLanguage } from '../../code-intelligence/ast-grep-facade';
 import { lspFacade } from '../../code-intelligence/lsp-facade';
+import type { CitationDeps } from '../../plan-audits';
 import { indexDeclaredPackages, readWorkspaceManifests, type DeclaredPackageIndex } from '../../workspace-manifests';
 import type { LibraryCheckDeps, ReferenceLookup, ReuseReferenceResolvers } from './plan-declarations';
 import type { DependencyBaseline } from './plan-library-ship-check';
@@ -43,22 +44,58 @@ function insideRoot(repoRoot: string, relPath: string): string | null {
   return rel.startsWith('..') || path.isAbsolute(rel) ? null : abs;
 }
 
-async function pathExists(repoRoot: string, relPath: string): Promise<ReferenceLookup> {
-  const abs = insideRoot(repoRoot, relPath);
-  if (!abs) return notFound('path escapes the repository root');
+type LocatedReference = { repoRoot: string; absolutePath: string; relativePath: string };
+
+/** Keep the citation policy's owning root; never reinterpret an admitted sibling
+ * relative to the parent, and never let a symlink widen that admission. */
+async function locateReference(options: DefaultReuseResolverOptions, relPath: string): Promise<{
+  lookup: ReferenceLookup; location?: LocatedReference;
+}> {
+  if (!options.repoRoot) return { lookup: unavailable('the plan\'s repository root could not be resolved') };
   try {
-    const info = await stat(abs);
-    return found(info.isDirectory() ? 'directory in the tree' : 'file in the tree');
+    const deps = options.citationDeps;
+    const selected = deps?.locateRepository
+      ? deps.locateRepository(relPath)
+      : { repoRoot: options.repoRoot, absolutePath: deps?.locate ? deps.locate(relPath) : insideRoot(options.repoRoot, relPath) };
+    if (!selected?.absolutePath) return { lookup: unavailable('citation path is not admitted') };
+    const root = await realpath(selected.repoRoot);
+    let absolutePath: string;
+    try { absolutePath = await realpath(selected.absolutePath); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return { lookup: code === 'ENOENT' || code === 'ENOTDIR'
+        ? notFound('no such path in the admitted tree') : unavailable(`tree read failed: ${code ?? String(error)}`) };
+    }
+    const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+    if (path.isAbsolute(relativePath) || relativePath.split('/').includes('..')) {
+      return { lookup: unavailable('canonical path escapes its admitted repository') };
+    }
+    const info = await stat(absolutePath);
+    return { lookup: found(`${info.isDirectory() ? 'directory' : 'file'} in admitted tree: ${absolutePath}`),
+      location: { repoRoot: root, absolutePath, relativePath } };
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return notFound('no such path in the tree');
-    return unavailable(`tree read failed: ${code ?? String(error)}`);
+    return { lookup: unavailable(`citation context unavailable: ${error instanceof Error ? error.message : String(error)}`) };
   }
+}
+
+/** Names are extracted only from parser-certified declaration nodes, never from
+ * arbitrary identifier occurrences, comments, strings, imports or call sites. */
+function declarationName(language: AstGrepLanguage, text: string): string | null {
+  const pattern = language === 'rust'
+    ? /^(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe|const|extern\s+"[^"]*")\s+)*(?:fn|struct|enum|trait|type)\s+([A-Za-z_$][\w$]*)/
+    : language === 'python'
+      ? /^(?:async\s+)?(?:def|class)\s+([A-Za-z_$][\w$]*)/
+      : language === 'go'
+        ? /^(?:func\s+(?:\([^)]*\)\s*)?|type\s+)([A-Za-z_$][\w$]*)/
+        : /^(?:(?:export|default|declare|async|abstract)\s+)*(?:function\s*\*?\s*|class\s+|interface\s+|type\s+)([A-Za-z_$][\w$]*)/;
+  return pattern.exec(text.trim())?.[1] ?? null;
 }
 
 export interface DefaultReuseResolverOptions {
   /** Repository root the plan's paths are relative to (the citation root); null when it could not be resolved. */
   repoRoot: string | null;
+  /** Existing citation context, including admitted sibling/registered repository identity. */
+  citationDeps?: Pick<CitationDeps, 'locate' | 'locateRepository'> | null;
   /** Operator database handle for the table, routine and doc lookups. */
   sql?: postgres.Sql<any> | null;
   workspaceId?: string | null;
@@ -107,20 +144,24 @@ export function defaultReuseReferenceResolvers(options: DefaultReuseResolverOpti
   const packages = (root: string) => (packageIndex ??= readWorkspaceManifests(root).then(indexDeclaredPackages));
 
   return {
-    file: async (ref) => (repoRoot ? pathExists(repoRoot, ref.path!) : noRoot),
+    file: async (ref) => (await locateReference(options, ref.path!)).lookup,
 
     symbol: async (ref) => {
       if (!repoRoot) return noRoot;
-      const file = ref.path!;
-      const exists = await pathExists(repoRoot, file);
-      if (exists.outcome !== 'found') return exists;
-      const name = ref.symbol!.split('.').at(-1)!;
+      const located = await locateReference(options, ref.path!);
+      if (!located.location) return located.lookup;
+      const { repoRoot: symbolRoot, relativePath: file } = located.location;
+      const name = ref.symbol!;
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) return unavailable('only one terminal declaration identifier is supported');
       const ext = path.extname(file).toLowerCase();
       let lspDetail = 'lsp not consulted for this language';
       if (LSP_TYPESCRIPT_EXTS.has(ext)) {
         try {
-          const answer = await lspFacade('workspace_symbols', { name, file, rootPath: repoRoot, limit: 50 }, { workspaceId: options.workspaceId ?? undefined });
-          if (!answer.error && answer.sites.some((site) => site.path === file)) return found('lsp workspace symbol');
+          const answer = await lspFacade('workspace_symbols', { name, file, rootPath: symbolRoot, limit: 50 }, { workspaceId: options.workspaceId ?? undefined });
+          const exact = answer.sites.filter((site) => site.path === file && site.name === name);
+          if (!answer.error && answer.truncation?.truncated) return unavailable('lsp symbol set is truncated');
+          if (!answer.error && exact.length > 1) return unavailable('symbol identity is ambiguous in the admitted file');
+          if (!answer.error && exact.length === 1) return found(`unique lsp declaration in ${located.location.absolutePath}`);
           lspDetail = answer.error ? `lsp unavailable: ${answer.error}` : 'lsp found no declaration in that file';
         } catch (error) {
           lspDetail = `lsp unavailable: ${error instanceof Error ? error.message : String(error)}`;
@@ -128,12 +169,21 @@ export function defaultReuseReferenceResolvers(options: DefaultReuseResolverOpti
       }
       const language = AST_GREP_LANGUAGE_BY_EXT[ext];
       if (!language) return unavailable(`${lspDetail}; ast-grep has no grammar for ${ext || 'this file'}`);
-      const syntax = await astGrepFacade('search', { pattern: name, language, paths: [file], rootPath: repoRoot, limit: 1 })
-        .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error), sites: [] }));
+      const syntax = await astGrepFacade('syntax_index', { pattern: name, language, paths: [file], rootPath: symbolRoot, limit: 500 })
+        .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error), sites: [],
+          truncation: { truncated: false }, evidence: undefined }));
       if (syntax.error) return unavailable(`${lspDetail}; ast-grep unavailable: ${syntax.error}`);
-      return syntax.sites.length > 0
-        ? found('ast-grep syntax match (identifier present; definition not certified)')
-        : notFound(`${ref.symbol} does not occur in ${file}`);
+      if (syntax.truncation?.truncated) return unavailable('syntax declaration set is truncated');
+      const declarations = syntax.sites.filter((site) => site.path === file && site.kind === 'declaration'
+        && declarationName(language, site.detail ?? '') === name);
+      if (declarations.length > 1) return unavailable('symbol identity is ambiguous in the admitted file');
+      if (declarations.length === 1) return found(`unique parsed declaration in ${located.location.absolutePath}`);
+      if (!syntax.evidence?.sourceScope.supportingFiles?.some((source) => source.path === file)) {
+        return unavailable('syntax backend did not certify this source file');
+      }
+      // This index covers selected declaration forms, not every binding a
+      // language can express. An empty result cannot certify symbol absence.
+      return unavailable(`${name} has no uniquely certified supported declaration in ${file}`);
     },
 
     tool: async (ref) => {

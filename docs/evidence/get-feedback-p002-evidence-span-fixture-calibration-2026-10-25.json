@@ -1,0 +1,400 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-evidence-span-first-bound-fixture-calibration",
+  "editionDate": "2026-10-25",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "Source-index and session-port route controlled-fixture calibration only. Original native28326/28545, actor/ABA/custody, cohort quality, native acceptance and owner-gated shipment remain open.",
+  "reason": {
+    "priorBinding": 69919,
+    "priorRun": 21997198,
+    "reason": "New first-bound fixture measurement unit for omitted immutable calibration inputs of69919; existing33cases and native disclosure preserved.",
+    "sourceTestBytesUnchanged": true,
+    "originalRecipePreserved": true,
+    "notHeadOnlyReplay": "The new unit measures nine previously omitted fixture inputs on first binding; it does not reacquire or rewrite the immutable prior run's recipe."
+  },
+  "test": {
+    "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+    "sha256": "e0a2a08e53a6ffb482a2f1d5dad7b11ffe0d06104d26e51ed159f5f904b79f76",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs --ref=2bbff3bf44ad94fc5165c25d87793432c102ca26 --any test:file -- packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+    "commitSha": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+    "runGroup": "gf-p002-evidence-span-calibrated-20261025-1792931925075",
+    "testRunId": 22006045,
+    "passed": 33,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "caseComparison": {
+      "oldRun": 21997198,
+      "newRun": 22006045,
+      "identity": [
+        "caseKey",
+        "occurrence",
+        "status"
+      ],
+      "oldCount": 33,
+      "newCount": 33,
+      "triplesIdentical": true,
+      "oldOnly": [],
+      "newOnly": [],
+      "verification": "Canonical complete testing:runs cases read inside code:run, count=2,total=2,partial=false; no test rerun used to reconstruct proof."
+    }
+  },
+  "calibration": {
+    "boundary": "Actual route validation and real SQL source-index selection; production501-session-turns.sql agrees on selected workspace/source_kind/session_id/turn_idx/speaker/text/owner columns and composite key. The fixture reproduces cross-workspace/backend/owner collisions and earlier incarnations.",
+    "positiveControls": "Exact workspace/session returns indexed2/4 texts; codex/omp use exact source-kind; claude/codex/omp isolated-owner target fields retain source row; earlier owner-matched incarnation selects its own source.",
+    "negativeControls": "Wrong workspace/backend/owner and mismatched explicit incarnation are refused before acquisition. Live identity preflight and invalid isolated owners reject. These are executed existing case assertions, not added author ratings.",
+    "fixtureInputs": "Inline rows, mocked launch/inspection, protocol constants and seeded source identity live in the unchanged test; directly imported PG helper and first-party supporting schema/runner and manifests are explicitly pinned.",
+    "limit": "Native transform/launch/inspection is controlled fixture behavior, including synthetic archive bytes/hash. This calibration covers the route/source-index boundary only; it does not calibrate native carrier execution or prove a live answering session."
+  },
+  "qualification": {
+    "id": 70065,
+    "testRunId": 22006045,
+    "currentness": {
+      "overall": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "staleReasons": [],
+      "unknownReasons": [],
+      "comparisonSupplied": true,
+      "provenance": "server-measured"
+    },
+    "fingerprints": {
+      "sourceFingerprint": "sha256-file-set-v1:35788a1e85123bf71b4c76298313ac4f8415cc46778a9cc58e403eee4e022221",
+      "testFingerprint": "sha256-file-set-v1:0ee835a87edb5b368b1fbcc97ea849819ecc6648431a4fd39f74618b25699ac5",
+      "fixtureFingerprint": "sha256-file-set-v1:0b81bc11405f01b236268544a5e2a583b5376915ebb770c01b391a55799312a0",
+      "rubricFingerprint": null,
+      "environmentFingerprint": null
+    },
+    "recipe": {
+      "kind": "repo-files",
+      "testPaths": [
+        "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts"
+      ],
+      "sourcePaths": [
+        "packages/operator-core/lib/adv-sessions.ts",
+        "packages/operator-core/lib/agent-launch-core.ts",
+        "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+        "packages/operator-core/lib/session-port/service.ts",
+        "packages/operator-core/lib/session-port/source.ts",
+        "packages/operator-core/lib/session-port/types.ts",
+        "packages/operator-core/lib/workspace-registry.ts"
+      ],
+      "fixturePaths": [
+        "libs/test-config/package.json",
+        "libs/test-config/src/pg-container.ts",
+        "package-lock.json",
+        "package.json",
+        "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+        "packages/operator-core/package.json",
+        "packages/operator-core/test/_pg-helpers.ts",
+        "packages/operator-core/test/_work-items-schema.ts",
+        "scripts/lib/strip-comments-and-strings.mjs"
+      ],
+      "schemaVersion": 1
+    },
+    "adequacy": {
+      "outcome": "passed",
+      "skipped": false,
+      "executed": true,
+      "collected": true,
+      "testLayer": "integration",
+      "fixtureFree": false,
+      "disclosedGap": "Native answering launch/inspection is controlled fixture behavior; actual native carrier receipt remains pending containing runtime.",
+      "pathReachable": true,
+      "fixtureCalibrated": true
+    },
+    "bindingFingerprint": "bdf4d4ff9ad7e17c961ce636eca5c0891f32fbdc61c4e5a6fc20817cf38fc6b4",
+    "pinFileCount": 18,
+    "scope": "Source-index and session-port route controlled-fixture calibration only. Original native28326/28545, actor/ABA/custody, cohort quality, native acceptance and owner-gated shipment remain open."
+  },
+  "priorRetirement": {
+    "bindingId": 69919,
+    "at": "2026-10-25T12:45:47.425Z",
+    "verified": "Separate includeRetracted:true exact-pair audit returned new70065 active/CURRENT including fixture and old69919 withdrawn. Prior21997198 remains canonical history. Original69919 adequacy fields, source/test fingerprints and recipes were equal before retirement."
+  },
+  "preExecutionPins": [
+    {
+      "path": "packages/operator-core/lib/adv-sessions.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "710f04fd236620d0ed83f946ad7dc83d4e3bb5e6",
+      "sha256": "eac21919239758c05e9e7ac02b3b66dd2ac841ae08ea6daa2432dc7dcf6a244b"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-launch-core.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "9464d4b15c9fcf7713ad128c4698aeccd9f8a3e3",
+      "sha256": "c973a7551161ae0c54f1fad23e208dfcd298a70ed39460b35b9e2519d49064a8"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "9fd521785302dac509ec1214ddcef1491c2bffbf",
+      "sha256": "72786492538dc89ae80754f6dbc7855e6f390246fe284afb466248aed3a9d726"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "499ed65c26a60628eecf9a5469858bef7c4214b1",
+      "sha256": "d2550f5b4d98a5e35615620f0a9a2f74274ffa372dd1a999925cbb4d89e43d60"
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/service.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+      "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84"
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/source.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+      "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e"
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/types.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+      "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5"
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-registry.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+      "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "06e7428f992204869973d3f7d2ba80f469597f3a",
+      "sha256": "e0a2a08e53a6ffb482a2f1d5dad7b11ffe0d06104d26e51ed159f5f904b79f76"
+    },
+    {
+      "path": "packages/operator-core/test/_pg-helpers.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "eff96fea50c11e960a6eae1bdaa485ea32c94f3f",
+      "sha256": "67083d27aec0fe13c70e52488229f4baae470cbdad666ab092e0e82dc34a9700"
+    },
+    {
+      "path": "packages/operator-core/test/_work-items-schema.ts",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "13c1d9fd766e6b3545f5fcfb9596e495273657eb",
+      "sha256": "aa5d0ec9a86a57fcfda746bd04deff4bc07d17ec8b4bcaab11a9aaad5637c798"
+    },
+    {
+      "path": "scripts/lib/strip-comments-and-strings.mjs",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "73abaf7191067d52c656c4257449a83243d74503",
+      "sha256": "cb37f21067d0ce1255cc852ffdc4a0b80a0a541a9e6f89d56c17c5c96b2f5490"
+    },
+    {
+      "path": "libs/test-config/src/pg-container.ts",
+      "repo": "libs/test-config",
+      "ref": "fac153de6b7530408176aa2ba2b32b0feec9bfff",
+      "headBlob": "9d8c7ea525a23606cceb6f8c9ff95398c7cdf30d",
+      "sha256": "e41f534233707df038548bdb91d1c247145051712a85ca1dc6028a93873c875e"
+    },
+    {
+      "path": "package.json",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "696d1d1efbf53f1bfbc0c7c51a9e80e1c5963b70",
+      "sha256": "740474bc5565f27cdac989cc4a1f5b99897a0b8743738ef6e0c5b1bffddd365f"
+    },
+    {
+      "path": "package-lock.json",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "785e8b8a5e9e912bc46102a98d987d68fcce7693",
+      "sha256": "67393d5f8a6f08fbbcfe22e2ef402cdc9ddac776c839f13a75736ea04ad42f43"
+    },
+    {
+      "path": "packages/operator-core/package.json",
+      "repo": ".",
+      "ref": "2bbff3bf44ad94fc5165c25d87793432c102ca26",
+      "headBlob": "dbdcde00745b1376dad144bffaee88273a156fc1",
+      "sha256": "704f9ceba27910c92ad092a5fb67bd5e27ff1c53b190e1b86bd5a53f7ee5a7bf"
+    },
+    {
+      "path": "libs/test-config/package.json",
+      "repo": "libs/test-config",
+      "ref": "fac153de6b7530408176aa2ba2b32b0feec9bfff",
+      "headBlob": "a4fe7bdde5f6998f41ab642e26a9cf11cf08da7c",
+      "sha256": "16061f6f613617ee323d3699e5d9ff22bc720373a3a8cc20edfb656d5d5b9b91"
+    }
+  ],
+  "execution": {
+    "state": "/tmp/gf-p002-evidence-span-calibrated-20261025-1792931925075.state.json",
+    "log": "/tmp/gf-p002-evidence-span-calibrated-20261025-1792931925075.log",
+    "startedAt": "2026-10-25T12:38:45.075Z",
+    "finishedAt": "2026-10-25T12:40:16.113Z",
+    "driverExit": 0,
+    "nativeExecDrained": true,
+    "namedPathsUnchanged": true,
+    "stateSha256": "3213add78cfee24fc3b4121d8c84382c0188b90d32aceef4fefedd5af9a66c0c",
+    "logSha256": "0421ade94eb5697c6b09b6d2b615a95034e8b15bdcad52fb358236b6e5d5d577",
+    "sourceRootRemoved": true,
+    "privatePgShutdownLogged": true,
+    "runnerPassLogged": true,
+    "receiptExists": false,
+    "receiptLimitation": "Requested parent receipt file was not retained. The maintained runner validated its canonical inserted-receipt contract and the independent testing:runs ledger read returned22006045. No claim relies on the absent parent receipt."
+  },
+  "sourceAssessment": {
+    "ok": true,
+    "evaluatorBuild": {
+      "sha": "c1ae9326a0",
+      "version": "0.0.0"
+    },
+    "governing": true,
+    "count": 1,
+    "rows": [
+      {
+        "specId": "GF-P002-source",
+        "specRevision": 1,
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "pass",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "pass",
+          "disclosed-gap": "fail"
+        },
+        "draggingBindingIds": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            45201,
+            68733,
+            69319,
+            69322,
+            69329,
+            69340,
+            69704,
+            69782,
+            69875,
+            70065
+          ],
+          "execution-integrity": [
+            28326,
+            28545,
+            45201
+          ],
+          "freshness": [
+            28326,
+            28545,
+            45201,
+            68733,
+            69305,
+            69319,
+            69322,
+            69327,
+            69329,
+            69331,
+            69332,
+            69338,
+            69614
+          ],
+          "disclosed-gap": [
+            45261,
+            68339,
+            69704,
+            69782,
+            70065
+          ]
+        }
+      }
+    ],
+    "wouldBlock": [
+      {
+        "specId": "GF-P002-source",
+        "revision": 1,
+        "criteria": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ]
+      }
+    ]
+  },
+  "diagnosticCaveat": {
+    "issue": "EI-26955691110246544",
+    "finding": "The governing evaluator still lists70065 in the fixture-calibration drag set despite its current measured fixture and fixtureCalibrated:true. The fixture criterion remains unknown because unresolved proof remains, including45201. This is not a criterion pass.",
+    "writer": "packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.ts draggingRows['fixture-calibration'] includes fixtureFree===false regardless of true calibration; fixture use is incorrectly attributed as an adverse row when another row blocks the criterion.",
+    "disposition": "Filed for a branch-consistent attribution fix and maintained regression. Preserve the exact emitted drag set above; do not silently edit the evaluator result or claim an overall improvement in criterion count."
+  },
+  "preserved": {
+    "r7": "D-036 and complete committed assessment artifact retained; R7 preflight not replayed. Review-only pendingDeliveryBarKeys[R-7] is not final shipment evidence.",
+    "attributionBindings": [
+      70014,
+      70015,
+      70016
+    ],
+    "dispatcher": "D-035/69965",
+    "originalOperationalBindings": [
+      28326,
+      28545
+    ],
+    "supplementalNativeBindings": [
+      69704,
+      69782
+    ],
+    "dirtyPendingBinding": 45201,
+    "reporter": "EI-26900834772734276 original21936773 root UNKNOWN; backend68733 was not replayed or requalified.",
+    "limits": "Native carrier, physical actor/ABA/lease history, cohort quality, custody/admission/approval, independent acceptance and final deployed shipment remain open.",
+    "loop": "Existing loop configuration unchanged; this unit is not proof of a loop-origin turn."
+  },
+  "verification": {
+    "productSourceChanged": false,
+    "testSourceChanged": false,
+    "newTestsWritten": false,
+    "newRuns": [
+      22006045
+    ],
+    "withdrawnBindings": [
+      69919
+    ],
+    "gradersRecruited": false,
+    "gateOps": false,
+    "deployedProofBound": false,
+    "planShipped": false
+  },
+  "next": "Continue a distinct named P002 source/fixture/execution gap from the current authoritative binding and exact source assessment. Preserve dirty45201 history and no-backend-replay boundary; do not replay simply because HEAD moved."
+}

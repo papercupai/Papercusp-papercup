@@ -8,6 +8,7 @@ import {
 } from './session-task-blocker-ref';
 import { applySessionTaskOp, type SessionTask, type SessionTaskResult } from './session-tasks';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 export {
   parseSessionTaskBlockerRef,
   validateSessionTaskBlockerRef,
@@ -87,7 +88,7 @@ export async function resolveSessionTaskBlocker(
           FROM harness_shared.work_items
          WHERE workspace_id = ${scope.workspaceId}
            AND feature_id = ${parsed.target}
-           AND (harness_slug = ${scope.harness} OR item_kind IN ('bug', 'change', 'task'))
+           AND (harness_slug = ${scope.harness} OR item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}))
          ORDER BY updated_ts DESC NULLS LAST
          LIMIT 1`;
       const row = rows[0];

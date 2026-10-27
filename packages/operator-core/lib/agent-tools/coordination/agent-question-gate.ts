@@ -169,6 +169,8 @@ export async function classifyAgentQuestion(input: AgentQuestionInput): Promise<
 export interface RouteAgentQuestionInput extends AgentQuestionInput {
   cardCorrelationId: string;
   cardWorkspaceId: string;
+  cardProtocolVersion?: 1;
+  cardConversationId?: string;
 }
 
 /**
@@ -191,6 +193,8 @@ export async function openAgentQuestionEscalation(
       meta: {
         cardCorrelationId: input.cardCorrelationId,
         cardWorkspaceId: input.cardWorkspaceId,
+        ...(input.cardProtocolVersion === 1 ? { cardProtocolVersion: 1,
+          cardConversationId: input.cardConversationId } : {}),
         category: AGENT_QUESTION_CATEGORY,
         autonomous: true,
         rung,

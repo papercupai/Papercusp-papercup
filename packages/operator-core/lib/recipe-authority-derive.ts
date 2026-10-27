@@ -339,7 +339,7 @@ function inspectCall(
   const normalizedTool = call.tool.includes(':')
     ? `${normPart(call.tool.split(':', 1)[0])}:${normPart(call.tool.slice(call.tool.indexOf(':') + 1))}`
     : `${splitTool(call.tool).ns}:${splitTool(call.tool).verb}`;
-  const { ns } = splitTool(call.tool);
+  const { ns, verb } = splitTool(call.tool);
 
   // A statically projected tools:invoke is transparent: inspect the inner tool
   // and args. A dynamic wrapper target is opaque and therefore fails closed.
@@ -412,7 +412,12 @@ function inspectCall(
       return { kind: 'volatile-coordination-args', tool: call.tool, keys: volatileKeys };
     }
   }
-  if (call.dynamicArgs && SCOPE_NAMESPACES.has(ns)) {
+  // A caller may already discover the entire named-resource registry with
+  // locks:list({}). An invocation-bound filter only narrows that read; it
+  // neither claims a resource nor carries the author's authority. Keep every
+  // mutating lock verb subject to the existing static-scope proof.
+  const filteredLockDiscovery = ns === 'locks' && verb === 'list';
+  if (call.dynamicArgs && SCOPE_NAMESPACES.has(ns) && !filteredLockDiscovery) {
     return { kind: 'dynamic-scope-args', tool: call.tool };
   }
   return null;

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInferenceGateway, OWNER_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import { createFailoverPool } from './account-failover';
+import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   configureGatewayRequestOutcomeStore,
   InMemoryGatewayRequestOutcomeStore,
@@ -14,7 +15,10 @@ let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 const homes: string[] = [];
 
 // Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
-beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+beforeEach(() => {
+  resetGovernorRegistry();
+  configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore());
+});
 
 afterEach(async () => {
   await gateway?.close();
@@ -363,5 +367,51 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
       accountsFailingSinceResponse: 3,
       lastTransportFailureKind: 'dns',
     });
+  });
+
+  // WI-6554700010029748: codexHealthyAccounts is model-blind. Live 2026-10-26: every serviceable
+  // account refused gpt-5.5, /stats still read healthy > 0, psu's preflight let gpt-5.5 sessions
+  // launch, and each model call came back a 429 after failing over across the pool.
+  it.each([
+    { bRefuses: true, expected: 0 },
+    { bRefuses: false, expected: 1 },
+  ])('/stats publishes the per-model serviceable count when accounts refuse a model (b refuses: $bRefuses)', async ({ bRefuses, expected }) => {
+    const accounts = await Promise.all(['chatgpt-a', 'chatgpt-b'].map(async accountId => ({ accountId, home: await codexHome(accountId) })));
+    const refusal = `{"detail":"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."}`;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+      if (account === 'chatgpt-a' || bRefuses) {
+        return new Response(refusal, { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      const event = { type: 'response.completed', response: { id: 'served', output: [] } };
+      return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(accounts.map(({ accountId }) => ({ accountId, token: async () => '' }))),
+      codexOAuthProxy: true, fetchImpl, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const before = await (await fetch(`http://127.0.0.1:${port}/stats`)).json() as { codexServiceableByModel?: Record<string, number> };
+    // No live refusal yet: the provider-wide count describes every model, so no map is published.
+    expect(before.codexServiceableByModel).toBeUndefined();
+    for (const owner of ['refusal-session-1', 'refusal-session-2']) {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: owner },
+        body: JSON.stringify({ model: 'gpt-5.5', input: [], stream: true }),
+      });
+      await response.text();
+    }
+    const stats = await (await fetch(`http://127.0.0.1:${port}/stats`)).json() as {
+      codexHealthyAccounts: number;
+      codexServiceableByModel?: Record<string, number>;
+      codexModelRefusals: Array<{ accountId: string; model: string }>;
+    };
+    // The refusal parks nothing: both accounts stay serviceable provider-wide…
+    expect(stats.codexHealthyAccounts).toBe(2);
+    expect(stats.codexModelRefusals.map(r => r.accountId).sort()).toEqual(bRefuses ? ['chatgpt-a', 'chatgpt-b'] : ['chatgpt-a']);
+    // …but only the non-refusing ones can serve THIS model.
+    expect(stats.codexServiceableByModel).toEqual({ 'gpt-5.5': expected });
   });
 });

@@ -458,6 +458,28 @@ describe('dependency source checkout boundaries', () => {
     expect(readFileSync(join(generated, 'node_modules/copied/index.js'), 'utf8')).toBe('generated-v2\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('excludes captured verifier driver dependencies from full and selected source installs', () => {
+    const integration = makeIntegration();
+    const generated = 'apps/operator/dist-verify/runtime/driver';
+    const ordinary = 'packages/verifier-source';
+    for (const path of [generated, ordinary]) {
+      mkdirSync(join(integration, path, 'node_modules/fixture'), { recursive: true });
+      writeFileSync(join(integration, path, 'node_modules/fixture/index.js'), 'measured bytes\n');
+    }
+    const walk = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a packages/verifier-source apps/operator/dist-verify/runtime/driver)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(walk.status, walk.stderr).toBe(0);
+    expect(walk.stdout).not.toContain('apps/operator/dist-verify');
+    expect(walk.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    expect(walk.stdout.match(/packages\/verifier-source\/node_modules/g)).toHaveLength(2);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('excludes unrelated nested checkouts while retaining tracked submodule inputs and trees', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'seed source repository');
@@ -1402,6 +1424,8 @@ describe('immutable dependency generation', () => {
         ref: candidate,
       });
       expect(Number(pin.expires)).toBeGreaterThan(Number(pin.updated));
+      expect(readPin(join(pin.checkout, 'node_modules/.papercusp-dependency-generation')).identity)
+        .toBe(pin.identity);
 
       const second = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
       expect(second.status, second.stderr).toBe(0);
@@ -1409,6 +1433,54 @@ describe('immutable dependency generation', () => {
       expect(second.stderr).toContain(
         `retained ${publishedIdentity(second.stdout)} as ref pin '${LABEL}' for ${candidate}`,
       );
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('preserves an unexpired ref pin when a pre-ref-pin checkout reader refreshes the shared store', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'candidate');
+      const ensured = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(ensured.status, ensured.stderr).toBe(0);
+      const identity = publishedIdentity(ensured.stdout);
+      const [pinName] = refPins(generationRoot);
+      const pinPath = join(generationRoot, '.pins', pinName);
+
+      // Frozen reader contract from the deployed helper predating 806a03bf65:
+      // same-host pins survive only when checkout/node_modules has the matching
+      // generation marker. It does not understand kind=ref or expires.
+      const legacyRefresh = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'source "$SCRIPT"',
+        'host="$(dependency_generation_host)"',
+        'for pin in "$GENERATION_ROOT"/.pins/*; do',
+        '  [ -f "$pin" ] || continue',
+        '  pin_host="$(dependency_generation_read_field "$pin" host)"',
+        '  identity="$(dependency_generation_read_field "$pin" identity)"',
+        '  checkout="$(dependency_generation_read_field "$pin" checkout)"',
+        '  [ -z "$pin_host" ] || [ "$pin_host" = "$host" ] || continue',
+        '  marker="$checkout/node_modules/.papercusp-dependency-generation"',
+        '  if [ ! -f "$marker" ] || [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] || ! dependency_generation_marker_matches "$GENERATION_ROOT/$identity" "$identity"; then',
+        '    rm -f -- "$pin"',
+        '  fi',
+        'done',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, SCRIPT, GENERATION_ROOT: generationRoot },
+      });
+      expect(legacyRefresh.status, String(legacyRefresh.stderr)).toBe(0);
+      expect(existsSync(pinPath)).toBe(true);
+
+      // A distinct input key leaves the candidate's selector intact. Publishing
+      // different tree bytes under the SAME lock inputs legitimately replaces it.
+      appendFileSync(join(integration, 'package-lock.json'), '\n');
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'newer-unpinned\n');
+      const newer = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+      expect(newer.status, newer.stderr).toBe(0);
+      expect(existsSync(join(generationRoot, identity))).toBe(true);
+      const selected = ensureRef(integration, candidate);
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(publishedIdentity(selected.stdout)).toBe(identity);
+      expect(selected.stderr).not.toContain('prewarming before checkpoint serialization');
     }, NATIVE_SHELL_TIMEOUT_MS);
 
     it('keeps a ref-pinned generation through recency retention until the pin expires', () => {
@@ -1436,6 +1508,7 @@ describe('immutable dependency generation', () => {
 
       const [pinName] = refPins(generationRoot);
       const pinPath = join(generationRoot, '.pins', pinName);
+      const compatibilityCheckout = readPin(pinPath).checkout;
       writeFileSync(pinPath, readFileSync(pinPath, 'utf8').replace(/^expires=\d+$/m, 'expires=1'));
       writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-after-expiry\n');
       const afterExpiry = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
@@ -1443,6 +1516,7 @@ describe('immutable dependency generation', () => {
       expect(afterExpiry.stderr).toContain(`removing expired or stale ref pin ${pinName}`);
       expect(existsSync(pinPath)).toBe(false);
       expect(existsSync(pinned)).toBe(false);
+      expect(existsSync(compatibilityCheckout)).toBe(false);
     }, NATIVE_SHELL_TIMEOUT_MS);
 
     it('refuses --retain-as without --ensure-ref or with a malformed label', () => {
@@ -4540,7 +4614,7 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     }
     expect(result?.status, `${result?.stderr}\nholder:\n${holderOutput}`).toBe(0);
     expect(result?.stdout).toContain('ACQUIRED');
-    expect(result?.stderr).toMatch(/copy lock progress: .* advances=[1-9]/);
+    expect(result?.stderr).toMatch(/copy lock progress: .* wait=\d+:\d+ advances=[1-9]/);
     // The holder's writes land in the copy destination, never beside the source in the cwd.
     expect(statSync(join(root, 'copied-bytes')).size).toBeGreaterThan(0);
     expect(existsSync(join(root, 'ignored'))).toBe(false);

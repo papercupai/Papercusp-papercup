@@ -26,6 +26,7 @@ import {
   callTimeoutMessage,
   withCallDeadline,
 } from './pg-read-query';
+import { ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 
 export type DependencyTraversalDirection = 'blockers' | 'blocked';
 
@@ -177,7 +178,7 @@ type DependencyBottleneckQuery = (
 
 type DependencyQueryClient = ReturnType<typeof getOrgPg>['sql'];
 
-const ISSUE_FAMILY_KINDS = ['bug', 'change', 'task'];
+const ISSUE_FAMILY_KINDS: string[] = [...ISSUE_FAMILY_ROUTE_KINDS];
 const PLAN_ITEM_RE = /^P-\d{3,}$/;
 const WORK_ITEM_RE = /^(?:WI|EI|F)-\d+$/i;
 

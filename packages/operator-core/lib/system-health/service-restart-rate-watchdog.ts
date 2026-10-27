@@ -52,7 +52,7 @@
  *  - Reads through `readJournal`, which already encodes the journalctl traps
  *    (exit-1-means-clean-window, ENOENT-means-no-systemd, unit-scoping).
  */
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { hostname } from 'node:os';
 import { readJournal, type JournalReadResult } from '../journal-read';
 import { openEscalation } from '../agent-tools/coordination/escalations';
@@ -296,33 +296,15 @@ export async function runRestartRateSweepOnce(
   return { alerts, unreadable, skipped: false };
 }
 
-let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Start the service restart-rate watchdog: a recurring process-level sweep.
  * Idempotent. Runtime gate: FLAGS.SERVICE_RESTART_RATE_WATCHDOG (per tick).
  */
-export function startServiceRestartRateWatchdog(opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? RESTART_RATE_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'service-restart-rate-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runRestartRateSweepOnce()
-        .catch((e) => {
-          console.warn(
-            `[service-restart-rate-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-          );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    {
+const armServiceRestartRateWatchdog = createManagedSweepStarter({
+  name: 'service-restart-rate-watchdog',
+  intervalMs: RESTART_RATE_SWEEP_INTERVAL_MS,
+  options: {
       category: 'watchdog',
       // D-004 (stop-discarded-dedup-and-audit-server-polling-2026-07-26, P-011): each
       // tick reads systemd restart counts via journalctl (readStarts) — no event source
@@ -330,5 +312,13 @@ export function startServiceRestartRateWatchdog(opts: { intervalMs?: number } = 
       // file's 'service-health' sibling in in-process-periodic.ts.
       classification: 'must-sample',
     },
-  );
+  onError: (e) => {
+          console.warn(
+            `[service-restart-rate-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        },
+});
+
+export function startServiceRestartRateWatchdog(opts: { intervalMs?: number } = {}): void {
+  armServiceRestartRateWatchdog(() => runRestartRateSweepOnce(), opts.intervalMs);
 }

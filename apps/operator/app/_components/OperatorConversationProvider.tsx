@@ -74,6 +74,9 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import { useWorkspaceId } from "@/lib/use-workspace-id";
 import type { ChatMessage, ChatToolCall } from "./chat/chat-types";
+import { parseChatEnvelope, parseChatEvent, parseChatState, parseStructuredResults, chatEventChannel,
+  type ChatResultBlock } from "@papercusp/chat-protocol";
+import { parseSseStream, type ParsedSseEvent } from "@papercusp/sse";
 import { useStateSnapshots } from "@/lib/use-state-snapshots";
 import { selectFocusedCard } from "@/lib/chat-cards/select-focused-card";
 import { composeAmbiguityPrompt } from "@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt";
@@ -111,6 +114,7 @@ interface OperatorTurnRow {
    *  text_typed/voice_*. deterministic-status-cards-2026-07-17 P-003. */
   source?: "text_typed" | "voice_stt" | "voice_tts" | "system";
   tools?: ChatToolCall[] | null;
+  results?: ChatResultBlock[] | null;
   report?: ParsedReport | null;
 }
 
@@ -147,6 +151,7 @@ function turnRowToChatMessage(t: OperatorTurnRow): ChatMessage {
     seq: typeof t.seq === "number" ? t.seq : undefined,
     ts: createdAtIso(t.createdAt),
     tools: Array.isArray(t.tools) ? t.tools : undefined,
+    results: t.results?.length ? t.results : undefined,
     report: reportForTurn(t),
   };
 }
@@ -636,13 +641,17 @@ export interface GenerationRequest {
 }
 
 export interface GenerationStream {
+  /** Filled only by a server acknowledgement of the committed assistant row. */
+  persistence?: { serverOwned?: boolean; turn: { conversationId: string; turnId: string; seq: number } | null };
   /** Async iterator yielding raw turn-output chunks. The caller buffers
    *  the chunks, parses with parseOperatorTurn(), then dispatches. */
   chunks: AsyncIterable<string>;
   /** Mutated by the chunks iterator as tool_call SSE events arrive.
    *  Read by the caller after `chunks` exhausts; attached to the
    *  resulting assistant message so the sidebar can render chips. */
-  tools?: { name: string; input?: unknown }[];
+  tools?: ChatToolCall[];
+  /** Mutated only by validated canonical result events, with stable IDs replacing prior versions. */
+  results?: ChatResultBlock[];
 }
 
 /**
@@ -704,6 +713,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      chatProtocolVersion: 1,
       // WI-6508: project onto the wire shape — never ship the render model.
       messages: toConverseWireMessages(req.messages),
       trigger: req.trigger,
@@ -727,27 +737,142 @@ const defaultGenerationFn: GenerationFn = async (req) => {
     throw new Error(text || `HTTP ${res.status}`);
   }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  const tools: { name: string; input?: unknown }[] = [];
+  let body = res.body;
+  let frames = parseSseStream(body);
+  const tools: ChatToolCall[] = [];
+  const results: ChatResultBlock[] = [];
+  const persistence: NonNullable<GenerationStream["persistence"]> = { turn: null };
+  let identity: { conversationId: string; turnId: string } | null = null;
+  let version: 0 | 1 = 0;
+  let cursor = 0, resumes = 0;
+  let terminal = false;
+  const eventIds = new Map<number, string>();
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    if (!identity || terminal || cancellation) return;
+    cancellation = fetch("/api/agent-mcp/operator-converse", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chatProtocolVersion: 1, operation: "cancel", ...identity }),
+      signal: AbortSignal.timeout(10000),
+    }).then(async response => {
+      const result = await response.json();
+      const state = parseChatState(result.state);
+      if (!response.ok || !state.ok || state.value.phase !== "cancelled"
+        || state.value.conversationId !== identity!.conversationId || state.value.turnId !== identity!.turnId) {
+        throw new Error("The reply cancellation needs reconciliation.");
+      }
+    });
+    // Attach immediately; the iterator awaits the same receipt on exit.
+    void cancellation.catch(() => {});
+  };
+  const reconnect = async () => {
+    req.signal.throwIfAborted();
+    if (!identity || resumes++ >= 2) throw new Error("The saved reply stream needs recovery.");
+    try { await frames.return(); await body.cancel(); } catch { /* socket already closed */ }
+    const response = await fetch("/api/agent-mcp/operator-converse", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chatProtocolVersion: 1, operation: "reconnect", ...identity, afterSequence: cursor }),
+      signal: req.signal,
+    });
+    if (!response.ok || !response.body) throw new Error("The saved reply stream needs reconciliation.");
+    body = response.body;
+    frames = parseSseStream(body);
+  };
 
   return {
     tools,
+    results,
+    persistence,
     chunks: (async function* () {
-      let buf = "";
+      req.signal.addEventListener("abort", cancel, { once: true });
+      try {
       while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // SSE frame parse — split on blank line.
-        let idx;
-        while ((idx = buf.indexOf("\n\n")) !== -1) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const eventMatch = frame.match(/^event:\s*(.+)$/m);
-          const dataMatch = frame.match(/^data:\s*(.+)$/m);
-          if (!eventMatch || !dataMatch) continue;
-          const event = eventMatch[1].trim();
+        let frame: IteratorResult<ParsedSseEvent, void>;
+        try { frame = await frames.next(); }
+        catch (error) {
+          if (!identity || req.signal.aborted) throw error;
+          await reconnect(); continue;
+        }
+        const { value, done } = frame;
+        if (done) {
+          if (version === 1 && !terminal) { await reconnect(); continue; }
+          break;
+        }
+          if (!value.event || !value.data) continue;
+          let event = value.event;
+          let dataText = value.data;
+          if (event === "run-meta") {
+            const meta = JSON.parse(dataText) as { chatProtocolVersion?: unknown; turnPersistence?: unknown; conversationId?: unknown };
+            if (meta.chatProtocolVersion !== undefined) {
+              if (meta.chatProtocolVersion !== 1) throw new Error("Unsupported reply stream version.");
+              version = 1;
+            }
+            if (meta.turnPersistence !== undefined) {
+              if (meta.turnPersistence !== 1 || typeof meta.conversationId !== "string" || !meta.conversationId
+                || (req.conversationId && meta.conversationId !== req.conversationId)) {
+                throw new Error("The reply persistence protocol does not match this conversation.");
+              }
+              persistence.serverOwned = true;
+            }
+            continue;
+          }
+          if (event === "turn-meta") {
+            const meta = JSON.parse(dataText);
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (meta.schemaVersion !== 1 || typeof meta.conversationId !== "string" || !meta.conversationId
+              || (req.conversationId && meta.conversationId !== req.conversationId)
+              || typeof meta.turnId !== "string" || !uuid.test(meta.turnId)
+              || (identity && (identity.turnId !== meta.turnId || identity.conversationId !== meta.conversationId))) {
+              throw new Error("The reply stream identity does not match this conversation.");
+            }
+            version = 1; persistence.serverOwned = true;
+            identity = { conversationId: meta.conversationId, turnId: meta.turnId };
+            if (req.signal.aborted) { cancel(); req.signal.throwIfAborted(); }
+            continue;
+          }
+          if (event === "turn-state") {
+            const state = parseChatState(JSON.parse(dataText));
+            if (!state.ok || !identity || state.value.conversationId !== identity.conversationId
+              || state.value.turnId !== identity.turnId) throw new Error("Invalid saved reply state.");
+            if (["cancelled", "failed", "interrupted", "needs-reconciliation"].includes(state.value.phase)) {
+              throw new Error(`The saved reply is ${state.value.phase}.`);
+            }
+            continue;
+          }
+          if (event === "chat-event") {
+            const parsed = parseChatEnvelope(JSON.parse(dataText));
+            if (!parsed.ok || !identity || parsed.value.conversationId !== identity.conversationId
+              || parsed.value.turnId !== identity.turnId || chatEventChannel(parsed.value.event.type) !== "event") {
+              throw new Error("Invalid saved reply event.");
+            }
+            const envelope = parsed.value;
+            if (envelope.sequence <= cursor) {
+              if (eventIds.get(envelope.sequence) !== envelope.eventId) throw new Error("Conflicting saved reply event.");
+              continue;
+            }
+            if (envelope.sequence !== cursor + 1) throw new Error("The saved reply stream has a sequence gap.");
+            cursor = envelope.sequence; eventIds.set(cursor, envelope.eventId);
+            if (eventIds.size > 5000) eventIds.delete(cursor - 5000);
+            event = envelope.event.type;
+            // Terminal execution acknowledgement comes from the separate
+            // post-commit done frame, after the last durable event.
+            if (event === "done") continue;
+            dataText = JSON.stringify(envelope.event);
+          } else if (version === 1 && event !== "done" && event !== "error") {
+            // Version 0 is selected only by a legacy host's response. Never
+            // render dual legacy frames alongside canonical replay.
+            continue;
+          }
+          if (event === "result" && version === 1) {
+            const parsed = parseStructuredResults(JSON.parse(dataText).blocks);
+            if (!parsed.ok) throw new Error("Invalid saved reply results.");
+            for (const block of parsed.value) {
+              const index = results.findIndex(current => current.id === block.id);
+              if (index < 0) results.push(block);
+              else results[index] = block;
+            }
+            continue;
+          }
           if (
             event !== "delta" &&
             event !== "done" &&
@@ -757,49 +882,67 @@ const defaultGenerationFn: GenerationFn = async (req) => {
             continue;
           let data: unknown;
           try {
-            data = JSON.parse(dataMatch[1]);
+            data = JSON.parse(dataText);
           } catch {
             continue;
           }
 
-          if (event === "delta") {
-            const text = (data as { text?: unknown })?.text;
-            if (typeof text === "string") yield text;
-          } else if (event === "tool_call") {
-            const d = data as { name?: unknown; input?: unknown };
-            if (typeof d?.name === "string") {
-              tools.push({ name: d.name, input: d.input });
-              // Surface tool_call to listeners in real time so the
-              // voice-card router (plan §C.1a) can arm `pending` the
-              // moment the brain emits chat:ask_choice — before the
-              // state-snapshot lands. Without this signal the
-              // provider only sees the card AFTER the snapshot
-              // arrives, opening a race where a fast STT answer
-              // would be dispatched as user_message instead of
-              // resolving the card.
-              if (typeof window !== "undefined") {
-                try {
-                  window.dispatchEvent(
-                    new CustomEvent("papercusp:operatorToolCall", {
-                      detail: {
-                        name: d.name,
-                        input: d.input,
-                        tsMs: Date.now(),
-                      },
-                    }),
-                  );
-                } catch {
-                  /* ignore */
-                }
+          const parsed = parseChatEvent(event, data);
+          if (!parsed) continue;
+          if (parsed.type === "delta") {
+            yield parsed.text;
+          } else if (parsed.type === "tool_call") {
+            const { type: _type, ...call } = parsed;
+            tools.push(call);
+            // Surface tool_call to listeners in real time so the
+            // voice-card router (plan §C.1a) can arm `pending` the
+            // moment the brain emits chat:ask_choice — before the
+            // state-snapshot lands. Without this signal the
+            // provider only sees the card AFTER the snapshot
+            // arrives, opening a race where a fast STT answer
+            // would be dispatched as user_message instead of
+            // resolving the card.
+            if (typeof window !== "undefined") {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("papercusp:operatorToolCall", {
+                    detail: {
+                      ...call,
+                      tsMs: Date.now(),
+                    },
+                  }),
+                );
+              } catch {
+                /* ignore */
               }
             }
-          } else if (event === "error") {
-            const msg = (data as { message?: unknown })?.message;
-            throw new Error(typeof msg === "string" ? msg : "stream error");
-          } else if (event === "done") {
+          } else if (parsed.type === "error") {
+            throw new Error(parsed.message);
+          } else if (parsed.type === "done") {
+            const receipt = data && typeof data === "object" && "persistedTurn" in data
+              ? (data as { persistedTurn: unknown }).persistedTurn : undefined;
+            if (receipt !== undefined) {
+              persistence.serverOwned = true;
+              if (!receipt || typeof receipt !== "object"
+                || !("conversationId" in receipt) || typeof receipt.conversationId !== "string" || !receipt.conversationId
+                || (req.conversationId && receipt.conversationId !== req.conversationId)
+                || !("turnId" in receipt) || typeof receipt.turnId !== "string"
+                || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.turnId)
+                || (identity && (receipt.turnId !== identity.turnId || receipt.conversationId !== identity.conversationId))
+                || !("seq" in receipt) || typeof receipt.seq !== "number" || !Number.isSafeInteger(receipt.seq) || receipt.seq < 0) {
+                throw new Error("The saved reply acknowledgement does not match this conversation.");
+              }
+              persistence.turn = { conversationId: receipt.conversationId, turnId: receipt.turnId, seq: receipt.seq };
+            }
+            if (version === 1 && !persistence.turn) throw new Error("The saved reply acknowledgement was lost.");
+            terminal = true;
             return;
           }
-        }
+      }
+      } finally {
+        req.signal.removeEventListener("abort", cancel);
+        try { await frames.return(); await body.cancel(); } catch { /* already closed */ }
+        if (cancellation) await cancellation;
       }
     })(),
   };
@@ -1413,7 +1556,9 @@ export function OperatorConversationProvider({
       // local message; together they're robust.
       // `tools` (added 2026-05-11 for chat:ask_choice) is omitted when
       // undefined so the server route can default to NULL.
-      const body: Record<string, unknown> = { role, text, source };
+      // Allocate once, outside the retry loop: a committed POST with a lost
+      // acknowledgement must reconcile to the same PG row on every retry.
+      const body: Record<string, unknown> = { role, text, source, turnId: crypto.randomUUID() };
       if (tools && tools.length > 0) body.tools = tools;
       if (report) body.report = report;
       const payload = JSON.stringify(body);
@@ -1680,11 +1825,11 @@ export function OperatorConversationProvider({
           return;
         }
         if (outcome.kind === "submit" || outcome.kind === "decline") {
-          const conv = conversationIdRef.current;
-          if (conv) {
+          const conv = outcome.conversationId ?? conversationIdRef.current;
+          if (conv && (!outcome.workspaceId || outcome.workspaceId === workspaceId)) {
             void postCardResponse(conv, {
               correlationId: outcome.correlationId,
-              workspaceId,
+              workspaceId: outcome.workspaceId ?? workspaceId,
               action: outcome.kind,
               payload: outcome.kind === "submit" ? outcome.payload : undefined,
             });
@@ -1830,6 +1975,7 @@ export function OperatorConversationProvider({
       const sayProjector = new OperatorSayStreamProjector();
       let streamedAssistantId: string | null = null;
       let streamedAssistantCommitted = false;
+      let streamPersistence: GenerationStream["persistence"];
 
       const snapshot = stateRef.current;
       const history = opts?.messagesOverride ?? snapshot.messages;
@@ -1848,6 +1994,7 @@ export function OperatorConversationProvider({
           isAutoFire: opts?.isAutoFire,
           audienceMode: audienceModeRef.current,
         });
+        streamPersistence = stream.persistence;
 
         let buf = "";
         for await (const chunk of stream.chunks) {
@@ -1871,6 +2018,20 @@ export function OperatorConversationProvider({
         }
         if (ctrl.signal.aborted) return;
 
+        const persistedTurn = stream.persistence?.turn;
+        if (stream.persistence?.serverOwned && !persistedTurn) {
+          throw new Error("The saved reply acknowledgement was lost; this turn needs recovery.");
+        }
+        if (persistedTurn) {
+          if (conversationIdRef.current && conversationIdRef.current !== persistedTurn.conversationId) {
+            throw new Error("The saved reply belongs to a different conversation.");
+          }
+          if (!conversationIdRef.current) {
+            conversationIdRef.current = persistedTurn.conversationId;
+            setConvId(persistedTurn.conversationId);
+          }
+        }
+
         const parsed = parseOperatorTurn(buf);
 
         // The turn is meaningful if EITHER the model wrote `<say>` OR
@@ -1883,12 +2044,15 @@ export function OperatorConversationProvider({
           stream.tools && stream.tools.length > 0
             ? stream.tools.slice()
             : undefined;
+        const resultBlocks = stream.results?.length ? parseStructuredResults(stream.results) : { ok: true as const, value: [] };
+        if (!resultBlocks.ok) throw new Error("Invalid saved reply results.");
+        const collectedResults = resultBlocks.value.length ? resultBlocks.value : undefined;
         // The report is PERSISTED (it is the Inbox's durable store — the
         // operator-report attention source reads operator_turns.report) but
         // NOT threaded onto the chat message: chat renders conversation
         // only. report-cards-inbox-reconciliation-2026-06-05 D-002.
         const report = parsed.report ?? undefined;
-        const turnHasContent = !!parsed.say || !!collectedTools || !!report;
+        const turnHasContent = !!parsed.say || !!collectedTools || !!collectedResults || !!report;
 
         if (turnHasContent) {
           const sayContent = parsed.say ?? "";
@@ -1909,6 +2073,7 @@ export function OperatorConversationProvider({
             ts: new Date().toISOString(),
           };
           if (collectedTools) assistantMessage.tools = collectedTools;
+          if (collectedResults) assistantMessage.results = collectedResults;
           if (streamedAssistantId) {
             dispatch({
               type: "finalize_assistant_stream",
@@ -1948,7 +2113,12 @@ export function OperatorConversationProvider({
           // tool/report-only turns; persistTurn writes whatever we send.
           // The server-side turns route accepts tools + report alongside
           // text (POST /api/operator/conversations/:id/turns).
-          persistTurn(
+          if (persistedTurn) {
+            newestLoadedSeqRef.current = Math.max(newestLoadedSeqRef.current ?? -1, persistedTurn.seq);
+            oldestLoadedSeqRef.current ??= persistedTurn.seq;
+            dispatch({ type: "replace_message_id", oldId: assistantMessageId,
+              newId: persistedTurn.turnId, seq: persistedTurn.seq });
+          } else persistTurn(
             "assistant",
             sayContent,
             isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
@@ -2189,7 +2359,7 @@ export function OperatorConversationProvider({
               ts: new Date().toISOString(),
             },
           });
-          persistTurn(
+          if (!streamPersistence?.serverOwned) persistTurn(
             "assistant",
             refusalText,
             isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
@@ -2320,7 +2490,8 @@ export function OperatorConversationProvider({
   // on every state-snapshot tick: when the focused card disappears
   // (server resolved it / aborted / workspace switch), active clears.
   const { cards: openCards } = useStateSnapshots();
-  const focusedCard = useMemo(() => selectFocusedCard(openCards), [openCards]);
+  const focusedCard = useMemo(() => selectFocusedCard(openCards.filter(card =>
+    !card.workspaceId || card.workspaceId === workspaceId)), [openCards, workspaceId]);
 
   // Arm-pending listener: surfaces from defaultGenerationFn when a
   // chat:ask_choice tool_call SSE event lands. Voice-active gates the
@@ -2433,6 +2604,8 @@ export function OperatorConversationProvider({
     const drained = routerAttachActive(routerStateRef.current, {
       correlationId: focusedCard.correlationId,
       runId: focusedCard.runId,
+      conversationId: focusedCard.conversationId,
+      workspaceId: focusedCard.workspaceId,
       card: focusedCard,
     });
     // Replay any buffered transcripts now that the card is active.

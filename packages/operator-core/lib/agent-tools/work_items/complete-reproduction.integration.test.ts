@@ -79,6 +79,65 @@ const rootCause = {
   evidenceRefs: ['test:complete-reproduction.integration.test.ts'],
 };
 
+const heldOpenRootCause = {
+  contractVersion: 2,
+  hypothesis: 'validateOnly bypasses held-open eligibility while the canonical writer refuses the nonholder',
+  alternativeHypothesis: 'the canonical writer also allows a nonholder to close a live held-open item',
+  distinguishingTest: 'Preview and submit the identical terminal close for an item held by another owner, then inspect both responses and persisted state.',
+  testResult: 'The saved pre-fix traces showed preview ok=true and write HELD OPEN; this regression asserts both paths refuse while the holder control succeeds.',
+  testProcedure: 'Seed an open issue with a held-open lease; call complete with validateOnly:true, call the same completion without it, and read back status and lease fields. Repeat with the caller as holder.',
+  predictedObservations: {
+    hypothesis: 'Before the fix, preview returns ok=true while the actual writer refuses and leaves the row open.',
+    alternativeHypothesis: 'Before the fix, both preview and actual writer return ok=true and the row becomes terminal.',
+  },
+  actualObservation: 'After the fix, the nonholder preview and write both refuse with the held-open reason, the row remains open, and the holder control completes.',
+  evidenceRefs: ['EI-26715376424820819', 'test:complete-reproduction.integration.test.ts'],
+};
+
+async function seedHeldIssue(holder: string, heldAt: string): Promise<{ id: string; harness: string; initialState: string }> {
+  const issue = await createIssue({
+    kind: 'bug',
+    scope: 'harness:papercusp',
+    createdBy: OWNER,
+    title: 'held-open preview fixture ' + holder + ' ' + Date.now() + ' ' + Math.random(),
+    body: 'Isolated held-open preview/write parity fixture.',
+  });
+  await db.adminSql.unsafe(
+    "UPDATE harness_shared.work_items SET payload = $1::jsonb, taken_by = $2, admission = 'admitted' WHERE feature_id = $3",
+    [JSON.stringify({
+      _claimHold: true,
+      held_open_by: holder,
+      held_open_at: heldAt,
+      held_open_reason: 'release criterion pending',
+    }), OWNER, issue.id],
+  );
+  const existing = await getWorkItem(issue.id);
+  if (!existing) throw new Error('held-open fixture ' + issue.id + ' was not readable after seeding');
+  return { id: issue.id, harness: existing.harness, initialState: existing.state };
+}
+
+async function runHeldOpenCompletion(id: string, harness: string, validateOnly: boolean) {
+  const args = complete.args.parse({
+    id,
+    harness,
+    state: 'resolved',
+    assumptions: 'none',
+    ...(validateOnly ? { validateOnly: true } : {}),
+    changeKinds: ['no-code-change'],
+    changeKindReason: 'isolated held-open fixture; the fixture itself has no source changes',
+    completion: {
+      summary: 'Check held-open terminal eligibility.',
+      verifiedHow: 'automated-test',
+      testsRun: 'complete-reproduction.integration.test.ts',
+      testResult: 'The test compares the preview, write, and persisted row.',
+      filesChanged: [],
+      rootCauseVerification: heldOpenRootCause,
+    },
+  });
+  const response = await complete.handler(args, { uiClientId: OWNER, isSuperuser: true, workspaceId: WS } as never);
+  return (response as { data: { results: Array<Record<string, unknown>> } }).data.results[0]!;
+}
+
 describe('BQL receipt authority through the close handler and real persistence', () => {
   it.each([
     ['pending reproduction', 'revision-requested', 'reproduction', 'done', 'proposed'],
@@ -125,6 +184,63 @@ describe('BQL receipt authority through the close handler and real persistence',
       expect(result.terminalCriteriaWarning).toContain('reproduction-receipt');
     } else {
       expect(result.terminalCriteriaWarning ?? '').not.toContain('reproduction-receipt');
+    }
+  }, 60_000);
+
+  it('EI-26715376424820819: a nonholder preview and real write both refuse a live held-open item', async () => {
+    const fixture = await seedHeldIssue('su-live-gatekeeper', new Date().toISOString());
+    const preview = await runHeldOpenCompletion(fixture.id, fixture.harness, true);
+    expect(preview).toMatchObject({ ok: false, validationOnly: true });
+    expect(String(preview.stateError)).toContain('HELD OPEN by su-live-gatekeeper');
+    const afterPreview = await getWorkItem(fixture.id);
+    expect(afterPreview?.state).toBe(fixture.initialState);
+    expect(afterPreview?.payload?.held_open_by).toBe('su-live-gatekeeper');
+
+    const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
+    expect(write.ok).toBe(false);
+    expect(String(write.stateError)).toContain('HELD OPEN by su-live-gatekeeper');
+    const afterWrite = await getWorkItem(fixture.id);
+    expect(afterWrite?.state).toBe(fixture.initialState);
+    expect(afterWrite?.payload?.held_open_by).toBe('su-live-gatekeeper');
+  }, 60_000);
+
+  it('keeps the holder positive control eligible for preview and terminal write', async () => {
+    const fixture = await seedHeldIssue(OWNER, new Date().toISOString());
+    const preview = await runHeldOpenCompletion(fixture.id, fixture.harness, true);
+    expect(preview).toMatchObject({ ok: true, validationOnly: true });
+    expect((await getWorkItem(fixture.id))?.state).toBe(fixture.initialState);
+
+    const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
+    expect(write.ok).toBe(true);
+    expect(write.stateError).toBeUndefined();
+    expect((await getWorkItem(fixture.id))?.state).toBe('done');
+  }, 60_000);
+
+  it('keeps expired-hold preview read-only and clears the stale lease only on the actual write', async () => {
+    const holder = 'su-expired-held-open-' + Math.random();
+    const fixture = await seedHeldIssue(holder, new Date(0).toISOString());
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const preview = await runHeldOpenCompletion(fixture.id, fixture.harness, true);
+      expect(preview).toMatchObject({
+        ok: true,
+        validationOnly: true,
+        heldOpenTransition: { staleHoldOpen: true, writeWillRecheck: true },
+      });
+      expect(warning).not.toHaveBeenCalled();
+      expect((await getWorkItem(fixture.id))?.payload?.held_open_by).toBe(holder);
+
+      const write = await runHeldOpenCompletion(fixture.id, fixture.harness, false);
+      expect(write.ok).toBe(true);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining(`[hold-open] lifted EXPIRED hold on ${fixture.id}`),
+      );
+      const closed = await getWorkItem(fixture.id);
+      expect(closed?.state).toBe('done');
+      expect(closed?.payload?.held_open_by).toBeUndefined();
+    } finally {
+      warning.mockRestore();
     }
   }, 60_000);
 });

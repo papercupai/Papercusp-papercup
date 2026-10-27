@@ -4,11 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ADMISSION_PRECHECK_FILE_CONCURRENCY,
+  ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX,
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_IDLE_MS,
   ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS,
+  admissionPrecheckFileConcurrency,
   admissionPrecheckSetupEnv,
   classifyTestFileRun,
+  confirmationRerunFiles,
   createCheckpointTreeFixPrecheckRunner,
   defaultExec,
   dependencyGenerationInfraCode,
@@ -16,6 +20,8 @@ import {
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
+  previousHeadBaselineFiles,
+  REPORT_ONLY_DEFERRED_SAMPLE_CAP,
   defaultGitCommonDir,
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
@@ -174,11 +180,23 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
   const withRadius = (r: AdmissionRadius = radius()) =>
     precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: ['lib/fix.ts', 'lib/new.test.ts'], radius: r });
 
-  it('runs radius files after the admitted ones without ever counting them as admitted', () => {
+  it('runs guarded radius files after the admitted ones, never counts them as admitted, and never runs report-only ones', () => {
     const pop = withRadius();
     expect(pop.admittedTestFiles).toEqual(['lib/new.test.ts']);
     expect(pop.radius).toMatchObject({ guarded: ['ws-a/lib/near.test.ts'], reportOnly: ['ws-b/lib/known-red-leg.test.ts'] });
-    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts', 'ws-b/lib/known-red-leg.test.ts']);
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts']);
+  });
+
+  it('WI-6554700010029981: a whole red-leg workspace of report-only files stays out of the executed set', () => {
+    // Measured 2026-10-27: guarded=111, reportOnly=6602 made a pre-check of 6,758 serial files (days).
+    const reportOnly = Array.from({ length: 6602 }, (_, i) => `ws-b/lib/r${i}.test.ts`);
+    const pop = withRadius(radius({ reportOnly }));
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts']);
+    expect(pop.radius?.reportOnly).toHaveLength(6602);
+    const v = evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass']]));
+    expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], unmeasured: [] });
+    if (!v.ok || !v.ran) throw new Error('expected a measured pass');
+    expect(v.reportOnlyDeferred).toEqual({ count: 6602, reason: 'deferred-to-verify-run', sample: reportOnly.slice(0, REPORT_ONLY_DEFERRED_SAMPLE_CAP) });
   });
 
   it('the managed worker rebuilds the same population from the persisted files plus the partition', () => {
@@ -197,14 +215,127 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
     expect(pop.radius?.reportOnly).toEqual([]);
   });
 
-  it('a failing GUARDED radius file refuses admission-imports-red and names its leg', () => {
-    const v = evaluateFixPrecheck(withRadius(), ran([
-      ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
-    ]));
+  const nearRed = (): FixPrecheckRunResult => ran([
+    ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+  ]);
+  const baseline = (status: 'pass' | 'fail' | 'unmeasured', detail?: string) =>
+    ({ commit: 'b'.repeat(40), results: [{ path: 'ws-a/lib/near.test.ts', status }], ...(detail ? { detail } : {}) });
+
+  it('a GUARDED radius file green at the MEASURED previous head and red now refuses admission-imports-red and names its leg', () => {
+    const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass') });
     expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'], newlyRedLegs: ['@t/a'], reportOnlyRed: [] });
     if (v.ok) throw new Error('expected refusal');
     expect(v.detail).toContain('ws-a/lib/near.test.ts (leg @t/a)');
     expect(v.detail).toContain('previously green leg(s) turned red: @t/a');
+  });
+
+  describe('measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the evaluator never implies green', () => {
+    it('a guarded red with NO paired baseline is neither blamed nor published', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed());
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [], alsoImportsRed: false,
+        baselineMissing: ['ws-a/lib/near.test.ts'], newlyRedLegs: [] });
+      if (v.ok) throw new Error('expected refusal');
+      expect(v).not.toHaveProperty('ratchet');
+      expect(v.detail).toContain('no measured previous-head verdict (no paired baseline was run)');
+      expect(v.detail).toContain('ws-a/lib/near.test.ts (leg @t/a)');
+    });
+
+    it('a guarded red that was ALSO red at the measured previous head is carried and publishes', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('fail') });
+      expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], carriedRed: ['ws-a/lib/near.test.ts'],
+        previousHead: baseline('fail') });
+    });
+
+    it('a baseline collection failure (matched=0 / route error) maps to unmeasured, never fail or pass', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('unmeasured') });
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [], baselineMissing: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('a baseline that could not run names its reason on the refusal', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(),
+        { previousHead: { commit: 'b'.repeat(40), results: [], detail: 'the paired baseline did not run (runner-failed): setup exited 1' } });
+      expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', baselineMissing: ['ws-a/lib/near.test.ts'] });
+      if (v.ok) throw new Error('expected refusal');
+      expect(v.detail).toContain('paired baseline at bbbbbbbbbbbb: the paired baseline did not run (runner-failed): setup exited 1');
+    });
+
+    it('a proven new failure still rejects when another guarded red is unpaired (reject wins)', () => {
+      const v = evaluateFixPrecheck(withRadius(), ran([
+        ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'fail'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+      ]));
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['lib/new.test.ts'], baselineMissing: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('previousHeadBaselineFiles selects exactly the guarded files red at the built commit', () => {
+      const pop = withRadius(radius({ guarded: ['ws-a/lib/near.test.ts', 'ws-a/lib/far.test.ts'] }));
+      expect(previousHeadBaselineFiles(pop, [
+        { path: 'lib/red.test.ts', status: 'fail' }, { path: 'lib/new.test.ts', status: 'fail' },
+        { path: './ws-a/lib/near.test.ts', status: 'fail' }, { path: 'ws-a/lib/far.test.ts', status: 'unmeasured' },
+        { path: 'ws-b/lib/known-red-leg.test.ts', status: 'fail' },
+      ])).toEqual(['ws-a/lib/near.test.ts']);
+      expect(previousHeadBaselineFiles(precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: [] }),
+        [{ path: 'lib/red.test.ts', status: 'fail' }])).toEqual([]);
+    });
+  });
+
+  describe('EI-27083585698781986: a one-shot flake is confirmed by a re-run before it is attributed', () => {
+    const rerun = (status: 'pass' | 'fail' | 'unmeasured', commit = C) =>
+      ({ commit, results: [{ path: 'ws-a/lib/near.test.ts', status }] });
+
+    it('a guarded red that passed at the previous head and PASSES its re-run at the built commit is an advisory flake, and publishes', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass'), confirmation: rerun('pass') });
+      expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], flakyAtBuiltCommit: ['ws-a/lib/near.test.ts'],
+        confirmation: rerun('pass'), previousHead: baseline('pass') });
+      // The first failing reading is retained as raw evidence; it is just not attributed.
+      expect(v.ok && v.ran && v.failing).toEqual(['ws-a/lib/near.test.ts']);
+      expect(v).not.toHaveProperty('carriedRed');
+    });
+
+    it('a re-run that FAILS again keeps the attribution (admission-imports-red)', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass'), confirmation: rerun('fail') });
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'], confirmation: rerun('fail') });
+      expect(v).not.toHaveProperty('flakyAtBuiltCommit');
+    });
+
+    it('an UNMEASURED re-run never overturns a measured red', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass'), confirmation: rerun('unmeasured') });
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('a re-run of a DIFFERENT commit is ignored', () => {
+      const v = evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('pass'), confirmation: rerun('pass', 'f'.repeat(40)) });
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'] });
+      expect(v).not.toHaveProperty('flakyAtBuiltCommit');
+    });
+
+    it('a passing re-run never rescues a red with no previous-head pass (carried or unpaired stay as they were)', () => {
+      expect(evaluateFixPrecheck(withRadius(), nearRed(), { previousHead: baseline('fail'), confirmation: rerun('pass') }))
+        .toMatchObject({ ok: true, carriedRed: ['ws-a/lib/near.test.ts'] });
+      expect(evaluateFixPrecheck(withRadius(), nearRed(), { confirmation: rerun('pass') }))
+        .toMatchObject({ ok: false, code: 'admission-precheck-unavailable', baselineMissing: ['ws-a/lib/near.test.ts'] });
+    });
+
+    it('a new ADMITTED test file failing is never confirmed away: the admission authored it', () => {
+      const v = evaluateFixPrecheck(withRadius(), ran([
+        ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'fail'], ['ws-a/lib/near.test.ts', 'pass'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+      ]), { previousHead: baseline('pass'), confirmation: { commit: C, results: [{ path: 'lib/new.test.ts', status: 'pass' }] } });
+      expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['lib/new.test.ts'] });
+    });
+
+    it('confirmationRerunFiles selects only guarded reds MEASURED green at the previous head, never signature files', () => {
+      const pop = withRadius(radius({ guarded: ['ws-a/lib/near.test.ts', 'ws-a/lib/far.test.ts', 'ws-a/lib/odd.test.ts'] }));
+      const results = [
+        { path: 'lib/red.test.ts', status: 'fail' as const }, { path: 'lib/new.test.ts', status: 'fail' as const },
+        { path: 'ws-a/lib/near.test.ts', status: 'fail' as const }, { path: 'ws-a/lib/far.test.ts', status: 'fail' as const },
+        { path: 'ws-a/lib/odd.test.ts', status: 'fail' as const },
+      ];
+      const previous = { commit: 'b'.repeat(40), results: [
+        { path: 'ws-a/lib/near.test.ts', status: 'pass' as const }, { path: 'ws-a/lib/far.test.ts', status: 'fail' as const },
+        { path: 'ws-a/lib/odd.test.ts', status: 'unmeasured' as const }, { path: 'lib/red.test.ts', status: 'pass' as const },
+      ] };
+      expect(confirmationRerunFiles(pop, results, previous)).toEqual(['ws-a/lib/near.test.ts']);
+      expect(confirmationRerunFiles(pop, results, undefined)).toEqual([]);
+    });
   });
 
   it('a failing REPORT-ONLY radius file is reported but cannot refuse: its leg was already red', () => {
@@ -223,9 +354,33 @@ describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', ()
     expect(v.detail).toContain('lib/new.test.ts (leg @t/root)');
   });
 
-  it('an unmeasured radius file refuses unavailable, like any other pre-check file', () => {
+  it('an unmeasured GUARDED radius file refuses unavailable: it could have imported a red', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-b/lib/known-red-leg.test.ts', 'pass']]));
+    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', unmeasured: ['ws-a/lib/near.test.ts'] });
+    if (v.ok) throw new Error('expected refusal');
+    expect(v.detail).toContain('ws-a/lib/near.test.ts');
+  });
+
+  it('a REPORT-ONLY radius file is deferred to the verify run, never unmeasured and never a refusal (D-036 point 3)', () => {
     const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass']]));
-    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', unmeasured: ['ws-b/lib/known-red-leg.test.ts'] });
+    expect(v).toMatchObject({
+      ok: true,
+      ran: true,
+      fixes: ['lib/red.test.ts'],
+      unmeasured: [],
+      reportOnlyDeferred: { count: 1, reason: 'deferred-to-verify-run', sample: ['ws-b/lib/known-red-leg.test.ts'] },
+    });
+  });
+
+  it('a deferred report-only file never hides a blocking unmeasured guarded file', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass']]));
+    expect(v).toMatchObject({
+      ok: false,
+      code: 'admission-precheck-unavailable',
+      reportOnlyDeferred: { count: 1, reason: 'deferred-to-verify-run', sample: ['ws-b/lib/known-red-leg.test.ts'] },
+    });
+    if (v.ok) throw new Error('expected refusal');
+    expect(v.detail).toContain('1 admission pre-check file(s) were not measured: ws-a/lib/near.test.ts;');
   });
 
   it('a skipped radius runs nothing extra but stays on the population as a loud marker', () => {
@@ -479,11 +634,14 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('routes a registered affected suite through the pinned exact-file script', async () => {
+  it('runs a frozen exact-file script in test mode without changing its production caller', async () => {
     const root = mkdtempSync(join(tmpdir(), 'precheck-affected-file-'));
     const checkpointRoot = join(root, 'checkpoint');
     const precheckRoot = `${checkpointRoot}-admission-precheck`;
     const commands: string[][] = [];
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const prepareTestEnvironment = vi.fn(async () => ({ PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@localhost:12345/postgres' }));
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       commands.push([...argv]);
       if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
@@ -492,24 +650,33 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
           private: true,
           scripts: {
             'test:affected': 'node -e "throw new Error(\'unexpected positional filename\')"',
-            'test:file': 'node -e "require(\'node:assert/strict\').deepEqual(process.argv.slice(1), [\'tests/host.test.ts\']); console.log(\'Tests 1 passed (1)\')"',
+            'test:file': 'node -e "const a=require(\'node:assert/strict\'); a.deepEqual(process.argv.slice(1), [\'tests/host.test.ts\']); a.equal(process.env.NODE_ENV, \'test\'); console.log(\'Tests 1 passed (1)\')"',
           },
         }));
         return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
       }
+      expect(opts.env?.PAPERCUSP_TEST_PG_ADMIN_URL).toBe('postgres://private@localhost:12345/postgres');
+      expect(opts.env?.NODE_ENV).toBe('test');
       return defaultExec(argv, opts);
     };
     try {
       const runner = createCheckpointTreeFixPrecheckRunner({
         ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
         testCommand: ['npm', 'run', 'test:affected'], exec,
+        prepareTestEnvironment,
         runLockHeld: () => ({ held: false, elapsedSec: null }),
       });
       expect(await runner({ commit: C, files: ['tests/host.test.ts'] })).toMatchObject({
         ran: true, results: [{ path: 'tests/host.test.ts', status: 'pass' }],
       });
       expect(commands.at(-1)).toEqual(['npm', 'run', 'test:file', '--', 'tests/host.test.ts']);
-    } finally { rmSync(root, { recursive: true, force: true }); }
+      expect(prepareTestEnvironment).toHaveBeenCalledWith(precheckRoot, expect.any(Function));
+      expect(process.env.NODE_ENV).toBe('production');
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses an affected suite with no registered exact-file script', async () => {
@@ -830,6 +997,198 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(logFiles).toHaveLength(3);
     expect(new Set(logFiles).size).toBe(1);
     expect(logFiles[0]).toMatch(/^\/tmp\/l\/admission-precheck-/);
+  });
+
+  it('persists each native file result before starting the next file and preserves its failure', async () => {
+    const events: string[] = [];
+    const tree = 'd'.repeat(40);
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[0] === 'git') return { exitCode: 0, signal: null, timedOut: false, output: tree, durationMs: 1 };
+      if (argv[1] === 'scripts/test-files.mjs') {
+        events.push(`run:${argv[2]}`);
+        return { exitCode: 1, signal: null, timedOut: false, output: 'Tests 1 failed (1)', durationMs: 3 };
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: 'setup ok', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, logDir: '/tmp/l', runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const out = await runner({ commit: C, expectedTree: tree, files: ['lib/a.test.ts', 'lib/b.test.ts'],
+      onFileResult: async result => {
+        expect(result.status).toBe('fail');
+        expect(result.exitCode).toBe(1);
+        await Promise.resolve();
+        events.push(`persist:${result.path}`);
+      } });
+    expect(events).toEqual(['run:lib/a.test.ts', 'persist:lib/a.test.ts', 'run:lib/b.test.ts', 'persist:lib/b.test.ts']);
+    expect(out).toMatchObject({ ran: true, results: [{ path: 'lib/a.test.ts', status: 'fail' }, { path: 'lib/b.test.ts', status: 'fail' }] });
+  });
+
+  it('a fixture lost during execution cannot persist a passing result or start the next file', async () => {
+    const files: string[] = [];
+    const recorded = vi.fn();
+    let healthy = true;
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[1] === 'scripts/test-files.mjs') {
+        files.push(argv[2]!);
+        healthy = false;
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec,
+      assertTestEnvironment: () => { if (!healthy) throw new Error('private fixture lost'); },
+      runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await expect(runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'], onFileResult: recorded }))
+      .rejects.toThrow('private fixture lost');
+    expect(files).toEqual(['lib/a.test.ts']);
+    expect(recorded).not.toHaveBeenCalled();
+  });
+
+  it('a durable file-result write failure stops execution before the next file', async () => {
+    const files: string[] = [];
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      if (argv[1] === 'scripts/test-files.mjs') files.push(argv[2]!);
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await expect(runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'], onFileResult: () => { throw new Error('durable write failed'); } }))
+      .rejects.toThrow('durable write failed');
+    expect(files).toEqual(['lib/a.test.ts']);
+  });
+
+  it('refuses a materialized tree mismatch before executing any test file', async () => {
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => ({ exitCode: 0, signal: null, timedOut: false,
+      output: argv[0] === 'git' ? 'e'.repeat(40) : 'setup ok', durationMs: 1 }));
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    expect(await runner({ commit: C, expectedTree: 'd'.repeat(40), files: ['lib/a.test.ts'] }))
+      .toMatchObject({ ran: false, reason: 'runner-failed', detail: expect.stringContaining('materialized tree differs') });
+    expect(exec.mock.calls.some(([argv]) => argv[1] === 'scripts/test-files.mjs')).toBe(false);
+  });
+
+  it('refuses an execution group above the unchanged 200-file cap before setup', async () => {
+    const exec = vi.fn();
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec });
+    expect(await runner({ commit: C, files: Array.from({ length: 201 }, (_, i) => `lib/${i}.test.ts`) }))
+      .toMatchObject({ ran: false, reason: 'runner-failed', detail: expect.stringContaining('200-file bound') });
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  describe('WI-6554700010030140: bounded file concurrency', () => {
+    const ok: ExecResult = { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => { open = resolve; });
+      return { opened, open };
+    };
+    const idle = () => ({ held: false, elapsedSec: null });
+
+    it('runs at most fileConcurrency files at once, serializes every queue write and returns results in input order', async () => {
+      const files = Array.from({ length: 7 }, (_, i) => `lib/f${i}.test.ts`);
+      const gates = new Map(files.map((f) => [f, gate()]));
+      const started: string[] = [];
+      let active = 0;
+      let maxActive = 0;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        const file = argv[2]!;
+        started.push(file);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gates.get(file)!.opened;
+        active -= 1;
+        return file === 'lib/f3.test.ts' ? { ...ok, exitCode: 1, output: 'Tests 1 failed (1)' } : ok;
+      });
+      let activeWrites = 0;
+      let maxActiveWrites = 0;
+      const write = async () => {
+        activeWrites += 1;
+        maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+        await Promise.resolve();
+        await Promise.resolve();
+        activeWrites -= 1;
+      };
+      const recorded: string[] = [];
+      const snapshots: FixPrecheckProgress[] = [];
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, fileConcurrency: 3, runLockHeld: idle });
+      const pending = runner({
+        commit: C, files,
+        onFileResult: async (r) => { await write(); recorded.push(r.path); },
+        onProgress: async (p) => { await write(); snapshots.push(p); },
+      });
+      await vi.waitFor(() => expect(started).toEqual(files.slice(0, 3)));
+      // Finish the THIRD file first: its slot is refilled before the first two complete.
+      gates.get('lib/f2.test.ts')!.open();
+      await vi.waitFor(() => expect(started).toHaveLength(4));
+      for (const f of [...files].reverse()) gates.get(f)!.open();
+      const out = await pending;
+
+      expect(maxActive).toBe(3);
+      expect(maxActiveWrites).toBe(1);
+      expect(recorded[0]).toBe('lib/f2.test.ts');
+      expect([...recorded].sort()).toEqual([...files].sort());
+      expect(out.ran && out.results.map((r) => r.path)).toEqual(files);
+      expect(out.ran && out.results.find((r) => r.path === 'lib/f3.test.ts')?.status).toBe('fail');
+      // A snapshot is built when written: completedCount never goes backwards and never
+      // claims a file whose result was not yet durably recorded.
+      const counts = snapshots.map((s) => s.completedCount);
+      expect(counts).toEqual([...counts].sort((a, b) => a - b));
+      expect(Math.max(...counts)).toBeLessThan(files.length);
+    });
+
+    it('after a failure no new file starts, and the error surfaces only after running siblings finish', async () => {
+      const files = ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts', 'lib/d.test.ts'];
+      const gates = new Map(files.map((f) => [f, gate()]));
+      const started: string[] = [];
+      let healthy = true;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        const file = argv[2]!;
+        started.push(file);
+        await gates.get(file)!.opened;
+        if (file === 'lib/a.test.ts') healthy = false;
+        return ok;
+      });
+      const recorded = vi.fn();
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, fileConcurrency: 2, runLockHeld: idle,
+        assertTestEnvironment: () => { if (!healthy) throw new Error('private fixture lost'); } });
+      let settled = false;
+      const pending = runner({ commit: C, files, onFileResult: recorded });
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.waitFor(() => expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']));
+      gates.get('lib/a.test.ts')!.open();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled).toBe(false);
+      expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+      gates.get('lib/b.test.ts')!.open();
+      await expect(pending).rejects.toThrow('private fixture lost');
+      expect(started).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+      expect(recorded).not.toHaveBeenCalled();
+    });
+
+    it('defaults to strictly serial when fileConcurrency is unset', async () => {
+      let active = 0;
+      let maxActive = 0;
+      const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+        if (argv[1] !== 'scripts/test-files.mjs') return ok;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        active -= 1;
+        return ok;
+      });
+      const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: idle });
+      expect(await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts', 'lib/c.test.ts'] })).toMatchObject({ ran: true });
+      expect(maxActive).toBe(1);
+    });
+
+    it('reads the operator override within bounds and rejects anything else', () => {
+      expect(ADMISSION_PRECHECK_FILE_CONCURRENCY).toBeGreaterThan(1);
+      expect(admissionPrecheckFileConcurrency({})).toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: '1' })).toBe(1);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: ' 6 ' })).toBe(6);
+      expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: '999' }))
+        .toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX);
+      for (const bad of ['0', '-2', '2.5', 'many', ''])
+        expect(admissionPrecheckFileConcurrency({ PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY: bad })).toBe(ADMISSION_PRECHECK_FILE_CONCURRENCY);
+    });
   });
 });
 

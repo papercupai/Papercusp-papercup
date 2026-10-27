@@ -8,15 +8,15 @@
  * Reads are gated by the store's `visibleTo` fragment via a viewer — there is no
  * JavaScript re-implementation of the visibility matrix here, because two
  * implementations of one security rule drift silently in the permissive direction.
- * An invisible report is reported as `not_found`, not `forbidden`: which reports
- * exist is itself information the matrix is meant to withhold.
+ * An exact ID in this workspace may disclose existence, but never private report
+ * contents: an inaccessible report returns `access_denied`, a missing one `not_found`.
  *
  * Server-only.
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { getReport, listReportLineage, type ReportCitationReadScope } from '../../report-library';
+import { getReport, reportExists, listReportLineage, type ReportCitationReadScope } from '../../report-library';
 import { readScorecardEvidence, type ScorecardEvidenceCriterion } from '../../scorecards';
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import { reportsLibraryDisabled, resolveViewer, resolveWorkspaceId, toReportFull, toReportSummary } from './_shared';
@@ -51,7 +51,7 @@ export default defineTool({
     'Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the ' +
     'publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id ' +
     'never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history ' +
-    'behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.',
+    'behind each report, newest first. Read-only. Existing reports you may not read return `access_denied`; missing ids return `not_found`.',
   guidance: {
     when:
       'When you have a report_id (from reports:list / reports:search, a `report:published:<id>` event, or a ' +
@@ -67,8 +67,8 @@ export default defineTool({
       'id never fails the rest. `report` carries the full record plus `path` (the owner deep link) and ' +
       '`body_md`. With `lineage:true` each result also carries `lineage:[…]` newest-first, INCLUDING ' +
       'retired steps — the history is the record, and hiding a retired step would make the chain read as ' +
-      'if it never happened. error is `not_found` both when the id does not exist and when it is not ' +
-      'visible to you: the visibility matrix withholds existence too.',
+      'if it never happened. `access_denied` with `exists:true` means the report exists in this workspace ' +
+      'but you may not read it; no private metadata or body is returned. `not_found` means no report with that id exists in this workspace.',
     seeAlso: ['reports:list (browse)', 'reports:search (full text)', 'reports:publish (supersede one)'],
   },
   // The envelope is `_bulk`'s to describe, not this tool's. Per-item stays OPEN because
@@ -129,27 +129,39 @@ export default defineTool({
       }
     }
 
+    const reportReadbacks: Array<{ id: string; bodySha256: string; bodyBytes: number;
+      visibility: string; publishedAt: string }> = [];
     const env = await runBulk(
       ids,
       async (id) => {
-        if (citationError) return { ok: false as const, id, error: citationError };
+        const unreadable = async () => await reportExists(sql, workspaceId, id)
+          ? { ok: false as const, id, error: 'access_denied', exists: true as const,
+              message: 'This report exists, but you do not have access to it.' }
+          : { ok: false as const, id, error: 'not_found' };
+        if (citationError) return citationError === 'not_found' ? unreadable() : { ok: false as const, id, error: citationError };
         const exactScope = citationScope?.reportId === id ? citationScope : undefined;
         const report = await getReport(sql, workspaceId, id, viewer, exactScope);
-        if (!report) return { ok: false as const, id, error: 'not_found' };
+        if (!report) return unreadable();
 
         const lineage = args.lineage
           ? (await listReportLineage(sql, workspaceId, report.lineageId, viewer)).map(toReportSummary)
           : undefined;
 
+        const full = toReportFull(report);
+        // Native semantic receipt: only the exact full, visible edition returned by this handler.
+        // No body text is copied into telemetry, and not_found never produces a successful receipt.
+        reportReadbacks.push({ id: report.reportId, bodySha256: full.body_sha256,
+          bodyBytes: full.body_bytes, visibility: full.visibility, publishedAt: full.published_at });
         return {
           ok: true as const,
           id,
-          report: toReportFull(report),
+          report: full,
           ...(lineage ? { lineage } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },
     );
+    ctx.metadata?.({ reportReadbacks });
     return bulkContent(env);
   },
 });

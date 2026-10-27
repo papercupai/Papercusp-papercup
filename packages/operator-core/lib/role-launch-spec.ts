@@ -175,7 +175,7 @@ import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
-import { promptsDir } from './prompt-assembly';
+import { promptsDir, RolePromptUnavailableError } from './prompt-assembly';
 import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
@@ -594,7 +594,28 @@ async function selectedLaunchCompositionSource(
       !['id', 'extends', 'version', 'description', 'slots', 'contributions', 'mode',
         'publisher', 'attestation', 'visibility'].includes(key));
     const contributions = identity.identity.contributions ?? [];
-    if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider')) continue;
+    if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider')) {
+      // The SU producer already rendered these contributions into promptText.
+      // Keep their authored source chain in the existing immutable closure even
+      // though resource assembly must not execute the turn providers again.
+      const rendered = resolveBlueprintSource(identity.identity, {
+        sourcePath: identity.sourcePath,
+        resolve: operatorResolveExtends({ localDirs: localDirs(cwd) }),
+      });
+      if (!rendered.validation.ok || rendered.layers.length !== identity.layers.length ||
+          rendered.layers.some((layer, index) => layer.id !== identity.layers[index]?.id ||
+            layer.contentHash !== identity.layers[index]?.contentHash)) {
+        throw new Error(`rendered identity ${JSON.stringify(layer.id)} source changed before artifact compilation`);
+      }
+      for (const sourceLayer of rendered.layers) {
+        const document = layerSourceDocument(sourceLayer);
+        if (!document) throw new Error(`rendered identity ${JSON.stringify(sourceLayer.id)} has no source snapshot`);
+        providerInputs.push({ kind: 'blueprint-layer', ref: sourceLayer.id,
+          revision: sourceLayer.contentHash, contentHash: sourceLayer.contentHash,
+          sourceKind: sourceLayer.sourceKind as 'blueprint' | 'identity', document });
+      }
+      continue;
+    }
     if (contributions.some((entry) =>
       entry.source === 'fixed' && entry.inputKind !== 'prompt-file' ||
       entry.source === 'provider' && !(
@@ -660,7 +681,7 @@ async function selectedLaunchCompositionSource(
   if (producerBindings.some((binding) => !usedBindings.has(binding.identityId))) {
     throw new Error('launch producer binding does not name a selected identity with operational contributions');
   }
-  if (selected.length === 0) return original();
+  if (selected.length === 0) return { ...original(), providerInputs };
   if (selectedRoot) {
     paths.set('__launch_composition__', selectedRoot.sourcePath);
     parents.push('__launch_composition__');
@@ -1108,6 +1129,7 @@ export function assembleWorkspaceRolePrompt(opts: {
   const chatPersonaPath = path.join(promptsDir(), `${opts.role}.persona.md`);
   if (fsSync.existsSync(chatPersonaPath)) {
     persona = fsSync.readFileSync(chatPersonaPath, 'utf8');
+    if (!persona.trim()) throw new RolePromptUnavailableError(opts.role, 'workspace-persona');
     promptFile = chatPersonaPath;
     const toolsMdPath = path.join(promptsDir(), `${opts.role}.tools.md`);
     if (fsSync.existsSync(toolsMdPath)) {
@@ -1122,11 +1144,8 @@ export function assembleWorkspaceRolePrompt(opts: {
       promptFile = spawnPersonaFiles[spawnPersonaFiles.length - 1];
     }
   }
-  if (persona == null) {
-    throw new Error(
-      `buildRoleLaunchSpec: role "${opts.role}" has no workspace-level persona ` +
-        `(no ${opts.role}.persona.md chat persona and no prompts/${opts.role}.md) — pass a harness`,
-    );
+  if (!persona?.trim()) {
+    throw new RolePromptUnavailableError(opts.role, 'workspace-persona');
   }
 
   const lines = [

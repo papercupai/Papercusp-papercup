@@ -7,6 +7,7 @@
 // Settings -> Integrations (connect, choose channels, choose the destination project, arm) is
 // driven from the installed descriptor alone.
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import readline from 'node:readline';
 
 const manifest = JSON.parse(fs.readFileSync(new URL('./papercusp.json', import.meta.url), 'utf8'));
@@ -32,6 +33,18 @@ async function handle(method, params) {
     const request = params?.request ?? {};
     if (request.capability === 'chat.channels') return { options: CHANNELS };
     if (request.capability === 'ticket.containers') return { options: PROJECTS };
+    if (request.capability === 'ticket.create') {
+      const args = request.args ?? {};
+      if (!PROJECTS.some(project => project.value === args.containerId)
+        || typeof args.correlationId !== 'string' || !args.correlationId.trim()) {
+        throw new Error('fixture_ticket_destination_or_correlation_invalid');
+      }
+      // This offline provider creates no external resource. A deterministic
+      // receipt preserves the same identity when the host requests recovery.
+      const externalRef = 'fixture-' + createHash('sha256').update(args.correlationId).digest('hex');
+      return { externalRef, url: `https://integrations-setup.example/tickets/${externalRef}`,
+        recovered: args.recoveryOnly === true };
+    }
     const err = new Error(`provider_capability_unsupported:${request.capability}`);
     err.code = -32000;
     throw err;

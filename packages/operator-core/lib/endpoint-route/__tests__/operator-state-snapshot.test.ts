@@ -4,7 +4,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn() }));
+vi.mock('../../auth', () => ({ getSessionUser: vi.fn(), getSessionUserOrDefault: vi.fn(), resolveSessionToken: vi.fn(async () => 'current') }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }),
+}));
+vi.mock('../../agent-tools/operator/converse-card', () => ({
+  snapshotConverseCards: vi.fn(async () => ({ snapshots: [], nextExpiryAt: null })),
+}));
+vi.mock('../../pg-listen-hub', () => ({ hubListen: vi.fn(async () => vi.fn()) }));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(),
   // backup seam (pulled in transitively) reads workspacesRoot at import.
@@ -23,7 +30,10 @@ import {
   setOpenCards,
 } from '@papercusp/agent-mcp';
 import type { OpenCardSnapshot } from '@papercusp/agent-mcp';
-import { registerAllRoutes } from '../register';
+import { snapshotConverseCards } from '../../agent-tools/operator/converse-card';
+import { hubListen } from '../../pg-listen-hub';
+import { registerRoute } from '../define-route';
+import stateSnapshot from '../routes/operator/state-snapshot';
 
 const ws = 'ws-test';
 
@@ -43,14 +53,14 @@ function openSseReader(res: Response) {
   const decoder = new TextDecoder();
   let buf = '';
 
-  async function next(timeoutMs: number): Promise<string | null> {
+  async function next(timeoutMs: number, event = 'snapshot'): Promise<string | null> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const idx = buf.indexOf('\n\n');
       if (idx >= 0) {
         const block = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
-        if (block.includes('event: snapshot')) return block;
+        if (block.includes(`event: ${event}`)) return block;
         continue;
       }
       const readPromise = reader.read();
@@ -90,8 +100,12 @@ describe('GET /api/operator/state-snapshot', () => {
       has_password: false,
     });
     vi.mocked(activeWorkspaceId).mockReturnValue(ws);
+    vi.mocked(snapshotConverseCards).mockReset();
+    vi.mocked(snapshotConverseCards).mockImplementation(async input => ({ snapshots: input.live, nextExpiryAt: null }));
+    vi.mocked(hubListen).mockReset();
+    vi.mocked(hubListen).mockResolvedValue(vi.fn());
     app = new Hono().basePath('/api');
-    registerAllRoutes(app);
+    registerRoute(app, stateSnapshot);
   });
   afterEach(() => _resetStateChannelForTests());
 
@@ -153,5 +167,53 @@ describe('GET /api/operator/state-snapshot', () => {
     const payload = JSON.parse(live!.split('data: ')[1]);
     expect(payload.snapshot.openCards.length).toBe(2);
     expect(payload.version).toBeGreaterThan(1);
+  });
+
+  it('uses the authenticated workspace when the host active workspace differs', async () => {
+    vi.mocked(activeWorkspaceId).mockReturnValue('other-ws');
+    openRun({ workspaceId: ws, runId: 'session-run' });
+    setOpenCards('session-run', [card('session-card')]);
+    openRun({ workspaceId: 'other-ws', runId: 'foreign-run' });
+    setOpenCards('foreign-run', [card('foreign-card')]);
+    const r = openSseReader(await app.request('/api/operator/state-snapshot'));
+    const first = await r.next(1000);
+    await r.close();
+    expect(JSON.parse(first!.split('data: ')[1]).runId).toBe('session-run');
+  });
+
+  it('hydrates durable cards without a local run and emits a reconnect reset first', async () => {
+    vi.mocked(snapshotConverseCards).mockResolvedValue({ snapshots: [{ runId: 'recovered',
+      workspaceId: ws, version: 0, snapshot: { openCards: [card('durable')] } }], nextExpiryAt: null });
+    const r = openSseReader(await app.request('/api/operator/state-snapshot'));
+    expect(await r.next(1000, 'reset')).toContain(ws);
+    expect(JSON.parse((await r.next(1000))!.split('data: ')[1]).snapshot.openCards[0].correlationId).toBe('durable');
+    await r.close();
+    expect(snapshotConverseCards).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: ws,
+      authorizeAdditional: expect.any(Function) }));
+  });
+
+  it('rereads committed notifications and clears a removed durable run', async () => {
+    let wake!: () => void;
+    const off = vi.fn();
+    vi.mocked(hubListen).mockImplementation(async (_channel, cb) => { wake = () => cb('changed'); return off; });
+    vi.mocked(snapshotConverseCards).mockResolvedValue({ snapshots: [{ runId: 'recovered',
+      version: 0, snapshot: { openCards: [card('durable')] } }], nextExpiryAt: null });
+    const r = openSseReader(await app.request('/api/operator/state-snapshot'));
+    await r.next(1000);
+    vi.mocked(snapshotConverseCards).mockResolvedValue({ snapshots: [], nextExpiryAt: null });
+    wake();
+    const cleared = JSON.parse((await r.next(1000))!.split('data: ')[1]);
+    expect(cleared).toMatchObject({ runId: 'recovered', snapshot: { openCards: [] } });
+    await r.close();
+    expect(off).toHaveBeenCalledOnce();
+  });
+
+  it.each([['unauthorized', 403], ['storage-unavailable', 503]])('refuses %s without falling back to local cards', async (error, status) => {
+    openRun({ workspaceId: ws, runId: 'local' });
+    setOpenCards('local', [card('secret')]);
+    vi.mocked(snapshotConverseCards).mockRejectedValue(new Error(error));
+    const res = await app.request('/api/operator/state-snapshot');
+    if (res.body && res.status === 200) await res.body.cancel();
+    expect(res.status).toBe(status);
   });
 });

@@ -8,11 +8,20 @@
  * injectable timer seam, type references, or prose mentions in comments.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { usesRawSetInterval } from '../../../../scripts/check-no-raw-setinterval.mjs';
+import { findOffenders, usesRawSetInterval } from '../../../../scripts/check-no-raw-setinterval.mjs';
 
 describe('no-raw-setinterval guard predicate (P-007)', () => {
+  it('classifies the actual killed-owner fixture as a separate test process', () => {
+    const path = 'scripts/lib/runtime-compatibility-admission.mjs';
+    const source = readFileSync(new URL('../../../../' + path, import.meta.url), 'utf8');
+    // The real raw timer remains detectable; only its process classification differs.
+    expect(usesRawSetInterval(source, path)).toBe(true);
+    expect(findOffenders().offenders).not.toContain(path);
+  });
+
   it('FLAGS a bare setInterval(...) call', () => {
     expect(usesRawSetInterval('const t = setInterval(() => tick(), 1000);')).toBe(true);
   });

@@ -28,7 +28,7 @@ import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { applyMigrationForTest } from '../../test/_pg-helpers';
+import { applyMigrationForTest, applyPlanItemAnchorMigrationsForTest } from '../../test/_pg-helpers';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
@@ -103,6 +103,7 @@ beforeAll(async () => {
     )`);
   // P-010 unification: work_items base + hfc/ei compat views (replaces hand-rolled hfc + ei).
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await applyPlanItemAnchorMigrationsForTest(rootSql);
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
   // specific test, not here"). This test's whole point is proving the production

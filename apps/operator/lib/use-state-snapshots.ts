@@ -26,6 +26,7 @@ import { reduceSnapshotEvent } from './snapshot-reducer';
 
 export interface SnapshotEnvelope {
   runId: string;
+  workspaceId?: string;
   version: number;
   snapshot: {
     openCards: OpenCardSnapshot[];
@@ -34,6 +35,9 @@ export interface SnapshotEnvelope {
 }
 
 export interface OpenCardWithRun extends OpenCardSnapshot {
+  /** Durable cards retain their owning conversation across pane switches. */
+  conversationId?: string;
+  workspaceId?: string;
   /** The runId that owns this card — needed for /card-response. */
   runId: string;
 }
@@ -146,6 +150,13 @@ function acquireSnapshotStream(): () => void {
         emitSnapshotStore();
       },
       handlers: {
+        reset: (raw) => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(raw); } catch { return; }
+          if (!parsed || typeof parsed !== 'object'
+            || typeof (parsed as { workspaceId?: unknown }).workspaceId !== 'string') return;
+          applySnapshotEvent({ kind: 'reset' });
+        },
         snapshot: (raw) => {
           // @papercusp/sse hands handlers the raw event data string; parse here.
           let parsed: unknown;
@@ -241,7 +252,7 @@ export function useStateSnapshots(): {
     // openCards is already in createdAt order from the correlator.
     for (const env of byRun.values()) {
       for (const c of env.snapshot.openCards) {
-        out.push({ ...c, runId: env.runId });
+        out.push({ ...c, runId: env.runId, workspaceId: env.workspaceId });
       }
     }
     return out;

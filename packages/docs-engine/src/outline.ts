@@ -12,7 +12,9 @@ import { humanize } from './shared.js';
 
 export async function buildOutline(source: DocSource, ctx: EngineCtx = {}): Promise<OutlinePayload> {
   if (ctx.signal?.aborted) throw new Error('cancelled');
-  const pages = await source.listPages();
+  const pages = await source.listPages({
+    onTiming: (event) => ctx.metadata?.({ docsListPagesTiming: event }),
+  });
   if (ctx.signal?.aborted) throw new Error('cancelled');
 
   // Group by first slug segment (or '_root' when the page has no section).

@@ -42,8 +42,11 @@ import { runWithLoopbackPeerVerdict } from '@papercusp/operator-core/lib/auth/lo
 import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { isServedOnExternalIngress, notServedOnExternalIngress } from './external-ingress-paths';
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
+import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
 
-const host = new Hono();
+const host = new Hono<{ Bindings: HttpBindings | Http2Bindings }>();
+const desktopPortal = createDesktopPortalLifecycle({ operator: (request, bindings) => app.fetch(request, bindings) });
+export const stopDesktopPortalHost = () => desktopPortal.stop();
 
 // 1. NO RESPONSE COMPRESSION — deliberate, do not re-add.
 //    Papercusp ships as a Tauri DESKTOP app: this host binds 127.0.0.1
@@ -132,7 +135,7 @@ for (const [wellKnownPath, target] of Object.entries(MCP_OAUTH_WELL_KNOWN)) {
 //    `/api/*` terminates here: an unknown API path returns the inner app's
 //    real (JSON) 404, NOT the SPA shell — so the SPA fallback below never
 //    sees an `/api/*` request.
-host.all('/api/*', (c) => app.fetch(c.req.raw, c.env));
+host.all('/api/*', (c) => desktopPortal.fetch(c.req.raw, c.env));
 
 // 8. SPA fallback (Phase G3) — the built Vite app for everything the API,
 //    docs, page-namespace, and cross-app routes above did not claim.

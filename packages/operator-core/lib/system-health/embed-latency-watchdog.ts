@@ -26,7 +26,7 @@
  *   · unavailable     — half or more of the embeds failed outright: not a
  *     latency problem; check the service, do not tune budgets.
  */
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { readEmbedLatency, UNATTRIBUTED_CALLER, type EmbedCallerLatency, type EmbedLatencyWindow } from '@papercusp/search';
 import { hostname } from 'node:os';
 
@@ -260,35 +260,22 @@ export async function runEmbedLatencySweepOnce(
   return { verdict: 'breach', escalated: 1 };
 }
 
-let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Start the embed-latency watchdog. Idempotent.
  * Runtime gate: FLAGS.EMBED_LATENCY_WATCHDOG (checked per tick).
  */
-export function startEmbedLatencyWatchdog(opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? EMBED_LATENCY_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'embed-latency-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return;
-      sweeping = true;
-      void runEmbedLatencySweepOnce()
-        .catch((e) => {
+const armEmbedLatencyWatchdog = createManagedSweepStarter({
+  name: 'embed-latency-watchdog',
+  intervalMs: EMBED_LATENCY_SWEEP_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'must-sample' },
+  onError: (e) => {
           console.warn(
             `[embed-latency-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // D-004: 'must-sample'. The embed-latency ring buffer is plain in-process
-    // state written by the search path and emits no change events, so there is
-    // nothing to subscribe to for "p99 crossed the budget" — it has to be read.
-    { category: 'watchdog', classification: 'must-sample' },
-  );
+        },
+});
+
+export function startEmbedLatencyWatchdog(opts: { intervalMs?: number } = {}): void {
+  armEmbedLatencyWatchdog(() => runEmbedLatencySweepOnce(), opts.intervalMs);
 }

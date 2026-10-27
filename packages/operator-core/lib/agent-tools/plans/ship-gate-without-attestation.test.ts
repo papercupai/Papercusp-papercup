@@ -76,8 +76,19 @@ describe('ship gate without a vetting attestation', () => {
     })).toMatchObject({ workItemId: 'WI-review', critics: ['reviewer'] });
   });
 
+  it.each(['rev4', 'revision4'])('retains an independent critique naming compact %s', async revision => {
+    expect(await readCurrentAcceptanceRubricCritique(rubric, 4, {
+      candidates: async () => [{ consultId: 'consult-review',
+        request: `Vet acceptance-plan ${revision}/barSetHash reviewed-bar-set`, createdAt: critique.createdAt }],
+      consult: async () => ({ exists: true, critiquePosts: 1, critics: ['reviewer'] }),
+    })).toMatchObject({ consultId: 'consult-review', rubricRevision: 4,
+      criteriaHash: 'current-hash', critics: ['reviewer'] });
+  });
+
   it.each(['Vet acceptance-plan revision 3', 'Vet acceptance-plan revision 4 criteriaHash old-hash',
-    'Vet acceptance-plan-else revision 4', 'Vet acceptance-plan'])('rejects stale or unbound request: %s', request => {
+    'Vet acceptance-plan-else revision 4', 'Vet acceptance-plan', 'Vet acceptance-plan rev3',
+    'Vet acceptance-plan rev40', 'Vet acceptance-plan rev4x', 'Vet acceptance-plan rev4 criteriaHash old-hash',
+    'Vet acceptance-plan-else rev4'])('rejects stale or unbound request: %s', request => {
     expect(critiqueCoversRubric(request, rubric, 4)).toBe(false);
   });
 });

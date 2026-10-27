@@ -12,10 +12,11 @@
  */
 import type { DependencyGraphNodeInput } from './dependency-graph-analysis';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 export const ISSUE_ENDPOINT_KIND = 'issue';
 export const FEATURE_ENDPOINT_KIND = 'feature';
 
-const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_ITEM_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 const ISSUE_TERMINAL = new Set(['resolved', 'closed', 'done', 'dropped']);
 const FEATURE_TERMINAL = new Set(['passed', 'deprecated', 'done', 'dropped']);
 

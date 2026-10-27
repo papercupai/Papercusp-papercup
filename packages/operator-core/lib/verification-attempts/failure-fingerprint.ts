@@ -70,7 +70,37 @@ const ZERO_FAILURE_RE = /\b(fail(?:ed|ures?|ing)?|errors?)\s*[=:]\s*0\b|\b0\s+(f
  * (for example, `✔ the mac leg cannot finish ...`). They report a passing test,
  * never the reason an attempt failed, so keep them out of the error-line fallback.
  */
-const PASSING_TEST_LINE_RE = /^(?:✔|ok\s+\d+\b)/i;
+const PASSING_TEST_LINE_RE = /^(?:[✔✓]|ok\s+\d+\b)/i;
+/** Router recaps and informational annotations describe a run, not its cause. */
+const NON_FAILURE_SUMMARY_RE = /^(?:ⓘ\s|TEST_FILE_(?:GROUP_)?RESULT\b)/;
+
+/** A scoped tsc pass can print the whole project's existing error count. Bind
+ * only its nearest aggregate to the matching canonical success receipt. Keep
+ * actual diagnostics and failed, incomplete or differently labelled runs. */
+function successfulTscSummaryLines(lines: readonly string[]): Set<number> {
+  const ignored = new Set<number>();
+  const pending = new Set<string>();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    const result = /^LINT_TSC_RESULT label=(\S+) scope=\S+ exit=(-?\d+) status=(\S+)/.exec(line);
+    if (result) {
+      if (result[2] === '0' && result[3] === 'clean') {
+        pending.add(result[1]!);
+        ignored.add(i);
+      } else pending.delete(result[1]!);
+      continue;
+    }
+    const start = /^LINT_TSC_RUN_STAMP label=(\S+)/.exec(line);
+    if (start) {
+      pending.delete(start[1]!);
+      ignored.add(i); // A start receipt is never a failure verdict.
+      continue;
+    }
+    const summary = /^TSC (\S+): \d+ type errors?\b/.exec(line);
+    if (summary && pending.delete(summary[1]!)) ignored.add(i);
+  }
+  return ignored;
+}
 
 /**
  * Prefix of the lines the capability:bash runner itself appends to a job log
@@ -150,9 +180,11 @@ export function failureFingerprint(input: FailureFingerprintInput): FailureFinge
     return { fingerprint: hashKey('log', label), label, source: 'log', structured: null };
   }
 
+  const successfulTsc = successfulTscSummaryLines(lines);
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
-    if (PASSING_TEST_LINE_RE.test(line) || !ERRORISH_RE.test(line) || ZERO_FAILURE_RE.test(line)) continue;
+    if (successfulTsc.has(i) || NON_FAILURE_SUMMARY_RE.test(line) || PASSING_TEST_LINE_RE.test(line) ||
+        !ERRORISH_RE.test(line) || ZERO_FAILURE_RE.test(line)) continue;
     const label = normalizeFailureText(line);
     if (label) return { fingerprint: hashKey('log', label), label, source: 'log', structured: null };
   }

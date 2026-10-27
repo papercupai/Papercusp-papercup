@@ -8,8 +8,17 @@ import {
   observeFallback, flushFallbackObservations, _resetFallbackObservationsForTests,
 } from '@papercusp/operator-core/lib/degradation/fallback-observations';
 import { cleanupScopedNativeFixtureDatabase } from '../vitest-shims/scoped-native-fixture-cleanup';
+import { notifySyncInvalidate, stopInvalidationListener } from '../../../packages/operator-core/lib/sync-sse';
 
-afterEach(() => {
+const routing = vi.hoisted(() => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async original => {
+  const actual = await original<typeof import('@papercusp/db-org')>();
+  return { ...actual, getOrgPg: routing.getOrgPg };
+});
+
+afterEach(async () => {
+  await stopInvalidationListener();
+  routing.getOrgPg.mockReset();
   _resetFallbackObservationsForTests();
   vi.restoreAllMocks();
 });
@@ -56,4 +65,23 @@ it('persists tracked late observations before the fixture closes its database', 
   expect(persisted).toBe(true);
   expect(closed).toBe(true);
   expect(warning).not.toHaveBeenCalled();
+}, 120_000);
+
+it('flushes coalesced sync notifications before closing the fixture SQL route', async () => {
+  const db = await createOrgTestDb();
+  routing.getOrgPg.mockReturnValue({ sql: db.adminSql });
+  const query = 'nativeFixture.teardown';
+  await notifySyncInvalidate(query, undefined, undefined, { dedupeWindowMs: 60_000 });
+  await notifySyncInvalidate(query, undefined, undefined, { dedupeWindowMs: 60_000 });
+  expect(routing.getOrgPg).toHaveBeenCalledTimes(1);
+  let callsBeforeClose = 0;
+  await cleanupScopedNativeFixtureDatabase({ adminSql: db.adminSql, cleanup: async () => {
+    callsBeforeClose = routing.getOrgPg.mock.calls.length;
+    await db.cleanup();
+    routing.getOrgPg.mockImplementation(() => { throw new Error('Fixture SQL route already closed'); });
+  } });
+  // The second notification is held by the bus, not a detached promise. A
+  // close-first cleanup leaves it scheduled against the next test's SQL route.
+  expect(callsBeforeClose).toBe(2);
+  expect(routing.getOrgPg).toHaveBeenCalledTimes(2);
 }, 120_000);

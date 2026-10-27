@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
 /**
  * Lightweight home for green-checkpoint run-lock policy and probing.
  *
@@ -25,10 +25,6 @@ function checkpointRunLockDirMirror(logDir: string, root: string): string {
   let h = 0;
   for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
   return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
-}
-
-function checkpointLogDirFromEnv(): string {
-  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? papercuspPath('checkpoint-logs');
 }
 
 function defaultPidAlive(pid: number): boolean {

@@ -103,6 +103,31 @@ const freshAnchor = () => ({
 });
 
 describe('nativeKickoffTurnActivityAfterMarker (WI-10004982)', () => {
+  it('binds an abort receipt to its exact prompt without certifying model start', () => {
+    const root = join(scratch, `codex-abort-${++fixtureCount}`);
+    const dir = join(root, 'sessions');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'rollout.jsonl');
+    const prompt = (text = KICKOFF) => ({ type: 'response_item', timestamp: at(),
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+    const aborted = { type: 'event_msg', timestamp: at(), payload: { type: 'turn_aborted' } };
+    const anchor = freshAnchor();
+    const call = () => nativeKickoffTurnActivityAfterMarker({ agent: 'codex', env: { CODEX_HOME: root },
+      transcriptPath: file, marker: MARKER, anchor, includeTerminalFailure: true });
+    writeFileSync(file, line(aborted) + line(prompt()));
+    // An earlier failed turn cannot release this pending marker.
+    expect(call()).toEqual({ available: true, started: false });
+    appendFileSync(file, line(aborted));
+    expect(call()).toMatchObject({ available: true, started: false, failure: { code: 'turn_aborted' } });
+    expect(call()).toMatchObject({ available: true, started: false, failure: { code: 'turn_aborted' } });
+    // The unanchored path yields the same distinct terminal receipt.
+    expect(nativeKickoffTurnActivityAfterMarker({ agent: 'codex', env: { CODEX_HOME: root },
+      transcriptPath: file, marker: MARKER, includeTerminalFailure: true })).toMatchObject({
+      available: true, started: false, failure: { code: 'turn_aborted' } });
+    writeFileSync(file, line(prompt()) + line(prompt('different owner turn')) + line(aborted));
+    expect(call()).toEqual({ available: false, started: false });
+  });
+
   it('never attributes a later owner turn to a pending anchored kickoff', () => {
     const { file, env } = claudeTranscript();
     writeFileSync(file, line(userPrompt()));

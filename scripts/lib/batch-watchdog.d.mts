@@ -131,6 +131,75 @@ export function createProgressAwareWatchdog({ timeoutMs, maxMs, stallWindowMs, e
      */
     readonly msSinceProgress: number;
 };
+/** @typedef {Readonly<{status:'ready', startedAtMs:number, callerDeadlineEpochMs:number|null,
+ * executionCutoffEpochMs:number, yieldDeadlineEpochMs:number, cleanupDeadlineEpochMs:number,
+ * orphanDeadlineEpochMs:number}>} QualificationYieldBudget */
+/** @typedef {Readonly<{identity:string, completedUnitIds:readonly string[], pendingUnitIds:readonly string[],
+ * newCompletionIds:readonly string[], budget:QualificationYieldBudget}>} QualificationYieldProgress */
+/** Absolute clocks for one physical qualification quantum. Progress and successors
+ * cannot move the caller deadline. Persistence and cleanup precede the OS fuse.
+ * @param {{startedAtMs:number, quantumMs:number, orphanDeadlineEpochMs:number,
+ * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
+ * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ */
+export function resolveQualificationYieldBudget({ startedAtMs, quantumMs, orphanDeadlineEpochMs, deadlineEpochMs, cleanupReserveMs, yieldReserveMs }: {
+    startedAtMs: number;
+    quantumMs: number;
+    orphanDeadlineEpochMs: number;
+    deadlineEpochMs?: number | null;
+    cleanupReserveMs?: number;
+    yieldReserveMs?: number;
+}): QualificationYieldBudget | Readonly<{
+    status: "refused";
+    reason: string;
+}>;
+/** Read through the existing custody validator, then store the yield before ACK.
+ * Output grants no progress; this policy grants no PASS/reuse authority. The store
+ * adapter must authenticate the frozen identity and terminal receipts. Independent
+ * worker timers prevent a healthy peer from refreshing a stalled worker's bound.
+ * @param {{budget:QualificationYieldBudget, identity:string, unitIds:string[],
+ * baselineReceipts?:Array<{unitId:string, completionId:string}>,
+ * readDurableProgress:(signal:AbortSignal)=>Promise<{status:string, identity?:string,
+ * receipts?:Array<{unitId:string, completionId:string, state:string, observedAtMs:number}>}>,
+ * commitYield:(progress:QualificationYieldProgress, signal:AbortSignal)=>Promise<boolean>,
+ * onYield?:(progress:QualificationYieldProgress)=>void,
+ * onKill:(decision:{reason:string, workerId?:string})=>void,
+ * now?:()=>number, setTimer?:(fn:()=>void, ms:number)=>any, clearTimer?:(handle:any)=>void}} input
+ */
+export function createQualificationYieldBoundary({ budget, identity, unitIds, baselineReceipts, readDurableProgress, commitYield, onYield, onKill, now, setTimer, clearTimer }: {
+    budget: QualificationYieldBudget;
+    identity: string;
+    unitIds: string[];
+    baselineReceipts?: Array<{
+        unitId: string;
+        completionId: string;
+    }>;
+    readDurableProgress: (signal: AbortSignal) => Promise<{
+        status: string;
+        identity?: string;
+        receipts?: Array<{
+            unitId: string;
+            completionId: string;
+            state: string;
+            observedAtMs: number;
+        }>;
+    }>;
+    commitYield: (progress: QualificationYieldProgress, signal: AbortSignal) => Promise<boolean>;
+    onYield?: (progress: QualificationYieldProgress) => void;
+    onKill: (decision: {
+        reason: string;
+        workerId?: string;
+    }) => void;
+    now?: () => number;
+    setTimer?: (fn: () => void, ms: number) => any;
+    clearTimer?: (handle: any) => void;
+}): {
+    readonly state: string;
+    readonly signal: AbortSignal;
+    workerStarted(workerId: any, timeoutMs: any): boolean;
+    workerFinished(workerId: any): boolean;
+    stop(): void;
+};
 /**
  * Did THIS `spawnSync` result come from our own batch-level watchdog kill,
  * rather than the child's own normal exit or an unrelated external signal
@@ -235,3 +304,19 @@ export function formatBatchProgress(progress: {
     completedFiles: number;
     totalFiles: number | null;
 }, classification?: ReturnType<typeof classifyBatchProgress>): string;
+export type QualificationYieldBudget = Readonly<{
+    status: "ready";
+    startedAtMs: number;
+    callerDeadlineEpochMs: number | null;
+    executionCutoffEpochMs: number;
+    yieldDeadlineEpochMs: number;
+    cleanupDeadlineEpochMs: number;
+    orphanDeadlineEpochMs: number;
+}>;
+export type QualificationYieldProgress = Readonly<{
+    identity: string;
+    completedUnitIds: readonly string[];
+    pendingUnitIds: readonly string[];
+    newCompletionIds: readonly string[];
+    budget: QualificationYieldBudget;
+}>;

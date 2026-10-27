@@ -9,6 +9,7 @@
  * mocked service modules, with no PG/flags/network initialization.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { installManagedTickAlarm } from './managed-tick-alarm';
 import {
   armInProcessPeriodicChecks,
   buildDefaultChecks,
@@ -29,6 +30,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: healthCadence.getFlag }));
 vi.mock('../workspace-registry', () => ({ readRegistry: healthCadence.readRegistry }));
 vi.mock('../system-health', () => ({ runSystemHealthTick: healthCadence.tick }));
 vi.mock('../system-health/perf-regression-rig', () => ({ collectPerfRegressionWhenDue: healthCadence.sample }));
+vi.mock('./managed-tick-alarm', () => ({ installManagedTickAlarm: vi.fn() }));
 
 afterEach(() => {
   disarmInProcessPeriodicChecks();
@@ -82,6 +84,13 @@ describe('runPeriodicCheck', () => {
 });
 
 describe('armInProcessPeriodicChecks', () => {
+  it('installs the production alarm adapter once when the host arms its checks', () => {
+    vi.mocked(installManagedTickAlarm).mockClear();
+    armInProcessPeriodicChecks({ checks: [] });
+    armInProcessPeriodicChecks({ checks: [] });
+    expect(installManagedTickAlarm).toHaveBeenCalledOnce();
+  });
+
   it('fires each check on its own interval and disarm stops it', async () => {
     vi.useFakeTimers();
     const a = vi.fn(async () => {});
@@ -257,6 +266,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
   it('carries exactly the expected ephemeral probe set (the EI-1622 conversions + later additions)', () => {
     expect([...byName.keys()].sort()).toEqual(
       [
+        'blind-review-runtime-reaper',
         'completion-ref-verify',
         'connection-pressure',
         'dbos-history-ceiling',
@@ -279,6 +289,13 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'timer-registration-scan',
       ].sort(),
     );
+  });
+
+  it('runs runtime recovery on host startup and every 30s, including pressure, with no cluster-worker duplicate', () => {
+    const recovery = byName.get('blind-review-runtime-reaper')!;
+    expect(recovery).toMatchObject({ intervalMs: 30_000, fireOnArm: true, shed: false, classification: 'timeout-reaper' });
+    expect(checkRunsInThisProcess(recovery, true)).toBe(true);
+    expect(checkRunsInThisProcess(recovery, false)).toBe(false);
   });
 
   it('preserves each check cadence (no frequency cuts — the row-cost is already gone)', () => {
@@ -337,6 +354,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     }
 
     const timeoutReaper = [
+      'blind-review-runtime-reaper',
       'spawn-reclaim-sweep',
       'stale-claim-sweep',
       'release-request-sweep',

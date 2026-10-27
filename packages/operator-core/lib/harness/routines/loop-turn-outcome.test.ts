@@ -196,6 +196,26 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     }
   });
 
+  it('ties a provider-derived retry deadline marker to the exact guarded next_fire_at write', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const now = 1_782_000_000_000;
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: "You've hit your session limit · resets in 3 hours" }),
+      { sql: sql as never, recordFire: vi.fn(async () => {}), now },
+    );
+
+    expect(res.rearmedMs).toBeGreaterThan(120_000);
+    const update = sql.calls.find((call) => call.kind === 'update');
+    expect(update).toBeTruthy();
+    expect(update!.text).toContain('providerRetrySchedule');
+    expect(update!.text).toContain('resume-turn-death');
+    const exactDeadline = new Date(now + res.rearmedMs!).toISOString();
+    expect(update!.values.filter((value) => value === exactDeadline)).toHaveLength(2);
+    expect(update!.values).toContain(true);
+  });
+
   it('a Codex exit 0 without turn.completed records malformed_output and re-arms the loop', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });

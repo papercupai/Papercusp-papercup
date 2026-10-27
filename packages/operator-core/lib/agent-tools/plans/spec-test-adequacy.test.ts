@@ -111,6 +111,71 @@ describe('shared adequacy-card binding evidence', () => {
     }
   });
 
+  it.each([false, true])('pins the full disclosed-gap census independently of selected proofs (historical disclosure: %s)', (disclosed) => {
+    const selected = [evidence({ id: 41001, evidenceRef: 'surface:first' }), evidence({ id: 41002, evidenceRef: 'surface:second' })];
+    const historical = evidence({ id: 41003, evidenceRef: 'surface:other' });
+    if (disclosed) {
+      historical.details.adequacy = { ...(historical.details.adequacy as Record<string, unknown>), disclosedGap: ['The failure path is not covered.'] };
+    }
+    const replacement = evidence({ id: 41004, evidenceRef: historical.evidenceRef });
+    const population = [...selected, historical, replacement];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, disclosedGapEvidence: population,
+      harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const probe = (criterion: 'disclosed-gap' | 'traceability') => {
+      const text = result.scorecardDraft.ratings[criterion].evidence;
+      const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+      expect(match).not.toBeNull();
+      return getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    };
+    const gapProbe = probe('disclosed-gap');
+    expect(gapProbe.bindingIds).toEqual([41001, 41002, 41003, 41004]);
+    expect(gapProbe.includeRetracted).toBe(true);
+    expect(probe('traceability').bindingIds).toEqual([41001, 41002]);
+    expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([41001, 41002]);
+    const fetched = population.filter(row => gapProbe.bindingIds!.includes(row.id!));
+    expect(activeSpecEvidence(fetched).map(row => row.id)).toEqual([41001, 41002, 41004]);
+    const rendered = result.scorecardDraft.ratings['disclosed-gap'].evidence;
+    expect(rendered).toContain('Apply activeSpecEvidence to these clause rows: 4 raw binding(s), 3 active logical binding(s); active bindingIds=[41001,41002,41004].');
+    if (disclosed) {
+      expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+      expect(result.wouldBlock).toContain('disclosed-gap');
+      expect(rendered).toContain('The failure path is not covered.');
+    } else {
+      expect(rendered).toContain('Checked 3 active binding(s) for the clause.');
+    }
+  });
+
+  it('includes a withdrawn renewal predecessor in the disclosed-gap probe without grading it', () => {
+    const selected = [
+      evidence({ id: 41001, evidenceRef: 'surface:first' }),
+      evidence({ id: 41002, evidenceRef: 'surface:second' }),
+    ];
+    const baseline = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    // A withdrawn row is absent from listSpecEvidence's active population, but
+    // remains explicitly cited by the replacement's persisted renewal metadata.
+    selected[1]!.details.renewal = { priorBindingId: 40999 };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: selected, harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const text = result.scorecardDraft.ratings['disclosed-gap'].evidence;
+    const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+    expect(match).not.toBeNull();
+    const probe = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    expect(probe.bindingIds).toEqual([40999, 41001, 41002]);
+    expect(probe.includeRetracted).toBe(true);
+    expect(text).toContain('renewal predecessor bindingIds=[40999]');
+    expect(text).toContain('Exclude withdrawn rows before applying activeSpecEvidence');
+    expect(text).toContain('2 raw binding(s), 2 active logical binding(s); active bindingIds=[41001,41002].');
+    expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([41001, 41002]);
+    for (const criterion of ADEQUACY_CRITERIA) {
+      expect(result.ratings[criterion].rating).toBe(baseline.ratings[criterion].rating);
+    }
+  });
+
   it('keeps the empty evidence probe empty after later bindings are added', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(), evidence: [], harness: 'papercusp', classRef: 'plan-class-feature-ship',
@@ -2781,7 +2846,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
-    it('keeps self-specId as an accepted identity but does not let it prove an explicit falsifier alone', () => {
+    it('accepts measured same-clause proof for an observation without declared scenarios', () => {
       const targetClause = clause({
         falsifier: { observation: 'The promoted directive cannot be read from the open standing state.' },
       });
@@ -2793,9 +2858,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
-      expect(result.ratings.falsifiability.suggestion).toContain('real clause falsifier.requiredScenarios id');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
     it('accepts the exact uppercase ID of a platform-generated clause as its self-target', () => {
@@ -2814,7 +2878,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.rating).toBe('pass');
     });
 
-    it('keeps an explicit falsifier unresolved when it has no canonical scenario to align', () => {
+    it('accepts measured self-target proof when observation and probe declare no scenarios', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2826,13 +2890,13 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
       expect(result.ratings.falsifiability.evidence).not.toContain('declares no falsifier scenarios');
     });
 
-    it('does not use prose-named scenarios to stand in for a canonical scenario list', () => {
+    it('does not interpret prose examples as a declared scenario list', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause({
           falsifier: {
@@ -2844,8 +2908,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings.falsifiability.rating).toBe('unknown');
-      expect(result.ratings.falsifiability.evidence).toContain('an own-specId target establishes identity only');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
       expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
     });
 
@@ -2955,7 +3019,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       clause: target, evidence: [row], classRef: 'plan-class-feature-ship',
     });
     const covered = grade(proof);
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence plane(s)');
     expect(covered.ratings.traceability.evidence).toContain(`evidencePlane="${plane}"`);
 
     const stale = grade({ ...proof, currentness: { ...proof.currentness, overall: 'stale' } });
@@ -3008,7 +3073,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [treeProof, liveProof],
       classRef: 'plan-class-feature-ship',
     });
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(covered.ratings['correct-layer'].evidence).toContain('Current bindings cover the required evidence plane(s)');
     expect(covered.ratings['correct-layer'].evidence).toContain('ref="live:verified-report"');
   });
@@ -3104,7 +3169,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [evidence({ evidenceKind: 'operational' })],
       classRef: 'plan-class-feature-ship',
     });
-    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(covered.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
   });
 
@@ -4005,7 +4070,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(38);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(39);
   });
 
   it('accepts a non-automated ledger census without inventing executable fixture proof', () => {
@@ -4016,9 +4081,48 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
 
     expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
     expect(result.ratings.traceability.rating).toBe('pass');
     expect(result.verdict).toBe('pass');
   });
+
+  it('does not count evidence-kind and plane coverage as exercised layer reachability', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree', 'coverage-census'], requiredTestLayers: [] }),
+      evidence: [ledgerCensusEvidence()],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].evidence).toContain('cover the required evidence kind(s)');
+    expect(result.ratings['correct-layer'].evidence).toContain('cover the required evidence plane(s)');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it.each(['missing-plane', 'wrong-plane', 'missing-kind', 'required-layer', 'required-scenario', 'source-suite'] as const)(
+    'keeps a layer-free census blocked by %s obligations', (control) => {
+      const row = ledgerCensusEvidence();
+      const spec = clause({ behaviorClass: 'non-automated', requiredEvidence: ['tree'], requiredTestLayers: [] });
+      if (control === 'missing-plane') delete row.details.evidencePlane;
+      else if (control === 'wrong-plane') row.details.evidencePlane = 'live';
+      else if (control === 'missing-kind') spec.requiredEvidence.push('manual');
+      else if (control === 'required-layer') spec.requiredTestLayers = ['integration'];
+      else if (control === 'required-scenario') spec.falsifier = {
+        observation: 'The missing path must have been exercised.', requiredScenarios: ['missing-path'],
+      };
+
+      const result = evaluateSpecTestAdequacy({
+        clause: spec, evidence: [row], classRef: 'plan-class-bugfix',
+        ...(control === 'source-suite' ? {
+          sourceBarTestRequirements: { status: 'required' as const, files: ['src/feature.test.ts'] },
+        } : {}),
+      });
+
+      expect(['fail', 'unknown']).toContain(result.ratings['correct-layer'].rating);
+      expect(result.wouldBlock).toContain('correct-layer');
+      expect(result.verdict).not.toBe('pass');
+    },
+  );
 
   it.each(['executable', 'repo-files', 'test-run', 'test-execution', 'test-fingerprint', 'fixture-required',
     'unmeasured', 'malformed-measurement'] as const)(
@@ -4855,6 +4959,56 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(complete.ratings['execution-integrity'].rating).toBe('pass');
     expect(complete.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
+  });
+
+  it('preserves separate causal pairs backed by the same whole-file recurrence run', () => {
+    const pairs = ['missing-history', 'missing-recovery'];
+    const pairClause = clause({ falsifier: {
+      observation: 'Either original failure recurs.', causalPairing: 'one-to-one', requiredScenarios: pairs,
+    } });
+    const testPath = 'packages/operator-core/lib/history.test.ts';
+    const baseAdequacy = evidence().details.adequacy as Record<string, unknown>;
+    const negatives = pairs.map((pair, index) => evidence({
+      id: 100 + index, evidenceKind: 'counterexample', evidenceRef: `${testPath}#before-${pair}`,
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false,
+        source: 'mutation-probe', mutationPhase: 'mutant', mutationFailedCaseTitles: [pair] },
+      testRunExecution: { status: 'fail', passed: 0, failed: 1, skipped: 0,
+        collectionFailed: false, testLayer: 'integration' },
+      details: { adequacy: { ...baseAdequacy, outcome: 'killed', targeted: pair,
+        scenarioIds: [pair], causalPairIds: [pair], testCases: [pair] } },
+    }));
+    const recurrences = pairs.map((pair, index) => {
+      const row = successfulTestBinding(testPath, { testCases: pairs });
+      return { ...row, id: 200 + index, details: { adequacy: {
+        ...(row.details.adequacy as object), causalPairIds: [pair], scenarioIds: [pair], testCases: [pair],
+      } } };
+    });
+    for (const rows of [[...negatives, ...recurrences], [...recurrences, ...negatives].reverse()]) {
+      const result = evaluateSpecTestAdequacy({ clause: pairClause, evidence: rows,
+        classRef: 'plan-class-feature-ship' });
+      expect(result.ratings['execution-integrity'].rating).toBe('pass');
+      expect(result.ratings['execution-integrity'].evidence).toContain('Every original failure has exactly one');
+    }
+  });
+
+  it('supersedes a corrected recurrence within its causal pair while retaining its sibling', () => {
+    const base = successfulTestBinding('packages/operator-core/lib/history.test.ts');
+    const recurrence = (id: number, pair: string, executed: boolean) => ({
+      ...base, id, details: { adequacy: { ...(base.details.adequacy as object),
+        causalPairIds: [pair], scenarioIds: [pair], executed } },
+    });
+    const older = recurrence(201, 'missing-history', false);
+    const sibling = recurrence(202, 'missing-recovery', true);
+    const corrected = recurrence(203, 'missing-history', true);
+    expect(latestLogicalEvidence([older, sibling, corrected])).toEqual([sibling, corrected]);
+    const active = activeSpecEvidence([older, sibling, corrected]);
+    expect(active.map(row => row.id).sort()).toEqual([202, 203]);
+    expect(active.find(row => row.id === 203)?.details.adequacy).toMatchObject({
+      causalPairIds: ['missing-history'], executed: true,
+    });
+    expect(active.find(row => row.id === 202)?.details.adequacy).toMatchObject({
+      causalPairIds: ['missing-recovery'],
+    });
   });
 
   it('rejects a collapsed causal pair even when one row claims every required scenario', () => {

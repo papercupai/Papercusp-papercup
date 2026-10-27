@@ -261,39 +261,49 @@ async function selectVerifiableFeatures(
 async function applyOutcomeToRow(
   harnessSlug: string,
   featureId: string,
+  observedRef: CompletionRef,
   outcome: VerificationOutcome,
   getPg: typeof getOrgPg = getOrgPg,
-): Promise<void> {
+): Promise<boolean> {
   const { sql } = getPg();
+  // The remote request yields: a writer may replace/remove the reference
+  // before it returns. Stamp only the exact reference that was checked.
   if (outcome === 'verified') {
-    await sql`
+    const updated = await sql`
       UPDATE harness_shared.harness_features_consolidated
          SET verified_done_at_remote_ts = NOW(),
              verifier_last_error = NULL,
              verifier_last_checked_at = NOW()
        WHERE harness_slug = ${harnessSlug}
          AND feature_id = ${featureId}
+         AND completion_ref = ${sql.json(observedRef)}::jsonb
+       RETURNING feature_id
     `;
-    return;
+    return updated.length > 0;
   }
   if (outcome === 'divergent') {
-    await sql`
+    const updated = await sql`
       UPDATE harness_shared.harness_features_consolidated
          SET verifier_last_error = 'sha_not_found',
              verifier_last_checked_at = NOW()
        WHERE harness_slug = ${harnessSlug}
          AND feature_id = ${featureId}
+         AND completion_ref = ${sql.json(observedRef)}::jsonb
+       RETURNING feature_id
     `;
-    return;
+    return updated.length > 0;
   }
   // 'error' — transient network/timeout; bump the checked-at so the UI
   // can show "last attempted" but don't poison verifier_last_error.
-  await sql`
+  const updated = await sql`
     UPDATE harness_shared.harness_features_consolidated
        SET verifier_last_checked_at = NOW()
      WHERE harness_slug = ${harnessSlug}
        AND feature_id = ${featureId}
+       AND completion_ref = ${sql.json(observedRef)}::jsonb
+     RETURNING feature_id
   `;
+  return updated.length > 0;
 }
 
 export type VerifyHarnessFeaturesDeps = {
@@ -330,7 +340,7 @@ export async function verifyHarnessFeatures(
   for (const row of rows) {
     const result = await runGit(row.completion_ref.remote, row.completion_ref.commit_sha);
     const outcome = decideVerificationOutcome(result);
-    await applyOutcomeToRow(harnessSlug, row.feature_id, outcome, getPg);
+    if (!await applyOutcomeToRow(harnessSlug, row.feature_id, row.completion_ref, outcome, getPg)) continue;
     if (outcome === 'verified') verified += 1;
     else if (outcome === 'divergent') divergent += 1;
     else errors += 1;
@@ -368,7 +378,7 @@ async function verifyHarnessFeaturesWithBackoff(
 
     const result = await runGit(row.completion_ref.remote, row.completion_ref.commit_sha);
     const outcome = decideVerificationOutcome(result);
-    await applyOutcomeToRow(harnessSlug, feature_id, outcome);
+    if (!await applyOutcomeToRow(harnessSlug, feature_id, row.completion_ref, outcome)) continue;
 
     if (outcome === 'verified' || outcome === 'divergent') {
       clearBackoffEntry(harnessSlug, feature_id);

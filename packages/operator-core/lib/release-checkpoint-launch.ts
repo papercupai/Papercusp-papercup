@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
 /**
  * release-checkpoint-launch — the agent-facing "fire the green-checkpoint NOW" lever's
  * launch primitive (WI-1320 follow-up: deploy-trigger-and-gate-unblock-2026-06-21).
@@ -50,7 +50,7 @@ import {
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
 import { GATE_FIRE_ID_ENV, isGateFireId, mintGateFireId, recordGateFire } from './release/gate-fire-ledger';
-import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, TASK_DEADLINE_EPOCH_MS_ENV } from './systemd-scope';
 import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 import type { CheckpointEligibilitySnapshot } from './release/checkpoint-eligibility-snapshot';
@@ -382,6 +382,11 @@ export interface ActiveCheckpointCheck {
   progress_at?: string | null;
   /** Current phase published by the run in its per-run `phase.json` marker. */
   current_phase?: string | null;
+  /** WI-6554700010029556: what the run is doing inside that phase (`repair-head-verification`,
+   *  `repair-tick-legs`, `materialization`), when it published one. */
+  current_activity?: string;
+  /** WI-6554700010029556: the leg in flight, 1-based `index` of `total`, when published. */
+  current_leg?: { label: string; index: number; total: number };
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
    *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
@@ -975,12 +980,6 @@ function checkpointRunLockDirMirror(logDir: string, root: string): string {
   return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
 }
 
-/** Mirrors release-config.ts's `checkpointLogDir` default resolution (env override, else
- *  `~/.papercusp/checkpoint-logs`) — same duplication rationale as the lock-dir mirror above. */
-function checkpointLogDirFromEnv(): string {
-  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? papercuspPath('checkpoint-logs');
-}
-
 /** Mirrors release-config.ts's `checkpointRoot` derivation (env override, else
  *  `<parent-of-root>/<basename(root)>-checkpoint`) — same duplication rationale as the
  *  log-dir/lock-dir mirrors above (operator-core must not depend on apps/operator).
@@ -1063,6 +1062,27 @@ const PROCESS_START_AFTER_LOCK_TOLERANCE_MS = 5_000;
 export interface CheckpointRunPhase {
   phase?: string;
   at?: string;
+  /** WI-6554700010029556: additive detail (green-checkpoint.ts `CheckpointRunPhaseDetail`). */
+  activity?: string;
+  leg?: { label?: unknown; index?: unknown; total?: unknown };
+}
+
+/** WI-6554700010029556: project the activity + leg a run published in `phase.json` onto the
+ *  probe result. Malformed detail is dropped, never guessed. */
+export function runPhaseDetailFields(
+  runPhase: CheckpointRunPhase | null | undefined,
+): { current_activity?: string; current_leg?: { label: string; index: number; total: number } } {
+  if (!runPhase) return {};
+  const leg = runPhase.leg;
+  return {
+    ...(typeof runPhase.activity === 'string' && runPhase.activity ? { current_activity: runPhase.activity } : {}),
+    ...(leg &&
+    typeof leg.label === 'string' &&
+    typeof leg.index === 'number' &&
+    typeof leg.total === 'number'
+      ? { current_leg: { label: leg.label, index: leg.index, total: leg.total } }
+      : {}),
+  };
 }
 
 /** Default reader for the run-lock's `phase.json`. Real fs; injectable for tests. Never throws:
@@ -1648,7 +1668,7 @@ export function checkActiveCheckpointRun(
             started_at: lockHeld.started_at ?? null,
             elapsed_sec: lockHeld.elapsed_sec ?? null,
             ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-            ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+            ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
             held_externally: true,
           }
         : {}),
@@ -1692,7 +1712,7 @@ export function checkActiveCheckpointRun(
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
         ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-        ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+        ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
         ...eta,
         ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
         held_externally: true,
@@ -1769,7 +1789,7 @@ export function checkActiveCheckpointRun(
     started_at: startedAt,
     elapsed_sec: elapsedSec,
     ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
-    ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
+    ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}), ...runPhaseDetailFields(runPhase),
     ...eta,
     ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };
@@ -1903,7 +1923,11 @@ export function buildCheckpointSystemdArgv(
   clearEnv: string[] = [],
   /** Exact runnable provenance. Invalid/preflight-only values are never forwarded. */
   candidateSource?: CheckpointCandidateSource | null,
+  launchStartedAtMs = Date.now(),
 ): string[] {
+  const inheritedDeadlines = [extraEnv[TASK_DEADLINE_EPOCH_MS_ENV], process.env[TASK_DEADLINE_EPOCH_MS_ENV]]
+    .map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
+  const callerDeadlineEpochMs = Math.min(launchStartedAtMs + MANUAL_CHECKPOINT_WATCHDOG_MS, ...inheritedDeadlines);
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
   // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
@@ -1992,7 +2016,7 @@ export function buildCheckpointSystemdArgv(
       : [];
   const gateFireEnv = isGateFireId(gateFireId) ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`] : [];
   const routedEnv = Object.entries(extraEnv)
-    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && key !== TASK_DEADLINE_EPOCH_MS_ENV)
     .map(([key, value]) => `--setenv=${key}=${value}`);
   return [
     '--user',
@@ -2017,6 +2041,7 @@ export function buildCheckpointSystemdArgv(
     ...greenCheckpointDbTargetSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...routedEnv,
+    `--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=${callerDeadlineEpochMs}`,
     ...verdictEnv,
     ...qualificationEnv,
     ...gateFireEnv,

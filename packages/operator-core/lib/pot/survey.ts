@@ -49,6 +49,7 @@ import { activeExternalBlockers } from '../external-blockers';
 import { placementConfig } from './placement-watchdog';
 import { mapWithConcurrency } from '../gym/concurrency';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 const MS_PER_DAY = 86_400_000;
 
 /**
@@ -580,7 +581,7 @@ export async function fetchEscalatedIssueFrontierRows(
            COALESCE(payload -> '_ei' ->> 'severity', 'minor') AS severity
       FROM harness_shared.work_items wi
      WHERE workspace_id = ${workspaceId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        -- Keep this storage-alias fold identical to fetchFrontierRows above: this count
        -- gates starvation/throughput signals and must describe the same row set.
        AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = 'open'

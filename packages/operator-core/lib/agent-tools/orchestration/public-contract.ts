@@ -7,9 +7,12 @@ import {
 } from '../../recipe-contract';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
+/** Shared by the foreground and durable script doors; not a transport deadline. */
+export const MAX_ORCHESTRATION_SCRIPT_CHARS = 1_000_000;
+
 export const orchestrationScriptSourceSchema = z
   .object({
-    source: z.string().min(1).max(20_000),
+    source: z.string().min(1).max(MAX_ORCHESTRATION_SCRIPT_CHARS),
     bindingSchema: recipeBindingSchemaV1Schema.optional(),
     requires: z.array(capabilityRequirementSchema).max(200).optional(),
     title: z.string().max(120).optional(),

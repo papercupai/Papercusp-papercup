@@ -90,6 +90,7 @@ export type FrozenLineageOperation =
 
 export type FrozenLineageSelectionSource =
   | 'live-repair-head'
+  | 'live-frozen-candidate'
   | 'effective-checkout-head'
   | 'staging'
   | 'current-head'
@@ -125,13 +126,14 @@ export interface FrozenLineagePolicyInput {
   expectedIdentity?: FrozenLineageIdentity | null;
 }
 
-export type FrozenLineagePolicyAllowReason = 'no-frozen-queue' | 'operation-not-governed' | 'repair-head-match';
+export type FrozenLineagePolicyAllowReason = 'no-frozen-queue' | 'operation-not-governed' | 'repair-head-match' | 'candidate-match';
 
 export type FrozenLineagePolicyRefusalReason =
   | 'selection-source-unknown'
   | 'unsafe-candidate-source'
   | 'queue-identity-required'
   | 'queue-identity-mismatch'
+  | 'queue-decision-mismatch'
   | 'checkout-cwd-unresolved'
   | 'checkout-head-required'
   | 'checkout-head-mismatch';
@@ -195,7 +197,9 @@ function refusal(
  *
  * Governed work fails closed on an unknown/unsafe source, a missing or stale
  * captured queue identity, a missing checkout observation, or any checkout HEAD
- * other than the current repairHead. Non-governed staging work remains legal.
+ * other than the queue-selected head. The original candidate is authorized only
+ * by a live ready-to-test marker; repair verification still requires repairHead.
+ * Non-governed staging work remains legal.
  */
 export function evaluateFrozenLineagePolicy(
   input: FrozenLineagePolicyInput,
@@ -244,18 +248,23 @@ export function evaluateFrozenLineagePolicy(
   if (!comparison.matches) {
     return refusal(input, liveIdentity, 'queue-identity-mismatch', comparison.mismatchedFields);
   }
+  const originalCandidate = input.selectionSource === 'live-frozen-candidate';
+  if (originalCandidate && marker?.phase !== 'ready-to-test') {
+    return refusal(input, liveIdentity, 'queue-decision-mismatch');
+  }
   if (input.checkoutCwd === null) {
     return refusal(input, liveIdentity, 'checkout-cwd-unresolved');
   }
   if (!input.checkoutHead) {
     return refusal(input, liveIdentity, 'checkout-head-required');
   }
-  if (input.checkoutHead !== liveIdentity.repairHead) {
+  const selectedHead = originalCandidate ? liveIdentity.candidate : liveIdentity.repairHead;
+  if (input.checkoutHead !== selectedHead) {
     return refusal(input, liveIdentity, 'checkout-head-mismatch');
   }
   return {
     allowed: true,
-    reason: 'repair-head-match',
+    reason: originalCandidate ? 'candidate-match' : 'repair-head-match',
     operation: input.operation,
     selectionSource: input.selectionSource,
     liveIdentity,

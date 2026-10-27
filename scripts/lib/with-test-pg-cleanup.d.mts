@@ -1,3 +1,9 @@
+/** Remove only dependency signal handlers that have actually been registered. */
+export function unhookRegisteredExitSignals(exitHook: {
+  hookedEvents(): string[];
+  unhookEvent(event: string): void;
+}): void;
+
 export interface CleanupOwnedTestStateOptions {
   child?: { pid?: number } | null;
   childLifetime?: { terminate(): Promise<void> } | null;

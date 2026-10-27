@@ -37,7 +37,7 @@ async function withScript(script: string, bundled: boolean, run: (entry: string,
         name: 'record-workspace-child',
         setup(build) {
           if (rawGuard) {
-            build.onLoad({ filter: /(?:workspace-test|check-vitest-config-enrollment|check-partial-index-alignment)\.mjs$/ }, ({ path }) => {
+            build.onLoad({ filter: /(?:workspace-test|check-vitest-config-enrollment|check-partial-index-alignment|verify-engineering-evidence-release)\.mjs$/ }, ({ path }) => {
               const source = readFileSync(path, 'utf8');
               const guard = 'if (isCliEntry(import.meta.url))';
               if (!source.includes(guard)) throw new Error('Expected the production CLI-entry guard');
@@ -199,6 +199,50 @@ describe('partial-index alignment CLI entry in the operator graph', () => {
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(1);
       expect(result.stderr).toContain('generated.ts');
+    });
+  });
+});
+
+describe('engineering evidence release CLI entry in the operator graph', () => {
+  const script = 'verify-engineering-evidence-release.mjs';
+  const fixtureEnv = (root: string) => ({ PAPERCUSP_ENGINEERING_JOURNEY_INPUTS: join(root, 'missing-inputs.json') });
+
+  it('stays inert in the host bundle and detects the original entry comparison', async () => {
+    await withScript(script, true, (entry, root) => {
+      const result = execute([entry], root, fixtureEnv(root));
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    });
+    await withScript(script, true, (entry, root) => {
+      const result = execute([entry], root, fixtureEnv(root));
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: 'unknown',
+        reason: 'Canonical release journey inputs are unavailable.' });
+    }, true);
+  });
+
+  it('preserves the standalone missing-input refusal', async () => {
+    await withScript(script, false, (entry, root) => {
+      const result = execute([entry], root, fixtureEnv(root));
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: 'unknown',
+        reason: 'Canonical release journey inputs are unavailable.' });
+    });
+  });
+
+  it('stays inert when imported by a separate executable', async () => {
+    await withScript(script, false, (entry, root) => {
+      const importer = join(root, 'importer.mjs');
+      writeFileSync(importer, `await import(${JSON.stringify(pathToFileURL(entry).href)}); console.log('import complete');`);
+      const result = execute([importer], root, fixtureEnv(root));
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe('import complete');
+      expect(result.stderr).toBe('');
     });
   });
 });

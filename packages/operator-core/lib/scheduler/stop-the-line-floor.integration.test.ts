@@ -54,6 +54,7 @@ vi.mock('../workspace-registry', async () => {
 const { aggregateIssueClaimExclusions, listIssueClaimableRows } = await import('./get-next');
 const { claimNextIssueWorkItem, claimNextWorkItem, claimWorkItem } = await import('../work-items');
 const { STOP_THE_LINE_RED_HOURS, stopTheLineExclusionSql } = await import('../work-items-admission');
+const { greenMainSloConditionKey } = await import('../release/green-main-slo-watchdog');
 
 const H = 'papercup';
 const H2 = 'other-harness';
@@ -228,6 +229,34 @@ describe('P-013/D-012 — stop-the-line claim floor', () => {
     // The floor governs self-select only: after ownership is checked, the registered
     // gate fixer still acquires the singleton through the named by-id path.
     expect((await claimWorkItem('WI-GREEN-STALL', 'su-gate-fixer', { harness: H }))?.id).toBe('WI-GREEN-STALL');
+  });
+
+  it('LIVE_GATE_OPS: live-gate green-main-slo alarms are explicit-ID only; per-sync alarms still flow (EI-27062367026577459)', async () => {
+    // Real watchdog keys. The encoded key contains `%`, which LIKE would otherwise read as a wildcard.
+    const scope = { workspaceId: WS, installSlug: H };
+    await seedRow('WI-SLO-RED-ADD', {
+      itemKind: 'bug',
+      conditionKey: greenMainSloConditionKey(scope, 'red-adding-admission', `green-main-slo:${H}:red-adding-admission:55bbd`, '4a0ab7'),
+    });
+    await seedRow('WI-SLO-ROUND', {
+      itemKind: 'bug',
+      conditionKey: greenMainSloConditionKey(scope, 'round-cycle-time', `green-main-slo:${H}:round-cycle-time:0a16:2`, '0a16'),
+    });
+    // Ordinary repair: a sync fleet's red rate, whose subject happens to spell a reserved metric.
+    await seedRow('WI-SLO-SYNC', {
+      itemKind: 'bug',
+      conditionKey: greenMainSloConditionKey(scope, 'per-sync-red-rate', `green-main-slo:${H}:per-sync-red-rate:queue-idle:20387`, 'queue-idle'),
+    });
+
+    const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(out.excluded.liveGateOps).toBe(2);
+    expect((await listIssueClaimableRows(undefined, { harness: H }, 50)).map((r) => r.id)).toEqual(['WI-SLO-SYNC']);
+
+    const filter = { harness: H, assignee: 'su-generic' } as Parameters<typeof claimNextIssueWorkItem>[0];
+    expect((await claimNextIssueWorkItem(filter, WS))?.id).toBe('WI-SLO-SYNC');
+    expect(await claimNextIssueWorkItem(filter, WS)).toBeNull();
+
+    expect((await claimWorkItem('WI-SLO-RED-ADD', 'su-gate-fixer', { harness: H }))?.id).toBe('WI-SLO-RED-ADD');
   });
 
   it('FEATURE FAMILY: feature self-select pauses while active, resumes when the item settles', async () => {

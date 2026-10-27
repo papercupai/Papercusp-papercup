@@ -996,6 +996,33 @@ describe('planItemLaneBlockReason', () => {
       });
     });
 
+    it.each([
+      ['preserved unrelated wall', 'No change to owner-gated Flywheel ask, legal/spend/mainnet/credential/sign/send/publish constraints or LIVE_GATE_OPS ownership.', null],
+      ['other item in a separate clause', 'P-002 remains owner-gated until the owner approves.', null],
+      ['explicit marker attribution', 'One owner-gated (P-002), while P-001 remains actionable.', null],
+      ['own item preservation', 'No change to owner-gated P-001; owner approval is still required.', 'owner-gated'],
+      ['later genuine gate', 'No change to owner-gated Flywheel ask. P-001 is hard-deferred until owner approval.', 'hard-deferred'],
+      ['unqualified genuine gate', 'Owner-gated: wait for the owner before executing.', 'owner-gated'],
+      ['unqualified preserved gate', 'No change to owner-gated; owner approval remains required.', 'owner-gated'],
+      ['preserved execution gate', 'No change to owner-gated execution; wait for owner approval.', 'owner-gated'],
+      ['preserved closure gate', 'No change to owner-gated source closure.', 'owner-gated'],
+      ['preserved approval requirement', 'No change to owner-gated approval requirement.', 'owner-gated'],
+      ['preserved hard deferral', 'No change to hard-deferred status pending owner approval.', 'hard-deferred'],
+      ['same named subject', 'No change to owner-gated Flywheel ask.', 'owner-gated'],
+    ])('scopes Decision markers: %s', async (_name, body, marker) => {
+      getPlanRowMock.mockResolvedValue({
+        items: [planItem({ text: _name === 'same named subject' ? 'Flywheel ask' : 'Do the thing' }), planItem({ id: 'P-002' })],
+        decisions: [{ id: 'D-003', title: 'P-001 detector amendment', body,
+          date: null, itemRefs: ['P-001', 'P-002'] }],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-001' } },
+        harness: 'papercusp', id: UNUSED_ID, family: UNUSED_FAMILY,
+      });
+      if (marker) expect(got?.reason).toContain(`owner-gated ("${marker}")`);
+      else expect(got).toBeNull();
+    });
+
     it('reports owner-gated for an item scoped to a Decision (via itemRefs) carrying a marker', async () => {
       getPlanRowMock.mockResolvedValue({
         items: [planItem({ id: 'P-006', storedStatus: 'todo' })],

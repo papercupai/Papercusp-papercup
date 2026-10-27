@@ -133,7 +133,7 @@ beforeEach(() => {
   mocks.resumeTarget.mockResolvedValue({ ok: false, error: 'not_found' });
 });
 
-async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
+async function call(model?: string, extra: Record<string, unknown> = {}) {
   return ensureCodexHome(new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
     method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: ADV_SESSION_ID, model, ...extra }),
   }));
@@ -200,6 +200,115 @@ describe('resumable archived backend identity', () => {
     expect(mocks.archiveStamp).toHaveBeenCalledWith('omp', nativeId);
     expect(mocks.archiveStamp).toHaveBeenCalledWith('claude', nativeId);
     expect(mocks.archiveStamp).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ensure-codex-home explicit preserved artifact policy', () => {
+  let artifactRecord: typeof savedRecord;
+  let revision: string;
+  const prompt = 'SAVED instructions\nUnicode λ, spaces  and\ttabs\n';
+  beforeAll(async () => {
+    const { compileLaunchSpecificationArtifact } = await vi.importActual<typeof import('../../../role-launch-spec')>('../../../role-launch-spec');
+    const artifact = await compileLaunchSpecificationArtifact({
+      promptText: prompt, cwd: '/tmp', role: 'su', stack: [], state: { schemaVersion: 1 },
+    });
+    revision = artifact.specificationRevision;
+    artifactRecord = { ...savedRecord, stack: [], selectedIdentity: null,
+      specificationRevision: revision, specificationArtifact: artifact.specificationArtifact } as unknown as typeof savedRecord;
+  });
+  beforeEach(async () => {
+    const real = await vi.importActual<typeof import('../../../su-persona-render')>('../../../su-persona-render');
+    mocks.pinnedPrompt.mockImplementation(real.pinnedSuRecoveryPrompt);
+    mocks.readRecord.mockResolvedValue(artifactRecord);
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd: '/tmp', launchArgv: ['psu', '--account=default'] });
+    mocks.rebuild.mockResolvedValue({ promptText: 'NEW RENDER MUST NOT WIN' });
+  });
+  const preserve = (extra: Record<string, unknown> = {}) => call(undefined, {
+    sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, ...extra,
+  });
+  const noWriters = () => {
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+  };
+
+  it.each(['default', 'auto', 'pool-fixture'])('uses the real artifact verifier and saved %s route even when fresh rendering succeeds', async account => {
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd: '/tmp', launchArgv: ['psu', `--account=${account}`] });
+    mocks.allowsAmbient.mockResolvedValue(false);
+    const response = await preserve();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ reason: 'preserved-artifact', preservedSpecificationRevision: revision,
+      preservedModel: artifactRecord.model, preservedAccountRoute: { mode: account === 'pool-fixture' ? 'pin' : account,
+        accountId: account === 'pool-fixture' ? account : null } });
+    expect(mocks.ensureHome).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      sessionKey: ADV_SESSION_ID, sid: OWNER, promptText: prompt, model: artifactRecord.model,
+      recordedSqliteHome: savedRecord.codexSqliteHome, recoverMissingHome: true, denyAmbientContext: true,
+      codexGatewayAccountId: account === 'pool-fixture' ? account : null, codexGatewayAuto: account === 'auto',
+    }));
+    expect(mocks.funding).toHaveBeenCalledExactlyOnceWith({ stack: [], repoDir: '/tmp', workspaceId: savedRecord.workspaceId });
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'corrupt', 'revision', 'stack', 'owner', 'model', 'account', 'legacy-route', 'role', 'adv'])(
+    'refuses %s before funding and all writer effects', async defect => {
+      if (defect === 'missing') mocks.readRecord.mockResolvedValue(null);
+      if (defect === 'corrupt') mocks.readRecord.mockResolvedValue({ ...artifactRecord,
+        specificationArtifact: { ...artifactRecord.specificationArtifact, inputs: [{ kind: 'unknown' }] } });
+      if (defect === 'revision') mocks.readRecord.mockResolvedValue({ ...artifactRecord, specificationRevision: 'b'.repeat(64) });
+      if (defect === 'stack') mocks.readRecord.mockResolvedValue({ ...artifactRecord, stack: ['domain:unverified'] });
+      if (defect === 'owner') mocks.sessionRow.mockResolvedValue({ coordOwnerId: 'su-other', agent: 'codex' });
+      if (defect === 'role') mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'judge' });
+      if (defect === 'legacy-route') mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex' });
+      if (defect === 'adv') mocks.sessionRow.mockResolvedValue(null);
+      const response = await preserve(defect === 'model' ? { model: 'different-model' }
+        : defect === 'account' ? { expectedAccountRoute: { mode: 'auto', accountId: null } } : {});
+      expect(response.status).toBe(409);
+      expect((await response.json()).ok).toBe(false);
+      expect(mocks.funding).not.toHaveBeenCalled();
+      expect(mocks.buildLaunchSpec).not.toHaveBeenCalled();
+      noWriters();
+    });
+
+  it('refuses exact-stack funding without removing layers or rebuilding', async () => {
+    mocks.funding.mockResolvedValue({ ok: false, code: 'identity_payment_required', detail: 'unfunded', refused: [] });
+    const response = await preserve();
+    expect(response.status).toBe(402);
+    expect(await response.json()).toMatchObject({ error: 'identity_payment_required' });
+    noWriters();
+    expect(mocks.buildLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it.each(['owner', 'revision', 'route', 'sqlite'])('rechecks %s drift after funding and before home writes', async drift => {
+    mocks.funding.mockImplementation(async () => {
+      if (drift === 'owner') mocks.sessionRow.mockResolvedValue({ coordOwnerId: 'su-new-owner', agent: 'codex' });
+      if (drift === 'revision') mocks.readRecord.mockResolvedValue({ ...artifactRecord, specificationRevision: 'b'.repeat(64) });
+      if (drift === 'route') mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd: '/tmp', launchArgv: ['psu', '--account=auto'] });
+      if (drift === 'sqlite') mocks.readRecord.mockResolvedValue({ ...artifactRecord, codexSqliteHome: '/different-state' });
+      return { ok: true };
+    });
+    const response = await preserve();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'preserved-source-drift' });
+    noWriters();
+  });
+
+  it('records only the recovered SQLite binding, retaining the exact artifact', async () => {
+    mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true, sqliteHome: '/recovered-state' });
+    expect((await preserve()).status).toBe(200);
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER,
+      expect.objectContaining({ specificationArtifact: artifactRecord.specificationArtifact,
+        specificationRevision: revision, model: artifactRecord.model, stack: [], codexSqliteHome: '/recovered-state' }));
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+    expect(mocks.rebuild).not.toHaveBeenCalled();
+  });
+
+  it.each([{ sourcePolicy: 'unknown' }, { expectedSpecificationRevision: null }])('rejects invalid policy pins before reads', async extra => {
+    expect((await preserve(extra)).status).toBe(400);
+    expect(mocks.readRecord).not.toHaveBeenCalled();
+    noWriters();
   });
 });
 
@@ -579,6 +688,52 @@ describe('ensure-codex-home pinned-source recovery', () => {
   it('does not mask an unrelated rebuild error as pinned-source recovery', async () => {
     mocks.rebuild.mockRejectedValue(new Error('plan context unavailable'));
     await expect(call()).rejects.toThrow('plan context unavailable');
+    expect(mocks.pinnedPrompt).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('keeps verified instructions usable across renderer skew (selected identity: %s)', async selected => {
+    if (!selected) mocks.readRecord.mockResolvedValue({ ...savedRecord, selectedIdentity: undefined });
+    mocks.rebuild.mockRejectedValue(Object.assign(new Error('su.md tiling is unsound: unclassified heading'), {
+      code: 'su-tiling-unsound',
+    }));
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true, reason: 'pinned-renderer-skew', preservedSpecificationRevision: REVISION,
+    });
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      sid: OWNER, promptText: 'PINNED V1 INSTRUCTIONS',
+    }));
+    expect(mocks.funding).toHaveBeenCalledWith(expect.objectContaining({ stack: savedRecord.stack }));
+    expect(mocks.pinnedPrompt).toHaveBeenCalledWith(expect.anything(), { allowUnselected: true });
+    expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
+  it('does not recover renderer skew without a verified pinned artifact', async () => {
+    const error = Object.assign(new Error('su.md tiling is unsound'), { code: 'su-tiling-unsound' });
+    mocks.rebuild.mockRejectedValue(error);
+    mocks.pinnedPrompt.mockReturnValue(null);
+    await expect(call()).rejects.toBe(error);
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+  });
+
+  it('keeps identity admission enforced during renderer-skew recovery', async () => {
+    mocks.rebuild.mockRejectedValue(Object.assign(new Error('su.md tiling is unsound'), {
+      code: 'su-tiling-unsound',
+    }));
+    mocks.funding.mockResolvedValue({ ok: false, code: 'identity-activation-refused',
+      detail: 'identity not funded', refused: [] });
+    const response = await call();
+    expect(response.status).toBe(402);
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.buildLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('does not classify an untyped renderer error by its message', async () => {
+    mocks.rebuild.mockRejectedValue(new Error('su.md tiling is unsound'));
+    await expect(call()).rejects.toThrow('su.md tiling is unsound');
     expect(mocks.pinnedPrompt).not.toHaveBeenCalled();
     expect(mocks.ensureHome).not.toHaveBeenCalled();
   });

@@ -4,6 +4,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readRubricWithoutSeeding, type Rubric } from '../../rubrics';
+import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -81,11 +82,7 @@ export const scorecardInstrumentSnapshotSchema = z
       .enum(['self-reported', 'platform-computed'])
       .optional()
       .describe(
-        "WHO measured this. Omitted means 'self-reported' — you derived and typed the number " +
-          'yourself, which is what every snapshot on this path is today. Only a deterministic ' +
-          "platform instrument may claim 'platform-computed'. The contract's verdict-mismatch " +
-          'check compares your rating to THIS snapshot, so on a self-reported one it is testing ' +
-          'you against yourself, not measuring anything.',
+        "Default self-reported: caller-derived numbers; verdict comparison checks your own assertion. Only deterministic platform instruments may claim platform-computed.",
       ),
   })
   .strict();
@@ -101,6 +98,9 @@ export const scorecardTestedShaSchema = z
 export const scorecardEvaluateArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
+    eligibilityOnly: z.boolean().optional().describe(
+      'Resolve only your grader identity and the current rubric identity, independently of acceptance BAR readiness. Supply rubricRef only; grading and history inputs are refused. ok:true is not grading clearance: inspect graderEligibility.canEmitGrading.',
+    ),
     sourceHive: z
       .string()
       .min(1)
@@ -222,7 +222,7 @@ async function reportGraderEligibility(
         advice:
           `STOP — do not grade: scorecards:emit will refuse this card with '${verdict.refusal.code}' ` +
           `however complete it is. Report this to whoever assigned the review so a different ` +
-          `independent grader is named; the ratings skeleton below is still useful to hand them.`,
+          'independent grader is named.',
         refusal: verdict.refusal,
       };
     }
@@ -247,7 +247,7 @@ async function reportGraderEligibility(
       principalImplementers: verdict.principalImplementers,
       advice:
         'Eligible to emit the independent grading (omit acceptance — that is the rubric author’s call). ' +
-        'Identity rails only; the ratings/evidence rails are what this call validates.',
+        'Identity rails only; ordinary evaluation and emission must still validate BAR readiness, ratings and evidence.',
     };
   } catch (error) {
     // A pre-flight that cannot answer must say so, not imply clearance.
@@ -269,6 +269,18 @@ export async function evaluateScorecard(
   args: z.infer<typeof scorecardEvaluateArgs>,
   caller?: ScorecardEvaluateCaller,
 ) {
+  if (args.eligibilityOnly) {
+    const incompatible = Object.entries(args)
+      .filter(([key, value]) => key !== 'rubricRef' && key !== 'eligibilityOnly' && value !== undefined)
+      .map(([key]) => key);
+    if (incompatible.length > 0) {
+      return {
+        ok: false as const,
+        code: 'eligibility_only_input_invalid' as const,
+        error: `eligibilityOnly accepts rubricRef only; omit grading/history inputs: ${incompatible.join(', ')}`,
+      };
+    }
+  }
   const rubricRead = await readRubricWithoutSeeding(args.rubricRef);
   if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
   if (rubricRead.kind === 'read-failed') {
@@ -282,7 +294,30 @@ export async function evaluateScorecard(
   if (rubricRead.kind === 'missing') {
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
-  const rubric = rubricRead.rubric;
+  // Identity preflight must remain answerable before product proof is ready.
+  // It uses the same identity resolver as grading, without reading the live
+  // criterion overlay or implying that the rubric is ready to grade.
+  const rubric = args.eligibilityOnly
+    ? rubricRead.rubric
+    : (await resolveLiveAcceptanceRubric(rubricRead.rubric, caller?.workspaceId)).rubric;
+  // Keep the exact definition that produced the skeleton/validated ratings
+  // attached to the result. scorecards:emit compares this pin again at the
+  // persistence boundary so an intervening rubric edit cannot be relabeled as
+  // the definition that the grader actually saw.
+  const rubricIdentity = {
+    rubricRevision: rubric.revision ?? null,
+    criteriaHash: rubric.criteriaHash ?? null,
+    rubricMeaningRevision: rubric.barContract?.meaningRevision ?? null,
+  };
+  if (args.eligibilityOnly) {
+    return {
+      ok: true as const,
+      eligibilityOnly: true as const,
+      rubricRef: rubric.rubricId,
+      ...rubricIdentity,
+      graderEligibility: await reportGraderEligibility(rubric, caller),
+    };
+  }
   const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys,
     args.ratings && Object.keys(args.ratings).length > 0 ? args.ratings : undefined);
   if (pendingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRefusal };
@@ -338,6 +373,7 @@ export async function evaluateScorecard(
   if (!args.ratings || Object.keys(args.ratings).length === 0) {
     return {
       ok: true as const,
+      ...rubricIdentity,
       graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
@@ -471,6 +507,7 @@ export async function evaluateScorecard(
       });
     return {
       ok: true as const,
+      ...rubricIdentity,
       graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
@@ -525,15 +562,16 @@ export default defineTool({
   name: 'scorecards:evaluate',
   profile: 'engineer',
   description:
-    'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; acceptance, vetting links, terminal, and force remain emit-only metadata. Use scorecards:emit to file the validated result.',
+    'Return a rubric grading skeleton or an explicit eligibility-only identity preflight. Optionally validate + canonicalize a complete ratings map, resolve registered instrument snapshots for the exact subject/window, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; file the result with scorecards:emit.',
   guidance: {
     when:
-      'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. Pass the same `subject` and observation window to evaluate and emit so registered instruments measure the same run.',
+      'Before grading/emitting a rubric scorecard. For reviewer identity preflight use { rubricRef, eligibilityOnly:true } yourself: it returns your graderEligibility and current rubric identity even when acceptance BAR proof is unready, without a grading skeleton or evidence validation. ok:true is not clearance; unknown, disqualified, author, or absent identity cannot grant canEmitGrading. Ordinary skeleton/ratings requests retain BAR readiness gates. Use the same `subject` and observation window on evaluate and emit.',
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
-      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
+      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with canonical ratings, and the returned rubricRevision, criteriaHash, and rubricMeaningRevision. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
     returns:
-      'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. Generation freshness can be `fresh`, `stale`, `unknown`, or `not-applicable`; the last means a complete matched replay recipe proves its selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence remain tied to the live bg-host generation. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
+      'eligibilityOnly:true returns only { ok, eligibilityOnly, rubricRef, rubricRevision, criteriaHash, rubricMeaningRevision, graderEligibility }; it does not establish BAR readiness or validate grading evidence. ' +
+      'Top level: { ok, code, rubricRevision, criteriaHash, rubricMeaningRevision, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `rubricRevision`, `criteriaHash`, and `rubricMeaningRevision` are the exact definition identity used by this evaluation (null means that identity component was unavailable); pass all three unchanged to `scorecards:emit` to refuse a rubric edit between review and filing. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. Generation freshness can be `fresh`, `stale`, `unknown`, or `not-applicable`; the last means a complete matched replay recipe proves its selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence remain tied to the live bg-host generation. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.
@@ -562,8 +600,13 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
+      eligibilityOnly: z.boolean().optional(),
+      rubricRef: z.string().optional(),
       code: z.string().optional(),
       error: z.string().optional(),
+      rubricRevision: z.number().int().positive().nullable().optional(),
+      criteriaHash: z.string().nullable().optional(),
+      rubricMeaningRevision: z.number().int().nonnegative().nullable().optional(),
       graderEligibility: z.record(z.string(), z.unknown()).nullable().optional(),
       rubric: z.record(z.string(), z.unknown()).optional(),
       skeleton: z.array(z.unknown()).optional(),

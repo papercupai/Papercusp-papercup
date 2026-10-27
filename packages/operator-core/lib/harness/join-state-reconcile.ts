@@ -37,11 +37,14 @@ import { join, resolve } from 'node:path';
 
 import {
   healLinkJoinedEntries,
+  isDogfoodHiveSlug,
   loadHarnessRegistry,
   mutateHarnessRegistry,
   upsertLinkJoinedEntry,
   type HarnessRegistry,
 } from '../harness-registry';
+import { dogfoodHiveDisabled } from './dogfood-hive-kill-switch';
+import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import type { JoinState } from './join-shared-harness';
 
 /**
@@ -128,6 +131,9 @@ export interface ReconcileJoinStatesResult {
   /** Link-joined entries an older build left short, completed to the full
    *  link-joined shape this sweep (WI-10003277). */
   enriched: string[];
+  /** Dogfood-hive join records ignored because PAPERCUSP_DISABLE_DOGFOOD_HIVE=1
+   *  (WI-6554700010029282): neither re-registered nor enriched. */
+  dogfoodDisabled: string[];
   /** Set when the sweep itself failed before walking (reported, never thrown). */
   error?: string;
 }
@@ -145,6 +151,7 @@ export async function reconcileJoinStates(
     healedByBoot: [],
     abandoned: [],
     enriched: [],
+    dogfoodDisabled: [],
   };
   const listJoinStates = opts.listJoinStates ?? defaultListJoinStates;
   const loadRegistry = opts.loadRegistry ?? loadHarnessRegistry;
@@ -156,6 +163,14 @@ export async function reconcileJoinStates(
   let needsHeal: boolean;
   try {
     states = await listJoinStates();
+    // WI-6554700010029282: the dogfood-hive kill switch covers this registration
+    // path too. A stale dogfood join record (~/.papercusp/join-state/papercup.json,
+    // shared by every operator under this $HOME) otherwise re-registers the dogfood
+    // harness on every boot, and boot-all then opens its Corestore.
+    if (opts.workspaceId === PAPERCUSP_WORKSPACE_ID && dogfoodHiveDisabled()) {
+      result.dogfoodDisabled = states.filter((js) => isDogfoodHiveSlug(js.slug)).map((js) => js.slug);
+      states = states.filter((js) => !isDogfoodHiveSlug(js.slug));
+    }
     const reg = await loadRegistry(opts.workspaceId);
     const current = { ...reg, projects: reg.projects ?? [] };
     registered = new Set(current.projects.map((p) => p.slug));

@@ -70,7 +70,7 @@ export interface DocContentOptions {
 }
 
 export interface DocListPagesTimingEvent {
-  component: 'starlight' | 'canonical-overlay';
+  component: 'starlight' | 'canonical-overlay' | 'harness-fs' | 'generic-fs';
   phase: 'revision' | 'cache' | 'build' | 'walk' | 'read-parse' | 'base-list-pages' | 'canonical-read' | 'overlay';
   state: 'started' | 'completed' | 'cached' | 'shared';
   elapsedMs?: number;

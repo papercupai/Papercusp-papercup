@@ -8,6 +8,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./evidence-root": "./src/evidence-root.ts",
     "./verifier-source": "./src/verifier-source.ts"
   },
   "scripts": {

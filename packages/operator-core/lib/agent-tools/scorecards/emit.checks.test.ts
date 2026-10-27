@@ -26,6 +26,7 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
 const resolvePlanHarness = vi.fn();
+const getPlanRow = vi.fn();
 const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({})));
 
 vi.mock('../../rubrics', async (importOriginal) => {
@@ -36,6 +37,10 @@ vi.mock('../../rubrics', async (importOriginal) => {
     // scorecards:emit uses the failure-aware writer read; keep this unit suite on
     // the same mocked rubric fixtures instead of falling through to live PG.
     readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
+    readRubricWithoutSeeding: async (rubricId: string) => {
       const rubric = await getRubric(rubricId);
       return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
     },
@@ -99,6 +104,7 @@ vi.mock('../../resolve-harness-paths', () => ({
 }));
 vi.mock('../plans/source', () => ({
   resolvePlanHarness: (...a: unknown[]) => resolvePlanHarness(...a),
+  getPlanRow: (...a: unknown[]) => getPlanRow(...a),
 }));
 
 import scorecardEmitTool, {
@@ -110,6 +116,8 @@ import scorecardEmitTool, {
   SCORECARD_EMIT_TIMEOUT_SEC,
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
+import { evaluateScorecard } from './evaluate';
+import { parseRequirementBars } from '../../acceptance-bar-seed';
 // Register the real judge-readable target in the projected-tool contract used by probes.
 import './get';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
@@ -482,6 +490,7 @@ const emitArgs = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   dispatchPendingGradingAudits.mockClear();
+  getPlanRow.mockReset().mockResolvedValue(null);
   getRubric.mockReset().mockImplementation(async (id: unknown) =>
     id === 'ar-checked-plan' ? CHECKED_RUBRIC : null,
   );
@@ -502,6 +511,43 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit deterministic criterion checks (P-011)', () => {
+  it.each([
+    { condition: 'The outcome holds.', expectedFile: 'packages/x/renamed.test.ts' },
+    { condition: 'A different outcome holds.', expectedFile: 'packages/x/real.test.ts' },
+  ])('current scoring uses live verification only for the same promise: $condition', async ({ condition, expectedFile }) => {
+    const plan = (file: string, promise = 'The outcome holds.') => [
+      '## Requirements', '', '**R-16 — Deterministic.**', '', '```requirement',
+      JSON.stringify({
+        intent: { request: 'Verify the outcome.', sourceRefs: ['owner-directive:2165'] },
+        acceptance: { condition: promise, falsifier: 'The outcome fails.', evidencePlane: 'tree',
+          requiredScope: ['P-001'], requiredTestLayers: ['unit'] },
+        verification: { method: 'Run the named test.', check: { kind: 'tests', files: [file] } },
+      }),
+      '```', '', '## Design', '', '### Bar-to-work map for this plan', '',
+      '| bar | implementing plan items | evidence plane |', '|---|---|---|',
+      '| R-16 | P-001 | tree |', '', '## Phase 1', '', '- **P-001** `todo` Verify (R-16).', '',
+    ].join('\n');
+    const parsed = parseRequirementBars(plan('packages/x/real.test.ts'));
+    if (!parsed.ok || !parsed.bars[0]?.criterion) throw new Error('explicit requirement fixture must parse');
+    const stored = { ...CHECKED_RUBRIC, subjectHarnessSlug: 'papercusp', criteria: [parsed.bars[0].criterion] };
+    getRubric.mockResolvedValue(stored);
+    getPlanRow.mockResolvedValue({ content: plan('packages/x/renamed.test.ts', condition), version: 11 });
+
+    const evaluated = await evaluateScorecard({ rubricRef: stored.rubricId });
+    expect(evaluated).toMatchObject({ ok: true, skeleton: [{ key: 'r-16', check: { files: [expectedFile] } }] });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true, checkRuns: { 'r-16': { ...PASS_RUN, files: [expectedFile] } },
+    });
+    const emitted = await emitScorecard(emitArgs({
+      ratings: { 'r-16': { rating: 'pass', evidence: 'The maintained detector passed.' } },
+    }) as never, { ...EMIT_INPUT, workspaceId: 'ws-test' }, { evaluateChecks });
+    expect(emitted, JSON.stringify(emitted)).toMatchObject({ ok: true });
+    expect(evaluateChecks.mock.calls[0][0].criteria[0].check).toMatchObject({ files: [expectedFile] });
+    expect(getPlanRow).toHaveBeenCalledWith(stored.subjectPlan, { harnessSlug: 'papercusp', workspaceId: 'ws-test' });
+    expect(stored.criteria[0].check).toMatchObject({ files: ['packages/x/real.test.ts'] });
+    expect(stored.revision).toBe(3);
+  });
+
   it.each([
     { count: 2, failed: 0, accepted: true },
     { count: 0, failed: 0, accepted: false },

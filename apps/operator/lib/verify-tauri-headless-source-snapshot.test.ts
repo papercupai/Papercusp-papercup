@@ -8,6 +8,7 @@
  * own source. Pin the startup snapshot/re-exec contract on the real script.
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -41,8 +42,9 @@ const sourceReexecIdx = src.indexOf(
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
+const spaCleanupSource = src.match(/^cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
 const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
-const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }';
+const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }; preflight_verifier_runtime_assets() { :; }';
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
 const operatorSnapshotSource = `${src.slice(operatorSnapshotIdx, operatorSnapshotCallIdx)}\n${normalizeOperatorSourceTestStub}`;
@@ -51,8 +53,164 @@ function committedSnapshotSource(end = operatorSnapshotCallIdx) {
   return `${src.slice(src.indexOf('snapshot_committed_operator_source() {'), end)}\n${normalizeOperatorSourceTestStub}`;
 }
 
+describe('EI-26928176238125992 — one admission for frozen SPA preparation', () => {
+  const prepare = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+
+  it.each([0, 37])('freezes a qualified candidate through the early validator and preserves refusal: %s', status => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-candidate-spa-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', 'log() { :; }',
+        'node() { printf "%s\\n" "$@" > "$TEST_ROOT/args"; return "$TEST_STATUS"; }',
+        prepare, 'prepare_verifier_spa || exit $?',
+        '[ "$VERIFIER_SPA_DIST" = "$WORK/verifier-spa/dist" ]',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
+        ...process.env, TEST_ROOT: fixture, TEST_STATUS: String(status), WORK: resolve(fixture, 'work'),
+        VERIFY_TAURI_SOURCE_REF: 'selected-commit', VERIFY_TAURI_SOURCE_REPO_DIR: '/selected/source',
+        PAPERCUSP_SHARED_SPA_DIST: '/private/candidate/spa',
+      } });
+      expect(result.status, result.stderr).toBe(status);
+      expect(readFileSync(resolve(fixture, 'args'), 'utf8').trim().split('\n')).toEqual([
+        '/selected/source/scripts/lib/verify-tauri-native-env.mjs', '--candidate-spa', '/selected/source',
+        resolve(fixture, 'work/verifier-spa/dist'),
+      ]);
+      const earlyCheck = src.indexOf('--candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" || exit $?');
+      expect(earlyCheck).toBeGreaterThan(0);
+      expect(earlyCheck).toBeLessThan(workAllocationIdx);
+      expect(earlyCheck).toBeLessThan(operatorSnapshotCallIdx);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it.each(['none', 'admission', 'prebuild', 'verify', 'build'])('admits once and stops at the first failed phase: %s', failure => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-spa-admission-'));
+    const frozen = resolve(fixture, 'source');
+    const order = resolve(fixture, 'order');
+    const receipt = resolve(fixture, 'source-receipt.json');
+    const output = resolve(fixture, 'work/verifier-spa/dist');
+    const script = (path: string, body: string) => {
+      mkdirSync(resolve(path, '..'), { recursive: true });
+      writeFileSync(path, `#!/bin/bash\nset -eu\n${body}\n`, { mode: 0o755 });
+    };
+    try {
+      writeFileSync(receipt, 'original source receipt');
+      script(resolve(frozen, 'apps/operator-vite/bin/vite-build-singleflight'), 'exit 0');
+      script(resolve(frozen, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'echo seed >> "$ORDER"');
+      script(resolve(frozen, 'scripts/pc-heavy.sh'), [
+        'echo admission >> "$ORDER"',
+        '[ "$FAIL_STEP" != admission ] || exit 23',
+        '[ "$1" = -- ]; shift',
+        'export PC_HEAVY_BYPASS=1',
+        '"$@"',
+      ].join('\n'));
+      script(resolve(fixture, 'bin/npm'), [
+        'phase="${!#}"',
+        '[ "$PC_HEAVY_BYPASS" = 1 ]',
+        '[ "$PAPERCUSP_RETAIN_DIST_CHUNKS" = 0 ]',
+        '[ "$PAPERCUSP_VITE_OUT_DIR" = "$EXPECTED_DIST" ]',
+        '[ "$PAPERCUSP_VITE_FINAL_OUT_DIR" = "$EXPECTED_DIST" ]',
+        '[ "$VITE_BUILD_OUT_ROOT/dist" = "$EXPECTED_DIST" ]',
+        '[ -z "${VITE_BUILD_CMD+x}${VITE_BUILD_LOCK+x}${VITE_BUILD_SNAPSHOT_DIR+x}" ]',
+        'echo "$phase" >> "$ORDER"',
+        '[ "$FAIL_STEP" != "$phase" ] || exit 17',
+        'if [ "$phase" = build ]; then mkdir -p "$EXPECTED_DIST/assets"; printf index > "$EXPECTED_DIST/index.html"; printf asset > "$EXPECTED_DIST/assets/entry.js"; fi',
+      ].join('\n'));
+      script(resolve(fixture, 'bin/node'), [
+        '[ "$PC_HEAVY_BYPASS" = 1 ]',
+        '[ "$*" = "scripts/source-preview.mjs verifier-verify --out $OPERATOR_SOURCE_ROOT --receipt $VERIFY_TAURI_SOURCE_RECEIPT --runtime-artifacts" ]',
+        'echo verify >> "$ORDER"',
+        '[ "$FAIL_STEP" != verify ] || exit 19',
+      ].join('\n'));
+      const result = spawnSync('bash', ['-c', [
+        'set -eu',
+        'log() { :; }',
+        prepare,
+        'prepare_verifier_spa || exit $?',
+        '[ "$VERIFIER_SPA_DIST" = "$EXPECTED_DIST" ]',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
+        ...process.env, PATH: `${fixture}/bin:${process.env.PATH}`,
+        WORK: resolve(fixture, 'work'), REPO_DIR: resolve(fixture, 'donor'),
+        OPERATOR_SOURCE_ROOT: frozen, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
+        VERIFY_TAURI_SOURCE_REF: 'fixture-commit', PAPERCUSP_SHARED_SPA_DIST: '',
+        ORDER: order, EXPECTED_DIST: output, FAIL_STEP: failure,
+        VITE_BUILD_CMD: 'inherited-command', VITE_BUILD_LOCK: 'inherited-lock', VITE_BUILD_SNAPSHOT_DIR: 'inherited-output',
+      } });
+      expect(result.status, result.stderr).toBe(failure === 'none' ? 0 : failure === 'admission' ? 23 : failure === 'verify' ? 19 : 17);
+      const phases = ['prebuild', 'verify', 'build'];
+      const completed = failure === 'none' ? phases : failure === 'admission' ? [] : phases.slice(0, phases.indexOf(failure) + 1);
+      expect(readFileSync(order, 'utf8').trim().split('\n')).toEqual(['seed', 'admission', ...completed]);
+      expect(readFileSync(receipt, 'utf8')).toBe('original source receipt');
+      expect(existsSync(resolve(output, 'index.html'))).toBe(failure === 'none');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
+
+describe('WI-6554700010027579 — committed native runtime asset inputs', () => {
+  const setupSource = readFileSync(resolve(__dirname, '../scripts/setup-porcupine-runtime.sh'), 'utf8');
+  const model = 'pinned fixture wake-word model\n';
+  const digest = createHash('sha256').update(model).digest('hex');
+  const setup = setupSource.replace(/^PORCUPINE_SHA256="[a-f0-9]+"/m, `PORCUPINE_SHA256="${digest}"`);
+  const preflight = src.match(/preflight_verifier_runtime_assets\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+
+  it.each(['valid', 'missing', 'corrupt'])('checks the selected commit pin without network or output mutation: %s', mode => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-model-preflight-'));
+    try {
+      const work = resolve(fixture, 'work');
+      const donor = resolve(fixture, 'donor');
+      mkdirSync(work); mkdirSync(resolve(donor, 'apps/operator/public/porcupine'), { recursive: true });
+      const cached = resolve(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+      if (mode !== 'missing') writeFileSync(cached, mode === 'valid' ? model : 'wrong model');
+      writeFileSync(resolve(fixture, 'selected-setup.sh'), setup);
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'WORK="$TEST_ROOT/work"; REPO_DIR="$TEST_ROOT/donor"; VERIFY_TAURI_SOURCE_REF=selected-commit',
+        'git() { printf "%s\\n" "$*" > "$TEST_ROOT/git-args"; cat "$TEST_ROOT/selected-setup.sh"; }',
+        'curl() { echo unexpected-network >&2; return 99; }; export -f curl',
+        preflight, 'preflight_verifier_runtime_assets /selected/source',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, TEST_ROOT: fixture } });
+      expect(result.status, result.stderr).toBe(mode === 'valid' ? 0 : 1);
+      expect(readFileSync(resolve(fixture, 'git-args'), 'utf8')).toContain(
+        '-C /selected/source cat-file blob selected-commit:apps/operator/scripts/setup-porcupine-runtime.sh');
+      expect(result.stderr).not.toContain('unexpected-network');
+      expect(existsSync(resolve(fixture, 'public'))).toBe(false);
+      if (mode !== 'valid') expect(result.stderr).toContain('required cached model');
+      const committed = committedSnapshotSource();
+      expect(committed.indexOf('preflight_verifier_runtime_assets "$source_repo"')).toBeGreaterThan(0);
+      expect(committed.indexOf('preflight_verifier_runtime_assets "$source_repo"'))
+        .toBeLessThan(committed.indexOf('verifier-measure'));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it.each(['valid', 'corrupt', 'missing'])('seeds only copied checksum-valid bytes before SPA prebuild: %s', mode => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-model-seed-'));
+    try {
+      const app = resolve(fixture, 'apps/operator');
+      mkdirSync(resolve(app, 'scripts'), { recursive: true });
+      const helper = resolve(app, 'scripts/setup-porcupine-runtime.sh');
+      writeFileSync(helper, setup);
+      const cached = resolve(fixture, 'cached.pv');
+      if (mode !== 'missing') writeFileSync(cached, mode === 'valid' ? model : 'corrupt donor');
+      const result = spawnSync('bash', ['-c',
+        'curl() { echo unexpected-network >&2; return 99; }; export -f curl; bash "$1" --source "$2"',
+        'fixture', helper, cached], { encoding: 'utf8', timeout: 5_000 });
+      expect(result.status, result.stderr).toBe(mode === 'valid' ? 0 : 1);
+      expect(result.stderr).not.toContain('unexpected-network');
+      const dest = resolve(app, 'public/porcupine/porcupine_params.pv');
+      expect(existsSync(dest)).toBe(mode === 'valid');
+      if (mode === 'valid') {
+        expect(readFileSync(dest, 'utf8')).toBe(model);
+        writeFileSync(cached, 'later donor change');
+        expect(readFileSync(dest, 'utf8')).toBe(model);
+      }
+      const build = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+      expect(build.indexOf('setup-porcupine-runtime.sh" --source')).toBeGreaterThan(0);
+      expect(build.indexOf('setup-porcupine-runtime.sh" --source'))
+        .toBeLessThan(build.indexOf('run prebuild'));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
+
 describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown', () => {
-  function finishFixture(exitCode: number, options: { copyFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
+  function finishFixture(exitCode: number, options: { copyFails?: boolean; stopFails?: boolean; cleanupFails?: boolean; noArtifacts?: boolean; noHarness?: boolean } = {}) {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-retained-artifacts-'));
     const source = resolve(fixture, 'source snapshot/operator-source');
     const work = resolve(fixture, 'work');
@@ -77,11 +235,13 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
       'VH_RUN_DIR="$TEST_EVIDENCE"; ASSERTION_MODE=1; SIGNAL_EXIT_CODE=0; ISOLATED_PG_PID=""; BRIDGE_PID=""; TAURI_LAUNCH_PROVENANCE=test-provenance; VERIFY_SCOPE_BASE=test-scope',
       'release_verifier_disk_reservations() { :; }; log() { echo "$*" >&2; }',
       'vh_capture_phase_stop() { :; }; vh_step() { :; }; vh_exit() { echo "verdict:$1"; }; capture_isolated_pg_diagnostics() { :; }; reap_frozen_source_survivors() { :; }',
-      'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
+      `write_stop_script() { printf '#!/bin/sh\\nexit ${options.stopFails ? 37 : 0}\\n' > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }`,
       'wait_owned_ports_free() { :; }; fed_release_port_locks() { :; }; display_lock_release() { :; }',
       'cleanup_assertion_script_snapshot() { :; }; cleanup_verifier_source_snapshot() { :; }',
       options.copyFails ? 'cp() { return 1; }' : '',
-      retention, bootRetention, cleanup, teardown, `(exit ${exitCode}); teardown`,
+      retention, bootRetention, cleanup, spaCleanupSource,
+      options.cleanupFails ? 'cleanup_operator_source_snapshot() { return 1; }' : '',
+      teardown, `(exit ${exitCode}); teardown`,
     ].join('\n')], {
       encoding: 'utf8', timeout: 10_000,
       env: { ...process.env, TEST_SOURCE: source, TEST_WORK: work, TEST_EVIDENCE: options.noHarness ? '' : evidence },
@@ -112,6 +272,16 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
     } finally { rmSync(run.fixture, { recursive: true, force: true }); }
   });
 
+  it.each(['stopFails', 'cleanupFails'] as const)('records a failing terminal verdict when %s after passing assertions', failure => {
+    const run = finishFixture(0, { [failure]: true });
+    try {
+      expect(run.result.status, run.result.stderr).toBe(1);
+      expect(run.result.stdout).toContain('verdict:1');
+      expect(run.result.stdout).not.toContain('verdict:0');
+      expect(existsSync(run.source)).toBe(true);
+    } finally { rmSync(run.fixture, { recursive: true, force: true }); }
+  });
+
   it('retains artifacts with instrumentation disabled in the surviving work directory', () => {
     const run = finishFixture(0, { noHarness: true });
     try {
@@ -131,14 +301,14 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
 
   it('guards boot-only cleanup with the persisted reaper and keeps assertion cleanup in teardown', () => {
     const stop = src.slice(src.indexOf('write_stop_script() {'), src.indexOf('# let the one EXIT trap own cleanup.'));
-    expect(stop).toContain('if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
+    expect(stop).toContain('if [ "\\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then');
     expect(stop).toContain('source "$WORK/frozen-source-reaper.sh"');
     expect(stop).toContain('reap_frozen_source_survivors "$OPERATOR_SOURCE_ROOT" "$TAURI_LAUNCH_PROVENANCE"');
     expect(stop).toContain('rm -rf -- "$OPERATOR_SOURCE_WORK"');
     expect(stop).toContain('SOURCE_CLEANUP_FAILED=1');
     expect(stop).toContain('exit 1');
     const teardown = src.slice(src.indexOf('teardown() {'), src.indexOf('\nverify_assertion_input_integrity()'));
-    expect(teardown).toContain('"$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?');
+    expect(teardown).toContain('"$WORK/stop.sh" >"$WORK/stop.log" 2>&1 || stop_rc=$?');
     expect(teardown).toContain('log "FATAL: generated stop script failed (exit=$stop_rc)"');
     expect(teardown).toContain('cleanup_operator_source_snapshot || {');
   });
@@ -833,7 +1003,7 @@ describe("EI-22587788892654404 — a repo-local temp root cannot enter its own s
 describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime loader", () => {
   const bundleFunctionIdx = src.indexOf("build_verifier_operator_host() {");
   const bundleCallIdx = src.indexOf(
-    "build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }",
+    "verifier_run_step verifier-host-bundle build_verifier_operator_host",
   );
   const launchEnvIdx = src.indexOf('OPERATOR_SOURCE_ENV_LINE="');
 
@@ -1109,7 +1279,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
       'cp -- "$WORK/.papercusp-run" "$OPERATOR_SOURCE_WORK/.papercusp-run"',
     );
     expect(src).toContain(
-      "snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }",
+      'snapshot_operator_source || { snapshot_rc=$?; cleanup_operator_source_snapshot; exit "$snapshot_rc"; }',
     );
     expect(src).toContain('if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then');
     expect(src).toContain('reap_frozen_source_survivors "$frozen_source_root" "$TAURI_LAUNCH_PROVENANCE"');
@@ -1173,6 +1343,7 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
           [
             "VERIFIER_DISK_RESERVATIONS=()",
             ...(badFootprint ? ['du() { echo unknown; }'] : []),
+            spaCleanupSource,
             src.slice(releaseStart, releaseEnd),
             src.slice(reservationStart, operatorSnapshotIdx),
             "reserve_verifier_disk 1073741824",

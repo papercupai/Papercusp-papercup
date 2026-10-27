@@ -35,6 +35,8 @@ import { refreshControlAnchorAfterMutation } from '../coordination/control-ancho
 import { attestModeControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { deactivateLoopForGoal, getLoopStatus } from '../../harness/routines/loop';
 import { notifyGoalHolderHandoff } from '../../goals/holder-handoff';
+import { renderModeInstructionsFact } from './instructions-fact';
+export { renderModeInstructionsFact };
 
 const MODE_IDS = MODES.map((m) => m.id);
 
@@ -51,27 +53,6 @@ export const MODE_INSTRUCTIONS_KEY_PREFIX = 'mode-instructions:';
 
 export function modeInstructionsFactKey(modeId: string): string {
   return `${MODE_INSTRUCTIONS_KEY_PREFIX}${modeId}`;
-}
-
-/**
- * The fact body. OPERATIVE CLAUSE FIRST, provenance last — deliberately, because
- * the store hard-clips at FACT_BODY_MAX_CHARS and the caller's `instructions`
- * may be longer than everything else here combined. Clipping the "who set it"
- * tail costs an anchor; clipping the instruction itself would silently change
- * what the agent is told to do.
- */
-export function renderModeInstructionsFact(opts: {
-  modeId: string;
-  instructions: string;
-  ownerDirected: boolean;
-  setBy: string;
-}): string {
-  const who = opts.ownerDirected ? 'the owner' : opts.setBy;
-  return (
-    `${opts.modeId.toUpperCase()} SCOPE — while '${opts.modeId}' is on, obey this verbatim: ` +
-    `${opts.instructions.trim()} ` +
-    `(set by ${who}; retracted when the mode is turned off)`
-  );
 }
 
 /**

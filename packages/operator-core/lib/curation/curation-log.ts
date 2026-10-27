@@ -18,6 +18,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 /** How far back "already surfaced" looks. Beyond this, a still-relevant signal
  *  may re-surface as a reminder (the source still emits it). */
 export const DEFAULT_SURFACED_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+const SURFACED_WRITE_BATCH_SIZE = 64;
 
 export interface SurfacedEntry {
   /** The FleetSignal id that was surfaced/batched. */
@@ -63,20 +64,29 @@ export async function recordSurfaced(
 ): Promise<void> {
   if (entries.length === 0) return;
   const workspaceId = activeWorkspaceId();
-  await withWorkspace(workspaceId, async (tx) => {
-    for (const e of entries) {
+  // Keep the last occurrence, matching the former sequential upserts. A bulk
+  // INSERT cannot update the same conflict key twice in one statement.
+  const rows = [...new Map(entries.map(entry => [entry.id, entry])).values()]
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    .map(entry => ({ workspace_id: workspaceId, signal_id: entry.id, kind: entry.kind,
+      policy_version: policyVersion, title: entry.title ?? null }));
+  for (let offset = 0; offset < rows.length; offset += SURFACED_WRITE_BATCH_SIZE) {
+    const batch = rows.slice(offset, offset + SURFACED_WRITE_BATCH_SIZE);
+    // Concurrent curator workers share signal keys. Acquire them in the same
+    // order, with one round trip per bounded transaction rather than retaining
+    // earlier row locks through every remaining per-signal round trip.
+    await withWorkspace(workspaceId, async (tx) => {
       await tx`
         INSERT INTO harness_shared.operator_curation_log
-          (workspace_id, signal_id, kind, policy_version, title, surfaced_at)
-        VALUES (${workspaceId}, ${e.id}, ${e.kind}, ${policyVersion}, ${e.title ?? null}, now())
+          ${tx(batch, 'workspace_id', 'signal_id', 'kind', 'policy_version', 'title')}
         ON CONFLICT (workspace_id, signal_id) DO UPDATE
-          SET surfaced_at = EXCLUDED.surfaced_at,
+          SET surfaced_at = now(),
               kind = EXCLUDED.kind,
               policy_version = EXCLUDED.policy_version,
               title = EXCLUDED.title
       `;
-    }
-  });
+    }, { acquireTimeoutMs: 7_500, lockTimeoutMs: 2_000, statementTimeoutMs: 5_000 });
+  }
 }
 
 /** A previously-surfaced recoverable (escalation/blocker-kind) signal that has

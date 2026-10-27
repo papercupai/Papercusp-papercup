@@ -1,5 +1,5 @@
 /** Hermetic composition smoke for the gateway service (P-013) — injected account + resolver. */
-import { test, afterEach, vi } from 'vitest';
+import { test, beforeEach, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,32 @@ import { processMonotonicClock } from '../process-monotonic-clock';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import type { GatewayPayloadSpool } from './payload-spool';
 import * as burnAlert from './burn-alert';
+import type { GatewayRequestOutcomeQuery, GatewayRequestOutcomeReport } from './gateway-request-outcome-store';
+
+// Keep the service composition real while binding the DB boundaries added
+// after these hermetic fixtures: no accepted support budget exists here, and
+// request outcome persistence/reporting belongs to its own store tests.
+const db = vi.hoisted(() => ({
+  budget: vi.fn(async (_workspace: string, _owner: string) => null),
+  recordOutcome: vi.fn(async () => {}),
+  reportOutcomes: vi.fn(async (_query: GatewayRequestOutcomeQuery): Promise<GatewayRequestOutcomeReport> => ({
+    rows: [], total: 0, byOutcome: { ok: 0, 'client-error': 0, 'upstream-429': 0,
+      'upstream-error': 0, shed: 0, cancelled: 0, 'gateway-error': 0, unclassified: 0 },
+    firstRequestTimestampMs: null, lastFinalizedAtMs: null, truncated: false, retentionMs: 0,
+  })),
+}));
+vi.mock('../blueprint/support-workflow-budget', () => ({ readSupportOperationBudgetBinding: db.budget }));
+vi.mock('./gateway-request-outcome-store', async original => ({
+  ...await original<typeof import('./gateway-request-outcome-store')>(),
+  recordGatewayRequestOutcome: db.recordOutcome,
+  reportGatewayRequestOutcomes: db.reportOutcomes,
+}));
+
+beforeEach(() => {
+  db.budget.mockClear();
+  db.recordOutcome.mockClear();
+  db.reportOutcomes.mockClear();
+});
 
 /** The per-account multiplier P-010 deleted along with `accountScaledCodexConcurrency`.
  *  Spelled here only so the falsifier below can name the number that must not return. */
@@ -64,8 +90,9 @@ const nativeFixtureReceipt = (attempt: GatewayCarryTrialAttempt) => ({ attemptId
   reservationRef: `native-fixture:${attempt.attemptId}`, clockId: attempt.clockId,
   validUntilMonotonicMs: processMonotonicClock.now() + 5_000 });
 
-test.each(['goal-denied', 'policy-unavailable', 'policy-throws', 'model-denied', 'attestation-fails', 'accepted'] as const)(
+test.each(['goal-denied', 'policy-unavailable', 'policy-throws', 'model-denied', 'budget-unavailable', 'attestation-fails', 'accepted'] as const)(
   'startGatewayService scopes authorization IO without bypassing its guards (%s)', async state => {
+    if (state === 'budget-unavailable') db.budget.mockRejectedValueOnce(new Error('private budget unavailable'));
     tempDir = mkdtempSync(join(tmpdir(), 'gateway-service-authority-'));
     const tokenPath = join(tempDir, 'provider.token');
     writeFileSync(tokenPath, 'PRIVATE_SCOPED_PROVIDER_TOKEN', { mode: 0o600 });
@@ -104,12 +131,14 @@ test.each(['goal-denied', 'policy-unavailable', 'policy-throws', 'model-denied',
     });
     const body = await response.text();
     assert.equal(response.status, state === 'accepted' ? 200 : state === 'attestation-fails' ? 502
-      : state === 'goal-denied' || state === 'model-denied' ? 403 : 503, body);
+      : state === 'goal-denied' || state === 'model-denied' || state === 'budget-unavailable' ? 403 : 503, body);
     assert.equal(goal.mock.calls.length, 1);
     assert.deepEqual(goal.mock.calls[0], ['private-service-owner']);
     assert.equal(policy.mock.calls.length, state === 'goal-denied' ? 0 : 1);
     if (state !== 'goal-denied') assert.deepEqual(policy.mock.calls[0], ['private-service-owner', 'codex']);
     const forwarded = state === 'accepted' || state === 'attestation-fails';
+    assert.equal(db.budget.mock.calls.length, forwarded || state === 'budget-unavailable' ? 1 : 0);
+    if (db.budget.mock.calls.length) assert.deepEqual(db.budget.mock.calls[0], ['private-service-workspace', 'private-service-owner']);
     assert.equal(provider.mock.calls.length, forwarded ? 1 : 0);
     assert.equal(record.mock.calls.length, forwarded ? 1 : 0);
     if (forwarded) {
@@ -166,6 +195,8 @@ test.each(['authorized', 'revoked'] as const)('startGatewayService carries trial
     if (status === 200) assert.equal(JSON.parse(body).owner, 'private-native-owner');
   }
   assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
+  assert.equal(db.reportOutcomes.mock.calls.length, 1, 'only the authorized exact-owner report reaches storage');
+  assert.equal(db.reportOutcomes.mock.calls[0]![0].ownerId, 'private-native-owner');
 });
 
 test('startGatewayService snapshots trial binding before asynchronous account resolution', async () => {
@@ -372,10 +403,14 @@ test('one Codex account does NOT multiply into a four-slot admission cap (D-006)
   assert.notEqual(INITIAL_PROVIDER_ADMISSION_WINDOW, RETIRED_CODEX_SLOTS_PER_ACCOUNT);
 });
 
-test('startGatewayService seeds every provider lane identically, whatever the account count', async () => {
+test.each([
+  { codexAccounts: 1, expectedFloor: 4 },
+  { codexAccounts: 4, expectedFloor: 4 },
+  { codexAccounts: 7, expectedFloor: 7 },
+])('startGatewayService shares the seed while provider floors track healthy accounts ($codexAccounts Codex accounts)', async ({ codexAccounts, expectedFloor }) => {
   const up = await startUpstream();
   const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
-  const codexDb = Array.from({ length: 7 }, (_, i) => ({
+  const codexDb = Array.from({ length: codexAccounts }, (_, i) => ({
     accountId: `codex-${i}`,
     credentialRef: `token:/codex-${i}`,
     source: 'pool' as const,
@@ -392,19 +427,27 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
     poolReloadIntervalMs: 0,
   });
   const scaled = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    concurrencyCap: number;
+    aimd: { floor: number };
+    codexHealthyAccounts: number;
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number; floor: number };
   };
-  // D-006: the account COUNT is deliberately not an input — seven accounts open at the
-  // same seed one does. (This case cannot detect a reinstated multiplication on its own;
-  // the single-account case above is the falsifier for that.)
+  // The Claude pool has one account in every case, so both provider lanes share
+  // the same cold-start seed. Codex account count does not multiply that seed.
   assert.equal(
     scaled.codexAdmission.maxConcurrent,
     INITIAL_PROVIDER_ADMISSION_WINDOW,
     'the seed is the shared starting window, whatever the account count',
   );
+  assert.equal(scaled.concurrencyCap, INITIAL_PROVIDER_ADMISSION_WINDOW);
   assert.equal(scaled.codexAimd.cap, INITIAL_PROVIDER_ADMISSION_WINDOW);
-  assert.equal(scaled.codexAimd.floor, 4, 'the AIMD floor is a minimum and survives P-010');
+  // P-002 (gateway-admission-congestion-only-2026-10-13): the configured
+  // minimum remains in force, but a provider's healthy accounts can raise its
+  // own contraction floor. This does not raise the other provider's floor.
+  assert.equal(scaled.codexHealthyAccounts, codexAccounts);
+  assert.equal(scaled.codexAimd.floor, expectedFloor, 'Codex respects both the configured minimum and its healthy pool');
+  assert.equal(scaled.aimd.floor, 4, 'Codex capacity does not change the Claude floor');
 
   await svc.stop();
   svc = await startGatewayService({
@@ -419,6 +462,7 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
   });
   const seeded = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
     concurrencyCap: number;
+    aimd: { floor: number };
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number; floor: number };
   };
@@ -427,6 +471,8 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
   assert.equal(seeded.codexAdmission.maxConcurrent, 12, 'the explicit seed opens the Codex lane');
   assert.equal(seeded.concurrencyCap, 12, 'and opens the Claude lane at exactly the same window');
   assert.equal(seeded.codexAimd.cap, 12);
+  assert.equal(seeded.codexAimd.floor, expectedFloor, 'an explicit seed does not replace the healthy-account floor');
+  assert.equal(seeded.aimd.floor, 4);
 });
 
 test('R-37: a gateway launched for one workspace selects only from that workspace’s pool (D-001)', async () => {

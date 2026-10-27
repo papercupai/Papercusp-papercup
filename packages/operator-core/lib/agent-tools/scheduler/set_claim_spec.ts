@@ -158,6 +158,8 @@ export async function previewClaimSpecAdmission(args: {
   spec: ClaimSpec;
   harness?: string;
   assignee: string;
+  /** Direct cup whose claim floors the preview evaluates, kept separate from the writer. */
+  targetAssignee?: string;
   cupId?: string;
   fleet?: string;
   explain?: ExplainIssueFloors;
@@ -228,11 +230,15 @@ export async function previewClaimSpecAdmission(args: {
 
   // Mirrors claimFloorsWhereSql's unified ['open'] default (work-item-status-full-unify P-004/P-005).
   const effectiveStates = args.spec.states ?? ['open'];
+  const previewAssignee =
+    !args.fleet && args.targetAssignee && args.targetAssignee === args.cupId
+      ? args.targetAssignee
+      : args.assignee;
   const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
   const rows =
     issueIds.length > 0
       ? await explain(args.harness, issueIds, {
-          assignee: args.assignee,
+          assignee: previewAssignee,
           states: effectiveStates,
         })
       : [];
@@ -247,7 +253,7 @@ export async function previewClaimSpecAdmission(args: {
   const alreadyHeldIds: string[] = [];
   let heldPreviewError: string | undefined;
   const heldRows = rows.filter((row) => row.refusedBy === 'already-taken' && row.heldBy);
-  const selfTarget = !args.fleet && args.cupId === args.assignee;
+  const selfTarget = !args.fleet && args.cupId === previewAssignee;
   if ((args.fleet || selfTarget) && heldRows.length > 0) {
     try {
       let members: Set<string>;
@@ -258,9 +264,9 @@ export async function previewClaimSpecAdmission(args: {
           (await import('../coordination/audience-host')).listFleetControlMembers;
         members = new Set(await resolveMembers(args.fleet));
       } else {
-        // A single-cup write may scope the caller's already-held work, but only
-        // when the target and verified writer identities are the same.
-        members = new Set([args.assignee]);
+        // A direct cup preview scopes only that exact target's held work. The
+        // caller remains the writer; targetAssignee is separately verified against cupId.
+        members = new Set([previewAssignee]);
       }
       const byHolder = new Map<string, string[]>();
       for (const row of heldRows) {
@@ -627,6 +633,7 @@ export default defineTool({
       spec: validated.spec,
       harness: resolvedHarness,
       assignee: ident.ownerId,
+      targetAssignee: args.fleet ? undefined : targetBeeId,
       cupId: args.fleet ? undefined : targetBeeId,
       fleet: args.fleet?.trim(),
     });

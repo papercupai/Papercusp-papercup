@@ -23,6 +23,7 @@ import {
   sweepLostGateRuns,
   type LostRunSweepDeps,
 } from './lost-gate-run-alarm';
+import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 
 const NOW = 1_750_000_000_000;
 const SELF_PID = 7;
@@ -57,6 +58,8 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
     progressAlarmKey: null as string | null,
     qualification,
     retries: 0,
+    /** The executor stamp each alarm field's winning claim merged into its record (R-1). */
+    stamps: {} as Record<'alarmKey' | 'progressAlarmKey', unknown>,
   };
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
@@ -74,6 +77,7 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
       const key = values[1] as string;
       if (row[field] === key) return Promise.resolve({ count: 0 });
       row[field] = key;
+      row.stamps[field] = JSON.parse(values[3] as string);
       return Promise.resolve({ count: 1 });
     }
     if (text.includes("(metadata->'gate_health') -")) {
@@ -485,5 +489,38 @@ describe('lost-run sweep wiring (R-5: within 10 minutes of the death)', () => {
     expect(starter).toMatch(
       /managedSetInterval\(\s*'green-checkpoint-lost-run-alarm',\s*opts\.lostRunIntervalMs \?\? LOST_RUN_SWEEP_INTERVAL_MS,\s*sweepLostRuns/,
     );
+  });
+});
+
+describe('claimLostRunAlarm executor stamp (gate-repair-plane-on-current-build-2026-10-15 R-1)', () => {
+  const target = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+  const bgHost: RepairLimbExecutor = {
+    hostId: 'port-3271',
+    processId: 'pid-4242',
+    executingBuild: { sha: 'a1b2c3d4e5f6', source: 'baked' },
+  };
+
+  it('stamps the winning alarm with the claiming host, process and executing build', async () => {
+    const { row, sql } = fakeRoutineRow(marker());
+    expect(await claimLostRunAlarm(sql, target, 'run-1', NOW, bgHost)).toBe(true);
+    expect(row.stamps.alarmKey).toEqual(bgHost);
+
+    // A second executor racing on the SAME key loses and cannot overwrite the winner's stamp.
+    const other: RepairLimbExecutor = { ...bgHost, hostId: 'port-3070', processId: 'pid-7' };
+    expect(await claimLostRunAlarm(sql, target, 'run-1', NOW + 1, other)).toBe(false);
+    expect(row.stamps.alarmKey).toEqual(bgHost);
+
+    // The progress alarm is stamped on its own field, by whoever claims it.
+    expect(
+      await claimLostRunAlarm(sql, { ...target, alarmField: 'qualificationProgressAlarm' }, 'q-1', NOW, other),
+    ).toBe(true);
+    expect(row.stamps.progressAlarmKey).toEqual(other);
+    expect(row.stamps.alarmKey).toEqual(bgHost);
+  });
+
+  it("defaults the stamp to THIS process's executor, never a git read", async () => {
+    const { row, sql } = fakeRoutineRow(marker());
+    expect(await claimLostRunAlarm(sql, target, 'run-2', NOW)).toBe(true);
+    expect(row.stamps.alarmKey).toEqual(currentRepairLimbExecutor());
   });
 });

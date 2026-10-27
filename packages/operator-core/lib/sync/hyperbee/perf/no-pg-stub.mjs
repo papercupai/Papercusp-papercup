@@ -74,6 +74,8 @@ const stub = (name) => {
 // no-pg-stub-covers-db-org-imports.test.ts — do not prune by hand.
 export const _resetForTests = stub('_resetForTests');
 export const _resetStoreIdentityForTests = stub('_resetStoreIdentityForTests');
+export const AcquireSnapshot = stub('AcquireSnapshot');
+export const AcquireTicketSnapshot = stub('AcquireTicketSnapshot');
 export const acquireTicketSnapshot = stub('acquireTicketSnapshot');
 export const buildConnectionOptions = stub('buildConnectionOptions');
 export const consumeEvents = stub('consumeEvents');
@@ -102,6 +104,7 @@ export const getFeatureLineage = stub('getFeatureLineage');
 export const getHarnessPg = stub('getHarnessPg');
 export const getLegacyClient = stub('getLegacyClient');
 export const getOrgPg = stub('getOrgPg');
+export const getOrgPgApp = stub('getOrgPgApp');
 export const getOrgPgListener = stub('getOrgPgListener');
 export const getOrgPgLosslessBigint = stub('getOrgPgLosslessBigint');
 export const GOAL_SPEND_SNAPSHOT_SOURCE = stub('GOAL_SPEND_SNAPSHOT_SOURCE');

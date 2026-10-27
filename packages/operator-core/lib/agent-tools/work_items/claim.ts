@@ -11,6 +11,7 @@
  * item (D-007).
  */
 import { z } from 'zod';
+import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
@@ -82,6 +83,7 @@ import {
   forceRefusalHint,
   notifyForceTransition,
   recordForceTransitionAudit,
+  verifyOwnerForceDirective,
   type ForceReleaseBasis,
 } from './release-force-guard';
 import {
@@ -338,6 +340,7 @@ async function claimOne(
   reader: CellReader | null,
   verifiedCallerAlias: string | null,
   declaredById: ReadonlyMap<string, DeclaredChangeKinds>,
+  reuse?: import('../../code-intelligence/task-brief').ClaimBriefReuseIdentity,
 ): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
@@ -574,13 +577,29 @@ async function claimOne(
       itemLastProgressAt: preClaimItem?.lastProgressAt ?? null,
       releaseRequest,
     });
-    if (!verdict.allowed) {
+    // WI-6554700010029971: an open, hook-captured owner directive addressed to THIS
+    // session authorizes the takeover even when the holder reads live — the owner's
+    // word outranks the liveness heuristic. Checked only after the ordinary bases
+    // refuse, so the audit basis stays the most specific one that applies.
+    let ownerDirectiveForce: { directiveId: number; excerpt: string } | null = null;
+    let ownerDirectiveRefusal: string | null = null;
+    if (!verdict.allowed && it.directiveRef != null) {
+      const ownerVerdict = await verifyOwnerForceDirective({
+        directiveId: it.directiveRef,
+        callerOwnerId: identity.ownerId,
+        workspaceId: identity.workspaceId ?? '',
+      });
+      if (ownerVerdict.ok) ownerDirectiveForce = ownerVerdict;
+      else ownerDirectiveRefusal = ownerVerdict.reason;
+    }
+    if (!verdict.allowed && !ownerDirectiveForce) {
       return {
         ok: false,
         id: it.id,
         error: 'force_unauthorized',
         holder: currentHolder,
         holderLiveness: verdict.holderLiveness,
+        ...(ownerDirectiveRefusal ? { ownerDirectiveRefusal } : {}),
         hint: forceRefusalHint(currentHolder),
       };
     }
@@ -588,8 +607,10 @@ async function claimOne(
       // The CAS leg must match `taken_by` byte-for-byte: the RAW stored holder, not its
       // canonical expansion (EI-23701433507513915).
       holder: storedHolder,
-      basis: verdict.basis as ForceReleaseBasis,
-      reason,
+      basis: ownerDirectiveForce ? 'owner-directive' : (verdict.basis as ForceReleaseBasis),
+      reason: ownerDirectiveForce
+        ? `${reason} [owner directive #${ownerDirectiveForce.directiveId}: "${ownerDirectiveForce.excerpt}"]`
+        : reason,
       ...(verdict.basis === 'announced-release-request-expired' && releaseRequest ? { releaseRequest } : {}),
     };
   }
@@ -942,6 +963,7 @@ async function claimOne(
         .catch(() => null),
       import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
         workItem, harness: workItem.harness ?? it.harness, workspaceId: identity.workspaceId,
+        reuse,
       })).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
@@ -1153,7 +1175,7 @@ async function claimOne(
       workItem: current,
       ...(claimFloor ? { claimFloor } : {}),
       hint:
-        `The force takeover was AUTHORIZED (${forced.basis}: ${forced.holder} is not live) but the claim write still refused it. ` +
+        `The force takeover was AUTHORIZED (${forced.basis}${forced.basis === 'owner-directive' ? '' : `: ${forced.holder} is not live`}) but the claim write still refused it. ` +
         `${forced.holder} still holds it UNCHANGED — this is NOT a live peer conflict, so do not retry the takeover blind or coordinate ` +
         `with ${forced.holder} (they are the dead holder you were reclaiming from). ` +
         (claimFloor
@@ -1419,6 +1441,8 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const reuse = createReuseBriefIdentity(ident.ownerId, ctx.dispatchCallId,
+      outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes }));
     // P-027: resolved ONCE for the whole batch — the advisory is reader-relative,
     // and every item in this call shares one reader. Guarded, so an
     // unattributable caller gets no advisory rather than a failed claim.
@@ -1467,7 +1491,7 @@ export default defineTool({
           }))
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
-    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById), {
+    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias, declaredById, reuse), {
       keyOf: (it) => ({ id: it.id }),
     });
     const env = declaredById.size

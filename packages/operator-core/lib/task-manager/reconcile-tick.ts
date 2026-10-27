@@ -35,7 +35,8 @@ import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-
 import { readJobLogTerminal, type JobLogTerminal } from './job-log-terminal';
 import {
   clearVanishedUnaccounted,
-  listLiveTasks,
+  listReconcileTasks,
+  recoverPendingTaskTerminalEvents,
   markEndedUnobserved,
   markRecoveredFromJobLog,
   markStranded,
@@ -48,6 +49,33 @@ import { lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ramTmpRoot } from '@papercusp/orchestrator';
 import { readProcessIdentity } from '../process-identity';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+
+/** One slow-pass warning, including the last awaited phase; normal passes stay quiet. */
+export function createReconcileStageReporter(
+  context: { workspaceId: string; harnessSlug: string },
+  warn: (message: string) => void = (message) => console.warn(message),
+) {
+  const startedAtMs = Date.now();
+  let phase = 'task-reconcile-start';
+  let taskId: string | undefined;
+  let phaseStartedAtMs = startedAtMs;
+  const timer = managedSetInterval('task-reconcile-slow-phase', 30_000, () => {
+    timer.stop();
+    warn('[task-reconcile] slow phase ' + JSON.stringify({
+      ...context, phase, taskId: taskId ?? null, startedAtMs, phaseStartedAtMs,
+      observedAtMs: Date.now(),
+    }));
+  }, { category: 'watchdog', classification: 'timeout-reaper', phase: 'arm', instanced: true });
+  return {
+    stage(name: string, currentTaskId?: string) {
+      phase = name;
+      taskId = currentTaskId;
+      phaseStartedAtMs = Date.now();
+    },
+    stop() { timer.stop(); },
+  };
+}
 
 const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
 
@@ -73,6 +101,8 @@ export async function cleanupEndedBrowserDirectory(row: TaskRow,
 }
 
 export interface ReconcileTickDeps {
+  /** Existing closeTask stages, plus the phases before and after terminal writes. */
+  stage?: (name: string, taskId?: string) => void;
   scan?: (opts: ScanOptions) => ScanResult | Promise<ScanResult>;
   listLive?: (workspaceId?: string) => Promise<TaskRow[]>;
   fs?: CgroupFs;
@@ -100,9 +130,10 @@ export interface ReconcileTickResult {
   summary: ReturnType<typeof summarizeReconcile>;
   result: ReconcileResult;
   scan: {
-    ownedRootExists: boolean;
+    ownedRootExists: boolean | null;
     ownedTruncated: boolean;
     foreignTruncated: boolean;
+    scanTimedOut: boolean;
     processes: number;
     userManagerRoot: string | null;
   };
@@ -153,9 +184,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   // files and classifies with the same rules; an injected non-node `fs` without
   // an `asyncFs` still takes the synchronous path.
   const scanFn = deps.scan ?? scanProcessesAsync;
-  const listLive = deps.listLive ?? listLiveTasks;
+  const listLive = deps.listLive ?? listReconcileTasks;
 
+  deps.stage?.('reconcile-scan');
   const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });
+  deps.stage?.('reconcile-read-live');
   const live = await listLive(deps.workspaceId);
 
   // D-018: for a live row whose scope is NOT visible in this scan, ask systemd
@@ -170,10 +203,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   const candidateUnits = [
     ...new Set(
       live
-        .filter((r) => isLiveOwnedState(r.state as TaskState) && r.scopeUnit && !seenScopes.has(r.scopeUnit))
+        .filter((r) => (isLiveOwnedState(r.state as TaskState) ||
+          (r.state === 'ended_unobserved' && r.exitCode == null)) && r.scopeUnit && !seenScopes.has(r.scopeUnit))
         .map((r) => r.scopeUnit as string),
     ),
   ];
+  deps.stage?.('reconcile-inspect-scopes');
   const terminalByUnit = deps.checkScopesReleased
     ? new Map()
     : candidateUnits.length
@@ -202,7 +237,9 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
 
   // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────
   let degradedReason: string | undefined;
-  if (!scan.ownedRootExists && live.length > 0) {
+  if (scan.scanTimedOut === true) {
+    degradedReason = 'the async process scan exceeded its IO deadline, so absence does not prove absence';
+  } else if (scan.ownedRootExists === false && live.length > 0) {
     degradedReason =
       'our cgroup slice does not exist on this host — every row would strand, which is a scan fault, not an outage';
   } else if (scan.ownedTruncated) {
@@ -222,6 +259,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         ownedRootExists: scan.ownedRootExists,
         ownedTruncated: scan.ownedTruncated,
         foreignTruncated: scan.foreignTruncated,
+        scanTimedOut: scan.scanTimedOut === true,
         processes: scan.processes.length,
         userManagerRoot: scan.userManagerRoot,
       },
@@ -237,6 +275,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       confirmedUnaccounted: [],
     };
   }
+
+  // Terminal-event recovery uses committed ledger truth, independent of scan
+  // health. The read-only path above must never emit or clear pending intent.
+  deps.stage?.('reconcile-terminal-events');
+  await recoverPendingTaskTerminalEvents(deps.workspaceId);
 
   // This confirmation is deliberately computed once per healthy tick and shared
   // by notification plus enforcement. Calling the debounce helper separately for
@@ -271,6 +314,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     }];
   });
 
+  deps.stage?.('reconcile-touch-alive');
   const touched = await touchAlive(
     [
       ...result.alive.map((a) => {
@@ -313,13 +357,33 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         return scan.ownedRootExists && Boolean(unit && releasedScopes.has(unit));
       })
     : result.endedUnobserved;
+  // A prior absence verdict is not an observed exit. Revisit only on this host,
+  // with no live process in the scope and positive independent release evidence.
+  if (scan.ownedRootExists) {
+    for (const row of live) {
+      if (row.state === 'ended_unobserved' && row.exitCode == null && row.scopeUnit &&
+        !seenScopes.has(row.scopeUnit) && releasedScopes.has(row.scopeUnit)) {
+        endedToPersist.push({ taskId: row.taskId, reason: 'revisit unobserved terminal row after confirmed scope release' });
+      }
+    }
+  }
+  const observeStage = deps.stage;
+  const persistedTerminals = new Set<string>();
+  const effectsForTask = (taskId: string) => ({
+    ...(observeStage ? { stage: (name: string) => observeStage(name, taskId) } : {}),
+    onTerminalPersisted: () => { persistedTerminals.add(taskId); },
+  });
   if (!degraded || endedToPersist.length > 0) {
     // Clean before terminal persistence; failure must remain eligible next tick.
     for (const verdict of [...strandedToPersist, ...endedToPersist]) {
       const row = byTaskId.get(verdict.taskId);
-      if (row) await cleanupEndedBrowserDirectory(row);
+      if (row) {
+        deps.stage?.('reconcile-browser-cleanup', row.taskId);
+        await cleanupEndedBrowserDirectory(row);
+      }
     }
-    strandedCount = await markStranded(strandedToPersist);
+    deps.stage?.('reconcile-mark-stranded');
+    strandedCount = await markStranded(strandedToPersist, undefined, effectsForTask);
     const endedWithTerminal = endedToPersist.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;
       const terminalProvenance = scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null;
@@ -351,19 +415,22 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         terminalProvenance,
       });
     }
-    endedUnobservedCount = await markEndedUnobserved(unobserved);
-    recoveredFromJobLogCount = await markRecoveredFromJobLog(recovered);
+    deps.stage?.('reconcile-mark-unobserved');
+    endedUnobservedCount = await markEndedUnobserved(unobserved, undefined, effectsForTask);
+    deps.stage?.('reconcile-recover-log');
+    recoveredFromJobLogCount = await markRecoveredFromJobLog(recovered, undefined, effectsForTask);
     // The failed unit was deliberately retained at spawn so its Result/exit
-    // status/MemoryPeak could reach the ledger. Release it only after the writer
-    // returns; a failed persistence throws before this point and leaves the unit
-    // available for the next reconciler tick.
+    // status/MemoryPeak could reach the ledger. A batch count cannot identify
+    // refused closes: release only units with their own accepted-write receipt.
+    // A throw or refused write leaves the unit available for the next tick.
     const resetFailure = deps.resetFailedTaskUnit ?? resetFailedTaskUnit;
     for (const verdict of endedWithTerminal) {
       // `endedWithTerminal` is a union: a bare StrandedVerdict for units with no
       // terminal record, or that verdict widened with `terminalProvenance`. Narrow
       // with `in` before reading it — the runtime condition is unchanged, since the
       // property is present exactly when the spread above added it.
-      if ('terminalProvenance' in verdict && verdict.terminalProvenance) {
+      if (persistedTerminals.has(verdict.taskId) && 'terminalProvenance' in verdict && verdict.terminalProvenance) {
+        deps.stage?.('reconcile-reset-unit', verdict.taskId);
         await resetFailure(verdict.terminalProvenance);
       }
     }
@@ -392,12 +459,16 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         },
       };
     });
+    deps.stage?.('reconcile-residue-upsert');
     const persisted = await upsertUnaccounted(groups, { workspaceId: deps.workspaceId });
     unaccountedPersisted = persisted.length;
+    deps.stage?.('reconcile-residue-clear');
     residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });
   }
 
+  deps.stage?.('reconcile-notify');
   await maybeNotify(deps, { summary, result, degraded, degradedReason, confirmedUnaccounted });
+  deps.stage?.('reconcile-complete');
 
   return {
     summary,
@@ -406,6 +477,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       ownedRootExists: scan.ownedRootExists,
       ownedTruncated: scan.ownedTruncated,
       foreignTruncated: scan.foreignTruncated,
+      scanTimedOut: scan.scanTimedOut === true,
       processes: scan.processes.length,
       userManagerRoot: scan.userManagerRoot,
     },

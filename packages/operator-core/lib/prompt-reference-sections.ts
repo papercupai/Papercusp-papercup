@@ -30,6 +30,14 @@ export function deferSuPromptReferences(text: string, sources: {
     let summary: string | null = null;
     if (heading.startsWith('Working as a fleet MEMBER')) {
       summary = 'Fleet members claim their assigned lane, honor governing decisions and locks, and checkpoint before yielding. Fetch the member runbook when joining a fleet.';
+      // These are decisions a member makes before fetching any runbook. Keep
+      // their canonical source text in the default launch, including the
+      // subscribe-then-recheck ordering that closes the lost-event window.
+      const pull = section.match(/^- \*\*PULL work[\s\S]*?(?=\n- \*\*Claim via)/m)?.[0];
+      const idle = section.match(/^- \*\*Persist with `loop:arm`[\s\S]*?(?=\n- \*\*Report exceptions)/m)?.[0]?.split('Blocked?')[0];
+      if (pull) summary += '\n\n' + pull.trim();
+      if (idle) summary += '\n\n' + idle.trim();
+      summary += '\n\nKeep the effective claim cap: only a held blocked/needs-human item with an active typed external blocker is excluded from active-slot consumption; an event wait alone is not exempt.';
     } else if (heading.startsWith('Git — a background routine')) {
       summary = 'Edit only canonical staging. Background git-sync owns add/commit/push; never stash, branch, create worktrees or resolve merge conflicts yourself.';
     } else if (heading.startsWith('Delivery discipline —')) {

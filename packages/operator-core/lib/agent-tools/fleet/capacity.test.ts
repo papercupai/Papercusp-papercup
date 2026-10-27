@@ -785,6 +785,39 @@ test('EI-21268415877542410: capacity reports one honest account-pool snapshot, n
   headroomSpy.mockRestore();
 });
 
+test('WI-6554700010029550: capacity names each codex account subscription tier, unread accounts as null', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  const observedAt = Date.parse('2026-10-26T17:00:00.000Z');
+  const rate = { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 };
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('pro-acct', { provider: 'codex', rate: { ...rate, planType: 'pro', planObservedAt: observedAt } }),
+    acctRow('plus-acct', {
+      provider: 'codex',
+      available: false,
+      usageWalled: true,
+      rate: { ...rate, planType: 'plus', planObservedAt: observedAt },
+    }),
+    acctRow('unread-acct', { provider: 'codex' }),
+    // A different provider's row must not leak into the codex reading.
+    acctRow('claude-acct', { rate: { ...rate, planType: 'max', planObservedAt: observedAt } }),
+  ]);
+  try {
+    const res = (await capacityMod.default.handler({ provider: 'codex' } as never, { role: 'su' } as never)) as {
+      content: { text: string }[];
+    };
+    const body = JSON.parse(res.content[0]!.text);
+    assert.deepEqual(body.accountPool.plans, [
+      { id: 'pro-acct', planType: 'pro', observedAt: '2026-10-26T17:00:00.000Z' },
+      { id: 'plus-acct', planType: 'plus', observedAt: '2026-10-26T17:00:00.000Z' },
+      { id: 'unread-acct', planType: null, observedAt: null },
+    ]);
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
 test('WI-41067: an implicit live fleet scope selects its worker provider instead of legacy Claude', async () => {
   const capacityMod = await import('./capacity');
   const observability = await import('../../inference-gateway/observability');

@@ -35,6 +35,7 @@ import {
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { ChangeKindsView } from './work-item-change-kinds';
 import { renderStackProofGuidance } from './change-kind-stack';
+import { missingRefactorProof, type RefactorFactsResolver } from './change-kind-refactor-proof';
 
 /**
  * D-003: claims that began before this instant and carry no declaration close with a warning
@@ -56,8 +57,8 @@ const CUTOVER_MS = Date.parse(CHANGE_KIND_GATE_CUTOVER);
 /** The root completion fields a single-kind close may use as its proof. */
 export interface RootCompletionProof {
   summary?: string;
-  testsRun?: string;
-  testResult?: string;
+  testsRun?: string | readonly string[];
+  testResult?: string | readonly string[];
   filesChanged?: readonly string[];
   filesDeleted?: readonly string[];
 }
@@ -73,6 +74,11 @@ export interface ChangeKindProofDeps {
   harnessSlug?: string | null;
   /** Optional maintained current-build test class that overrides the manifest default. */
   testClass?: string | null;
+  /**
+   * P-004 / R-4: resolves a 'refactor' close's facts (test_runs rows, git diff, coverage map,
+   * detector re-scan). Omitted ⇒ a 'refactor' close is refused (fail closed), never waved through.
+   */
+  resolveRefactorFacts?: RefactorFactsResolver;
 }
 
 export interface ChangeKindMissingProof {
@@ -138,12 +144,21 @@ const trimmed = (v: string | null | undefined): string | undefined => {
   return t ? t : undefined;
 };
 
+/** Root completion evidence accepts either text or a list of text entries. */
+function rootProofText(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return value.every((entry) => typeof entry === 'string') ? trimmed(value.join('\n')) : undefined;
+  }
+  return typeof value === 'string' ? trimmed(value) : undefined;
+}
+
 /** A git/build sha, or the headless runner's snapshot-contains assertion. */
 const BUILD_IDENTITY_RE = /\b[0-9a-f]{7,40}\b|\bVERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS\b/i;
 /** A test file named directly, for runners the regex above does not list. */
 const TEST_FILE_RE = /[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?\b|[\w./-]*_test\.(?:go|py)\b|\btest_\w+\.py\b/i;
 const PASSING_RESULT_RE = /\b(?:pass(?:ed|es|ing)?|green|ok)\b|\b0\s+fail(?:ed|ures?|ing)?\b/i;
-const FAILING_RESULT_RE = /\b[1-9]\d*\s+(?:failed|failing|failures?)\b|\bFAIL\b/;
+const FAILING_COUNT_RE = /\b[1-9]\d*\s+fail(?:ed|ures?|ing)?\b/i;
+const FAILING_RESULT_RE = /\bFAIL\b/;
 /** The live operator database on this box: a migration applied there is not disposable. */
 const LIVE_OPERATOR_DB_RE = /^papercusp$|(?:127\.0\.0\.1|localhost):5432\/papercusp\b/i;
 /** The shared operator runtimes: a job run there is not isolated. */
@@ -162,8 +177,8 @@ function evidenceFor(
     ? {
         kind,
         ...(trimmed(root.summary) ? { summary: trimmed(root.summary)! } : {}),
-        ...(trimmed(root.testsRun) ? { testsRun: trimmed(root.testsRun)! } : {}),
-        ...(trimmed(root.testResult) ? { testResult: trimmed(root.testResult)! } : {}),
+        ...(rootProofText(root.testsRun) ? { testsRun: rootProofText(root.testsRun)! } : {}),
+        ...(rootProofText(root.testResult) ? { testResult: rootProofText(root.testResult)! } : {}),
       }
     : { kind };
   return entry ? { ...base, ...stripUndefined(entry) } : base;
@@ -180,8 +195,10 @@ function citesPassingTestRun(e: ChangeKindEvidence): string[] {
     missing.push('`testsRun` naming the test command or test files that ran (for example `testing:run { files }`)');
   }
   const result = e.testResult ?? '';
+  // A runner's explicit zero count is not a FAIL verdict; retain other FAIL markers.
+  const uncountedResult = result.replace(/\b0\s+FAIL\b/g, '');
   if (!result) missing.push('`testResult` reporting the run passed');
-  else if (FAILING_RESULT_RE.test(result) || !PASSING_RESULT_RE.test(result)) {
+  else if (FAILING_COUNT_RE.test(result) || FAILING_RESULT_RE.test(uncountedResult) || !PASSING_RESULT_RE.test(result)) {
     missing.push(`\`testResult\` reporting a passing run (got "${result.slice(0, 120)}")`);
   }
   return missing;
@@ -311,6 +328,11 @@ export async function missingProofForKind(
     case 'test-only':
       missing = citesPassingTestRun(e);
       break;
+    case 'refactor':
+      // D-006: refused on missing proof whatever the claim's start time — the cutover warn path
+      // only covers closes with NO declaration, and a declared 'refactor' never reaches it.
+      missing = await missingRefactorProof(entry ?? {}, deps.resolveRefactorFacts);
+      break;
     case 'config':
       missing = checkReadBack(e, 'the effective value read back from the program that consumes it');
       break;
@@ -403,9 +425,9 @@ function renderRefusal(
   lines.push(
     kinds
       ? `REJECTED — ${itemId} declares change kind(s) ${kinds.join(', ')}, but this close does not carry the proof they ` +
-          'require. The completion is recorded; the item stays open.'
-      : `REJECTED — ${itemId} has no change-kind declaration, so this close cannot show the proof its change requires. ` +
-          'The completion is recorded; the item stays open.',
+          'require; the item stays open.'
+      : `REJECTED — ${itemId} has no change-kind declaration, so this close cannot show the proof its change requires; ` +
+          'the item stays open.',
   );
   for (const p of problems) lines.push(`- ${p}`);
   for (const m of missing) {

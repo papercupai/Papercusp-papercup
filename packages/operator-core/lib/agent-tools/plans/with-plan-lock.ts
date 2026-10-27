@@ -84,6 +84,7 @@ import {
 } from './rubric-loss-guard';
 import { RUBRIC_TEMPLATE_NAME, rubricTemplateDataSchema } from './rubric-template';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -91,6 +92,7 @@ import {
   VALID_PLAN_SLUG,
 } from './source';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 /** System author of the EI-14579 resurrection marker revision. */
 export const TEMPLATE_DATA_LOSS_GUARD_AUTHOR = 'with-plan-lock:template-data-loss-guard';
 /** System author of a revision recorded for a plan write whose caller wired no revision
@@ -123,7 +125,7 @@ async function promotedDependencyMutations(
   const endpoints = new Map<string, { kind: string; ref: string }>();
   for (const row of rows) {
     if (endpoints.has(row.item_id)) continue;
-    endpoints.set(row.item_id, ['bug', 'change', 'task'].includes(row.item_kind)
+    endpoints.set(row.item_id, (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(row.item_kind)
       ? { kind: 'issue', ref: row.feature_id }
       : { kind: 'feature', ref: `${scope.harnessSlug}#${row.feature_id}` });
   }
@@ -596,9 +598,13 @@ export async function withPlanLock<T>(
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
   }
+  // The admitted workspace must survive home-harness writes too: resolving
+  // only the optional lock arguments otherwise falls back to the dogfood
+  // tenant, while readers retain the caller's concrete workspace.
+  const contextScope = await ctxToPlanSourceOpts(_ctx);
   const { workspaceId, harnessSlug } = await resolvePlanScope({
-    harnessSlug: opts.harnessSlug,
-    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug ?? contextScope.harnessSlug,
+    workspaceId: opts.workspaceId ?? contextScope.workspaceId,
   });
   const slug = opts.slug;
   const filePath = syntheticPlanPath(harnessSlug, slug);

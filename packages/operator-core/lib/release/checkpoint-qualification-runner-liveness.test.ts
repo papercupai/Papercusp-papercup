@@ -51,6 +51,31 @@ const runningWithRunner = (unit: string | null): CheckpointQualificationTransact
 // Well inside the 3h lease: without a liveness term every case below would be a `conflict`.
 const DURING_LEASE = 1_000 + 60_000;
 
+it.each(['live', 'unknown', 'dead'] as const)('checks the confined payload after parent death: %s', async childState => {
+  const runner = { ...runningWithRunner('parent.scope').currentPhysicalRunner!,
+    childScopeUnits: ['pc-child123.scope'], childScopeReservedAtMs: 1000 };
+  const observed: string[] = [];
+  configureRunnerLivenessProber(async candidate => {
+    observed.push(candidate.unit!);
+    return candidate.unit === 'pc-child123.scope' ? childState : 'dead';
+  });
+  try {
+    await expect(probeRunnerLiveness(runner, DURING_LEASE)).resolves.toBe(childState);
+    expect(observed[0]).toBe('pc-child123.scope');
+    if (childState !== 'dead') expect(observed).toHaveLength(1);
+  } finally { configureRunnerLivenessProber(null); }
+});
+
+it('does not reclaim a dead parent while an enrolled child may still be starting', async () => {
+  const runner = { ...runningWithRunner('parent.scope').currentPhysicalRunner!,
+    childScopeUnits: ['pc-child123.scope'], childScopeReservedAtMs: 1000 };
+  configureRunnerLivenessProber(() => 'dead');
+  try {
+    await expect(probeRunnerLiveness(runner, 1000 + QUALIFICATION_LAUNCH_GRACE_MS - 1)).resolves.toBe('unknown');
+    await expect(probeRunnerLiveness(runner, 1000 + QUALIFICATION_LAUNCH_GRACE_MS)).resolves.toBe('dead');
+  } finally { configureRunnerLivenessProber(null); }
+});
+
 it('keeps a not-yet-created named scope single-flight, then recovers its dead reservation', async () => {
   const begun = beginQualificationTransaction(null, { attemptId: 'scheduled-attempt', nowMs: 1_000 }).transaction;
   const reserved = reserveQualificationRunner(begun, {
@@ -121,13 +146,13 @@ it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it o
   }
 });
 
-it.skipIf(process.platform !== 'linux')('runs systemctl liveness checks without blocking the event loop', async () => {
+it.skipIf(process.platform !== 'linux').each(['active', 'deactivating'])('keeps %s systemctl units live without blocking the event loop', async state => {
   configureRunnerLivenessProber(null);
   const bin = mkdtempSync(join(tmpdir(), 'qualification-systemctl-'));
   const previousPath = process.env.PATH;
   try {
     const fakeSystemctl = join(bin, 'systemctl');
-    writeFileSync(fakeSystemctl, '#!/bin/sh\nsleep 0.25\nprintf "active\\n"\n');
+    writeFileSync(fakeSystemctl, `#!/bin/sh\nsleep 0.25\nprintf "${state}\\n"\n`);
     chmodSync(fakeSystemctl, 0o755);
     process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
 

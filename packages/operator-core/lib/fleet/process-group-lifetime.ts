@@ -113,7 +113,10 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
       // A successful parent can close its pipes while helpers still run. A
       // deadline or an unsuccessful probe must never manufacture an exit receipt.
       let probeFailureReported = false;
-      let nextMemberProbe = 0;
+      // Give an ordinary signal/exit and its child-reaping callback a chance
+      // to settle before scanning every host PID for the exceptional zombie
+      // case. The cheap group probe still runs immediately and every 10ms.
+      let nextMemberProbe = Math.min(deadline, Date.now() + 100);
       for (;;) {
         let groupFound = false;
         try {

@@ -45,6 +45,7 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import { activeWorkspaceId } from '../workspace-registry';
 import { followUpSystemClears, type SystemClearedBlockerItem } from '../work-item-ref-blocker-auto-clear';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
 /** event-wait-settlement-2026-10-20 P-005: who settles a missed proving fire on recovery. */
 export const MISSED_FIRE_RECOVERY_ACTOR = 'system:event-settlement-recovery';
@@ -282,7 +283,7 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     return rows.map((r) => ({
       id: r.id,
       harness: r.harness,
-      family: ['bug', 'change', 'task'].includes(String(r.item_kind)) ? 'issue' as const : 'feature' as const,
+      family: (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(r.item_kind)) ? 'issue' as const : 'feature' as const,
       holder: r.taken_by?.trim() || null,
       stateChangedAt: r.state_changed_at ? new Date(r.state_changed_at).toISOString() : null,
       blockers: r.blockers,

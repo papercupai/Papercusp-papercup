@@ -17,6 +17,8 @@
 // registration. Must stay above `import './bootstrap'` (and is reached first
 // by operator tools, which import `defineTool` from this index).
 import './capability-tiers-papercusp';
+// Import actual package metadata before builtin tools self-register, including in bundles.
+import './builtin-provider-papercusp';
 // Entity resolvers (tool-arg-referential-integrity-2026-07-19 P-004): registers the
 // existence checks the `entity-check` dispatch step consults for `entityRef` args.
 // Same load-time-side-effect contract as the tier resolver above. Inert until an arg
@@ -221,8 +223,12 @@ export {
 } from '@papercusp/tooldef';
 export {
   registerCard,
+  readPrivateCardLink,
   resolveCardResponse,
+  resolveCardResponseAsync,
+  deliverCommittedCardResponse,
   cancelPendingCardsForRun,
+  cancelPendingCardsForRunAsync,
   cancelPendingCardsForWorkspaceSwitch,
   _resetCardCorrelatorForTests,
 } from '@papercusp/tooldef';
@@ -308,6 +314,7 @@ export {
   listAllProjectedTools,
   PROJECTED_TOOL_REGISTRY_SOURCE,
   projectedToolRegistryRevision,
+  projectedToolProviderVersion,
   projectedToolCallContract,
   projectedToolAdmitted,
   assertProjectedToolCallContract,

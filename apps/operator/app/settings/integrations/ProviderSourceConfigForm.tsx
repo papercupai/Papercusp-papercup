@@ -5,6 +5,7 @@ import { useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import type { TicketSourceSummary } from '@papercusp/operator-core/lib/integrations/ticket-integrations';
 import SchemaForm from '../../dev/_components/SchemaForm';
+import { LazyDetails } from '../../_components/LazyDetails';
 import { Button } from '../../harness/Button';
 import { integrationRequest } from './ticket-integrations-client';
 
@@ -32,14 +33,13 @@ export function ProviderSourceConfigForm({ source, displayName, schema, onSaved 
     }
   };
   return (
-    <details>
-      <summary>Configure connection</summary>
+    <LazyDetails summary="Configure connection">
       <form aria-label={`${displayName} connection settings`} onSubmit={(event) => void save(event)} style={{ display: 'grid', gap: 12, paddingTop: 12 }}>
         <fieldset disabled={saving} style={{ border: 0, padding: 0 }}>
           <SchemaForm schema={schema} value={draft} onChange={setDraft} />
         </fieldset>
         <Button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save connection settings'}</Button>
       </form>
-    </details>
+    </LazyDetails>
   );
 }

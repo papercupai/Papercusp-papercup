@@ -86,6 +86,9 @@
 #   RECLAIM_MIN_FREE_PCT=100  only sweep when free% is below this (default 100
 #                             = always sweep; the age filters already make a
 #                             healthy box a cheap no-op)
+#   CONTAINER_STORE_MAX_BYTES=21474836480  allocated-byte cap per physical store;
+#                             excess that native guards retain is reported, never
+#                             removed by walking a manager-owned layout
 #
 # Run hourly via the papercup-docker-reclaim.timer systemd user timer.
 # The same actor also covers Podman's separate rootless/rootful image stores.
@@ -103,6 +106,7 @@ VOLUME_MAX_AGE_SECS="${VOLUME_MAX_AGE_SECS:-86400}"
 SKIP_IMAGES="${SKIP_IMAGES:-0}"
 RECLAIM_MIN_FREE_PCT="${RECLAIM_MIN_FREE_PCT:-100}"
 TARGET_FS="${TARGET_FS:-/}"
+CONTAINER_STORE_MAX_BYTES="${CONTAINER_STORE_MAX_BYTES:-21474836480}"
 
 log() { printf '[docker-reclaim] %s\n' "$*"; }
 
@@ -111,19 +115,33 @@ log() { printf '[docker-reclaim] %s\n' "$*"; }
 # through the last native command with storage:pin's existing mutex/parser.
 PIN_GUARD_INPUT=''
 PIN_GUARD_PID=''
+PIN_GUARD_OUTPUT=''
+STORE_NATIVE_FAILURES=0
+STORE_SKIP_REASON=''
+declare -A SEEN_CONTAINER_STORES=()
 container_pin_guard_release() {
   if [[ -n "$PIN_GUARD_INPUT" ]]; then
+    local receipt
+    printf '%s\t%s\n' "$STORE_NATIVE_FAILURES" "$STORE_SKIP_REASON" >&"$PIN_GUARD_INPUT" || true
     exec {PIN_GUARD_INPUT}>&-
+    if IFS= read -r receipt <&"$PIN_GUARD_OUTPUT"; then
+      log "store-receipt $receipt"
+    else
+      log 'store-receipt {"complete":false,"status":"guard-receipt-failed"}'
+    fi
+    exec {PIN_GUARD_OUTPUT}<&-
     wait "$PIN_GUARD_PID" || true
-    PIN_GUARD_INPUT=''; PIN_GUARD_PID=''
+    PIN_GUARD_INPUT=''; PIN_GUARD_PID=''; PIN_GUARD_OUTPUT=''
   fi
 }
 trap container_pin_guard_release EXIT
 
 container_pin_guard_acquire() {
-  local label="$1" root="$2" module output readiness
-  [[ "$root" == /* && "$root" != *$'\n'* ]] || {
+  local label="$1" root="$2" module output input readiness identity
+  STORE_NATIVE_FAILURES=0; STORE_SKIP_REASON=''
+  [[ "$root" == /* && "$root" != *$'\n'* && "$root" != *$'\r'* && "$root" != *$'\t'* ]] || {
     log "retention pin admission failed: $label storage root unavailable — skipping store"
+    printf '[docker-reclaim] store-receipt {"store":"%s","status":"discovery-failed","complete":false,"measurementComplete":false}\n' "$label"
     return 1
   }
   # The unit runs a snapshot COPY under $TMPDIR, so a climb out of this script's own
@@ -135,19 +153,91 @@ container_pin_guard_acquire() {
       import { pathToFileURL } from "node:url";
       import { realpathSync } from "node:fs";
       import { execFileSync } from "node:child_process";
-      import { isAbsolute } from "node:path";
+      import { isAbsolute, normalize } from "node:path";
       const released = new Promise(resolve => {
-        process.stdin.once("end", resolve);
-        process.stdin.once("data", resolve);
+        process.stdin.once("end", () => resolve("1\taborted"));
+        process.stdin.once("data", data => resolve(String(data)));
         process.stdin.resume();
       });
+      const root = process.argv[2], store = process.argv[3];
+      const maxBytes = Number(process.argv[4]);
+      const receipt = { store, root, maxBytes, measurementComplete: false, complete: false,
+        nativeFailures: 0, evictionOrder: "native-unverified" };
+      const privileged = store === "podman-rootful" || store === "docker";
+      // This is a read-only, bounded, no-follow allocated-inode census. Native
+      // managers retain exclusive authority to delete their internal layouts.
+      const census = String.raw`
+import os, sys, json, stat, time
+request = json.load(sys.stdin)
+root, pins = request["root"], request["pins"]
+deadline = time.monotonic() + 30
+seen, pinned_seen = {}, {}
+total = pinned = entries = 0
+def covers(path):
+    return any(scope == "/" or path == scope or path.startswith(scope + "/") for scope in pins)
+def add(path, s):
+    global total, pinned, entries
+    entries += 1
+    if entries > 1000000 or time.monotonic() >= deadline:
+        raise RuntimeError("allocation census budget exceeded")
+    key, size = (s.st_dev, s.st_ino), s.st_blocks * 512
+    if size < 0:
+        raise RuntimeError("invalid allocation")
+    if key in seen and seen[key] != size:
+        raise RuntimeError("allocation changed during census")
+    if key not in seen:
+        seen[key] = size
+        total += size
+    if covers(path) and key not in pinned_seen:
+        pinned_seen[key] = size
+        pinned += size
+def walk(fd, path, device):
+    before = os.fstat(fd)
+    if before.st_dev != device:
+        raise RuntimeError("filesystem boundary")
+    add(path, before)
+    with os.scandir(fd) as children:
+        for child in children:
+            child_path = os.path.join(path, child.name)
+            s = os.stat(child.name, dir_fd=fd, follow_symlinks=False)
+            if s.st_dev != device:
+                raise RuntimeError("filesystem boundary")
+            if stat.S_ISDIR(s.st_mode):
+                nested = os.open(child.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    current = os.fstat(nested)
+                    if (s.st_dev, s.st_ino) != (current.st_dev, current.st_ino):
+                        raise RuntimeError("directory identity changed")
+                    walk(nested, child_path, device)
+                finally:
+                    os.close(nested)
+            else:
+                add(child_path, s)
+    after = os.fstat(fd)
+    if (before.st_dev, before.st_ino, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_ctime_ns):
+        raise RuntimeError("directory changed during census")
+try:
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        initial = os.fstat(fd)
+        walk(fd, root, initial.st_dev)
+        identity = str(initial.st_dev) + ":" + str(initial.st_ino)
+    finally:
+        os.close(fd)
+    if total > 9007199254740991 or pinned > total:
+        raise RuntimeError("allocation overflow")
+    print(json.dumps({"bytes": total, "pinnedBytes": pinned, "identity": identity, "complete": True}))
+except Exception as error:
+    print(json.dumps({"complete": False, "permissionDenied": isinstance(error, PermissionError), "error": str(error)[:240]}))
+`;
       try {
-        const { withRetentionPinProtection } = await import(pathToFileURL(process.argv[1]).href);
+        const { withRetentionPinProtection, readRetentionPins } = await import(pathToFileURL(process.argv[1]).href);
+        if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error("invalid container store cap");
         // Keep the registry and mutex under the caller identity. Only resolving
         // a rootful store needs privilege; sudoing the guard would switch both.
         const resolvePath = path => {
           try { return realpathSync(path); } catch (error) {
-            if (process.argv[3] !== "podman-rootful" ||
+            if (!privileged ||
                 !["EACCES", "EPERM"].includes(error.code)) throw error;
             const physical = execFileSync("sudo", ["-n", "realpath", "-e", "--", path], {
               encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
@@ -158,28 +248,82 @@ container_pin_guard_acquire() {
             return physical;
           }
         };
+        const nowMs = Date.now();
         await withRetentionPinProtection(async isPinned => {
-          process.stdout.write(isPinned(process.argv[2]) ? "PINNED\n" : "LOCKED\n");
-          await released;
-        }, { resolvePath });
+          // The same parser, time and held mutex give both reads the identical
+          // validated snapshot, including when a pin expires during native work.
+          const read = readRetentionPins({ nowMs });
+          if (read.errors.length) throw new Error("pin allocation snapshot unavailable");
+          const pinPaths = [...new Set(read.pins.flatMap(pin => pin.paths.flatMap(path => {
+            let physical = path;
+            try { physical = resolvePath(path); } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+            }
+            return [normalize(path), normalize(physical)];
+          })))];
+          const physicalRoot = resolvePath(root);
+          receipt.physicalRoot = physicalRoot;
+          if (physicalRoot === "/") throw new Error("filesystem root is not a container store");
+          const measure = () => {
+            const args = ["-c", census];
+            const options = { input: JSON.stringify({ root: physicalRoot, pins: pinPaths }),
+              encoding: "utf8", timeout: 35000, maxBuffer: 8192, stdio: ["pipe", "pipe", "pipe"] };
+            let result = JSON.parse(execFileSync("python3", args, options));
+            if (result.permissionDenied && privileged) {
+              result = JSON.parse(execFileSync("sudo", ["-n", "python3", ...args], options));
+            }
+            if (!result.complete) throw new Error(result.error || "incomplete allocation census");
+            return result;
+          };
+          const before = measure();
+          const pinned = isPinned(root);
+          receipt.beforeBytes = before.bytes;
+          process.stdout.write(`${pinned ? "PINNED" : "LOCKED"}\t${before.identity}\n`);
+          const [failures, skip] = (await released).trim().split("\t");
+          receipt.nativeFailures = Number(failures) || 0;
+          const after = measure();
+          if (after.identity !== before.identity) throw new Error("store root identity changed");
+          receipt.measurementComplete = true;
+          receipt.afterBytes = after.bytes;
+          receipt.pinnedBytes = after.pinnedBytes;
+          receipt.reclaimedBytes = Math.max(0, before.bytes - after.bytes);
+          receipt.pinnedOverageBytes = Math.max(0, after.pinnedBytes - maxBytes);
+          receipt.unprotectedOverageBytes = Math.max(0, after.bytes - Math.max(maxBytes, after.pinnedBytes));
+          receipt.status = skip || (receipt.nativeFailures ? "native-failed"
+            : receipt.unprotectedOverageBytes ? (pinned ? "pinned-unrelated-overage" : "unprotected-overage")
+            : receipt.pinnedOverageBytes ? "pinned-overage" : "within-cap");
+          receipt.complete = !skip && !receipt.nativeFailures && !receipt.unprotectedOverageBytes;
+          process.stdout.write(JSON.stringify(receipt) + "\n");
+        }, { resolvePath, nowMs });
       } catch (error) {
-        console.error(String(error));
-        process.stdout.write("ERROR\n");
+        receipt.status = "measurement-failed";
+        receipt.error = String(error).slice(0, 240);
+        if (receipt.beforeBytes === undefined) process.stdout.write("ERROR\n");
+        process.stdout.write(JSON.stringify(receipt) + "\n");
         await released;
       }
       process.stdin.destroy();
-    ' "$module" "$root" "$label"
+    ' "$module" "$root" "$label" "$CONTAINER_STORE_MAX_BYTES"
   }
   PIN_GUARD_PID="${CONTAINER_PIN_GUARD_PID:-}"
-  PIN_GUARD_INPUT="${CONTAINER_PIN_GUARD[1]:-}"
+  input="${CONTAINER_PIN_GUARD[1]:-}"
   output="${CONTAINER_PIN_GUARD[0]:-}"
-  if [[ -z "$PIN_GUARD_PID" || -z "$PIN_GUARD_INPUT" || -z "$output" ]]; then
+  if [[ -z "$PIN_GUARD_PID" || -z "$input" || -z "$output" ]]; then
     log "retention pin admission failed: $label guard unavailable — skipping store"
     container_pin_guard_release
     return 1
   fi
-  IFS= read -r readiness <&"$output" || readiness=ERROR
+  exec {PIN_GUARD_INPUT}>&"$input"
+  exec {PIN_GUARD_OUTPUT}<&"$output"
+  exec {input}>&-
   exec {output}<&-
+  IFS=$'\t' read -r readiness identity <&"$PIN_GUARD_OUTPUT" || readiness=ERROR
+  if [[ -n "$identity" && -n "${SEEN_CONTAINER_STORES[$identity]:-}" ]]; then
+    STORE_SKIP_REASON=duplicate-store
+    container_pin_guard_release
+    return 1
+  fi
+  [[ -z "$identity" ]] || SEEN_CONTAINER_STORES[$identity]="$label"
   if [[ "$readiness" != LOCKED ]]; then
     if [[ "$readiness" == PINNED ]]; then log "retention pin protects $label — skipping store"
     else log "retention pin admission failed: $label — skipping store"; fi
@@ -233,12 +377,20 @@ run() {
     log "DRY_RUN would run: $*"
     return 0
   fi
-  "$@" >/dev/null 2>&1 || log "step failed (non-fatal): $*"
+  local command_exit=0
+  timeout 120s "$@" >/dev/null 2>&1 || command_exit=$?
+  if (( command_exit != 0 )); then
+    STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+    log "step failed (non-fatal, exit=${command_exit}): $*"
+  fi
 }
 
 # ── 1. Build cache ───────────────────────────────────────────────────────────
 if (( ${#DOCKER[@]} > 0 )); then
-  docker_root="$("${DOCKER[@]}" info --format '{{.DockerRootDir}}' 2>/dev/null)"
+  docker_root=''
+  if ! docker_root="$(timeout 30s "${DOCKER[@]}" info --format '{{.DockerRootDir}}' 2>/dev/null)"; then
+    docker_root=''
+  fi
   container_pin_guard_acquire docker "$docker_root" || DOCKER=()
 fi
 if (( ${#DOCKER[@]} > 0 )); then
@@ -265,12 +417,24 @@ fi
 NOW_EPOCH="$(date +%s)"
 anon_removed=0
 anon_skipped_young=0
+anonymous_volumes=''
+if ! anonymous_volumes="$(timeout 30s "${DOCKER[@]}" volume ls -qf dangling=true 2>/dev/null)"; then
+  STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+  anonymous_volumes=''
+fi
 
 while IFS= read -r vol; do
   [[ -z "$vol" ]] && continue
-  created="$("${DOCKER[@]}" volume inspect -f '{{.CreatedAt}}' "$vol" 2>/dev/null)"
+  if ! created="$(timeout 30s "${DOCKER[@]}" volume inspect -f '{{.CreatedAt}}' "$vol" 2>/dev/null)" || [[ -z "$created" ]]; then
+    STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+    continue
+  fi
   if [[ -n "$created" ]]; then
     created_epoch="$(date -d "$created" +%s 2>/dev/null || echo 0)"
+    if (( created_epoch <= 0 )); then
+      STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+      continue
+    fi
     if (( created_epoch > 0 )) && (( NOW_EPOCH - created_epoch < VOLUME_MAX_AGE_SECS )); then
       anon_skipped_young=$(( anon_skipped_young + 1 ))
       continue
@@ -279,9 +443,13 @@ while IFS= read -r vol; do
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY_RUN would remove anonymous volume $vol"
   else
-    "${DOCKER[@]}" volume rm "$vol" >/dev/null 2>&1 && anon_removed=$(( anon_removed + 1 ))
+    if timeout 30s "${DOCKER[@]}" volume rm "$vol" >/dev/null 2>&1; then
+      anon_removed=$(( anon_removed + 1 ))
+    else
+      STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+    fi
   fi
-done < <("${DOCKER[@]}" volume ls -qf dangling=true 2>/dev/null | grep -E '^[0-9a-f]{64}$')
+done < <(printf '%s\n' "$anonymous_volumes" | grep -E '^[0-9a-f]{64}$')
 
 log "anonymous volumes removed=${anon_removed} skipped_too_young=${anon_skipped_young} (named volumes never touched)"
 
@@ -320,12 +488,14 @@ if (( TESTCONTAINER_IDLE_MAX_SECS < 3600 )); then
 fi
 
 testcontainer_connections() {
-  local id="$1" port n total=0
+  local id="$1" port n total=0 published connections
+  published="$(timeout 30s "${DOCKER[@]}" port "$id" 2>/dev/null)" || return 1
   while IFS= read -r port; do
     [[ -z "$port" ]] && continue
-    n="$(ss -Htn state established "( sport = :$port or dport = :$port )" 2>/dev/null | wc -l)"
+    connections="$(timeout 30s ss -Htn state established "( sport = :$port or dport = :$port )" 2>/dev/null)" || return 1
+    n="$(printf '%s\n' "$connections" | sed '/^$/d' | wc -l)"
     total=$(( total + n ))
-  done < <("${DOCKER[@]}" port "$id" 2>/dev/null | sed -nE 's/.*:([0-9]+)$/\1/p' | sort -u)
+  done < <(printf '%s\n' "$published" | sed -nE 's/.*:([0-9]+)$/\1/p' | sort -u)
   echo "$total"
 }
 
@@ -333,8 +503,10 @@ if [[ "$SKIP_TESTCONTAINERS" == "1" ]]; then
   log "SKIP_TESTCONTAINERS=1 — skipping leaked-testcontainer sweep"
 elif ! command -v ss >/dev/null 2>&1; then
   # Without ss the connection guard cannot run, so nothing is provably idle.
+  STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
   log "ss not found — skipping leaked-testcontainer sweep"
-elif ! tc_ids="$("${DOCKER[@]}" ps -aq --no-trunc --filter label=org.testcontainers=true 2>/dev/null)"; then
+elif ! tc_ids="$(timeout 30s "${DOCKER[@]}" ps -aq --no-trunc --filter label=org.testcontainers=true 2>/dev/null)"; then
+  STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
   log "docker ps failed — skipping leaked-testcontainer sweep"
 else
   [[ "$DRY_RUN" == "1" ]] || mkdir -p "$TESTCONTAINERS_LAST_USED_DIR" 2>/dev/null
@@ -359,7 +531,11 @@ else
       tc_recent=$(( tc_recent + 1 ))
       continue
     fi
-    conns="$(testcontainer_connections "$id")"
+    if ! conns="$(testcontainer_connections "$id")"; then
+      STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
+      log "testcontainer live references unavailable — retained $id"
+      continue
+    fi
     if (( conns > 0 )); then
       tc_busy=$(( tc_busy + 1 ))
       [[ "$DRY_RUN" == "1" ]] || touch "$marker" 2>/dev/null
@@ -368,11 +544,12 @@ else
     fi
     if [[ "$DRY_RUN" == "1" ]]; then
       log "DRY_RUN would remove leaked testcontainer ${desc:-$id} (unused for ${idle}s)"
-    elif "${DOCKER[@]}" rm -f -v "$id" >/dev/null 2>&1; then
+    elif timeout 30s "${DOCKER[@]}" rm -f -v "$id" >/dev/null 2>&1; then
       tc_removed=$(( tc_removed + 1 ))
       rm -f "$marker"
       log "removed leaked testcontainer ${desc:-$id} (unused for ${idle}s)"
     else
+      STORE_NATIVE_FAILURES=$(( STORE_NATIVE_FAILURES + 1 ))
       log "step failed (non-fatal): docker rm -f -v $id"
     fi
   done <<< "$tc_ids"
@@ -388,6 +565,7 @@ else
   fi
   log "testcontainers removed=${tc_removed} recently_used=${tc_recent} busy=${tc_busy} first_seen=${tc_first_seen} (idle threshold ${TESTCONTAINER_IDLE_MAX_SECS}s)"
 fi
+[[ "$DRY_RUN" != "1" ]] || STORE_SKIP_REASON=dry-run
 container_pin_guard_release
 fi
 
@@ -399,15 +577,19 @@ reclaim_podman_images() {
   shift
   if ! root="$(timeout 30s "$@" info --format '{{.Store.GraphRoot}}' 2>/dev/null)"; then
     log "$label unreachable — skipping image store"
-    return 0
-  fi
-  if [[ "$SKIP_IMAGES" == "1" ]]; then
-    log "SKIP_IMAGES=1 — skipping $label image sweep"
+    printf '[docker-reclaim] store-receipt {"store":"%s","status":"discovery-failed","complete":false,"measurementComplete":false}\n' "$label"
     return 0
   fi
   container_pin_guard_acquire "$label" "$root" || return 0
+  if [[ "$SKIP_IMAGES" == "1" ]]; then
+    log "SKIP_IMAGES=1 — skipping $label image sweep"
+    STORE_SKIP_REASON=images-disabled
+    container_pin_guard_release
+    return 0
+  fi
   log "pruning $label unreferenced images older than ${IMAGE_MAX_AGE}"
   run "$@" image prune -af --filter "until=${IMAGE_MAX_AGE}"
+  [[ "$DRY_RUN" != "1" ]] || STORE_SKIP_REASON=dry-run
   container_pin_guard_release
 }
 

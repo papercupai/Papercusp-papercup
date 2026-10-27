@@ -75,6 +75,32 @@ afterEach(() => {
 });
 
 describe('armEphemeralExecutor', () => {
+  it('recovers catalog initialization after database failures without restarting the host', async () => {
+    installFakeRegistry();
+    let reads = 0;
+    const { deps, fired, recorded } = mkDeps({
+      list: async () => {
+        if (++reads < 3) throw new Error('CONNECT_TIMEOUT');
+        return [spec()];
+      },
+    });
+    await armEphemeralExecutor(deps);
+    expect(armedEphemeralIds()).toEqual([]);
+    const recovery = ticks.find((tick) => tick.ms === 30_000)!;
+    expect(recovery).toBeTruthy();
+    recovery.cb();
+    await flush();
+    expect(armedEphemeralIds()).toEqual([]);
+    recovery.cb();
+    await flush();
+    expect(armedEphemeralIds()).toEqual(['r1']);
+    ticks.find((tick) => tick.ms === 5_000)!.cb();
+    await flush();
+    expect(fired.map((row) => row.id)).toEqual(['r1']);
+    expect(recorded).toEqual([{ id: 'r1', error: null }]);
+    expect(getManaged('ephemeral-executor-heartbeat')).toBeUndefined();
+  });
+
   it('arms ONE managed timer per active ephemeral routine (category ephemeral-harness)', async () => {
     installFakeRegistry();
     const { deps } = mkDeps({ list: async () => [spec({ id: 'a' }), spec({ id: 'b' })] });

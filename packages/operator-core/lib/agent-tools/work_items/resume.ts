@@ -3,6 +3,7 @@ import { parseCarryNote, shortCarryHash } from '../../carry-note';
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type WorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
 import { compactTaskBrief, getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
+import { admissionActionability } from '../../work-items-admission';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
@@ -24,21 +25,19 @@ function planOf(item: ResumeItem): { slug: string; item: string | null } | null 
     : null;
 }
 
+/**
+ * EI-26988974367709614: the SAME contract the self-select `admission_hold` floor applies, so
+ * a row the scheduler serves is never one resume forbids acting on. A hold blocks; a pending
+ * post-hoc review on a fail-open row is a caution, because that row is claimable by design.
+ */
 function admissionActionBlocker(item: ResumeItem): string | null {
-  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
-    ? item.payload as Record<string, unknown> : {};
-  const review = payload.admissionReview && typeof payload.admissionReview === 'object' && !Array.isArray(payload.admissionReview)
-    ? payload.admissionReview as Record<string, unknown> : {};
-  const pendingReview = review.state === 'pending';
-  const hold = payload.admissionHold;
-  const activeHold = hold !== null && hold !== undefined && hold !== false;
-  if (!pendingReview && !activeHold) return null;
-  if (pendingReview && activeHold) {
-    return 'A live admission review is pending and an admission hold remains; do not follow the stored checkpoint action.';
-  }
-  return pendingReview
-    ? 'A live admission review is pending; do not follow the stored checkpoint action.'
-    : 'A live admission hold remains; do not follow the stored checkpoint action.';
+  const verdict = admissionActionability(item.payload);
+  return verdict.actionable ? null : verdict.reason;
+}
+
+function admissionCaution(item: ResumeItem): string | null {
+  const verdict = admissionActionability(item.payload);
+  return verdict.actionable ? verdict.caution : null;
 }
 
 /** Omit whole records to fit; never turn a partial next action into an instruction. */
@@ -72,6 +71,7 @@ export function buildWorkItemResume(input: {
         ...(latest?.status === 'available' && next !== null
           ? { source: 'next-action' }
           : {}),
+        ...(admissionCaution(item) ? { admissionCaution: admissionCaution(item) } : {}),
       },
     checkpoint: {
       status: checkpoint.readFailed ? 'unknown' : checkpoint.checkpoint === null ? 'absent' : 'available',

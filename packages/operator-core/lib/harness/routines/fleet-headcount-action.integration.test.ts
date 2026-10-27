@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   listExpiredRules: vi.fn(),
   lapseRule: vi.fn(),
   orgSql: vi.fn(),
+  getModes: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
 }));
@@ -92,6 +93,12 @@ vi.mock('../../goal-launch-settings', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../goal-launch-settings')>()),
   resolveGoalLaunch: (...args: unknown[]) => mocks.resolveGoalLaunch(...args),
 }));
+// The launcher-mode read (WI-6554700010029298) is stubbed at its own seam so it never
+// lands on `mocks.orgSql`, whose call count the plan-status cases assert on.
+vi.mock('../../modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../modes/store')>()),
+  getModes: (...args: unknown[]) => mocks.getModes(...args),
+}));
 vi.mock('../../modes/goal-context', () => ({
   resolveGoalContext: (...args: unknown[]) => mocks.resolveGoalContext(...args),
 }));
@@ -111,7 +118,7 @@ vi.mock('./system-actions', () => ({
   registerSystemAction: vi.fn(),
 }));
 
-import { runFleetHeadcountGovernor } from './fleet-headcount-action';
+import { FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS, runFleetHeadcountGovernor } from './fleet-headcount-action';
 
 const readyAttestation = (ownerId: string, ready: boolean) => ({
   version: 1 as const,
@@ -237,6 +244,7 @@ beforeEach(() => {
   });
   mocks.setHeadcountTarget.mockResolvedValue(undefined);
   mocks.orgSql.mockResolvedValue([]);
+  mocks.getModes.mockResolvedValue([]);
 });
 
 // WI-1457060. The governor reasoned only about member headcount and readiness, never
@@ -553,6 +561,81 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     ]));
   });
 
+  // WI-6554700010029299: a deterministic psu boot refusal made every replacement die
+  // at boot, and the 15-minute backoff cap let the governor mint dead members forever.
+  describe('deterministic boot-failure hold (WI-6554700010029299)', () => {
+    const FP = 'psu: su launch account route differs from its resolved bootstrap';
+    const bootDeath = 'headless member launched but its agent command died at boot (exit 1) — log tail: '
+      + 'psu: fleet — joined fleet fleet-a as member.\npsu: SU launch account route differs from its resolved bootstrap\n'
+      + '[papercusp] initial terminal command exited with status 1; headless launch exiting.';
+    const priorWithBootFailures = (count: number) => ({
+      version: 1 as const,
+      transactionId: 'tx-boot',
+      launcherOwnerId: 'su-leader',
+      state: 'verified' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-a'],
+      openedMemberIds: ['su-a'],
+      verifiedMemberIds: ['su-a'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-a'],
+      workerAttestations: [readyAttestation('su-a', true)],
+      failed: [],
+      waves: [{ index: 0, ownerIds: ['su-a'], state: 'verified' as const }],
+      recovery: { retryOwnerIds: [], nextAction: 'observe' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: ['su-a'],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: Array.from({ length: count }, (_, i) => ({ at: 100 + i, action: 'boot-failure' as const, reason: FP })),
+        terminalVerdict: null,
+      },
+    });
+    const runWithPrior = async (priorBootFailures: number) => {
+      mocks.claimAttempt.mockResolvedValue({
+        workspaceId: 'ws', fleetSlug: 'fleet-a', target: 2,
+        config: { ...baseConfig, productiveCapacityFloor: 1 },
+        nextAttemptAt: null, backoffMs: 900_000, lastError: null, claimedAt: 1,
+      });
+      mocks.getFleet.mockResolvedValue({
+        fleetSlug: 'fleet-a', leaderOwnerId: 'su-leader', lastLaunchTransaction: priorWithBootFailures(priorBootFailures),
+      });
+      mocks.liveMemberIds.mockResolvedValue(['su-a']);
+      mocks.spawnHeadless.mockImplementation(async () => ({ status: 'error', error: bootDeath }));
+      await runFleetHeadcountGovernor({
+        installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+      });
+    };
+
+    it('the third identical all-dead wave holds relaunch for hours and says why', async () => {
+      await runWithPrior(2);
+      expect(mocks.spawnHeadless).toHaveBeenCalled();
+      expect(mocks.recordAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+        succeeded: false,
+        holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+        error: expect.stringContaining(FP),
+      }));
+      const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+      expect(persisted.governor.history.filter((e: { action: string }) => e.action === 'boot-failure')).toHaveLength(3);
+      expect(mocks.headcountEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'refusal', reason: 'boot-failure-hold', fingerprint: FP, consecutiveWaves: 3 }),
+      ]));
+    });
+
+    it('control: a second identical wave stays on the ordinary backoff', async () => {
+      await runWithPrior(1);
+      expect(mocks.spawnHeadless).toHaveBeenCalled();
+      const last = mocks.recordAttempt.mock.calls.at(-1)?.[0];
+      expect(last).toMatchObject({ succeeded: false });
+      expect(last.holdMs).toBeUndefined();
+      expect(mocks.headcountEvents).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ reason: 'boot-failure-hold' }),
+      ]));
+    });
+  });
+
   it('refuses a zero-capacity refill before claiming a launch slot or pruning', async () => {
     mocks.getFleet.mockResolvedValue({
       fleetSlug: 'fleet-a',
@@ -645,7 +728,10 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     });
   });
 
-  it('settles a late verified probe while preserving an unrelated legacy non-ready wait', async () => {
+  // WI-6554700010029353: the legacy member's ready:false is a frozen snapshot outside the
+  // probe cohort. It is reported as unready but no longer holds a `wait`. At target 1
+  // with su-late productive, the fleet is simply satisfied.
+  it('settles a late verified probe; an unrelated frozen legacy non-ready member holds no wait', async () => {
     const transaction = {
       version: 1 as const,
       transactionId: 'tx-late-with-legacy-seat',
@@ -687,8 +773,10 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     expect(mocks.spawnHeadless).not.toHaveBeenCalled();
     expect(mocks.kill).not.toHaveBeenCalled();
     expect(mocks.recordAttempt).toHaveBeenLastCalledWith(
+      expect.objectContaining({ succeeded: true }),
+    );
+    expect(mocks.recordAttempt).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        succeeded: false,
         error: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
       }),
     );
@@ -699,17 +787,87 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       unconfirmedMemberIds: [],
       recovery: {
         retryOwnerIds: [],
-        nextAction: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+        nextAction: 'target and productive-capacity floor are both satisfied',
       },
       waves: [{ state: 'verified', verifiedOwnerIds: ['su-late'] }],
       governor: {
         terminalVerdict: {
-          outcome: 'unverified',
-          action: 'wait',
+          outcome: 'productive',
+          action: 'none',
           unreadyMemberIds: ['su-legacy-unready'],
         },
       },
     });
+  });
+
+  // WI-6554700010029353 — the Luna Max shape end to end: a verified member with a
+  // frozen ready:false attestation, outside probeOwnerIds and silent (not executing),
+  // beside a deficit. Before the fix the governor returned `wait: prune is unsafe` on
+  // every tick and never spawned. Now it refills the deficit and still never kills
+  // the frozen member.
+  it('refills a deficit past a frozen non-executing unready member and never prunes it', async () => {
+    const config = { ...baseConfig };
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-frozen-unready',
+      launcherOwnerId: 'su-leader',
+      state: 'verified' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-frozen-unready', 'su-b'],
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-frozen-unready', 'su-b'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-b'],
+      workerAttestations: [
+        readyAttestation('su-frozen-unready', false),
+        readyAttestation('su-b', true),
+      ],
+      failed: [],
+      waves: [],
+      recovery: { retryOwnerIds: [], nextAction: 'none' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: transaction,
+    });
+    mocks.listTargets.mockResolvedValue([{ ...grantedTarget(config), target: 2 }]);
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 2,
+      config,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.liveMemberIds.mockResolvedValue(['su-frozen-unready', 'su-b']);
+    mocks.executingOwnersSince.mockResolvedValue(new Set(['su-b']));
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, true));
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+      }),
+    );
   });
 
   it.each(['silent', 'executing', 'unknown'] as const)(
@@ -951,5 +1109,71 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     );
     expect(launchContext).toContain('draining your fleet claim-lane backlog');
     expect(launchContext).not.toContain('working plan `plan-a`');
+  });
+});
+
+// WI-6554700010029298. A governor top-up composed its psu command with no mode, so a
+// drain fleet's replacements all booted AUTO-only: Luna Max had 721 joiners in 7 days
+// and none held DRAIN, because DRAIN lived only on the founding leader's identity and
+// three later leaders never held it.
+describe('governor top-up launches the fleet mode (WI-6554700010029298)', () => {
+  const runTopUp = async (config: Record<string, unknown>) => {
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.listTargets.mockResolvedValue([grantedTarget(config)]);
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 1,
+      config,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, true));
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+    const spawnArgs = mocks.spawnHeadless.mock.calls[0]?.[0];
+    expect(spawnArgs).toBeDefined();
+    return String(spawnArgs.envelope.greetingCmd);
+  };
+
+  it('launches --mode=drain from the recipe even when the current leader holds no DRAIN', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }]);
+    const command = await runTopUp({ ...baseConfig, mode: 'drain' });
+    expect(command).toContain('--mode=drain');
+    // Member-shaped: the founding caller's subject and owner provenance never ride along.
+    expect(command).not.toContain('--mode-owner-directed');
+    expect(command).not.toContain('--mode-subject=');
+    expect(mocks.getModes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the launching leader\'s live DRAIN row for a legacy recipe without a mode', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }, { mode: 'drain', subject: 'leader mission', ownerDirected: true }]);
+    const command = await runTopUp({ ...baseConfig });
+    expect(mocks.getModes).toHaveBeenCalledWith('ws', 'su-leader');
+    expect(command).toContain('--mode=drain');
+    expect(command).not.toContain('--mode-owner-directed');
+    expect(command).not.toContain('leader mission');
+  });
+
+  it('launches no mode when neither the recipe nor the leader declares one', async () => {
+    mocks.getModes.mockResolvedValue([{ mode: 'auto' }]);
+    const command = await runTopUp({ ...baseConfig });
+    expect(command).not.toContain('--mode=');
+  });
+
+  it('still tops up, without a mode, when the leader mode read fails', async () => {
+    mocks.getModes.mockRejectedValue(new Error('pg down'));
+    const command = await runTopUp({ ...baseConfig });
+    expect(command).not.toContain('--mode=');
   });
 });

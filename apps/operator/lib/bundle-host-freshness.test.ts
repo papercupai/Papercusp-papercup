@@ -8,20 +8,33 @@
  * These tests drive the real CLI against a throwaway git repo.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { buildSync } from 'esbuild';
 
 // Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY.
-const HELPER =
+const HELPER_SOURCE =
   process.env.PROBE_SCRIPT ?? resolve(fileURLToPath(new URL('.', import.meta.url)), '../bin/bundle-host-freshness.mjs');
+let helperDir: string;
+let HELPER: string;
+
+beforeAll(() => {
+  // Execute the exact helper under test, including a mutation-probe copy.
+  // A child committed-source loader must not silently replace an edited helper.
+  helperDir = mkdtempSync(join(tmpdir(), 'bundle-freshness-helper-'));
+  HELPER = join(helperDir, 'freshness.mjs');
+  buildSync({ entryPoints: [HELPER_SOURCE], outfile: HELPER, bundle: true,
+    platform: 'node', format: 'esm' });
+});
+afterAll(() => { if (helperDir) rmSync(helperDir, { recursive: true, force: true }); });
 
 let repo: string;
 let outdir: string;
 
-function run(op: 'stamp' | 'check') {
+function run(op: 'stamp' | 'check', entry = join(repo, 'entry.ts')) {
   return spawnSync(
     process.execPath,
     [
@@ -30,7 +43,7 @@ function run(op: 'stamp' | 'check') {
       '--repo-root',
       repo,
       '--entry',
-      join(repo, 'entry.ts'),
+      entry,
       '--outfile',
       join(outdir, 'hono-host.mjs'),
       '--manifest',
@@ -61,6 +74,22 @@ afterEach(() => {
 });
 
 describe('bundle-host-freshness output-tree identity', () => {
+  it('qualifies a committed shadow without npm cache reuse and rejects provenance drift', () => {
+    const ordinary = join(repo, 'node_modules/.package-lock.json');
+    const source = join(repo, 'node_modules/.source-package-lock.json');
+    writeFileSync(source, readFileSync(ordinary));
+    rmSync(ordinary);
+    symlinkSync(source, join(repo, 'node_modules/.papercusp-installed-package-lock.json'));
+    const stamp = run('stamp');
+    expect(stamp.status, stamp.stderr).toBe(0);
+    expect(run('check').status).toBe(0);
+    expect(existsSync(ordinary)).toBe(false);
+    writeFileSync(source, '{"lockfileVersion":3,"packages":{"sdk":{"version":"2.0.0"}}}\n');
+    const check = run('check');
+    expect(check.status).not.toBe(0);
+    expect(check.stderr).toContain('installed-dependency mismatch');
+  });
+
   it('verifies after bundle-host.sh EXIT trap deletes the build-private gate dirs', () => {
     const meta = join(outdir, '.restricted-gate-meta.4242');
     const lkg = join(outdir, '.restricted-lkg.4242');
@@ -87,6 +116,120 @@ describe('bundle-host-freshness output-tree identity', () => {
     const check = run('check');
     expect(check.status).not.toBe(0);
     expect(check.stderr).toContain('output-tree mismatch');
+  });
+});
+
+describe('host boot artifact provenance', () => {
+  function stagingFixture() {
+    const entry = join(repo, 'apps/operator/bin/host.ts');
+    mkdirSync(join(repo, 'apps/operator/bin'), { recursive: true });
+    writeFileSync(entry, 'export const trace = true;\n');
+    execFileSync('git', ['-C', repo, 'add', 'apps/operator/bin/host.ts']);
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'host']);
+    outdir = join(repo, 'apps/operator/dist-host');
+    mkdirSync(outdir, { recursive: true });
+    const outfile = join(outdir, 'hono-host.mjs');
+    writeFileSync(outfile, 'export const trace = true;\n');
+    writeFileSync(outfile + '.meta.json', JSON.stringify({ inputs: { 'apps/operator/bin/host.ts': {} } }));
+    const sha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    return { entry, outfile, sha };
+  }
+
+  function buildStamp(f: ReturnType<typeof stagingFixture>, reuse: '0' | '1', sourceSha = f.sha) {
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+    const source = readFileSync(new URL('../bin/bundle-host.sh', import.meta.url), 'utf8');
+    const boundary = source.lastIndexOf('# Stamp only after the bundle');
+    expect(boundary).toBeGreaterThan(0);
+    const script = [
+      'set -euo pipefail',
+      'COMMITTED_NODE=(' + quote(process.execPath) + ')',
+      'FRESHNESS_HELPER=' + quote(HELPER),
+      'REPO_ROOT=' + quote(repo),
+      'ENTRY=' + quote(f.entry),
+      'OUTFILE=' + quote(f.outfile),
+      'FRESH_MARKER=' + quote(join(outdir, '.bundle-fresh.json')),
+      'SOURCE_SHA=' + quote(sourceSha),
+      source.slice(boundary),
+    ].join('\n');
+    return spawnSync('bash', ['-c', script], {
+      encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_REUSE_FRESH: reuse },
+    });
+  }
+
+  function boot(f: ReturnType<typeof stagingFixture>, startedAtMs?: number) {
+    const module = new URL('../../../packages/operator-core/lib/release/operator-artifact.ts', import.meta.url).href;
+    const args = [f.outfile, f.sha, ...(startedAtMs === undefined ? [] : [startedAtMs])];
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval',
+      'import { measureBootOperatorArtifact } from ' + JSON.stringify(module) +
+      '; console.log(JSON.stringify(measureBootOperatorArtifact(...' + JSON.stringify(args) + ')));'],
+    { encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    return JSON.parse(child.stdout);
+  }
+
+  it.each(['0', '1'] as const)('qualifies clean host compiler inputs with freshness reuse=%s', (reuse) => {
+    const f = stagingFixture();
+    const built = buildSync({ absWorkingDir: repo, entryPoints: ['apps/operator/bin/host.ts'],
+      outfile: f.outfile, bundle: true, platform: 'node', format: 'esm', metafile: true });
+    writeFileSync(f.outfile + '.meta.json', JSON.stringify(built.metafile));
+    const stamped = buildStamp(f, reuse);
+    expect(stamped.status, stamped.stderr).toBe(0);
+    expect(boot(f)).toMatchObject({ status: 'measured', sourceSha: f.sha });
+  });
+
+  it('keeps dirty background inputs unqualified without failing the availability build', () => {
+    const f = stagingFixture();
+    writeFileSync(f.entry, 'export const trace = false;\n');
+    const stamped = buildStamp(f, '0');
+    expect(stamped.status, stamped.stderr).toBe(0);
+    expect(stamped.stderr).toContain('tracked source tree is dirty');
+    expect(boot(f).status).toBe('unknown');
+    expect(existsSync(join(outdir, '.bundle-fresh.json'))).toBe(false);
+  });
+
+  it('refuses a changed HEAD after the build captured its source identity', () => {
+    const f = stagingFixture();
+    writeFileSync(join(repo, 'entry.ts'), 'export const changed = true;\n');
+    execFileSync('git', ['-C', repo, 'add', 'entry.ts']);
+    execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'move']);
+    const stamped = buildStamp(f, '0');
+    expect(stamped.status, stamped.stderr).toBe(0);
+    expect(stamped.stderr).toContain('build source HEAD mismatch');
+    expect(boot(f).status).toBe('unknown');
+  });
+
+  it('does not qualify a process that started before the artifact was produced', () => {
+    const f = stagingFixture();
+    expect(buildStamp(f, '0').status).toBe(0);
+    expect(boot(f, 1).status).toBe('unknown');
+    expect(boot(f).status).toBe('measured');
+  });
+
+  it('writes an artifact that a fresh staging process can measure at boot', () => {
+    const f = stagingFixture();
+    // bundle_host_esbuild runs through the cache reader at the repository root.
+    // Use the actual compiler's paths so a synthetic operator-relative fixture
+    // cannot hide a mismatch between the build and artifact writer.
+    const built = buildSync({ absWorkingDir: repo, entryPoints: ['apps/operator/bin/host.ts'],
+      outfile: f.outfile, bundle: true, platform: 'node', format: 'esm', metafile: true });
+    expect(Object.keys(built.metafile!.inputs)).toContain('apps/operator/bin/host.ts');
+    writeFileSync(f.outfile + '.meta.json', JSON.stringify(built.metafile));
+    const stamped = run('stamp', f.entry);
+    expect(stamped.status, stamped.stderr).toBe(0);
+    const module = new URL('../../../packages/operator-core/lib/release/operator-artifact.ts', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval',
+      `import { measureBootOperatorArtifact } from ${JSON.stringify(module)}; console.log(JSON.stringify(measureBootOperatorArtifact(${JSON.stringify(f.outfile)}, ${JSON.stringify(f.sha)})));`],
+    { encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject({ status: 'measured', sourceSha: f.sha,
+      sourceBlobs: { 'apps/operator/bin/host.ts': expect.stringMatching(/^[a-f0-9]{40}$/) } });
+    expect(run('check', f.entry).status).toBe(0);
+  });
+
+  it('refuses a staging freshness stamp without compiler input provenance', () => {
+    const f = stagingFixture();
+    rmSync(f.outfile + '.meta.json');
+    expect(run('stamp', f.entry).status).not.toBe(0);
   });
 });
 

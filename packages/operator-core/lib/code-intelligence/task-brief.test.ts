@@ -1,12 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildTaskBrief, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, enrichTaskBriefWithReuse, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import { nativeChangeReport, type ChangeReportRequest } from './packer-facade';
 import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
+import { coChangeFromCommits, formatPriorWorkLine, type PriorWorkQuery, type PriorWorkReport } from './change-history';
+import { readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
+import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
+import { decodeClaimReuseContribution } from './reuse-brief-providers';
 
 const dirs: string[] = [];
 describe('P039 completion pre-review briefs', () => {
@@ -44,6 +48,27 @@ describe('P039 completion pre-review briefs', () => {
       runs: async () => [{ path: 'target.test.ts', status: 'skip', runGroupId: 'bound-run' }] });
     expect(skipped.testsWithoutRunEvidence).toContain('target.test.ts');
   });
+  it('appends untouched co-change into the existing completion advisory with P009 limits and issued identity', async () => {
+    const { report, rootResolver } = setup();
+    const now = new Date().toISOString();
+    const history = coChangeFromCommits({ end: now, paths: ['target.ts'], commit: 'a'.repeat(40), complete: true,
+      commits: [1, 2, 3].map(n => ({ sha: String(n), parents: ['parent'], at: new Date(Date.now() - n * 86400000).toISOString(),
+        files: [{ status: 'M', path: 'target.ts' }, { status: 'M', path: 'partner.ts' }] })) });
+    const issued = vi.fn(async () => true), observe = vi.fn();
+    const base = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => [] });
+    const enriched = await getCompletionTimeBrief({ ...ref(), workItem: 'WI-completion',
+      reuse: { owner: 'su-fixture', invocation: 'real-completion', observe } },
+    { root: rootResolver, report, runs: async () => [], cochange: async () => history, reuse: { recordIssued: issued } });
+    expect(enriched.changes).toEqual(base.changes); expect(enriched.tests).toEqual(base.tests);
+    expect(enriched.limitations).toContain('Untouched partner.ts (3/3;90d)');
+    expect(Object.keys(enriched)).toEqual(Object.keys(base));
+    expect(issued).toHaveBeenCalledOnce();
+    expect(observe.mock.calls[0]?.[0]).toMatchObject({ ledger: 'recorded',
+      context: { surface: 'completion', invocation: 'real-completion', workItem: 'WI-completion' },
+      observations: expect.arrayContaining([expect.objectContaining({ provider: 'cochange', status: 'issued' }),
+        expect.objectContaining({ provider: 'sql' })]) });
+    expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
   it('invalidates consequences when the source changes during the ledger read', async () => {
     const { root, report, rootResolver } = setup();
     const result = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => {
@@ -51,6 +76,61 @@ describe('P039 completion pre-review briefs', () => {
     } });
     expect(result).toMatchObject({ status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null });
   });
+  it.each(['complete', 'truncated', 'incomplete'] as const)('binds completion coverage questions to %s measured diff and compiler test reach', async mode => {
+    const { report, rootResolver } = setup();
+    const observe = vi.fn();
+    const measured: typeof nativeChangeReport = async (...args) => {
+      const result = await report(...args);
+      return { ...result, report: { ...result.report, changed: [{ path: 'target.ts', line1: 1,
+        patch: `diff --git a/target.ts b/target.ts\n--- a/target.ts\n+++ b/target.ts\n@@ -1,2 +1,3 @@\n unchanged\n-old\n+new\n${mode === 'incomplete' ? '' : '+added\n'}` }],
+      limitations: mode === 'truncated' ? [...result.report.limitations, 'Diff excerpt truncated for target.ts.'] : result.report.limitations } };
+    };
+    await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'completion-coverage', observe } },
+      { root: rootResolver, report: measured, cochange: async () => coChangeFromCommits({ end: new Date().toISOString(),
+        paths: ['target.ts'], commit: null, complete: false, commits: [] }),
+      reuse: { providers: [], recordIssued: async () => true } });
+    const context = observe.mock.calls[0]![0].context;
+    expect(context.changedLines).toEqual(mode === 'complete' ? { 'target.ts': [2, 3] } : undefined);
+    expect(context.staticTests).toContain('target.test.ts');
+    // Neither a static path nor a diff becomes checked or executed source.
+    expect(context.checkedPaths).toBeUndefined();
+  });
+  it('keeps an independent SQL provider when the co-change source is unavailable', async () => {
+    const { report, rootResolver } = setup();
+    const observed = vi.fn();
+    const result = await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'completion-sql', observe: observed } },
+      { root: rootResolver, report, cochange: async () => { throw new Error('history unavailable'); }, reuse: {
+        recordIssued: async () => true, providers: [{ id: 'sql', read: async context => ({ status: 'measured',
+          sourceVersion: context.sourceVersion, indexVersion: 'sql-v1', lines: ['Unchecked reader db/read.ts'] }) }],
+      } });
+    expect(result.limitations).toContain('Unchecked reader db/read.ts');
+    expect(observed.mock.calls[0]?.[0]).toMatchObject({ ledger: 'recorded', observations: [{ provider: 'sql', status: 'issued' }] });
+  });
+  it.each(['covered', 'uncovered', 'partial', 'stale', 'ambiguous', 'missing'] as const)(
+    'derives checked source from one %s close-bound coverage receipt and shares it with coverage advice', async mode => {
+      const { root, report, rootResolver } = setup(), observed = vi.fn();
+      const coverage = vi.fn(async (context: import('./reuse-brief-providers').ReuseProviderContext) => {
+        if (mode === 'missing') return null;
+        const testHash = coverageHash(readFileSync(join(root, 'target.test.ts')));
+        const hashes = new Map(context.sourceFiles!.map(file => [file.path, file.sha256]));
+        hashes.set('target.test.ts', testHash);
+        const snapshot: TestCoverageSnapshot = { schemaVersion: 1, root, scopeRoot: root,
+          testFile: 'target.test.ts', testSha256: testHash, observedAt: new Date().toISOString(),
+          populationComplete: mode !== 'partial', population: [{ path: 'target.test.ts', sha256: testHash }],
+          sources: [{ path: 'target.ts', sha256: mode === 'stale' ? '0'.repeat(64) : hashes.get('target.ts')!,
+            executable: [1], covered: mode === 'uncovered' ? [] : [1] }] };
+        return { snapshots: mode === 'ambiguous' ? [snapshot, { ...snapshot, scopeRoot: join(root, 'other') }] : [snapshot],
+          currentHashes: hashes, population: ['target.test.ts'] };
+      });
+      const result = await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'bound-coverage', observe: observed } },
+        { root: rootResolver, report, coverage, cochange: async () => coChangeFromCommits({ end: new Date().toISOString(),
+          paths: ['target.ts'], commit: null, complete: false, commits: [] }), reuse: { recordIssued: async () => true } });
+      expect(coverage).toHaveBeenCalledOnce();
+      expect(observed.mock.calls[0]![0].context.checkedPaths).toEqual(
+        mode === 'covered' || mode === 'partial' ? ['target.ts'] : mode === 'uncovered' ? [] : undefined);
+      expect(result.limitations.join(' ')).toContain(mode === 'stale' || mode === 'ambiguous' || mode === 'missing'
+        ? 'execution unknown' : mode === 'uncovered' ? 'no test executes' : 'executed by target.test.ts');
+    });
   it('gives the default compiler report the remaining brief deadline, not a fixed 2000 ms sub-budget', async () => {
     const { rootResolver } = setup();
     // Honour the budget the way the off-thread worker does: a fresh worker under host load
@@ -152,6 +232,152 @@ function depsFor(root: string): TaskBriefDeps {
     }),
   };
 }
+describe('native engineering evidence task context', () => {
+  function engineeringFixture(patch: Partial<EngineeringEvidenceDeps> = {}) {
+    const deps: EngineeringEvidenceDeps = {
+      authorize: async scope => scope.workspaceId === 'w' && scope.harness === 'h',
+      symbol: async () => [{ path: 'target.ts', name: 'target', line1: 1, versionedSymbolId: 'target-v1',
+        fileFingerprint: 'a'.repeat(64), declarationFingerprint: null }],
+      sourceCurrent: async () => true,
+      items: async scope => [{ ...scope, plan: 'ee-feature', item: 'P-001', anchorState: 'current' }],
+      specs: async () => [{ plan: 'ee-feature', item: 'P-001', id: 'EE-1', revision: 1, currentRevision: 1,
+        fingerprint: 'b'.repeat(64), behavior: 'Return the feature', lifecycle: 'active' }],
+      spec: async () => null,
+      decisions: async () => [{ plan: 'ee-feature', id: 'D-001', title: 'Rationale', body: 'Explicit item rule',
+        itemRefs: ['P-001'], affects: [] },
+      { plan: 'broader-plan', id: 'D-002', title: 'Broader context', body: 'Affects the plan without declaring this item.',
+        itemRefs: [], affects: ['ee-feature'] }],
+      proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1', revision: 1, workItem: 'WI-ee',
+        evidenceRef: 'test-run:72101', kind: 'test', state: 'current', withdrawn: false,
+        fingerprints: {}, runId: 72101, reasons: [] }],
+      run: async () => ({ id: 72101, file: 'target.test.ts', status: 'pass', commit: 'c'.repeat(40) }),
+      cases: async () => [{ runId: 72101, key: 'ee.intent-exact', occurrence: 1, status: 'pass' }],
+      ...patch,
+    };
+    const reader: typeof readEngineeringEvidence = (query, scope) => readEngineeringEvidence(query, scope, deps);
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const subject = { id: 'WI-ee', harness: 'h', sourcePlanSlug: 'ee-feature', sourcePlanItemIds: ['P-001'],
+      payload: { paths: ['target.ts'] } };
+    return { root, subject, deps: { ...depsFor(root), engineering: reader, hasClaim: async () => false } };
+  }
+  it('ee.brief-four-axes: carries exact canonical references or an explicit execution gap through claim, intent and completion', async () => {
+    const { root, subject, deps } = engineeringFixture();
+    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(claim.engineering?.intent[0]?.ref).toMatchObject({ tool: 'plans:get-specs', args: { revision: 1, specIds: ['EE-1'] } });
+    expect(claim.engineering?.rationale[0]?.ref).toMatchObject({ tool: 'plans:get', args: { decisionId: 'D-001' } });
+    expect(claim.engineering?.rationale).toHaveLength(1);
+    expect(claim.engineering?.gaps).toContain('broader-plan-context-available');
+    expect(claim.engineering?.validation[0]?.ref.tool).toBe('plans:get-spec-evidence');
+    expect(claim.engineering?.execution).toEqual([]); expect(claim.engineering?.gaps.length).toBeGreaterThan(0);
+    const intent = (await getIntentTimeTaskBrief({ owner: 'su-ee', workspaceId: 'w', harness: 'h',
+      intent: 'Inspect target', paths: ['target.ts'] }, deps))!.taskBrief;
+    expect(intent.engineering?.recover.args).toMatchObject({ file_path: 'target.ts', name: 'target', harnesses: ['h'] });
+    const completion = await getCompletionTimeBrief({ workspaceId: 'w', harness: 'h', paths: [], subject },
+      { root: async () => root, engineering: deps.engineering });
+    expect(completion.engineering?.recover).toEqual(claim.engineering?.recover);
+  });
+
+  it('preserves the complete engineering baseline and delivers every hint recorded as issued', async () => {
+    const { root, subject, deps } = engineeringFixture();
+    writeFileSync(join(root, 'target.ts'), '// ' + 'source context '.repeat(80)
+      + '\nexport function target() { return 1; }');
+    for (const maxChars of [6000, TASK_BRIEF_MAX_CHARS, 2400]) {
+      const ref = { workspaceId: 'w', workItem: subject, maxChars };
+      const base = (await getClaimTimeTaskBrief(ref, deps))!.taskBrief;
+      const observe = vi.fn();
+      const enriched = (await getClaimTimeTaskBrief({ ...ref,
+        reuse: { owner: 'su-fixture', invocation: 'engineering-budget', observe } }, {
+        ...deps, reuse: { recordIssued: async () => true, providers: [
+          { id: 'clones', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+            indexVersion: 'clones-v1', lines: ['target.ts ' + 'similar source '.repeat(22)] }) },
+          { id: 'sql', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+            indexVersion: 'sql-v1', lines: ['target.ts ' + 'reader '.repeat(20)] }) },
+        ] },
+      }))!.taskBrief;
+      const hints = enriched.graph.relationships.flatMap(line => {
+        const row = decodeClaimReuseContribution(enriched, line); return row ? [row] : [];
+      });
+      expect({ ...enriched, graph: { ...enriched.graph,
+        relationships: enriched.graph.relationships.slice(0, base.graph.relationships.length) } })
+        .toEqual(base);
+      const issued = observe.mock.calls[0][0].observations.filter((row: { status: string }) => row.status === 'issued');
+      if (maxChars === 6000) expect(issued.length).toBeGreaterThan(0);
+      expect(hints.map(row => row.provider)).toEqual(issued.map((row: { provider: string }) => row.provider));
+      expect(JSON.stringify(enriched).length).toBeLessThanOrEqual(maxChars);
+    }
+  });
+  it.each([3000, 2900])('classifies claim overflow as budget and preserves a later fitting provider at %i characters', async maxChars => {
+    const { subject, deps } = engineeringFixture();
+    const base = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    base.exclusions.push('');
+    base.exclusions[base.exclusions.length - 1] = 'x'.repeat(maxChars - 150 - JSON.stringify(base).length);
+    const observe = vi.fn();
+    const result = await enrichTaskBriefWithReuse(base, { workspaceId: 'w', workItem: subject, maxChars,
+      reuse: { owner: 'su-fixture', invocation: 'claim-overflow', observe } }, {
+      ...deps, reuse: { recordIssued: async () => true, providers: [
+        { id: 'sql', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+          indexVersion: 'sql-v1', lines: ['SQL reader ' + 'r'.repeat(190)] }) },
+        { id: 'coverage', read: async context => ({ status: 'measured', sourceVersion: context.sourceVersion,
+          indexVersion: 'coverage-v1', lines: ['Covered target.ts'] }) },
+      ] },
+    }, Date.now() + 6000);
+    expect(observe.mock.calls[0][0].observations).toEqual([
+      expect.objectContaining({ provider: 'sql', status: 'budget', reason: 'truncated' }),
+      expect.objectContaining({ provider: 'coverage', status: 'issued' }),
+    ]);
+    expect(result.graph.relationships.map(line => decodeClaimReuseContribution(result, line)?.provider)).toEqual(['coverage']);
+    expect({ ...result, graph: { ...result.graph, relationships: base.graph.relationships } }).toEqual(base);
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(maxChars);
+  });
+  it('SPEC-P-008-B: the claim brief lists the prior work the first-touch note shows for the same function', async () => {
+    const { subject, deps } = engineeringFixture();
+    // The brief derives the touched names from the file at claim time (target.ts declares target()).
+    const report: PriorWorkReport = { status: 'measured', path: 'target.ts', names: ['target'], total: 1,
+      items: [{ workItem: 'WI-prior', title: 'Fix target overflow', state: 'done', kind: 'bug',
+        lastEditAt: new Date(Date.now() - 2 * 86_400_000).toISOString(), closedAt: null, symbols: ['target'] }],
+      fileLevel: [], fileLevelTotal: 0, truncated: false, error: null };
+    const priorWork = vi.fn(async (query: PriorWorkQuery): Promise<PriorWorkReport> =>
+      ({ ...report, path: query.path, names: query.names }));
+    const observe = vi.fn();
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject,
+      reuse: { owner: 'su-fixture', invocation: 'claim-prior-work', observe } },
+    { ...deps, reuse: { recordIssued: async () => true, priorWork } }))!.taskBrief;
+    expect(priorWork).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'w', path: 'target.ts',
+      names: ['target'], excludeWorkItem: 'WI-ee' }));
+    const contributions = brief.graph.relationships.flatMap(line => {
+      const row = decodeClaimReuseContribution(brief, line); return row ? [row] : [];
+    });
+    const provenance = contributions.find(row => row.provider === 'provenance');
+    // The exact line the first-touch push renders for this report (shared formatter, same harness).
+    expect(provenance?.text).toContain(formatPriorWorkLine(report, { harness: 'h' })!);
+    expect(observe.mock.calls[0][0].observations).toContainEqual(
+      expect.objectContaining({ provider: 'provenance', status: 'issued', cohort: 'treatment' }));
+  });
+  it('ee.brief-budget: fits the complete caller brief in 2400 characters and retains scoped recovery for omitted data', async () => {
+    const { subject, deps } = engineeringFixture();
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject, maxChars: 2400 }, deps))!.taskBrief;
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(2400);
+    expect(brief.engineering?.recover).toEqual({ tool: 'graph:query', args: { op: 'evidence', harnesses: ['h'], plan: 'ee-feature', item: 'P-001' } });
+  });
+  it('ee.brief-stale: preserves stale validation and refuses a foreign scope', async () => {
+    const { subject, deps } = engineeringFixture({ proofs: async () => [{ id: 51, plan: 'ee-feature', spec: 'EE-1',
+      revision: 1, workItem: 'WI-ee', evidenceRef: 'test-run:72101', kind: 'test', state: 'stale', withdrawn: false,
+      fingerprints: {}, runId: 72101, reasons: ['changed-source'] }] });
+    const brief = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(brief.engineering?.validation[0]?.state).toBe('stale');
+    const foreign = (await getClaimTimeTaskBrief({ workspaceId: 'foreign', workItem: subject }, deps))!.taskBrief;
+    expect(foreign.engineering?.intent).toEqual([]); expect(foreign.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  });
+  it('ee.brief-no-trace: a missing trace or unavailable evidence cannot block ordinary task context', async () => {
+    const { subject, deps } = engineeringFixture();
+    const withoutPaths = { ...subject, payload: {} };
+    const claim = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: withoutPaths }, deps))!.taskBrief;
+    expect(claim.engineering?.intent.length).toBeGreaterThan(0); expect(claim.engineering?.execution).toEqual([]);
+    deps.engineering = async () => { throw new Error('optional trace service absent'); };
+    const fallback = (await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: subject }, deps))!.taskBrief;
+    expect(fallback.status).toBe('current'); expect(fallback.engineering?.gaps).toContain('engineering-evidence-unavailable');
+  });
+});
 describe('P012 bounded scoped task briefs', () => {
   it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');

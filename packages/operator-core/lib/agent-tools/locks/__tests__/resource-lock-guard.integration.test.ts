@@ -17,6 +17,7 @@ import {
   tryAcquireResource,
   tryReleaseResource,
   readResourceQueue,
+  SU_LOCKS_FEATURE_KEY,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
@@ -52,6 +53,43 @@ describe('guardResource (requiresLock enforcement)', async () => {
 
   beforeAll(async () => {
     if (live) await readInbox(`warmup-${Date.now()}`).catch(() => {});
+  });
+
+  it.skipIf(!live)('runs and releases a shared guard while another resource holds the shared domain gate', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const owner = 'independent-' + uniqueWs();
+    let unblock!: () => void;
+    let signalHeld!: () => void;
+    const hold = new Promise<void>(resolve => { unblock = resolve; });
+    const held = new Promise<void>(resolve => { signalHeld = resolve; });
+    const unrelated = getTxPool().begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock_shared(${SU_LOCKS_FEATURE_KEY}::int, hashtext(${'su:' + ws}))`;
+      signalHeld();
+      await hold;
+    });
+    await held;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const operation = guardResource({
+      coordinationDomain: ws, ownerId: owner, ownerLabel: owner, coordIdentity: mkId(owner),
+      resource: 'staging-server', mode: 'shared',
+    }, async () => 'independent operation completed');
+    try {
+      const out = await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('shared guard waited for an unrelated domain reader')), 3000);
+        }),
+      ]);
+      expect(out).toMatchObject({ acquired: true, result: 'independent operation completed' });
+      const after = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'staging-server' });
+      expect(after.holders.some(holder => holder.owner === owner)).toBe(false);
+    } finally {
+      if (timer) clearTimeout(timer);
+      unblock();
+      await unrelated;
+      await operation;
+    }
   });
 
   it.skipIf(!live).each([

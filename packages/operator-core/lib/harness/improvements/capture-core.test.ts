@@ -3,6 +3,7 @@ import {
   captureImprovement,
   captureToolInvocationFriction,
   validateScoutEvidenceCitations,
+  setCaptureReviewState,
   storageKindOf,
   CaptureWatchdogIdentityConflictError,
   DUP_THRESHOLD,
@@ -19,7 +20,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
-import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
+import { markLeaderTriage, type CreateIssueInput, type EngineerIssue } from '../../issues-engineer';
 import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
 import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
@@ -32,6 +33,10 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }
 vi.mock('../../agent-tools/work_items/recent-lexical-dupe-guard', () => ({
   findRecentLexicalDupes: vi.fn(async () => null),
 }));
+vi.mock('../../issues-engineer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../issues-engineer')>();
+  return { ...actual, markLeaderTriage: vi.fn() };
+});
 
 import { findRecentLexicalDupes } from '../../agent-tools/work_items/recent-lexical-dupe-guard';
 
@@ -114,6 +119,11 @@ function deps(
       created.push(input);
       return existing({ id: 'EI-100', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'bug' });
     },
+    markReviewBlocked: async (id) => ({
+      workItem: { id, state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
+    }),
   };
 }
 
@@ -406,6 +416,47 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     reviewHarness: 'papercusp',
   };
 
+  it('persists the named review blocker through the default leader-triage writer', async () => {
+    vi.mocked(markLeaderTriage).mockReset().mockResolvedValue(
+      existing({ id: 'EI-100', title: reviewInput.title, state: 'blocked' }),
+    );
+
+    const result = await setCaptureReviewState('EI-100', 'blocked', {
+      reason: 'agent-review enrollment pending',
+      by: 'su-filer',
+    });
+
+    expect(markLeaderTriage).toHaveBeenCalledExactlyOnceWith(
+      'EI-100', 'agent-review enrollment pending', 'su-filer',
+    );
+    expect(result).toEqual({
+      workItem: { id: 'EI-100', state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
+    });
+  });
+
+  it('uses the default leader-triage writer when capture dependencies omit the review-park seam', async () => {
+    vi.mocked(markLeaderTriage).mockReset().mockResolvedValue(
+      existing({ id: 'EI-100', title: reviewInput.title, state: 'blocked' }),
+    );
+    const d = deps();
+    delete d.markReviewBlocked;
+
+    const result = await captureImprovement(reviewInput, d);
+
+    expect(markLeaderTriage).toHaveBeenCalledExactlyOnceWith(
+      'EI-100', 'agent-review enrollment pending', 'su-filer',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      created: true,
+      reviewRequired: true,
+      reviewState: 'blocked',
+    });
+    expect(result.agentReviewFailure).toBeUndefined();
+  });
+
   it.each(['end-user', 'chat'] as const)('enrolls a %s bug in verification before it can be implemented', async (reporterKind) => {
     const d = deps();
     d.createIssue = async (input) => {
@@ -413,6 +464,11 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
       return existing({ id: 'EI-100', title: input.title, payload: input.payload });
     };
     const transitions: string[] = [];
+    const blockedWrites: { id: string; reason: string; by?: string }[] = [];
+    d.markReviewBlocked = async (id, reason, by) => {
+      blockedWrites.push({ id, reason, by });
+      return { workItem: { id, state: 'blocked' }, requestedState: 'blocked', appliedState: 'blocked' };
+    };
     d.setWorkItemStateWithAliasInfo = async (id, state) => {
       transitions.push(state);
       return { workItem: { id, state }, requestedState: state, appliedState: state };
@@ -436,7 +492,10 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     expect(d.enterAgentReview).toHaveBeenCalledWith({
       id: 'EI-100', submittedBy: 'system:connector', harnessSlug: 'papercusp', workspaceId: 'ws',
     });
-    expect(transitions).toEqual(['blocked', 'open']);
+    expect(blockedWrites).toEqual([{
+      id: 'EI-100', reason: 'agent-review enrollment pending', by: 'system:connector',
+    }]);
+    expect(transitions).toEqual(['open']);
     expect(result).toMatchObject({ reviewRequired: true, reviewState: 'open' });
   });
 
@@ -470,10 +529,10 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
 
   it('creates with pending admission, then durably parks the row as blocked', async () => {
     const d = deps();
-    const transitions: { id: string; state: string; opts?: Record<string, unknown> }[] = [];
-    d.setWorkItemStateWithAliasInfo = async (id, state, opts) => {
-      transitions.push({ id, state, opts });
-      return { workItem: { id, state }, requestedState: state, appliedState: state };
+    const blockedWrites: { id: string; reason: string; by?: string }[] = [];
+    d.markReviewBlocked = async (id, reason, by) => {
+      blockedWrites.push({ id, reason, by });
+      return { workItem: { id, state: 'blocked' }, requestedState: 'blocked', appliedState: 'blocked' };
     };
 
     const result = await captureImprovement(reviewInput, d);
@@ -487,13 +546,9 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
         reason: 'awaiting-agent-review',
       },
     });
-    expect(transitions).toEqual([
-      {
-        id: 'EI-100',
-        state: 'blocked',
-        opts: { harness: 'papercusp', by: 'su-filer', reason: 'agent-review enrollment pending' },
-      },
-    ]);
+    expect(blockedWrites).toEqual([{
+      id: 'EI-100', reason: 'agent-review enrollment pending', by: 'su-filer',
+    }]);
     expect(result).toMatchObject({
       ok: true,
       created: true,
@@ -507,7 +562,7 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     const merged: Record<string, unknown>[] = [];
     const d = {
       ...deps(),
-      setWorkItemStateWithAliasInfo: async () => {
+      markReviewBlocked: async () => {
         throw new Error('blocked write failed');
       },
       releaseIssue: async (id: string, opts?: { expectedAssignee?: string }) => {
@@ -538,12 +593,12 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
 
   it('does not apply the review park to bugs or observation-lane captures', async () => {
     const d = deps();
-    const writer = vi.fn(async (id: string, state: 'blocked' | 'open') => ({
-      workItem: { id, state },
-      requestedState: state,
-      appliedState: state,
+    const writer = vi.fn(async (id: string) => ({
+      workItem: { id, state: 'blocked' },
+      requestedState: 'blocked',
+      appliedState: 'blocked',
     }));
-    d.setWorkItemStateWithAliasInfo = writer;
+    d.markReviewBlocked = writer;
 
     await captureImprovement({ ...reviewInput, kind: 'bug' }, d);
     await captureImprovement({ ...reviewInput, lane: 'observation' }, d);
@@ -3432,6 +3487,30 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     );
     expect(res.possibleDuplicates).toEqual([]);
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+  });
+
+  it('returns no duplicate verdict when both fuzzy search legs are unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = {
+        ...deps(),
+        searchIssues: async () => {
+          throw new Error('search unavailable');
+        },
+        findSemanticDupes: async () => null,
+      };
+      const res = await captureImprovement(
+        { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+        d,
+      );
+
+      expect(res.possibleDuplicates).toBeNull();
+      expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'unavailable', degraded: true });
+      expect(res.hint).toContain('NO DEDUP VERDICT');
+      expect(res.hint).toContain('both lexical and semantic searches were unavailable');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('reports semantic OK + not degraded only when the embedding leg and index coverage are healthy', async () => {

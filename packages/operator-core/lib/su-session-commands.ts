@@ -1,6 +1,6 @@
 /**
- * Durable acceptance for SU owner turns. The existing conversation transcript
- * owns the user text and its source id; the receipt travels on that same turn.
+ * Durable acceptance for SU commands. The existing conversation transcript
+ * owns the payload and its source id; the receipt travels on that same record.
  * A row lock serializes reservations across hosts. No provider is called until
  * the transaction commits, and an unsettled receipt is never executed again.
  */
@@ -13,21 +13,21 @@ export type SuOwnerTurn = Extract<SuSessionCommand, { type: 'owner_turn' }>;
 
 export interface SuSessionCommandReceipt {
   fingerprint: string;
-  command: SuOwnerTurn;
+  command: SuSessionCommand;
   acceptedAt: string;
   /** Missing means delivery is uncertain after a host replacement. */
   outcome?: SuSessionCommandOutcome;
 }
 
 export interface SuSessionCommandStore {
-  reserve(command: SuOwnerTurn, fingerprint: string): Promise<{
+  reserve(command: SuSessionCommand, fingerprint: string): Promise<{
     created: boolean;
     receipt: SuSessionCommandReceipt;
   }>;
-  finish(command: SuOwnerTurn, fingerprint: string, outcome: SuSessionCommandOutcome): Promise<void>;
+  finish(command: SuSessionCommand, fingerprint: string, outcome: SuSessionCommandOutcome): Promise<void>;
 }
 
-function receiptKey(command: SuOwnerTurn): string {
+function receiptKey(command: SuSessionCommand): string {
   return `su:${command.target.advSessionId}:${command.commandId}`;
 }
 
@@ -52,6 +52,8 @@ export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionC
                 WHERE a.workspace_id = c.workspace_id AND a.id = ${target.advSessionId}
                   AND a.su_agent_chat_id = c.id AND a.coord_owner_id = ${target.ownerId}
                   AND a.agent = ${target.backend}
+                  AND (${command.expectedRuntimeGeneration ?? null}::bigint IS NULL
+                    OR a.su_runtime_generation = ${command.expectedRuntimeGeneration ?? null})
                   AND COALESCE(a.session_id, a.su_session_descriptor->'identity'->>'nativeSessionId') = ${target.nativeSessionId}
              )
            FOR UPDATE OF c`;
@@ -73,8 +75,11 @@ export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionC
         const receipt: SuSessionCommandReceipt = {
           fingerprint, command, acceptedAt: new Date().toISOString(),
         };
+        const isTurn = ['owner_turn', 'queue', 'steer'].includes(command.type);
         const turn = {
-          role: 'user', content: command.content, ts: receipt.acceptedAt,
+          role: isTurn ? 'user' : 'system',
+          content: isTurn && 'content' in command ? command.content : '', ts: receipt.acceptedAt,
+          origin: command.origin ?? { kind: 'owner' },
           source: 'su-session', source_id: sourceId, su_command: receipt,
         };
         await sql`
@@ -137,6 +142,8 @@ export async function loadSuOwnerTurnReceipts(
      WHERE c.workspace_id = ${identity.workspaceId}
        AND c.id = ${identity.agentChatId}
        AND turn->>'source' = 'su-session'
+       AND COALESCE(turn->'su_command'->'command'->>'type', 'owner_turn') IN ('owner_turn', 'queue', 'steer')
+       AND COALESCE(turn->'su_command'->'command'->'origin'->>'kind', 'owner') = 'owner'
        AND turn->'su_command'->'command'->'target'->>'nativeSessionId' = ${identity.nativeSessionId}
      ORDER BY turns.position`;
   return rows.flatMap((row) => row.turn_id && typeof row.content === 'string'

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010021944:9cc9f69149c9be90d95fbabcf9d4d8b3",
+  "inputSha256": "9cc9f69149c9be90d95fbabcf9d4d8b35b4c74f07d394854a17c4dfb695a36e1",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-26T07:05:35.888Z",
+  "actor": "su-respawn-ebb0fbe43e480e827420268a317e294b",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010021944",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "5cf2cb0b4aebc7e2f476e62be83cad1da5f49b4f6dd8cd95cc6e8b8a7b52b39e",
+      "observedParkFingerprint": "5cf2cb0b4aebc7e2f476e62be83cad1da5f49b4f6dd8cd95cc6e8b8a7b52b39e",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Local preparation ONLY. Canonical D045 at revision121/contentHash84018cb288e8735e349eba3ca85759f13d3dca25d451adcf9a1fa237fb2b651c explicitly supersedes prior origin-publication condition for D042 ONE LOCAL preparation after activation reconciliation. Authoritative plan:acceptance event delivery991164 reports activation audit27:9 mappings,4 canonical source refs,revision121; current plans:get verifies same revision121/hash. Dry-run returned wouldClear:true without ownerOverride and this exact park fingerprint. Prior four source/two test canonical+staging blob equality, actual :3170 bundle and five flags verified; refresh again before allocation. Reconciliation does NOT assert publication root fixed; origin remains REQUIRED for separately authorized shared staging action. No shared fixture mutations, executionStarted or R21/R22 authority.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010021944-9cc9f69149c9be90d95fbabcf9d4d8b3-reconcile.json"
+}

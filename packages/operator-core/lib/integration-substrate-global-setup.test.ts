@@ -6,12 +6,15 @@ import { integrationNeedsPostgres, setupIntegrationSubstrate } from '../test/_in
 const privateTransport = fileURLToPath(new URL(
   './agent-tools/capability/vm-copy-authority-bridge.integration.test.ts', import.meta.url,
 ));
+const selfOwnedLoopTurn = fileURLToPath(new URL(
+  './harness/routines/loop-turn-start-reconcile.integration.test.ts', import.meta.url,
+));
 const databaseTest = fileURLToPath(new URL('./work-items-corroboration.integration.test.ts', import.meta.url));
 const selectionCanary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));
 const project = { name: 'fixture-project' };
 
 describe('operator-core integration substrate selection (EI-26266395178004133)', () => {
-  it.each([privateTransport, selectionCanary])('omits PostgreSQL for the exact selected private suite %s', async path => {
+  it.each([privateTransport, selfOwnedLoopTurn, selectionCanary])('omits PostgreSQL for the exact selected private suite %s', async path => {
     const loaders = { baseline: vi.fn(), org: vi.fn() };
     await setupIntegrationSubstrate(project, [path], loaders);
     expect(loaders.baseline).not.toHaveBeenCalled();

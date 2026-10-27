@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, sep } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
@@ -687,6 +687,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     spawnMock.mockImplementation(() => fakeChild());
     const result = await spawnHeadless({
       envelope,
+      coordOwnerId: 'su-headless-owner',
       beforeSpawn,
       installBoundary: async () => {
         installReady = true;
@@ -699,6 +700,9 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(result.status).toBe('ok');
     expect(beforeSpawn).toHaveBeenCalledOnce();
     expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock.mock.calls[0]?.[2]).toMatchObject({
+      env: { PAPERCUSP_AGENT_TASK_ID: 'task1234' },
+    });
     expect(taskEnrolment.complete).toHaveBeenCalledOnce();
     // The real lease is idempotent: boot completion and finally both release it.
     expect(release).toHaveBeenCalled();
@@ -2040,6 +2044,38 @@ describe('buildConsoleOneliner', () => {
           env: { PATH: `${desktopDir}:/usr/bin:/bin` },
         });
         expect(readFileSync(join(root, 'selected-node.txt'), 'utf8').trim()).toBe('abi-141');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('runs a real Node shebang CLI through retained Node ahead of conflicting shim and desktop interpreters', () => {
+      const root = mkdtempSync(join(tmpdir(), 'console-node-shebang-'));
+      try {
+        const runtimeDir = join(root, 'retained-node');
+        const shimDir = join(root, 'shims');
+        const desktopDir = join(root, 'desktop');
+        for (const dir of [runtimeDir, shimDir, desktopDir]) mkdirSync(dir);
+        symlinkSync(process.execPath, join(runtimeDir, 'node'));
+        for (const dir of [shimDir, desktopDir]) {
+          if (process.env.PAPERCUSP_RUNTIME_TEST_BUN) symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN, join(dir, 'node'));
+          else {
+            writeFileSync(join(dir, 'node'), '#!/bin/sh\nexit 79\n', { mode: 0o755 });
+          }
+        }
+        const cli = join(shimDir, 'runtime-cli');
+        const receiptPath = join(root, 'receipt.json');
+        writeFileSync(cli, '#!/usr/bin/env node\n' +
+          'require("node:fs").writeFileSync(process.env.CLI_RECEIPT,JSON.stringify({runtime:process.versions.bun?"bun":"node",executable:process.execPath,args:process.argv.slice(2)}))\n',
+        { mode: 0o755 });
+        const oneliner = buildConsoleOneliner(root, {
+          PAPERCUSP_NODE_RUNTIME_DIR: runtimeDir, PAPERCUSP_BIN_DIR: shimDir, CLI_RECEIPT: receiptPath,
+        }, 'runtime-cli "literal argument"', APPEARANCE, null, false, false);
+        execFileSync('/bin/bash', ['-c', oneliner], {
+          cwd: root, env: { PATH: `${desktopDir}:/usr/bin:/bin` }, encoding: 'utf8',
+        });
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        expect(receipt).toEqual({ runtime: 'node', executable: realpathSync(process.execPath), args: ['literal argument'] });
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

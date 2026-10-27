@@ -1,0 +1,30 @@
+{
+  "updatedAt": "2026-10-27T04:03Z",
+  "predecessorBrief": ".papercusp/evidence/quick-access-20261026/successor-fire22.json",
+  "status": "Publication still blocked. No native or materialization task has been launched. All Cargo, mutation, component and ACL proof in fire22 remains valid; do not repeat it.",
+  "diagnosis": {
+    "measurement": "Canonical routine metadata.last_skipped_paths at03:57:08 explicitly fences both scanner script and survivor-test on libs/papercusp/libs/db/sql/1592-issue-occurrence-canonical-covering-index.sql. reason=migration-dependency-fence; no blockingAgents/WorkItems; unattributedMigrations names1592.",
+    "reservation": "Read-only migration_reservations query for num1592 or occurrence-covering filename returns0. Same-transaction positive control returns1591-cleanup-issue-family-index-build.sql, so absence is verified.",
+    "alternativeExcluded": "Both native edit timestamps03:10/03:11 precede latest editor turn-end03:46:05; locks:queue for both files is empty. Ending this turn alone does not fix the active migration fence.",
+    "source": "migrationDependencyFenceSkips in packages/operator-core/lib/harness/git-sync/run-git-sync.ts deliberately fails closed for all root dirty paths when a blocked migration lacks attribution. Preserve this safety guard."
+  },
+  "repair": {
+    "item": "EI-27103641386590354",
+    "assignee": "su-c6cc0753-b651-4ffb-976b-2a42242d1209",
+    "originalAuthorItem": "EI-25503081061868211",
+    "request": "coord-send-0c6b5d42357f27d10e88e5688a3e0184df0c872561d4c1e480ed3f2e73801f9f",
+    "evidenceUpdate": "coord-send-229bb08d93e7c4aa5d9576465f58e79e7dc9f72ddbb5c9750fc751efb28b8d8a",
+    "pickup": "Verified targeted presence changed to this blocker as the author's live intent; recent activity34sec. The author is live and progressing. Do not create a second fixer or poll their lane.",
+    "relatedClassIssue": "EI-26605384996080638 open/unassigned; its old comments name Codex edit attribution workspace_id NULL, fixed writer WI-6554700010019499. Do not assume that historical cause is this occurrence without measuring it.",
+    "fact": "finding:scanner-publication-migration-fence on WI-6554700010029944, verified with probe/falsifier and900sTTL."
+  },
+  "wait": {
+    "old": "Commit await377114 timed out; delivery1004931 consumed/already settled. No completion was implied.",
+    "active": 377154,
+    "event": "git-sync:committed",
+    "timeoutSec": 1200,
+    "note": "Registered during this recovery. On publication verify exact3 expected blobs from fire22. If repair completes before publication, use sanctioned background-worker sync only after the current resource lease releases; never manual commit or guard disable."
+  },
+  "next": "Read the author's repair reply if delivered, then act on exact commit event. Verify source expected blobs23301236/35e123eb/fb245074, materialize newpin, clean18 survivor+100 source-snapshot, bind scanner clause and close with proof, notify peer28a3e, ONE terminal nativePASS. Finalv8 amendment/reviews/activation/independentacceptance and delivery are still open. The work loop remains intentionally ended; bounded commit event continues the task.",
+  "guardRails": "Avi-approved SELF/AUTO. No manualgit, LIVE_GATE_OPS, migration allocation/file edits on the live author's lane, weakened fences, or realHOMEshortcut changes. No shipment or final native pass claimed."
+}

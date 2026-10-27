@@ -27,6 +27,7 @@ import {
   mapIssueClaimExclusionCounts,
   mapIssueClaimExclusionSamples,
 } from './get-next';
+import { ISSUE_FLOOR_ATTRIBUTION, ISSUE_FLOOR_EXPLANATIONS } from '../work-items';
 
 /** Re-emit the count SELECT list from an ARBITRARY floor set, using the same expression the
  *  production constant is built from. This is what lets a control be a genuinely emitted
@@ -121,6 +122,29 @@ describe('POSITIVE CONTROL — a mis-scoped instrument reports every floor, neve
       ISSUE_CLAIM_EXCLUSION_COUNT_SELECT_SQL,
     );
     expect(findBucketlessFloors(ISSUE_CLAIM_FLOORS, renamed)).toEqual([first.ok]);
+  });
+});
+
+// WI-6554700010029716: the per-id explainer (work_items:observe, explainIssueClaimFloors,
+// diagnoseClaimNextMiss attribution) once read a hand-written floor list that dropped
+// ok_admission_recovery, so self-select skipped queued/held recovery rows while the explainer
+// called them admissible. Its list is now ISSUE_FLOOR_ATTRIBUTION; this pins it to the claim bar.
+describe('per-id attribution covers every floor the claim bar enforces', () => {
+  const attributed = new Set<string>(ISSUE_FLOOR_ATTRIBUTION.map(([, column]) => column));
+
+  it('every ISSUE_CLAIM_FLOORS column has an explainIssueClaimFloors label', () => {
+    expect(ALL_OK.filter((ok) => !attributed.has(ok))).toEqual([]);
+  });
+
+  it('labels are unique and each one carries an explanation', () => {
+    const labels = ISSUE_FLOOR_ATTRIBUTION.map(([label]) => label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.filter((label) => !(label in ISSUE_FLOOR_EXPLANATIONS))).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL: the pre-fix list (without ok_admission_recovery) is named as uncovered', () => {
+    const preFix = new Set([...attributed].filter((column) => column !== 'ok_admission_recovery'));
+    expect(ALL_OK.filter((ok) => !preFix.has(ok))).toEqual(['ok_admission_recovery']);
   });
 });
 

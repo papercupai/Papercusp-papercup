@@ -73,6 +73,92 @@ function summaryTranscript(summaryTexts: string[], tail: PortableTurn[]): string
   ].join('\n\n');
 }
 
+export interface PortableTurnFitInspection {
+  feasible: boolean;
+  fidelity: 'full' | 'summary-tail';
+  fullEstimatedTokens: number;
+  minimumRequiredTokens: number;
+  latestAtomicGroupEstimatedTokens: number;
+  summaryChunks: number | null;
+  reason: string | null;
+}
+
+type PortableTurnFitPlan =
+  | { kind: 'full'; transcript: string; estimatedTokens: number; inspection: PortableTurnFitInspection }
+  | { kind: 'summary-tail'; chunks: PortableTurn[][]; tail: PortableTurn[]; outputBudget: number;
+      inspection: PortableTurnFitInspection }
+  | { kind: 'blocked'; inspection: PortableTurnFitInspection };
+
+function planPortableTurnFit(input: {
+  turns: PortableTurn[];
+  availableTokens: number;
+  renderPayload?: (transcript: string, fidelity: 'full' | 'summary-tail') => string;
+}): PortableTurnFitPlan {
+  const full = renderPortableTurns(input.turns).text;
+  const measure = (transcript: string, fidelity: 'full' | 'summary-tail') =>
+    estimatePortableTokens(input.renderPayload?.(transcript, fidelity) ?? transcript);
+  const fullEstimatedTokens = measure(full, 'full');
+  const groups = atomicTurnGroups(input.turns);
+  const latest = groups.at(-1)?.flat() ?? [];
+  const latestAtomicGroupEstimatedTokens = measure(renderPortableTurns(latest).text, 'summary-tail');
+  if (fullEstimatedTokens <= input.availableTokens) {
+    return { kind: 'full', transcript: full, estimatedTokens: fullEstimatedTokens, inspection: {
+      feasible: true, fidelity: 'full', fullEstimatedTokens,
+      minimumRequiredTokens: fullEstimatedTokens, latestAtomicGroupEstimatedTokens,
+      summaryChunks: null, reason: null,
+    } };
+  }
+  if (groups.length < 2) {
+    const reason = 'session port cannot fit the latest required atomic conversation/tool group in the target budget';
+    return { kind: 'blocked', inspection: {
+      feasible: false, fidelity: 'summary-tail', fullEstimatedTokens,
+      minimumRequiredTokens: fullEstimatedTokens, latestAtomicGroupEstimatedTokens,
+      summaryChunks: null, reason,
+    } };
+  }
+  let minimumRequiredTokens = Number.POSITIVE_INFINITY;
+  for (let split = 1; split < groups.length; split++) {
+    let chunks: PortableTurn[][];
+    try {
+      chunks = chunkAtomicGroups(groups.slice(0, split));
+    } catch (error) {
+      return { kind: 'blocked', inspection: {
+        feasible: false, fidelity: 'summary-tail', fullEstimatedTokens,
+        minimumRequiredTokens: fullEstimatedTokens, latestAtomicGroupEstimatedTokens,
+        summaryChunks: null, reason: error instanceof Error ? error.message : String(error),
+      } };
+    }
+    const tail = groups.slice(split).flat();
+    const baseline = summaryTranscript(chunks.map(() => ''), tail);
+    const baselineTokens = measure(baseline, 'summary-tail');
+    const required = baselineTokens + chunks.length * MIN_SUMMARY_OUTPUT_BUDGET;
+    minimumRequiredTokens = Math.min(minimumRequiredTokens, required);
+    const outputBudget = input.availableTokens - baselineTokens;
+    if (outputBudget >= chunks.length * MIN_SUMMARY_OUTPUT_BUDGET) {
+      return { kind: 'summary-tail', chunks, tail, outputBudget, inspection: {
+        feasible: true, fidelity: 'summary-tail', fullEstimatedTokens,
+        minimumRequiredTokens: required, latestAtomicGroupEstimatedTokens,
+        summaryChunks: chunks.length, reason: null,
+      } };
+    }
+  }
+  const reason = 'session port cannot fit the latest required atomic conversation/tool group plus bounded summary output';
+  return { kind: 'blocked', inspection: {
+    feasible: false, fidelity: 'summary-tail', fullEstimatedTokens,
+    minimumRequiredTokens: Number.isFinite(minimumRequiredTokens) ? minimumRequiredTokens : fullEstimatedTokens,
+    latestAtomicGroupEstimatedTokens, summaryChunks: null, reason,
+  } };
+}
+
+/** Deterministic, side-effect-free fit preview used before confirmation or egress. */
+export function inspectPortableTurnFit(input: {
+  turns: PortableTurn[];
+  availableTokens: number;
+  renderPayload?: (transcript: string, fidelity: 'full' | 'summary-tail') => string;
+}): PortableTurnFitInspection {
+  return planPortableTurnFit(input).inspection;
+}
+
 export async function fitPortableTurns(input: {
   turns: PortableTurn[];
   availableTokens: number;
@@ -95,40 +181,21 @@ export async function fitPortableTurns(input: {
     maxOutputTokensPerChunk: number;
   };
 }> {
-  const full = renderPortableTurns(input.turns).text;
   const measure = (transcript: string, fidelity: 'full' | 'summary-tail') =>
     estimatePortableTokens(input.renderPayload?.(transcript, fidelity) ?? transcript);
-  const fullTokens = measure(full, 'full');
-  if (fullTokens <= input.availableTokens) {
+  const plan = planPortableTurnFit(input);
+  if (plan.kind === 'full') {
     return {
       fidelity: 'full',
-      transcript: full,
-      estimatedTokens: fullTokens,
+      transcript: plan.transcript,
+      estimatedTokens: plan.estimatedTokens,
       tokenEstimator: SESSION_PORT_TOKEN_ESTIMATOR,
       summaryOutputRedactions: 0,
     };
   }
   if (!input.summarizer) throw new Error('session port requires summarization, but no summarizer is available');
-
-  const groups = atomicTurnGroups(input.turns);
-  if (groups.length < 2) {
-    throw new Error('session port cannot fit the latest required atomic conversation/tool group in the target budget');
-  }
-  let selected: { chunks: PortableTurn[][]; tail: PortableTurn[]; outputBudget: number } | null = null;
-  for (let split = 1; split < groups.length; split++) {
-    const chunks = chunkAtomicGroups(groups.slice(0, split));
-    const tail = groups.slice(split).flat();
-    const baseline = summaryTranscript(chunks.map(() => ''), tail);
-    const baselineTokens = measure(baseline, 'summary-tail');
-    const outputBudget = input.availableTokens - baselineTokens;
-    if (outputBudget >= chunks.length * MIN_SUMMARY_OUTPUT_BUDGET) {
-      selected = { chunks, tail, outputBudget };
-      break;
-    }
-  }
-  if (!selected) {
-    throw new Error('session port cannot fit the latest required atomic conversation/tool group plus bounded summary output');
-  }
+  if (plan.kind === 'blocked') throw new Error(plan.inspection.reason ?? 'session port cannot fit target budget');
+  const selected = plan;
   const perChunkBudget = Math.floor(selected.outputBudget / selected.chunks.length);
   const maxOutputTokens = Math.min(
     MAX_SUMMARIZER_OUTPUT_TOKENS,

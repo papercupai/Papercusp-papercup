@@ -94,6 +94,58 @@ describe('scanProcessesAsync — inventory IO', () => {
     expect(actual.processes.find((p) => p.pid === 601)?.exemptReason).toBe('human-terminal');
   });
 
+  it('returns explicitly incomplete coverage when procfs IO never settles', async () => {
+    const fs = box({ cgroups: { [`${OURS}/pc-aaa111.scope`]: [10] } });
+    const actual = await scanProcessesAsync({
+      selfPid: 999,
+      asyncIoDeadlineMs: 5,
+      asyncFs: {
+        readFile: async (path) => {
+          if (path === '/proc/10/stat') return new Promise<string | null>(() => {});
+          return fs.readFile(path);
+        },
+        readDir: async (path) => fs.readDir(path),
+        isDir: async (path) => fs.isDir(path),
+      },
+    });
+
+    expect(actual).toMatchObject({
+      processes: [],
+      ownedRootAbs: `${ROOT}${OURS}`,
+      ownedRootExists: true,
+      userManagerRoot: MGR,
+      ownedTruncated: true,
+      foreignTruncated: true,
+      scanTimedOut: true,
+    });
+  });
+
+  it('leaves root presence unknown when the deadline precedes cgroup discovery', async () => {
+    const fs = box({ cgroups: {} });
+    const actual = await scanProcessesAsync({
+      selfPid: 999,
+      asyncIoDeadlineMs: 5,
+      asyncFs: {
+        readFile: async (path) => {
+          if (path === '/proc/999/cgroup') return new Promise<string | null>(() => {});
+          return fs.readFile(path);
+        },
+        readDir: async (path) => fs.readDir(path),
+        isDir: async (path) => fs.isDir(path),
+      },
+    });
+
+    expect(actual).toMatchObject({
+      processes: [],
+      ownedRootAbs: null,
+      ownedRootExists: null,
+      userManagerRoot: null,
+      ownedTruncated: true,
+      foreignTruncated: true,
+      scanTimedOut: true,
+    });
+  });
+
   it('does not block the event loop while a procfs read is pending', async () => {
     const fs = box({ cgroups: { [`${OURS}/pc-aaa111.scope`]: [10] } });
     let release!: () => void;

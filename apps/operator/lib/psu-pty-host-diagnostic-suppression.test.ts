@@ -119,7 +119,7 @@ describe('routine host diagnostics are routed, not bare', () => {
     'DEFERRED/REFUSED for ${ownerId}',
     'DEFERRED for ${ownerId} (quota-blocked;',
     'submit not confirmed for ${ownerId} — resubmit CR #${n}',
-    "mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId}",
+    "mcp-reconnect ${outcome.ok ? 'OK' : 'FAILED'} for ${ownerId}",
   ];
 
   it.each(ROUTINE_DEFER_MARKERS)('%s is emitted via writeHostDiagnostic', (marker) => {

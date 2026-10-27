@@ -17,6 +17,8 @@ const row = (kind: string, count: number, latestId = '42'): PtyHostEventAggregat
  * write host events through appendHostEvent's `kind` pass-through. */
 const HOST_EVENT_PRODUCERS = new Set([
   'appendHostEvent',
+  // reanchorAfterContextReset's injected recorder; the host wires it to appendHostEvent.
+  'appendEvent',
   'emitEvent',
   'recordAdoptedCarryDrillEvent',
   'recordAdoptedCarryDrillTerminal',
@@ -52,8 +54,14 @@ function emittedHostKinds(hostSource: string): string[] {
     if (ts.isParenthesizedExpression(expression)) return returnedProperty(expression.expression, name);
     if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
       const helper = bindingBefore(expression.expression.text, expression);
-      if (helper && ts.isArrowFunction(helper) && ts.isBlock(helper.body)) {
-        const returns = helper.body.statements
+      // A helper is either `const f = (…) => { … }` in scope or a top-level `function f`
+      // (classifyMcpReconnectHostOutcome feeds `outcome.event`; WI-6554700010030030).
+      const calleeName = expression.expression.text;
+      const declared = source.statements.find((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === calleeName);
+      const body = helper && ts.isArrowFunction(helper) && ts.isBlock(helper.body) ? helper.body : declared?.body;
+      if (body) {
+        const returns = body.statements
           .filter(ts.isReturnStatement)
           .flatMap((statement) => statement.expression ? [statement.expression] : []);
         return returns.map((value) => returnedProperty(value, name)).find(Boolean);
@@ -100,12 +108,30 @@ function emittedHostKinds(hostSource: string): string[] {
   const callee = (call: ts.CallExpression) => (call.expression as ts.Identifier).text;
   const hostCalls = calls.filter((call) => callee(call) === 'appendHostEvent');
   const delegated = hostCalls.filter((call) => call.arguments[1]?.getText(source) === 'kind');
-  // makeCarryRearm's emitEvent and recordAdoptedCarryDrillEvent pass `kind` through;
-  // their callers are the producers counted below.
-  expect(delegated).toHaveLength(2);
+  // A wrapper that forwards `kind` to appendHostEvent (makeCarryRearm's emitEvent,
+  // recordAdoptedCarryDrillEvent, the reset re-anchor's appendEvent) hides its kinds at its
+  // own call sites, so every such wrapper must be a counted producer. This is the invariant a
+  // pinned call count only approximated: the count went red whenever the host added a producer
+  // (WI-6554700010030030), while a NEW uncounted wrapper is exactly what must stay red.
+  const wrapperName = (node: ts.Node): string | null => {
+    for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+      if (ts.isFunctionDeclaration(n)) return n.name?.text ?? null;
+      if (ts.isArrowFunction(n) || ts.isFunctionExpression(n)) {
+        const holder = n.parent;
+        if ((ts.isVariableDeclaration(holder) || ts.isPropertyAssignment(holder)) && ts.isIdentifier(holder.name)) {
+          return holder.name.text;
+        }
+        return null;
+      }
+    }
+    return null;
+  };
+  expect(delegated.length).toBeGreaterThan(0);
+  const uncounted = delegated.map(wrapperName).filter((name) => name === null || !HOST_EVENT_PRODUCERS.has(name));
+  expect(uncounted, 'kind pass-through wrappers missing from HOST_EVENT_PRODUCERS').toEqual([]);
   const direct = hostCalls.filter((call) => !delegated.includes(call));
-  const emitted = calls.filter((call) => callee(call) === 'emitEvent');
-  expect(emitted).toHaveLength(9); // every pass-through producer is included in this census.
+  const emitted = calls.filter((call) => callee(call) === 'emitEvent' || callee(call) === 'appendEvent');
+  expect(emitted.length).toBeGreaterThan(0); // each one's kind must resolve below, or resolve() throws.
   // recordAdoptedCarryDrillTerminal delegates into recordAdoptedCarryDrillEvent with `kind`.
   const drill = calls.filter((call) =>
     callee(call).startsWith('recordAdoptedCarryDrill') && call.arguments[0]?.getText(source) !== 'kind');
@@ -274,6 +300,10 @@ describe('PTY host event classification for Blender', () => {
     const unclassified = kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified');
     expect(unclassified, `unclassified PTY host event kinds: ${unclassified.join(', ')}`).toEqual([]);
     expect(classifyPtyHostEvent('pty-spawned')).toBe('routine');
+    // WI-6554700010030030: a failed in-place re-anchor is a failure; a benign skip is not.
+    expect(classifyPtyHostEvent('reset-reanchor-failed')).toBe('failure');
+    expect(classifyPtyHostEvent('reset-reanchor-skipped')).toBe('routine');
+    expect(classifyPtyHostEvent('reset-reanchor-reported')).toBe('routine');
     expect(classifyPtyHostEvent('inject-mutex-force-released')).toBe('recovered');
     expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');

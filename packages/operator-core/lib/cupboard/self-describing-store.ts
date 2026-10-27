@@ -48,9 +48,26 @@ function isMonorepoRoot(dir: string): boolean {
   return existsSync(join(dir, 'package.json')) && existsSync(join(dir, 'packages'));
 }
 
+/** Node's permission model (`--permission`), when the process runs under it. */
+type PermissionModel = { has(scope: string, reference?: string): boolean };
+
+/** May this process READ `path`? Always true outside Node's permission model. Under
+ *  it, `existsSync` on an unpermitted path THROWS `ERR_ACCESS_DENIED` instead of
+ *  returning false — so a walk must ask first rather than probe. */
+function mayRead(path: string): boolean {
+  const permission = (process as unknown as { permission?: PermissionModel }).permission;
+  return permission === undefined || permission.has('fs.read', path);
+}
+
 function walkUpToRepoRoot(start: string): string | null {
   let dir = start;
   for (let i = 0; i < 24; i += 1) {
+    // A confined runtime (the packaged sidecar's import qualification runs with
+    // `--permission --allow-fs-read=<bundle>`) cannot read the bundle's ancestors.
+    // An unreadable dir is not this module's repo root, and grants only reach
+    // DOWNWARD, so nothing above it is either: stop instead of crashing the import
+    // (WI-6554700010029714 — nine cupboard stores call this at MODULE SCOPE).
+    if (!mayRead(join(dir, 'package.json')) || !mayRead(join(dir, 'packages'))) break;
     if (isMonorepoRoot(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) break; // reached the filesystem root

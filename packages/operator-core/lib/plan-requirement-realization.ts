@@ -198,6 +198,54 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
 }
 
 /**
+ * WI-6554700010030192: review-only pending-delivery (`plans:set-plan-status
+ * { pendingDeliveryBarKeys }`) recruits independent grading BEFORE delivery, so the
+ * selected bars' proof cannot exist yet. A done, reasoned not-code item whose EVERY
+ * enforceable outcome-BAR projection belongs to a selected pending-delivery bar can
+ * therefore never earn a {@link NonCodeItemProof} during that review. Without this,
+ * `requirement_unrealized` refused ahead of `acceptance_ungraded`, and no grader was
+ * ever recruited for a plan whose final delivery item owns only a deployed/live bar.
+ * An item that owns ANY other outcome projection is excluded: that projection's proof
+ * can exist now, and a passing pending sibling must not vouch for it.
+ */
+export function pendingDeliveryOwnedItemIds(input: {
+  snapshot: Pick<AcceptanceBarContractSnapshot, 'bars'>;
+  pendingBarKeys: readonly string[];
+  doneNonCodeItemIds: ReadonlySet<string>;
+}): Set<string> {
+  const pending = new Set(input.pendingBarKeys);
+  const ownsPending = new Set<string>();
+  const ownsOther = new Set<string>();
+  for (const bar of input.snapshot.bars) {
+    if (bar.role !== 'outcome') continue;
+    for (const mapping of bar.mappings) {
+      if (mapping.lifecycleStatus !== undefined && !isEnforceableSpecLifecycle(mapping.lifecycleStatus)) continue;
+      (pending.has(bar.barKey) ? ownsPending : ownsOther).add(mapping.planItemId);
+    }
+  }
+  return new Set([...ownsPending].filter((id) => input.doneNonCodeItemIds.has(id) && !ownsOther.has(id)));
+}
+
+/**
+ * Split unrealized requirements for the review-only pending-delivery path. Only a
+ * `no-verifying-citation` entry whose target is pending-delivery-owned is deferred;
+ * a missing audit or a target absent from the plan still refuses. The final ship
+ * (no `pendingDeliveryBarKeys`) never calls this, so it still requires full realization.
+ */
+export function partitionPendingDeliveryUnrealized(
+  unrealized: readonly UnrealizedRequirement[],
+  pendingItemIds: ReadonlySet<string>,
+): { blocking: UnrealizedRequirement[]; pendingDelivery: UnrealizedRequirement[] } {
+  const blocking: UnrealizedRequirement[] = [];
+  const pendingDelivery: UnrealizedRequirement[] = [];
+  for (const entry of unrealized) {
+    (entry.reason === 'no-verifying-citation' && pendingItemIds.has(entry.planTarget)
+      ? pendingDelivery : blocking).push(entry);
+  }
+  return { blocking, pendingDelivery };
+}
+
+/**
  * Dispositions that ASSERT the plan absorbed the requirement, and so owe evidence.
  *
  * Exported (P-019) so the draft-clause deriver selects the SAME population this judge

@@ -101,7 +101,54 @@ const STRICT_ALIAS_RE = /\balias(?:es)?\s+(?:for|of)\s+`([A-Za-z_][A-Za-z0-9_]*)
  * thing to refuse: that is the class silently returning, which is exactly how it
  * reached 71 filings.
  */
-export const STRICT_ALIAS_DECLARATION_FLOOR = 24;
+export const STRICT_ALIAS_DECLARATION_FLOOR = 17;
+
+/**
+ * FOLDED aliases (WI-6554700010029664, 2026-10-27) — spellings that are still ACCEPTED but no
+ * longer ADVERTISED: each is folded into its canonical field by a `z.preprocess` before parse
+ * instead of being declared as a sibling schema field, because the Claude/OMP seed has a
+ * 100,000 B budget and every declared alias costs compact-schema bytes on every seeded turn.
+ *
+ * Moving an alias here is NOT the removal the floor above refuses: the floor dropped 24 → 17
+ * because these seven declarations (coord:presence ownerId/ownerIds, coord:inbox
+ * unansweredOnly/unanswered, events:catalog pattern/query, loop:status owner, capability:bash
+ * cmd — eight rows, one of which never matched the strict prose form) left the advertised
+ * schema, where the description scanner can see them, for this table, where
+ * tool-alias-contract.test.ts asserts BEHAVIOUR instead: the alias is absent from the projected
+ * inputSchema, the canonical is present, and parsing `{ [alias]: sample }` yields
+ * `{ [canonical]: sample }`. A spelling deleted from a fold fails that test, so the class is
+ * still guarded. Never lower FOLDED_ALIAS_FLOOR to get green; add a row when you fold another.
+ */
+export interface FoldedArgAlias {
+  tool: string;
+  alias: string;
+  canonical: string;
+  /** A value the canonical field accepts; parsing `{ ...base, [alias]: sample }` must yield it. */
+  sample: unknown;
+  /** Required non-alias args the schema needs to parse at all. */
+  base?: Record<string, unknown>;
+}
+
+export const FOLDED_ARG_ALIASES: readonly FoldedArgAlias[] = [
+  // plans:items' folds (WI-6554700010029562, normalizePlansItemsArgs) are pinned by
+  // plans/contract-repair-aliases.test.ts; add their rows here once they are on every lineage.
+  { tool: 'facts:list', alias: 'scope_ref', canonical: 'scopeRef', sample: 'papercusp', base: { scope: 'harness' } },
+  { tool: 'facts:list', alias: 'ref', canonical: 'scopeRef', sample: 'papercusp', base: { scope: 'harness' } },
+  { tool: 'facts:retract', alias: 'scope_ref', canonical: 'scopeRef', sample: 'papercusp', base: { scope: 'harness', key: 'k', reason: 'r' } },
+  { tool: 'facts:retract', alias: 'ref', canonical: 'scopeRef', sample: 'papercusp', base: { scope: 'harness', key: 'k', reason: 'r' } },
+  { tool: 'coord:presence', alias: 'ownerId', canonical: 'owner', sample: 'su-a' },
+  { tool: 'coord:presence', alias: 'ownerIds', canonical: 'owners', sample: ['su-a', 'su-b'] },
+  { tool: 'coord:inbox', alias: 'includeAmbient', canonical: 'include_ambient', sample: true },
+  { tool: 'coord:inbox', alias: 'unansweredOnly', canonical: 'unanswered_only', sample: true },
+  { tool: 'coord:inbox', alias: 'unanswered', canonical: 'unanswered_only', sample: true },
+  { tool: 'events:catalog', alias: 'pattern', canonical: 'q', sample: 'gate' },
+  { tool: 'events:catalog', alias: 'query', canonical: 'q', sample: 'gate' },
+  { tool: 'loop:status', alias: 'owner', canonical: 'ownerId', sample: 'self' },
+  { tool: 'capability:bash', alias: 'cmd', canonical: 'command', sample: 'true' },
+];
+
+/** The folded-alias population may only grow; see the note on FOLDED_ARG_ALIASES. */
+export const FOLDED_ALIAS_FLOOR = 13;
 
 /** Adapt a projected catalog entry; returns null when there is nothing to scan. */
 export function toAliasScannableTool(tool: unknown): AliasScannableTool | null {

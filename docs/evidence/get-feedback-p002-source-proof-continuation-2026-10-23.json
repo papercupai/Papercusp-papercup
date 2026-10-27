@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-proof-continuation",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "status": "partial; P002 remains open",
+  "sourceCommit": "8fa43342f66b6060857e2f4d3b005b130229a93c",
+  "priorProof": "docs/evidence/get-feedback-r2-proof-refresh-2026-10-23.json",
+  "reasonForRefresh": {
+    "assessment": "/tmp/gf-p002-current-adequacy-20261023-1111.json",
+    "assessmentBuild": "67f3342e8c",
+    "changedMeasuredSources": [
+      "packages/operator-core/lib/agent-launch-core.ts",
+      "apps/operator/scripts/ptool.mjs",
+      "apps/operator/scripts/tool-delivery.generated.mjs"
+    ],
+    "meaning": "Named measured source bytes changed. The refresh was not triggered solely by HEAD movement."
+  },
+  "newCleanRuns": [
+    {
+      "testRunId": 21817288,
+      "path": "apps/operator/lib/psu-launcher.test.ts",
+      "passed": 1209,
+      "failed": 0,
+      "skipped": 0,
+      "bindingId": 66762
+    },
+    {
+      "testRunId": 21817294,
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0,
+      "bindingId": 66761
+    },
+    {
+      "testRunId": 21818097,
+      "path": "packages/operator-core/lib/session-port/store.integration.test.ts",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "bindingId": 66768
+    }
+  ],
+  "execution": {
+    "runner": "npm run lint:as-committed -- test:file --any --ref=8fa43342f66b6060857e2f4d3b005b130229a93c -- <named files>",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "worktreeDirty": false,
+    "scratchConfig": false,
+    "firstRunLog": "/tmp/gf-p002-three-clean-refresh-20261023-1112.log",
+    "firstRunOutcome": "Launcher and dispatcher passed; PostgreSQL global setup refused writes before integration cases, so the combined command exited 1.",
+    "privatePgRunLog": "/tmp/gf-p002-store-private-pg-20261023-1123.log",
+    "privatePgMechanism": "Existing scripts/with-test-pg.mjs supervises a throwaway migrated PostgreSQL server and the committed runner. PAPERCUSP_TEST_RUNS_DB_URL points the reporter to its durable ledger separately from the private test database.",
+    "privatePgOutcome": "The single integration file matched and executed both cases, with no skipped tests or substituted children. Committed runner and supervising child exited 0; PostgreSQL shutdown completed.",
+    "sharedStorageIssue": "EI-26762746203176023",
+    "sharedStorageEvidenceComment": 1200141,
+    "storageOwnerNotice": "coord-send-370ee7073511ab470975b966b3431a4cf619965a846362267487ba121e222b6a"
+  },
+  "bindings": {
+    "specId": "AUTO-BAR-R-2-P-002",
+    "specRevision": 3,
+    "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+    "positiveReceipt": "/tmp/gf-p002-positive-bind-20261023-1124.json",
+    "integrationReceipt": "/tmp/gf-p002-store-bind-20261023-1127.json",
+    "independentCurrentness": "/tmp/gf-p002-three-currentness-compact-20261023-1132.json",
+    "newBindingsIndependentlyCurrent": [66761, 66762, 66768],
+    "qualification": "Each replacement was independently server-measured CURRENT at every applicable dimension, with no stale or unknown reason, before equivalent old evidence was retired.",
+    "preservedRecipes": "The previous bounded source/test/fixture file sets were preserved. No full imported-graph measurement is claimed.",
+    "retainedServiceBinding": 65882,
+    "retainedCalibratedCaughtMutant": 65897,
+    "retiredEquivalentBindings": [65881, 65883, 65106],
+    "retirementReceipt": "/tmp/gf-p002-three-old-equivalents-retired-20261023-1135.json",
+    "designAttestations": "Older rows carrying design attestations were retained. The new dispatcher row preserves its previous metadata rather than inventing additional attestations."
+  },
+  "governingAssessment": {
+    "receipt": "/tmp/gf-p002-governing-after-refresh-20261023-1129.json",
+    "evaluatorBuild": "67f3342e8c",
+    "rows": [
+      {
+        "specId": "AUTO-BAR-R-2-P-002",
+        "revision": 3,
+        "evaluationMode": "mechanical",
+        "verdict": "pass",
+        "wouldBlock": [],
+        "passingTestBindingIds": [66762, 66761, 65882, 66768],
+        "caughtMutantBindingIds": [65897]
+      },
+      {
+        "specId": "GF-P002-source",
+        "revision": 1,
+        "evaluationMode": "judgment",
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "falsifiability",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor",
+          "disclosed-gap"
+        ],
+        "requiredProofFloor": "l4",
+        "diagnosticReceipt": "/tmp/gf-p002-source-diagnostics-20261023-1131.json",
+        "recoveredDiagnosticReceipt": "/tmp/gf-p002-gf-source-diagnostic-recovered.json"
+      }
+    ],
+    "scope": "The BAR row passes. The separate source clause does not pass; there is no all-clause acceptance or item closure."
+  },
+  "remainingWork": [
+    "GF-P002-source needs clause-specific durable, calibrated, current and falsifiable proof, including its governed L4 floor; do not waive the floor or retire disclosed gaps without stronger proof.",
+    "Native actor and source-transition limits remain on EI-26733731037199530 and WI-10005891. Existing bounded native records do not prove universal noninterference.",
+    "Original and supplementary quality-cohort shortfalls, independent plan acceptance and exact final shipment remain open on their existing items."
+  ],
+  "scope": [
+    "This unit refreshed three affected test bindings and preserved the still-qualified service and mutation evidence.",
+    "It changed no product source or tests, created no new native consultation, and altered no settings, proof floor, spec revision or cohort cut.",
+    "No gate operation, shared container cleanup, source-actor conclusion or shipment claim follows from these results."
+  ]
+}

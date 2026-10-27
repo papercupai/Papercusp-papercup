@@ -564,7 +564,7 @@ describe('capability:read', () => {
     }
   });
 
-  it('rejects line, query, and view modes on durable and volatile scratch references', async () => {
+  it('keeps durable and volatile scratch references byte-only', async () => {
     const payload = Buffer.from('scratch mode guard payload', 'utf8');
     const manifest = writeScratchReference({
       filePath: join(DIR, 'durable-mode-guard.spill'),
@@ -610,6 +610,8 @@ describe('capability:read', () => {
         for (const mode of [
           { query: 'payload' },
           { view_lines: { offset: 1, limit: 1 } },
+          { content_indexes: [0] },
+          { evidence_class: 'event' },
         ]) {
           const mixed = (await readTool.handler!(
             { uri: entry.uri, byte_offset: 0, byte_limit: 4, ...mode } as never,
@@ -942,6 +944,8 @@ describe('capability:read', () => {
     expect(queryBranch?.properties?.offset?.not).toBeDefined();
     expect(queryBranch?.properties?.byte_offset?.not).toBeDefined();
     expect(queryBranch?.properties?.evidence_class?.not).toBeDefined();
+    expect(queryBranch?.properties?.query?.description).toContain('papercusp://scratch-spool');
+    expect(queryBranch?.properties?.query?.description).toContain('papercusp://scratch-memory');
 
     const viewBranch = branches.find((branch) => branch.required?.includes('view_lines'));
     expect(viewBranch?.properties?.query?.not).toBeDefined();
@@ -988,6 +992,16 @@ describe('capability:read', () => {
     expect(contentIndexesDescription).toContain("under the response's content field");
     expect(contentIndexesDescription).toContain('it does not parse JSON serialized inside');
     expect(contentIndexesDescription).toContain('Use evidence_class');
+    expect(contentIndexesDescription).toContain('papercusp://scratch-spool');
+
+    const evidenceClassDescription = descriptions.get('evidence_class');
+    expect(evidenceClassDescription).toContain('papercusp://scratch-spool');
+    expect(evidenceClassDescription).toContain('papercusp://scratch-memory');
+
+    const toolDocs = `${String(readTool.description)} ${JSON.stringify(readTool.guidance ?? {})}`;
+    expect(toolDocs).toContain('papercusp://scratch-spool');
+    expect(toolDocs).toContain('papercusp://scratch-memory');
+    expect(toolDocs).toContain('not query, view_lines, content_indexes, or evidence_class');
 
     const argsSchema = readTool.args as unknown as {
       safeParse: (value: unknown) => { success: boolean };

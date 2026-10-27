@@ -57,7 +57,7 @@ beforeAll(async () => {
     const report = validateProviderInterface({
       capabilityClass, providerPackage: provider.pkg, providerVersion: provider.version, registryRevision: 'r1', verbBindings,
       lookup: (name) => name === provider.tool
-        ? { name, pluginName: provider.pkg, inputSchema: sendSchema, outputSchema: null } : null,
+        ? { name, pluginName: provider.pkg, providerVersion: provider.version, inputSchema: sendSchema, outputSchema: null } : null,
     });
     await recordProviderConformance(db.adminSql, {
       workspaceId: WS, classId: CLASS.id, classVersion: CLASS.version,

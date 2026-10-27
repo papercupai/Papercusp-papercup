@@ -71,6 +71,9 @@ export async function buildCommitAttributionRows(
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean);
+    // A multi-author commit (WI-6554700010029864) says WHO co-authored it, not which agent edited
+    // which file, so its rows carry no agent rather than stamping the first author on every file.
+    const agentId = t.agents && t.agents.length > 1 ? undefined : t.agent;
     for (const file of files) {
       const base: CommitAttributionRow = {
         workspaceId,
@@ -78,7 +81,7 @@ export async function buildCommitAttributionRows(
         repo,
         commitSha: sha,
         file,
-        agentId: t.agent,
+        agentId,
         sessionId: t.sessionId,
         planSlug: t.planSlug,
         committedAt,

@@ -24,7 +24,8 @@
  */
 import { createRequire } from 'node:module';
 import type { _InstanceType, Image, Instance, InstanceTypeInfo, Snapshot, Volume, EC2Client } from '@aws-sdk/client-ec2';
-import { type ContextEntry, GetRoleCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
+import { type ContextEntry, GetRoleCommand, GetRolePolicyCommand, ListRolePoliciesCommand,
+  ListAttachedRolePoliciesCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
 import { DescribeKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
 import {
@@ -103,6 +104,8 @@ import {
   AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS,
   parseAwsAmiReleaseDescription,
 } from './aws-ami-release';
+import { assertAwsCanaryDeadlineSleeping, canonicalAwsCanaryJson } from './aws-canary-deadline';
+import { awsCanaryDeadlineStackFragment, type AwsCustomerFiniteCanary } from './aws-customer-setup-template';
 
 // These SDKs are external in HOST: static imports are hoisted even from lazy internal modules.
 // Free literal require calls also let desktop esbuild include the SDKs. Source
@@ -168,6 +171,16 @@ export interface AwsSdkWorkspaceHostClientOptions extends AwsSdkCredentialResolv
   now?: () => string;
   /** Accounts whose shared release AMIs the image catalog lists (default: the Papercusp publisher). */
   imagePublisherAccountIds?: readonly string[];
+  /** Server factory binding from the original administrative trial; never desired.provider. */
+  finiteCanary?: AwsCustomerFiniteCanary & { executionId: string };
+}
+
+/** Administrative arming and launcher readback share the existing regional SDK clients. */
+export interface AwsCanaryDeadlineClient {
+  assertCanaryAdmission(identity: { workspaceId: string; hostId: string;
+    runId?: string; teardownDeadlineAt?: string }): Promise<void>;
+  armCanaryDeadline(input: AwsCustomerFiniteCanary): Promise<{ executionId: string }>;
+  assertCanaryDeadline(input: AwsCustomerFiniteCanary & { executionId: string }): Promise<void>;
 }
 
 const DEFAULT_WAITER: AwsSdkWaiterConfig = { maxWaitTimeSec: 300, minDelaySec: 5, maxDelaySec: 20 };
@@ -605,9 +618,11 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   private readonly now: () => string;
   private readonly imagePublisherAccountIds: readonly string[];
   private accountCheck?: Promise<AwsCallerIdentityEvidence>;
+  private readonly finiteCanary?: Readonly<AwsCustomerFiniteCanary & { executionId: string }>;
 
   constructor(options: AwsSdkWorkspaceHostClientOptions) {
     this.bound = bindConnection(options.connection);
+    this.finiteCanary = options.finiteCanary ? Object.freeze({ ...options.finiteCanary }) : undefined;
     const inner = memoizeCredentials(
       createAwsSdkCredentialProvider(this.bound.plan, this.bound.region, {
         resolveExternalId: options.resolveExternalId,
@@ -697,6 +712,127 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         `aws_workspace_host_account_mismatch: credentials resolve to account '${identity.accountId}', connection names '${this.bound.accountId}'`,
       );
     }
+  }
+
+  async assertCanaryAdmission(identity: { workspaceId: string; hostId: string;
+    runId?: string; teardownDeadlineAt?: string }): Promise<void> {
+    const bound = this.finiteCanary;
+    if (!bound) {
+      if (identity.runId !== undefined || identity.teardownDeadlineAt !== undefined) {
+        throw new Error('AWS canary has no original administrative deadline binding');
+      }
+      return;
+    }
+    if (identity.runId !== bound.runId || identity.workspaceId !== bound.workspaceId ||
+        identity.hostId !== bound.hostId || identity.teardownDeadlineAt !== bound.teardownDeadlineAt) {
+      throw new Error('AWS canary controller identity differs from the original administrative binding');
+    }
+    await this.assertCanaryDeadline(bound);
+  }
+
+  private async assertBoundCanaryDeadline(): Promise<void> {
+    if (this.finiteCanary) await this.assertCanaryDeadline(this.finiteCanary);
+  }
+
+  private async readCanaryDeadlineFoundation(input: AwsCustomerFiniteCanary) {
+    if (!this.bound.accountId) throw new Error('AWS finite canary requires a bound account');
+    const expected = awsCanaryDeadlineStackFragment({ ...input, accountId: this.bound.accountId,
+      region: this.bound.region, principalArn: `arn:aws:iam::${this.bound.accountId}:root` }, Date.parse(this.now()));
+    const launcher = expected.Resources.CanaryLauncherRole.Properties;
+    const cleanup = expected.Resources.CanaryCleanupRole.Properties;
+    const clients = this.clients();
+    const parsePolicy = (value: string | undefined): unknown => {
+      if (!value) throw new Error('AWS canary IAM policy missing');
+      try { return JSON.parse(value); } catch { return JSON.parse(decodeURIComponent(value)); }
+    };
+    const equal = (actual: unknown, wanted: unknown) => canonicalAwsCanaryJson(actual) === canonicalAwsCanaryJson(wanted);
+    const [launcherRole, cleanupRole, launcherPolicy, cleanupPolicy, document] = await Promise.all([
+      this.call('canary-get-launcher-role', () => clients.iam.send(new GetRoleCommand({ RoleName: launcher.RoleName }))),
+      this.call('canary-get-cleanup-role', () => clients.iam.send(new GetRoleCommand({ RoleName: cleanup.RoleName }))),
+      this.call('canary-get-launcher-policy', () => clients.iam.send(new GetRolePolicyCommand({
+        RoleName: launcher.RoleName, PolicyName: launcher.Policies[0].PolicyName }))),
+      this.call('canary-get-cleanup-policy', () => clients.iam.send(new GetRolePolicyCommand({
+        RoleName: cleanup.RoleName, PolicyName: cleanup.Policies[0].PolicyName }))),
+      this.call('canary-get-document', () => clients.ssm.send(new (ssmSdk().GetDocumentCommand)({
+        Name: expected.plan.documentName, DocumentVersion: '1', DocumentFormat: 'JSON' }))),
+    ]);
+    // Verifying one inline policy alone would miss an extra grant capable of
+    // cancelling cleanup. These dedicated roles must have exactly their single
+    // expected inline policy and no attached managed policy. Never treat a page
+    // or an omitted inventory as an empty complete policy population.
+    await Promise.all([launcher, cleanup].map(async role => {
+      const [inline, attached] = await Promise.all([
+        this.call('canary-list-role-policies', () => clients.iam.send(new ListRolePoliciesCommand({ RoleName: role.RoleName }))),
+        this.call('canary-list-attached-policies', () => clients.iam.send(new ListAttachedRolePoliciesCommand({ RoleName: role.RoleName }))),
+      ]);
+      if (inline.IsTruncated || inline.Marker || attached.IsTruncated || attached.Marker ||
+          inline.PolicyNames?.length !== 1 || inline.PolicyNames[0] !== role.Policies[0].PolicyName ||
+          !Array.isArray(attached.AttachedPolicies) || attached.AttachedPolicies.length) {
+        throw new Error('AWS canary role policy inventory is incomplete or grants extra authority');
+      }
+    }));
+    if (launcherRole.Role?.Arn !== `arn:aws:iam::${this.bound.accountId}:role/${launcher.RoleName}` ||
+        !launcherRole.Role.RoleId || cleanupRole.Role?.Arn !== expected.plan.input.cleanupRoleArn ||
+        !equal(parsePolicy(cleanupRole.Role.AssumeRolePolicyDocument), cleanup.AssumeRolePolicyDocument) ||
+        !equal(parsePolicy(launcherPolicy.PolicyDocument), launcher.Policies[0].PolicyDocument) ||
+        !equal(parsePolicy(cleanupPolicy.PolicyDocument), cleanup.Policies[0].PolicyDocument)) {
+      throw new Error('AWS canary installed IAM foundation does not match the original trial');
+    }
+    const createdAt = document.CreatedDate?.getTime();
+    if (document.Name !== expected.plan.documentName || document.DocumentVersion !== '1' ||
+        document.Status !== 'Active' || document.DocumentType !== 'Automation' || document.DocumentFormat !== 'JSON' ||
+        !document.Content || !equal(JSON.parse(document.Content), expected.plan.document) ||
+        !Number.isFinite(createdAt) || createdAt! > Date.parse(this.now())) {
+      throw new Error('AWS canary immutable document does not match the original trial');
+    }
+    return { expected, launcherRole: launcherRole.Role, document, createdAt: createdAt! };
+  }
+
+  /** Setup/admin only. The launch role deliberately cannot start, replace or cancel this execution. */
+  async armCanaryDeadline(input: AwsCustomerFiniteCanary): Promise<{ executionId: string }> {
+    await this.assertMutationAccount();
+    const { expected } = await this.readCanaryDeadlineFoundation(input);
+    const result = await this.call('canary-start-automation', () => this.clients().ssm.send(
+      new (ssmSdk().StartAutomationExecutionCommand)({ DocumentName: expected.plan.documentName,
+        DocumentVersion: '1', ClientToken: expected.plan.clientToken, Mode: 'Auto' })));
+    if (!result.AutomationExecutionId || !/^[a-f0-9-]{36}$/.test(result.AutomationExecutionId)) {
+      throw new Error('AWS canary arming returned no execution identity');
+    }
+    return { executionId: result.AutomationExecutionId };
+  }
+
+  /** Fresh provider reads on every admission; never memoize a running sleep or caller identity. */
+  async assertCanaryDeadline(input: AwsCustomerFiniteCanary & { executionId: string }): Promise<void> {
+    if (!/^[a-f0-9-]{36}$/.test(input.executionId)) throw new Error('AWS canary execution identity invalid');
+    const { expected, launcherRole, document, createdAt } = await this.readCanaryDeadlineFoundation(input);
+    const identity = await this.callerIdentity();
+    const launcherName = expected.Resources.CanaryLauncherRole.Properties.RoleName;
+    if (identity.accountId !== this.bound.accountId ||
+        !identity.arn.startsWith(`arn:aws:sts::${this.bound.accountId}:assumed-role/${launcherName}/`) ||
+        !identity.userId.startsWith(`${launcherRole.RoleId}:`)) {
+      throw new Error('AWS finite canary must run as its dedicated launcher role');
+    }
+    const result = await this.call('canary-get-automation', () => this.clients().ssm.send(
+      new (ssmSdk().GetAutomationExecutionCommand)({ AutomationExecutionId: input.executionId })));
+    const execution = result.AutomationExecution;
+    const start = execution?.ExecutionStartTime?.getTime();
+    const steps = execution?.StepExecutions?.filter(step => step.StepName === 'AwaitCreationCutoff');
+    if (!execution || execution.AutomationExecutionId !== input.executionId ||
+        execution.DocumentName !== expected.plan.documentName || execution.DocumentVersion !== '1' ||
+        execution.Mode !== 'Auto' || execution.StepExecutionsTruncated || steps?.length !== 1 ||
+        execution.CurrentStepName !== 'AwaitCreationCutoff' || execution.CurrentAction !== 'aws:sleep' ||
+        !Number.isFinite(start) || start! < createdAt || start! > Date.parse(this.now()) ||
+        Object.keys(execution.Parameters ?? {}).length || execution.TargetLocations?.length ||
+        execution.Targets?.length || execution.TargetMaps?.length || execution.TargetLocationsURL) {
+      throw new Error('AWS canary execution is not bound to the installed original document');
+    }
+    // GetAutomationExecution does NOT return ClientToken. It is supplied only to Start;
+    // admission binds its returned id to the immutable document and the actual running step.
+    assertAwsCanaryDeadlineSleeping(expected.plan, { accountId: identity.accountId, region: this.bound.region,
+      documentName: execution.DocumentName, documentVersion: execution.DocumentVersion,
+      content: document.Content!, executionId: input.executionId, executionStatus: execution.AutomationExecutionStatus ?? '',
+      currentStep: { name: steps[0].StepName ?? '', action: steps[0].Action ?? '', status: steps[0].StepStatus ?? '' } },
+    Date.parse(this.now()));
   }
 
   async validateConnection(connection: WorkspaceHostProviderConnection): Promise<WorkspaceHostConnectionValidation> {
@@ -983,6 +1119,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async createVolume(input: AwsCreateVolumeInput): Promise<AwsCreatedVolume> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('create-volume', () =>
       this.ec2.send(
         new (ec2Sdk().CreateVolumeCommand)({
@@ -1073,6 +1210,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const nic = input.NetworkInterfaces[0];
     const disk = input.BlockDeviceMappings[0];
     const result = await this.call('run-instances', () =>
@@ -1381,6 +1519,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   async startInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     await this.assertMutationAccount();
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('start-instances', () =>
       this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [...instanceIds] })),
     );
@@ -1420,6 +1559,8 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         throw new Error(`aws_workspace_host_repair_stop_incomplete: ${instanceId} is '${stopped?.state ?? 'absent'}'`);
       }
     }
+    // Stop/wait can span the cutoff. Re-read the independent deadline immediately before restart.
+    await this.assertBoundCanaryDeadline();
     const started = await this.call('start-instances', () =>
       this.ec2.send(new (ec2Sdk().StartInstancesCommand)({ InstanceIds: [instanceId] })),
     );
@@ -1467,6 +1608,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     if (existing && existing.state !== 'error' && existing.state !== 'deleted') {
       return { snapshotId: existing.snapshotId };
     }
+    await this.assertBoundCanaryDeadline();
     const result = await this.call('create-snapshot', () =>
       this.ec2.send(
         new (ec2Sdk().CreateSnapshotCommand)({
@@ -1815,7 +1957,7 @@ export interface AwsConnectionCredentialSource {
 
 /** The production AWS SDK v3 seam client for one persisted AWS connection. */
 export function createAwsSdkWorkspaceHostClient(options: AwsSdkWorkspaceHostClientOptions): AwsWorkspaceHostSdkClient &
-  AwsConnectionCredentialSource & {
+  AwsConnectionCredentialSource & AwsCanaryDeadlineClient & {
   preflight(): AwsWorkspaceHostPreflightClient;
 } {
   return new AwsSdkWorkspaceHostClient(options);

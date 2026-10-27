@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  applyTriage,
   importanceRank,
   sortByImportance,
   severityToImportance,
@@ -663,6 +664,34 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
       wallOwnerId: 'su-xyz',
       wallRef: 'WI-42',
     });
+  });
+
+  it('owner-wall: triage is scoped to a loop wall claim version', () => {
+    const shared = {
+      source: 'loop-carry-note' as const,
+      ownerId: 'su-loop-owner',
+      ref: 'loop:papercusp:su-loop-owner',
+      recheck: 'recheck the active gate',
+      status: 'waiting' as const,
+    };
+    const oldRouteWall = ownerWallToAttention({ ...shared, claim: 'Use the previous route' });
+    const currentHoldWall = ownerWallToAttention({ ...shared, claim: 'Resolve the current headroom hold' });
+    const resolved = {
+      action: 'resolve' as const,
+      note: 'cleared the previous route wall',
+      triagedBy: 'operator',
+      triagedAt: null,
+    };
+    const triageById = new Map([[oldRouteWall.id, resolved]]);
+    const surfaced = [oldRouteWall, currentHoldWall].map((item) => {
+      const record = triageById.get(item.id);
+      return record ? applyTriage(item, record) : item;
+    });
+
+    expect(oldRouteWall.id).not.toBe(currentHoldWall.id);
+    expect(ownerWallToAttention({ ...shared, claim: 'Use the previous route' }).id).toBe(oldRouteWall.id);
+    expect(surfaced.map((item) => item.triageState)).toEqual(['resolved', 'untriaged']);
+    expect(surfaced[1]?.tier).toBe('decision');
   });
 
   it('owner-wall: an explicit non-actionable oracle verdict demotes a stale row to an Alert', () => {

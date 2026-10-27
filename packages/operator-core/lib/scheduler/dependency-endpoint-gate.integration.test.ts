@@ -41,8 +41,9 @@
  *     lib/scheduler/dependency-endpoint-gate.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationForTest, applyPlanItemAnchorMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   COORD_REF_HOLDERS_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -66,7 +67,19 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    // The real withWorkspace closes over connection.ts's application pool;
+    // replacing this barrel's getOrgPg cannot redirect that lexical reader.
+    // Keep its transaction and workspace GUC on the same private fixture SQL.
+    withWorkspace: async <T>(workspaceId: string, fn: (tx: postgres.Sql) => Promise<T>) =>
+      h.sql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
+        return fn(tx as unknown as postgres.Sql);
+      }) as Promise<T>,
+  };
 });
 vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
@@ -159,6 +172,17 @@ beforeAll(async () => {
   // WI-10005221: promotion now reaches the work-item emit path, whose key-fire latch reads
   // harness_shared.event_awaits. Apply the shared claim-path substrate, as dependency-writer does.
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
+  // Promotion and feature links also join their real spec-revision edges.
+  // These fixtures declare no clauses, but the empty join still needs its schema.
+  for (const migration of [
+    '851-first-class-plan-spec-clauses.sql',
+    '855-work-item-spec-evidence-bindings.sql',
+  ]) {
+    await applyMigrationForTest(db.sql, fileURLToPath(new URL(
+      `../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url,
+    )));
+  }
   await db.sql
     .unsafe(
       `
@@ -179,7 +203,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.work_item_blocked RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges, harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.work_item_blocked RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.plans.clear();
 });

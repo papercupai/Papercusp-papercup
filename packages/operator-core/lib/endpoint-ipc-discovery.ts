@@ -24,6 +24,9 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir, rm, rename, lstat } from 'node:fs/promises';
 import { backgroundWorkersEnabled } from './background-workers';
 import { papercuspHome } from '@papercusp/host-platform/home';
+import { getServingBuild, normalizeMcpExecutionTarget, type McpExecutionTarget } from './serving-build';
+import { getServingHostIdentity } from './serving-host-identity';
+import { moduleRepoRoot } from './module-repo-root';
 
 const REL_DIR = '.papercusp';
 const REL_FILE = 'endpoint-ipc.json';
@@ -77,6 +80,8 @@ export interface EndpointIpcDiscovery {
   port?: number;
   /** Coarse process role, persisted so request-only hosts can find a bg-host without probing its HTTP event loop. */
   processRole?: EndpointIpcProcessRole;
+  executionTarget?: McpExecutionTarget;
+  executionProcessId?: string;
   /** Optional agent endpoint. Legacy UI readers keep using socketPath above. */
   agentMcp?: AgentMcpEndpoint;
 }
@@ -140,6 +145,9 @@ export async function writeEndpointIpcDiscovery(
     startedAt: Date.now(),
     port,
     processRole: backgroundWorkersEnabled() ? 'bg-host' : 'operator',
+    ...(getServingHostIdentity().buildSha ? { executionTarget: { environment: getServingBuild(),
+      buildSha: getServingHostIdentity().buildSha!, installRoot: moduleRepoRoot(import.meta.url) } } : {}),
+    ...(getServingHostIdentity().processId ? { executionProcessId: getServingHostIdentity().processId! } : {}),
     ...(options.agentMcp ? { agentMcp: publicAgentEndpoint(options.agentMcp) } : {}),
   };
   const body = JSON.stringify(payload, null, 2);
@@ -241,6 +249,8 @@ async function readEndpointIpcDiscoveryFrom(path: string): Promise<EndpointIpcDi
         startedAt: Number(j.startedAt) || 0,
         ...(Number.isFinite(j.port) ? { port: Number(j.port) } : {}),
         ...(j.processRole === 'operator' || j.processRole === 'bg-host' ? { processRole: j.processRole } : {}),
+        ...(normalizeMcpExecutionTarget(j.executionTarget) ? { executionTarget: normalizeMcpExecutionTarget(j.executionTarget)! } : {}),
+        ...(typeof j.executionProcessId === 'string' ? { executionProcessId: j.executionProcessId } : {}),
         ...(validAgentEndpoint(j.agentMcp) ? { agentMcp: publicAgentEndpoint(j.agentMcp) } : {}),
       };
     }

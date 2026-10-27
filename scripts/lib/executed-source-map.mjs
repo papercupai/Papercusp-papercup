@@ -201,23 +201,24 @@ const OWN_ROWS_FIRST = "(recorded_git_dir IS NULL), recorded_at DESC";
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string | null} [o.runnerIdentity] Explicit runtime proof identity; unknown means run fresh.
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @param {string | null} [o.gitDir] the reading checkout's object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, gitDir = resolveRecordedGitDir(repoRoot) }) {
+export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files, runnerIdentity = null, gitDir = resolveRecordedGitDir(repoRoot) }) {
   const selectedFiles = Array.isArray(files)
     ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
     : null;
   if (selectedFiles?.length === 0) return { map: new Map(), rows: 0 };
-  if (!gitDir) return { map: new Map(), rows: 0 };
-  const fileFilter = selectedFiles ? "AND test_file = ANY($3::text[])" : "";
+  if (!gitDir || typeof runnerIdentity !== 'string' || !runnerIdentity.trim()) return { map: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($4::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, ${PATH_ARRAY_AS_JSON("executed_modules")}
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND ${OWN_OR_LEGACY_ROWS(2)} ${fileFilter}
+      WHERE workspace_name = $1 AND ${OWN_OR_LEGACY_ROWS(2)} AND runner_identity = $3 ${fileFilter}
       ORDER BY test_file, ${OWN_ROWS_FIRST}`,
-    selectedFiles ? [workspaceName, gitDir, selectedFiles] : [workspaceName, gitDir],
+    selectedFiles ? [workspaceName, gitDir, runnerIdentity, selectedFiles] : [workspaceName, gitDir, runnerIdentity],
   );
   return { map: rowsToExecutedMap(rows, { repoRoot }), rows: rows.length };
 }
@@ -265,29 +266,30 @@ export function rowsToReuseProofs(rows) {
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string | null} [o.runnerIdentity] Filter before newest-per-file selection; unknown means run fresh.
  * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
  * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
 export async function loadReuseProofs({
-  client, workspaceName, runContext, files, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
+  client, workspaceName, runContext, files, runnerIdentity = null, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
 }) {
   const selectedFiles = Array.isArray(files)
     ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
     : null;
   if (selectedFiles?.length === 0) return { proofs: new Map(), rows: 0 };
   // No object store means no way to tell this install's proofs from a sibling's: reuse nothing.
-  if (!gitDir) return { proofs: new Map(), rows: 0 };
-  const fileFilter = selectedFiles ? "AND test_file = ANY($4::text[])" : "";
+  if (!gitDir || typeof runnerIdentity !== 'string' || !runnerIdentity.trim()) return { proofs: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($5::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at,
             ${PATH_ARRAY_AS_JSON("executed_modules")}, ${PATH_ARRAY_AS_JSON("read_paths")},
             inputs_captured, opaque_reasons, run_context, runner_identity
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)} ${fileFilter}
+      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)} AND runner_identity = $4 ${fileFilter}
       ORDER BY test_file, ${OWN_ROWS_FIRST}`,
-    selectedFiles ? [workspaceName, runContext, gitDir, selectedFiles] : [workspaceName, runContext, gitDir],
+    selectedFiles ? [workspaceName, runContext, gitDir, runnerIdentity, selectedFiles] : [workspaceName, runContext, gitDir, runnerIdentity],
   );
   return { proofs: rowsToReuseProofs(rows), rows: rows.length };
 }
@@ -300,20 +302,21 @@ export async function loadReuseProofs({
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string | null} [o.runnerIdentity] Membership is scoped to the requested runtime; unknown means run fresh.
  * @param {string} [o.repoRoot] the reading checkout (default: the one this module was loaded from)
  * @param {string | null} [o.gitDir] its object store (default: resolveRecordedGitDir(repoRoot))
  * @returns {Promise<{ files: string[], rows: number }>}
  */
 export async function loadReuseProofFiles({
-  client, workspaceName, runContext, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
+  client, workspaceName, runContext, runnerIdentity = null, repoRoot = MODULE_REPO_ROOT, gitDir = resolveRecordedGitDir(repoRoot),
 }) {
-  if (!gitDir) return { files: [], rows: 0 };
+  if (!gitDir || typeof runnerIdentity !== 'string' || !runnerIdentity.trim()) return { files: [], rows: 0 };
   const { rows } = await client.query(
     `SELECT DISTINCT test_file
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)}
+      WHERE workspace_name = $1 AND run_context = $2 AND ${OWN_OR_LEGACY_ROWS(3)} AND runner_identity = $4
       ORDER BY test_file`,
-    [workspaceName, runContext, gitDir],
+    [workspaceName, runContext, gitDir, runnerIdentity],
   );
   return {
     files: rows.map((row) => row?.test_file).filter((file) => typeof file === "string" && file.length > 0),

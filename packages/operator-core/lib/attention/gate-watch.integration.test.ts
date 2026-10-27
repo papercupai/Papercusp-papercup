@@ -78,6 +78,49 @@ beforeEach(async () => {
 });
 
 describe('tickGateWatch (real PG + real transcript files)', () => {
+  it('retains async questions after acknowledgement, closes only correlated human replies, and replays idempotently', async () => {
+    const sessionId = 'codex-async-native-session';
+    const ref = (index: number) => JSON.stringify(['request_user_input_async', 'async-ask', index]);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-async-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'rollout.jsonl');
+    const header = { type: 'session_meta', payload: { id: sessionId } };
+    const ask = { type: 'response_item', payload: { type: 'function_call', name: 'functions.request_user_input_async', call_id: 'async-ask',
+      arguments: JSON.stringify({ questions: [{ title: 'Which route?', options: ['Direct', 'Fleet'] }, { title: 'What deadline?' }] }),
+    } };
+    const ack = { type: 'response_item', payload: { type: 'function_call_output', call_id: 'async-ask', output: '{"accepted":true}' } };
+    await fs.writeFile(file, [header, ask].map(row => JSON.stringify(row)).join('\n') + '\n');
+    expect((await tickGateWatch({ root: dir })).opened).toBe(2);
+    await fs.appendFile(file, JSON.stringify(ack) + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(0);
+    expect(await listPendingGates({ workspaceId: WS, sessionId })).toMatchObject([
+      { ref_id: ref(0), question: 'Which route?', options: [{ label: 'Direct' }, { label: 'Fleet' }] },
+      { ref_id: ref(1), question: 'What deadline?', options: null },
+    ]);
+    const answer = (questionItemId: string, text: string) => JSON.stringify({ type: 'response_item', payload: {
+      type: 'message', role: 'user', content: [{ type: 'input_text', text:
+        `<send_user_message_question_reply>${JSON.stringify({ questionItemId, question: 'Q?', answer: text })}</send_user_message_question_reply>`,
+      }],
+    } });
+    const firstAnswer = answer(ref(0), 'Direct');
+    await fs.appendFile(file, firstAnswer.slice(0, 40));
+    expect((await tickGateWatch({ root: dir })).closed).toBe(0);
+    await fs.appendFile(file, firstAnswer.slice(40) + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(1);
+    expect((await listPendingGates({ workspaceId: WS, sessionId })).map(g => g.ref_id)).toEqual([ref(1)]);
+    await fs.appendFile(file, answer('["request_user_input_async","unrelated",0]', 'Tomorrow') + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(0);
+    await fs.appendFile(file, answer(ref(1), 'Tomorrow') + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(1);
+    // Lose the watermark: complete history must neither resurrect answered gates
+    // nor add a second row for an already observed native question.
+    await sql`DELETE FROM harness_shared.session_gate_watcher_files WHERE workspace_id = ${WS}`;
+    const replay = await tickGateWatch({ root: dir });
+    expect(replay).toMatchObject({ opened: 0, closed: 0, errors: [] });
+    expect(await listPendingGates({ workspaceId: WS, sessionId })).toEqual([]);
+    expect(await listPendingGates({ workspaceId: WS, sessionId, includeClosed: true })).toHaveLength(2);
+  });
+
   it('R-1/R-2: projects a native question into the owner inbox, delivers the owner answer, wakes the asker, then closes on the correlated result', async () => {
     const sessionId = 'gate-watch-owner-codex';
     const ownerId = 'su-gate-watch-owner';

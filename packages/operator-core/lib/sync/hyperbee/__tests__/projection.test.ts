@@ -21,6 +21,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { encodeHlc } from '@papercusp/locks-core';
 import {
   applyOpVia,
   applyHyperbeeOpToPg,
@@ -212,7 +213,8 @@ describe('provenance attribution binds to the unforgeable source log, not the se
   }
 
   const putOp = (extra: Partial<OpEnvelope>): OpEnvelope => ({
-    type: 'put', table: 'presence', hbKey: 'k', value: { id: 'k' }, ...extra,
+    type: 'put', table: 'presence', hbKey: 'k', value: { id: 'k' },
+    ts: 1000, hlc: encodeHlc({ ms: 1000, count: 0 }), ...extra,
   });
 
   it('a REMOTE op stamps author from the unforgeable source-log key, ignoring a forged writerPubkey', async () => {
@@ -229,6 +231,7 @@ describe('provenance attribution binds to the unforgeable source log, not the se
       authorPubkey: 'REMOTE-LOG-KEY',
       origin: 'remote',
       sourceLogKeyHex: 'REMOTE-LOG-KEY',
+      hbKey: 'k', ts: 1000, fedHlc: encodeHlc({ ms: 1000, count: 0 }),
     });
   });
 
@@ -243,6 +246,7 @@ describe('provenance attribution binds to the unforgeable source log, not the se
       authorPubkey: 'MY-OWN-DEVICE',
       origin: 'local',
       sourceLogKeyHex: 'OWN-LOG-KEY',
+      hbKey: 'k', ts: 1000, fedHlc: encodeHlc({ ms: 1000, count: 0 }),
     });
   });
 
@@ -255,7 +259,8 @@ describe('provenance attribution binds to the unforgeable source log, not the se
     );
     // source undefined ≠ own ⇒ origin=remote; with no unforgeable source the
     // author is left empty rather than trusting the forged writerPubkey.
-    expect(seen[0]).toEqual({ authorPubkey: '', origin: 'remote' });
+    expect(seen[0]).toEqual({ authorPubkey: '', origin: 'remote',
+      hbKey: 'k', ts: 1000, fedHlc: encodeHlc({ ms: 1000, count: 0 }) });
   });
 });
 
@@ -277,7 +282,8 @@ describe('skipOwnOps — the EI-117 echo breaker (own-log replays on CDC tables)
   }
 
   const putOp = (extra: Partial<OpEnvelope>): OpEnvelope => ({
-    type: 'put', table: 'plans-by-slug', hbKey: 'k', value: { id: 'k' }, ...extra,
+    type: 'put', table: 'plans-by-slug', hbKey: 'k', value: { id: 'k' },
+    ts: 1000, hlc: encodeHlc({ ms: 1000, count: 0 }), ...extra,
   });
 
   it('a log-source-VERIFIED own put on a skipOwnOps projection is skipped (no write, returns false)', async () => {

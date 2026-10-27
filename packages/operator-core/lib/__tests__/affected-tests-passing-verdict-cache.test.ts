@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildPassingTaskVerdictIdentity,
+  captureNpmTaskRuntimeIdentity,
+  capturePassingTaskRuntimeIdentity,
   CAPABILITY_BASH_SEAM_IDENTITY_ENV,
   closureDigestManifestPath,
   decidePassingTaskVerdict,
@@ -65,8 +67,138 @@ const identity = (overrides: Record<string, unknown> = {}) =>
     environment: { CI: '1', VITEST_MAX_FORKS: '2' },
     gateConfig: { retry: true, timeoutMs: 1000 },
     dependencyHash: 'dep-a',
+    runtimeIdentity: runtimeTuple(),
     ...overrides,
+  })!;
+
+const runtimeTuple = (overrides: Record<string, unknown> = {}) => ({
+  name: 'node', version: '25.9.0', executable: '/pinned/node',
+  binarySha256: 'a'.repeat(64), platform: 'linux', arch: 'x64',
+  nativeDependencyGeneration: 'b'.repeat(64), lockfileSha256: 'c'.repeat(64),
+  configurationSha256: 'd'.repeat(64), ...overrides,
+});
+
+describe('P005 runtime-specific passing proofs', () => {
+  it('measures npm\'s workspace PATH interpreter, including a Bun binary named node', () => {
+    if (process.platform === 'win32') return; // The POSIX shebang route explicitly declines Windows.
+    const root = mkdtempSync(join(tmpdir(), 'runtime-npm-path-'));
+    try {
+      const workspaceRoot = join(root, 'pkg');
+      const bin = join(workspaceRoot, 'node_modules/.bin');
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(root, 'node_modules'));
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+        `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env node\n', { mode: 0o755 });
+      const executable = process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath;
+      symlinkSync(executable, join(bin, 'node'));
+      const actual = captureNpmTaskRuntimeIdentity({ root, workspaceRoot,
+        scriptText: 'vitest run --config vitest.config.ts', environment: process.env });
+      expect(actual).toMatchObject({ name: process.env.PAPERCUSP_RUNTIME_TEST_BUN ? 'bun' : 'node',
+        binarySha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+      });
+      // Same argv and PATH cannot turn a non-Node shebang into a Node proof.
+      writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env bun\n');
+      expect(captureNpmTaskRuntimeIdentity({ root, workspaceRoot,
+        scriptText: 'vitest run', environment: process.env })).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
+
+  it('does not label an opaque npm script with npm\'s own interpreter', () => {
+    for (const scriptText of ['bun x vitest run', 'npm run child', 'vitest run && bun other.ts',
+      'NODE_OPTIONS=--require=other vitest run', 'vitest run $(runtime-selector)']) {
+      expect(captureNpmTaskRuntimeIdentity({ root: '/missing', workspaceRoot: '/missing',
+        scriptText, environment: process.env })).toBeNull();
+    }
+    for (const hook of [{ preScript: 'bun setup.ts' }, { postScript: 'bun check.ts' }]) {
+      expect(captureNpmTaskRuntimeIdentity({ root: '/missing', workspaceRoot: '/missing',
+        scriptText: 'vitest run', environment: process.env, ...hook })).toBeNull();
+    }
+  });
+
+  it.each(['dependencyHash', 'command', 'environment', 'gateConfig'])
+  ('refuses a missing %s input even with a measured runtime', (field) => {
+    expect(identity({ [field]: undefined })).toBeNull();
+  });
+
+  it('measures the selected executable and refuses missing dependency-generation identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-verdict-identity-'));
+    try {
+      const nodeModules = join(root, 'node_modules');
+      mkdirSync(nodeModules);
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      const environment = { ...process.env };
+      const executable = process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath;
+      const request = { root, environment, executable };
+      expect(capturePassingTaskRuntimeIdentity(request)).toBeNull();
+      const marker = join(nodeModules, '.papercusp-dependency-generation');
+      writeFileSync(marker, `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      const actual = capturePassingTaskRuntimeIdentity(request);
+      expect(actual).toMatchObject({ name: process.env.PAPERCUSP_RUNTIME_TEST_BUN ? 'bun' : 'node',
+        platform: process.platform, arch: process.arch,
+        binarySha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+        lockfileSha256: createHash('sha256').update(readFileSync(join(root, 'package-lock.json'))).digest('hex'),
+      });
+      expect(actual).not.toBeNull();
+      expect(identity({ runtimeIdentity: actual })).not.toBeNull();
+      writeFileSync(marker, 'schema=1\nidentity=unpublished\n');
+      expect(capturePassingTaskRuntimeIdentity(request)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an entirely absent runtime tuple and legacy proofs', () => {
+    expect(identity({ runtimeIdentity: undefined })).toBeNull();
+    const current = identity();
+    const legacy = passingTaskVerdictEntry(current);
+    delete (legacy.components as { runtime?: string }).runtime;
+    expect(decidePassingTaskVerdict({ enabled: true, cacheRead: { reason: 'cache-ready' },
+      entry: legacy, identity: identity() })).toEqual({ hit: false, reason: 'runtime-identity-changed' });
+  });
+
+  it.each([
+    ['name', 'bun'], ['version', '1.4.4'], ['binarySha256', 'e'.repeat(64)],
+    ['platform', 'darwin'], ['arch', 'arm64'],
+    ['nativeDependencyGeneration', 'f'.repeat(64)],
+    ['lockfileSha256', '1'.repeat(64)], ['configurationSha256', '2'.repeat(64)],
+  ])('rejects %s drift in both directions', (field, changed) => {
+    const a = identity({ runtimeIdentity: runtimeTuple() });
+    const b = identity({ runtimeIdentity: runtimeTuple({ [field]: changed }) });
+    for (const [prior, next] of [[a, b], [b, a]]) {
+      expect(decidePassingTaskVerdict({ enabled: true, cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(prior), identity: next })).toEqual({
+        hit: false, reason: 'runtime-identity-changed',
+      });
+    }
+  });
+
+  it.each(['name', 'version', 'executable', 'binarySha256', 'platform', 'arch',
+    'nativeDependencyGeneration', 'lockfileSha256', 'configurationSha256'])
+  ('fails closed when %s is absent', (field) => {
+    expect(identity({ runtimeIdentity: runtimeTuple({ [field]: undefined }) })).toBeNull();
+  });
+
+  it('preserves a current Node proof after a passing or failing Bun attempt', () => {
+    const node = identity({ runtimeIdentity: runtimeTuple() });
+    const bun = identity({ runtimeIdentity: runtimeTuple({ name: 'bun', version: '1.4.4' }) });
+    expect(bun.fingerprint).not.toBe(node.fingerprint);
+    const nodeEntry = passingTaskVerdictEntry(node);
+    let cache = mergePassingTaskVerdictUpdates(emptyPassingTaskVerdictCache(), 'run', { task: nodeEntry });
+    // A failed Bun attempt must not write or retire any Node proof.
+    expect(shouldStorePassingTaskVerdict({ enabled: true, cacheStatus: 'miss', initialStatus: 1,
+      finalStatus: 1, absorptionRan: false, identity: bun })).toBe(false);
+    expect(passingTaskVerdictCacheEntry(cache, 'run', 'task', node)).toEqual(nodeEntry);
+    cache = mergePassingTaskVerdictUpdates(cache, 'run', { task: passingTaskVerdictEntry(bun) });
+    for (const current of [node, bun]) {
+      expect(decidePassingTaskVerdict({ enabled: true, cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictCacheEntry(cache, 'run', 'task', current), identity: current }).hit).toBe(true);
+    }
+  });
+});
 
 describe('passing affected-task verdict identity', () => {
   it('reuses relocated immutable commands only while command selection and dependency bytes match', () => {
@@ -280,6 +412,44 @@ describe('passing affected-task verdict identity', () => {
 });
 
 describe('dependency-closure hashing and persistence', () => {
+  it('enumerates a broad workspace closure with bounded tracked-file visits and exact directory boundaries', () => {
+    const names = Array.from({ length: 256 }, (_, index) => `@fixture/dep-${index}`);
+    const workspaces = new Map(names.map((name, index) => [name, {
+      dir: `packages/dep-${index}`, deps: index === 0 ? names.slice(1) : [],
+    }]));
+    const owned = names.map((_, index) => `packages/dep-${index}/source.ts`);
+    owned.push('packages/dep-1/nested/source.ts');
+    const files = ['package.json', ...owned, 'packages/dep-1-neighbor/source.ts',
+      ...Array.from({ length: 2048 }, (_, index) => `docs/unrelated-${index}.md`)];
+    let visits = 0;
+    const trackedFiles = new Proxy(files, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) visits++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const input = {
+      root: '/unused', taskKey: names[0] + ' :: test', script: 'test', workspaceName: names[0], workspaces,
+      trackedScan: { files: trackedFiles, unscannedPresent: [] }, repoWideTaskKeys: new Set<string>(),
+      sharedInputProvenance: { ok: true as const, files: ['package.json'] },
+      hashFiles: ({ files }: { files: string[] }) => ({
+        ok: true as const, hash: 'fixture', listHash: 'fixture', fileCount: files.length, files: [...files],
+      }),
+    };
+    const proof = passingTaskVerdictDependencyProvenance(input);
+    expect(proof.ok).toBe(true);
+    if (!proof.ok) throw new Error(proof.reason);
+    expect(proof.semantic.files).toEqual(['package.json', ...owned]);
+    // A deterministic work bound, independent of wall-clock load: rescanning
+    // the tracked population once per closure directory exceeds this budget.
+    expect(visits).toBeLessThanOrEqual(files.length * 8);
+    workspaces.set('@fixture/missing', { dir: 'packages/missing', deps: [] });
+    workspaces.get(names[0])!.deps.push('@fixture/missing');
+    expect(passingTaskVerdictDependencyProvenance(input)).toEqual({
+      ok: false, reason: 'provenance-incomplete:workspace-not-enumerated:packages/missing',
+    });
+  });
+
   it('keeps integration tasks non-reusable in resumable runs', () => {
     expect(
       passingTaskVerdictDependencyProvenance({
@@ -589,13 +759,14 @@ describe('cross-run passing-task verdict reuse', () => {
     overrides: Record<string, unknown> = {},
   ) =>
     buildPassingTaskVerdictIdentity({
+      runtimeIdentity: runtimeTuple(),
       taskKey: '@papercusp/web :: test',
       command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/checkpoint' },
       gateConfig: passingTaskVerdictCrossRunGateConfig({ retry: true, timeoutMs: 1000 }),
       dependencyHash: 'dep-a',
       ...overrides,
       environment: passingTaskVerdictCrossRunIdentityEnvironment(environment).environment,
-    });
+    })!;
 
   const runA = {
     CI: '1',
@@ -931,12 +1102,13 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
 
   const identityFor = (environment: Record<string, unknown>) =>
     buildPassingTaskVerdictIdentity({
+      runtimeIdentity: runtimeTuple(),
       taskKey: '@papercusp/web :: test',
       command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo' },
       gateConfig: { retry: true, timeoutMs: 1000 },
       dependencyHash: 'dep-a',
       environment: passingTaskVerdictCrossRunIdentityEnvironment(environment).environment,
-    });
+    })!;
 
   // A realistic child environment for two separate `npm test` invocations on an UNCHANGED tree.
   const invocationOne = {
@@ -1484,13 +1656,14 @@ describe('closure hashing separates membership from content', () => {
         inheritedEnvironment: Record<string, unknown>,
       ) =>
         buildPassingTaskVerdictIdentity({
+          runtimeIdentity: runtimeTuple(),
           taskKey: '@target :: test',
           command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo/pkg/target' },
           gateConfig: passingTaskVerdictCrossRunGateConfig({ retryFailed: false }),
           dependencyHash,
           environment: passingTaskVerdictCrossRunIdentityEnvironment(inheritedEnvironment)
             .environment,
-        });
+        })!;
       const storedProof = passingTaskVerdictEntry(
         proofIdentity(before.hash, {
           CODEX_SESSION_ID: 'run-a',
@@ -1642,6 +1815,7 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
 
       const semanticIdentity = (dependencyHash: string) =>
         buildPassingTaskVerdictIdentity({
+          runtimeIdentity: runtimeTuple(),
           taskKey: '@target :: test',
           command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo/pkg/target' },
           gateConfig: passingTaskVerdictCrossRunGateConfig({ retryFailed: false }),
@@ -1650,7 +1824,7 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
             CODEX_SESSION_ID: 'run-a',
             PATH: '/run-a/bin',
           }).environment,
-        });
+        })!;
       const storedSemanticProof = passingTaskVerdictEntry(
         semanticIdentity(before.semantic.hash),
       );

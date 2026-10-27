@@ -90,6 +90,7 @@ describe('task terminal overlapping initialization (real PG)', () => {
 
     // Attach both outcomes immediately: retain the original stack without an
     // unhandled rejection if the root fails before the event bridge catches it.
+    const consoleWarn = vi.spyOn(console, 'warn');
     const root = import('../connected-apps/alerts').then(
       value => ({ value, error: null }),
       error => ({ value: null, error: error instanceof Error ? error.stack || error.message : String(error) }),
@@ -133,6 +134,8 @@ describe('task terminal overlapping initialization (real PG)', () => {
       expect(initialized.error).toBeNull();
       expect(initialized.value?.raiseConnectedAppAlert).toBeTypeOf('function');
       expect(warnings, warnings.join('\n')).toEqual([]);
+      expect(consoleWarn.mock.calls.map(args => args.map(String).join(' '))
+        .filter(line => /\[events\] (match failed|local rule reload failed)/.test(line))).toEqual([]);
       expect(emissionCalls).toBe(1);
       expect(h.engineLoads).toBe(1);
       expect(await h.sql`
@@ -145,11 +148,13 @@ describe('task terminal overlapping initialization (real PG)', () => {
       `).toEqual([{
         fire_count: 1,
         last_payload: {
+          terminalEventRevision: 1,
           taskId, state: 'killed', exitCode: 137, exitReason: 'oom-kill',
           taskClass: 'bash-job', harness: 'papercusp', launchedBy: 'test-overlap-owner',
         },
       }]);
     } finally {
+      consoleWarn.mockRestore();
       const outcome = await root;
       if (outcome.error) console.info('TERMINAL_IMPORT_ROOT_FAILURE', outcome.error);
     }

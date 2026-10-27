@@ -18,7 +18,7 @@ import {
   readHostedDesktopTicket,
   type HostedDesktopViewerMode,
 } from "./hosted-desktop-viewer-protocol";
-import { readHostedWorkspaceTicket } from "./hosted-workspace-session-protocol";
+import { readHostedWorkspaceTicket, readHostedWorkspaceSocketOrigin } from "./hosted-workspace-session-protocol";
 import { kasmvncRfbClass } from "./kasmvnc-rfb";
 import styles from "./hosted-workspace-session.module.css";
 
@@ -155,7 +155,7 @@ export function HostedDesktopViewer({
       updateState("connecting");
       const socket = new WebSocket(
         buildHostedDesktopSocketUrl(
-          window.location.origin,
+          readHostedWorkspaceSocketOrigin(payload, window.location.origin),
           ticket,
           desktopSessionId,
           mode,

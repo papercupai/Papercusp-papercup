@@ -369,32 +369,45 @@ export async function listRuntimeVintage(
   return store.list(workspaceId, client, units);
 }
 
+const BOOT_REPORT_RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000] as const;
+
+/** A database that is still starting must not leave the previous boot pinned forever. */
+async function reportBootVintage(label: string, report: () => Promise<void>): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await report();
+      return;
+    } catch (error) {
+      const delay = BOOT_REPORT_RETRY_DELAYS_MS[attempt];
+      console.warn(`[runtime-vintage] ${label} failed (non-fatal, attempt ${attempt + 1}):`,
+        (error as Error)?.message ?? error,
+        delay === undefined ? 'retry budget exhausted' : `retrying in ${delay}ms`);
+      if (delay === undefined) return;
+      await new Promise<void>((resolve) => { setTimeout(resolve, delay).unref(); });
+    }
+  }
+}
+
 /**
  * Fire-and-forget boot-time self-report, built from build-info.ts's
  * getBuildInfo() (the same sha/version resolver /api/health already exposes).
- * Never throws, never blocks boot — a failed report just means this runtime's
- * row stays stale until its next successful boot, not a crashed process.
+ * Never throws or blocks boot. A bounded retry window lets the database finish
+ * starting; exhausting it leaves the row stale and logs the failed attempts.
  */
-export function reportRuntimeVintageOnBoot(unit: string, extra?: Record<string, unknown>): void {
-  void (async () => {
-    try {
-      const { getBuildInfo } = await import('./build-info');
-      const info = getBuildInfo();
-      await reportRuntimeVintage({
-        unit,
-        treeSha: info.sha,
-        bundleVersion: info.version,
-        buildTime: new Date().toISOString(),
-        pid: process.pid,
-        extra,
-      });
-    } catch (e) {
-      console.warn(
-        `[runtime-vintage] self-report failed for unit=${unit} (non-fatal):`,
-        (e as Error)?.message ?? e,
-      );
-    }
-  })();
+export function reportRuntimeVintageOnBoot(unit: string, extra?: Record<string, unknown>): Promise<void> {
+  const buildTime = new Date().toISOString();
+  return reportBootVintage(`self-report for unit=${unit}`, async () => {
+    const { getBuildInfo } = await import('./build-info');
+    const info = getBuildInfo();
+    await reportRuntimeVintage({
+      unit,
+      treeSha: info.sha,
+      bundleVersion: info.version,
+      buildTime,
+      pid: process.pid,
+      extra,
+    });
+  });
 }
 
 /**
@@ -487,28 +500,24 @@ export function resolvePostgresInstanceReport(
 }
 
 /** Boot-time report of the connected Postgres instance. Never throws, never blocks boot. */
-export function reportPostgresRuntimeVintageOnBoot(): void {
-  void (async () => {
-    try {
-      const { sql } = getOrgPg();
-      const [row] = await sql<Array<{ backend_pid: number; port: string; version: string; started: string | Date }>>`
-        SELECT pg_backend_pid() AS backend_pid, current_setting('port') AS port,
-               version() AS version, pg_postmaster_start_time() AS started`;
-      const report = row
-        ? resolvePostgresInstanceReport({
-            backendPid: Number(row.backend_pid),
-            port: row.port,
-            version: row.version,
-            postmasterStartTime: row.started,
-          })
-        : null;
-      if (!report) {
-        console.warn('[runtime-vintage] postgres instance is not a verifiable local process; no postgres:<port> row reported');
-        return;
-      }
-      await reportRuntimeVintage(report);
-    } catch (e) {
-      console.warn('[runtime-vintage] postgres instance report failed (non-fatal):', (e as Error)?.message ?? e);
+export function reportPostgresRuntimeVintageOnBoot(): Promise<void> {
+  return reportBootVintage('postgres instance report', async () => {
+    const { sql } = getOrgPg();
+    const [row] = await sql<Array<{ backend_pid: number; port: string; version: string; started: string | Date }>>`
+      SELECT pg_backend_pid() AS backend_pid, current_setting('port') AS port,
+             version() AS version, pg_postmaster_start_time() AS started`;
+    const report = row
+      ? resolvePostgresInstanceReport({
+          backendPid: Number(row.backend_pid),
+          port: row.port,
+          version: row.version,
+          postmasterStartTime: row.started,
+        })
+      : null;
+    if (!report) {
+      console.warn('[runtime-vintage] postgres instance is not a verifiable local process; no postgres:<port> row reported');
+      return;
     }
-  })();
+    await reportRuntimeVintage(report);
+  });
 }

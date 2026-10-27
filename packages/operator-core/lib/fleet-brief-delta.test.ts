@@ -159,13 +159,15 @@ describe('computeFleetBriefDelta', () => {
       baseline,
       observation: obs({ rosterSize: 11, specRevision: 8, poolFactor: 0.66 }),
       boundary: 'wake',
-      churn: { joined: 3, left: 1 },
+      churn: { joined: 3, left: 1, neverActive: 1, pending: 0 },
       closes: { delta: 12, isFloor: false },
     });
     expect(d.since).toBe('2026-08-09T19:00:00.000Z');
     expect(d.members.delta).toBe(2);
     expect(d.members.joined).toBe(3);
     expect(d.members.left).toBe(1);
+    expect(d.members.neverActive).toBe(1);
+    expect(d.members.bootPending).toBe(0);
     expect(d.closes.delta).toBe(12);
     expect(d.specRevision.previous).toBe(7);
     expect(d.specRevision.current).toBe(8);
@@ -178,7 +180,7 @@ describe('computeFleetBriefDelta', () => {
       baseline,
       observation: obs({ rosterSize: 9, countedMembers: 7 }),
       boundary: 'wake',
-      churn: { joined: 0, left: 0 },
+      churn: { joined: 0, left: 0, neverActive: 0, pending: 0 },
       closes: { delta: 0, isFloor: false },
     });
     expect(d.members.delta).toBe(0);
@@ -190,7 +192,7 @@ describe('computeFleetBriefDelta', () => {
       baseline,
       observation: obs(),
       boundary: 'explicit',
-      churn: { joined: 0, left: 0 },
+      churn: { joined: 0, left: 0, neverActive: 0, pending: 0 },
       closes: { delta: 4, isFloor: false },
       since: '2026-08-09T12:00:00.000Z',
     });
@@ -202,7 +204,7 @@ describe('computeFleetBriefDelta', () => {
       baseline,
       observation: obs(),
       boundary: 'wake',
-      churn: { joined: 0, left: 0 },
+      churn: { joined: 0, left: 0, neverActive: 0, pending: 0 },
       closes: { delta: 5, isFloor: true },
     });
     expect(d.closes.isFloor).toBe(true);
@@ -214,7 +216,7 @@ describe('computeFleetBriefDelta', () => {
       baseline,
       observation: obs(),
       boundary: 'wake',
-      churn: { joined: 0, left: 0 },
+      churn: { joined: 0, left: 0, neverActive: 0, pending: 0 },
       closes: { delta: null, isFloor: false },
     });
     expect(d.closes.delta).toBeNull();
@@ -231,7 +233,7 @@ describe('describeFleetBriefDelta', () => {
         baseline,
         observation: obs({ rosterSize: 11, specRevision: 8, poolFactor: 0.66 }),
         boundary: 'wake',
-        churn: { joined: 2, left: 0 },
+        churn: { joined: 2, left: 0, neverActive: 0, pending: 0 },
         closes: { delta: 12, isFloor: false },
       }),
     );
@@ -248,11 +250,40 @@ describe('describeFleetBriefDelta', () => {
         baseline,
         observation: obs({ rosterSize: 9 }),
         boundary: 'wake',
-        churn: { joined: 3, left: 3 },
+        churn: { joined: 3, left: 3, neverActive: 0, pending: 0 },
         closes: { delta: 0, isFloor: false },
       }),
     );
     expect(line).toContain('members 0 (3 joined / 3 left)');
+  });
+
+  // EI-27031443048618869: psu records the join before boot, so a refused launch is a join.
+  it('names dead launches even when the net difference already accounts for every join', () => {
+    // +5 net, 5 joined, 0 left: the old rule printed no breakdown, hiding that 4 never booted.
+    const line = describeFleetBriefDelta(
+      computeFleetBriefDelta({
+        baseline,
+        observation: obs({ rosterSize: 14 }),
+        boundary: 'wake',
+        churn: { joined: 5, left: 0, neverActive: 4, pending: 0 },
+        closes: { delta: 0, isFloor: false },
+      }),
+    );
+    expect(line).toContain('members +5 (5 joined, 4 never made a call / 0 left)');
+  });
+
+  it('an unmeasured activation split prints no dead-launch claim', () => {
+    const d = computeFleetBriefDelta({
+      baseline,
+      observation: obs({ rosterSize: 9 }),
+      boundary: 'wake',
+      churn: { joined: 3, left: 3, neverActive: null, pending: null },
+      closes: { delta: 0, isFloor: false },
+    });
+    expect(d.members.neverActive).toBeNull();
+    const line = describeFleetBriefDelta(d);
+    expect(line).toContain('members 0 (3 joined / 3 left)');
+    expect(line).not.toContain('never made a call');
   });
 
   it('says an axis is unknown rather than dropping it', () => {
@@ -277,7 +308,7 @@ describe('describeFleetBriefDelta', () => {
         baseline,
         observation: obs(),
         boundary: 'wake',
-        churn: { joined: 0, left: 0 },
+        churn: { joined: 0, left: 0, neverActive: 0, pending: 0 },
         closes: { delta: 5, isFloor: true },
       }),
     );

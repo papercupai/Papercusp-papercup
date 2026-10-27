@@ -3,9 +3,15 @@
  * standing operator e2e run gets exactly one owned work-item. The deps seam is injected, so these
  * tests exercise the real decision logic without a database.
  */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../task-manager/store', () => ({ listTasks: vi.fn(async () => []) }));
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/store')>()),
+  listTasks: vi.fn(async () => []),
+}));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('../../agent-tools/work_items/_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn() }));
@@ -234,6 +240,7 @@ function world(opts: {
   inFlight?: string[];
   umbrellaAssignee?: string | null;
   terminalTaskFailures?: TerminalTaskFailure[];
+  readTaskSummaryLine?: RedFilerDeps['readTaskSummaryLine'];
 }) {
   const items: OwnershipCandidate[] = [];
   let next = 1;
@@ -242,6 +249,7 @@ function world(opts: {
       [...opts.groups].sort((a, b) => b.finishedAt.localeCompare(a.finishedAt)).map(({ runGroup, finishedAt }) => ({ runGroup, finishedAt })),
     inFlightGroups: async () => opts.inFlight ?? [],
     terminalTaskFailures: async () => opts.terminalTaskFailures ?? [],
+    readTaskSummaryLine: opts.readTaskSummaryLine ?? (async () => null),
     groupsWithRows: async (_workspaceId, runGroups) =>
       [...new Set(runGroups.filter((runGroup) => opts.groups.some((g) => g.runGroup === runGroup)))],
     groupRows: async (g) => opts.groups.find((x) => x.runGroup === g)?.rows ?? [],
@@ -361,6 +369,45 @@ describe('fileOperatorE2eReds', () => {
     ]);
     expect(w.items).toHaveLength(1);
     expect(w.items[0]).toMatchObject({ assignee: 'su-owner', title: expect.stringContaining(failure.runGroup) });
+  });
+
+  it('includes the parsed HARNESS_RESULT from the bounded task-log tail on a no-row failure', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'operator-e2e-red-filer-'));
+    try {
+      const logPath = join(directory, 'task.log');
+      const marker =
+        'HARNESS_RESULT harness=operator-e2e-isolated verdict=fail run=operator-e2e-nightly:task-e2e-1 ' +
+        'first_failure=preflight/native-check/not-ready passed=0 failed=1 blocked=0 skipped=0';
+      await writeFile(logPath, `${'x'.repeat(32 * 1024)}\n${marker}\n`, 'utf8');
+      const w = world({
+        groups: [],
+        terminalTaskFailures: [taskFailure({ logPath })],
+        readTaskSummaryLine: defaultRedFilerDeps().readTaskSummaryLine,
+      });
+
+      await fileOperatorE2eReds(CTX, w.deps);
+
+      expect(w.items).toHaveLength(1);
+      expect(w.items[0]?.summary).toContain(
+        'Parsed harness result: HARNESS_RESULT harness=operator-e2e-isolated verdict=fail ' +
+          'run=operator-e2e-nightly:task-e2e-1 first_failure=preflight/native-check/not-ready',
+      );
+      expect(w.deps.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            harnessResult: {
+              harness: 'operator-e2e-isolated',
+              verdict: 'fail',
+              runId: 'operator-e2e-nightly:task-e2e-1',
+              firstFailure: { phase: 'preflight', step: 'native-check', reasonCode: 'not-ready' },
+            },
+          }),
+        }),
+        expect.anything(),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('does not create a run-level item when that run group already has reporter rows', async () => {

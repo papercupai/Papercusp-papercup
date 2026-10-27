@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
+  type PreparedCheckpointSelectionRecord,
+  checkpointSelectionQueueAuthorityMatches,
+  preparedCheckpointQueueMatches,
   classifyScheduledQualificationJoin,
   cancelQualificationTransaction,
   classifyQualificationVerdict,
@@ -11,6 +14,10 @@ import {
   projectCheckpointQualificationState,
   QUALIFICATION_PROGRESS_STALE_MS,
   recordQualificationRunnerProgress,
+  recordQualificationChildScope,
+  recordQualificationWorkProgress,
+  recordQualificationWorkYield,
+  type QualificationWorkProgressInput,
   isPostVerdictHang,
   QUALIFICATION_POST_VERDICT_HANG_MS,
   recordQualificationScheduledFire,
@@ -20,14 +27,17 @@ import {
   recoverQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  voidPreparedSelectionForMovedCandidate,
   type HistoricalPreSuiteRecoveryInput,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
   createFrozenCandidateQueue,
+  parseFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
   markFrozenRepairUnmeasuredRetest,
@@ -35,6 +45,8 @@ import {
   frozenRepairHeadOwesVerification,
   frozenRepairHeadAwaitsVerification,
   settleFrozenRepairRetestRequest,
+  type FrozenCandidateRepairPhase,
+  type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 import {
   CHECKPOINT_ELIGIBILITY_PREDICATES,
@@ -50,6 +62,288 @@ const begin = () =>
     evidenceRefs: ['tool:release:checkpoint-run'],
     nowMs: 100,
   }).transaction;
+
+describe('qualification child scope custody', () => {
+  const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
+  const fixture = () => reserveQualificationRunner(begin(), { ...fence, pid: 42,
+    unit: 'parent.scope', started: true, leaseDurationMs: 1000, nowMs: 200 }).transaction;
+  const enroll = (unit = 'pc-child123.scope') => recordQualificationChildScope(fixture(), {
+    ...fence, unit, operation: 'enroll', nowMs: 300 }).transaction;
+
+  it('durably recovers enrolled payloads and refuses settlement or cancellation before death', () => {
+    const current = parseCheckpointQualificationTransaction(enroll())!;
+    expect(current.currentPhysicalRunner!.childScopeUnits).toEqual(['pc-child123.scope']);
+    expect(waitQualificationTransaction(current, { attemptId: fence.attemptId, reason: 'infra-inconclusive' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+    expect(settleQualificationTransaction(current, { ...fence, reason: 'not-green', green: false }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+    expect(cancelQualificationTransaction(current, { attemptId: fence.attemptId, unit: 'parent.scope' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'child-scope-custody-held' });
+  });
+
+  it.each(['live', 'unknown', undefined] as const)('retains payload custody for %s liveness', scopeLiveness => {
+    const current = enroll();
+    expect(recordQualificationChildScope(current, { ...fence, unit: 'pc-child123.scope',
+      operation: 'release', scopeLiveness, nowMs: 400 }))
+      .toMatchObject({ status: 'conflict', transaction: current, refusalReason: 'child-scope-death-unmeasured' });
+  });
+
+  it('releases only the dead payload and permits a successor after the last payload is gone', () => {
+    const first = enroll();
+    const second = recordQualificationChildScope(first, { ...fence, unit: 'pc-child456.scope',
+      operation: 'enroll', nowMs: 400 }).transaction;
+    const release = (current: Parameters<typeof recordQualificationChildScope>[0], unit: string) => recordQualificationChildScope(current, { ...fence, unit,
+      operation: 'release', scopeLiveness: 'dead', nowMs: 500 });
+    const partial = release(second, 'pc-child123.scope').transaction;
+    expect(partial.currentPhysicalRunner!.childScopeUnits).toEqual(['pc-child456.scope']);
+    const freed = release(partial, 'pc-child456.scope').transaction;
+    expect(waitQualificationTransaction(freed, { attemptId: fence.attemptId, reason: 'infra-inconclusive',
+      runId: fence.runId, nowMs: 600 }).status).toBe('updated');
+  });
+
+  it('refuses stale runners, malformed units, duplicate recovery data and backwards clocks', () => {
+    const current = enroll();
+    for (const wrong of [{ runnerId: 'old' }, { runId: 'old' }, { pidIdentity: 'old' },
+      { attemptId: 'old' }, { unit: 'unowned.service' }, { nowMs: 299 }]) {
+      expect(recordQualificationChildScope(current, { ...fence, unit: 'pc-other123.scope',
+        operation: 'enroll', nowMs: 400, ...wrong }).status).toBe('conflict');
+    }
+    const duplicate = structuredClone(current);
+    duplicate.currentPhysicalRunner!.childScopeUnits!.push('pc-child123.scope');
+    expect(parseCheckpointQualificationTransaction(duplicate)).toBeNull();
+  });
+});
+
+describe('prepared selection authority shape', () => {
+  const prepared = (): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate: 'candidate-1', tip: 'tip-1', base: null, candidateSource: 'tip', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate: 'candidate-1', identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+
+  it('recovers the complete committed selection through the stored transaction parser', () => {
+    const transaction = { ...begin(), preparedSelection: prepared() };
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(transaction))))
+      .toEqual(transaction);
+  });
+
+  it('voids a selection made for a candidate the attempt no longer names (WI-6554700010010801)', () => {
+    const moved = { ...begin(), candidate: 'frozen-candidate', preparedSelection: prepared() };
+    const voided = voidPreparedSelectionForMovedCandidate(moved);
+    expect(voided).not.toHaveProperty('preparedSelection');
+    expect(voided.candidate).toBe('frozen-candidate');
+    expect(voided.evidenceRefs).toContain('prepared-selection-voided:candidate-1');
+    // The voided record round-trips: the next physical run reads "no selection" and plans afresh.
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(voided)))).toEqual(voided);
+  });
+
+  it('leaves a matching selection, an unset candidate, or no selection untouched', () => {
+    const matching = { ...begin(), preparedSelection: prepared() };
+    expect(voidPreparedSelectionForMovedCandidate(matching)).toBe(matching);
+    const unset = { ...begin(), candidate: null, preparedSelection: prepared() };
+    expect(voidPreparedSelectionForMovedCandidate(unset)).toBe(unset);
+    const none = begin();
+    expect(voidPreparedSelectionForMovedCandidate(none)).toBe(none);
+  });
+
+  it.each([
+    ['missing freeze cut', { freezeCut: undefined }],
+    ['partial freeze cut', { freezeCut: { candidate: 'candidate-1' } }],
+    ['mismatched freeze cut', { freezeCut: { candidate: 'other', tip: 'tip-1', knownGood: null,
+      source: 'staging-tip', reason: 'no-known-good' } }],
+    ['unknown freeze reason', { freezeCut: { candidate: 'candidate-1', tip: 'tip-1', knownGood: null,
+      source: 'staging-tip', reason: 'invented' } }],
+    ['partial carry', { carry: { judgedCandidate: 'candidate-1' } }],
+    ['malformed queue', { queue: { repairHead: 'candidate-1' } }],
+  ])('refuses %s instead of recovering partial authority', (_name, corruption) => {
+    const stored = JSON.parse(JSON.stringify({ ...begin(), preparedSelection: { ...prepared(), ...corruption } }));
+    expect(parseCheckpointQualificationTransaction(stored)).toBeNull();
+  });
+
+  it('recovers after its own initial queue write, preserving strict refusal after authority changes', () => {
+    const record = prepared();
+    const initial = createFrozenCandidateQueue({ candidate: record.candidate,
+      qualificationAttemptId: record.attemptId, base: record.base, nowMs: 200,
+      affectedTestProofGroup: 'original-run' });
+    const roundTrip = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(initial)))!;
+    expect(preparedCheckpointQueueMatches(record, null)).toBe(true);
+    expect(preparedCheckpointQueueMatches(record, roundTrip)).toBe(true);
+    for (const changed of [
+      { ...roundTrip, qualificationAttemptId: 'other-attempt' },
+      { ...roundTrip, repairHead: 'admitted-head' },
+      { ...roundTrip, base: 'other-base' },
+      { ...roundTrip, updatedAtMs: 201 },
+      { ...roundTrip, attempts: 1 },
+      { ...roundTrip, phase: 'blocked' as const },
+    ]) expect(preparedCheckpointQueueMatches(record, changed)).toBe(false);
+    // A captured queue never takes the fresh-cut exception, even at the same SHA.
+    expect(preparedCheckpointQueueMatches({ ...record, queue: roundTrip }, null)).toBe(false);
+  });
+
+  // WI-6554700010029580: a later physical run of the SAME attempt recovers the committed selection after
+  // the fixer state machine and the attempt's own verdict recording touched the queue row.
+  it('recovers a captured queue across bookkeeping drift but refuses any change to the selected candidate', () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const opened = createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'earlier-attempt',
+      base: 'base-1', nowMs: 200, affectedTestProofGroup: 'original-run' });
+    // Physical run 1 judged the candidate red; that is the queue the attempt's preparation captured.
+    const red = roundTrip(markFrozenCandidateVerificationRed(opened, { failingTests: ['lib/a.test.ts'], nowMs: 300 }));
+    expect(red.phase).toBe('awaiting-fixer');
+    // The stored record is the JSON round-trip the transaction parser returns, not the in-memory object.
+    const record = JSON.parse(JSON.stringify({ ...prepared(), candidate: red.repairHead, queue: red }));
+    // Between physical runs the fixer state machine and the gate touch only bookkeeping.
+    const dispatched = markFrozenRepairFixerDispatched(red, { spawnId: 'durable-spawn:fixer-1', nowMs: 400 });
+    expect(dispatched.attempts).toBe(1);
+    for (const live of [
+      dispatched,
+      { ...red, updatedAtMs: 900, fixerStateChangedAtMs: 900 },
+      { ...red, freeRetries: 1, lastVerdictAtMs: 800, fixerSpawnId: null },
+      { ...red, phase: 'blocked' as const, blockedReason: 'attempts-exhausted' as const },
+    ]) expect(preparedCheckpointQueueMatches(record, live)).toBe(true);
+    // An admission moves the head the preflight would prepare; lineage changes are a different queue.
+    const admitted = markFrozenRepairAdmitted(dispatched, { atMs: 500, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'head-2' }, fromRepairHead: red.repairHead, toRepairHead: 'head-2',
+      paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } });
+    expect(admitted.repairHead).toBe('head-2');
+    for (const live of [
+      admitted,
+      { ...red, phase: 'ready-to-test' as const },
+      { ...red, base: 'other-base' },
+      { ...red, qualificationAttemptId: 'other-attempt' },
+      { ...red, openedAtMs: 250 },
+      { ...red, candidate: 'candidate-2' },
+    ]) expect(preparedCheckpointQueueMatches(record, live)).toBe(false);
+    expect(preparedCheckpointQueueMatches(record, null)).toBe(false);
+    expect(preparedCheckpointQueueMatches({ ...record, queue: { repairHead: red.repairHead } }, red)).toBe(false);
+  });
+
+  // WI-6554700010030147: the fresh preparation's pre-commit re-read uses the same authority.
+  it('judges a live queue by its selection authority, and a queue appearing or vanishing as a change', () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const red = roundTrip(markFrozenCandidateVerificationRed(createFrozenCandidateQueue({ candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 200, affectedTestProofGroup: 'g' }),
+      { failingTests: ['lib/a.test.ts'], nowMs: 300 }));
+    expect(checkpointSelectionQueueAuthorityMatches(null, null)).toBe(true);
+    expect(checkpointSelectionQueueAuthorityMatches(red, null)).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(null, red)).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, updatedAtMs: 901, attempts: 3 })).toBe(true);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, repairHead: 'head-2' })).toBe(false);
+    expect(checkpointSelectionQueueAuthorityMatches(red, { ...red, phase: 'ready-to-test' as const })).toBe(false);
+  });
+});
+
+describe('fenced durable remaining-work continuation', () => {
+  const running = () => reserveQualificationRunner(begin(), { attemptId: 'attempt-1', runnerId: 'runner-1',
+    candidate: 'candidate-1', runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+    leaseDurationMs: 1_000, nowMs: 200 }).transaction;
+  const input = (): QualificationWorkProgressInput => ({ attemptId: 'attempt-1', candidate: 'candidate-1',
+    repairHead: null, runnerId: 'runner-1', runId: 'run-1', pidIdentity: 'boot:42', root: '/repo',
+    taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+    manifest: { schemaVersion: 1, units: [
+      { id: 'a', kind: 'test', path: 'a.test.ts' }, { id: 'post', kind: 'post-suite', path: 'post.mjs' } ] },
+    updates: [{ receipt: { unitId: 'a', completionId: 'completion-a', observedAtMs: 250, state: 'pass',
+      worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass', proof: {
+        recordedSha: 'candidate-1', executedModules: ['a.test.ts'], readPaths: [], inputsCaptured: true,
+        opaqueReasons: [], runContext: 'ci', runnerIdentity: 'proof-v3 node' } } }], nowMs: 300 });
+
+  it('persists the entire frozen population and survives the production parse/recovery path', () => {
+    const saved = recordQualificationWorkProgress(running(), input());
+    expect(saved.status).toBe('updated');
+    const recovered = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(saved.transaction)))!;
+    expect(recovered.continuation).toMatchObject({ manifest: input().manifest,
+      receipts: [{ unitId: 'a', state: 'pass' }] });
+    expect(recordQualificationWorkProgress(recovered, input())).toMatchObject({ status: 'idempotent' });
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      receipts: null } })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      manifest: { schemaVersion: 1, units: [] } } })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({ ...recovered, continuation: { ...recovered.continuation,
+      supersededReceipts: recovered.continuation!.receipts } })).toBeNull();
+  });
+
+  it('saves the exact yield cursor while retaining single-flight custody through cleanup', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const checkpoint = { runnerId: 'runner-1', runId: 'run-1', savedAtMs: 350,
+      executionCutoffEpochMs: 340, yieldDeadlineEpochMs: 400, cleanupDeadlineEpochMs: 600,
+      orphanDeadlineEpochMs: 700, callerDeadlineEpochMs: 650,
+      completed: [{ unitId: 'a', completionId: 'completion-a' }], pendingUnitIds: ['post'] };
+    const result = recordQualificationWorkYield(saved, { ...input(), updates: [], nowMs: 350 }, checkpoint);
+    expect(result.status).toBe('updated');
+    expect(result.transaction.currentPhysicalRunner).toEqual(saved.currentPhysicalRunner);
+    expect(result.transaction.continuation!.lastYield).toEqual(checkpoint);
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(result.transaction))))
+      .toEqual(result.transaction);
+    expect(reserveQualificationRunner(result.transaction, { attemptId: 'attempt-1', runnerId: 'rival',
+      candidate: 'candidate-1', incumbentLiveness: 'live', leaseDurationMs: 1000, nowMs: 360 }).status).toBe('conflict');
+    const waiting = settleQualificationTransaction(result.transaction, { attemptId: 'attempt-1',
+      runId: 'run-1', candidate: 'candidate-1', reason: 'infra-inconclusive', green: null, nowMs: 380 }).transaction;
+    expect(waiting.phase).toBe('waiting');
+    expect(waiting.continuation).toEqual(result.transaction.continuation);
+    for (const override of [{ pendingUnitIds: [] }, { completed: [] },
+      { completed: [{ unitId: 'a', completionId: 'forged' }] }, { savedAtMs: 400 },
+      { callerDeadlineEpochMs: 550 }]) {
+      expect(recordQualificationWorkYield(saved, { ...input(), updates: [], nowMs: 350 },
+        { ...checkpoint, ...override }).status).toBe('conflict');
+    }
+  });
+
+  it.each(['live', 'unknown'] as const)('refuses a second runner even with an expired lease and %s liveness', liveness => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const rival = reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'runner-2',
+      candidate: 'candidate-1', leaseDurationMs: 1_000, incumbentLiveness: liveness, nowMs: 50_000 });
+    expect(rival).toMatchObject({ status: 'conflict', refusalReason: 'runner-held' });
+    expect(recordQualificationWorkProgress(saved, { ...input(), runnerId: 'runner-2' })).toMatchObject({
+      status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+  });
+
+  it('rejects an old fence after a proved-dead handoff without altering replacement receipts', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    const replacement = reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'runner-2',
+      runId: 'run-2', candidate: 'candidate-1', pid: 43, pidIdentity: 'boot:43', started: true,
+      leaseDurationMs: 1_000, incumbentLiveness: 'dead', nowMs: 50_000 }).transaction;
+    const late = recordQualificationWorkProgress(replacement, { ...input(), nowMs: 50_100 });
+    expect(late).toEqual({ status: 'conflict', refusalReason: 'runner-fence-mismatch', transaction: replacement });
+    expect(replacement.continuation).toEqual(saved.continuation);
+  });
+
+  it('refuses selection, retry-policy, candidate, repair-head, and duplicate-completion changes', () => {
+    const saved = recordQualificationWorkProgress(running(), input()).transaction;
+    for (const override of [
+      { manifest: { schemaVersion: 1 as const, units: input().manifest.units.slice(1) } },
+      { candidate: 'other' }, { repairHead: 'other' }, { retryStates: ['fail' as const] },
+      { updates: [{ receipt: { ...input().updates[0]!.receipt, unitId: 'post' } }] },
+    ]) expect(recordQualificationWorkProgress(saved, { ...input(), ...override }).status).toBe('conflict');
+    expect(reserveQualificationRunner(saved, { attemptId: 'attempt-1', runnerId: 'new-runner',
+      candidate: 'recut-candidate', incumbentLiveness: 'dead', leaseDurationMs: 1000, nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(beginQualificationTransaction(saved, { attemptId: 'attempt-1', candidate: 'recut-candidate', nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(waitQualificationTransaction(saved, { attemptId: 'attempt-1', candidate: 'recut-candidate',
+      reason: 'infra-inconclusive', nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(settleQualificationTransaction(saved, { attemptId: 'attempt-1', repairHead: 'recut-repair',
+      reason: 'advanced', green: true, nowMs: 50_000 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'continuation-lineage-mismatch' });
+    expect(parseCheckpointQualificationTransaction({ ...saved, candidate: 'recut-candidate' })).toBeNull();
+  });
+
+  it('retains failure history and requires the frozen retry policy plus an exact predecessor to replace it', () => {
+    const first = input(); first.retryStates = ['fail']; first.updates[0]!.receipt.state = 'fail';
+    const saved = recordQualificationWorkProgress(running(), first).transaction;
+    const retry = input(); retry.retryStates = ['fail']; retry.nowMs = 400;
+    retry.updates[0]!.receipt.completionId = 'completion-retry';
+    expect(recordQualificationWorkProgress(saved, retry).status).toBe('conflict');
+    retry.updates[0]!.supersedesCompletionId = 'completion-a';
+    expect(recordQualificationWorkProgress(saved, retry)).toMatchObject({ status: 'updated', transaction: {
+      continuation: { receipts: [{ state: 'pass', completionId: 'completion-retry' }],
+        supersededReceipts: [{ state: 'fail', completionId: 'completion-a' }] } } });
+    const validPass = recordQualificationWorkProgress(running(), input()).transaction;
+    expect(recordQualificationWorkProgress(validPass, { ...retry, retryStates: [] })).toMatchObject({
+      status: 'conflict', refusalReason: 'continuation-replacement-not-admitted' });
+  });
+});
 
 describe('physical reservation refusal evidence (P-033)', () => {
   const running = () => reserveQualificationRunner(begin(), {
@@ -1118,6 +1412,80 @@ describe('logical checkpoint qualification transaction', () => {
     ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
   });
 
+  describe('unstarted candidate with an admitted repair', () => {
+    const terminal = () => settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'error', green: null, nowMs: 400,
+    }).transaction;
+    const successor = { attemptId: 'attempt-2', requiredAncestorSha: 'repair-1',
+      declaredPaths: ['fixed.ts'], candidate: 'candidate-2', nowMs: 500 };
+    const admitted = () => markFrozenRepairAdmitted(
+      createFrozenCandidateQueue({ candidate: 'candidate-1', qualificationAttemptId: 'attempt-1',
+        base: null, nowMs: 200 }),
+      { atMs: 350, actor: 'agent-1', source: { ref: 'staging', sha: 'repair-1' },
+        fromRepairHead: 'candidate-1', toRepairHead: 'repair-1', paths: ['fixed.ts'],
+        unchanged: [], blobs: { 'fixed.ts': 'blob-1' } },
+    );
+
+    it('preserves the admitted head across terminal handoff and judges the original candidate first', () => {
+      const queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(admitted())))!;
+      const before = structuredClone(queue);
+      expect(queue).toMatchObject({ phase: 'ready-to-test', candidate: 'candidate-1', repairHead: 'repair-1' });
+      expect(assessTerminalRepairQueueReconciliation(terminal(), successor, queue)).toMatchObject({
+        status: 'preserved', reason: 'exact-safe-unstarted', candidate: 'candidate-1',
+        predecessorAttemptId: 'attempt-1', successorAttemptId: 'attempt-2',
+      });
+      expect(queue).toEqual(before);
+      expect(decideFrozenCandidateRepairQueue(queue, { nowMs: 600 })).toMatchObject({
+        kind: 'test-candidate', candidate: 'candidate-1', runSuite: true, recordVerdict: true,
+      });
+      const measured = markFrozenCandidateVerificationRed(queue, {
+        failingTests: ['broken.test.ts'], nowMs: 700,
+      });
+      expect(measured).toMatchObject({ phase: 'ready-to-verify', candidate: 'candidate-1',
+        repairHead: 'repair-1', retestRequested: queue.retestRequested,
+        convergenceRounds: [{ head: 'candidate-1' }] });
+      expect(decideFrozenCandidateRepairQueue(measured, { nowMs: 800 })).toMatchObject({
+        kind: 'verify-repair', candidate: 'repair-1', originalCandidate: 'candidate-1',
+        runSuite: true, recordVerdict: true,
+      });
+    });
+
+    it('refuses competing ownership and advanced heads without exact admission and pending proof', () => {
+      const queue = admitted();
+      const entry = queue.admissions![0]!;
+      for (const changed of [
+        { ...queue, attempts: 1 },
+        { ...queue, fixerSpawnId: 'live-fixer' },
+        { ...queue, dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 1000 } },
+        { ...queue, qualificationAttemptId: 'other-attempt' },
+        { ...queue, qualificationAttemptId: null },
+        { ...queue, admissions: [] },
+        { ...queue, admissions: [{ ...entry, toRepairHead: 'other-head' }] },
+        { ...queue, admissions: [entry, { ...entry, atMs: 360, toRepairHead: 'other-head' }], updatedAtMs: 360 },
+        { ...queue, retestRequested: undefined },
+        { ...queue, retestRequested: { ...queue.retestRequested!, candidate: 'other-candidate' } },
+        { ...queue, retestRequested: { ...queue.retestRequested!, repairHead: 'other-head' } },
+        { ...queue, retestRequested: { ...queue.retestRequested!, requestedAtMs: 300 } },
+      ]) {
+        expect(parseFrozenCandidateRepairQueue(changed)).not.toBeNull();
+        expect(assessTerminalRepairQueueReconciliation(terminal(), successor, changed).status).toBe('blocked');
+      }
+      // WI-6554700010015312: the immediate-predecessor link is the same single lineage one hop
+      // back, so it carries provenance in every phase, including this admitted ready-to-test.
+      // The admission proof is still required: drop it and the fence names what is missing.
+      expect(assessTerminalRepairQueueReconciliation({ ...terminal(), previousAttemptId: 'older-attempt' },
+        successor, { ...queue, qualificationAttemptId: 'older-attempt' }))
+        .toMatchObject({ status: 'preserved', reason: 'exact-safe-unstarted' });
+      expect(assessTerminalRepairQueueReconciliation({ ...terminal(), previousAttemptId: 'older-attempt' },
+        successor, { ...queue, qualificationAttemptId: 'older-attempt', retestRequested: undefined }))
+        .toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'admission-unproven' });
+      // A two-hop-old origin is not the lineage.
+      expect(assessTerminalRepairQueueReconciliation({ ...terminal(), previousAttemptId: 'older-attempt' },
+        successor, { ...queue, qualificationAttemptId: 'oldest-attempt' }))
+        .toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    });
+  });
+
   // WI-10007398: the run that measures a red moves the queue to awaiting-fixer and exits; the
   // fixer is dispatched by the NEXT run's `dispatch-fixer` decision. Refusing that successor at
   // begin (queue-not-safe-unstarted) closed the only automatic path — measured 2026-10-07/08:
@@ -1197,18 +1565,20 @@ describe('logical checkpoint qualification transaction', () => {
         requiredAncestorSha: 'different-repair-head',
       }, unknownOriginQueue),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    // Once the pin supplies provenance, the refusal names the live competing owner rather than
+    // the (already-resolved) unknown origin — naming the pin as the remedy would mislead.
     expect(
       assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
         ...unknownOriginQueue,
         fixerSpawnId: 's-live',
       }),
-    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'fixer-not-proven-dead' });
     expect(
       assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
         ...unknownOriginQueue,
         dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
       }),
-    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'dispatch-reserved' });
   });
 
   // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Observed 2026-10-08: the
@@ -1764,7 +2134,136 @@ describe('logical checkpoint qualification transaction', () => {
           { round: 2, head: 'repair-1', failingCount: 1, atMs: 550 },
         ],
       }),
-    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'head-already-judged' });
+  });
+
+  // WI-6554700010015312: the reconciliation is a GENERAL handoff, not a shape allowlist. Each
+  // past deadlock (EI-24610407938327281, WI-10000288, WI-10007398, WI-10007408,
+  // WI-6554700010018169) was one more legitimate queue shape missing from the old list, and the
+  // refused successor was the only run that could act on it. A lineage-linked queue in ANY phase
+  // is now handed forward unless a NAMED fence holds.
+  describe('general handoff across every queue phase (WI-6554700010015312)', () => {
+    const settled = (green: boolean | null, reason: string) =>
+      settleQualificationTransaction(begin(), { attemptId: 'attempt-1', reason, green, nowMs: 400 }).transaction;
+    const inconclusive = () => settled(null, 'error');
+    const red = () => settled(false, 'not-green');
+    const provenGreen = () => settled(true, 'advanced');
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-9', nowMs: 500 };
+    // begin() judges 'candidate-1', so the promoted fixture's repairHead is 'candidate-1'.
+    const awaitingFixer = () => markFrozenCandidateVerificationRed(
+      createFrozenCandidateQueue({ candidate: 'frozen-0', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+      { failingTests: ['broken.test.ts'], nowMs: 250 },
+    );
+    const readyToVerify = () => markFrozenRepairAdmitted(awaitingFixer(), {
+      atMs: 300, actor: 'agent-1', source: { ref: 'staging', sha: 'candidate-1' }, fromRepairHead: 'frozen-0',
+      toRepairHead: 'candidate-1', paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const fixtures: Record<FrozenCandidateRepairPhase, () => FrozenCandidateRepairQueue> = {
+      'ready-to-test': () =>
+        createFrozenCandidateQueue({ candidate: 'frozen-0', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+      'awaiting-fixer': awaitingFixer,
+      'ready-to-verify': readyToVerify,
+      'ready-to-promote': () => markFrozenRepairVerificationGreen(readyToVerify(), { repairHead: 'candidate-1', nowMs: 350 }),
+      blocked: () => markFrozenRepairExhausted(awaitingFixer(), { reason: 'attempts-exhausted', nowMs: 350 }),
+    };
+    // Record<FrozenCandidateRepairPhase, …> makes a new phase a compile error HERE as well as in
+    // the switch, so the handoff decision for it cannot be skipped.
+    const preservedReason: Record<FrozenCandidateRepairPhase, string> = {
+      'ready-to-test': 'exact-safe-unstarted',
+      'awaiting-fixer': 'awaiting-unassigned-fixer',
+      'ready-to-verify': 'matching-untested-repair-head',
+      'ready-to-promote': 'promoted-awaiting-staging-bridge',
+      blocked: 'blocked-hold-handoff',
+    };
+    const roundTrip = (q: FrozenCandidateRepairQueue) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+
+    for (const phase of Object.keys(fixtures) as FrozenCandidateRepairPhase[]) {
+      it(`hands a lineage-linked ${phase} queue to the successor, and the run then acts on it`, () => {
+        const queue = roundTrip(fixtures[phase]());
+        expect(queue.phase).toBe(phase);
+        // ready-to-promote carries green proof, so its owner is the green attempt; every other
+        // phase is handed forward by the inconclusive attempt that most often owns it live.
+        const terminal = phase === 'ready-to-promote' ? provenGreen() : inconclusive();
+        expect(assessTerminalRepairQueueReconciliation(terminal, successor, queue)).toMatchObject({
+          status: 'preserved', reason: preservedReason[phase], candidate: 'frozen-0',
+          predecessorAttemptId: 'attempt-1', successorAttemptId: 'attempt-2',
+        });
+        // Same lineage one hop back carries the same provenance.
+        expect(assessTerminalRepairQueueReconciliation(
+          { ...terminal, attemptId: 'attempt-1b', previousAttemptId: 'attempt-1' }, successor, queue,
+        )).toMatchObject({ status: 'preserved', reason: preservedReason[phase] });
+        // The handed-forward queue yields a real decision, never an unhandled shape.
+        expect(decideFrozenCandidateRepairQueue(queue, { nowMs: 600, fixerAlive: null })).toHaveProperty('kind');
+        // A live dispatch reservation fences every phase.
+        expect(assessTerminalRepairQueueReconciliation(terminal, successor, {
+          ...queue, dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
+        })).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'dispatch-reserved' });
+        // Someone else's queue stays fail-closed in every phase.
+        expect(assessTerminalRepairQueueReconciliation(terminal, successor, {
+          ...queue, qualificationAttemptId: 'someone-else',
+        })).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+      });
+    }
+
+    it('keeps each named fence fail-closed', () => {
+      const fenceOf = (terminal: ReturnType<typeof settled>, queue: FrozenCandidateRepairQueue,
+        next: typeof successor & { assignedFixerLiveness?: { spawnId: string; liveness: 'live' | 'dead' | 'unknown' } } = successor) =>
+        assessTerminalRepairQueueReconciliation(terminal, next, queue);
+      const assigned = markFrozenRepairFixerDispatched(awaitingFixer(), { spawnId: 's-fixer', nowMs: 320 });
+      for (const liveness of [undefined, 'live', 'unknown'] as const) {
+        expect(fenceOf(inconclusive(), assigned,
+          liveness ? { ...successor, assignedFixerLiveness: { spawnId: 's-fixer', liveness } } : successor))
+          .toMatchObject({ status: 'blocked', fence: 'fixer-not-proven-dead' });
+      }
+      expect(fenceOf(inconclusive(), assigned,
+        { ...successor, assignedFixerLiveness: { spawnId: 's-fixer', liveness: 'dead' } }))
+        .toMatchObject({ status: 'preserved', reason: 'awaiting-dead-fixer' });
+      // Liveness for a DIFFERENT spawn proves nothing about this row's fixer.
+      expect(fenceOf(inconclusive(), assigned,
+        { ...successor, assignedFixerLiveness: { spawnId: 's-other', liveness: 'dead' } }))
+        .toMatchObject({ status: 'blocked', fence: 'fixer-not-proven-dead' });
+      // A red terminal cannot carry ready-to-promote's green proof forward.
+      expect(fenceOf(red(), fixtures['ready-to-promote']()))
+        .toMatchObject({ status: 'blocked', fence: 'promotion-unproven' });
+      // Green proof at a DIFFERENT head is not proof for this head.
+      expect(fenceOf(provenGreen(), { ...fixtures['ready-to-promote'](), repairHead: 'other-head' }))
+        .toMatchObject({ status: 'blocked', fence: 'promotion-unproven' });
+      // A ready-to-verify head the suite already judged would be declined by the run itself.
+      const judged = fixtures['ready-to-verify']();
+      expect(fenceOf(inconclusive(), {
+        ...judged,
+        convergenceRounds: [...(judged.convergenceRounds ?? []), { round: 2, head: judged.repairHead, failingCount: 1, atMs: 360 }],
+      })).toMatchObject({ status: 'blocked', fence: 'head-already-judged' });
+      // No transition counts an attempt before the candidate is judged.
+      expect(fenceOf(inconclusive(), { ...fixtures['ready-to-test'](), attempts: 1 }))
+        .toMatchObject({ status: 'blocked', fence: 'queue-integrity' });
+      // An EXPIRED reservation is abandoned in every phase, not a fence.
+      expect(fenceOf(inconclusive(), {
+        ...fixtures.blocked(), dispatchReservation: { token: 'stale', claimedAtMs: 100, expiresAtMs: 499 },
+      })).toMatchObject({ status: 'preserved', reason: 'blocked-hold-handoff' });
+    });
+
+    it('keeps an unpinned null-origin queue fail-closed outside the idle unstarted candidate', () => {
+      for (const phase of Object.keys(fixtures) as FrozenCandidateRepairPhase[]) {
+        const queue = { ...roundTrip(fixtures[phase]()), qualificationAttemptId: null };
+        const verdict = assessTerminalRepairQueueReconciliation(inconclusive(), successor, queue);
+        if (phase === 'ready-to-test') {
+          expect(verdict).toMatchObject({ status: 'preserved', reason: 'exact-safe-unstarted' });
+        } else {
+          expect(verdict).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+        }
+      }
+      // A pin on the exact repairHead supplies the link — except for ready-to-promote, whose
+      // green proof needs a KNOWN lineage, not just a head match.
+      const promote = { ...fixtures['ready-to-promote'](), qualificationAttemptId: null };
+      expect(assessTerminalRepairQueueReconciliation(provenGreen(),
+        { ...successor, requiredAncestorSha: promote.repairHead }, promote))
+        .toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+      const held = { ...fixtures.blocked(), qualificationAttemptId: null };
+      expect(assessTerminalRepairQueueReconciliation(inconclusive(),
+        { ...successor, requiredAncestorSha: held.repairHead }, held))
+        .toMatchObject({ status: 'preserved', reason: 'blocked-hold-handoff' });
+    });
   });
 
   // WI-2142947: a NULL qualificationAttemptId (schema v3 permits this, WI-41667) is an

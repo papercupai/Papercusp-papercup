@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "EI-26842368936683990",
+  "planSlug": "identity-definitions-own-policy-2026-10-17",
+  "planItemId": "P-001",
+  "scope": "Local working-tree recurrence guard for restricted-role Codex native children; not deployed acceptance or full role census.",
+  "origin": {
+    "verified": "Managed child preparation reached native spawn without the existing recorded-role home readiness check. A legacy repair could leave an SU MCP profile. Default account preparation returned before any role validation.",
+    "historicalRequestAttribution": "unknown",
+    "preservedBoundary": "Original 155-schema scoper sample remains separate; later operator observations do not satisfy scoper coverage. No subject role/grant/profile edits or new observers."
+  },
+  "change": {
+    "reused": "codexHomeLaunchReadiness",
+    "boundary": "prepareCodexGatewayLaunch before account-route branching",
+    "callSites": [
+      "apps/operator/scripts/psu-launcher.mjs:13243",
+      "apps/operator/scripts/psu-launcher.mjs:13348",
+      "apps/operator/scripts/psu-pty-host.mjs:11370",
+      "apps/operator/scripts/psu-pty-host.mjs:17402"
+    ],
+    "roles": [
+      "scoper",
+      "judge"
+    ],
+    "accountModes": [
+      "default",
+      "auto",
+      "pin"
+    ]
+  },
+  "verification": {
+    "before": {
+      "path": "/tmp/idop-carry-role-negative-20261024.receipt.json",
+      "id": "21877581",
+      "receiptId": "d7170be3-d04c-4112-91d8-4fc4f91b97fc",
+      "outcome": "inserted",
+      "status": "fail",
+      "commitSha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+      "worktreeDirty": true,
+      "startedAt": "2026-10-24T07:36:44.507Z",
+      "finishedAt": "2026-10-24T07:36:44.570Z",
+      "caseStatusCounts": {
+        "skip": 58,
+        "pass": 6,
+        "fail": 6
+      },
+      "childSubstituted": null,
+      "executionDetailKeys": [
+        "schemaVersion",
+        "runStartedAt",
+        "root",
+        "runGroupId",
+        "workspaceId",
+        "harnessSlug",
+        "testNamePattern",
+        "testLayer",
+        "mutationPhase",
+        "runtimeEnvironmentBeforeCaptureStatus",
+        "filePath",
+        "passed",
+        "failed",
+        "skipped",
+        "collectionFailed",
+        "failedCaseTitles",
+        "passedCaseTitles",
+        "worktreeDirty",
+        "commitSha",
+        "worktreeDirtyReason",
+        "runtimeEnvironmentAfterCaptureStatus"
+      ],
+      "failingCases": [
+        "Codex managed child preserves its recorded role authority > refuses a 'scoper' child after an SU home repair on the 'default' route",
+        "Codex managed child preserves its recorded role authority > refuses a 'scoper' child after an SU home repair on the 'auto' route",
+        "Codex managed child preserves its recorded role authority > refuses a 'scoper' child after an SU home repair on the 'pin' route",
+        "Codex managed child preserves its recorded role authority > refuses a 'judge' child after an SU home repair on the 'default' route",
+        "Codex managed child preserves its recorded role authority > refuses a 'judge' child after an SU home repair on the 'auto' route",
+        "Codex managed child preserves its recorded role authority > refuses a 'judge' child after an SU home repair on the 'pin' route"
+      ]
+    },
+    "after": {
+      "path": "/tmp/idop-carry-role-fixed-20261024.receipt.json",
+      "id": "21877835",
+      "receiptId": "93a77a0f-dcc0-4e35-aebe-ecaf8a83ed87",
+      "outcome": "inserted",
+      "status": "pass",
+      "commitSha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+      "worktreeDirty": true,
+      "startedAt": "2026-10-24T07:40:36.092Z",
+      "finishedAt": "2026-10-24T07:40:36.341Z",
+      "caseStatusCounts": {
+        "pass": 70
+      },
+      "childSubstituted": null,
+      "executionDetailKeys": [
+        "schemaVersion",
+        "runStartedAt",
+        "root",
+        "runGroupId",
+        "workspaceId",
+        "harnessSlug",
+        "testNamePattern",
+        "testLayer",
+        "mutationPhase",
+        "runtimeEnvironmentBeforeCaptureStatus",
+        "filePath",
+        "passed",
+        "failed",
+        "skipped",
+        "collectionFailed",
+        "passedCaseTitles",
+        "passedCaseTitlesTruncated",
+        "worktreeDirty",
+        "commitSha",
+        "worktreeDirtyReason",
+        "runtimeEnvironmentAfterCaptureStatus"
+      ],
+      "failingCases": []
+    },
+    "syntaxCheck": {
+      "command": "node --check apps/operator/scripts/psu-launcher.mjs",
+      "exitCode": 0
+    },
+    "diffCheck": {
+      "command": "git diff --check -- apps/operator/scripts/psu-launcher.mjs apps/operator/scripts/psu-launcher-codex-home-guard.test.ts",
+      "exitCode": 0
+    },
+    "limits": [
+      "Both test receipts are working-tree evidence at the recorded base commit, worktreeDirty=true.",
+      "Execution detail childSubstituted is absent; the separate maintained runner summary reports zero.",
+      "No claim that an already-running host loaded the change.",
+      "Source-authentication gate349651, historical vault and full P001 census remain open."
+    ]
+  },
+  "files": [
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "bytes": 895869,
+      "sha256": "cea911b4a1d3e7d64f66157cc2f8c6ba419f38e8e86538e17534f4228b70d0e1"
+    },
+    {
+      "path": "apps/operator/scripts/psu-launcher-codex-home-guard.test.ts",
+      "bytes": 44578,
+      "sha256": "dd785a57e7cc3061656b74059e12c292bf445b85f02daefe8c2bd0efbd730222"
+    },
+    {
+      "path": "/tmp/idop-carry-role-negative-20261024.log",
+      "bytes": 74690,
+      "sha256": "1f764a15991d2408d167d06fb13bd678c4c46b92ea9838d3f705adf12d9f5cf2"
+    },
+    {
+      "path": "/tmp/idop-carry-role-negative-20261024.receipt.json",
+      "bytes": 21922,
+      "sha256": "4bed7d8d8f64d5434378a5f627044daeee763f22647bf645055969581406a9dc"
+    },
+    {
+      "path": "/tmp/idop-carry-role-fixed-20261024.log",
+      "bytes": 19080,
+      "sha256": "e9c8cc153347e486c09d44bc6ce8db5ca649c66404e04edb8a7f9e2b0983bc78"
+    },
+    {
+      "path": "/tmp/idop-carry-role-fixed-20261024.receipt.json",
+      "bytes": 28356,
+      "sha256": "2a3e3c0fef6a2ddf3a1470dbf80dad8389e7a442c3928c9d6bff21e64ac04d4b"
+    }
+  ]
+}

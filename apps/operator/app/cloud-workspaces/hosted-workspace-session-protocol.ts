@@ -203,6 +203,17 @@ export function base64ToUtf8(value: string): string {
   return new TextDecoder().decode(base64ToBytes(value));
 }
 
+/** A local GUI may receive a ticket for its signed-in HTTPS control plane. */
+export function readHostedWorkspaceSocketOrigin(payload: unknown, fallback: string): string {
+  const origin = record(payload)?.socketOrigin;
+  if (origin === undefined) return fallback;
+  if (typeof origin !== "string") throw new TypeError("invalid_hosted_socket_origin");
+  const url = new URL(origin);
+  if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password)
+    throw new TypeError("invalid_hosted_socket_origin");
+  return url.origin;
+}
+
 export function buildHostedWorkspaceSocketUrl(
   origin: string,
   ticket: string,

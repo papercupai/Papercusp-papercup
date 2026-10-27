@@ -1,0 +1,465 @@
+{
+  "schemaVersion": 1,
+  "plan": "seed-miniflare-cache-census-2026-10-24",
+  "workItem": "WI-6554700010026184",
+  "recordKind": "current-source-acceptance-evidence",
+  "pathNotation": "Resolve a leading ~/ with the evidence recorder's home directory; canonicalTree is relative to this repository. These are evidence locators, not portable copies of external artifacts. Recorded hashes remain the identity checks; missing host context is UNKNOWN.",
+  "observer": "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+  "subject": {
+    "commit": "76ddc5f7e751478c3e0323e9476ace12abd8042e",
+    "sourcePath": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts",
+    "sourceSha256": "daa3c178566f4c2328289c1f8454c58c62b3ab478b7593fe724ae70425d4c983",
+    "testPath": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.test.ts",
+    "testSha256": "0b4b79115455d0fc20347614f9858e33c31a9c8c2e05b12593c1bc45f7a27208"
+  },
+  "independentReview": {
+    "requirement": "R-3",
+    "verification": "manual",
+    "conversation": "conv-request-491af1a1a2a30221b4eeec0a9991927c10b073742dd886e285da970b684069e1",
+    "verdict": "ACCEPT",
+    "verdictRef": "thread-post:1204321",
+    "reviewer": "su-3f5e59b9-614e-4550-9b1b-3884ffab1576",
+    "eligibilityCheck": {
+      "tool": "rubrics:check-approver",
+      "rubricRef": "acceptance-seed-miniflare-cache-census-2026-10-24",
+      "eligible": true,
+      "reason": "eligible"
+    },
+    "observedScope": "The reviewer independently recomputed the exact source/test hashes and reviewed strict cache shape, no-follow descriptor/path identity, loaded exclusions, same-leftover symlink topology, generation drift and security package controls.",
+    "reviewerRun": 21882978,
+    "reviewerRunLimit": "The review reused the stable worker Vite source map for this passing dirty-tree run. Canonical evidence currentness remains UNKNOWN for that run because worktreeDirty is true. It is not the clean acceptance run below.",
+    "cleanRunFollowupRef": "thread-post:1204332",
+    "cleanRunFollowupState": "requested; no reviewer confirmation asserted",
+    "priorReview": "thread-post:1203881 remains historical evidence for older source/test bytes only."
+  },
+  "cleanFocusedRun": {
+    "id": 21937292,
+    "status": "pass",
+    "passed": 49,
+    "failed": 0,
+    "skipped": 0,
+    "nativeExit": 0,
+    "childSubstituted": 0,
+    "worktreeDirty": false,
+    "root": "/tmp/pcv/papercusp-lint-as-committed-76ddc5f7e7-1AAWy0",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=papercusp-workspace PC_EXECUTED_SOURCE_MAP_OUT=/tmp/843e2-miniflare-76ddc5-current-source-map.json npm run test:file -- packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.test.ts",
+    "sourceMap": "/tmp/843e2-miniflare-76ddc5-current-source-map.json",
+    "sourceEvidenceScope": "repository-worker-vite-original-sources",
+    "sourceEvidenceStatus": "stable",
+    "sourceEvidenceReasons": [],
+    "opaqueReasons": ["child-process", "worker-runtime-unavailable", "config-deps-unavailable"],
+    "normalBindings": { "R-1": 69315, "R-2": 69316 },
+    "normalBindingReadback": "Both CURRENT with no stale or unknown reasons."
+  },
+  "mutationProof": [
+    {
+      "requirement": "R-1",
+      "probeInvocationId": "ee47fd30-7b45-43e4-8223-610d5cb167a2",
+      "mutation": "Replace the .mf admission branch condition with false.",
+      "baselineRun": 21937300,
+      "unmutatedCopyRun": 21937305,
+      "mutantRun": 21937306,
+      "bindingId": 69323,
+      "verdict": "caught"
+    },
+    {
+      "requirement": "R-2",
+      "mutation": "Remove the assertMiniflareToolingCache call.",
+      "baselineRun": 21937808,
+      "unmutatedCopyRun": 21937811,
+      "mutantRun": 21938558,
+      "bindingId": 69324,
+      "verdict": "caught",
+      "log": "/tmp/843e2-miniflare-r2-76ddc5.log"
+    }
+  ],
+  "mutationScope": "Both maintained probes used copy-out overlay relocation, contained writes, passing original and unmutated-copy baselines, parseable mutants and assertion failures. Both verified byte-identical source after the probe.",
+  "mechanicalAdequacyReadback": { "R-1": "pass", "R-2": "pass", "gaps": [] },
+  "custodyReadback": {
+    "requirement": "R-4",
+    "verification": "manual",
+    "continuationRecheck": {
+      "measuredAt": "2026-10-25T01:03:44.301525+00:00",
+      "cloneHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+      "trackedPorcelain": "",
+      "headExit": 0,
+      "statusExit": 0,
+      "receiptSha256": [
+        "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+        "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2"
+      ],
+      "matchesDesignBaseline": true,
+      "limit": "Bounded external tuple observation retained unchanged. The later server readback records committed custody binding69537 as CURRENT; this is evidence currentness, not an acceptance verdict. Final acceptance has not occurred and requires another tuple comparison."
+    },
+    "clone": {
+      "path": "/mnt/data/offload/wi-10006692-retained-bench-2026-10-08/843e2-signed-source-proof-b9958b78",
+      "observedHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+      "trackedPorcelain": "",
+      "headExit": 0,
+      "statusExit": 0,
+      "matchesDesignBaseline": true
+    },
+    "receipts": [
+      {
+        "path": "~/.papercusp/scratch/843e2-source-proof-binding-v2-safe.json",
+        "observedSha256": "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+        "matchesDesignBaseline": true
+      },
+      {
+        "path": "~/.papercusp/scratch/843e2-source-proof-generation-publish-v2-readback-safe.json",
+        "observedSha256": "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2",
+        "matchesDesignBaseline": true
+      }
+    ],
+    "procedure": "Compare clone HEAD and clean tracked status with the Design tuple; SHA256 both complete named receipt files. This is a bounded readback, not ongoing custody monitoring. Recheck before final acceptance."
+  },
+  "actionCensus": {
+    "requirement": "R-5",
+    "status": "BLOCKED-POSITIVE-PUBLICATION-EVIDENCE",
+    "coverageStatus": "UNKNOWN",
+    "predicateStatus": "FALSIFIER-OBSERVED;INDEPENDENT-GRADE-PENDING",
+    "continuationReconciliation": {
+      "cutoffInclusive": "2026-10-25T00:59:00Z",
+      "decision": "seed-miniflare-cache-census-2026-10-24#D-005",
+      "nativeInventory": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-action-census-v6.json",
+        "sha256": "6b5193f1f007f30e7855219703dd92861609dba121ffde3c15112b1f24c460fd",
+        "candidateExecutionSessions": 22,
+        "parseGaps": []
+      },
+      "exactMcpTail": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-mcp-tail-v1.json",
+        "sha256": "a72b550cacef175c35c99e80682cced4593e3ffab9c6f8e6d4fb7e84640ca920",
+        "records": 1951,
+        "firstId": "44013775",
+        "lastId": "44190090",
+        "scope": "Complete arguments for retained actor candidate intervals after the prior early endpoint; three truncated argument records are reconstructed separately from native evidence."
+      },
+      "reconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-reconciliation-v1.json",
+        "sha256": "f9acd08ef8fbf703d66c512e6f867b4f3440f06a218ac5c27e221dc1ac14448d",
+        "nativeTailActions": 1702,
+        "nativeShellCommands": 615,
+        "serverShellLeaves": 24,
+        "serverShellLeavesWithNativeMatches": 24,
+        "nestedExtractionGaps": [],
+        "limit": "Exact byte matching reconciles records; it does not establish every command's effects or absence of prohibited actions."
+      },
+      "nativeMethodCensus": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-methods-v1.json",
+        "sha256": "b0e6b1340acdf7b6b2cd708a4da8311d52cb6508b1c69c49b02e11d227fd8e51",
+        "parsedExecScripts": 474,
+        "parseGaps": [],
+        "scope": "Static native tools.* call sites only; all retained function-call records are wait resumptions."
+      },
+      "mcpMethodCensus": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-mcp-methods-v1.json",
+        "sha256": "9bb841523c0669048f10af48373fd2adfe27e2d460ef4bc54ba708a38a8ed688",
+        "parsedScripts": 235,
+        "truncatedScriptsReconstructedFromNative": ["44044186", "44044284"],
+        "scope": "Complete static method and call-expression index, including tools:invoke targets; no branch or prohibited-effect absence verdict."
+      },
+      "scopeAnalystCompletionTail": {
+        "reason": "The administrative work-item close precedes the physical completion and final plan message. Retain this follow-through rather than cutting at the database close timestamp.",
+        "endInclusive": "2026-10-25T00:23:26.931Z",
+        "mcpPath": "~/.papercusp/scratch/843e2-miniflare-r5-scope-completion-tail-v1.json",
+        "mcpSha256": "9c8a8e64acff5869f609a58439c5f90aba8bb156efa513cc9a90f3e8e0dcd35a",
+        "mcpRecords": 5,
+        "nativePath": "~/.papercusp/scratch/843e2-miniflare-r5-scope-completion-native-v1.json",
+        "nativeSha256": "b1d05e3595d2956478b4fe3dda95cfc72e45a95156120e1b7401183a37dbcdc5",
+        "nativeRecords": 2,
+        "limit": "Later 00:23:30 wake and 00:24 member-recovery work are separately identified, not removed by goal_ref filtering."
+      },
+      "supplementalAuthorCompletionTail": {
+        "reason": "The first ADV49752 cutoff predates physical repair-close completion, carry checkpoints and final handback. Preserve the complete supplemental tail and its interleaved actions under D-005.",
+        "priorCutoffInclusive": "2026-10-24T09:03:05.080Z",
+        "expandedCandidateEndInclusive": "2026-10-24T09:05:45.808Z",
+        "nativePath": "~/.papercusp/scratch/843e2-miniflare-r5-peer-completion-native-v1.json",
+        "nativeSha256": "aa53f1a3ab4edd41948db9479c8d30464043cfd307853c027578ec89d80ff647",
+        "nativeRecords": 14,
+        "nativeParseGaps": [],
+        "reconciliationPath": "~/.papercusp/scratch/843e2-miniflare-r5-peer-completion-reconciliation-v1.json",
+        "reconciliationSha256": "a1f1619d1d7f2fd8e491c13864e69f79b0f63e6f21bc7723716fb3bec4a693e7",
+        "mcpRecords": 19,
+        "mcpFirstId": "44023444",
+        "mcpLastId": "44024464",
+        "mcpRecordsetSha256": "661079a71e708000fb8b624a6e23e576143cb5fb640cb02ac66b38d4009dc151",
+        "successfulSsh": {
+          "leafInvocation": "44023451",
+          "parentInvocation": "44023459",
+          "task": "0mvm68gotuf1cw1a3bz",
+          "nativeExit": 0,
+          "childFailures": [],
+          "returnedSnapshotMetadata": true,
+          "commandExactNativeMcpMatch": true,
+          "commandSha256": "0c1375b4fa0812ef79e5259a9e22019b7823d8d28fc8b736a98c1a4b175a30a9",
+          "nativeCompletedAt": "2026-10-24T09:03:28.682Z",
+          "artifact": "runtime-migration/p006-mac-snapshot-sources-20261024-501c.json@papercusp"
+        },
+        "status": "UNKNOWN",
+        "limit": "Successful remote execution is now observed. Historical external-network boundary and actual plan-associated intervals remain unresolved; purpose attribution grants no exemption. All fourteen native action bodies have explicit supplemental dispositions. The nineteen-record MCP fingerprint does not establish complete exact-argument coverage. Prior v6 bytes and recordset hashes remain historical evidence for their original bounds."
+      },
+      "contributorConsultRecords": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-contributor-consults-v1.json",
+        "sha256": "72ac36afe52599abf20d168171b62dba67be67631b01e101e13b1f688a9f8efe",
+        "records": 13,
+        "scope": "Canonical routing and dispatch records retain source experts, actual answering owners and failed attempts separately. Additional prepared ADV51444 expired without running, per the cleanup writer and failed port record; it supplies no review verdict."
+      },
+      "nativeReadCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-read-command-dispositions-v1.json",
+        "sha256": "9a524fc8d52f6a1e4dc3cbd67005a2d6169c8affdfd99a5ac0ccfcfcceaaac89",
+        "population": 615,
+        "completeBodiesReviewed": 191,
+        "remaining": 424,
+        "remainingCategories": {
+          "python-evidence-script": 85,
+          "internal-MCP-client": 324,
+          "maintained-test-or-lint-wrapper": 14,
+          "internal-DB-select": 1
+        },
+        "scope": "Manual complete-body dispositions bound to native record and command SHA256 for local reads, Git inspection, bounded waits and configuration-only SSH expansion. Embedded multiline Python bodies were inspected. Remaining commands and nested callees are separate; no whole-census prohibited-action absence verdict."
+      },
+      "nativePythonCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-python-command-dispositions-v1.json",
+        "sha256": "4de51d8a80559b6bdb38eacdab1bc0311784303c9db4ce45ac645b814ce7bf10",
+        "completePythonBodiesReviewed": 85,
+        "totalCompleteBodiesReviewed": 276,
+        "remainingCommandBodies": 339,
+        "remainingCategories": {
+          "internal-MCP-client": 324,
+          "maintained-test-or-lint-wrapper": 14,
+          "internal-DB-select": 1
+        },
+        "nestedEffectFollowups": [0, 254, 259, 264, 408, 455],
+        "scope": "Complete Python command bodies were read, including appended shell statements and nested tool payloads. The six named indices retain collector identity, internal artifact, mutation-wrapper or report-publication effect follow-ups. Body review is not all-callee proof, an acceptance verdict or a new test run. The earlier 191-command file remains an immutable partial edition."
+      },
+      "nativeRemainingCommandDispositions": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-remaining-command-dispositions-v1.json",
+        "sha256": "8e0607e00ec98506582774999ee4a28c2e81739829b723120a021ceaa26b8d8b",
+        "completeBodiesReviewedThisEdition": 339,
+        "categories": { "internal-MCP-client": 324, "maintained-test-or-lint-wrapper": 14, "internal-DB-select": 1 },
+        "totalCompleteBodiesReviewed": 615,
+        "remainingCommandBodies": 0,
+        "nestedEffectFollowups": [0, 254, 259, 264, 408, 455],
+      "publicationSurfaceFollowups": [454, 455, 604],
+        "scope": "Completes the retained 615-command body population through full shell/payload review. Exact body, record and JSON/script hashes are retained; quoted declarative prose is data, while nested executable scripts and commands are reviewed separately. Callee effects, owner Reports publication classification, native custom methods, complete contributors/intervals and final acceptance tail remain unresolved. R-5 stays UNKNOWN. Earlier partial editions are preserved unchanged."
+      },
+      "nestedEffectReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-nested-effect-reconciliation-v1.json",
+        "sha256": "b554527dfda2577d663405926dc325e8ba88b7cf6eda4a7de7be11dbbf2e127f",
+        "savedFollowupsAddressed": [0, 254, 259, 264, 408, 455],
+        "status": "UNKNOWN",
+        "scope": "Binds the collector creation/current bytes and actual inventory result; exact two-artifact save receipt; serialized inequality followed by complete parsed six-value equality; canonical contained mutation receipt; and exact original/retry owner-report request/result. Collector execution-time source sealing, opaque downstream effects and publication-predicate classification remain explicit gaps. Historical scope-report publish/readback are retained despite a current not_found from this session. No review command was replayed."
+      },
+      "nativeCustomScriptStructure": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-custom-script-structure-v1.json",
+        "sha256": "a5d105132f556d2c58cb91dddec83ec46fe34ebae9e217be917c86ceef907960",
+        "scriptsParsed": 474,
+        "parseGaps": 0,
+        "literalExecCalls": 519,
+        "literalCommandHashesInSavedPopulation": 515,
+        "dynamicExecExpressions": 41,
+        "scope": "Static complete-script syntax and tool-call spans only; no all-script semantic or executed-branch verdict. Literal mismatches and dynamic exec expressions are reconciled in separate envelope artifacts; nested tool/callee effects remain."
+      },
+      "nativeCallEnvelopeReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-call-envelope-reconciliation-v1.json",
+        "sha256": "5ef87b375176de007d0887b17a279cf2247b80133e3d4930985918700f560a02",
+        "unmatchedLiteralCallsites": 4,
+        "preExecutionRejectedSearches": 3,
+        "supplementalCompletedCommands": 1,
+        "scope": "Three native wrapper/result records affirmatively record pre-execution search refusals. The second peer repair completion starts inside the stored interval but completes at 14:48:39.952Z, with wrapper return 14:48:40.889Z; retain that supplemental complete body/result beyond the earlier 14:48:33.403Z endpoint. Preserve the original 615-command population and both conservative peer windows; no purpose-based deletion or whole-channel absence claim."
+      },
+      "nativeDynamicExecReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-dynamic-exec-reconciliation-v1.json",
+        "sha256": "d60e564c38cd2b99520e8d09ca6edfe07bd0e84664d64c2786c9b7640a1226c5",
+        "dynamicCallsites": 41,
+        "expandedDistinctCommands": 101,
+        "exactNativeMatches": 101,
+        "matchedOriginal615": 99,
+        "supplementalCompletions": 2,
+        "unresolvedExpressions": 0,
+        "scope": "Whitelisted static dataflow and one exact saved report-result value reconstruct all 41 selected expressions into 101 distinct native command/result matches. Tools are symbolic stubs and no historical command is replayed. Retain ADV49752 native line516 at09:03:42.414Z (failed exit1, idempotency/helper refusal) and ADV51495 line671 at00:23:11.262Z beyond the original candidate endpoints; the original 615-command population remains immutable. Exact envelope reconciliation is not a downstream-effect, interval-completeness or R-5 acceptance verdict."
+      },
+      "nativeYieldedShellDrains": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-native-yielded-shell-drains-v1.json",
+        "sha256": "1d4dbc4b05ec491e744f60341e2f4b7b3c258b587f9b99aef28d1ec66d95183d",
+        "processes": ["13289", "47991"],
+        "scope": "Historical native process_id and complete command bytes join the two initially yielded shells to their physical terminal records. Retain drain source/output hashes and distinguish mixed wrapper envelopes. No live session was polled or replayed."
+      },
+      "publicationPredicateConflict": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-publication-predicate-conflict-v1.json",
+        "sha256": "a636a9250b9aded20a3daeba234b36e97f596adddb6a677eec84f723ec3bb23e",
+        "publicationObserved": true,
+        "scope": "Two successful owner Reports writes are retained against current plan19, rubric3 and R-5 spec revision2. The condition explicitly names publication without an internal-Reports exception. Healthy acceptance is blocked; the literal predicate conflicts with observed writes. Governing interpretation remains pending, and this artifact supplies no final independent verdict, exception, BAR amendment or full census claim."
+      },
+      "governingPublicationDecision": {
+        "ref": "seed-miniflare-cache-census-2026-10-24#D-006",
+        "planRevision": 20,
+        "planContentHash": "97bc1069a54d1c9f93d13a9f5a38d033fffa67a09fad2c153a977ac80b2470cd",
+        "readback": "Complete D-006 read from canonical plans:get on 2026-10-25. Owner-only Reports writes count as publication under the unchanged R-5 BAR; no internal-library exception exists. The confirmed plan-associated report rpt_459e93a7-c788-44c1-b73a-9c8efacfa84a is a counterexample; rpt_3cb376f7-4293-4ed9-9ac8-453089e904b7 remains supported by this producer's exact saved receipt. No external/public disclosure is alleged.",
+        "scope": "This resolves the previously pending interpretation in the preserved publicationPredicateConflict artifact. It does not supply an independent acceptance card, amend the BAR, erase historical evidence or clear remaining coverage and parent holds. A narrower outward/public promise requires the supported BAR amendment and outside-lineage approval route."
+      },
+      "contributorAuthorityReconciliation": {
+        "path": "~/.papercusp/scratch/843e2-miniflare-r5-contributor-authority-reconciliation-v1.json",
+        "sha256": "25e1b92cfa5cf33a55315c55e267f0d9c0f9f7151f6efaddce23e18d247e45dc",
+        "planRevisions": 19,
+        "storedPlanAudits": 6,
+        "linkedGradingAudits": 5,
+        "scope": "Exact canonical plan revision/audit authors, clause author groups and three spec-quality plus two adequacy cards are linked to their persisted grading-audit authors and retained native candidate identities. Thirteen consult records retain source experts and answering-owner candidates separately; failed prepared ADV51444 remains preparation without a review verdict. Acceptance-rubric card absence is bounded to that exact rubric. Contributor coverage, interval boundaries, downstream effects and final acceptance tail remain incomplete; no healthy verdict, exception or BAR amendment is supplied."
+      },
+      "remaining": [
+        "Resolve historical network boundary and downstream effects of MCP44022053, MCP44023057 and successful supplemental MCP44023451. Failed remote exit1 and current loopback configuration do not establish no contact; the third call returned snapshot metadata with native exit0.",
+        "Keep conservative candidate intervals and all three SSH calls. The first ADV49752 candidate window now extends through physical handback09:05:45.808Z; no per-goal deletion or interval exclusion has been established.",
+        "Complete nested-callee and actual-effect reconciliation for all seven prohibited surfaces. All 615 retained command bodies now have dispositions; body review, static parses and record matches do not establish every callee effect. Reconcile saved owner Reports publication requests and exact results without inventing an internal-publication exemption.",
+        "Complete contributor coverage beyond the named author/audit/consult sources, including work-item/edit-attribution and reviewer-dispatch/failed-launch records. Reconcile the saved inventory start against canonical creation records and extend the acceptance tail beyond this cutoff before any healthy R-5 verdict."
+      ]
+    },
+    "inventoryPath": "~/.papercusp/scratch/843e2-miniflare-action-census-v4.json",
+    "inventorySha256": "eeea638788fecb0b293210948c041af598bc681d2b53a46b0d9a9d98f954b6ac",
+    "inventoryEnd": "2026-10-24T22:28:41.634643Z",
+    "inventoryRoots": 21,
+    "parseGaps": [],
+    "boundedTail": {
+      "priorCompleteEvidence": "thread-post:1203829",
+      "startExclusive": "2026-10-24T08:42:32.703851Z",
+      "endExclusive": "2026-10-24T22:28:41.634643Z",
+      "contributionBounds": {
+        "49752": [
+          { "start": "2026-10-24T08:42:32.703851Z", "end": "2026-10-24T09:03:05.080Z", "record": "EI-26849701831136773" },
+          { "start": "2026-10-24T14:18:46.859Z", "end": "2026-10-24T14:48:33.403Z", "record": "EI-26870731917620808" }
+        ],
+        "review": "Actual answering owners are ADV51710/su-0daaeca1-71a7-41be-853b-908caf7249cd and ADV51715/su-3f5e59b9-614e-4550-9b1b-3884ffab1576, confirmed by immutable posts 1204283 and 1204321. Consult source experts are not substituted for them.",
+        "limit": "These are historical inventory bounds, not a complete current interval claim. The first window requires the supplementalAuthorCompletionTail through09:05:45.808Z above. Interleaved P006 activity remains included pending contemporaneous interval adjudication; purpose alone supplies no exclusion."
+      },
+      "nativeRecordsets": [
+        { "adv": 49410, "records": 430, "sha256": "bc12dd65d3ddf314d156a2ffcee41dff1db891a640491297ce61b46b9568ed6c" },
+        { "adv": 51379, "records": 80, "sha256": "d0b353cc796dbeb0fa2f374a207221e428aa7eb99fdebeca3ed8e0de9c66e7a9" },
+        { "adv": 49752, "records": 314, "sha256": "16653b65c08b1c2aec25ebcec8916f04d0cb9f81bbedd9dbe8dce43e1aa152cf" },
+        { "adv": 51688, "records": 219, "sha256": "bc25194b3f2ebb837125909b0f2535a00bee8763e71cf31383146fde4cefb1be" },
+        { "adv": 51710, "records": 14, "sha256": "a194b2420594b3a3d3b37c9625c0425d18cc2e7c46764295f4741f451ad914c0" },
+        { "adv": 51715, "records": 33, "sha256": "84504410fff1c603a5f63a3bece9d72e95913c438ff4f7c4704323d25e1c0549" }
+      ],
+      "nativeHashProcedure": "Filter v4 actions by the exclusive prior endpoint and recorded contribution bounds, preserve stored order, join recordSha256 values with |, then SHA256 the UTF-8 string. No re-execution is implied.",
+      "mcpRecordsets": [
+        { "actor": "su-0daaeca1-71a7-41be-853b-908caf7249cd", "firstId": "44140288", "lastId": "44140916", "records": 11, "sha256": "a58c51856087c8be5c98e1353df981266ec5636cd97235ffdabbbd6d2d1b07ba" },
+        { "actor": "su-3f5e59b9-614e-4550-9b1b-3884ffab1576", "firstId": "44141004", "lastId": "44146585", "records": 44, "sha256": "60efc31ef5512a113c25d7246c3215921c4d4ae730272d0ab37a49bb9e14606a" },
+        { "actor": "su-501c9929-ca51-40f3-a17f-7f69304b0906", "firstId": "44013850", "lastId": "44044782", "records": 338, "sha256": "1fea1dfd4fe9ff853d47c33b8daf9fa9f73718631cf3471c6cf9475106589917" },
+        { "actor": "su-843e294a-e363-4b17-b899-52a3c0f75fb6", "firstId": "44013775", "lastId": "44149321", "records": 782, "sha256": "98e0210ffa263354a692c8fa15231b6a56830d7cd3fc3c1b5ffd2662054e8c3c" },
+        { "actor": "su-ba52ba2d-0989-4515-a560-2277739c6570", "firstId": "44029394", "lastId": "44031860", "records": 65, "sha256": "206a58b9b17d88040c08b23f295e9213a412e36d8b30fa85791a23e073ba14ed" }
+      ],
+      "mcpHashProcedure": "Query harness_shared.tool_invocations in workspace papercusp-workspace over the stated half-open tail, normalize only the system:judge/ prefix, and apply the 49752 contribution intervals. For each actor, order by id and SHA256 UTF-8 string_agg(id:status:SHA256(coalesce(args_json::text,'')), '|'). Positive control invocation 43895531 returned one row; neither result was truncated.",
+      "observedOutliers": [
+        "Invocation 44041188 is storage:prune with dryRun:true; it does not prove any deletion.",
+        "Invocations 44030982 and replay 44032833 requested ordinary git-sync for evidence files. The invocation status alone is not proof of physical commit, push or runtime adoption.",
+        "Read-only reviewer commands and both actual answering-owner transcripts were inspected. Source/store-wide absence is not inferred from tool-name filtering.",
+        "The server-shell population inside these contribution intervals has 24 calls. Multiline and nested physical effects still need full reconciliation before a healthy R-5 verdict."
+      ],
+      "status": "UNKNOWN",
+      "continuationDelta": {
+        "nativeInventory": "~/.papercusp/scratch/843e2-miniflare-action-census-delta-v5.json",
+        "nativeInventorySha256": "864ff3f9c166165ab6b3695fa2b408695774e38f0072203f0e94bfd93832026b",
+        "startExclusive": "2026-10-24T22:28:41.634643Z",
+        "endInclusive": "2026-10-25T00:02:08.978594Z",
+        "actualNativeWriter": "ADV51688, including predecessor 01a16fdd and continuation 01a1702f",
+        "nativeActions": 296,
+        "nativeParseGaps": [],
+        "mcpFirstId": "44149734",
+        "mcpLastId": "44173147",
+        "mcpRecords": 326,
+        "mcpRecordsetSha256": "12c90a91c6a901019b9e63c61bfad8a9e63cad08500db8eed8b308d4213e1d7a",
+        "mcpPositiveControl": "Invocation 44149321 returned one row. Same id:status:argument-SHA256 ordered recordset formula as the prior tail, bounded to this delta and the retained owner plus its system:judge alias.",
+        "limit": "Inventory and recordset fingerprints do not replace complete nested-effect judgments. Later acceptance activity remains outside this cutoff."
+      },
+      "interleavedScopeQuestion": {
+        "evidence": "thread-post:1204450",
+        "invocations": ["44022053", "44023057"],
+        "observation": "Two SSH mac-vm Kopia snapshot-list/policy-help operations appear inside the broad first supplemental repair interval. Their payloads state separate P006 backup metadata work. The canonical artifact runtime-migration/p006-mac-backup-custody-20261024-501c.json states P006 Mac storage custody before recovery; WI-6554700010022072 belongs to node-to-bun-staged-migration-2026-10-22.",
+        "disposition": "D-005 retains both actions in the census. P006 attribution and read-only intent are purpose evidence, not exemptions. A remote SSH action remains network-capable even on an internal host. UNKNOWN remains until actual effects and contemporaneous plan-associated intervals are resolved; no exclusion or favorable acceptance verdict is established.",
+        "governingDecision": "seed-miniflare-cache-census-2026-10-24#D-005",
+        "decisionPlanRevision": 19,
+        "exactOutcomeEvidence": [
+          { "invocation": "44022053", "task": "0mvm64rk3gmxajl11xc", "nativeStatus": "failed", "nativeExit": 1, "sshChildExit": 1, "durationMs": 5346, "nativeRowSha256": "792165ef12418ea910e050c1eedafc8f590d1c1725f06850382001a6905cb725" },
+          { "invocation": "44023057", "task": "0mvm67sqf1f3p2zg4wd", "nativeStatus": "failed", "nativeExit": 1, "sshChildExit": 1, "durationMs": 919, "nativeRowSha256": "fe9bd96a43737375c694074ce1bf492182cf202eb7b2eaf0a6b8167b6c5e7169" }
+        ],
+        "outcomeSource": "ADV49752 native rollout 01a16d0d-400d-7d52-8b6e-712cf9e7a364, item_completed rows 458 and 501; code:run childFailures record the physical capability:bash task outputs. Both stdout records say remoteExit:1 and backup source metadata read failed; no secret output. No SSH action was replayed for this read.",
+        "contemporaneousTask": "Both physical task arguments name EI-26823017306309705, the separate native macOS storage investigation. Native agent messages at 08:50:17.549Z and 09:03:03.578Z describe backup/census interleaving. These records are preserved as interval/purpose evidence; they are not used to delete either call or establish an uninterrupted repair interval.",
+        "networkEvidence": {
+          "sshExitContract": "Installed ssh(1) manual EXIT STATUS says ssh returns the remote command status, or 255 if an error occurred. The retained ssh-child exit 1 is evidence of remote command failure; it is not evidence that no contact occurred.",
+          "logSha256": ["8e154769aee3d8577d48079422f51dd3b327aa5afc1ff0c00195da1de6fca2aa", "793806d9088993ad30179e56d3425190558b09004c583f22ee80630abc4c8a6c"],
+          "currentRouteOnly": "Local ssh -G mac-vm, which expands configuration without connecting, reports hostname 127.0.0.1 and port 2222, with no proxycommand/proxyjump output. The selected ~/.ssh/config has mtime 2026-08-27 and SHA256 8d944fc39bd6b5be88cd46642ff186bc977e51c0fc1f70dbb8513ca1c07cfa41. This does not independently prove the complete historical route or the contract boundary.",
+          "maintainedSource": "papercusp-desktop/bin/mac-vm-launch.py defaults its SSH host to loopback and port to 2222; inspected source SHA256 8669e2c31b65f1828a427afac57c24207f0c803911cdf463e05f365080867dc5. The launcher was read, not executed.",
+          "limit": "D-005 supplies no internal-host exemption. Historical route/boundary and actual plan-associated intervals still require adjudication; no healthy or falsified R-5 claim follows from these observations alone."
+        },
+        "consult": "conv-request-4fe12125b69f5d3989766b6a821f992fb3d23f8cc1b4d53fc805d77ef8276bdc",
+        "consultOutcome": "no_qualified_responder / evidence_unavailable; no answering session was launched. This is not a favorable ruling or proof that no expert exists."
+      },
+      "additionalScopeContributor": {
+        "owner": "su-b28c0433-620c-47f4-bcdd-0aa1ae4cbdbe",
+        "adv": 51495,
+        "workItem": "WI-6554700010028110",
+        "candidateStart": "2026-10-25T00:06:44Z",
+        "candidateEnd": "2026-10-25T00:23:10.635Z",
+        "nativeInventory": "~/.papercusp/scratch/843e2-miniflare-r5-scope-analysis-native-v1.json",
+        "nativeInventorySha256": "45e72d53c02759d956d88b4a42725104b80eb51dc9d20ab1411c46502b88dda9",
+        "nativeActions": 76,
+        "nativeParseGaps": [],
+        "mcpFirstId": "44174559",
+        "mcpLastId": "44179053",
+        "mcpRecords": 117,
+        "mcpRecordsetSha256": "8efd4783f9e23ff12cf227fe6b5402f2f5f8fd1f6f914a139df8a9619e8ca3c1",
+        "mcpHashProcedure": "Same ordered id:status:argument-SHA256 formula, workspace papercusp-workspace, owner plus its system:judge alias, inclusive candidate timestamps. Positive rows are an inventory, not a prohibited-effect absence verdict.",
+        "limit": "This actual scope-analysis contributor must remain in the final census. Its completed documentary scope interpretation does not confer platform reviewer qualification or decide R-5 acceptance."
+      },
+      "remaining": [
+        "Finish classifying multiline native and server-shell actions and nested orchestration against all seven prohibited surfaces; preserve unknowns when ledger args were truncated.",
+        "Extend native and MCP coverage after 22:28:41.634643Z through final acceptance, including this evidence-repair continuation and any new acceptance contributors."
+      ]
+    },
+    "coverage": "Preserves prior v3, adds current native continuation 51688 and actual answer sessions 51710/51715, and records both completed native actions and function/custom tool call records. This is an inventory, not an absence verdict.",
+    "remaining": [
+      "Finish contributor census from plan/work-item, consult, grading-audit and reviewer dispatch records, including failed launches.",
+      "Narrow shared actor contribution intervals before judging unrelated activity.",
+      "Reconcile MCP invocations with native calls and nested orchestration; lexical command filtering alone is insufficient.",
+      "Extend coverage through final acceptance and judge every enumerated prohibited surface; any unmeasured action channel remains UNKNOWN."
+    ]
+  },
+  "parentDisposition": {
+    "requirement": "R-6",
+    "verification": "manual",
+    "readback": "EI-26830350923351846 and EI-26825512897643109 remain open. Existing docs/evidence/seed-miniflare-parent-disposition-2026-10-24.json remains the narrow disposition.",
+    "retained": "This repair does not establish full original-source admission, parent GO or shipment. The twelve saved loop checks and separate contested parent source-binding check remain distinct. No release cut, original-source open, license activation, publication or guard bypass is authorized."
+  },
+  "measuredManualBindings": {
+    "R-3": { "id": 69490, "evidenceRef": "thread-post:1204321", "observedCurrentness": "current", "provenance": "server-measured", "scope": "Exact reviewed source/test bytes only; unanswered clean-run addendum is not reviewer confirmation." },
+    "R-6": { "id": 69487, "evidenceRef": "docs/evidence/seed-miniflare-parent-disposition-2026-10-24.json", "observedCurrentness": "current", "provenance": "server-measured", "artifactSha256": "58a4508279c0cd25dd82c08a80c99edb765ea10385dea10f490eef7f4f3d9134", "scope": "Exact committed limited disposition only; parents remain open." },
+    "limit": "These are observed binding readbacks. Re-read canonical evidence currentness at acceptance; this file does not monitor it. R-4 and R-5 remain unresolved."
+  },
+  "commitRoute": {
+    "status": "pending",
+    "canonicalTree": ".",
+    "gitSyncReceipt": { "status": "refused", "fired": false, "reason": "request-only-host" },
+    "dependency": "EI-26785152335918923",
+    "dependencyOwner": "su-4585c0c9-eddc-47a6-b7d4-54c22bbfd2b3",
+    "requestRef": "mvmz8vcx-0000-3b5d69a3b73a4215bb926201e1831dfe",
+    "replyRef": "coord-send-1890bbf54f54e0194720b6fa1cc6bf1a9282d2e5064baf2778eb143720f68c7a",
+    "replyFinding": "Existing BG owner confirmed pickup and says the historical :3271 execution address is not a qualified current-generation route. Current spec-quality audit passed; current-contract critiques and committed-generation implementation/activation remain unfinished. No publication proof supplied.",
+    "pathQuarantine": {
+      "report": "git-sync/content-errors/dc70eb56f032c407d1eaef6189325bafea4e4d203d759f109c9d042d68a59e67.json",
+      "detector": "identity-leak",
+      "rootCause": "Hardcoded host-home evidence locators caused content-lint quarantine of both pending JSON files. Exact report content hashes matched their pre-repair bytes. The BG route restriction alone did not explain their omission.",
+      "priorCurrentSourceSha256": "b9bd73fe4662f7588d784159ceb497989a9852a3d887ed48d7d9fca43deed5f4",
+      "priorCustodySha256": "962e7ca934793d74ba17d9cad5d6ac8ba6e225ad8a471c66a1838db47afc72f3",
+      "repair": "Use ~/ evidence locators and repository-relative canonicalTree, with explicit resolution semantics. Receipt hashes and external artifact bytes are unchanged.",
+      "verification": "Maintained npm run content-lint -- --file=<each evidence JSON> --detector=identity-leak --json returned clean, ranCount:1 and exitCode:0 for both portable versions. Resolved receipt SHA256 values still match both Design baselines.",
+      "limit": "Passing local content lint does not prove a subsequent git-sync commit or clear any runtime/publication hold. No watcher was rearmed."
+    },
+    "limits": "No manual commit/push, host restart, worker activation, duplicate root-loop rearm or release operation was performed."
+  },
+  "limits": [
+    "P-001 remains completed; these are appended current proof bindings, not a reopened implementation task.",
+    "R-5 still requires a complete bounded contributor/native/MCP reconciliation; the retained inventory alone is not absence proof.",
+    "Re-read the exact external custody tuple at final acceptance. File freshness alone does not monitor external paths.",
+    "P-002 and final plan acceptance remain open.",
+    "Original-source admission, parent GO, shipment, release, private-only, license, no-eighth-cut, sole-publisher and native-execution holds remain in force."
+  ]
+}

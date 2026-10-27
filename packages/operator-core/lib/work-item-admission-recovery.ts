@@ -511,40 +511,122 @@ export async function requestAdmissionRecovery(
       throw new AdmissionRecoveryRefused('original recovery changed during registration; retry this same item');
     }
     if (request.state === 'queued') {
-      // Queueing and acceleration commit together. The routine engine still owns its fire.
+      // Acceleration must retain the natural ordinary deadline. Otherwise each
+      // queued exact request can consume another recurring ordinary opportunity.
       const updated = await tx`
-        UPDATE harness_shared.routines SET next_fire_at = LEAST(COALESCE(next_fire_at, now()), now())
-         WHERE id = ${routineId} AND active = true RETURNING id`;
+        UPDATE harness_shared.routines
+           SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}',
+                 COALESCE(metadata->'admissionOrdinarySlot',
+                   jsonb_build_object('dueAt', COALESCE(next_fire_at, now())))),
+               next_fire_at = LEAST(COALESCE(next_fire_at, now()), now())
+         WHERE id = ${routineId} AND workspace_id = ${input.workspaceId}
+           AND install_slug = ${input.harnessSlug} AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
+           AND target_role = ${`system:${WORK_ITEM_ADMISSION_PROMOTER}`} AND active = true
+           AND jsonb_typeof(COALESCE(metadata, '{}'::jsonb)) = 'object'
+         RETURNING id`;
       if (updated.length !== 1) throw new AdmissionRecoveryRefused('promoter was paused during recovery registration');
     }
     return { ok: true as const, workItemId: input.workItemId, request, inProgress: false };
   });
 }
 
+/** Serialize the ordinary/recovery choice without holding a transaction across
+ * model I/O. A later workflow can resume a stranded slot's original run id. */
+export async function withAdmissionPromoterLock<T>(
+  scope: Pick<AdmissionRecoveryScope, 'workspaceId' | 'harnessSlug'>,
+  lockSql: Sql | undefined,
+  action: () => Promise<T>,
+): Promise<T | null> {
+  const client = lockSql ?? createAdmissionRecoveryLockSql();
+  const key = JSON.stringify(['admission-promoter-slot', scope.workspaceId, scope.harnessSlug]);
+  try {
+    const reserved = await client.reserve();
+    let locked = false;
+    try {
+      const [row] = await reserved<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtextextended(${key}, 0)) AS locked`;
+      locked = row?.locked === true;
+      if (!locked) return null;
+      return await action();
+    } finally {
+      try {
+        if (locked) await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
+      } finally {
+        reserved.release();
+      }
+    }
+  } finally {
+    if (!lockSql) await client.end({ timeout: 5 });
+  }
+}
+
+export interface ComponentScreeningReceipt {
+  itemId: string;
+  stage: 'request' | 'freshness' | 'provenance' | 'routine' | 'eligibility' | 'authority' | 'recheck';
+  reason: 'selected' | 'request-ineligible' | 'screen-time-invalid' | 'already-held' | 'already-reviewed' |
+    'request-changed' | 'recovery-refused' | 'authority-refused';
+}
+export interface ComponentScreeningSelection {
+  itemIds: string[];
+  /** At most one safe disposition per observed row in the existing 20-row scan.
+   * Never persist arbitrary exception messages, signed requests or credentials. */
+  receipts: ComponentScreeningReceipt[];
+}
+
 /** Ordering hints for the ordinary component writer, never replay/assignment grants.
  * Exact-request fires still stop at their original mutation scope. */
-export async function readAuthorizedComponentScreeningIds(
+export async function readAuthorizedComponentScreening(
   scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
   deps: Pick<AdmissionRecoveryDeps, 'authorize'>,
   sql: Sql = getOrgPg().sql,
-): Promise<string[]> {
-  const rows = await sql<{ feature_id: string }[]>`
-    SELECT feature_id FROM harness_shared.work_items
-     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-       AND admission IN ('pending', 'unreviewed')
-       AND payload #>> '{_admissionRecovery,state}' = 'held'
-       AND payload #>> '{_admissionRecovery,stage}' = 'screen'
-       AND payload #>> '{_admissionRecovery,version}' = '3'
-       AND position('outside-mutation-scope' IN COALESCE(payload #>> '{_admissionRecovery,reason}', '')) > 0
-     ORDER BY feature_id LIMIT 20`;
+): Promise<ComponentScreeningSelection> {
+  // Advance the bounded window even when every candidate fails eligibility.
+  // Otherwise old reviewed, malformed or no-longer-authorized requests can
+  // permanently hide later requests. Reuse the owning routine's metadata;
+  // neither admission nor the signed request is changed by this scan cursor.
+  const rows = await sql.begin(async (tx): Promise<{ feature_id: string }[]> => {
+    const [routine] = await tx<{ id: string; cursor: string | null }[]>`
+      SELECT id, metadata #>> '{admissionComponentCursor}' AS cursor
+        FROM harness_shared.routines
+       WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.harnessSlug}
+         AND name = ${WORK_ITEM_ADMISSION_PROMOTER}
+         AND target_role = ${`system:${WORK_ITEM_ADMISSION_PROMOTER}`} AND active = true
+       FOR UPDATE`;
+    if (!routine) return [];
+    const selected = await tx<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+         AND admission IN ('pending', 'unreviewed')
+         AND payload #>> '{_admissionRecovery,state}' = 'held'
+         AND payload #>> '{_admissionRecovery,stage}' = 'screen'
+         AND payload #>> '{_admissionRecovery,version}' = '3'
+         AND position('outside-mutation-scope' IN COALESCE(payload #>> '{_admissionRecovery,reason}', '')) > 0
+       ORDER BY (feature_id > ${routine.cursor ?? ''}) DESC, feature_id LIMIT 20`;
+    if (selected.length > 0) {
+      await tx`UPDATE harness_shared.routines
+         SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{admissionComponentCursor}',
+               to_jsonb(${selected[selected.length - 1]!.feature_id}::text))
+       WHERE id = ${routine.id} AND workspace_id = ${scope.workspaceId}
+         AND install_slug = ${scope.harnessSlug}`;
+    }
+    return Array.from(selected);
+  });
   const ids: string[] = [];
+  const receipts: ComponentScreeningReceipt[] = [];
   for (const row of rows) {
     const exact = { ...scope, workItemId: row.feature_id };
+    let stage: ComponentScreeningReceipt['stage'] = 'request';
+    const record = (reason: ComponentScreeningReceipt['reason']) => {
+      receipts.push({ itemId: row.feature_id, stage, reason });
+    };
     try {
       const item = await readItem(sql, exact);
       const request = savedRequest(item);
       if (!request || request.version !== 3 || request.state !== 'held' || request.stage !== 'screen' ||
-          !request.reason?.includes('outside-mutation-scope')) continue;
+          !request.reason?.includes('outside-mutation-scope')) {
+        record('request-ineligible');
+        continue;
+      }
       // A held request gets one ordinary adjudication opportunity. A structural
       // prescreen hold did not judge its protected twin, so it cannot consume
       // that opportunity. readPromoterWindow defers these priority rows without
@@ -561,29 +643,50 @@ export async function readAuthorizedComponentScreeningIds(
       const screeningDeferred = hold?.actor === 'system:work-item-admission-promoter' &&
         (hold.screeningDeferred === true || hold.screeningDeferred === undefined &&
           /^deferred: twin \S+ is [a-z-]+; held until it can be judged$/.test(hold.reason ?? ''));
-      if (!Number.isFinite(requestedScreenAt) ||
-          heldAt >= requestedScreenAt && !screeningDeferred ||
-          retryAt >= requestedScreenAt && !(screeningDeferred && retryAt === heldAt)) continue;
+      stage = 'freshness';
+      if (!Number.isFinite(requestedScreenAt)) { record('screen-time-invalid'); continue; }
+      if (heldAt >= requestedScreenAt && !screeningDeferred) { record('already-held'); continue; }
+      if (retryAt >= requestedScreenAt && !(screeningDeferred && retryAt === heldAt)) {
+        record('already-reviewed'); continue;
+      }
+      stage = 'provenance';
       await verifyRequest(sql, exact, request);
+      stage = 'routine';
       await assertRoutineActive(sql, exact, request.routineId);
+      stage = 'eligibility';
       assertItemEligible(item, request.target);
+      stage = 'authority';
       await deps.authorize(exact, request);
       // Authorization may wait on policy I/O. Do not prioritize a replaced request
       // or an item newly held by a peer during that read.
+      stage = 'recheck';
       const current = await readItem(sql, exact);
       assertItemEligible(current, request.target);
       const [same] = await sql<{ unchanged: boolean }[]>`
         SELECT payload->'_admissionRecovery' = ${sql.typed(JSON.stringify(item.payload?._admissionRecovery), 25)}::jsonb AS unchanged
           FROM harness_shared.work_items WHERE workspace_id = ${exact.workspaceId}
             AND harness_slug = ${exact.harnessSlug} AND feature_id = ${exact.workItemId}`;
-      if (same?.unchanged) ids.push(row.feature_id);
+      if (same?.unchanged) {
+        ids.push(row.feature_id);
+        record('selected');
+      } else record('request-changed');
     } catch (error) {
       if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) throw error;
       // An invalid request earns no priority. Ordinary screening and its own
       // endpoint protections remain available without mutating the saved request.
+      record(error instanceof AdmissionAuthorityRefused ? 'authority-refused' : 'recovery-refused');
     }
   }
-  return ids;
+  return { itemIds: ids, receipts };
+}
+
+/** Compatibility for ID-only consumers; the production action retains receipts. */
+export async function readAuthorizedComponentScreeningIds(
+  scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
+  deps: Pick<AdmissionRecoveryDeps, 'authorize'>,
+  sql: Sql = getOrgPg().sql,
+): Promise<string[]> {
+  return (await readAuthorizedComponentScreening(scope, deps, sql)).itemIds;
 }
 
 /** Called inside the existing durable promoter action; a crash retries the original item.

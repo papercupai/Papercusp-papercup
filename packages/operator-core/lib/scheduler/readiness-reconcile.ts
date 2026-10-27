@@ -25,11 +25,12 @@
  * to silently hand out (or starve) work while the triggers are wrong.
  *
  * FEATURE family = harness_shared.work_items rows with
- * item_kind NOT IN ('bug','change','task') — exactly the set the sidecar covers.
+ * item_kind NOT IN (...ISSUE_FAMILY_ROUTE_KINDS) — exactly the set the sidecar covers.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /** One (workspace_id, harness_slug, feature_id) sidecar key. */
 export interface ReadinessKey {
   workspace_id: string;
@@ -121,7 +122,7 @@ export async function reconcileReadiness(sql: Sql = getOrgPg().sql): Promise<Rea
     WITH oracle AS (
       SELECT f.workspace_id, f.harness_slug, f.feature_id
         FROM harness_shared.work_items f
-       WHERE f.item_kind <> ALL (ARRAY['bug','change','task'])
+       WHERE f.item_kind <> ALL (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          -- Migration 719: the workspace is a REQUIRED argument. A blocker ref resolves
          -- within the blocked item's OWN workspace — the 2-arg form was deleted because
          -- (harness_slug, feature_id) is not unique across workspaces, so it had no

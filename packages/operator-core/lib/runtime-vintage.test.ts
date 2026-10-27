@@ -7,7 +7,7 @@
  * contract). The Pg store's upsert is exercised live by an actual boot report,
  * not here.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { hostname, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -21,6 +21,7 @@ import {
   configureRuntimeVintageStore,
   resetRuntimeVintageStore,
   reportRuntimeVintage,
+  reportRuntimeVintageOnBoot,
   listRuntimeVintage,
   measureRuntimeVintageEnvironment,
   measureLiveNodeEntrySource,
@@ -61,6 +62,54 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     const rows = await listRuntimeVintage('default');
     expect(rows).toHaveLength(1);
     expect(rows[0].treeSha).toBe('sha-new');
+  });
+
+  it('replaces a stale boot pin after the database recovers, retaining the original boot time', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const store = new InMemoryRuntimeVintageStore();
+      configureRuntimeVintageStore(store);
+      await store.report({ unit: 'boot-retry', treeSha: 'old-boot', pid: 4242 });
+      const write = vi.spyOn(store, 'report').mockRejectedValueOnce(new Error('CONNECT_TIMEOUT'));
+      const bootTime = new Date().toISOString();
+      const pending = reportRuntimeVintageOnBoot('boot-retry');
+      await vi.dynamicImportSettled();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect((await store.list())[0].treeSha).toBe('old-boot');
+      await vi.advanceTimersByTimeAsync(1_000);
+      await pending;
+      const rows = await store.list();
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ unit: 'boot-retry', pid: process.pid, buildTime: bootTime });
+      expect(rows[0].treeSha).not.toBe('old-boot');
+      expect(rows[0].extra.kernelProcessIdentity).toBe(readProcessIdentity(process.pid));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds boot reporting retries and leaves the previous pin unchanged when every write fails', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const store = new InMemoryRuntimeVintageStore();
+      configureRuntimeVintageStore(store);
+      await store.report({ unit: 'boot-retry-exhausted', treeSha: 'old-boot', pid: 4242 });
+      const write = vi.spyOn(store, 'report').mockRejectedValue(new Error('CONNECT_TIMEOUT'));
+      const pending = reportRuntimeVintageOnBoot('boot-retry-exhausted');
+      await vi.dynamicImportSettled();
+      await vi.runAllTimersAsync();
+      await pending;
+      expect(write).toHaveBeenCalledTimes(5);
+      expect((await store.list())[0]).toMatchObject({ treeSha: 'old-boot', pid: 4242 });
+      expect(warn).toHaveBeenLastCalledWith(expect.any(String), 'CONNECT_TIMEOUT', 'retry budget exhausted');
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('keeps distinct rows per host for the same unit (fleet of Mac/Windows/tower bundles)', async () => {

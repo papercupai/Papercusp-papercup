@@ -13,6 +13,7 @@ import { streamValues } from 'stream-json/streamers/stream-values.js';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { withBoundedTimeout } from '../bounded-timeout';
+import { acceptPreparedCloneFile, type PreparedCloneFile } from './clone-advisory';
 import { versionedSymbolIdentity, type CodeIntelAnswer, type CodeIntelSourceFile, type SymbolSite } from './contracts';
 import { PACKAGE_NAME_PROOF_DIGEST, packageNameProofSha256, type ProofDigest } from './proof-digest';
 
@@ -34,6 +35,7 @@ export interface PushSnapshot {
   /** Static file imports, not symbol callers or proof of runtime execution. */
   importers: ReadonlyMap<string, readonly string[]>;
   hashes: ReadonlyMap<string, string>;
+  cloneFiles?: ReadonlyMap<string, PreparedCloneFile>;
   symbols?: ReadonlyMap<string, readonly SnapshotSymbol[]>;
   /** Exact captured token positions; never infer a cursor from a name on the same line. */
   cursorSites?: ReadonlyMap<string, readonly { symbol: SnapshotSymbol; column: number; spelling: string }[]>;
@@ -53,6 +55,8 @@ export interface SnapshotSymbol {
 function snapshotBuilder() {
   const reverse = new Map<string, Set<string>>();
   const hashes = new Map<string, string>();
+  const cloneFiles = new Map<string, PreparedCloneFile>();
+  const addClone = (value: unknown) => { const row = acceptPreparedCloneFile(value); if (row) cloneFiles.set(row.path, row); };
   const byName = new Map<string, SnapshotSymbol[]>();
   const cursorSites = new Map<string, { symbol: SnapshotSymbol; column: number; spelling: string }[]>();
   const addEdge = (edge: any) => {
@@ -83,7 +87,7 @@ function snapshotBuilder() {
       cursorSites.set(key, rows);
     }
   };
-  return { reverse, hashes, byName, cursorSites, addEdge, addSymbol };
+  return { reverse, hashes, byName, cursorSites, addEdge, addSymbol, cloneFiles, addClone };
 }
 
 function snapshotHeader(raw: any, now: number): { commit: string; generatedAt: string; generatedMs: number } | null {
@@ -102,13 +106,17 @@ export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot 
   if (!header) return null;
   const builder = snapshotBuilder();
   for (const edge of raw.edges) builder.addEdge(edge);
-  if (!builder.reverse.size) return null;
+  if (raw.clones?.schema === 'clone-advisory-v1' && Array.isArray(raw.clones.files)) {
+    for (const row of raw.clones.files) builder.addClone(row);
+  }
+  if (!builder.reverse.size && !builder.cloneFiles.size) return null;
   if (raw.symbols?.schema === 'code-intel-symbol-snapshot-v1' && raw.symbols.knowledge === 'syntax-bound'
     && Array.isArray(raw.symbols.symbols)) {
     for (const row of raw.symbols.symbols) builder.addSymbol(row);
   }
   return { ...header, importers: new Map([...builder.reverse].map(([path, paths]) => [path, [...paths].sort()])),
-    hashes: builder.hashes, symbols: builder.byName, cursorSites: builder.cursorSites };
+    hashes: builder.hashes, symbols: builder.byName, cursorSites: builder.cursorSites,
+    cloneFiles: raw.clones?.schema === 'clone-advisory-v1' ? builder.cloneFiles : undefined };
 }
 
 /** Row-wise assembly and bounded input chunks keep parsing AND indexing cooperative.
@@ -146,7 +154,7 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
       const key = path.join('.');
       if (key === 'edges') metadata.edges = token?.name === 'startArray' ? [] : null;
       if (key === 'symbols.symbols') sawSymbols = token?.name === 'startArray';
-      if (/^(schema|generatedAt|index|symbols\.schema|symbols\.knowledge|edges\.\d+|symbols\.symbols\.\d+)$/.test(key)) {
+      if (/^(schema|generatedAt|index|clones\.schema|clones\.files\.\d+|symbols\.schema|symbols\.knowledge|edges\.\d+|symbols\.symbols\.\d+)$/.test(key)) {
         selected = key;
         return true;
       }
@@ -162,11 +170,13 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
     for await (const { key, value } of pipeline) {
       if (key.startsWith('edges.')) builder.addEdge(value);
       else if (key.startsWith('symbols.symbols.')) builder.addSymbol(value);
+      else if (key.startsWith('clones.files.')) builder.addClone(value);
       else metadata[key] = value;
       await cooperate();
     }
     const header = snapshotHeader(metadata, now);
-    if (!header || !builder.reverse.size) return null;
+    if (!header || (!builder.reverse.size
+      && !(metadata['clones.schema'] === 'clone-advisory-v1' && builder.cloneFiles.size))) return null;
     if (!sawSymbols || metadata['symbols.schema'] !== 'code-intel-symbol-snapshot-v1'
       || metadata['symbols.knowledge'] !== 'syntax-bound') { builder.byName.clear(); builder.cursorSites.clear(); }
     const importers = new Map<string, string[]>();
@@ -175,7 +185,8 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
       importers.set(path, [...paths].sort());
       await cooperate();
     }
-    return { ...header, importers, hashes: builder.hashes, symbols: builder.byName, cursorSites: builder.cursorSites };
+    return { ...header, importers, hashes: builder.hashes, symbols: builder.byName, cursorSites: builder.cursorSites,
+      cloneFiles: metadata['clones.schema'] === 'clone-advisory-v1' ? builder.cloneFiles : undefined };
   } catch {
     return null;
   } finally {

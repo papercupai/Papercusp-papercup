@@ -331,6 +331,32 @@ describe('session-port evidence in an earlier carry-respawn incarnation (WI-1000
     expect(state.sourceRow).toMatchObject({ sessionId: SESSION });
   });
 
+  it('verifies ownership once when selected incarnation and consult evidence identify the same source', async () => {
+    await seedEarlier('su-source');
+    let ownershipReads = 0;
+    state.sql = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        const template = args[0] as TemplateStringsArray;
+        if (Array.isArray(template) && template.join(' ').includes('SELECT t.owner')) ownershipReads++;
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    try {
+      const response = await inspect({
+        sourceNativeSessionId: EARLIER,
+        consultEvidenceSpan: { sessionId: EARLIER, turnIndices: [2, 4], contextTurns: 2 },
+      });
+      expect(response.status).toBe(200);
+      expect(state.acquiredRow).toMatchObject({ coordOwnerId: 'su-source', sessionId: EARLIER });
+      expect(state.inspectArgs).toMatchObject({
+        sourceRow: { sessionId: EARLIER }, evidenceSpan: { sessionId: EARLIER },
+      });
+      expect(ownershipReads).toBe(1);
+    } finally {
+      state.sql = sql;
+    }
+  });
+
   it('refuses a selected incarnation belonging to another owner before reading any transcript', async () => {
     await seedEarlier('su-someone-else');
     const response = await inspect({ sourceNativeSessionId: EARLIER, consultEvidenceSpan: null });

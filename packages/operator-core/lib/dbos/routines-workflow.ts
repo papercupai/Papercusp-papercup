@@ -41,12 +41,17 @@ import {
   ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
+  admitUnderPoolShed,
+  admitStarvedZeroCreditStart,
+  createStarvedZeroCreditBudget,
+  POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
+import { routineFireProvenance, readMonitoredFireSnapshot, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
 import {
   classifyClaimSkip,
   recordUnclaimableRoutine,
@@ -694,6 +699,7 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       routine.name,
       routine.rescheduleIntervalSec,
       routine.targetOwnerId,
+      routineFireProvenance(routine, 'manual'),
     ] as const;
     if (dbosStarted()) {
       await DBOS.startWorkflow(routineFireWorkflow, {
@@ -793,6 +799,7 @@ async function routineFireImpl(
   routineName?: string,
   rescheduleIntervalSec?: number | null,
   targetOwnerId?: string | null,
+  provenance?: RoutineFireProvenance,
 ): Promise<void> {
   await runWithWorkspace(workspaceId, async () => {
     // Checkpoint immediately so the executor reaper can distinguish "workflow
@@ -804,6 +811,9 @@ async function routineFireImpl(
         installSlug,
         targetRole,
         routineName: routineName ?? routineId,
+        provenance: provenance ?? null,
+        ...(targetRole === 'system:sql-read-census' ? { snapshot: await readMonitoredFireSnapshot(
+          getOrgPg().sql, workspaceId, routineId).catch(() => null) } : {}),
       }),
       { name: 'routine-fire-start' },
     );
@@ -1053,6 +1063,11 @@ async function routineFireImpl(
       );
     }
 
+    if (targetRole === 'system:sql-read-census') await DBOS.runStep(async () => ({
+      provenance: provenance ?? null,
+      snapshot: await readMonitoredFireSnapshot(getOrgPg().sql, workspaceId, routineId).catch(() => null),
+    }), { name: 'routine-fire-finish' });
+
     // A completed dispatch (loop:wake / system:<action> / spawn:<role>) produced DBOS
     // operation output, which DISPROVES any prior reaper verdict of "produced no DBOS
     // operation output" for THIS routine. Clear a stale reaper-sourced last_error so the
@@ -1260,16 +1275,38 @@ async function routinesTickImpl(): Promise<void> {
   const remainingStartsByQueue = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item.availableStarts]));
   const loggedWithheldQueues = new Set<string>();
   const dueByAge = orderDueRoutinesByAge(due);
+  // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
+  // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds,
+  // EXCEPT the oldest routine overdue past the starvation bound (EI-27084758447422793), so a
+  // sustained shed can delay a non-critical routine but never starve it indefinitely.
+  const shedNowMs = Date.now();
+  const shedAdmitted = poolCritical ? admitUnderPoolShed(dueByAge, shedNowMs) : null;
+  // WI-6554700010030059: the starvation bound must also reach the zero-credit hold below. Under
+  // a critical probe every non-critical queue has zero credit, so without this the routine the
+  // shed just admitted was HELD and never fired; under ok/elevated a full window starved it alike.
+  const starvedZeroCredit = createStarvedZeroCreditBudget();
   for (const r of dueByAge) {
-    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
-    // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds.
-    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
+    if (shedAdmitted && !shedAdmitted.has(r)) continue;
+    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
+      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
+      console.warn(
+        `[routines-tick] pool shed: firing STARVED routine ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+          `overdue ${overdueMin}min past the ${POOL_SHED_STARVATION_BOUND_MS / 60_000}min starvation bound (EI-27084758447422793)`,
+      );
+    }
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
     // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's
     // previous-cohort feedback and actual durable occupancy. A withheld row has
     // not advanced next_fire_at, so it remains due for the next feedback epoch.
     const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0;
-    if (remainingStarts <= 0) {
+    if (remainingStarts <= 0 && admitStarvedZeroCreditStart(r, shedNowMs, starvedZeroCredit)) {
+      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
+      console.warn(
+        `[routines-tick] starvation bound: starting ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+          `on ${queueName} despite zero queue credit — overdue ${overdueMin}min, pool=${dispatchEpoch.pressure} ` +
+          `(WI-6554700010030059)`,
+      );
+    } else if (remainingStarts <= 0) {
       const admission = queueAdmission.get(queueName);
       if (!loggedWithheldQueues.has(queueName)) {
         loggedWithheldQueues.add(queueName);
@@ -1306,7 +1343,13 @@ async function routinesTickImpl(): Promise<void> {
         );
         if (verdict.state === 'unclaimable') {
           console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
-          void recordUnclaimableRoutine(sql, r.id, verdict);
+          void recordUnclaimableRoutine(sql, {
+            id: r.id,
+            name: r.name,
+            installSlug: r.installSlug,
+            nextFireAt: r.nextFireAt ?? null,
+            lastFiredAt: r.lastFiredAt ?? null,
+          }, verdict);
         }
       } catch (e) {
         console.warn(`[routines-tick] claim-skip classifier failed for '${r.name}' (non-fatal): ${String(e)}`);
@@ -1340,6 +1383,7 @@ async function routinesTickImpl(): Promise<void> {
         r.name,
         r.rescheduleIntervalSec ?? null,
         r.targetOwnerId ?? null,
+        routineFireProvenance(r, 'scheduler', r.nextFireAt),
       );
       remainingStartsByQueue.set(queueName, remainingStarts - 1);
     } catch (e) {
@@ -1363,24 +1407,45 @@ async function routinesTickImpl(): Promise<void> {
  * Git-sync on the protected critical lane ran minutes late (the 21:00:00Z slot of one hive
  * started 21:02:33Z; an 18-minute gap after a bg-host restart).
  *
- * This tick keeps the semantics the tail had: the EI-11171 critical-pool floor (loop-rebase
- * only, then return), loop-rebase first, then the sweeps in their original order. Its overlap
- * guard is keyed on its OWN workflow name, so a slow sweep pass sheds only the next sweep pass.
- *
- * WI-6554700010019234: the DB overlap guard fails open when the event loop stalls past its
- * probe deadline, so this tick ALSO holds an in-process registry (see tryEnterInProcessPass).
- * A pass that finds another fresh pass running in this process returns before any step, even
- * under the EI-11171 critical-pool floor: the running pass already started with loop-rebase.
+ * Critical rebase and noncritical sweeps each hold an in-process registry. A retained
+ * noncritical pass must not prevent a later tick from rebasing newly completed loop turns.
+ * A fresh critical pass excludes the entire later tick; after critical settlement the tick
+ * may enter the noncritical lane, whose pool and DB overlap sheds retain their semantics.
+ * Both lanes retain the maintained stale backstop and release their entries in finally.
  */
 const sweepPassRegistry = pinModuleState(
   '@papercusp/operator-core.routines-sweep-pass-registry',
   createInProcessPassRegistry,
 );
+const criticalSweepPassRegistry = pinModuleState(
+  '@papercusp/operator-core.routines-critical-sweep-pass-registry',
+  createInProcessPassRegistry,
+);
 
 async function routinesSweepTickImpl(): Promise<void> {
+  if (shouldShedSchedulerTickUnderLoopPressure()) {
+    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
+    return;
+  }
   const now = Date.now();
   const passId = DBOS.workflowID ?? `routinesSweepTick-${now}`;
-  const admitted = tryEnterInProcessPass(sweepPassRegistry, passId, now, undefined, (evictedId, ageMs) => {
+  const criticalAdmitted = tryEnterInProcessPass(criticalSweepPassRegistry, passId, now, undefined, (evictedId, ageMs) => {
+    console.warn(
+      `[routines-sweep-tick] EVICTED critical in-process pass ${evictedId} after ${Math.round(ageMs / 1000)}s without settling — admitting ${passId}`,
+    );
+  });
+  if (!criticalAdmitted) {
+    console.warn(`[routines-sweep-tick] SKIPPED — another critical rebase pass is running in this process`);
+    return;
+  }
+  try {
+    await runLoopRebaseSweep(getOrgPg().sql, timedSweepDbos);
+  } finally {
+    exitInProcessPass(criticalSweepPassRegistry, passId);
+  }
+
+  // Preserve the existing pinned registry for noncritical work across module reloads.
+  const admitted = tryEnterInProcessPass(sweepPassRegistry, passId, Date.now(), undefined, (evictedId, ageMs) => {
     console.warn(
       `[routines-sweep-tick] EVICTED in-process pass ${evictedId} after ${Math.round(ageMs / 1000)}s without settling — admitting ${passId} (WI-6554700010019234)`,
     );
@@ -1399,10 +1464,6 @@ async function routinesSweepTickImpl(): Promise<void> {
 }
 
 async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbos): Promise<void> {
-  if (shouldShedSchedulerTickUnderLoopPressure()) {
-    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
-    return;
-  }
   const { sql } = getOrgPg();
   // Probe only: the dispatch tick owns pool-shed accounting (recordPoolShed and the durable shed
   // event), so this second probe must not double-count sheds.
@@ -1417,24 +1478,9 @@ async function routinesSweepPassImpl(DBOS: typeof timedSweepDbos = timedSweepDbo
     return;
   }
 
-  // EI-11171 critical-routine floor (cont.): heavy sweeps stay shed, but loop completion-rebase
-  // is liveness-critical and MUST still run. Otherwise pure loops remain parked at infinity
-  // until a non-shed tick, producing the 20–70 minute cadence gaps in EI-21859486764076047.
-  if (poolCritical) {
-    await runLoopRebaseSweep(sql, DBOS);
-    return;
-  }
-
-  // Loop completion-rebase (B-LOOP-2) — its OWN step, FIRST after the fire loop
-  // (Task-#8 / su-cold-auto 2026-07-03): a loop fire parks at next_fire_at='infinity'
-  // and stays parked until this rebase re-arms it, so the rebase is as
-  // liveness-critical as the fires themselves. It used to ride at the TAIL of
-  // reconcileAndGovern (position #10 of 11 serial sweeps below) — under pool
-  // starvation the earlier sweeps starved it and armed loops sat parked ~17 min
-  // between 60s wakes while fires for other routines kept flowing. Placing it
-  // here bounds its delay to the fire loop only. Fail-soft: a rebase failure
-  // must never block the watchdog sweeps below.
-  await runLoopRebaseSweep(sql, DBOS);
+  // The independently guarded critical rebase already ran before entering this lane.
+  // Pool pressure sheds only the noncritical tail.
+  if (poolCritical) return;
 
   // An accepted program receipt is durable launch intent. The normal submit
   // path returns after admission; this bounded scan starts roots whose DBOS

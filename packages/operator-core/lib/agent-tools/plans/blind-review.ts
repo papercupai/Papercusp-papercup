@@ -22,10 +22,12 @@ import {
   loadBlindReviewBrief,
   recordBlindGapDispositions,
   recordBlindReview,
+  blindReviewSummaryOutcome,
 } from '../../blind-review-gate';
 import { runBlindReviewMintOp } from './blind-review-mint-op';
 import { archiveBlindReviewScratchPlans } from '../../blind-review-scratch-plans';
 import { resumeBlindGapReviewer } from '../../blind-reviewer-mint';
+import { replaceBlindGapReviewer } from '../../blind-review-replacement';
 import {
   findLatestBlindReviewSessionBindingByReviewer,
   recordBlindReviewSessionPost,
@@ -49,12 +51,12 @@ const dispositionSchema = z.object({
 export default defineTool({
   name: 'plans:blind-review',
   description:
-    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only (never plan text); op 'mint' launches a confined reviewer; op 'resume' recovers that exact reviewer in place; op 'post' records the reviewer's gaps; op 'dispose' maps each gap to a plan item or an accepted-risk Decision.",
+    "Blind gap review before acceptance. op 'brief' returns the owner's source turns only; 'mint' launches a confined reviewer; 'resume' recovers that exact reviewer; 'replace' recruits an independent replacement for an ended, posted inconclusive review while preserving its history; 'post' records the reviewer's outcome; 'dispose' maps gaps to plan items or accepted risks.",
   guidance: {
     when: "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
     notWhen: 'Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.',
     chaining:
-      "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, gaps }. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
+      "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, outcome, gaps }. Use inconclusive when product access or verification is incomplete. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance.",
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -63,18 +65,40 @@ export default defineTool({
   args: z.object({
     harness: harnessArg,
     slug: z.string().min(1).describe('The plan under review.'),
-    op: z.enum(['brief', 'post', 'dispose', 'mint', 'resume']),
-    howToRun: z.string().max(4000).optional().describe('mint: how the reviewer runs the product.'),
+    op: z.enum(['brief', 'post', 'dispose', 'mint', 'resume', 'replace']),
+    howToRun: z.string().max(4000).optional().describe('mint/replace: how the reviewer runs the product.'),
     productReads: z.object({
       docsHarness: z.string().min(1).max(120).optional(),
       docsSlugs: z.array(z.string().min(1).max(1000)).max(10).optional(),
       testFiles: z.array(z.string().min(1).max(1000)).max(20).optional(),
-    }).strict().optional().describe('mint: nominate exact maintained product doc slugs and test files for bounded raw history. No plan artifacts or proof IDs.'),
-    activationAuditSeq: z.number().int().positive().optional().describe("post: the brief's activationAuditSeq."),
+    }).strict().optional().describe('mint/replace: exact maintained product doc slugs and test files. replace persists this corrected manifest immutably for the authenticated request. No plan artifacts or proof IDs.'),
+    activationAuditSeq: z.number().int().positive().optional().describe("post/replace: the exact current activationAuditSeq."),
+    sourceReviewId: z.number().int().positive().optional().describe('replace: exact original inconclusive material receipt.'),
+    requestKey: z.string().min(1).max(200).optional().describe('replace: stable identity for this authenticated immutable request. Repeat it to reconcile; use a new key after a confirmed no-process failure.'),
     gaps: z.array(z.object({ text: z.string().min(1).max(4000) })).max(100).optional().describe('post: one entry per gap; [] when none.'),
     dispositions: z.array(dispositionSchema).min(1).max(200).optional().describe('dispose: one per gap.'),
     summary: z.string().max(4000).optional(),
+    outcome: z.enum(['conclusive', 'inconclusive']).optional().describe('post: conclusive only after completing the product review; inconclusive when access or verification is incomplete. Empty gaps alone are not completion.'),
   }).superRefine((args, ctx) => {
+    if (args.op === 'replace') {
+      for (const key of ['sourceReviewId', 'requestKey', 'activationAuditSeq', 'productReads'] as const) {
+        if (args[key] === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required for op 'replace'` });
+      }
+    } else {
+      for (const key of ['sourceReviewId', 'requestKey'] as const) {
+        if (args[key] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is op 'replace' only` });
+      }
+    }
+    if (args.op === 'post' && args.outcome === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: "outcome is required for op 'post'" });
+    }
+    if (args.op !== 'post' && args.outcome !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: "outcome is op 'post' only" });
+    }
+    const marker = blindReviewSummaryOutcome(args.summary);
+    if (args.op === 'post' && marker && args.outcome && marker !== args.outcome) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['outcome'], message: 'summary verdict contradicts outcome' });
+    }
     if (args.op === 'post' && args.gaps === undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gaps'], message: "gaps is required for op 'post' ([] when none)" });
     }
@@ -87,20 +111,28 @@ export default defineTool({
     if (args.op !== 'dispose' && args.dispositions !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dispositions'], message: "dispositions is op 'dispose' only" });
     }
-    if (args.op !== 'mint' && args.howToRun !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['howToRun'], message: "howToRun is op 'mint' only" });
+    if (args.op !== 'mint' && args.op !== 'replace' && args.howToRun !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['howToRun'], message: "howToRun is op 'mint' or 'replace' only" });
     }
-    if (args.op !== 'mint' && args.productReads !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['productReads'], message: "productReads is op 'mint' only" });
+    if (args.op !== 'mint' && args.op !== 'replace' && args.productReads !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['productReads'], message: "productReads is op 'mint' or 'replace' only" });
     }
-    if (args.op !== 'post' && args.activationAuditSeq !== undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['activationAuditSeq'], message: "activationAuditSeq is op 'post' only" });
+    if (args.op !== 'post' && args.op !== 'replace' && args.activationAuditSeq !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['activationAuditSeq'], message: "activationAuditSeq is op 'post' or 'replace' only" });
     }
   }),
   async handler(args, ctx) {
     const opts = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
     const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
     const scope = { workspaceId, planSlug: args.slug, harnessSlug };
+
+    if (args.op === 'replace') {
+      const result = await replaceBlindGapReviewer({ workspaceId, harness: harnessSlug, slug: args.slug,
+        activationAuditSeq: args.activationAuditSeq!, sourceReviewId: args.sourceReviewId!,
+        requestKey: args.requestKey!, productReads: args.productReads!, howToRun: args.howToRun,
+        ctx: { ...(ctx as unknown as Record<string, unknown>), workspaceId } });
+      return text(result, result.ok !== true);
+    }
 
     if (args.op === 'brief') {
       const brief = await loadBlindReviewBrief(scope);
@@ -112,6 +144,7 @@ export default defineTool({
         slug: args.slug,
         activationAuditSeq: brief.activationAuditSeq,
         ownerTurnCount: brief.ownerTurns.length,
+        unverifiedTurnCount: brief.unverifiedTurns.length,
         excludedRefs: brief.excludedRefs,
         brief: brief.text,
       });
@@ -180,7 +213,7 @@ export default defineTool({
 
     const written = args.op === 'post'
       ? await recordBlindReview({ ...scope, createdBy, gaps: args.gaps ?? [],
-          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary })
+          activationAuditSeq: reviewerBinding?.activationAuditSeq ?? args.activationAuditSeq, summary: args.summary, outcome: args.outcome! })
       : await recordBlindGapDispositions({ ...scope, createdBy, dispositions: args.dispositions ?? [], summary: args.summary });
     if (!written.ok) return text({ error: written.code, slug: args.slug, message: written.message }, true);
     if (args.op === 'post' && reviewerBinding) {

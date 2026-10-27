@@ -1,12 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { assertEvidenceRootPlacement, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { assertEvidenceRootPlacement, formatRunRetentionLine, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { planCommand, retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -264,6 +264,103 @@ describe('evidence root byte ceiling', () => {
       expect(expired.removed).toEqual([names[0]]);
       expect(expired.cap?.pinnedBytes).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(leases, { recursive: true, force: true }); }
+  });
+});
+
+describe('exact VH pin allocation and cap verdict', () => {
+  const runId = '20200101T000000Z-1';
+  const healthy = { measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
+  const pin = (scope: string, now: number) => {
+    const leases = path.join(privateRetention, 'pins');
+    mkdirSync(leases, { recursive: true });
+    const id = randomUUID();
+    const tag = 'agent-pin-' + Buffer.from(JSON.stringify({ version: 1, id, owner: 'test', reason: 'exact-vh-cap', createdAt: new Date(now).toISOString() })).toString('base64url');
+    writeFileSync(path.join(leases, `lease-agent-pin-${id}.tsv`), `schema=papercusp-release-retention/v1\ntag=${tag}\nexpires_ns=${BigInt(now + 3600e3) * 1000000n}\npath=${scope}\n`);
+  };
+  const terminal = (root: string, name = runId) => {
+    mkdirSync(path.join(root, name));
+    writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
+  };
+
+  it.each([false, true])('charges only the pinned child union while retaining its atomic run (alias=%s)', async alias => {
+    const root = tmp(), now = Date.now();
+    try {
+      terminal(root);
+      const run = path.join(root, runId), child = path.join(run, 'z-proof');
+      mkdirSync(child);
+      writeFileSync(path.join(run, 'bulk'), Buffer.alloc(256 * 1024, 1));
+      writeFileSync(path.join(run, 'a-shared'), Buffer.alloc(4096, 1));
+      linkSync(path.join(run, 'a-shared'), path.join(child, 'receipt'));
+      linkSync(path.join(child, 'receipt'), path.join(child, 'duplicate'));
+      const aliasPath = path.join(privateRetention, 'alias');
+      if (alias) symlinkSync(root, aliasPath);
+      pin(path.join(alias ? aliasPath : root, runId, 'z-proof'), now);
+      const report = await pruneRunsWithReport(root, 30, now, { ...healthy, maxBytes: 64 * 1024 });
+      expect(report.removed).toEqual([]);
+      expect(existsSync(run)).toBe(true);
+      expect(report.cap?.pinnedBytes).toBe((lstatSync(child).blocks + lstatSync(path.join(child, 'receipt')).blocks) * 512);
+      expect(report.cap?.pinnedOverageBytes).toBe(0);
+      expect(report.cap?.overByBytes).toBeGreaterThan(0);
+      expect(report.cap?.error).toContain('size cap remains exceeded');
+      expect(formatRunRetentionLine(report)).toContain('cap=exceeded');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('charges a root pin for unknown entries without following their symlink targets', async () => {
+    const root = tmp(), external = tmp(), now = Date.now();
+    try {
+      terminal(root);
+      writeFileSync(path.join(root, 'foreign'), Buffer.alloc(4096, 1));
+      writeFileSync(path.join(external, 'outside'), Buffer.alloc(256 * 1024, 1));
+      symlinkSync(external, path.join(root, 'external'));
+      pin(root, now);
+      const report = await pruneRunsWithReport(root, 30, now, { ...healthy, maxBytes: 1 });
+      expect(report.cap?.pinnedBytes).toBe(report.cap?.beforeBytes);
+      expect(report.cap?.beforeBytes).toBeLessThan(256 * 1024);
+      expect(report.cap?.overByBytes).toBe(report.cap?.pinnedOverageBytes);
+      expect(report.cap?.error).toBeUndefined();
+      expect(formatRunRetentionLine(report)).toContain('cap=pinned-overage');
+      expect(readFileSync(path.join(external, 'outside'))).toHaveLength(256 * 1024);
+    } finally { for (const dir of [root, external]) rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['latest', 'keep', 'non-terminal', 'grace', 'foreign'])('reports healthy-disk non-pin excess retained by %s', async protection => {
+    const root = tmp(), now = Date.now();
+    try {
+      if (protection === 'foreign') writeFileSync(path.join(root, 'foreign'), Buffer.alloc(64 * 1024, 1));
+      else {
+        terminal(root);
+        writeFileSync(path.join(root, runId, 'bulk'), Buffer.alloc(64 * 1024, 1));
+        if (protection === 'latest') symlinkSync(runId, path.join(root, 'latest'));
+        if (protection === 'keep') writeFileSync(path.join(root, runId, '.vh-keep'), 'keep');
+        if (protection === 'non-terminal' || protection === 'grace') {
+          rmSync(path.join(root, runId, 'result.json'));
+          const age = new Date(now - (protection === 'grace' ? 1000 : 48 * 3600e3));
+          utimesSync(path.join(root, runId), age, age);
+        }
+      }
+      const report = await pruneRunsWithReport(root, 30, now, { ...healthy, maxBytes: 1 });
+      expect(report.removed).toEqual([]);
+      expect(report.disk.status).toBe('healthy');
+      expect(report.cap?.pinnedBytes).toBe(0);
+      expect(report.cap?.error).toContain('size cap remains exceeded');
+      expect(formatRunRetentionLine(report)).toContain('cap=exceeded');
+      expect(readdirSync(root).length).toBeGreaterThan(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports actual root allocation after pressure eviction', async () => {
+    const root = tmp();
+    try {
+      terminal(root);
+      writeFileSync(path.join(root, runId, 'bulk'), Buffer.alloc(64 * 1024, 1));
+      const report = await pruneRunsWithReport(root, 30, Date.now(), { maxBytes: 1024 * 1024,
+        measureDisk: async () => ({ totalBytes: 1000, availableBytes: existsSync(path.join(root, runId)) ? 0 : 900 }), reserveBytes: () => 100 });
+      expect(report.removed).toEqual([runId]);
+      expect(report.disk.status).toBe('recovered');
+      expect(report.cap?.afterBytes).toBe(lstatSync(root).blocks * 512);
+      expect(report.cap?.afterBytes).toBeLessThan(report.cap!.beforeBytes!);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

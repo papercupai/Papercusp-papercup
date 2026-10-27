@@ -74,4 +74,56 @@ describe('lastInboxReadAtBatch', () => {
     expect(reads.get('su-b')).toBe('2026-10-12T11:10:00.000Z');
     expect(reads.get('su-c')).toBe('2026-10-12T12:00:00.000Z');
   });
+
+  it('finds the latest qualifying read without scanning an owner’s retained history', async () => {
+    await sql`
+      INSERT INTO harness_shared.tool_invocations (coord_owner_id, tool_name, invoked_at, args_json)
+      SELECT 'su-history', 'coord:inbox',
+             '2026-10-01T00:00:00Z'::timestamptz + n * interval '1 second', '{}'::jsonb
+        FROM generate_series(1, 8000) AS n
+    `;
+    await sql`
+      INSERT INTO harness_shared.tool_invocations (coord_owner_id, tool_name, invoked_at, args_json)
+      VALUES ('su-history', 'coord_orient', '2026-10-12T14:00:00Z', '{}'::jsonb),
+             ('su-history', 'coord:send', '2026-10-12T15:00:00Z', '{}'::jsonb)
+    `;
+    // Match the maintained production index, without adding a new access path.
+    await sql`CREATE INDEX tool_invocations_coord_owner_idx
+                ON harness_shared.tool_invocations (coord_owner_id, invoked_at DESC)
+                WHERE coord_owner_id IS NOT NULL`;
+    await sql`ANALYZE harness_shared.tool_invocations`;
+
+    type PlanNode = {
+      'Relation Name'?: string;
+      'Actual Rows'?: number;
+      'Rows Removed by Filter'?: number;
+      Plans?: PlanNode[];
+    };
+    let plan: PlanNode | undefined;
+    // Explain the actual function's parameterized query, then execute that same
+    // query for the result assertion. This guards work performed, not wall time.
+    const explainedSql = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        return (async () => {
+          const parts = [...args[0] as TemplateStringsArray];
+          parts[0] = 'EXPLAIN (ANALYZE, FORMAT JSON) ' + parts[0];
+          Object.defineProperty(parts, 'raw', { value: [...parts] });
+          const explained = await Reflect.apply(target, thisArg, [parts, ...args.slice(1)]);
+          plan = explained[0]['QUERY PLAN'][0].Plan;
+          return Reflect.apply(target, thisArg, args);
+        })();
+      },
+    });
+    const reads = await lastInboxReadAtBatch(['su-history', 'su-history', 'su-absent'], {
+      foldedOnly: true,
+      sql: explainedSql as never,
+    });
+    expect([...reads]).toEqual([['su-history', '2026-10-12T14:00:00.000Z']]);
+    expect(plan).toBeDefined();
+    const examinedRows = (node: PlanNode): number =>
+      (node['Relation Name'] === 'tool_invocations'
+        ? (node['Actual Rows'] ?? 0) + (node['Rows Removed by Filter'] ?? 0)
+        : 0) + (node.Plans ?? []).reduce((sum, child) => sum + examinedRows(child), 0);
+    expect(examinedRows(plan!)).toBeLessThan(64);
+  });
 });

@@ -67,7 +67,7 @@
  * poll loop emits N door calls under a system principal, i.e. the plane's OUTPUT would
  * otherwise be scored as evidence AGAINST it.
  */
-import { TURN_GAP_MS, clusterTurns } from '../code-run-batch-nudge';
+import { TURN_GAP_MS, clusterTurns, isStatePlaneQuote } from '../code-run-batch-nudge';
 
 /** The DOORS: tools that return a pipeline value an agent may then act on or quote. */
 export const DOOR_TOOLS: readonly string[] = Object.freeze([
@@ -123,6 +123,8 @@ export interface PlaneCallRow {
   readonly ownerId: string;
   readonly toolName: string;
   readonly atMs: number;
+  /** Stored arguments; absent historical content cannot prove a quote opportunity. */
+  readonly args?: unknown;
 }
 
 export type PlaneMomentKind = 'act-quote' | 'wait';
@@ -200,9 +202,8 @@ function byAgent(rows: readonly PlaneCallRow[]): Map<string, PlaneCallRow[]> {
 }
 
 /**
- * METRIC A. An OPPORTUNITY is a durable write that follows a door read within
- * {@link ACT_WINDOW_MS} in the same spawn — the agent held a pipeline value and then
- * committed something. It is ADOPTED when a plane read falls between that door read and
+ * METRIC A. An OPPORTUNITY is a durable write containing a pipeline value after a door read within
+ * {@link ACT_WINDOW_MS} by the same agent. It is ADOPTED when a plane read falls between that door read and
  * the write.
  *
  * Note the ordering requirement is real, not decorative: a `state:read` BEFORE the door
@@ -216,7 +217,7 @@ export function computeActQuoteMoments(
   for (const calls of byAgent(rows).values()) {
     for (let i = 0; i < calls.length; i++) {
       const write = calls[i];
-      if (!QUOTE_SINK_TOOLS.includes(write.toolName)) continue;
+      if (!isStatePlaneQuote(write.toolName, write.args)) continue;
 
       // The most recent door read still in hand.
       let doorAt: number | null = null;
@@ -298,7 +299,7 @@ export function computeStatePlaneAdoption(
 ): StatePlaneAdoption {
   const actQuote = rollup(
     'act-quote',
-    `durable writes (${QUOTE_SINK_TOOLS.length} quote sinks) that followed a door read within ${ACT_WINDOW_MS / 60_000}min in the same spawn`,
+    `durable writes containing pipeline values (${QUOTE_SINK_TOOLS.length} quote sinks) after a door read within ${ACT_WINDOW_MS / 60_000}min by the same agent`,
     computeActQuoteMoments(rows),
   );
   const wait = rollup(
@@ -334,6 +335,7 @@ export const MEASURED_TOOLS: readonly string[] = Object.freeze([
 export const STATE_PLANE_ADOPTION_SQL = `
   SELECT coord_owner_id AS owner_id,
          tool_name,
+         args_json,
          (extract(epoch from invoked_at) * 1000)::bigint AS at_ms
     FROM harness_shared.tool_invocations
    WHERE workspace_id = $1
@@ -356,12 +358,14 @@ export async function readStatePlaneAdoption(
   const raw = await runQuery<{
     owner_id: string;
     tool_name: string;
+    args_json: unknown;
     at_ms: string | number;
   }>(STATE_PLANE_ADOPTION_SQL, [opts.workspaceId, opts.windowDays, [...MEASURED_TOOLS]]);
 
   const rows: PlaneCallRow[] = raw.map((r) => ({
     ownerId: r.owner_id,
     toolName: r.tool_name,
+    args: r.args_json,
     atMs: Number(r.at_ms),
   }));
   return computeStatePlaneAdoption(rows, opts.windowDays);

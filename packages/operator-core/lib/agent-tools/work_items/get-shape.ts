@@ -1269,6 +1269,7 @@ function projectRow(
       includeLifecycleCandidatePayload,
     ),
     ...(operationalBrief !== undefined ? { operationalBrief } : {}),
+    ...(r.touchHistory !== undefined ? { touchHistory: r.touchHistory } : {}),
     ...(r.threadWindow !== undefined
       ? {
           threadWindow: projectThreadWindow(

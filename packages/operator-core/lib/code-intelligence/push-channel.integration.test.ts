@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
+import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_MAX_CHARS, CODE_INTEL_PUSH_TURN_CHARS, formatPushFact, recordIntentTaskBrief, snapshotFirstTouchLeg, snapshotGrepLeg,
   readNoteAnchorStaleness, readPushNotesContext, type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
 import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
@@ -27,7 +27,10 @@ const input = { workspace: 'push-integration-A', owner: 'agent-A', harness: 'pap
 const snapshot = () => parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
   index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) }, generatedAt: new Date().toISOString(),
   edges: [{ importer: 'test.ts', imported: 'target.ts', importerSha256: 'b'.repeat(64) }] }))!;
-const fact = (subject: string): PushFact => ({ leg: 'first-touch', subject, text: 'x'.repeat(550), citedPaths: ['target.ts'] });
+// P-005: each fixture push renders to exactly the per-push cap, so three spend the turn to zero.
+const PUSH_OVERHEAD = formatPushFact({ leg: 'first-touch', subject: 'probe', text: 'x', citedPaths: ['target.ts'] }, snapshot()).length - 1;
+const BODY = 'x'.repeat(CODE_INTEL_PUSH_MAX_CHARS - PUSH_OVERHEAD);
+const fact = (subject: string): PushFact => ({ leg: 'first-touch', subject, text: BODY, citedPaths: ['target.ts'] });
 const deliver = (facts: PushFact[], workspace = input.workspace, budget = CODE_INTEL_PUSH_TURN_CHARS) =>
   commitPushFacts({ ...input, workspace }, snapshot(), facts, budget, new AbortController().signal);
 
@@ -97,6 +100,24 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(result.workItems).toEqual([
       expect.objectContaining({ id: 'WI-edited', state: 'done', relation: 'file-edit-ledger', paths: ['target.ts'] }),
       expect.objectContaining({ id: 'WI-open', state: 'open', relation: 'open-on-path', paths: ['target.ts'] }),
+    ]);
+  });
+
+  it('serves open-on-path from the partial GIN index and still ignores non-array paths (P-002, migration 1595)', async () => {
+    const [index] = await db.adminSql<{ indexdef: string }[]>`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'harness_shared' AND indexname = 'work_items_payload_paths_gin'`;
+    expect(index?.indexdef).toMatch(/USING gin \(+payload -> 'paths'::text\)+ WHERE \(jsonb_typeof\(+payload -> 'paths'::text\)+ = 'array'::text\)/);
+    const workspace = 'push-incident-gin';
+    // `?|` also matches a scalar string or an object key, so the array predicate is
+    // what keeps these two out, exactly as the old CASE ... ELSE '[]' did.
+    for (const [id, paths] of [['WI-array', ['target.ts']], ['WI-scalar', 'target.ts'], ['WI-object', { 'target.ts': true }]] as const) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, kind, title, status, payload)
+        VALUES (${workspace}, 'papercusp', ${id}, 'feature', ${id}, 'open', ${JSON.stringify({ paths })}::jsonb)`;
+    }
+    const result = await readPushIncidentAttribution({ ...input, workspace }, ['target.ts'], db.adminSql);
+    expect(result.workItems).toEqual([
+      expect.objectContaining({ id: 'WI-array', relation: 'open-on-path', paths: ['target.ts'] }),
     ]);
   });
 
@@ -171,10 +192,11 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
       db.appSql.options.onresult = previousOnResult;
     }
     const rows = await db.adminSql<{ chars: number }[]>`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${input.workspace}`;
-    expect(rows.length).toBe(2);
-    expect(texts.filter(Boolean)).toHaveLength(2);
-    expect(rows.reduce((sum, row) => sum + row.chars, 0)).toBeLessThanOrEqual(CODE_INTEL_PUSH_TURN_CHARS);
-    expect(texts.filter(Boolean).every(text => text.includes('Snapshot aaaaaaaaaaaa'))).toBe(true);
+    // P-005: three cap-sized pushes spend the turn exactly; no worker can spend it twice.
+    expect(rows.length).toBe(3);
+    expect(texts.filter(Boolean)).toHaveLength(3);
+    expect(rows.reduce((sum, row) => sum + row.chars, 0)).toBe(CODE_INTEL_PUSH_TURN_CHARS);
+    expect(texts.filter(Boolean).every(text => text.startsWith('## Code intelligence (first-touch) @aaaaaaaaaaaa\n'))).toBe(true);
   });
 
   it('a new turn restores spend but only compaction makes the same fact eligible again', async () => {
@@ -224,24 +246,29 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     const skipsOf = () => db.adminSql<{ subject: string; site: string; chars: number; budget_left: number }[]>`
       SELECT subject, site, chars, budget_left FROM harness_shared.code_intel_push_skips
       WHERE workspace_id = ${workspace} ORDER BY subject`;
-    // Two ~640-char facts fit the 1,500-char turn; a third does not fit what the turn has left.
-    expect(await deliver([fact('s-1'), fact('s-2'), fact('s-3')], workspace)).not.toBe('');
-    // A small request share (memory took the rest) drops a fact the turn could still hold...
-    expect(await deliver([fact('s-4')], workspace, 10)).toBe('');
-    // ...but re-offering an already-delivered fact is not a budget loss, and a repeat
-    // drop in the same turn is one row.
-    expect(await deliver([fact('s-1'), fact('s-3')], workspace, 10)).toBe('');
-    // A fact the request dropped before the commit is classified against the turn too.
-    expect(await commitPushFacts({ ...input, workspace }, snapshot(), [], 20, new AbortController().signal, [fact('s-5')])).toBe('');
+    // A request share smaller than what the turn has left is the binding limit (no
+    // production caller passes one since P-005; the classification stays exact).
+    expect(await deliver([fact('s-0')], workspace, 10)).toBe('');
+    // P-005 R-5 boundary: three pushes of exactly the 500-char cap spend the 1,500-char
+    // turn to exactly zero; the fourth does not fit what the turn has left.
+    expect(await deliver([fact('s-1'), fact('s-2'), fact('s-3'), fact('s-4')], workspace)).not.toBe('');
+    // Re-offering an already-delivered fact is not a budget loss, and a repeat drop in
+    // the same turn is one row.
+    expect(await deliver([fact('s-1'), fact('s-4')], workspace)).toBe('');
+    // A fact the request dropped before the commit (over the per-push cap) is push-cap.
+    const wide: PushFact = { ...fact('s-5'), text: `${BODY}x` };
+    expect(await commitPushFacts({ ...input, workspace }, snapshot(), [], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [wide])).toBe('');
     const skips = await skipsOf();
-    expect(skips.map(s => [s.subject, s.site])).toEqual(
-      [['s-3', 'turn-budget'], ['s-4', 'request-budget'], ['s-5', 'request-budget']]);
-    expect(skips[0].budget_left).toBeLessThan(skips[0].chars);
-    expect(skips[0].budget_left).toBe(CODE_INTEL_PUSH_TURN_CHARS - 2 * skips[0].chars);
-    expect(skips.slice(1).map(s => s.budget_left)).toEqual([10, 20]);
-    const pushed = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+    expect(skips.map(s => [s.subject, s.site, s.chars, s.budget_left])).toEqual([
+      ['s-0', 'request-budget', CODE_INTEL_PUSH_MAX_CHARS, 10],
+      ['s-4', 'turn-budget', CODE_INTEL_PUSH_MAX_CHARS, 0],
+      ['s-5', 'push-cap', CODE_INTEL_PUSH_MAX_CHARS + 1, 0]]);
+    const pushed = await db.adminSql<{ subject: string; chars: number }[]>`SELECT subject, chars FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${workspace} ORDER BY subject`;
-    expect(pushed.map(p => p.subject)).toEqual(['s-1', 's-2']);
+    expect(pushed.map(p => [p.subject, p.chars])).toEqual(
+      [['s-1', CODE_INTEL_PUSH_MAX_CHARS], ['s-2', CODE_INTEL_PUSH_MAX_CHARS], ['s-3', CODE_INTEL_PUSH_MAX_CHARS]]);
+    expect(pushed.reduce((sum, p) => sum + p.chars, 0)).toBe(CODE_INTEL_PUSH_TURN_CHARS);
     const leaked = await db.appSql.begin(async tx => {
       await tx`SELECT set_config('app.workspace_id', 'foreign-workspace', true)`;
       return tx`SELECT id FROM harness_shared.code_intel_push_skips WHERE workspace_id = ${workspace}`;
@@ -249,7 +276,27 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(leaked).toHaveLength(0);
     // The skip row never blocks the real delivery: next turn the dropped fact goes out.
     await db.adminSql`UPDATE harness_shared.identity_hook_turns SET turn_id = 'skips-next-turn' WHERE workspace_id = ${workspace}`;
-    expect(await deliver([fact('s-3')], workspace)).toContain('x'.repeat(550));
+    expect(await deliver([fact('s-4')], workspace)).toContain(BODY);
+  });
+
+  it('WI-6554700010030085: legs the push wall stopped land as wall skips beside the facts it gathered', async () => {
+    const workspace = 'push-integration-wall';
+    // One fact gathered before the gather deadline, two enabled legs the wall never ran.
+    const text = await commitPushFacts({ ...input, workspace }, snapshot(), [fact('w-1')], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [], ['incident', 'grep']);
+    expect(text).toContain(BODY);
+    // The same leg cut twice in one turn is still one row.
+    await commitPushFacts({ ...input, workspace }, snapshot(), [], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [], ['grep']);
+    const skips = await db.adminSql<{ leg: string; subject: string; site: string; chars: number; budget_left: number }[]>`
+      SELECT leg, subject, site, chars, budget_left FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} ORDER BY leg`;
+    const pushed = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace}`;
+    expect(pushed.map(p => p.subject)).toEqual(['w-1']);
+    expect(skips.map(s => [s.leg, s.subject, s.site, s.chars])).toEqual([
+      ['grep', 'leg-not-run:grep', 'wall', 0], ['incident', 'leg-not-run:incident', 'wall', 0]]);
+    expect(skips.every(s => s.budget_left === CODE_INTEL_PUSH_TURN_CHARS)).toBe(true);
   });
 
   it('WI-6554700010018439: a delivered intent-time brief is one intent row that never spends the hook budget', async () => {
@@ -272,7 +319,7 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
       suggested_call: 'code:pack {"op":"pack","include":["target.ts"],"rootPath":"/repo"}' });
     expect(rows[0].chars).toBeGreaterThan(CODE_INTEL_PUSH_TURN_CHARS);
     // Same turn: the ~2k-char brief rode in a tool result, so the hook still has its 1,500 chars.
-    expect(await deliver([fact('i-1'), fact('i-2')], workspace)).toContain('x'.repeat(550));
+    expect(await deliver([fact('i-1'), fact('i-2')], workspace)).toContain(BODY);
     const hook = await db.adminSql<{ subject: string }[]>`SELECT subject FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${workspace} AND leg <> 'intent' ORDER BY subject`;
     expect(hook.map(row => row.subject)).toEqual(['i-1', 'i-2']);
@@ -309,7 +356,7 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 
     const replay = (owner: string, calls: PushInput['calls']) =>
-      codeIntelPushText({ owner, workspace, harness: 'papercusp', root, calls }, 0, {
+      codeIntelPushText({ owner, workspace, harness: 'papercusp', root, calls }, {
         snapshot: async () => fixture, enabled: async () => true, commit: commitPushFacts,
         legs: () => new Map<PushLegId, PushLeg>([['grep', snapshotGrepLeg], ['first-touch', snapshotFirstTouchLeg]]) });
     const recorded = (owner: string) => db.adminSql<{ leg: string; subject: string }[]>`SELECT leg, subject

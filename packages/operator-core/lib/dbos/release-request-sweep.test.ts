@@ -194,6 +194,40 @@ describe('release-request-sweep check', () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it('supersedes an old release request after a successor takes the claim', async () => {
+    const row = dueRow({ onSilence: 'reclaim', holderNow: 'successor' });
+    findDueReleaseRequests.mockResolvedValue([row]);
+    resolveWorkItemReleaseRequest.mockImplementation(async (_id, opts) => ({
+      ...row.request, resolved: true, resolution: opts.resolution,
+    }));
+
+    await check.tick();
+
+    expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith(row.id, expect.objectContaining({
+      resolution: 'superseded', expectedHolder: row.request.holder,
+      expectedBy: row.request.by, expectedDeadlineAt: row.request.deadlineAt,
+    }));
+    expect(assessForceRelease).not.toHaveBeenCalled();
+    expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('retires a persisted reclaim that captured a replacement holder without releasing it', async () => {
+    const pending = pendingConsequence(dueRow({ onSilence: 'reclaim', holderNow: 'successor' }));
+    expect(pending.job.reclaimHolder).not.toBe(pending.job.holder);
+    findPendingReleaseRequestConsequences.mockResolvedValue([pending]);
+
+    await check.tick();
+
+    expect(settleReleaseRequestConsequence).toHaveBeenCalledWith({}, pending);
+    expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+    expect(releaseWorkItem).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(commentWorkItem).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it('onSilence:"reclaim" — CAS wins → releases the item + notifies both parties + comments', async () => {
     const row = dueRow({ onSilence: 'reclaim' });
     findDueReleaseRequests.mockResolvedValue([row]);
@@ -386,6 +420,8 @@ describe('release-request-sweep check', () => {
   it('processes multiple due rows independently', async () => {
     const rowA = dueRow({ id: 'WI-A', onSilence: 'reclaim', holderNow: 'holder-a' });
     const rowB = dueRow({ id: 'WI-B', onSilence: 'nothing', holderNow: 'holder-b' });
+    rowA.request.holder = 'holder-a';
+    rowB.request.holder = 'holder-b';
     findDueReleaseRequests.mockResolvedValue([rowA, rowB]);
     resolveWorkItemReleaseRequest.mockImplementation(async (id: string) => ({
       ...(id === 'WI-A' ? rowA.request : rowB.request),

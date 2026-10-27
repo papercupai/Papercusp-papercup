@@ -43,6 +43,17 @@ const REPAIRED = "2".repeat(40);
 const BASE = "0".repeat(40);
 const INITIAL_RUN = "initial-proof-run";
 const VERIFIER_RUN = "repair-verifier-run";
+const RUNTIME_IDENTITY = {
+  name: "node", version: "25.9.0", executable: "/fixture/node",
+  binarySha256: "a".repeat(64), platform: "linux", arch: "x64",
+  nativeDependencyGeneration: "b".repeat(64), lockfileSha256: "c".repeat(64),
+  configurationSha256: "d".repeat(64),
+};
+const fixtureIdentity = (input: Parameters<typeof buildPassingTaskVerdictIdentity>[0]): PassingTaskVerdictIdentity => {
+  const identity = buildPassingTaskVerdictIdentity(input);
+  if (!identity) throw new Error("positive cache fixture requires a complete runtime and task identity");
+  return identity;
+};
 
 // Real launch surfaces share only this execution substrate. A manual checkpoint receives the
 // user-manager environment plus fresh systemd metadata; a scheduled/repair checkpoint inherits
@@ -58,6 +69,7 @@ const CANONICAL_LAUNCH_ENV = {
   LANG: "C.UTF-8",
   XDG_RUNTIME_DIR: "/run/user/1000",
   DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+  PAPERCUSP_TEST_RUNS_DB_URL: "postgres://fixture-test-ledger",
 };
 
 const INITIAL_LAUNCH_ENV = {
@@ -201,12 +213,13 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
           repoWideTaskKeys,
         });
         if (!provenance.ok) return null;
-        return buildPassingTaskVerdictIdentity({
+        return fixtureIdentity({
           taskKey: task.key,
           command: commandFor(task, root),
           environment,
           gateConfig,
           dependencyHash: provenance.hash,
+          runtimeIdentity: RUNTIME_IDENTITY,
         });
       };
 
@@ -382,7 +395,7 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
           repoWideTaskKeys,
         });
         if (!provenance.ok) return null;
-        return buildPassingTaskVerdictIdentity({
+        return fixtureIdentity({
           taskKey: task.key,
           command: commandFor(task, root),
           environment: passingTaskVerdictIdentityEnvironment(
@@ -390,6 +403,7 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
           ).environment,
           gateConfig,
           dependencyHash: provenance.hash,
+          runtimeIdentity: RUNTIME_IDENTITY,
         });
       };
 
@@ -461,14 +475,15 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     ).environment;
     expect(verifierEnvironment).toEqual(initialEnvironment);
 
-    const initialIdentity = buildPassingTaskVerdictIdentity({
+    const initialIdentity = fixtureIdentity({
       taskKey: "@fixture/app :: test",
       command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
       environment: initialEnvironment,
       gateConfig,
       dependencyHash: "closure",
+      runtimeIdentity: RUNTIME_IDENTITY,
     });
-    const changedPathIdentity = buildPassingTaskVerdictIdentity({
+    const changedPathIdentity = fixtureIdentity({
       taskKey: initialIdentity.taskKey,
       command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
       environment: passingTaskVerdictIdentityEnvironment(
@@ -482,6 +497,7 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       ).environment,
       gateConfig,
       dependencyHash: "closure",
+      runtimeIdentity: RUNTIME_IDENTITY,
     });
     expect(
       decidePassingTaskVerdict({
@@ -497,18 +513,19 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     const dir = mkdtempSync(join(tmpdir(), "repair-cache-identity-"));
     const path = join(dir, "cache.json");
     try {
-      const baseline = buildPassingTaskVerdictIdentity({
+      const baseline = fixtureIdentity({
         taskKey: "@fixture/app :: test",
         command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
         environment: { CI: "1", PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
         gateConfig,
         dependencyHash: "closure-a",
+        runtimeIdentity: RUNTIME_IDENTITY,
       });
       const entry = passingTaskVerdictEntry(baseline);
       const variants: Array<[string, PassingTaskVerdictIdentity]> = [
         [
           "command-changed",
-          buildPassingTaskVerdictIdentity({
+          fixtureIdentity({
             ...baseline,
             command: {
               cmd: "npm",
@@ -518,11 +535,12 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
             environment: { CI: "1", PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
             gateConfig,
             dependencyHash: "closure-a",
+            runtimeIdentity: RUNTIME_IDENTITY,
           }),
         ],
         [
           "environment-changed",
-          buildPassingTaskVerdictIdentity({
+          fixtureIdentity({
             taskKey: baseline.taskKey,
             command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
             environment: {
@@ -532,37 +550,41 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
             },
             gateConfig,
             dependencyHash: "closure-a",
+            runtimeIdentity: RUNTIME_IDENTITY,
           }),
         ],
         [
           "gate-config-changed",
-          buildPassingTaskVerdictIdentity({
+          fixtureIdentity({
             taskKey: baseline.taskKey,
             command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
             environment: { CI: "1", PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
             gateConfig: { ...gateConfig, retryFailed: false },
             dependencyHash: "closure-a",
+            runtimeIdentity: RUNTIME_IDENTITY,
           }),
         ],
         [
           "implementation-version-changed",
-          buildPassingTaskVerdictIdentity({
+          fixtureIdentity({
             taskKey: baseline.taskKey,
             command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
             environment: { CI: "1", PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
             gateConfig,
             dependencyHash: "closure-a",
+            runtimeIdentity: RUNTIME_IDENTITY,
             implementationVersion: "tooling-v-next",
           }),
         ],
         [
           "dependency-closure-changed",
-          buildPassingTaskVerdictIdentity({
+          fixtureIdentity({
             taskKey: baseline.taskKey,
             command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
             environment: { CI: "1", PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
             gateConfig,
             dependencyHash: "closure-b",
+            runtimeIdentity: RUNTIME_IDENTITY,
           }),
         ],
       ];
@@ -632,19 +654,21 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     expect(verifierEnv.PAPERCUSP_TEST_RUN_GROUP).toBe(VERIFIER_RUN);
     expect(verifierEnv.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBe(INITIAL_RUN);
 
-    const initialIdentity = buildPassingTaskVerdictIdentity({
+    const initialIdentity = fixtureIdentity({
       taskKey: "@fixture/app :: test",
       command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
       environment: { PAPERCUSP_TEST_RUN_GROUP: INITIAL_RUN },
       gateConfig,
       dependencyHash: "closure",
+      runtimeIdentity: RUNTIME_IDENTITY,
     });
-    const foreignIdentity = buildPassingTaskVerdictIdentity({
+    const foreignIdentity = fixtureIdentity({
       taskKey: initialIdentity.taskKey,
       command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
       environment: { PAPERCUSP_TEST_RUN_GROUP: "foreign-pipeline-run" },
       gateConfig,
       dependencyHash: "closure",
+      runtimeIdentity: RUNTIME_IDENTITY,
     });
     expect(
       decidePassingTaskVerdict({

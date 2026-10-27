@@ -57,6 +57,8 @@ export interface DueConsultRow {
   is_due: boolean;
   /** PostgreSQL returns timestamptz as Date under the normal postgres-js client. */
   updated_at: unknown;
+  /** Exact timestamp text preserves PostgreSQL microseconds lost by Date parsing. */
+  snapshot_updated_at?: string;
   latency_contract: string;
   question: string;
   routing: unknown;
@@ -235,7 +237,7 @@ export interface ExpirySweepResult {
   woke: string[];
   /** Durable alert calls acknowledged this tick (replays included). */
   requesterAlerts: string[];
-  /** Rows deliberately left retryable because the durable alert write failed. */
+  /** Rows left retryable because snapshot revalidation or the durable alert write failed. */
   requesterAlertFailures: string[];
   /** P-014: silent review consults converted to a pullable work item this tick
    * (conversation id + the work item that now carries the review). */
@@ -286,7 +288,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const due = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id,
            state, expires_at, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
-           updated_at, latency_contract, question, routing, cascade_cursor, cascade_digest,
+           updated_at,
+           to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS snapshot_updated_at,
+           latency_contract, question, routing, cascade_cursor, cascade_digest,
            exchanges_used,
            COALESCE(
              exchanges_used = 0
@@ -379,6 +383,18 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const isSilentEarlyRow =
       !isDue && row.state === 'awaiting_responder' && row.responder_id != null && silentResponderIds.has(row.conversation_id);
     if (!isDue && !isSilentEarlyRow) continue;
+
+    // Detection can take long enough for a reply or close to win. Revalidate
+    // the selected row immediately before sending its durable alert; on a read
+    // failure, leave the row eligible so the next sweep retries.
+    let snapshotCurrent: boolean;
+    try {
+      snapshotCurrent = await isCurrentExpirySnapshot(sql, row);
+    } catch {
+      requesterAlertFailures.push(row.conversation_id);
+      continue;
+    }
+    if (!snapshotCurrent) continue;
 
     // Requester alert delivery is deliberately attempted BEFORE the CAS
     // transition: if its durable write fails, the row remains eligible and the next sweep retries
@@ -695,6 +711,9 @@ async function convertReviewConsult(
   }
 
   try {
+    // Filing the pullable item is asynchronous. A reply/close may win while
+    // the filer runs, so do not send a conversion alert from the old snapshot.
+    if (!(await isCurrentExpirySnapshot(sql, row))) return { status: 'raced' };
     await deps.notifyRequester(reviewConversionAlertForRow({ row, kind, workItemId, nowIso }));
   } catch {
     return { status: 'failed' };
@@ -851,4 +870,19 @@ function timestampToIso(value: unknown): string {
   if (value == null) return '';
   const parsed = value instanceof Date ? value : new Date(String(value));
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
+}
+
+/** Whether the exact open consult snapshot selected for this sweep still exists. */
+async function isCurrentExpirySnapshot(sql: Sql, row: DueConsultRow): Promise<boolean> {
+  const snapshotUpdatedAt = row.snapshot_updated_at ?? timestampToIso(row.updated_at);
+  const rows = await sql<{ conversation_id: string }[]>`
+    SELECT conversation_id
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${row.workspace_id}
+       AND conversation_id = ${row.conversation_id}
+       AND closed_at IS NULL
+       AND state = ${row.state}
+       AND updated_at = ${snapshotUpdatedAt}::timestamptz
+  `;
+  return rows.length > 0;
 }

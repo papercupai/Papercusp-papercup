@@ -22,8 +22,31 @@ import {
   toAliasScannableTool,
   formatAliasIssues,
   STRICT_ALIAS_DECLARATION_FLOOR,
+  FOLDED_ARG_ALIASES,
+  FOLDED_ALIAS_FLOOR,
   type AliasScannableTool,
 } from './tool-alias-contract';
+import plansItemsTool from './plans/items';
+import factsListTool from './facts/list';
+import factsRetractTool from './facts/retract';
+import presenceTool from './coordination/tools/presence';
+import inboxTool from './coordination/tools/inbox';
+import eventsCatalogTool from './events/catalog';
+import loopStatusTool from './loop/status';
+import bashTool from './capability/bash';
+
+type ParsableTool = { args: { safeParse(v: unknown): { success: boolean; data?: unknown; error?: unknown } } };
+/** The tool modules a FOLDED_ARG_ALIASES row may name — a row for any other tool fails loudly. */
+const FOLDED_ALIAS_TOOLS: Record<string, ParsableTool> = {
+  'plans:items': plansItemsTool as unknown as ParsableTool,
+  'facts:list': factsListTool as unknown as ParsableTool,
+  'facts:retract': factsRetractTool as unknown as ParsableTool,
+  'coord:presence': presenceTool as unknown as ParsableTool,
+  'coord:inbox': inboxTool as unknown as ParsableTool,
+  'events:catalog': eventsCatalogTool as unknown as ParsableTool,
+  'loop:status': loopStatusTool as unknown as ParsableTool,
+  'capability:bash': bashTool as unknown as ParsableTool,
+};
 
 function liveScannableTools(): AliasScannableTool[] {
   const catalog = listAllProjectedTools();
@@ -102,6 +125,63 @@ describe('tool argument aliases — class-wide contract (P-009)', () => {
     // A scan that matched nothing at all would satisfy "no issues" vacuously.
     expect(scan.toolsWithAliases).toBeGreaterThan(0);
     expect(scan.declarations.length).toBeGreaterThanOrEqual(scan.toolsWithAliases);
+  });
+});
+
+/**
+ * WI-6554700010029664 — FOLDED aliases are accepted but not advertised, so the description
+ * scanner above cannot see them. Guard them by BEHAVIOUR: absent from the projected schema,
+ * canonical present, and parsing the alias yields the canonical value.
+ */
+describe('tool argument aliases — folded (accepted, not advertised)', () => {
+  it('the folded-alias population has not shrunk below its floor', () => {
+    expect(FOLDED_ARG_ALIASES.length).toBeGreaterThanOrEqual(FOLDED_ALIAS_FLOOR);
+  });
+
+  it('every folded alias is unadvertised, its canonical is advertised, and parsing it yields the canonical', () => {
+    const byName = new Map(liveScannableTools().map((t) => [t.name, t]));
+    const failures: string[] = [];
+    for (const row of FOLDED_ARG_ALIASES) {
+      const projected = byName.get(row.tool);
+      const tool = FOLDED_ALIAS_TOOLS[row.tool];
+      if (!projected || !tool) {
+        failures.push(`${row.tool}: not in the projected catalog or not mapped in FOLDED_ALIAS_TOOLS`);
+        continue;
+      }
+      if (row.alias in projected.properties) failures.push(`${row.tool}.${row.alias}: still advertised`);
+      if (!(row.canonical in projected.properties)) failures.push(`${row.tool}.${row.canonical}: canonical not advertised`);
+      const parsed = tool.args.safeParse({ ...row.base, [row.alias]: row.sample });
+      if (!parsed.success) {
+        failures.push(`${row.tool}.${row.alias}: parse refused — ${JSON.stringify(parsed.error).slice(0, 200)}`);
+        continue;
+      }
+      const data = parsed.data as Record<string, unknown>;
+      const got = data[row.canonical];
+      const want = row.canonical === 'itemIds' && typeof row.sample === 'string' ? [row.sample] : row.sample;
+      if (JSON.stringify(got) !== JSON.stringify(want)) {
+        failures.push(`${row.tool}.${row.alias}: folded to ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+      }
+      if (row.alias in data) failures.push(`${row.tool}.${row.alias}: alias key survived the fold`);
+    }
+    expect(failures, failures.join('\n')).toEqual([]);
+  });
+
+  it('the canonical spelling wins when the canonical and a folded alias are both supplied', () => {
+    expect((factsListTool as unknown as ParsableTool).args.safeParse({ scope: 'harness', scopeRef: 'a', ref: 'b' }).data).toMatchObject({
+      scopeRef: 'a',
+    });
+    expect((inboxTool as unknown as ParsableTool).args.safeParse({ unanswered_only: false, unanswered: true }).data).toMatchObject({
+      unanswered_only: false,
+    });
+    expect((eventsCatalogTool as unknown as ParsableTool).args.safeParse({ q: 'a', pattern: 'b', query: 'c' }).data).toMatchObject({ q: 'a' });
+    expect((loopStatusTool as unknown as ParsableTool).args.safeParse({ ownerId: 'a', owner: 'b' }).data).toMatchObject({ ownerId: 'a' });
+    expect((bashTool as unknown as ParsableTool).args.safeParse({ command: 'a', cmd: 'b' }).data).toMatchObject({ command: 'a' });
+    // A blank canonical does not shadow a real alias value (resolveScopeRefAlias precedence).
+    expect((factsListTool as unknown as ParsableTool).args.safeParse({ scope: 'harness', scopeRef: ' ', scope_ref: 'x' }).data).toMatchObject({
+      scopeRef: 'x',
+    });
+    // A wrongly-typed alias is still REFUSED, not silently dropped.
+    expect((factsListTool as unknown as ParsableTool).args.safeParse({ scope: 'harness', ref: 42 }).success).toBe(false);
   });
 });
 

@@ -43,7 +43,7 @@
  * ledger — the write is idempotent state, not an event.
  */
 import type { JSONValue, Sql } from 'postgres';
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { goalSpend, GOAL_SPEND_SNAPSHOT_SOURCE, type GoalSpend } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -932,35 +932,20 @@ export async function runGoalSpendRollupOnce(
   };
 }
 
-let tickTimer: ManagedHandle | null = null;
 
 /**
  * Start the recurring rollup tick. Idempotent. Runtime gate:
  * FLAGS.GOAL_SPEND_ROLLUP_TICK (checked per tick, default ON).
  */
-export function startGoalSpendRollupTick(sql: Sql, opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? GOAL_SPEND_ROLLUP_INTERVAL_MS;
-  if (tickTimer) tickTimer.stop();
-  let sweeping = false;
-  tickTimer = managedSetInterval(
-    'goal-spend-rollup',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runGoalSpendRollupOnce(sql)
-        .catch((e) => {
+const armGoalSpendRollupTick = createManagedSweepStarter({
+  name: 'goal-spend-rollup',
+  intervalMs: GOAL_SPEND_ROLLUP_INTERVAL_MS,
+  options: { category: 'global-sweep', classification: 'must-sample' },
+  onError: (e) => {
           console.warn(`[goal-spend-rollup] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // 'must-sample': the cost ledger emits no event this could subscribe to —
-    // periodic aggregation is the only trigger available for a spend snapshot.
-    // 'global-sweep', not 'watchdog': this is a host-wide idempotent aggregation,
-    // not an out-of-band sentinel — it recovers nothing, so it does not belong in
-    // RECOVERY_MECHANISMS (the recovery-dependency-audit enumerates 'watchdog').
-    { category: 'global-sweep', classification: 'must-sample' },
-  );
+        },
+});
+
+export function startGoalSpendRollupTick(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armGoalSpendRollupTick(() => runGoalSpendRollupOnce(sql), opts.intervalMs);
 }

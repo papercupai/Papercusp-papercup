@@ -61,9 +61,13 @@ export function setBrowserMachineId(machineId: string): void {
   try { window.sessionStorage.setItem(MACHINE_KEY, machineId); } catch { /* URL selection remains available. */ }
 }
 
-/** Namespace a localStorage key to the active workspace: `pc:ws:<id>:<key>`. */
+/** Keep workspace state separate for each selected machine on this origin.
+ * The local machine retains its existing keys; remote state never inherits it. */
 export function wsLocalKey(key: string): string {
-  return `pc:ws:${getBrowserWorkspaceId()}:${key}`;
+  const workspace = getBrowserWorkspaceId();
+  const machine = getBrowserMachineId();
+  if (!machine || machine === 'local') return `pc:ws:${workspace}:${key}`;
+  return `pc:machine:${encodeURIComponent(machine)}:ws:${encodeURIComponent(workspace)}:${key}`;
 }
 
 /**

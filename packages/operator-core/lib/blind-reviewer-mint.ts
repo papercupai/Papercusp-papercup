@@ -27,7 +27,7 @@ import {
 } from './capability-envelope/session-confinement';
 import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import { BLIND_REVIEW_TOOL, loadBlindReviewBrief } from './blind-review-gate';
-import type { BlindReviewBrief } from './blind-review-brief';
+import { briefTurnCount, type BlindReviewBrief } from './blind-review-brief';
 import {
   acquireBlindReviewSessionResume,
   createBlindReviewSessionBinding,
@@ -48,6 +48,34 @@ export { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
  */
 export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
 
+// The backend ladder lives in a dependency-free leaf so the session binding and runtime
+// custody (which this module's own imports reach) can check membership without a cycle.
+import { BLIND_REVIEWER_BACKENDS } from './blind-reviewer-backends';
+export { BLIND_REVIEWER_BACKENDS };
+export type { BlindReviewerBackend } from './blind-reviewer-backends';
+
+function receiptRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * Does a launch-agent receipt PROVE no process started? `isError` alone never does: a
+ * launcher can fail after spawning. Only an explicit pre-spawn failure with zero processes
+ * (launch-agent's `err()`), or a non-deduped `opened: 0` receipt that is not partial and has
+ * no tasks, proves it. The backend ladder falls through only on this proof, so it can never
+ * start a second reviewer beside a live first one. A pre-spawn refusal also leaves (or
+ * releases) the launch idempotency key, so the next rung may reuse it.
+ */
+export function launchProvablyNotStarted(value: unknown): boolean {
+  const env = receiptRecord(value);
+  const data = receiptRecord(env?.data);
+  const failure = receiptRecord(data?.launchFailure);
+  if (failure?.stage === 'pre-spawn' && failure.processesOpened === 0) return true;
+  const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
+  return !!launch && launch.mode !== 'deduped' && launch.opened === 0 && launch.partial === false
+    && Array.isArray(launch.tasks) && launch.tasks.length === 0;
+}
+
 /**
  * Everything a blind reviewer may call. Each entry carries why it is here; nothing in this
  * list returns plan artifacts.
@@ -55,6 +83,9 @@ export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
 export const BLIND_REVIEWER_TOOL_CEILING: readonly string[] = Object.freeze([
   // Identity: the reviewer can confirm who it is.
   'coord:whoami',
+  // Lifecycle: close only this session through the existing host guards. This
+  // returns no plan material and cannot select or terminate another reviewer.
+  'session:end',
   // Deferred-tool access on a trimmed surface. tools:invoke re-checks the INNER name at
   // the dispatch seat, so it cannot reach a tool outside this ceiling.
   'tools:find',
@@ -97,6 +128,42 @@ export function blindReviewerConfinement(slug: string, productReads?: ProductRea
   });
 }
 
+/**
+ * Registered tools a howToRun names that the reviewer's ceiling refuses (EI-27120299877087815).
+ * A reviewer told to call one spends its review on capability_denied and posts inconclusive
+ * (#109; #53 recorded the same setup error). Only names in the live catalog count, so event
+ * keys such as work-item:done:<id> pass. Same token grammar as tools:find's exactToolNamesInQuery.
+ */
+export function howToRunToolsOutsideCeiling(howToRun: string | null | undefined,
+  confinement: SessionToolConfinement, knownTools: ReadonlySet<string>): string[] {
+  const text = howToRun?.trim();
+  if (!text || !confinement.denyOutside) return [];
+  const admitted = new Set(confinement.denyOutside);
+  const refused = new Set<string>();
+  for (const match of text.matchAll(/(?:^|[^a-z0-9_.-])([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)(?=$|[^a-z0-9_-])/gi)) {
+    const name = match[1].toLowerCase();
+    if (knownTools.has(name) && !admitted.has(name)) refused.add(name);
+  }
+  return [...refused].sort();
+}
+
+export function howToRunOutsideCeilingMessage(refused: readonly string[], confinement: SessionToolConfinement): string {
+  return `howToRun names ${refused.join(', ')}, which this reviewer's tool ceiling refuses; the reviewer ` +
+    'would spend its review on capability_denied. Remove every such name, including from "do not call" ' +
+    `clauses, and describe the work in terms of the admitted tools: ${[...(confinement.denyOutside ?? [])].join(', ')}.`;
+}
+
+/** The live projected tool catalog, lower-cased. Empty when the catalog is not loaded. */
+export async function defaultKnownToolNames(): Promise<ReadonlySet<string>> {
+  const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
+  const names = new Set<string>();
+  for (const tool of listAllProjectedTools()) {
+    const name = tool.expose?.mcp?.name;
+    if (name) names.add(name.toLowerCase());
+  }
+  return names;
+}
+
 export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: string | null, productReads?: ProductReadBoundary,
   scratchPlans?: ScratchPlanBoundary): string {
   const run = howToRun?.trim()
@@ -127,6 +194,8 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
       '## Your scratch plans',
       `To exercise plan-tool behaviour, create plans of your own. Every slug must start with ${scratchPlans.scratchPrefix}, for example ${scratchPlans.scratchPrefix}probe.`,
       'plans:new, plans:add-item, plans:set-status, plans:audit and plans:get accept those slugs only, and plans:set-plan-status accepts them only with dryRun: true.',
+      'Use force: true on plans:new for an independent scratch rehearsal; it is permitted only under your own minted prefix and cannot bypass another plan\'s boundary.',
+      `Browse product definitions with plan-types:list or plan-types:get using harness: '${scratchPlans.harness}'. Public Cupboard browsing is limited to cupboard:search { kind: 'pack', q: '<your product search>' }; plan and rubric listings remain refused.`,
       'Never name the reviewed plan in a scratch call. Such a call is refused, and the attempt is recorded as reading the plan, which voids your review.',
       'Your scratch plans are archived when you post your gaps.',
     ] : []),
@@ -135,8 +204,10 @@ export function buildBlindReviewerKickoff(brief: BlindReviewBrief, howToRun?: st
     brief.text,
     '',
     '## Report',
-    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, gaps: [...] }`,
-    '(gaps: [] when you found none), then end your session.',
+    `Call ${BLIND_REVIEW_TOOL} { op: 'post', slug: '${brief.planSlug}', activationAuditSeq: ${brief.activationAuditSeq}, outcome: 'conclusive', gaps: [...] }`,
+    'Use conclusive only after completing the product interaction against the owner\'s words; gaps: [] means you found none.',
+    'If product access or verification is incomplete, post outcome: \'inconclusive\' with a summary explaining what could not be verified. Empty gaps alone do not complete a review.',
+    'After posting your review, call session:end with a short reason to finish your own session. It preserves the posted review and applies the existing agent-launched and human-attended guards.',
   ].join('\n');
 }
 
@@ -149,11 +220,14 @@ export interface MintBlindGapReviewerDeps {
   createSessionBinding?: typeof createBlindReviewSessionBinding;
   acquireSessionResume?: typeof acquireBlindReviewSessionResume;
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
+  /** Registered tool names for the howToRun ceiling check; injected in tests. */
+  knownTools?: () => Promise<ReadonlySet<string>>;
 }
 
 export type MintBlindGapReviewerResult =
   | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number; scratchPrefix: string | null; binding: BlindReviewSessionBinding | null }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads' | 'session_binding_failed'; message: string };
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_source_turns' | 'invalid_product_reads'
+      | 'how_to_run_outside_ceiling' | 'session_binding_failed'; message: string; refusedTools?: string[] };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -178,9 +252,11 @@ export async function mintBlindGapReviewer(
     return { ok: false, code: 'no_activation_audit',
       message: `${input.slug} has no activation audit, so there are no owner turns to brief a reviewer with.` };
   }
-  if (brief.ownerTurns.length === 0) {
-    return { ok: false, code: 'no_owner_turns',
-      message: `${input.slug}'s activation audit resolves no authenticated owner turns. Repair source-origin enrollment and audit mappings before minting a blind reviewer.` };
+  // Owner directive #2499: an unverified-origin user turn is briefed (labelled), not refused.
+  // Only an audit citing no user turn at all leaves the reviewer nothing to judge against.
+  if (briefTurnCount(brief) === 0) {
+    return { ok: false, code: 'no_source_turns',
+      message: `${input.slug}'s activation audit cites no readable user turns (only assistant or machine-injected turns, or refs that do not resolve). Re-audit its mappings against the owner's own words before minting a blind reviewer.` };
   }
   const productReads = input.productReads ? { harness: input.harness,
     docsHarness: input.productReads.docsHarness ?? input.harness,
@@ -194,6 +270,13 @@ export async function mintBlindGapReviewer(
   const scratchCandidate: ScratchPlanBoundary = { scratchPrefix: blindReviewScratchPrefix(),
     reviewedSlug: input.slug, harness: input.harness };
   const scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
+  const confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
+  const refusedTools = howToRunToolsOutsideCeiling(input.howToRun, confinement,
+    await (deps.knownTools ?? defaultKnownToolNames)());
+  if (refusedTools.length > 0) {
+    return { ok: false, code: 'how_to_run_outside_ceiling', refusedTools,
+      message: howToRunOutsideCeilingMessage(refusedTools, confinement) };
+  }
   const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
   const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
   // A SYSTEM effect, not the caller's personal launch: the reviewer must descend from this
@@ -211,22 +294,28 @@ export async function mintBlindGapReviewer(
     userId: null,
     [confinementKey]: blindReviewerConfinement(input.slug, productReads, scratchPlans),
   };
-  const launch = await handler(
-    {
-      brief: kickoff,
-      harness: input.harness,
-      headless: true,
-      // Use the native backend used by grading-audit recovery. An implicit
-      // Claude launch can strand a confined review on a completed provider
-      // API error while its PTY remains live (EI-25752839878478687).
-      agent: 'codex',
-      account: BLIND_GAP_REVIEW_ACCOUNT,
-      // A confined reviewer must reach the door and product on the build that
-      // minted it. The stable endpoint may still serve an older tool catalog.
-      mcpTarget: 'spawn-host',
-    },
-    systemCtx as never,
-  );
+  // Walk the backend ladder. Only a launch PROVEN not started falls through; anything
+  // else (spawned, partial, or an isError that may follow a spawn) stops the walk, so no
+  // second reviewer starts.
+  let launch: unknown = null;
+  for (const backend of BLIND_REVIEWER_BACKENDS) {
+    launch = await handler(
+      {
+        brief: kickoff,
+        harness: input.harness,
+        headless: true,
+        agent: backend.agent,
+        ...(backend.model ? { model: backend.model } : {}),
+        ...(backend.effort ? { effort: backend.effort } : {}),
+        account: BLIND_GAP_REVIEW_ACCOUNT,
+        // A confined reviewer must reach the door and product on the build that
+        // minted it. The stable endpoint may still serve an older tool catalog.
+        mcpTarget: 'spawn-host',
+      },
+      systemCtx as never,
+    );
+    if (!launchProvablyNotStarted(launch)) break;
+  }
   if ((launch as { isError?: unknown } | null)?.isError === true) {
     return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
       scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null };
@@ -283,8 +372,8 @@ export async function resumeBlindGapReviewer(
     workspaceId, planSlug: input.slug, harnessSlug: input.harness,
   });
   if (!brief) return { ok: false, code: 'no_activation_audit', message: 'The plan has no current activation audit to resume.' };
-  if (brief.ownerTurns.length === 0) {
-    return { ok: false, code: 'no_owner_turns', message: 'The current activation audit has no authenticated owner turns.' };
+  if (briefTurnCount(brief) === 0) {
+    return { ok: false, code: 'no_source_turns', message: 'The current activation audit cites no readable user turns.' };
   }
   const acquired = await (deps.acquireSessionResume ?? acquireBlindReviewSessionResume)({
     workspaceId, planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq,

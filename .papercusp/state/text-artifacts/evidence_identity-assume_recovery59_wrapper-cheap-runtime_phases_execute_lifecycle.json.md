@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery59/wrapper-cheap-runtime/phases/execute/lifecycle.json"
+updated_at: 1792947217108
+_body: "content"
+---
+
+{"schemaVersion":1,"runId":"20261025T164015Z-237475","host":"main-server-Precision-7865-Tower","observedAt":"2026-10-25T16:40:24.686Z","observer":{"pid":237475,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9753250","parentPid":234526},"supervisor":{"pid":251138,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9755216","parentPid":237475},"worker":{"pid":255054,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9755946","parentPid":251138},"database":{"pid":251680,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:9755375","parentPid":251138},"argv":["/home/marsh-office/.local/node25/bin/node","--import","/mnt/data/tmp/verifier-command-wcpJq2/invoked-source/scripts/lib/isolated-runtime-start.mjs","--import","./scripts/lib/committed-source-loader.mjs","scripts/test-files.mjs","apps/operator/lib/psu-identity-assume-native.integration.test.ts","--testNamePattern=^discovers a deferred handoff tool before invoking an already advertised executor$"],"cwd":"/mnt/data/tmp/verifier-command-wcpJq2/invoked-source","workspace":"test-runtime-c07bb9f6-4f3","runtimeRoot":"/tmp/pcv/papercusp-test-runtime-lrrI6t","dataDir":"/tmp/pcv/papercusp-test-pg-a5h11p","pgPort":36833,"ended":{"kind":"isolated-runtime-end","childPid":255054,"exitCode":0,"signal":null,"runtimeRemoved":true,"pgDataRemoved":true,"observedAt":"2026-10-25T16:41:18.113Z"}}

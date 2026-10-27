@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import { isAbsolute, posix, resolve, sep } from 'node:path';
 import { assertRemoteAuthReady } from './remote-auth-policy';
+import { measurePinnedApplicationRuntime, resolveApplicationRuntimeLaunch } from './bundled-node';
 
 export const VM_RELEASE_DISTRIBUTION_PROFILE = 'vm-release';
 export const VM_RELEASE_FORBIDDEN_PORTS = new Set([3055, 3170, 3270]);
@@ -33,6 +34,7 @@ interface ProvenanceArtifact {
 interface BuildProvenance {
   version: string;
   buildSha: string;
+  gitHead?: string;
   artifacts: ProvenanceArtifact[];
 }
 
@@ -81,10 +83,12 @@ function fail(detail: string): never {
   throw new Error(`[vm-release] immutable runtime policy refused startup: ${detail}`);
 }
 
-function parseManifest(path: string): BuildProvenance {
+function parseManifest(path: string): { manifest: BuildProvenance; bytes: Buffer } {
   let value: unknown;
+  let bytes: Buffer;
   try {
-    value = JSON.parse(readFileSync(path, 'utf8'));
+    bytes = readFileSync(path);
+    value = JSON.parse(bytes.toString('utf8'));
   } catch (error) {
     fail(`cannot read package-contained build-provenance.json (${(error as Error).message})`);
   }
@@ -101,7 +105,7 @@ function parseManifest(path: string): BuildProvenance {
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
     fail('build-provenance.json lists no artifacts');
   }
-  return manifest as BuildProvenance;
+  return { manifest: manifest as BuildProvenance, bytes };
 }
 
 function safeArtifactName(name: unknown): name is string {
@@ -312,9 +316,9 @@ export function assertVmReleaseRuntimePort(port: number, env: NodeJS.ProcessEnv 
  * Verify immutable package identity and the one-operator network/environment
  * contract. This must run before `serve --ensure` can adopt an existing process.
  */
-export function assertVmReleaseRuntimePolicy(options: VmReleaseRuntimePolicyOptions): void {
+export function assertVmReleaseRuntimePolicy(options: VmReleaseRuntimePolicyOptions) {
   const env = options.env ?? process.env;
-  if (!isVmReleaseDistribution(env)) return;
+  if (!isVmReleaseDistribution(env)) return null;
 
   const expectedVersion = env.PAPERCUSP_BUILD_VERSION;
   const expectedSha = env.PAPERCUSP_BUILD_SHA;
@@ -331,7 +335,8 @@ export function assertVmReleaseRuntimePolicy(options: VmReleaseRuntimePolicyOpti
   assertRemoteAuthReady(options.hostname, env);
 
   const sidecarRoot = realpathSync(options.sidecarDir);
-  const manifest = parseManifest(resolve(sidecarRoot, 'build-provenance.json'));
+  const manifestPath = resolve(sidecarRoot, 'build-provenance.json');
+  const { manifest, bytes: manifestBytes } = parseManifest(manifestPath);
   if (manifest.version !== expectedVersion) {
     fail(`manifest version ${manifest.version} does not equal baked version ${expectedVersion}`);
   }
@@ -364,4 +369,52 @@ export function assertVmReleaseRuntimePolicy(options: VmReleaseRuntimePolicyOpti
     if (!seen.has(required)) fail(`manifest does not attest required runtime artifact ${required}`);
   }
   assertVmReleaseModelAssets(sidecarRoot, env);
+  if (!readFileSync(manifestPath).equals(manifestBytes)) {
+    fail('build provenance changed during package verification');
+  }
+  return { sidecarRoot, manifest, manifestBytes };
+}
+
+/**
+ * Ordinary packaged host boots use the same pinned selector as candidate probes.
+ * The provenance emitter already attests the retained Node and serve bytes. Bind
+ * those bytes to the running process before --ensure, singleton locks, or PG boot.
+ * Operational Bun is intentionally not selected from an environment or a manifest
+ * assertion: its canonical acceptance reader must be connected before activation.
+ */
+export async function assertVmReleaseApplicationRuntime(options: VmReleaseRuntimePolicyOptions) {
+  const verified = assertVmReleaseRuntimePolicy(options);
+  const env = options.env ?? process.env;
+  if (!verified) return null;
+
+  const { sidecarRoot, manifest, manifestBytes } = verified;
+  const manifestPath = resolve(sidecarRoot, 'build-provenance.json');
+  if (!/^[a-f0-9]{40,64}$/.test(manifest.gitHead ?? '')) {
+    fail('application runtime selection requires an exact provenance gitHead');
+  }
+  const nodeArtifact = manifest.artifacts.find(artifact => artifact.name === 'bin/node')!;
+  const entryArtifact = manifest.artifacts.find(artifact => artifact.name === 'serve.mjs')!;
+  const node = await measurePinnedApplicationRuntime(resolve(sidecarRoot, 'bin/node'), nodeArtifact.sha256);
+  const launch = await resolveApplicationRuntimeLaunch({
+    candidate: {
+      candidateSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+      sourceSha: manifest.gitHead!,
+      roles: ['host'],
+      entrypoint: resolve(sidecarRoot, 'serve.mjs'),
+      entrypointSha256: entryArtifact.sha256,
+      node,
+    },
+    role: 'host',
+    env,
+  });
+  if (process.versions.bun || realpathSync(process.execPath) !== launch.executable
+    || process.versions.node !== launch.runtime.version
+    || process.platform !== launch.runtime.platform || process.arch !== launch.runtime.arch
+    || sha256(process.execPath) !== launch.runtime.binarySha256) {
+    fail('ordinary host must run the package-pinned Node executable');
+  }
+  if (!readFileSync(manifestPath).equals(manifestBytes)) {
+    fail('build provenance changed during application runtime selection');
+  }
+  return launch;
 }

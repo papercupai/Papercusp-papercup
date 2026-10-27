@@ -12,7 +12,7 @@ import { createPrivateHealthSnapshot } from './private-http-workspace-preflight'
 import { AGENT_STRANDED_ALARM_THRESHOLD, AGENT_WEDGED_ALARM_THRESHOLD,
   summarizeAgentStrand, WEDGE_CLASSES, type AgentStrandHealth } from '../lib/system-health/agent-strand-census';
 import { strandMetrics } from '../lib/system-health/compute';
-import { coordinationStatus } from '../lib/system-health/thresholds';
+import { coordinationStatus, infraStatus } from '../lib/system-health/thresholds';
 import { readOperatorState, updateOperatorState } from '../lib/operator-state-pg';
 import type { FlapState } from '../lib/system-health/liveness-alarm';
 import type { CoordinationHealth, InfraHealth, SystemHealth } from '../lib/system-health/types';
@@ -204,19 +204,20 @@ async function main() {
       }
       const census = summarizeAgentStrand(counts === null ? null : verdicts,
         stranded === null ? null : Array.from({ length: stranded }, (_, i) => `stranded-${i}`));
-      const data: CoordinationHealth = { unansweredAgents: 0, unansweredTotal: independentPanel ? 1 : 0,
-        unansweredOldestMs: independentPanel ? 3_600_000 : null, criticalContext: 0, highContext: 0,
+      const data: CoordinationHealth = { unansweredAgents: 0, unansweredTotal: 0,
+        unansweredOldestMs: null, criticalContext: 0, highContext: 0,
         activeAwaits: 0, staleAwaits: 0, leaderlessFleets: 0, liveFleets: 0, orphanedClaims: 0,
         stalledClaims: 0, coverageCollisions: 0, parkedMembers: 0, agentStrand: census };
       health.panels.coordination.data = data;
       health.panels.coordination.status = coordinationStatus(data);
       health.panels.coordination.metrics = strandMetrics(census);
-      health.panels.infra.data = { hostedControlPlane: {
+      health.panels.infra.data = { gatewayReachable: !independentPanel, hostedControlPlane: {
         observedAt: health.evaluatedAt, windowMs: 3_600_000, lifecycle: null, api: null,
         hosts: { expectedRunning: 1, unhealthy, unobserved: 0, platformOwnedRunning: 1 },
         providerConnections: { connected: 1, degraded: 0 }, reverseConnectors: { active: 1, lost: 0 },
         ownedCost: { estimatedUsdCents: 0, estimates: 1, unpriced: 0, breachedBudgets: 0 },
       } } as InfraHealth;
+      health.panels.infra.status = infraStatus(health.panels.infra.data);
       await writeSharedSnapshot('system.health', workspace, health, 1);
       return health;
     }
@@ -246,6 +247,11 @@ async function main() {
       assert.deepEqual(panel.data, snapshot.panels.coordination.data);
       assert.deepEqual(panel.metrics, snapshot.panels.coordination.metrics);
       assert.equal(panel.status, snapshot.panels.coordination.status);
+      assert.deepEqual(response.rows[0].panels.infra, snapshot.panels.infra);
+      if (independentPanel) {
+        assert.equal(response.rows[0].panels.infra.status, 'crit');
+        assert.equal(response.rows[0].panels.infra.data?.gatewayReachable, false);
+      }
       return panel;
     }
     await publish([0, 0, 0, 0], 0, 0);
@@ -279,9 +285,15 @@ async function main() {
       unknownControls.push(leg);
     }
     assert.equal((await raisesFor('panel:coordination')).length, 0);
-    // An unrelated coordination warning must still be allowed its own signal.
-    await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD, true);
-    assert.equal((await raisesFor('panel:coordination')).length, 1);
+    // Coordination is WARN-max. A separately failed gateway supplies a real
+    // critical catch-all control while both populations remain WARN-only.
+    assert.equal((await raisesFor('panel:infra')).length, 0);
+    const independent = await observe(classCounts, AGENT_STRANDED_ALARM_THRESHOLD, true);
+    assert.equal(independent.status, 'warn');
+    const independentAlarms = await until('independent critical panel alarm',
+      () => raisesFor('panel:infra'), rows => rows.length === 1);
+    assert.equal(independentAlarms.length, 1);
+    assert.equal((await raisesFor('panel:coordination')).length, 0);
     for (const signature of signatures) {
       while ((await raisesFor(signature)).length < 3) {
         await observe(signature === 'agents-wedged' ? [0, 0, 0, 0] : classCounts,
@@ -318,12 +330,15 @@ async function main() {
       episodes[signature] = { alarms: (await raisesFor(signature)).length, attentionIntents: notices.length };
       assert.equal(episodes[signature].alarms, 4);
     }
+    assert.equal((await raisesFor('panel:coordination')).length, 0);
     assert.deepEqual(fingerprint(), sourceBefore, 'source changed during population journey');
     await stopHost();
     console.log('LIVENESS_ALARM_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true, signal,
       sourceUnchanged: true, sourceFingerprints: sourceBefore, bundleSha256, intervalMs, first,
       population: { classCounts, stranded: AGENT_STRANDED_ALARM_THRESHOLD, severityControls: controls,
-        unknownControls, genericPopulationPages: 0, independentPanelPage: true, episodes,
+        unknownControls, genericPopulationPages: 0, independentPanelPage: true,
+        independentPanelControl: { key: 'infra', status: 'crit', gatewayReachable: false,
+          alarms: independentAlarms.length }, episodes,
         quietBoundary: { persistedHistoryAdvanced: true, durationMs } } }));
     return;
   }

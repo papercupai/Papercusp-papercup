@@ -94,7 +94,7 @@ export interface CodexCliKernelAdapterDeps {
   initialAccount: CodexCliAccount;
   /** Re-read per rotation, exactly as the live handler re-reads `codexCliAccounts()`. */
   accounts: () => readonly CodexCliAccount[];
-  pool: Pick<AccountPool, 'onExhausted'> | null;
+  pool: (Pick<AccountPool, 'onExhausted'> & Partial<Pick<AccountPool, 'active'>>) | null;
   run: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
   model: string;
   effort: string;
@@ -171,6 +171,15 @@ export function createCodexCliKernelAdapter(deps: CodexCliKernelAdapterDeps): Co
     },
 
     selectFailover(context: GatewayKernelRouteContext<CodexCliRouteValue, CodexCliChunk, CodexCliResponseMetadata>) {
+      if (context.lastError?.code === 'account-unavailable') {
+        try {
+          const selected = deps.pool?.active?.();
+          const next = deps.accounts().find(account => account.accountId === selected?.accountId);
+          if (!next || context.triedRouteKeys.some(key =>
+            key === `cli:${next.accountId}` || key.startsWith(`cli:${next.accountId}#`))) return null;
+          return toRoute({ account: next, reason: 'rotate' }, context.attempt + 1);
+        } catch { return null; }
+      }
       // The kernel already returned null for a hard pin before reaching here
       // (D-006 invariant 1), so this never needs to re-check `hardPin`.
       //

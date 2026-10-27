@@ -122,6 +122,10 @@ describe('every FrozenRepairAdmission field survives the queue round trip (P-019
         unmeasured: ['lib/d.test.ts'],
       },
       patch: { commit: C2, parent: C, sha256: 'a'.repeat(64) },
+      patches: [
+        { commit: C1, parent: BASE, sha256: 'b'.repeat(64) },
+        { commit: C2, parent: C, sha256: 'a'.repeat(64) },
+      ],
       hunks: { 'lib/a.test.ts': { applied: 2, agents: ['su-door'] } },
       ledgerRowIds: [11, 12],
       foreignHunksAccepted: 1,

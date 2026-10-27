@@ -358,7 +358,14 @@ export function isDuplicateMigrationLedgerFailure(stderr: string): boolean {
   return SCHEMA_MIGRATIONS_DUP_KEY_RE.test(stderr);
 }
 
-type PsqlResult = { status: number; stdout: string; stderr: string; signal?: string | null; staleFence?: StaleMigrationFence };
+type MigrationPhase = {
+  phase: string; state: 'pending' | 'fulfilled' | 'rejected'; elapsedMs: number;
+  backendApplicationName?: string;
+};
+type PsqlResult = {
+  status: number; stdout: string; stderr: string; signal?: string | null; staleFence?: StaleMigrationFence;
+  diagnostics?: { backendApplicationName?: string; phases: MigrationPhase[] };
+};
 
 type StaleMigrationFence = Exclude<FenceCheck, { current: true }> | { current: false; reason: 'check_failed' };
 type MigrationFenceGuard = Pick<FenceToken, 'assertCurrent'> & { marker: string };
@@ -366,7 +373,10 @@ type MigrationFenceGuard = Pick<FenceToken, 'assertCurrent'> & { marker: string 
 type PsqlRunner = (
   cmd: string,
   args: string[],
-  opts: { input?: string; encoding: 'utf8'; onHeartbeat?: (elapsedSec: number) => void; fence?: MigrationFenceGuard },
+  opts: {
+    input?: string; encoding: 'utf8'; onHeartbeat?: (elapsedSec: number) => void;
+    onPhase?: (event: MigrationPhase) => void; fence?: MigrationFenceGuard;
+  },
 ) => Promise<PsqlResult>;
 
 /** Run a psql command asynchronously, optionally emitting a heartbeat while
@@ -374,8 +384,34 @@ type PsqlRunner = (
  * operator event loop, so ctx.progress could never refresh the MCP idle
  * deadline. The child receives its SQL through stdin just as the old sync
  * path did. */
-export const runPsql: PsqlRunner = (cmd, args, opts) =>
-  runGovernedOperation(
+export const runPsql: PsqlRunner = async (cmd, args, opts) => {
+  const startedAt = Date.now();
+  const phases: MigrationPhase[] = [];
+  const backendApplicationName = opts.fence?.marker;
+  const reportPhase = (phase: string, state: MigrationPhase['state']) => {
+    const event: MigrationPhase = { phase, state, elapsedMs: Date.now() - startedAt, backendApplicationName };
+    // Retain a bounded diagnostic trail on the final tool receipt as well as
+    // progress. Never include the connection URL or migration SQL.
+    if (phases.length === 64) phases.splice(1, 1);
+    phases.push(event);
+    try { opts.onPhase?.(event); } catch { /* observation cannot own the apply */ }
+  };
+  const childArgs = [...args];
+  if (backendApplicationName) {
+    const url = new URL(childArgs[0]);
+    url.searchParams.set('application_name', backendApplicationName);
+    childArgs[0] = url.toString();
+  }
+  reportPhase('admission', 'pending');
+  const admissionHeartbeat = managedSetInterval(
+    'db-migrate-admission-progress', PSQL_PROGRESS_INTERVAL_MS,
+    () => {
+      try { opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000)); } catch { /* advisory */ }
+    },
+    { category: 'lifecycle', classification: 'must-sample', allowInTest: true, instanced: true },
+  );
+  try {
+    const result = await runGovernedOperation<PsqlResult>(
     {
       workspaceId: activeWorkspaceId(),
       namespace: 'db-migrate-psql',
@@ -389,9 +425,13 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
       },
       payloadRef: 'db:migrate:psql',
       metadata: { binary: cmd },
+      onAdmissionPhase: (event) => reportPhase(`admission:${event.phase}`, event.state),
     },
-    async () =>
-      new Promise((resolve, reject) => {
+    async () => {
+      admissionHeartbeat.stop();
+      reportPhase('admission', 'fulfilled');
+      reportPhase('child', 'pending');
+      return new Promise<PsqlResult>((resolve, reject) => {
         const startedAt = Date.now();
         let lastHeartbeatAt = startedAt;
         let settled = false;
@@ -438,6 +478,7 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
             }
             if (!check.current && !settled) {
               staleFence = check;
+              reportPhase('fence', 'rejected');
               // SIGINT makes psql cancel its own backend's waiting statement.
               // No peer/backup backend is selected or signalled.
               child.stdin?.end();
@@ -477,7 +518,7 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
         }
 
         try {
-          child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
+          child = execFile(cmd, childArgs, { encoding: opts.encoding }, (error, stdout, stderr) => {
             const status = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
             const diagnostic = stderr.trim()
               ? stderr
@@ -503,10 +544,14 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
                   const line = pendingOutput.slice(0, newline).replace(/\r$/, '');
                   pendingOutput = pendingOutput.slice(newline + 1);
                   if (line !== opts.fence!.marker) continue;
+                  reportPhase('sql-guards', 'fulfilled');
+                  reportPhase('fence', 'pending');
                   // Do not reuse a periodic check begun before the marker.
                   void (async () => {
                     if (checking) await checking;
                     if (!(await checkFence()) || nextPart >= parts.length) return;
+                    reportPhase('fence', 'fulfilled');
+                    reportPhase('ddl', 'pending');
                     const input = parts[nextPart++];
                     if (nextPart === parts.length) child.stdin?.end(input);
                     else child.stdin?.write(input + markerLine);
@@ -514,6 +559,7 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
                 }
               },
             });
+            reportPhase('sql-guards', 'pending');
             child.stdin?.write(parts[0] + markerLine);
           } else {
             child.stdin?.end(opts.input);
@@ -521,8 +567,15 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
         } catch (error) {
           fail(error);
         }
-      }),
-  );
+      });
+    },
+    );
+    reportPhase('child', result.status === 0 ? 'fulfilled' : 'rejected');
+    return { ...result, diagnostics: { backendApplicationName, phases } };
+  } finally {
+    admissionHeartbeat.stop();
+  }
+};
 
 /** Query harness_shared.schema_migrations directly (a fresh psql
  *  invocation — NOT the pool that may have just dropped) for whether
@@ -573,6 +626,7 @@ async function runMigrationWithLockRetry(
   onAttempt?: (attempt: number, maxAttempts: number) => void,
   onHeartbeat?: (elapsedSec: number) => void,
   fence?: MigrationFenceGuard,
+  onPhase?: (event: MigrationPhase) => void,
 ): Promise<{ result: PsqlResult; attempts: number }> {
   for (let attempt = 1; ; attempt++) {
     onAttempt?.(attempt, maxAttempts);
@@ -582,6 +636,7 @@ async function runMigrationWithLockRetry(
       encoding: 'utf8',
       onHeartbeat,
       fence,
+      onPhase,
     });
     if (result.status === 0 || result.staleFence) return { result, attempts: attempt };
     if (attempt >= maxAttempts || !isRetryableLockFailure(result.stderr ?? '')) return { result, attempts: attempt };
@@ -1110,6 +1165,7 @@ export default defineTool({
               );
             },
             { marker: fenceMarker, assertCurrent: fence.assertCurrent },
+            (event) => emitProgress(undefined, JSON.stringify(event)),
           );
           if (r.status !== 0) {
             if (r.staleFence) {
@@ -1117,6 +1173,7 @@ export default defineTool({
                 ok: false,
                 applied: false,
                 reason: `stale_fence_${r.staleFence.reason}`,
+                diagnostics: r.diagnostics,
                 fence_seq: fence.seq,
                 ...('live_fence_seq' in r.staleFence ? { live_fence_seq: r.staleFence.live_fence_seq } : {}),
                 attempts,
@@ -1144,6 +1201,7 @@ export default defineTool({
                   'already records this file as applied — verified via a FRESH connection, independent of whatever ' +
                   'connection dropped on the earlier attempt. Treating this as a redundant retry, not a real failure.',
                 exit_code: r.status,
+                diagnostics: r.diagnostics,
                 stderr: (r.stderr ?? '').slice(-2000),
                 attempts,
               });
@@ -1154,6 +1212,7 @@ export default defineTool({
               exit_code: r.status,
               stderr: (r.stderr ?? '').slice(-2000),
               signal: r.signal ?? null,
+              diagnostics: r.diagnostics,
               attempts,
               // EI-18747087108453188: was isLockTimeoutFailure-only, so a deadlock
               // or serialization-failure exhaustion (both now retried above)
@@ -1174,6 +1233,7 @@ export default defineTool({
               already_applied: true,
               action_key: actionKey,
               schema_migrations_recorded: true,
+              diagnostics: r.diagnostics,
               file: args.file,
               note:
                 'The same psql session verified this filename in harness_shared.schema_migrations before entering the DDL branch — no-op.',
@@ -1196,6 +1256,7 @@ export default defineTool({
             fence_seq: fence.seq,
             schema_migrations_recorded: true,
             sha256,
+            diagnostics: r.diagnostics,
             attempts,
           });
         },

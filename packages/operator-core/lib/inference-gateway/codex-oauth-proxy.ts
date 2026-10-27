@@ -971,6 +971,8 @@ export interface CodexCapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  /** WI-6554700010029499: `x-codex-plan-type`, lower-cased (`pro`, `plus`, `free`, …). */
+  planType?: string;
   /** Credit-funded continuation is separate from the included allowance. */
   usageCreditsAvailable?: boolean;
   creditBalance?: AccountCreditBalance;
@@ -1090,13 +1092,17 @@ export function parseCodexRateLimitHeaders(
     : Number.isFinite(numericBalance) && numericBalance >= 0
       ? { amount: numericBalance, unit: 'credits', source: 'codex', unlimited: false }
       : undefined;
-  const credits: Pick<CodexCapacityWindows, 'usageCreditsAvailable' | 'creditBalance'> =
+  const credits: Pick<CodexCapacityWindows, 'usageCreditsAvailable' | 'creditBalance' | 'planType'> =
     hasCredits === undefined && unlimited === undefined ? {} : {
       usageCreditsAvailable: unlimited === true ||
         (hasCredits === true && (balance === undefined || (Number.isFinite(Number(balance)) && Number(balance) > 0))),
     };
   if (creditBalance) credits.creditBalance = creditBalance;
-  const reserve = ['x-base-model-inference-primary', 'x-base-model-inference-secondary'] as const;
+  // WI-6554700010029499: the tier rides every response. Nothing recorded it, so five accounts
+  // dropping Pro -> Plus (windows walling after ~1-2k requests instead of 13k-30k) went unseen ~2 days.
+  const planType = lower['x-codex-plan-type']?.trim().toLowerCase();
+  if (planType) credits.planType = planType;
+  const reserve =['x-base-model-inference-primary', 'x-base-model-inference-secondary'] as const;
   const bucket = codexRateLimitBucket(lower);
   // When the backend tells us which meter is active, do not project a different
   // family that happens to be present on the same response. This is the key
@@ -1115,6 +1121,16 @@ export function parseCodexRateLimitHeaders(
     }
   }
   return credits;
+}
+
+/** WI-6554700010029499: relative capacity of a ChatGPT plan tier, for detecting a DOWNGRADE between
+ *  two readings. `null` = an unrecognised tier, which never counts as a change in either direction. */
+const CODEX_PLAN_RANK: Readonly<Record<string, number>> = {
+  free: 0, go: 1, plus: 2, team: 2, business: 2, edu: 2, enterprise: 3, pro: 4,
+};
+export function codexPlanRank(plan: string | undefined): number | null {
+  if (!plan) return null;
+  return CODEX_PLAN_RANK[plan.trim().toLowerCase()] ?? null;
 }
 
 /** A window at/over this utilization is EXHAUSTED — the meter that produced the 429. Matches the

@@ -13,7 +13,7 @@
  * These tests drive the SHIPPING script with fake `docker` / `ss` / `df` /
  * `podman` / `sudo` executables on PATH. No real container is touched.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -53,6 +53,7 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
   const markers = join(root, 'last-used');
   const log = join(root, 'calls');
   mkdirSync(bin);
+  mkdirSync(join(root, 'store'));
   const executable = (name: string, body: string) =>
     writeFileSync(join(bin, name), '#!/bin/bash\n' + body, { mode: 0o755 });
 
@@ -63,12 +64,14 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
     [
       'printf "docker %s\\n" "$*" >>"$FIXTURE_LOG"',
       'case "$1" in',
-      '  info) [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/store"; exit 0 ;;',
-      '  ps) printf "%s\\n" $FIXTURE_TC_IDS ;;',
+      '  info) if [[ "$*" == *--format* ]]; then echo "$FIXTURE_ROOT/store"; exit "${FIXTURE_INFO_FAIL:-0}"; fi; exit 0 ;;',
+      '  ps) [[ "${FIXTURE_PS_FAIL:-0}" == 0 ]] || exit 31; printf "%s\\n" $FIXTURE_TC_IDS ;;',
       '  inspect) echo "/fixture-container img created=2026-10-01T00:00:00Z" ;;',
-      '  port) p="${2:0:1}"; case "$p" in a) n=41001;; b) n=41002;; c) n=41003;; d) n=41004;; *) n=41009;; esac',
+      '  port) [[ "${FIXTURE_PORT_FAIL:-0}" == 0 ]] || exit 32; p="${2:0:1}"; case "$p" in a) n=41001;; b) n=41002;; c) n=41003;; d) n=41004;; *) n=41009;; esac',
       '        echo "5432/tcp -> 0.0.0.0:$n"; echo "5432/tcp -> [::]:$n" ;;',
-      '  volume) exit 0 ;;',
+      '  volume) if [[ "$2" == ls ]]; then printf "%s\\n" ${FIXTURE_VOLUME_IDS:-}; exit "${FIXTURE_VOLUME_FAIL:-0}"; fi',
+      '          if [[ "$2" == inspect ]]; then echo 2020-01-01T00:00:00Z; fi; exit 0 ;;',
+      '  rm) exit "${FIXTURE_RM_EXIT:-0}" ;;',
       'esac',
       'exit 0',
     ].join('\n') + '\n',
@@ -78,6 +81,7 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
     'ss',
     [
       'printf "ss %s\\n" "$*" >>"$FIXTURE_LOG"',
+      '[[ "${FIXTURE_SS_FAIL:-0}" == 0 ]] || exit 33',
       'for p in $FIXTURE_BUSY_PORTS; do',
       '  if [[ "$*" == *":$p "* || "$*" == *":$p)"* ]]; then echo "ESTAB 0 0 127.0.0.1:$p 127.0.0.1:5555"; fi',
       'done',
@@ -226,5 +230,63 @@ describe('WI-6554700010009309 — docker reclaim removes only leaked testcontain
     const out = f.run({ TESTCONTAINER_IDLE_MAX_SECS: '60' });
     expect(removed(f.calls())).toEqual([]);
     expect(out).toMatch(/below the 3600s floor/);
+  });
+
+  it.each(['FIXTURE_PORT_FAIL', 'FIXTURE_SS_FAIL'])('retains an idle-marked container when %s makes live references unknown', (failure) => {
+    const f = makeFixture({ ids: [IDLE_ID] });
+    f.mark(IDLE_ID, 2 * DAY_SECS);
+    const out = f.run({ [failure]: '1' });
+    expect(removed(f.calls())).toEqual([]);
+    const line = out.split('\n').find(line => line.startsWith('[docker-reclaim] store-receipt '))!;
+    expect(JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)))
+      .toMatchObject({ status: 'native-failed', nativeFailures: 1, complete: false });
+  });
+
+  it.each(['FIXTURE_PS_FAIL', 'FIXTURE_VOLUME_FAIL', 'FIXTURE_RM_EXIT'])('preserves native failure evidence for %s without failing the timer', (failure) => {
+    const f = makeFixture({ ids: [IDLE_ID] });
+    f.mark(IDLE_ID, 2 * DAY_SECS);
+    const out = f.run({ [failure]: '1' });
+    const line = out.split('\n').find(line => line.startsWith('[docker-reclaim] store-receipt '))!;
+    expect(JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)))
+      .toMatchObject({ status: 'native-failed', nativeFailures: 1, complete: false });
+  });
+
+  it('reports an absent ss instrument as incomplete and retains containers', () => {
+    const f = makeFixture({ ids: [IDLE_ID] });
+    f.mark(IDLE_ID, 2 * DAY_SECS);
+    const tools = join(f.root, 'without-ss'); mkdirSync(tools);
+    // A real PATH with only the needed executables makes command -v ss fail;
+    // no production skip knob or replacement shell classifier is involved.
+    for (const name of ['bash', 'node', 'python3', 'git', 'dirname', 'date', 'tail', 'tr',
+      'timeout', 'grep', 'sed', 'sort', 'mkdir', 'stat', 'touch', 'rm', 'wc']) {
+      symlinkSync(execFileSync('which', [name], { encoding: 'utf8' }).trim(), join(tools, name));
+    }
+    for (const name of ['docker', 'podman', 'sudo', 'df']) symlinkSync(join(f.root, 'bin', name), join(tools, name));
+    const out = f.run({ PATH: tools });
+    expect(out).toContain('ss not found');
+    expect(removed(f.calls())).toEqual([]);
+    const line = out.split('\n').find(line => line.startsWith('[docker-reclaim] store-receipt '))!;
+    expect(JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)))
+      .toMatchObject({ status: 'native-failed', nativeFailures: 1, complete: false });
+  });
+
+  it('never consumes partial volume discovery after a native failure', () => {
+    const f = makeFixture({ ids: [] });
+    const out = f.run({ FIXTURE_VOLUME_IDS: IDLE_ID, FIXTURE_VOLUME_FAIL: '34', SKIP_TESTCONTAINERS: '1' });
+    expect(f.calls().some(call => call.startsWith('docker volume rm'))).toBe(false);
+    expect(out).toContain('"nativeFailures":1');
+  });
+
+  it('does not prune a store reported only by a failed Docker discovery command', () => {
+    const f = makeFixture({ ids: [] });
+    const out = f.run({ FIXTURE_INFO_FAIL: '35' });
+    expect(f.calls().some(call => /docker (builder|image|volume|rm) /.test(call))).toBe(false);
+    expect(out).toContain('"status":"discovery-failed"');
+  });
+
+  it('removes only old anonymous volumes even when discovery includes dangling named data', () => {
+    const f = makeFixture({ ids: [] });
+    f.run({ FIXTURE_VOLUME_IDS: IDLE_ID + ' bytebot_postgres_data', SKIP_TESTCONTAINERS: '1' });
+    expect(f.calls().filter(call => call.startsWith('docker volume rm'))).toEqual([`docker volume rm ${IDLE_ID}`]);
   });
 });

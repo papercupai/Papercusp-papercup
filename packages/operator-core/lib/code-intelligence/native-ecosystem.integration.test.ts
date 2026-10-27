@@ -16,6 +16,7 @@ import '../harness/docs/native-source-change.integration.test';
 import '../agent-tools/plans/native-planning-advice.integration.test';
 import './task-brief.integration.test';
 import './task-brief-ledger.integration.test';
+import './engineering-evidence.integration.test';
 import '../dream/capability-packets.integration.test';
 import './scoped-contracts.integration.test';
 import './first-party-discovery.integration.test';

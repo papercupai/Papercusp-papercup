@@ -1,7 +1,7 @@
 /**
  * The git-sync DELETION-IMPORT guard (EI-17).
  *
- * Pure + seam-injected (runGit, readText) — no real repo, no fs. Pins the
+ * Seam-injected cases plus real-Git regression coverage. Pins the
  * load-bearing behavior: a dirty deletion whose module a surviving file still
  * (relatively) imports is flagged (so `commitOneRepo` excludes it from the
  * commit, exactly like an oversized blob or a broken .mdx); an unrelated
@@ -9,6 +9,10 @@
  * deletion, and any `git`/read failure are all NOT flagged (fail open).
  */
 import { describe, it, expect, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   detectUnsafeDeletions,
   parseDeletedPaths,
@@ -22,7 +26,7 @@ import type { RunGit } from './run-git-sync';
 
 /** A runGit stub: `status` answers the given NUL-joined porcelain entries; `grep -l`
  *  answers with the file list registered for that fixed-string token (simulating
- *  `git grep -zIl -F <token> --untracked -- <exts>`); anything else is a benign no-op. */
+ *  Git's explicit -e pattern or positional -F pattern); anything else is a benign no-op. */
 const makeRunGit = (opts: {
   statusEntries: string[];
   grepHits?: Record<string, string[]>;
@@ -37,8 +41,8 @@ const makeRunGit = (opts: {
         : { code: statusCode, stdout: '', stderr: 'fatal' };
     }
     if (args[0] === 'grep') {
-      const fIdx = args.indexOf('-F');
-      const token = args[fIdx + 1];
+      const patternIdx = args.includes('-e') ? args.indexOf('-e') : args.indexOf('-F');
+      const token = args[patternIdx + 1];
       const code = grepCode ? grepCode(token) : token in grepHits ? 0 : 1;
       const hits = grepHits[token] ?? [];
       const stdout = hits.length ? hits.join('\0') + '\0' : '';
@@ -125,6 +129,41 @@ describe('candidateSearchTokens', () => {
 });
 
 describe('detectUnsafeDeletions', () => {
+  it.each(['target', '-target'])('finds tracked and untracked live importers using real Git (%s)', async (name) => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'deletion-import-guard-'));
+    const git = (args: string[]) => spawnSync('git', [
+      '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false',
+      '-c', 'user.name=Guard Test', '-c', 'user.email=guard@example.invalid', ...args,
+    ], { cwd: repoPath, encoding: 'utf8' });
+    try {
+      expect(git(['init', '--quiet']).status).toBe(0);
+      writeFileSync(join(repoPath, `${name}.ts`), 'export const value = 1;\n');
+      const importer = `import { value } from './${name}';\n`;
+      writeFileSync(join(repoPath, 'tracked.ts'), importer);
+      expect(git(['add', '--', `${name}.ts`, 'tracked.ts']).status).toBe(0);
+      expect(git(['commit', '--quiet', '-m', 'fixture']).status).toBe(0);
+      unlinkSync(join(repoPath, `${name}.ts`));
+      writeFileSync(join(repoPath, 'untracked.ts'), importer);
+      const log = vi.fn();
+      const offenders = await detectUnsafeDeletions({
+        repoPath,
+        runGit: async (args) => {
+          const result = git(args);
+          return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+        },
+        readText: async (path) => readFileSync(join(repoPath, path), 'utf8'),
+        log,
+      });
+      expect(offenders).toHaveLength(1);
+      expect(offenders[0]).toMatchObject({ file: `${name}.ts`, detectorKey: 'unsafe-deletion' });
+      expect(offenders[0].error).toContain('tracked.ts');
+      expect(offenders[0].error).toContain('untracked.ts');
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('git grep errored'));
+    } finally {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('flags a deletion whose module a surviving file still imports (relative)', async () => {
     const runGit = makeRunGit({
       statusEntries: [' D apps/operator/lib/operator-last-scan.ts'],

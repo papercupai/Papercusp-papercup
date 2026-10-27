@@ -14,6 +14,7 @@ import {
 } from './scorecard-ledger-fill';
 import type { LatestRubricCheckResult } from './check-results-ledger';
 import type { RecordedRubricCheck } from '@papercusp/test-config/execution-details';
+import { retainMeasurementProvenance } from './measurement-provenance';
 
 const RUBRIC = 'acceptance-ledger-fill-fixture';
 const SCALE = ['meets', 'near', 'misses'];
@@ -38,6 +39,23 @@ const criteria = [
   { key: 'suite', check: { kind: 'tests', files: ['x.test.ts'] } },
 ];
 const manual = { rating: 'meets', evidence: 'read by hand' };
+
+it('preserves legacy scalar grades with explicit legacy-missing provenance', () => {
+  const criterion = { key: 'disk', check: { kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lt', value: 80 } } };
+  const legacy = row('disk:instrument', 42, 'pass', { unit: '%' });
+  const provenance = retainMeasurementProvenance({ procedure: { kind: 'command', key: 'host:df-root-used-pct' },
+    result: { n: 1 }, startedAt: legacy.finishedAt, finishedAt: legacy.finishedAt });
+  const grade = (r: LatestRubricCheckResult) => fillRatingsFromLedger({ criteria: [criterion], callerRatings: undefined,
+    latest: new Map([['disk:instrument', r]]), rubricRatingScale: SCALE });
+  const old = grade(legacy);
+  const current = grade({ ...legacy, check: { ...legacy.check, provenance } });
+  expect(old.ok && current.ok).toBe(true);
+  if (!old.ok || !current.ok) return;
+  expect(old.ratings.disk?.rating).toBe(current.ratings.disk?.rating);
+  expect(old.ratings.disk?.ledgerResult).toMatchObject({ value: 42, unit: '%', provenanceStatus: 'legacy-missing' });
+  expect(old.ratings.disk?.evidence).toContain('provenance legacy-missing');
+  expect(current.ratings.disk?.ledgerResult?.provenance).toEqual(provenance);
+});
 
 describe('ledgerCheckBindings — which criteria the ledger owns', () => {
   it('owns opt-in scheduled native adoption checks and fills their actual ledger verdicts', () => {

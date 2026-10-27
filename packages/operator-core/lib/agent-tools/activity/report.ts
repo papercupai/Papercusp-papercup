@@ -19,7 +19,8 @@
  *
  * `owner_id` is the worker's coordination identity (PAPERCUSP_SID, the same id baked
  * into its MCP `?client=`) — passed explicitly because the hook is the source of
- * truth for it. Falls back to the request's client/principal when omitted.
+ * truth for it. It must match an attributable caller; transport-only ingestion
+ * retains its explicit owner. Falls back to the request's client/principal when omitted.
  */
 
 import { z } from 'zod';
@@ -42,7 +43,7 @@ import {
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
 } from '../../adv-sessions';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { isTransportOnlyIdentity, resolveAgentIdentity } from '../coordination/identity';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from '../locks/coordination-domain';
 import { releaseAllOwnedLocks } from '../locks/release-all-owned';
 import { buildActivityHookBundle } from './hook-bundle';
@@ -181,6 +182,8 @@ export default defineTool({
     session_id: z.string().max(256).optional(),
     /** The stable adv_sessions row id, when the launcher can carry it. */
     adv_session_id: z.coerce.number().int().positive().optional(),
+    /** Exact initial headless task row id, carried only by lifecycle hooks. */
+    agent_task_id: z.string().regex(/^[0-9a-z]{19}$/).optional(),
     /** PAPERCUSP_WAKE_DELIVERY_ID: set only on a child the wake executor spawned
      *  as a one-turn resume. Verified against the delivery ledger (WI-10005679). */
     wake_delivery_id: z.coerce.number().int().positive().optional(),
@@ -235,6 +238,16 @@ export default defineTool({
       (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
     if (!owner) {
       return { isError: true, content: [{ type: 'text', text: 'owner_required: pass the worker owner id (PAPERCUSP_SID).' }] };
+    }
+
+    // A worker may report itself, but cannot renew another owner's leases or
+    // trigger its lifecycle effects by presenting that owner's id. Native-session
+    // classification below only checks the presented owner, after telemetry.
+    // Keep the legacy explicit-owner path for transport-only hook ingestion.
+    let callerOwner: string | undefined;
+    try { callerOwner = resolveAgentIdentity(ctx).ownerId; } catch { /* No attributable caller. */ }
+    if (callerOwner && !isTransportOnlyIdentity(callerOwner) && callerOwner !== owner) {
+      return { isError: true, content: [{ type: 'text', text: 'owner_mismatch: activity owner must match the attributed caller.' }] };
     }
 
     // WI-10001513: this request is the ONLY thing that crosses the process boundary
@@ -399,11 +412,40 @@ export default defineTool({
             const reanchor = args.adv_session_id != null
               ? reanchorAdvSessionNativeId(args.adv_session_id, args.session_id.trim())
               : reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim());
-            await reanchor.catch((e) => {
+            const receipt = await reanchor.catch((e) => {
               console.warn(
                 `[activity:report] SessionStart reanchor for ${owner} failed: ${e instanceof Error ? e.message : e}`,
               );
+              return null;
             });
+            // Codex/OMP learn their native id only after bootstrap. If enrollment's
+            // one-shot task binder ran before this SessionStart, the adv row now has
+            // the missing id but task_ledger would stay unbound forever. Bind the
+            // exact enrolled row even if it already ended, then preserve the
+            // owner-wide live-row reconciliation for duplicate launches.
+            if (receipt?.owner === owner && (args.adv_session_id != null || args.agent_task_id != null)) {
+              try {
+                const { bindLiveAgentSessionTasksToNativeSession } = await import('../../task-manager/store');
+                const binding = {
+                  workspaceId,
+                  coordOwnerId: owner,
+                  sessionId: args.session_id.trim(),
+                };
+                if (args.agent_task_id) {
+                  await bindLiveAgentSessionTasksToNativeSession({
+                    ...binding,
+                    initialTaskId: args.agent_task_id,
+                  });
+                }
+                if (args.adv_session_id != null) {
+                  await bindLiveAgentSessionTasksToNativeSession(binding);
+                }
+              } catch (e) {
+                console.warn(
+                  `[activity:report] SessionStart task/session bind for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+                );
+              }
+            }
           }
         }
       } catch (e) {

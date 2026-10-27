@@ -1,0 +1,85 @@
+{
+  "purpose": "Recovery brief if tool-side checkpoint writes time out; reconcile their outcome before retrying.",
+  "owner": "su-58f6ce8c-a42b-4feb-ac5c-79a11355ec0f",
+  "workItem": "WI-6554700010029565",
+  "verificationWorkItem": "WI-6554700010029574",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "route": "Authorized SELF/AUTO; no new approval question. No git add/commit/push, live gate operations, or parallel native run.",
+  "currentContract": {
+    "planRevision": 7,
+    "rubricRevision": 3,
+    "rubricRef": "acceptance-quick-access-search-launcher-2026-10-26",
+    "criteriaHash": "abaa814655424e744256ade1ee4d41429a280dfb1e72d70e70bea842e798e7c5",
+    "barSetHash": "e565ad8813f57c88e46f8bcced41f3daea4e233abc2a010f0e5002aa603ca0a6",
+    "approval": "thread-post:1207137 approved exact preview 1207128; v6 amendment applied. This cannot approve a future pin.",
+    "decision": "D-003 records approved scope/reuse and omission of shared PID in exact focus. Audit4 covers plan6; refresh after final amendment.",
+    "qualityCard": "EI-27076424000251674",
+    "qualityAudit": "EI-27076740688222392 passed",
+    "activation": "Both independent bar critiques closed answered and accept activation. Last plans:start passed critique gate, then returned consult_available. Current schema permits consulted:true with consult_reason citing those reviews. Do not bypass independent certification."
+  },
+  "reviewFixes": {
+    "paths": [
+      "apps/operator/app/quick-panel/QuickAccessLauncher.tsx",
+      "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+      "apps/operator/e2e/quick-access.native.spec.mts"
+    ],
+    "changes": [
+      "Canonical focus action receives observed window or exact launch identity, without shared terminal-server PID.",
+      "Component suite now contains a real mismatched-report negative test and shared-PID launch-identity regression guard.",
+      "Native spec asserts selected conversation objective, visible/hit-testable controls and dialogs, and final real xdotool Escape."
+    ],
+    "componentVerification": "11 tests pass, managed task0mvpr6n7elg74mg1tm0, log .papercusp/scratch/bash-a456afc8-abc.log; completed exit0 at21:13:44Z.",
+    "nativeCollection": "Raw Playwright CLI collected1 test in1 file, task0mvpriwq09nf0lgwhhm, log .papercusp/scratch/bash-59198eef-405.log; completed exit0 at21:22:45Z. Earlier RTK collection output was not usable proof.",
+    "commit": "At21:24 component/source test edits were automatically committed, native spec remained dirty. Re-read git status/log for all3 paths, then use a new exact clean immutable image. Do not edit an immutable image."
+  },
+  "runningNativeBaseline": {
+    "taskId": "0mvppjb6iz9szf51kk4",
+    "bashId": "c2f8a489-f5d",
+    "source": "8361237bd65531b14a1ffdb2d413d25c6d065b9d",
+    "image": "/tmp/pcv/papercusp-lint-as-committed-8361237bd6-Xe2YzE",
+    "evidence": "/mnt/data/offload/verification-harness/verify-tauri-headless/20261026T202709Z-1140800",
+    "deadline": "2026-10-26T22:26:48Z",
+    "lastMeasured": "98 dependency trees prepared, SPA build passed, host bundle building. CgroupCPU2164s measured21:13; processes:list cpu507 was stale. Empty phases.jsonl means current phase not completed, not failure.",
+    "acceptance": "BASELINE ONLY after review source fixes. It cannot prove new source. Preserve one native run; do not overlap a new run."
+  },
+  "shortcutCargoRun": {
+    "taskId": "0mvpriowe2mckx4e9zz",
+    "bashId": "a6e1cc6b-ea6",
+    "deadline": "2026-10-26T22:02:18Z",
+    "command": "node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml -- docs_search::tests:: --nocapture",
+    "image": "/tmp/pcv/papercusp-lint-as-committed-8361237bd6-Xe2YzE",
+    "state": "Started; no result observed. Read durable log/task before any retry."
+  },
+  "existingProof": {
+    "focused": "55/55 tests on clean8361237b, pre/post provenance uncommitted0 unknown0, task0mvpq8ifv1dqab8e1rf, log172970d7-a30. 22 launcher/Escape +33 client-navigation.",
+    "acl": "test_runs22259678, run792e28b0-6fd1-4f60-8d13-14025343628a, clean8361237b: SPEC-P-002-visible-to-matrix and REPORT-CITED-READ-SCOPE-P001 both pass;37 other cases intentionally filtered. Actual ledger read reconciled timed-out testing:run; do not rerun to recover proof.",
+    "shortcut": "Existing docs_search.rs cfg(test) at629 includes OFF default, every preset roundtrip, rejected/successful rebind and disable guards. Earlier first-critic no-tests claim is false. Actual OS dispatch remains unverified."
+  },
+  "reviews": {
+    "firstCritique": "conv-request-cf728d54f73ab0d63955f7a18a248829c75c6cae5a64adb36491ba1f046e95a1 closed_answered, current answer1207157",
+    "secondCritique": "conv-request-62c6a6b452188e1c419a8cd06169440ca7d30fcdb39d219a94e9c27a72bcd49b closed_answered, posts1207173-75",
+    "vetting": "conv-mvpovia8-0000-a881effa571849bab729ea7a8206f6fe",
+    "vetter": "su-94041b37-9ef8-48de-a22b-931f2031bcc8",
+    "vettingIssue": "Recovered reviewer could not reply: not_a_participant. Delivered OBJECT via3 coord parts21:15: R1 shortcut under-bound. Asked explicit workspacepapercusp-workspace/harnesspapercusp :3170 retry; its envelope showed another harness, cause unproven. Asked whether existing actual Cargo OFF/preset/rebind proof+native popup covers preserved config or whether OS dispatch is mandatory. Read directed reply before further questions.",
+    "safety": "Shortcut setting is Server-tray-only; dev rig has no tray-setting IPC and persisted file uses real HOME, not isolated PAPERCUSP_HOME. NEVER edit Avi's real shortcut file for testing. No attestation or OS-dispatch pass is claimed."
+  },
+  "checkpointRecovery": {
+    "parentWrite": "/tmp/quick-access-latest-parent-checkpoint.json",
+    "parentRead": "/tmp/qa-latest-parent-read.json",
+    "loopWrite": "/tmp/quick-access-loop-latest.json",
+    "loopRead": "/tmp/qa-latest-loop-read.json",
+    "factWrite": "/tmp/quick-access-review-guard-fact.json",
+    "rule": "Several calls timed out or remained pending. Read authoritative state before retrying mutations; use recorded transport idempotency keys from .err files for an exact replay. Never reuse carried numeric exec handles.",
+    "lastConfirmedParentHash": "aa6c8cba455d at20:57",
+    "lastConfirmedP003Hash": "2ab6c7662315 at20:57",
+    "lastConfirmedLoopHash": "689d614f8e69 at20:58"
+  },
+  "terminalRunUpdate": {
+    "native": "Task0mvppjb6iz9szf51kk4 TERMINAL FAIL exit1 at21:28:41Z. result.json: preparePASS3129466ms, bootPASS235601ms, assertFAIL322968ms. Native test progressed through live plan and people, then timed out60s waiting for Close conversation after Talk at old spec line65. No native run remains active. Do not confuse this with the old xterm startup failure.",
+    "cargo": "Task0mvpriowe2mckx4e9zz TERMINAL PASS exit0 at21:23:52Z. 14 selected docs_search Rust tests passed,483 filtered, reporter inserted7/15 rows. Do not rerun to reconstruct proof; inspect durable log/ledger.",
+    "harnessAudit": "Two slow failures now have different causes: first xterm mapping race (fixed by sync), second Talk modal missing (cause UNPROVEN). Before another native attempt, complete harness audit on parent: retained error-context/Playwright trace describes the external runner, not native DOM. Native spec now automatically attaches actual native URL/body/dialogs/error/rejection list on predicate failure and asserts clicked controls exist and are enabled. This guards the missing-evidence class. No modal fix is claimed; investigate existing evidence or a cheaper browser/current-build route before another full run. Existing lazyWithRetry is used by other modal hosts; bare React.lazy in this launcher is a possible lead, NOT a measured cause.",
+    "loop": "Existing owner loop deliberately re-armed at21:39 for same approved task,120s cold,7200s deadman, workItem parent; old deadman was exhausted. Receipt /tmp/quick-access-loop-rearm.json. Do not spawn another loop.",
+    "vetting": "Event says a new canonical answer from su-5098e361-6831-4af8-9610-3980c99fbdef exists. Read /tmp/quick-access-vetting-recovered-answer.json or conversations:get; do not act solely on older94041 objection."
+  },
+  "next": "Read terminalRunUpdate first. Diagnose missing native Talk dialog; complete pre-rerun harness audit, commit all review/diagnostic changes automatically, read canonical recovered vetting answer, then choose new exact clean pin and request fresh outside amendment approval. Refresh audit/quality as required, bind actual current unit/Cargo/native proof, grade independently, complete plan/WIs and publish owner delivery with entry instructions. First-paint risk on real catalog remains unmeasured; do not invent an SLA or acceptance result."
+}

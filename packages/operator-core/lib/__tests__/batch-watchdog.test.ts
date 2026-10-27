@@ -22,6 +22,8 @@ import {
   resolveTaskTimeoutMs,
   decideWatchdogExpiry,
   createProgressAwareWatchdog,
+  resolveQualificationYieldBudget,
+  createQualificationYieldBoundary,
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
@@ -225,6 +227,105 @@ function fakeScheduler() {
 }
 
 const MINUTE = 60_000;
+
+describe('durable qualification quantum', () => {
+  const budget = () => {
+    const value = resolveQualificationYieldBudget({ startedAtMs: 0, quantumMs: 500,
+      deadlineEpochMs: 1_000, orphanDeadlineEpochMs: 1_200, cleanupReserveMs: 200, yieldReserveMs: 100 });
+    if (value.status !== 'ready') throw new Error(value.reason);
+    return value;
+  };
+  const flush = async () => { for (let n = 0; n < 8; n++) await Promise.resolve(); };
+  const setup = (read?: () => Promise<any>, commit?: () => Promise<boolean>) => {
+    const clock = fakeScheduler(), kills: string[] = [], yields: unknown[] = [], commits: unknown[] = [];
+    const watchdog = createQualificationYieldBoundary({ budget: budget(), identity: 'frozen-attempt-runner',
+      unitIds: ['a', 'b'], baselineReceipts: [{ unitId: 'a', completionId: 'old' }],
+      readDurableProgress: read ?? (async () => ({ status: 'ready', identity: 'frozen-attempt-runner', receipts: [
+        { unitId: 'a', completionId: 'old', state: 'pass', observedAtMs: 0 },
+        { unitId: 'b', completionId: 'new', state: 'pass', observedAtMs: 400 },
+      ] })),
+      commitYield: async progress => { commits.push(progress); return commit ? commit() : true; },
+      onYield: progress => yields.push(progress), onKill: d => kills.push(d.reason + (d.workerId ? `:${d.workerId}` : '')),
+      now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+    return { watchdog, clock, kills, yields, commits };
+  };
+
+  it('freezes independently specified execution, persistence, cleanup and orphan deadlines', () => {
+    expect(budget()).toEqual({ status: 'ready', startedAtMs: 0, callerDeadlineEpochMs: 1_000,
+      executionCutoffEpochMs: 500, yieldDeadlineEpochMs: 600, cleanupDeadlineEpochMs: 1_000, orphanDeadlineEpochMs: 1_200 });
+    expect(Object.isFrozen(budget())).toBe(true);
+    expect(resolveQualificationYieldBudget({ startedAtMs: 700, quantumMs: 500, deadlineEpochMs: 1_000,
+      orphanDeadlineEpochMs: 1_200, cleanupReserveMs: 200, yieldReserveMs: 100 }))
+      .toEqual({ status: 'refused', reason: 'deadline-reserve-exhausted' });
+  });
+
+  it('acknowledges a boundary only after the new exact receipt population is durably committed', async () => {
+    let finish!: (value: boolean) => void;
+    const s = setup(undefined, () => new Promise(resolve => { finish = resolve; }));
+    s.clock.advance(500); await flush();
+    expect(s.watchdog.state).toBe('persisting'); expect(s.yields).toEqual([]);
+    expect(s.commits).toMatchObject([{ completedUnitIds: ['a', 'b'], pendingUnitIds: [], newCompletionIds: ['new'] }]);
+    finish(true); await flush();
+    expect(s.watchdog.state).toBe('yielded'); expect(s.yields).toHaveLength(1); expect(s.kills).toEqual([]);
+    s.clock.advance(2_000); expect(s.kills).toEqual([]);
+  });
+
+  it('does not count repeated old receipts or output-shaped fields as progress', async () => {
+    const s = setup(async () => ({ status: 'ready', identity: 'frozen-attempt-runner', capturedBytes: 999999,
+      receipts: [{ unitId: 'a', completionId: 'old', state: 'pass', observedAtMs: 0 }] }));
+    s.clock.advance(500); await flush();
+    expect(s.kills).toEqual(['durable-progress-stalled']); expect(s.commits).toEqual([]); expect(s.yields).toEqual([]);
+  });
+
+  it('retains the frozen selected population when the caller changes its array', async () => {
+    const clock = fakeScheduler(), unitIds = ['a', 'b'];
+    const commits: unknown[] = [];
+    createQualificationYieldBoundary({ budget: budget(), identity: 'frozen-attempt-runner', unitIds,
+      readDurableProgress: async () => ({ status: 'ready', identity: 'frozen-attempt-runner', receipts: [
+        { unitId: 'a', completionId: 'new', state: 'pass', observedAtMs: 400 },
+      ] }),
+      commitYield: async progress => { commits.push(progress); return true; },
+      onKill: reason => { throw new Error(JSON.stringify(reason)); },
+      now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+    unitIds.splice(0, unitIds.length, 'forged');
+    clock.advance(500); await flush();
+    expect(commits).toMatchObject([{ completedUnitIds: ['a'], pendingUnitIds: ['b'] }]);
+  });
+
+  it('counts a custody-validated replacement completion as new progress', async () => {
+    const s = setup(async () => ({ status: 'ready', identity: 'frozen-attempt-runner', receipts: [
+      { unitId: 'a', completionId: 'retry', state: 'fail', observedAtMs: 400 },
+    ] }));
+    s.clock.advance(500); await flush();
+    expect(s.kills).toEqual([]);
+    expect(s.commits).toMatchObject([{ completedUnitIds: ['a'], pendingUnitIds: ['b'], newCompletionIds: ['retry'] }]);
+  });
+
+  it('kills a blocked worker even while its healthy peer completes', async () => {
+    const s = setup();
+    s.watchdog.workerStarted('db-blocked', 300); s.watchdog.workerStarted('healthy', 200);
+    s.clock.advance(100); expect(s.watchdog.workerFinished('healthy')).toBe(true);
+    s.watchdog.workerStarted('healthy-next', 200); s.clock.advance(100); s.watchdog.workerFinished('healthy-next');
+    s.clock.advance(100);
+    expect(s.kills).toEqual(['worker-stalled:db-blocked']); expect(s.yields).toEqual([]);
+  });
+
+  it.each(['read', 'commit'])('bounds a stalled %s before cleanup and refuses late acknowledgment', async stage => {
+    let finish!: (value: any) => void;
+    const pending = () => new Promise<any>(resolve => { finish = resolve; });
+    const s = setup(stage === 'read' ? pending : undefined, stage === 'commit' ? pending : undefined);
+    s.clock.advance(500); await flush(); s.clock.advance(100); await flush();
+    expect(s.kills).toEqual(['yield-deadline']); expect(s.watchdog.signal.aborted).toBe(true);
+    finish(true); await flush(); expect(s.yields).toEqual([]);
+  });
+
+  it('does not record or acknowledge after the physical runner settles during a slow read', async () => {
+    let finish!: (value: any) => void;
+    const s = setup(() => new Promise(resolve => { finish = resolve; }));
+    s.clock.advance(500); await flush(); s.watchdog.stop(); finish({ status: 'ready' }); await flush();
+    expect(s.commits).toEqual([]); expect(s.yields).toEqual([]); expect(s.kills).toEqual([]);
+  });
+});
 
 describe('createProgressAwareWatchdog', () => {
   const build = (scheduler: ReturnType<typeof fakeScheduler>) => {

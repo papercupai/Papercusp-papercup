@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "kind": "GF-P002-source-backend-falsifier-proof",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "specId": "GF-P002-source",
+  "specRevision": 1,
+  "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+  "status": "bounded routing falsifier caught; current staging clause acceptance remains open",
+  "sourceCommit": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+  "priorProof": {
+    "path": "docs/evidence/get-feedback-p002-clause-refresh-2026-10-23.json",
+    "sha256": "789c96073125e6d893d6dd136cbd052eaa6f03b204941b151188eda2b7549354"
+  },
+  "probe": {
+    "schemaVersion": 1,
+    "runnerPath": "scripts/mutation-probe.sh",
+    "runnerSha256": "0f7d5a047fad8010327bc359079db45fc4602db50e65fba8a57c35794f655ae4",
+    "runnerCommit": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+    "cwd": ".",
+    "argv": [
+      "--file",
+      "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "--mutate",
+      "s/\\Qif (!['claude', 'codex', 'omp'].includes(sourceAgent)) {\\E/if (sourceAgent !== 'claude') {/",
+      "--test",
+      "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts -t 'planDispatchOperation|reaches all three targets from fresh and ended'",
+      "--relocation",
+      "overlay"
+    ],
+    "result": {
+      "relocation": "overlay",
+      "expected": "caught",
+      "target": "copy-out",
+      "baselineLedger": "test_runs:21822750",
+      "mutantLedger": "test_runs:21822811",
+      "verdict": "caught",
+      "assertionEvidence": "test-file-assertion-failure",
+      "copyBaselineLedger": "test_runs:21822784",
+      "mutantParse": "ok",
+      "guardExit": 1,
+      "baselineExit": 0
+    }
+  },
+  "controlRuns": [
+    {
+      "id": 21822811,
+      "status": "fail",
+      "source": "mutation-probe",
+      "commitSha": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+      "harnessSlug": "papercusp",
+      "workspaceId": "papercusp-workspace",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    },
+    {
+      "id": 21822784,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commitSha": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+      "harnessSlug": "papercusp",
+      "workspaceId": "papercusp-workspace",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    },
+    {
+      "id": 21822750,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commitSha": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+      "harnessSlug": "papercusp",
+      "workspaceId": "papercusp-workspace",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    }
+  ],
+  "observedScope": {
+    "testFile": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+    "baseline": {
+      "passed": 11,
+      "failed": 0,
+      "unselected": 137
+    },
+    "unchangedCopyControl": {
+      "passed": 11,
+      "failed": 0,
+      "unselected": 137
+    },
+    "mutant": {
+      "passedControls": 9,
+      "failed": 2,
+      "unselected": 137
+    },
+    "exactFailedCases": [
+      "planDispatchOperation (D-009 walk shape) > an OMP source uses the maintained isolated port on its own backend",
+      "planDispatchOperation (D-009 walk shape) > a live or ended Codex source uses the maintained isolated port on its own backend"
+    ],
+    "oracle": "Pre-existing OMP and live/ended Codex eligibility assertions; mutation removes both backends from the supported source guard while keeping the native-fork backend. No expectations or product source were edited.",
+    "containment": "Private overlay; all post-baseline writes contained; original tracked source unchanged.",
+    "native": "Native launches are fake. This does not establish native actor attribution, source lease/ABA history, full filesystem noninterference, cohort quality, independent plan acceptance or shipment.",
+    "coverage": "Bounded eight source files and one test/inline-fixture file; no full imported-graph claim."
+  },
+  "sourceCensus": [
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/native-consult.ts",
+      "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-launch-core.ts",
+      "sha256": "d9efae7f3a67e27d2e5fefc03fe29725d432a37d66383b6a5a06fde41efcacc3",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/service.ts",
+      "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/source.ts",
+      "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/types.ts",
+      "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/adv-sessions.ts",
+      "sha256": "a03229266247b798d27e702b8e7e5e8203d642903930cfceac1c174c8bde8f6f",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-registry.ts",
+      "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+      "canonicalBytesMatch": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "canonicalBytesMatch": true
+    }
+  ],
+  "bindings": {
+    "writeCounts": {
+      "ok": 3,
+      "failed": 0
+    },
+    "created": [
+      {
+        "id": 66893,
+        "testRunId": 21822750,
+        "kind": "test",
+        "bindingFingerprint": "7ceca12a5b5a8f5dfdd48d3ff1fa53ef4224d02b5bbf1cb4d27fa9d2fdf070aa"
+      },
+      {
+        "id": 66894,
+        "testRunId": 21822784,
+        "kind": "test",
+        "bindingFingerprint": "960e25fe73cf73981adf2cc1fed45a1e529f807b1d876ff836d224b264ba7725"
+      },
+      {
+        "id": 66895,
+        "testRunId": 21822811,
+        "kind": "mutation",
+        "bindingFingerprint": "dd9090a48f21006d9abbeea288e59c70ecca66292e61ef61dc6ec696fc155c1e"
+      }
+    ],
+    "independentCurrentness": [
+      {
+        "id": 66895,
+        "currentness": {
+          "overall": "current",
+          "dimensions": {
+            "spec": "current",
+            "source": "current",
+            "test": "current",
+            "fixture": "current",
+            "rubric": "not-applicable",
+            "environment": "not-applicable",
+            "coverageEvidence": "not-applicable",
+            "testRun": "current"
+          },
+          "staleReasons": [],
+          "unknownReasons": [],
+          "comparisonSupplied": true,
+          "provenance": "server-measured"
+        }
+      },
+      {
+        "id": 66894,
+        "currentness": {
+          "overall": "current",
+          "dimensions": {
+            "spec": "current",
+            "source": "current",
+            "test": "current",
+            "fixture": "current",
+            "rubric": "not-applicable",
+            "environment": "not-applicable",
+            "coverageEvidence": "not-applicable",
+            "testRun": "current"
+          },
+          "staleReasons": [],
+          "unknownReasons": [],
+          "comparisonSupplied": true,
+          "provenance": "server-measured"
+        }
+      },
+      {
+        "id": 66893,
+        "currentness": {
+          "overall": "current",
+          "dimensions": {
+            "spec": "current",
+            "source": "current",
+            "test": "current",
+            "fixture": "current",
+            "rubric": "not-applicable",
+            "environment": "not-applicable",
+            "coverageEvidence": "not-applicable",
+            "testRun": "current"
+          },
+          "staleReasons": [],
+          "unknownReasons": [],
+          "comparisonSupplied": true,
+          "provenance": "server-measured"
+        }
+      }
+    ],
+    "casesMatchMeasuredFailures": true,
+    "retired": []
+  },
+  "governingStagingAssessment": {
+    "buildSha": "67f3342e8c",
+    "scope": "Unfiltered by evidence reference; both current P002 clauses.",
+    "rows": [
+      {
+        "specId": "AUTO-BAR-R-2-P-002",
+        "verdict": "pass",
+        "floor": null,
+        "wouldBlock": []
+      },
+      {
+        "specId": "GF-P002-source",
+        "verdict": "fail",
+        "floor": "l4",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "falsifiability",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor",
+          "disclosed-gap"
+        ]
+      }
+    ]
+  },
+  "focusedDiagnostic": {
+    "scope": "Only dispatcher test and new mutation references; diagnostic, not governing acceptance.",
+    "wouldBlock": [
+      "falsifiability",
+      "correct-layer",
+      "plan-class-risk-floor",
+      "disclosed-gap"
+    ],
+    "executionIntegrity": "pass; canonical selected cases and descriptor-linked baselines accepted",
+    "falsifierLimitation": "Successful mutation or counterexample binding(s) do not establish clause-scoped falsifiability for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07); The exact measured failed case has a passing current same-clause binding for get-feedback-reliability-usefulness-adoption-2026-10-03/GF-P002-source@1 (4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07), but its scenario label does not align with a canonical falsifier.requiredScenarios id and adequacy.targeted; an own-specId target establishes "
+  },
+  "evaluatorDifference": {
+    "stagingBuild": "67f3342e8c",
+    "stagingSelfTargetRule": "return clause.falsifier === null",
+    "testedCommittedBuild": "d9e349cba2a0ae86feaeaf7f39d3ae7959200d2d",
+    "committedSelfTargetRule": "return targetRequirement.acceptedTargets.includes(target)",
+    "verifiedBy": "Read both exact Git blobs of spec-test-adequacy.ts and dev:pipeline_position serving containment. Staging owner runtime does not contain the committed change. No clause, sourceBar, proof floor or scenario association was amended to obtain a pass."
+  },
+  "stagingRefreshBlocker": {
+    "observedUnit": "papercup-staging-sync.service",
+    "observedFailure": "09:08:27 EDT: candidate d9e349cba2 fails forward-compat check on unarmed migration1567; old API intentionally kept serving.",
+    "canonicalFixItem": "WI-6554700010022152",
+    "duplicateRecord": "EI-26772996468181965",
+    "disposition": "Existing dropped duplicate reports canonical migration armed/applied under its owning item; candidate publication remains a separate step. Its current checkpoint assigns publication to another driver; no parallel updater or restart was launched.",
+    "caution": "A staging restart alone reuses the same pin. Reuse maintained sync-staging-checkout publication after containing committed migration, preserving all migration guards."
+  },
+  "remaining": [
+    "Retain all historical source-isolation mutations and native disclosure bindings; the new reachability mutant is not their equivalent.",
+    "Qualify against an owner runtime containing the committed evaluator and preserve full-clause history; no L4 acceptance is claimed from the old staging verdict.",
+    "Native actor/source-transition and lease ABA limits remain on EI-26733731037199530/WI-10005891.",
+    "Original and supplementary quality-cohort shortfalls, independent acceptance, original R5 defect and exact shipment remain open."
+  ],
+  "unchanged": [
+    "Existing tests and tracked production source",
+    "GF-P002-source@1 identity, sourceBar null, required L4 floor and D006/D017/D020",
+    "Frozen original native/cohort evidence and earlier proof artifacts"
+  ]
+}

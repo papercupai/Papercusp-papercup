@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto';
 import type { ParsedRequirementBar } from './acceptance-bar-seed';
 
 export type RequirementsDriftField =
+  | 'intent'
   | 'model'
   | 'driftMarkers'
   | 'method'
@@ -111,13 +112,13 @@ const barNumber = (barKey: string): number => {
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 };
 
-/** Requirement text also represents METHOD/replication, which do not change BAR meaning. */
+/** Requirement text also represents Intent and METHOD/replication, which do not change BAR meaning. */
 export function amendedRequirementBarKeys(
   priorCriteria: ReadonlyArray<Record<string, unknown>>,
   nextCriteria: ReadonlyArray<Record<string, unknown>>,
 ): string[] {
   const priorByBar = new Map(priorCriteria.map((criterion) => [criterion.barKey, criterion]));
-  const fields = ['model', 'driftMarkers', ...VERIFICATION_FIELDS, ...STATED_ACCEPTANCE_FIELDS] as const;
+  const fields = ['intent', 'model', 'driftMarkers', ...VERIFICATION_FIELDS, ...STATED_ACCEPTANCE_FIELDS] as const;
   return nextCriteria.flatMap((criterion) => {
     const barKey = typeof criterion.barKey === 'string' ? criterion.barKey.trim() : '';
     const prior = priorByBar.get(barKey);
@@ -150,6 +151,9 @@ export function diffAmendedCriteriaAgainstRequirements(input: {
     if (comparable(criterion.model) !== comparable(plan.model)) fields.push('model');
     if (plan.criterion) {
       const stated = plan.criterion as Record<string, unknown>;
+      // Legacy criteria may omit Intent; only supplied canonical provenance
+      // supersedes the plan's recorded request.
+      if (isRecord(criterion.intent) && !sameStructure(criterion.intent, stated.intent)) fields.push('intent');
       if (comparable(criterion.driftMarkers) !== comparable(stated.driftMarkers)) fields.push('driftMarkers');
       for (const field of VERIFICATION_FIELDS) {
         if (!sameStructure(criterion[field], stated[field])) fields.push(field);
@@ -201,11 +205,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * pui-chat-first-ux rev 10, where a vetter graded the stale `check.files` from the plan block).
  *
  * This is the inverse of `diffAmendedCriteriaAgainstRequirements`: it writes exactly the fields that
- * function compares — condition (model), falsifier (driftMarkers), method/check/replication, and any
- * STATED acceptance metadata — so a re-rendered block reads in sync. Acceptance metadata the block
- * does not state is left unstated, because the seeder derives it from the Bar-to-work map. Intent is
- * the plan's own record of the request and is never rewritten. Legacy prose R-N records, unchanged
- * BARs, and blocks that do not parse are left byte-identical. Pure: callers write the result.
+ * function compares — supplied Intent, condition (model), falsifier (driftMarkers),
+ * method/check/replication, and any STATED acceptance metadata — so a re-rendered block reads in
+ * sync. Acceptance metadata the block does not state is left unstated, because the seeder derives
+ * it from the Bar-to-work map. Legacy criteria that omit Intent preserve the plan's recorded
+ * request. Legacy prose R-N records, unchanged BARs, and blocks that do not parse are left
+ * byte-identical. Pure: callers write the result.
  */
 export function rerenderAmendedRequirementBlocks(
   planContent: string,
@@ -263,7 +268,12 @@ export function rerenderAmendedRequirementBlocks(
       if (criterion[field] === undefined || criterion[field] === null) delete verification[field];
       else verification[field] = criterion[field];
     }
-    const next = JSON.stringify({ ...block, acceptance, verification });
+    const next = JSON.stringify({
+      ...block,
+      ...(isRecord(criterion.intent) ? { intent: criterion.intent } : {}),
+      acceptance,
+      verification,
+    });
     if (next === lines.slice(index + 1, close).join('\n')) continue;
     lines.splice(index + 1, close - index - 1, next);
     end -= close - index - 2;

@@ -58,7 +58,7 @@ const ctx = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as never;
 
-function record(toolName: string, over: Record<string, unknown> = {}): Promise<void> | void {
+function record(toolName: string, over: Record<string, unknown> = {}, args: unknown = { a: 1 }): Promise<void> | void {
   return PROJECTED_DEPS.recordInvocation!({
     toolName,
     pluginName: 'agent-mcp',
@@ -66,7 +66,7 @@ function record(toolName: string, over: Record<string, unknown> = {}): Promise<v
     windowKey: 'w1',
     durationMs: 3,
     status: 'ok',
-    args: { a: 1 },
+    args,
   } as never);
 }
 
@@ -196,5 +196,95 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
     expect(captured.filter((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('retains oversized completion target and preview identity in the actual SQL arguments', async () => {
+    const args = {
+      id: 'WI-6554700010020287',
+      harness: 'papercusp',
+      state: 'done',
+      validateOnly: true,
+      recordOnly: false,
+      completion: { summary: 'large evidence '.repeat(4000) },
+    };
+    await record('work_items:complete', {}, args);
+    await flushPendingTelemetry();
+
+    const insert = captured.find(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    const stored = String(insert.params[16]);
+    expect(JSON.parse(stored)).toEqual({
+      _truncated: true,
+      _size: JSON.stringify(args).length,
+      id: args.id,
+      harness: args.harness,
+      state: 'done',
+      validateOnly: true,
+      recordOnly: false,
+    });
+    expect(stored.length).toBeLessThanOrEqual(32768);
+  });
+
+  it('retains bulk target overrides without mistaking omitted flags for false', async () => {
+    const items = [
+      { id: 'WI-1', completion: { summary: 'evidence'.repeat(6000) } },
+      { id: 'EI-2', harness: 'engineering', state: 'resolved', validateOnly: false, recordOnly: true,
+        completion: { summary: 'second' } },
+    ];
+    await record('work_items:complete', {}, { harness: 'papercusp', validateOnly: true, items });
+    await flushPendingTelemetry();
+
+    const insert = captured.find(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    const stored = JSON.parse(String(insert.params[16]));
+    expect(stored).toMatchObject({
+      _truncated: true,
+      harness: 'papercusp',
+      validateOnly: true,
+      items: [
+        { id: 'WI-1' },
+        { id: 'EI-2', harness: 'engineering', state: 'resolved', validateOnly: false, recordOnly: true },
+      ],
+    });
+    expect(stored.items[0]).not.toHaveProperty('validateOnly');
+    expect(stored.items[0]).not.toHaveProperty('recordOnly');
+    expect(stored.items.every((item: object) => !('completion' in item))).toBe(true);
+  });
+
+  it('bounds bulk identity and explicitly reports targets omitted from oversized or invalid input', async () => {
+    const items = Array.from({ length: 101 }, (_, index) => ({
+      id: `WI-${index}`,
+      harness: '\u0001'.repeat(80),
+      state: '\u0001'.repeat(40),
+      completion: { summary: 'evidence'.repeat(100) },
+    }));
+    await record('work_items:complete', {}, { items });
+    await flushPendingTelemetry();
+
+    const insert = captured.find(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    const serialized = String(insert.params[16]);
+    const stored = JSON.parse(serialized);
+    expect(serialized.length).toBeLessThanOrEqual(32768);
+    expect(stored._itemsCount).toBe(items.length);
+    expect(stored._itemsOmitted).toBeGreaterThan(0);
+    expect(stored.items.length + stored._itemsOmitted).toBe(items.length);
+    expect(stored.items[0].id).toBe('WI-0');
+  });
+
+  it('preserves normal args and null authorization-refusal args, and leaves unrelated large payloads opaque', async () => {
+    const normal = { id: 'EI-3', validateOnly: false, completion: { summary: 'small' } };
+    await record('work_items:complete', {}, normal);
+    await PROJECTED_DEPS.recordInvocation!({
+      toolName: 'work_items:complete', pluginName: 'agent-mcp', ctx: ctx(), windowKey: 'w1',
+      durationMs: 1, status: 'role-not-allowed', args: null,
+    });
+    const unrelated = { id: 'secret-looking-content', body: 'x'.repeat(40000) };
+    await record('other:tool', {}, unrelated);
+    await flushPendingTelemetry();
+
+    const inserts = captured.filter(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'));
+    expect(inserts.map(c => c.params[16])).toEqual([
+      JSON.stringify(normal),
+      null,
+      JSON.stringify({ _truncated: true, _size: JSON.stringify(unrelated).length }),
+    ]);
   });
 });

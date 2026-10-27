@@ -80,11 +80,41 @@ describe('selectHistoryWithinBudget', () => {
     expect(result.map((m) => m.content)).toEqual(['first', 'second', 'third', 'fourth']);
   });
 
-  it('always keeps at least the most-recent message even if it exceeds budget alone', () => {
+  it('refuses when the most-recent message cannot fit the hard budget', () => {
     const huge = 'x'.repeat(2000); // 500 tokens + 8 overhead = 508 tokens
-    const result = selectHistoryWithinBudget([msg('user', huge)], 10);
-    expect(result).toHaveLength(1);
-    expect(result[0].content).toBe(huge);
+    expect(() => selectHistoryWithinBudget([msg('user', huge)], 10)).toThrow('history-budget-exceeded');
+  });
+
+  it('P010 hard history budget', () => {
+    const messages = [msg('assistant', 'older'.repeat(1600)), msg('user', 'latest'.repeat(1300))];
+    // The host supplies its real rendered cost, including the existing summary and framing.
+    const cost = (selected: ReadonlyArray<ReturnType<typeof msg>>) => Math.ceil(JSON.stringify({
+      summary: 's'.repeat(6000), messages: selected,
+    }).length / 4);
+    const latestOnly = [messages[1]];
+    const exact = cost(latestOnly);
+    for (const budget of [exact, exact + 1]) {
+      const selected = selectHistoryWithinBudget(messages, budget, 8000, cost);
+      expect(selected).toEqual(latestOnly);
+      expect(cost(selected)).toBeLessThanOrEqual(budget);
+    }
+    expect(() => selectHistoryWithinBudget(messages, exact - 1, 8000, cost))
+      .toThrow('history-budget-exceeded');
+    expect(selectHistoryWithinBudget(messages, cost(messages), 8000, cost)).toEqual(messages);
+    expect(() => selectHistoryWithinBudget([], 5000, 8000, () => 5001))
+      .toThrow('history-budget-exceeded');
+    expect(() => selectHistoryWithinBudget(messages, 5000, 8000, () => Number.NaN))
+      .toThrow('invalid-history-estimate');
+    const long = Array.from({ length: 16384 }, (_, id) => ({ ...msg('user', ''), id }));
+    let estimates = 0;
+    const bounded = selectHistoryWithinBudget(long, 5000, 8000, selected => {
+      estimates++;
+      return 1000 + selected.length;
+    });
+    expect(bounded).toHaveLength(4000);
+    expect(bounded[0].id).toBe(12384);
+    expect(bounded.at(-1)?.id).toBe(16383);
+    expect(estimates).toBeLessThan(100);
   });
 
   it('respects per-turn overhead in budget accounting', () => {

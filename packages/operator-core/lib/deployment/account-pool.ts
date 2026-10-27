@@ -234,6 +234,12 @@ export interface AccountRateState {
   /** When credit eligibility was observed; a credit-only update is not a new usage-window reading. */
   usageCreditsObservedAt?: number;
   creditBalance?: AccountCreditBalance;
+  /** WI-6554700010029499: the subscription tier the provider reports on every response (codex:
+   *  `x-codex-plan-type`, e.g. `pro` / `plus` / `free`), lower-cased. A drop in tier silently cuts the
+   *  account's window capacity, so the write seam compares it against the previous reading. */
+  planType?: string;
+  /** Epoch ms `planType` was last observed. */
+  planObservedAt?: number;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -587,7 +593,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
   now: number,
 ): AccountPool {
   return {
@@ -605,6 +611,7 @@ export function recordAccountWindow(
             ? now : a.rate.utilizationAt,
         ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined
           ? { usageCreditsAvailable: w.usageCreditsAvailable, usageCreditsObservedAt: now } : {}),
+        ...(w.planType ? { planType: w.planType, planObservedAt: now } : {}),
         ...(w.creditBalance &&
           ((w.creditBalance.unit === 'credits' && accountProvider(a) === 'codex') ||
            (w.creditBalance.unit === 'USD' && accountProvider(a) === 'claude' && a.credentialRef.startsWith('apikey:'))) &&
@@ -881,6 +888,25 @@ export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVer
 /** Shorthand: the stale-gated burn action for selection wiring. */
 export function accountBurnAction(a: Pick<ClaudeAccount, 'rate'>, now: number): BurnAction {
   return accountBurnVerdict(a.rate, now).action;
+}
+
+/**
+ * The burn action the inference GATEWAY applies to individual requests — NOT the spawn pin.
+ *
+ * A `shed` resting on a `measured-wall` (the provider's own meter says the window is spent) keeps
+ * the account out of the gateway race. A `shed` resting on a `pacing-projection` only refuses the
+ * hard spawn PIN (see `selectAccountForSpawn`): the account still serves, so at the gateway it
+ * ranks as `throttle` — behind every non-burning account, never refused outright.
+ *
+ * Passing the raw spawn action to the gateway made `accountLoadKey` score a projected shed as
+ * Infinity, so the gateway answered 429 to every request for a model only those accounts serve
+ * while the provider returned zero 429s (WI-6554700010029796: the two Pro Codex accounts at 7d
+ * utilization 0.91, gpt-6.1-sol shed in bursts for hours).
+ */
+export function accountGatewayBurnAction(a: Pick<ClaudeAccount, 'rate'>, now: number): BurnAction {
+  const verdict = accountBurnVerdict(a.rate, now);
+  if (verdict.action === 'shed' && verdict.disposition !== 'measured-wall') return 'throttle';
+  return verdict.action;
 }
 
 /** The account's drain-relevant utilization: the observed unified-5h fraction, or 0 when never

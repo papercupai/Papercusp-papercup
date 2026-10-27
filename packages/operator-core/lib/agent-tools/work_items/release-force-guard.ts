@@ -43,7 +43,8 @@ export type ForceReleaseBasis =
   | 'holder-wake-missed'
   | 'announced-release-request-expired'
   | 'queen'
-  | 'leads-holder-fleet';
+  | 'leads-holder-fleet'
+  | 'owner-directive';
 
 /** A checked cross-holder mutation that can leave a forensic trail. */
 export type ForceTransition = 'release' | 'claim';
@@ -471,8 +472,75 @@ export function forceRefusalHint(holder: string): string {
     `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases) — OR the shared liveness oracle (the same one coord:wake trusts) independently reporting the session \`ended\`/\`suspect\` (EI-18907586326157984), holding system-authority as an Overwatch pane, queen authority, or leading ${holder}'s OWN fleet. ` +
     `An accepted session:end acknowledgement also authorizes a reclaim while the host is winding down. ` +
     `A terminal wake with no post-attempt activity may also authorize a reclaim, but a queued/pending wake is not a miss. ` +
-    `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing.`
+    `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing. ` +
+    `If the OWNER told you to take this work, retry with { force:true, reason, directiveRef:<your open owner directive #> }: ` +
+    `an open, hook-captured owner directive addressed to YOUR session authorizes the takeover even over a live holder (basis owner-directive).`
   );
+}
+
+/**
+ * Owner-directive force authority (WI-6554700010029971, owner directives #2495/#2496,
+ * 2026-10-27: "FIX OUR SYSTEM TO ALLOW AGENTS TO FORCE A CLAIM EVEN IF THE SYSTEM THINKS
+ * THE OTHER AGENT IS ACTIVE").
+ *
+ * Incident: the owner ended a fleet's agents and told su-96b7fe62 to take the gate item.
+ * One holder was a headless Codex process the owner's kill never reached; it kept a live
+ * heartbeat, so every force claim was refused `force_unauthorized` and the gate sat with a
+ * holder that was not going to do the work. None of the existing bases (not-live,
+ * warm-idle, leader, queen) can express "the owner said so".
+ *
+ * The owner's word is the authority, so the check is on the OWNER'S TURN, never on
+ * agent prose: the directive must (1) exist in this workspace, (2) have been captured by
+ * the UserPromptSubmit provenance hook — i.e. typed by the owner, not written by an agent
+ * through orders:record, (3) be addressed to the CALLING session (`recorded_by`; the
+ * owner often pastes one message into several sessions, and each copy authorizes only
+ * its own session), (4) still be open, and (5) be recent. The directive id and an
+ * excerpt ride into the force reason, so the audit row and the displaced holder's
+ * notification both name the owner turn that authorized the takeover.
+ */
+export const OWNER_FORCE_DIRECTIVE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export interface OwnerForceDirectiveRow {
+  id: number;
+  workspaceId: string;
+  recordedBy: string;
+  verbatimText: string;
+  createdAtMs: number;
+  dispositionedAtMs: number | null;
+  capturedByHook?: boolean;
+}
+
+export type OwnerForceDirectiveVerdict =
+  | { ok: true; directiveId: number; excerpt: string }
+  | { ok: false; reason: string };
+
+export async function verifyOwnerForceDirective(
+  input: { directiveId: number; callerOwnerId: string; workspaceId: string },
+  deps: { getDirective?: (id: number) => Promise<OwnerForceDirectiveRow | null>; now?: () => number } = {},
+): Promise<OwnerForceDirectiveVerdict> {
+  const getDirective =
+    deps.getDirective ?? (async (id: number) => (await import('../../owner-directives')).getOwnerDirective(id));
+  let row: OwnerForceDirectiveRow | null;
+  try {
+    row = await getDirective(input.directiveId);
+  } catch (err) {
+    return { ok: false, reason: `directive #${input.directiveId} could not be read (${String(err).slice(0, 120)})` };
+  }
+  const id = input.directiveId;
+  if (!row || row.workspaceId !== input.workspaceId) return { ok: false, reason: `directive #${id} not found in this workspace` };
+  if (row.capturedByHook !== true) {
+    return { ok: false, reason: `directive #${id} was agent-recorded (orders:record), not captured from an owner-typed turn` };
+  }
+  if (row.recordedBy !== input.callerOwnerId) {
+    return { ok: false, reason: `directive #${id} was addressed to ${row.recordedBy}, not to you (${input.callerOwnerId})` };
+  }
+  if (row.dispositionedAtMs != null) return { ok: false, reason: `directive #${id} is already closed` };
+  const now = (deps.now ?? Date.now)();
+  if (now - row.createdAtMs > OWNER_FORCE_DIRECTIVE_MAX_AGE_MS) {
+    return { ok: false, reason: `directive #${id} is older than ${OWNER_FORCE_DIRECTIVE_MAX_AGE_MS / 3_600_000}h` };
+  }
+  const excerpt = row.verbatimText.replace(/\s+/g, ' ').trim().slice(0, 160);
+  return { ok: true, directiveId: id, excerpt };
 }
 
 /** Forensic audit row — mirrors release/deploy.ts's canonical full-column shape.

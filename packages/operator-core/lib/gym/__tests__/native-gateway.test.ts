@@ -155,6 +155,53 @@ describe('native Gym governor-backed provider controller', () => {
     expect(f.reserve).not.toHaveBeenCalled(); f.revoke();
   });
 
+  function modelLimitFixture() {
+    const f = controllerFixture();
+    const request: GatewayCarryTrialAttempt = { ...f.request, credentialHeader: 'x-api-key',
+      target: 'https://api.anthropic.com/v1/messages', anthropicVersion: '2023-06-01', anthropicBeta: null };
+    const proof = { kind: 'provider-model-limit' as const, sourceSha256: digest('model contract'),
+      bodySha256: request.bodySha256, responseSha256: digest('model response'), requestId: 'req-model',
+      model: 'approved-model', inputTokens: 100, outputTokens: 128, anthropicVersion: '2023-06-01' as const };
+    f.authority.inputEvidence = proof;
+    return { ...f, request, proof };
+  }
+  it('reserves the full Anthropic model input window while retaining the explicit requested output cap', async () => {
+    const f = modelLimitFixture();
+    Object.assign(f.proof, { privateCredential: 'do-not-copy' });
+    try {
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).not.toBeNull();
+      const input = f.reserve.mock.calls[0]![1];
+      expect(input.cycle?.resources).toEqual({ armId: 'native-cycle', inputTokens: 100, outputTokens: 41 });
+      expect(JSON.parse(input.note!).inputEvidence).toEqual({ kind: 'provider-model-limit',
+        sourceSha256: digest('model contract'), bodySha256: f.request.bodySha256, responseSha256: digest('model response'),
+        requestId: 'req-model', model: 'approved-model', inputTokens: 100, outputTokens: 128, anthropicVersion: '2023-06-01' });
+      expect(input.note).not.toContain('do-not-copy');
+    } finally { f.revoke(); }
+  });
+  it.each(['beta', 'missing-beta', 'version', 'oauth', 'route', 'model', 'input', 'output', 'response', 'body', 'request-id', 'missing-cap'])(
+    'refuses Anthropic model-limit proof with %s drift before reserving', async changed => {
+      const f = modelLimitFixture(), patch: { -readonly [K in keyof GatewayCarryTrialAttempt]?: GatewayCarryTrialAttempt[K] } = {};
+      if (changed === 'beta') patch.anthropicBeta = 'context-1m-2025-08-07';
+      if (changed === 'missing-beta') patch.anthropicBeta = undefined;
+      if (changed === 'version') patch.anthropicVersion = '2099-01-01';
+      if (changed === 'oauth') patch.credentialHeader = 'authorization';
+      if (changed === 'route') patch.target = 'https://provider.invalid/v1/messages';
+      if (changed === 'model') f.proof.model = 'foreign';
+      if (changed === 'input') f.proof.inputTokens--;
+      if (changed === 'output') f.proof.outputTokens = 40;
+      if (changed === 'response') f.proof.responseSha256 = 'invalid';
+      if (changed === 'body') f.proof.bodySha256 = digest('foreign');
+      if (changed === 'request-id') f.proof.requestId = 'invalid request id';
+      if (changed === 'missing-cap') {
+        const body = JSON.stringify({ model: 'approved-model', messages: [] });
+        patch.body = body; patch.bodySha256 = digest(body); f.proof.bodySha256 = patch.bodySha256;
+      }
+      try {
+        expect(await f.gateway.carryTrial.authorizeAttempt({ ...f.request, ...patch })).toBeNull();
+        expect(f.reserve).not.toHaveBeenCalled();
+      } finally { f.revoke(); }
+    });
+
   // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: the ChatGPT subscription backend
   // rejects max_output_tokens, so only host evidence of the provider's own frozen limits
   // may stand in for the per-request output field, and only on that oauth-http route.

@@ -100,6 +100,7 @@ async function deleteFromPg(opts: UsageProjectionOpts, _key: string): Promise<vo
 export function buildUsageProjection(opts: UsageProjectionOpts): TableProjection<ContributorUsageEventRow> {
   return {
     tableTag: 'usage',
+    mergeRule: 'append-only',
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

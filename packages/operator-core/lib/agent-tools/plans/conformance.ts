@@ -12,6 +12,8 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createPhaseTracker, type AbortCompletionContext, type AbortCompletionReceipt, type PhaseTracker, type ToolResult } from '@papercusp/tooldef';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { harnessArg, harnessScopedCtx, isAllHarnessSentinel } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { readPlanBySlug } from './source';
@@ -20,6 +22,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { parseTurnRefs, verifyTurnRefs, type TurnRefVerdict } from '../../turn-provenance/turn-ref';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { buildConformanceReport, loadConformanceReportPlans } from '../../spec-conformance/conformance-report';
+import type { SweepWatermarkWrite } from '../../spec-conformance/sweep-action';
 import {
   approveDeviation,
   OWNER_TURN_VERDICT_SET,
@@ -144,6 +147,75 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
   ...(isError ? { isError: true as const } : {}),
 });
 
+/** Keep a stalled run observable even before dispatch can write its invocation row. */
+async function withConformanceRunDiagnostics<T>(
+  ctx: UnifiedToolContext,
+  work: (phases: PhaseTracker) => Promise<T>,
+): Promise<T> {
+  const phases = ctx.phases ?? createPhaseTracker({ historyCap: 32 });
+  let slow = false;
+  const report = (event: 'pending' | 'progress' | 'settled'): void => {
+    try {
+      console.info(`[spec-conformance-phase] ${JSON.stringify({
+        event,
+        traceId: ctx.requestOrigin?.mcpRequestTraceId ?? null,
+        dispatchCallId: ctx.dispatchCallId ?? null,
+        phases: phases.snapshot(),
+      })}`);
+    } catch { /* Diagnostics cannot change the run or authorize a retry. */ }
+  };
+  // One observation per slow run, then only real phase transitions; no polling.
+  const timer = setTimeout(() => { slow = true; report('pending'); }, 5_000);
+  timer.unref?.();
+  const track: PhaseTracker['track'] = (phase, operation) => {
+    const pending = phases.track(phase, operation);
+    if (slow) report('progress');
+    return pending;
+  };
+  try {
+    return await work({ ...phases, track });
+  } finally {
+    clearTimeout(timer);
+    if (slow) report('settled');
+  }
+}
+
+/** Recover only this returned run's acknowledged watermark write; never make runs idempotent. */
+export function conformanceRunAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const incomplete = (): AbortCompletionReceipt => ({
+    status: 'recovery-incomplete',
+    reason: 'conformance result did not prove this attempt and its persisted target watermark',
+    failures: ['missing-or-mismatched-conformance-receipt'],
+  });
+  const input = asRecord(args);
+  const payload = completedResultPayload(result);
+  const receipt = asRecord(payload?.runReceipt);
+  const run = Array.isArray(payload?.ran) && payload.ran.length === 1 ? asRecord(payload.ran[0]) : null;
+  if (
+    context.toolName !== 'plans:conformance' || !context.callId.trim() || result.isError ||
+    input?.op !== 'run' || payload?.ok !== true || payload.op !== 'run' || !receipt ||
+    receipt.attemptId !== context.callId ||
+    typeof receipt.workspaceId !== 'string' || !receipt.workspaceId.trim() ||
+    typeof receipt.harnessSlug !== 'string' || !receipt.harnessSlug.trim() ||
+    ['*', 'all'].includes(receipt.harnessSlug) ||
+    receipt.harnessSlug !== payload.harnessSlug ||
+    (input.harness != null && input.harness !== receipt.harnessSlug) ||
+    typeof receipt.planSlug !== 'string' || !receipt.planSlug.trim() ||
+    receipt.planSlug !== input.slug || receipt.planSlug !== payload.planSlug ||
+    typeof receipt.lastRunAt !== 'string' || !Number.isFinite(Date.parse(receipt.lastRunAt)) ||
+    run?.ok !== true || run.key !== `${receipt.harnessSlug}/${receipt.planSlug}`
+  ) return incomplete();
+  return {
+    status: 'recorded',
+    effectRef: `spec-conformance:${context.callId}:${encodeURIComponent(receipt.workspaceId)}:${encodeURIComponent(receipt.harnessSlug)}:${encodeURIComponent(receipt.planSlug)}:${receipt.lastRunAt}`,
+    diagnostics: { ...receipt, summary: run.summary },
+  };
+}
+
 export default defineTool({
   name: 'plans:conformance',
   description:
@@ -155,6 +227,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
+  abortCompletionReceipt: conformanceRunAbortCompletionReceipt,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: argsSchema,
@@ -165,17 +238,42 @@ export default defineTool({
       if (isAllHarnessSentinel(sctx.harnessSlug)) {
         return text({ ok: false, error: 'invalid_args', message: "op:'run' requires one concrete harness" }, true);
       }
-      const opts = await ctxToPlanSourceOpts(sctx);
-      const read = await readPlanBySlug(args.slug, opts);
-      if (!read) return text({ ok: false, error: 'plan_not_found', slug: args.slug }, true);
-      const target = { harnessSlug: read.row.harnessSlug, planSlug: args.slug };
-      const { productionSweepDeps, runSpecConformanceSweep } = await import('../../spec-conformance/sweep-action');
-      const outcome = await runSpecConformanceSweep({ target }, {
-        ...productionSweepDeps({ workspaceId: opts.workspaceId ?? activeWorkspaceId() }),
-        listPlans: async () => [{ ...target, content: read.row.content }],
+      return withConformanceRunDiagnostics(ctx, async (phases) => {
+        const { track } = phases;
+        const opts = await track('sourceOptions', () => ctxToPlanSourceOpts(sctx));
+        const read = await track('readPlan', () => readPlanBySlug(args.slug!, opts));
+        if (!read) return text({ ok: false, error: 'plan_not_found', slug: args.slug }, true);
+        const target = { harnessSlug: read.row.harnessSlug, planSlug: args.slug! };
+        const { productionSweepDeps, runSpecConformanceSweep } = await track('loadSweep', () => import('../../spec-conformance/sweep-action'));
+        const deps = productionSweepDeps({ workspaceId: opts.workspaceId ?? activeWorkspaceId(), phases });
+        const persisted: { row: SweepWatermarkWrite | null } = { row: null };
+        const outcome = await track('sweep', () => runSpecConformanceSweep({ target }, {
+          ...deps,
+          listPlans: () => track('listPlans', async () => [{ ...target, content: read.row.content }]),
+          readWatermarks: () => track('readWatermarks', () => deps.readWatermarks()),
+          lastTransitions: (plans) => track('lastTransitions', () => deps.lastTransitions(plans)),
+          footprintWindow: (plan, sinceSha) => track('footprintWindow', () => deps.footprintWindow(plan, sinceSha)),
+          reconcileFootprint: (plan, sinceSha, window) => track('reconcileFootprint', () => deps.reconcileFootprint(plan, sinceSha, window)),
+          runConformance: (plan) => track('runConformance', () => deps.runConformance(plan)),
+          writeWatermark: (row) => track('writeWatermark', async () => {
+            await deps.writeWatermark(row);
+            persisted.row = row;
+          }),
+        }));
+        const ok = outcome.ran.length === 1 && outcome.ran[0].ok;
+        return text({
+          ok, op: 'run', ...target, ...outcome,
+          ...(persisted.row && ctx.dispatchCallId ? {
+            runReceipt: {
+              attemptId: ctx.dispatchCallId,
+              workspaceId: opts.workspaceId ?? activeWorkspaceId(),
+              harnessSlug: persisted.row.harnessSlug,
+              planSlug: persisted.row.planSlug,
+              lastRunAt: persisted.row.lastRunAt,
+            },
+          } : {}),
+        }, !ok);
       });
-      const ok = outcome.ran.length === 1 && outcome.ran[0].ok;
-      return text({ ok, op: 'run', ...target, ...outcome }, !ok);
     }
     if (args.op === 'report') {
       // R-22 census: read-only, so it needs no plan slug and writes nothing. A harness

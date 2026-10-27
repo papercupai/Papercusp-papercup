@@ -15,6 +15,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { judgeToolDeliveryDoc } from './tool-delivery-doc-measurements';
+import { measureToolDeliveryHalves } from '../../../../scripts/gen-tool-delivery';
+import { getEncoding } from 'js-tiktoken';
+import { compactInputSchema, summaryGuidanceDescription } from '@papercusp/tooldef';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -32,6 +35,9 @@ WIRE_BYTES       full=1599477  compact=649761  savedByCompact=949716
 GUIDANCE_BYTES   full=334797   summary=81030   savedBySummary=253767
 DEFINITION_BYTES  full=369616  compact=100418  savedByCompact=269198
 DEFINITION_TOKENS full=109945  compact=38329   savedByCompact=71616 provenance=measured
+SCHEMA_BYTES full=2000 compact=1200 savedByCompact=800
+SCHEMA_TOKENS full=900 compact=600 savedByCompact=300 provenance=measured tokenizer=o200k_base scope=fixture serialization=JSON.stringify
+GUIDANCE_TOKENS full=100 summary=20 savedBySummary=80 provenance=measured tokenizer=o200k_base scope=fixture serialization=raw-description
 DEFS_N1_BYTES  refs=1  inlined=800   referenced=855  addedByFactoring=55
 DEFS_N2_BYTES  refs=2  inlined=1526  referenced=941  savedByFactoring=585
 \`\`\`
@@ -39,6 +45,35 @@ The byte figure is an UPPER BOUND on the context actually saved.
 `;
 
 describe('fixture controls (the detector must be able to FAIL)', () => {
+  it('rejects swapped schema/guidance methods even when each count reconciles', () => {
+    const swapped = GOOD.replace('serialization=JSON.stringify', 'serialization=SWAP')
+      .replace('serialization=raw-description', 'serialization=JSON.stringify')
+      .replace('serialization=SWAP', 'serialization=raw-description');
+    expect(judgeToolDeliveryDoc(swapped).violations).toEqual(expect.arrayContaining([
+      'schema-token-measurement-method-mismatch', 'guidance-token-measurement-method-mismatch',
+    ]));
+  });
+
+  it.each(['scope=fixture', 'tokenizer=o200k_base'])('rejects halves measured on different subjects: %s', (field) => {
+    expect(judgeToolDeliveryDoc(GOOD.replace(field, field + '-other')).violations).toContain('component-token-subject-mismatch');
+  });
+  it('rejects a wire total presented without a schema byte measurement', () => {
+    expect(judgeToolDeliveryDoc(GOOD.replace(/SCHEMA_BYTES.*\n/, '')).violations).toContain('missing-schema-bytes-measurement');
+    expect(judgeToolDeliveryDoc(GOOD.replace('savedByCompact=800', 'savedByCompact=801')).violations).toContain('schema-bytes-do-not-reconcile');
+  });
+  it.each(['SCHEMA_TOKENS', 'GUIDANCE_TOKENS'])('rejects a missing %s even with a valid total token count', (marker) => {
+    const verdict = judgeToolDeliveryDoc(GOOD.split('\n').filter((line) => !line.startsWith(marker)).join('\n'));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.violations).toContain(`missing-${marker === 'SCHEMA_TOKENS' ? 'schema' : 'guidance'}-token-measurement`);
+  });
+
+  it.each([
+    ['savedByCompact=300', 'savedByCompact=301', 'schema-tokens-do-not-reconcile'],
+    ['savedBySummary=80', 'savedBySummary=81', 'guidance-tokens-do-not-reconcile'],
+    ['provenance=measured tokenizer=o200k_base scope=fixture', 'provenance=inferred tokenizer=o200k_base scope=fixture', 'missing-schema-token-provenance'],
+  ])('rejects damaged component evidence: %s', (before, after, violation) => {
+    expect(judgeToolDeliveryDoc(GOOD.replace(before, after)).violations).toContain(violation);
+  });
   it('CALIBRATION: the passing fixture really passes, so the controls are not vacuous', () => {
     const v = judgeToolDeliveryDoc(GOOD);
     expect(v.violations).toEqual([]);
@@ -230,8 +265,23 @@ describe('fixture controls (the detector must be able to FAIL)', () => {
     // and the parser did see four distinct `full` pairs, so the risk was real — each of
     // the four measurement lines carries one, which is why every lookup is line-scoped
     expect(v.pairs.filter((p) => p.key === 'full').map((p) => p.value)).toEqual([
-      1599477, 334797, 369616, 109945,
+      1599477, 334797, 369616, 109945, 2000, 900, 100,
     ]);
+  });
+});
+
+describe('token measurement uses each actual schema and guidance half', () => {
+  it('matches independently tokenised source strings and keeps prose out of schema totals', () => {
+    const encoding = getEncoding('o200k_base');
+    const count = (text: string) => encoding.encode(text, [], []).length;
+    const schema = { type: 'object', properties: { value: { type: 'string', description: 'a long explanation '.repeat(20) } } };
+    const description = 'Select a value. '.repeat(15);
+    const measured = measureToolDeliveryHalves([{ inputSchema: schema, description }], count);
+    expect(measured.schema).toEqual({ full: count(JSON.stringify(schema)), compact: count(JSON.stringify(compactInputSchema(schema))) });
+    expect(measured.guidance).toEqual({ full: count(description), summary: count(summaryGuidanceDescription(description)) });
+    expect(measureToolDeliveryHalves([{ inputSchema: schema, description: '' }], count).schema).toEqual(measured.schema);
+    expect(measured.schema.full).toBeGreaterThan(measured.schema.compact);
+    expect(measured.guidance.full).toBeGreaterThan(measured.guidance.summary);
   });
 });
 

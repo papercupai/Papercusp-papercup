@@ -34,6 +34,9 @@ import {
   loadRoleToolsMd,
   promptsDir,
   resolveChatRoleDocument,
+  RolePromptUnavailableError,
+  rolePromptUnavailableDetails,
+  verifyRolePromptAssets,
   type ChatRoleDocumentKind,
   type Role,
 } from './prompt-assembly';
@@ -95,10 +98,10 @@ describe('P-023 acceptance — every PROMPT_ROLE renders byte-equivalent before 
     }
     // The public loaders keep their pre-P-023 contract per role.
     const persona = fileTierText(role, 'persona');
-    if (persona === null) expect(() => loadRolePersona(role)).toThrow(/Every role must have a persona\.md/);
+    if (persona === null) expect(() => loadRolePersona(role)).toThrow(/ROLE_PROMPT_UNAVAILABLE/);
     else expect(loadRolePersona(role)).toBe(persona);
     const converse = fileTierText(role, 'converse');
-    if (converse === null) expect(() => loadRoleConverse(role)).toThrow(/Required for chat-mode roles/);
+    if (converse === null) expect(() => loadRoleConverse(role)).toThrow(/ROLE_PROMPT_UNAVAILABLE/);
     else expect(loadRoleConverse(role)).toBe(converse);
     expect(loadRoleToolsMd(role)).toBe(fileTierText(role, 'tools'));
   });
@@ -158,7 +161,7 @@ describe('P-023 — chat-surface documents resolve through the blueprint extends
 
     // Neither tier ⇒ null / the same refusal as before.
     expect(loadChatRoleDocument('worker', 'persona', ctx)).toBeNull();
-    expect(() => loadRolePersona('worker', ctx)).toThrow(/worker\.persona\.md not found at .*apps\/operator\/prompts\/worker\.persona\.md \(nor at any of the prompt-chain candidates: .*blueprints\/base\/prompts\/worker\.persona\.md\)\. Every role must have a persona\.md/);
+    expect(() => loadRolePersona('worker', ctx)).toThrow(RolePromptUnavailableError);
   });
 
   it('a LEAF blueprint wins over `base` (leaf-first across the extends-chain, read from blueprint.yaml like the spawn tier)', () => {
@@ -229,5 +232,73 @@ describe('P-023 — chat-surface documents resolve through the blueprint extends
       // The default context still serves the file tier.
       expect(loadRolePersona('oracle')).toBe(fileTierText('oracle', 'persona'));
     });
+  });
+});
+
+describe('runtime-only required-document refusal and content install recovery', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'prompt-runtime-only-'));
+    process.env.PAPERCUSP_PROMPTS_DIR = join(root, 'prompts');
+    process.env.PAPERCUSP_RELOAD_PROMPTS = '0';
+    mkdirSync(join(root, 'prompts'));
+  });
+  afterEach(() => {
+    delete process.env.PAPERCUSP_PROMPTS_DIR;
+    process.env.PAPERCUSP_RELOAD_PROMPTS = '1';
+    rmSync(root, { recursive: true, force: true });
+  });
+  it('refuses only required documents with stable public identifiers and no paths', () => {
+    const ctx = { harnessDir: join(root, 'harness') };
+    for (const document of ['persona', 'converse'] as const) {
+      let error: unknown;
+      try { document === 'persona' ? loadRolePersona('operator', ctx) : loadRoleConverse('operator', ctx); }
+      catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(RolePromptUnavailableError);
+      expect(error).toMatchObject({ code: 'ROLE_PROMPT_UNAVAILABLE', role: 'operator', document });
+      expect((error as Error).message).toContain('Cupboard');
+      expect((error as Error).message).not.toContain(root);
+    }
+    expect(loadRoleToolsMd('operator', ctx)).toBeNull();
+  });
+  it('recovers after install with production caching, then refuses a deleted input', () => {
+    const ctx = { harnessDir: join(root, 'harness') };
+    expect(() => loadRolePersona('oracle', ctx)).toThrow(RolePromptUnavailableError);
+    const file = join(root, 'prompts/oracle.persona.md');
+    writeFileSync(file, 'SYNTHETIC ORACLE');
+    expect(loadRolePersona('oracle', ctx)).toBe('SYNTHETIC ORACLE');
+    rmSync(file);
+    expect(() => loadRolePersona('oracle', ctx)).toThrow(RolePromptUnavailableError);
+  });
+  it('records metadata and refusal evidence without prompt text or directory-only availability', () => {
+    const ctx = { harnessDir: join(root, 'harness') };
+    const missing = verifyRolePromptAssets(ctx);
+    expect(missing.roles).toEqual(PROMPT_ROLES);
+    expect(missing.documents).toHaveLength(PROMPT_ROLES.length * CHAT_ROLE_DOCUMENT_KINDS.length);
+    expect(missing.documents.filter(d => d.required).every(d => d.disposition === 'unavailable' && d.refusalVerified)).toBe(true);
+    writeFileSync(join(root, 'prompts/oracle.persona.md'), 'SYNTHETIC PRIVATE BYTES');
+    const installed = verifyRolePromptAssets(ctx);
+    expect(installed.documents.filter(d => d.disposition === 'available')).toEqual([
+      expect.objectContaining({ role: 'oracle', document: 'persona', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    ]);
+    expect(JSON.stringify(installed)).not.toContain('SYNTHETIC PRIVATE BYTES');
+    expect(JSON.stringify(installed)).not.toContain(root);
+    expect(installed.installedUseVerified).toBe(false);
+    expect(installed.candidateAccepted).toBe(false);
+  });
+  it('refuses blank required documents and recognizes only canonical transported errors', () => {
+    const ctx = { harnessDir: join(root, 'harness') };
+    writeFileSync(join(root, 'prompts/oracle.persona.md'), ' \n ');
+    expect(() => loadRolePersona('oracle', ctx)).toThrow(RolePromptUnavailableError);
+    expect(verifyRolePromptAssets(ctx).documents.find(d => d.role === 'oracle' && d.document === 'persona'))
+      .toMatchObject({ disposition: 'unavailable', sha256: null, refusalVerified: true });
+    writeFileSync(join(root, 'prompts/oracle.persona.md'), 'SYNTHETIC INSTALLED ORACLE');
+    expect(loadRolePersona('oracle', ctx)).toBe('SYNTHETIC INSTALLED ORACLE');
+    const known = new RolePromptUnavailableError('oracle', 'persona');
+    expect(rolePromptUnavailableDetails({ code: 'handler_error', message: known.message }))
+      .toEqual(rolePromptUnavailableDetails(known));
+    expect(rolePromptUnavailableDetails(new Error('/private/resolver/oracle.persona.md missing'))).toBeNull();
+    expect(rolePromptUnavailableDetails({ message: known.message + ' /private/path' })).toBeNull();
+    expect(rolePromptUnavailableDetails({ code: 'ROLE_PROMPT_UNAVAILABLE', message: 'unrelated' })).toBeNull();
   });
 });

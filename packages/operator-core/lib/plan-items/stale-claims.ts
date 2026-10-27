@@ -51,6 +51,7 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { STALE_MS } from '../liveness';
+import { warmDeadHolderFragment } from '../work-items-stale-claims';
 
 type Db = Sql | TransactionSql;
 
@@ -92,21 +93,30 @@ export async function reclaimExpiredPlanItemClaims(
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? STALE_PLAN_CLAIM_GRACE_MS) / 1000));
   const key = opts.key;
   const rows = await sql<ReleasedPlanClaim[]>`
-    WITH live_holder AS (
-      -- Mig-225 alias-aware liveness: fresh presence rows…
-      SELECT owner_id AS alias
-        FROM harness_shared.coord_presence
-       WHERE heartbeat_at IS NOT NULL
-         AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
-      UNION
-      -- …plus every alias of a RUNNING nursery row with a fresh heartbeat.
-      SELECT a.alias
-        FROM harness_shared.spawned_agents n
-        CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
-       WHERE n.status IN ('running', 'restarting')
-         AND n.heartbeat_at IS NOT NULL
-         AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
-         AND a.alias IS NOT NULL AND a.alias <> ''
+    -- WI-6554700010029302: a heartbeat-fresh owner with no turn past ACTIVITY_DEAD_MS
+    -- (the oracle's warm-dead, the same set the work-item reaper subtracts since
+    -- WI-6554700010029295) is NOT alive for claim purposes. Measured: claim leases
+    -- lapse hours before their holders stop, so a fresh presence beat was the ONLY
+    -- thing keeping a lapsed claim held, e.g. 10h past its lease by an owner idle 10h.
+    WITH warm_dead AS (${warmDeadHolderFragment(sql, graceSec)}),
+    live_holder AS (
+      SELECT lh.alias FROM (
+        -- Mig-225 alias-aware liveness: fresh presence rows…
+        SELECT owner_id AS alias
+          FROM harness_shared.coord_presence
+         WHERE heartbeat_at IS NOT NULL
+           AND (now() - heartbeat_at) < make_interval(secs => ${graceSec})
+        UNION
+        -- …plus every alias of a RUNNING nursery row with a fresh heartbeat.
+        SELECT a.alias
+          FROM harness_shared.spawned_agents n
+          CROSS JOIN LATERAL (VALUES (n.spawn_id), (n.session_owner), (n.run_id)) AS a(alias)
+         WHERE n.status IN ('running', 'restarting')
+           AND n.heartbeat_at IS NOT NULL
+           AND (now() - n.heartbeat_at) < make_interval(secs => ${graceSec})
+           AND a.alias IS NOT NULL AND a.alias <> ''
+      ) lh
+       WHERE NOT EXISTS (SELECT 1 FROM warm_dead wd WHERE wd.alias = lh.alias)
     ),
     dead AS (
       SELECT c.workspace_id, c.harness_slug, c.plan_slug, c.item_id,

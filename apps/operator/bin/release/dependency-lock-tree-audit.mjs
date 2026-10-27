@@ -35,9 +35,35 @@
 // Exit 0 = complete, 3 = defects found, 2 = misuse / unreadable input.
 
 import { lstatSync, readFileSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { join, posix, resolve } from 'node:path';
 
 export const MAX_DEFECTS = 50;
+
+// better-sqlite3 loads its native binding only when a database is opened. A
+// manifest/version or import-only check admits the missing-binding incident
+// EI-26892635373712820. Keep this node-only so the publisher works offline.
+const SQLITE_RUNTIME_PROBE = `
+try {
+  const Database = require(process.argv[1]);
+  const db = new Database(':memory:');
+  try {
+    if (db.prepare('SELECT 1 AS ok').get()?.ok !== 1) throw new Error('SQLite query returned an unexpected result');
+  } finally { db.close(); }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+`;
+
+function sqliteRuntimeFailure(packagePath) {
+  const result = spawnSync(process.execPath, ['--eval', SQLITE_RUNTIME_PROBE, resolve(packagePath)], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
+  });
+  if (result.status === 0) return null;
+  return String(result.error?.message || result.stderr || `native probe exited ${result.status ?? result.signal}`)
+    .replace(/\s+/g, ' ').trim().slice(0, 2000);
+}
 
 /** Parse `rel<TAB>digest` manifest text into the list of lockfile paths. */
 export function lockfilesFromManifest(text) {
@@ -105,6 +131,11 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs = defaultFs() }) {
         path: rel,
         detail: `locked ${entry.version} installed ${manifest.version ?? 'none'}`,
       });
+    } else if (key === 'node_modules/better-sqlite3' || key.endsWith('/node_modules/better-sqlite3')) {
+      // Probe each exact installed copy, including workspace/private copies,
+      // rather than accidentally resolving a healthy hoisted or host package.
+      const detail = sqliteRuntimeFailure(path);
+      if (detail !== null) defects.push({ kind: 'native-runtime-unusable', path: rel, detail });
     }
   }
   return { installed: true, entries, defects };

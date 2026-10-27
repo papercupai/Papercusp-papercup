@@ -31,6 +31,9 @@ IOSchedulingClass=idle
 # definition would need `systemctl --user daemon-reexec`, which would disturb every
 # other user unit on this box, so the per-unit form is deliberate.
 Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
+# The script skips an immediate calendar catch-up only after a recent successful
+# scheduled run. Manual invocations do not set this marker.
+Environment=PC_BACKUP_SCHEDULED=1
 # One pg_dump worker keeps this large recurring producer in the scheduled
 # low-impact lane. The script default remains 4 for deliberate one-off runs,
 # but the hourly service must not recreate the four-worker MCP contention that

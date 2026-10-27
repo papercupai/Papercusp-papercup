@@ -1,0 +1,7 @@
+---
+rel_path: "docs/evidence/oversized-tool-results-reduction-2026-10-12/p009-bind-deadline-mechanism-2026-10-23.json"
+updated_at: 1792799758110
+_body: "content"
+---
+
+{"observedAt":"2026-10-23T23:55:58.095Z","rows":[{"id":"43798589","duration_ms":45959,"status":"ok","error_message":"test_cases_not_in_run","timings":{"active":{},"phaseMs":{"bindRows":39448,"storeBinding":13405,"measureAndPin":20756,"expandTestRuns":6455,"resolveRunScope":0,"vettingAdvisory":0,"mutationTargeting":0,"attestationAdvisory":0,"declaredConfiguration":5282,"resolveMeasurementScope":0},"totalMs":45904,"schemaVersion":"plans-bind-spec-evidence-stage-timings-v1","storedBindingIds":[]},"call_id":"euvxgf-hs"},{"id":"43801223","duration_ms":73631,"status":"ok","error_message":null,"timings":{"active":{},"phaseMs":{"bindRows":67134,"storeBinding":26699,"measureAndPin":19972,"expandTestRuns":5370,"resolveRunScope":0,"vettingAdvisory":585,"mutationTargeting":0,"attestationAdvisory":171,"declaredConfiguration":20459,"resolveMeasurementScope":0},"totalMs":73261,"schemaVersion":"plans-bind-spec-evidence-stage-timings-v1","storedBindingIds":[67814,67815,67816,67817,67818,67819,67820,67821,67822,67823,67824,67825,67826,67827,67828,67829,67830,67831]},"call_id":"euvxgf-12z"}],"mitigation":"Bound future calls to6bindings after reconciling every unknown write; underlying large-batch latency remains captured as EI-26815939141895566."}

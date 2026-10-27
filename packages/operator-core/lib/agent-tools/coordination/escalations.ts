@@ -1290,7 +1290,7 @@ export async function reopenEscalation(input: {
  */
 export async function resolveEscalation(
   input: ResolveInput,
-  opts: { allowSpawnRequest?: boolean } = {},
+  opts: { allowSpawnRequest?: boolean; beforeResolve?: (open: EscalationRecord) => Promise<void> } = {},
 ): Promise<EscalationRecord | 'not_found' | 'already_resolved' | 'requires_spawn_approve'> {
   const { opens, resolves, reopens } = await loadEscalations();
   const open = opens.find((e) => e.msg_id === input.msg_id);
@@ -1304,6 +1304,9 @@ export async function resolveEscalation(
   if ((open as Record<string, unknown>).spawnRequest === true && !opts.allowSpawnRequest) {
     return 'requires_spawn_approve';
   }
+
+  // A refused/unknown linked-card decision must leave this escalation open.
+  await opts.beforeResolve?.(open);
 
   // WI-10769 — the resolve event's id is DERIVED from the escalation it resolves,
   // not freshly minted. A resolve is terminal and one-per-escalation, so a fresh id

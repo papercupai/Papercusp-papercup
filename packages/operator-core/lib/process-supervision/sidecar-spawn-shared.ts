@@ -34,6 +34,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 // ── bundled-vs-dev-tsx spawn-plan resolution ────────────────────────────────
@@ -41,7 +42,7 @@ import { dirname, join } from 'node:path';
 // `import.meta.url` for the spawn module IS the bundle (no tsx, no .ts on
 // disk), so we re-exec that same artifact under the bundled node with a
 // divert env var the entrypoint checks for. In DEV (tsx, real source tree)
-// we run the sibling .ts entry via `npx tsx`. Identical across all three
+// we run the sibling .ts entry under the explicit Node with the maintained tsx loader. Identical across all three
 // spawners modulo the divert env var name and the dev entry path.
 
 export interface SidecarSpawnPlan {
@@ -62,7 +63,7 @@ export interface ResolveSidecarSpawnPlanOpts {
   /** Env var name the bundled re-exec sets to '1' so the entrypoint diverts
    *  into sidecar-server mode instead of the normal operator boot path. */
   bundledModeEnvVar: string;
-  /** `process.execPath` (the running node binary) — injectable for tests. */
+  /** Explicit retained Node executable; a Bun parent must resolve its Node boundary. */
   execPath: string;
   /** THIS process's own pid (`process.pid`) — declared to the child as its
    *  parent identity. Required, not optional: a spawner that forgets to declare
@@ -74,7 +75,7 @@ export interface ResolveSidecarSpawnPlanOpts {
 }
 
 /** Pure: decide HOW to spawn a sidecar child (bundled re-exec-self vs dev
- *  `npx tsx <entry>`). Exported for unit tests. Identical decision across all
+ *  explicit Node + tsx <entry>). Exported for unit tests. Identical decision across all
  *  three sidecar spawners, modulo the divert env var name + dev entry path. */
 export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): SidecarSpawnPlan {
   const isBundled = !opts.selfPath.endsWith('.ts') && !opts.selfPath.endsWith('.tsx');
@@ -98,8 +99,8 @@ export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): Side
   }
   const isTs = opts.devScriptPath.endsWith('.ts');
   return {
-    cmd: isTs ? 'npx' : opts.execPath,
-    args: isTs ? ['tsx', opts.devScriptPath] : [opts.devScriptPath],
+    cmd: opts.execPath,
+    args: isTs ? ['--import', createRequire(import.meta.url).resolve('tsx'), opts.devScriptPath] : [opts.devScriptPath],
     env: { ...parentIdentityEnv(opts.spawnerPid) },
     mode: 'dev-tsx',
   };

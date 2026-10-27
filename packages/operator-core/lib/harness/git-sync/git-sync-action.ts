@@ -32,6 +32,7 @@
  *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { contentReportPreviewText, CONTENT_REPORT_PREVIEW_LIMIT, gitSyncContentEscalationBody, gitSyncContentPreview, gitSyncContentSignature, persistGitSyncContentReport } from './git-sync-content-report';
 import { readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
@@ -46,7 +47,7 @@ import {
   clearResourceWaiter,
   getTxPool,
   readResourceQueue,
-  releaseAllResourcesForOwner,
+  releaseOwnerResourcesScoped,
   tryAcquireResource,
   tryHeartbeatResource,
   tryReleaseResource,
@@ -245,6 +246,7 @@ import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
   effectivePublishRefusal,
+  nextAttributionShareDropTicks,
   nextZeroAttributionTicks,
   oversizedKey,
   selectContentNoticeRecipients,
@@ -1073,8 +1075,15 @@ async function releaseAll(
     // settled together, those teardown transactions contended with each other,
     // routinely outliving the 15s cleanup budget and keeping dev:restart's
     // exclusive barrier draining for its full 45s (EI-22047168222679674).
+    // EI-27114494366587753: the fire's owner token is private to this fire, so the
+    // names it holds are exactly `acquired`. Lock just those names (shared gate +
+    // per-resource keys) instead of the EXCLUSIVE workspace key, which serialized
+    // every agent's file-lock operation behind every git-sync teardown.
+    const names = acquired.map(({ resource }) => resource);
     const released = await acquireWithContentionRetry(() =>
-      inWorkspaceTxn(cd, owner, (tx) => releaseAllResourcesForOwner(tx, cd, owner)),
+      inWorkspaceTxn(cd, owner, (tx) => releaseOwnerResourcesScoped(tx, cd, owner, names), {
+        resources: names,
+      }),
     );
     // The bulk store release bypasses locks:release and its broadcast helper.
     // Emit only after the transaction has removed each exclusive row so a
@@ -1214,10 +1223,13 @@ async function reclaimOrphanedSelfSharedHolds(
   const { holders } = await readResourceQueue(tx, { coordinationDomain, resource });
   for (const holder of holders) {
     if (holder.mode !== 'shared' || !isOrphanedSelfOwner(holder.owner)) continue;
+    // The caller holds only this resource's key (acquireLocks): stay inside it.
     const released = await tryReleaseResource(tx, {
       coordinationDomain,
       owner: holder.owner,
       lockId: holder.lock_id,
+      resource,
+      scope: 'resource',
     }).catch(() => null);
     if (released && released.released > 0) {
       console.error(
@@ -1266,8 +1278,13 @@ async function acquireLocks(
             ownerLabel: `git-sync:${slug}`,
             reason: `auto-commit ${slug}`,
             ttlSec: LOCK_TTL_SEC,
+            scope: 'resource',
           });
-        }),
+          // EI-27114494366587753: every statement above touches only `resource`'s
+          // rows (and its own registry row), so hold that resource's key under the
+          // SHARED workspace gate rather than the exclusive workspace key. Measured
+          // 2026-10-24..27: the exclusive key took 444k calls at a 636 ms mean wait.
+        }, { resources: [resource] }),
       );
     let r: ResourceAcquireResult;
     try {
@@ -1308,8 +1325,18 @@ async function acquireLocks(
         // this can never touch a lease a concurrent fire here legitimately holds.
         for (const holder of r.holders ?? []) {
           if (holder.mode !== 'exclusive' || !isOrphanedSelfOwner(holder.owner)) continue;
-          const released = await inWorkspaceTxn(cd, owner, (tx) =>
-            tryReleaseResource(tx, { coordinationDomain: cd, owner: holder.owner, lockId: holder.lock_id }),
+          const released = await inWorkspaceTxn(
+            cd,
+            owner,
+            (tx) =>
+              tryReleaseResource(tx, {
+                coordinationDomain: cd,
+                owner: holder.owner,
+                lockId: holder.lock_id,
+                resource,
+                scope: 'resource',
+              }),
+            { resources: [resource] },
           ).catch(() => null);
           if (released && released.released > 0) {
             reclaimed = true;
@@ -1348,8 +1375,8 @@ async function acquireLocks(
             await clearQueuedGitSyncOwners(tx, cd, resource);
             await clearResourceExclusiveQueue(tx, cd, resource, owner);
             await clearResourceWaiter(tx, cd, resource, owner);
-            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource });
-          }),
+            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource, scope: 'resource' });
+          }, { resources: [resource] }),
         );
       } catch (error) {
         console.error(
@@ -1703,29 +1730,8 @@ async function writeGitSyncContentEscalation(
   needsHuman: boolean,
 ): Promise<void> {
   const { sql } = getOrgPg();
-  const files = contentErrors.map((c) => ({
-    scope: c.scope,
-    file: c.file,
-    detector: c.detectorKey,
-    error: c.error,
-    // The detector scans dirty working-tree bytes, which may differ from HEAD.
-    // Preserve the exact snapshot and verdict identity so the human escalation
-    // remains reproducible after another edit or commit changes the file.
-    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
-    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
-  }));
-  const list = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`).join(', ');
-  const body = JSON.stringify({
-    kind: CONTENT_ERROR_KIND,
-    harness_slug: slug,
-    files,
-    consecutive_content_error_ticks: consecutiveTicks,
-    needs_human: needsHuman,
-    emitted_at: Date.now(),
-    detail: needsHuman
-      ? `git-sync content guard: ${files.length} file(s) STILL failing their content check after ${consecutiveTicks} ticks — the content-fixer could not repair them; a human must fix: ${list}. (They are quarantined — excluded from every auto-commit — so staging stays clean while they wait.)`
-      : `git-sync quarantined ${files.length} broken file(s) (excluded from the auto-commit so staging stays clean); content-fixer dispatched: ${list}.`,
-  });
+  const evidenceArtifact = await persistGitSyncContentReport(slug, workspaceId, contentErrors);
+  const body = gitSyncContentEscalationBody(slug, contentErrors, consecutiveTicks, needsHuman, evidenceArtifact);
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
      VALUES ($1, $2, $3, $4, $5)
@@ -1857,6 +1863,9 @@ async function readEscalationCounters(
   /** WI-6554700010018198: consecutive ticks on which agents had dirty work in some repo
    *  and none of it got an attributed commit. */
   zeroAttributionTicks: number;
+  /** P-003 (gate-systems-as-designed-2026-10-27): consecutive measured ticks whose
+   *  attributed-file share fell below the floor. */
+  attributionShareDropTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
   /** WI-6554700010009238: `last_yield.at` and `last_synced_at` (epoch ms) from earlier fires. */
@@ -1873,6 +1882,7 @@ async function readEscalationCounters(
       cs: string | null;
       cpt: number;
       zat: number;
+      asd: number;
       pubrefused: string | null;
       pubblocked: string | null;
       pubat: string | number | null;
@@ -1891,6 +1901,7 @@ async function readEscalationCounters(
            metadata->>'last_content_error_signature' AS cs,
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            coalesce((metadata->>'consecutive_zero_attribution_ticks')::int, 0) AS zat,
+           coalesce((metadata->>'consecutive_attribution_share_drop_ticks')::int, 0) AS asd,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
            metadata->'own_head_publish'->>'at' AS pubat,
@@ -1915,6 +1926,7 @@ async function readEscalationCounters(
     contentSignature: rows[0]?.cs ?? null,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
     zeroAttributionTicks: rows[0]?.zat ?? 0,
+    attributionShareDropTicks: rows[0]?.asd ?? 0,
     publishRefusal: effectivePublishRefusal(
       refused
         ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null, atMs: epochMsOrNull(rows[0]?.pubat) }
@@ -2165,9 +2177,7 @@ function contentFixerEligibleErrors(contentErrors: readonly ScopedContentError[]
  *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
  *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
 function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
-  return [...new Set(contentErrors.map((c) => `${c.scope}\u001f${c.file}\u001f${c.detectorKey}`))]
-    .sort()
-    .join('\u001e');
+  return gitSyncContentSignature(contentErrors);
 }
 
 /** One `last_content_errors` entry: `<scope>/<file> [<detector>]`. WI-6554700010008496: a
@@ -2188,26 +2198,18 @@ async function upsertGitSyncContentHumanWorkItem(
   consecutiveTicks: number,
 ): Promise<void> {
   const signature = contentFixerSignature(contentErrors);
-  const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 24);
-  const files = contentErrors.map((c) => ({
-    scope: c.scope,
-    file: c.file,
-    detector: c.detectorKey,
-    error: c.error,
-    // The detector scans dirty working-tree bytes, which may differ from HEAD.
-    // Preserve the exact snapshot and verdict identity so the human escalation
-    // remains reproducible after another edit or commit changes the file.
-    ...(c.contentHash ? { contentHash: c.contentHash } : {}),
-    ...(c.detectorResultHash ? { detectorResultHash: c.detectorResultHash } : {}),
-  }));
+  // Preserve the existing condition key while replacing the stored raw signature.
+  const signatureHash = signature.slice('sha256:'.length, 'sha256:'.length + 24);
+  const evidenceArtifact = await persistGitSyncContentReport(slug, workspaceId, contentErrors);
+  const files = gitSyncContentPreview(contentErrors);
   const fileList = files.map((f) => `${f.scope}/${f.file} [${f.detector}]: ${f.error}`).join('; ');
   const { upsertConditionWorkItem } = await import('../../coord/condition-upsert');
   await upsertConditionWorkItem(`git-sync-content:${slug}:${signatureHash}`, {
     kind: 'bug',
-    title: `git-sync content quarantine needs a human (${files.length} file(s), ${signatureHash})`,
+    title: `git-sync content quarantine needs a human (${contentErrors.length} file(s), ${signatureHash})`,
     summary:
       `The git-sync content fixer exhausted its ${MAX_CONTENT_FIXER_ATTEMPTS}-tick budget for this offender signature ` +
-      `after ${consecutiveTicks} consecutive ticks. These files remain quarantined from auto-commit until repaired: ${fileList}`,
+      `after ${consecutiveTicks} consecutive ticks. ${contentErrors.length} files remain quarantined from auto-commit until repaired. Preview: ${contentReportPreviewText(fileList)}. Full evidence: ${evidenceArtifact}`,
     severity: 'major',
     harness: slug,
     workspaceId,
@@ -2217,6 +2219,9 @@ async function upsertGitSyncContentHumanWorkItem(
       signature: signatureHash,
       consecutiveContentErrorTicks: consecutiveTicks,
       files,
+      fileCount: contentErrors.length,
+      filesOmitted: contentErrors.length - files.length,
+      evidenceArtifact,
     },
   });
 }
@@ -2660,13 +2665,15 @@ type GitSyncActivityMarker = {
   /** The per-fire lock owner ties this durable marker back to the live resource lease. */
   owner: string;
   owner_pid: number;
+  /** Exact DBOS correlation; manual fires outside a workflow explicitly record null. */
+  workflow_id: string | null;
   git_commands: GitSyncCommandSnapshot;
   timeout?: GitSyncTimeoutSnapshot;
   settlement_progress?: GitSyncSettlementProgress;
   /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
   leg?: string;
 };
-type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'git_commands' | 'timeout'>;
+type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'workflow_id' | 'git_commands' | 'timeout'>;
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -2700,6 +2707,8 @@ async function recordOutcome(
   consecutiveCumulativePeelTicks: number,
   /** WI-6554700010018198: see nextZeroAttributionTicks. */
   consecutiveZeroAttributionTicks: number,
+  /** P-003 (gate-systems-as-designed-2026-10-27): see nextAttributionShareDropTicks. */
+  consecutiveAttributionShareDropTicks = 0,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -2733,6 +2742,7 @@ async function recordOutcome(
       ? 'quarantined'
       : outcome.status;
   const localSyncRecordedAt = Date.now();
+  const contentEvidence = await persistGitSyncContentReport(slug, workspaceId, outcome.contentErrors);
   await patchRoutineMetadata(
     slug,
     workspaceId,
@@ -2794,11 +2804,17 @@ async function recordOutcome(
       // WI-6554700010018198: durable per-repo attribution evidence, kept to the last
       // MEASURED tick (journald rotated the only record of the 85h outage in <12h).
       consecutive_zero_attribution_ticks: consecutiveZeroAttributionTicks,
+      // P-003: each repo's tally in last_attribution carries attributableFileCount /
+      // attributedFileCount, this sweep's attributed-file share.
+      consecutive_attribution_share_drop_ticks: consecutiveAttributionShareDropTicks,
       ...(outcome.attribution ? { last_attribution: { at: localSyncRecordedAt, repos: outcome.attribution } } : {}),
       last_publish_blocked_at: publishBlockedAtCommit,
       // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
-      last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
+      last_content_errors: outcome.contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map(c => contentReportPreviewText(gitSyncContentErrorKey(c))),
+      last_content_error_count: outcome.contentErrors.length,
+      last_content_errors_omitted: Math.max(0, outcome.contentErrors.length - CONTENT_REPORT_PREVIEW_LIMIT),
+      last_content_errors_artifact: contentEvidence,
       last_content_error_signature:
         fixerContentErrors.length > 0 ? contentFixerSignature(fixerContentErrors) : null,
       // A measured-clean pass invalidates the prior dispatch identity. This is
@@ -3722,6 +3738,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     ...activity,
     owner: lockOwner,
     owner_pid: process.pid,
+    workflow_id: ctx.workflowId ?? null,
     git_commands: snapshotGitCommands(),
     ...(timeoutSnapshot ? { timeout: timeoutSnapshot } : {}),
   });
@@ -4300,6 +4317,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       runGitSync(slug, {
         repoPath,
         config: cfg,
+        onRootCommit: ({ sha, committedAtMs }) => {
+          emitGitSyncCommittedEvent(sha, { scope: { installSlug: slug, workspaceId } }, committedAtMs);
+        },
         runGit: async (args, cwd, gitOptions) => {
           // WI-10006724: a fire that can no longer prove it holds its lease must
           // not start another Git command; another fire may own this index now.
@@ -4458,7 +4478,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // WI-6554700010018899: commits that published before the yield are real local
       // commits. The redo pass finds nothing left to commit, so without this emit every
       // `git-sync:committed` waiter sleeps to its timeout.
-      if (error.localCommitSha) {
+      if (error.localCommitSha && !error.localCommits) {
         emitGitSyncCommittedEvent(
           error.localCommitSha,
           { scope: { installSlug: slug, workspaceId } },
@@ -4565,7 +4585,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // not the routine-wide streak. A new file/detector set starts its own five-tick budget.
   const contentSignature =
     revalidatedContentErrors.length > 0 ? contentFixerSignature(revalidatedContentErrors) : null;
-  const sameContentSignature = contentSignature !== null && contentSignature === prev.contentSignature;
+  const previousSignature = prev.contentSignature && !prev.contentSignature.startsWith('sha256:')
+    ? 'sha256:' + createHash('sha256').update(prev.contentSignature).digest('hex')
+    : prev.contentSignature;
+  const sameContentSignature = contentSignature !== null && contentSignature === previousSignature;
   const prevSignatureContentTicks = sameContentSignature ? prev.contentTicks : 0;
   const contentTicks = contentSignature === null ? 0 : prevSignatureContentTicks + 1;
   // EI-21906459740652039: the cumulative-limit peel's own consecutive-tick counter.
@@ -4578,6 +4601,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // WI-6554700010018198: the 85h zero-attribution outage was invisible because no tick
   // counted it. Held (not reset) on ticks that measured nothing — see the helper.
   const zeroAttributionTicks = nextZeroAttributionTicks(prev.zeroAttributionTicks, outcome.attribution);
+  // P-003 (gate-systems-as-designed-2026-10-27): attributed-file share, held on ticks that
+  // committed too few attributable files to judge.
+  const attributionShareDropTicks = nextAttributionShareDropTicks(prev.attributionShareDropTicks, outcome.attribution);
 
   // EI-22154166487566939: the local-sync guard above is stopped in its own finally
   // (~2773-2777) before this point, so the record step + all 7 post-legs legs below
@@ -4654,6 +4680,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           prevOversizedKeys: prev.oversizedKeys,
           cumulativePeelTicks,
           zeroAttributionTicks,
+          attributionShareDropTicks,
           // EI-21230011589307899: surface a frozen own-head publish. Read from the
           // previous tick's publish leg — see readEscalationCounters.
           publishRefusal: prev.publishRefusal,
@@ -4696,7 +4723,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // root commit succeeded. Aggregate counts also include submodule commits,
     // so emit only from the root commit proof captured by the local producer.
     // Fire-and-forget, never gates the tick, benign to replay past the record step.
-    if (outcome.localCommitSha) {
+    if (outcome.localCommitSha && !outcome.localCommits) {
       emitGitSyncCommittedEvent(
         outcome.localCommitSha,
         { scope: { installSlug: slug, workspaceId } },
@@ -5987,6 +6014,7 @@ export interface GitServingResolutionDeps {
   getBootedHarness?(workspaceId: string, harnessSlug: string): GitServingRecoveryHandle | null;
   bootSingleHarness?(workspaceId: string, harnessSlug: string): Promise<GitServingBootResult>;
   getPgGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
+  getForeignStoreOwner?(request: GitServingRequest): Promise<{ pid: number; processIdentity: string | null } | null>;
 }
 
 /**
@@ -6036,6 +6064,30 @@ export async function resolveGitServingStateWithBootRecovery(
 
   let boot: GitServingBootResult;
   try {
+    // A PG snapshot describes one database's handles, not every process that
+    // can own this filesystem. Packaged and development hosts may use separate
+    // PG clusters while sharing the same Corestore. Never boot over that owner
+    // or infer a signing identity from its lock; authority still requires an
+    // exact, current owner-issued serving capability.
+    const owner = deps.getForeignStoreOwner
+      ? await deps.getForeignStoreOwner(request)
+      : await (async () => {
+          const [{ getForeignHarnessStoreOwner }, { workspacesRoot }] = await Promise.all([
+            import('../../sync/hyperbee/corestore'), import('../../workspace-registry'),
+          ]);
+          return getForeignHarnessStoreOwner({
+            workspaceRoot: join(workspacesRoot(), request.workspaceId),
+            harnessSlug: request.installSlug,
+          });
+        })();
+    if (owner) {
+      return {
+        status: 'unknown',
+        retryable: true,
+        reason: `serving discovery does not reach live Corestore owner process ${owner.pid}; ` +
+          'authenticated owner capability or an explicit store handoff is required; duplicate boot refused',
+      };
+    }
     boot = await bootSingleHarness(request.workspaceId, request.installSlug);
   } catch (error) {
     return {
@@ -8244,6 +8296,9 @@ async function recordAndEscalateTick(a: {
   cumulativePeelTicks: number;
   /** WI-6554700010018198: consecutive zero-attribution ticks including this one. */
   zeroAttributionTicks: number;
+  /** P-003: consecutive low attributed-file-share ticks including this one. Optional so a
+   *  step input checkpointed before this field existed still replays. */
+  attributionShareDropTicks?: number;
   /** EI-21230011589307899: the previous tick's own-head-publish refusal (or null when
    *  publishing cleanly), and the freeze point seen one tick before that. */
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
@@ -8274,6 +8329,7 @@ async function recordAndEscalateTick(a: {
     a.publishRefusal?.blockedAtCommit ?? null,
     a.cumulativePeelTicks,
     a.zeroAttributionTicks,
+    a.attributionShareDropTicks ?? 0,
   );
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
@@ -8378,7 +8434,7 @@ async function recordAndEscalateTick(a: {
           (notice === 'realarm' ? `⚠ STILL QUARANTINED (re-alarm) — ` : '') +
           `git-sync: [${slug}] ${contentErrors.length} broken file(s) STILL failing their content check after ${contentTicks} ticks — ` +
           `the content-fixer couldn't repair them; a human is needed. Quarantined (staging stays clean): ` +
-          contentErrors.map((c) => `${c.scope}/${c.file}`).join(', ');
+          contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map((c) => contentReportPreviewText(`${c.scope}/${c.file}`)).join(', ');
         console.warn(`[git-sync] ${slug}: ${summary}`);
         try {
           await upsertGitSyncContentHumanWorkItem(slug, workspaceId, contentErrors, contentTicks);
@@ -8412,6 +8468,9 @@ async function recordAndEscalateTick(a: {
         await patchRoutineMetadata(slug, workspaceId, {
           consecutive_content_error_ticks: 0,
           last_content_errors: [],
+          last_content_error_count: 0,
+          last_content_errors_omitted: 0,
+          last_content_errors_artifact: null,
           last_content_fixer: null,
         });
         await clearGitSyncEscalation(slug, [CONTENT_ERROR_KIND], CONTENT_ESCALATION_PHASE);
@@ -8421,7 +8480,7 @@ async function recordAndEscalateTick(a: {
     if (outcome.contentErrors.length > 0) {
       await patchRoutineMetadata(slug, workspaceId, {
         consecutive_content_error_ticks: 0,
-        last_content_errors: outcome.contentErrors.map(gitSyncContentErrorKey),
+        last_content_errors: outcome.contentErrors.slice(0, CONTENT_REPORT_PREVIEW_LIMIT).map(c => contentReportPreviewText(gitSyncContentErrorKey(c))),
         last_content_error_signature: null,
         last_content_fixer: null,
       });
@@ -8490,6 +8549,7 @@ async function recordAndEscalateTick(a: {
     prevOversizedKeys: a.prevOversizedKeys,
     chronicCumulativeTicks: a.cumulativePeelTicks,
     zeroAttributionTicks: a.zeroAttributionTicks,
+    attributionShareDropTicks: a.attributionShareDropTicks ?? 0,
     attribution: a.outcome.attribution,
     publishRefusal: a.publishRefusal,
     prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,

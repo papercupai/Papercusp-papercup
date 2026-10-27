@@ -69,6 +69,7 @@ const explicitAssigneeM = vi.hoisted(() => ({
 }));
 const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
+  ownerDirective: { ok: false, reason: 'no directive' } as any,
 }));
 const pilotReceipts = vi.hoisted(() => ({ persistBinding: vi.fn() }));
 vi.mock('../coordination/identity', async (importOriginal) => ({
@@ -93,6 +94,7 @@ vi.mock('../coordination/recipient-resolve', async (importOriginal) => ({
 // genuine implementation instead of undefined — only the fns stubbed below are replaced.
 vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<object>()),
+  bindWorkItemDirectiveRef: vi.fn(async () => ({ ok: true })),
   claimWorkItem: vi.fn(),
   classifyClaimFailure: vi.fn(),
   commentWorkItem: vi.fn(),
@@ -133,6 +135,7 @@ vi.mock('./release-force-guard', () => ({
   forceRefusalHint: (holder: string) => `refused:${holder}`,
   notifyForceTransition: vi.fn(async () => {}),
   recordForceTransitionAudit: vi.fn(async () => {}),
+  verifyOwnerForceDirective: vi.fn(async () => forceGuard.ownerDirective),
 }));
 // green-main-cycle-time-2026-10-08 P-013 (D-028(4)): the real gate-singleton decision runs;
 // only its two reads (condition_key, the claimant's re-wake verdict) are faked, so this file
@@ -159,7 +162,12 @@ vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
 
 import { claimWorkItem, classifyClaimFailure, commentWorkItem, explainIssueClaimFloors, getWorkItem, type WorkItem } from '../../work-items';
 import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
-import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
+import {
+  assessForceRelease,
+  notifyForceTransition,
+  recordForceTransitionAudit,
+  verifyOwnerForceDirective,
+} from './release-force-guard';
 import { mockImplementationTyped, mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
 
 /**
@@ -209,6 +217,7 @@ beforeEach(() => {
   identity.ownerId = 'me';
   identity.workspaceId = 'ws-1';
   forceGuard.verdict = { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } };
+  forceGuard.ownerDirective = { ok: false, reason: 'no directive' };
   fleetAdmission.decision = { allowed: true, scoped: false };
   workScope.gate.mockResolvedValue({ allowed: true, reason: 'no-policy' });
   workScope.refusal.mockClear();
@@ -803,6 +812,67 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(claimM).not.toHaveBeenCalled();
       expect(forceAuditM).not.toHaveBeenCalled();
       expect(forceNotifyM).not.toHaveBeenCalled();
+      expect(vi.mocked(verifyOwnerForceDirective)).not.toHaveBeenCalled();
+    });
+
+    it('WI-6554700010029971: an owner directive authorizes taking over a LIVE holder, and the audit names it', async () => {
+      getM.mockResolvedValue(issueItem({ id: 'WI-LIVE', assignee: 'peer', lastProgressAt: '2026-08-20T08:39:00.000Z' }));
+      forceGuard.verdict = { allowed: false, holderLiveness: { live: true } };
+      forceGuard.ownerDirective = { ok: true, directiveId: 2494, excerpt: 'JUST TAKE THE GATE' };
+      claimM.mockResolvedValue(issueItem({ id: 'WI-LIVE', assignee: 'me', harness: 'papercusp' }));
+
+      const b = await body({ id: 'WI-LIVE', force: true, reason: 'owner ended the holder', directiveRef: 2494 });
+
+      expect(vi.mocked(verifyOwnerForceDirective)).toHaveBeenCalledWith({
+        directiveId: 2494,
+        callerOwnerId: 'me',
+        workspaceId: 'ws-1',
+      });
+      expect(claimM).toHaveBeenCalledWith('WI-LIVE', 'me', expect.objectContaining({ expectedAssignee: 'peer' }));
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        forced: {
+          holder: 'peer',
+          basis: 'owner-directive',
+          reason: 'owner ended the holder [owner directive #2494: "JUST TAKE THE GATE"]',
+        },
+      });
+      expect(forceAuditM).toHaveBeenCalledWith(
+        'me',
+        'WI-LIVE',
+        'claim',
+        expect.objectContaining({ holder: 'peer', basis: 'owner-directive' }),
+      );
+      expect(forceNotifyM).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'me' }),
+        expect.objectContaining({ itemId: 'WI-LIVE', holder: 'peer', basis: 'owner-directive' }),
+      );
+    });
+
+    it('WI-6554700010029971: an unverifiable directive still refuses the live takeover and says why', async () => {
+      getM.mockResolvedValue(issueItem({ id: 'WI-LIVE', assignee: 'peer' }));
+      forceGuard.verdict = { allowed: false, holderLiveness: { live: true } };
+      forceGuard.ownerDirective = { ok: false, reason: 'directive #9 was agent-recorded (orders:record), not captured from an owner-typed turn' };
+
+      const b = await body({ id: 'WI-LIVE', force: true, reason: 'trust me', directiveRef: 9 });
+
+      expect(b.results[0]).toMatchObject({
+        ok: false,
+        error: 'force_unauthorized',
+        ownerDirectiveRefusal: expect.stringContaining('agent-recorded'),
+      });
+      expect(claimM).not.toHaveBeenCalled();
+      expect(forceAuditM).not.toHaveBeenCalled();
+    });
+
+    it('WI-6554700010029971: when an ordinary basis already authorizes, the directive is not consulted', async () => {
+      getM.mockResolvedValue(issueItem({ id: 'WI-DEAD', assignee: 'peer' }));
+      claimM.mockResolvedValue(issueItem({ id: 'WI-DEAD', assignee: 'me', harness: 'papercusp' }));
+
+      const b = await body({ id: 'WI-DEAD', force: true, reason: 'holder ended', directiveRef: 2494 });
+
+      expect(vi.mocked(verifyOwnerForceDirective)).not.toHaveBeenCalled();
+      expect(b.results[0].forced).toMatchObject({ basis: 'holder-session-ended', reason: 'holder ended' });
     });
 
     it('applies a batch reason, with a per-item reason overriding it', async () => {

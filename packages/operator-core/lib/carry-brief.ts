@@ -85,6 +85,7 @@ import {
   type ByocReleaseCarrySnapshot,
 } from './byoc-release-carry';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
 export interface CarryBriefHeldItem {
@@ -555,7 +556,7 @@ export async function readHeldWorkItems(
   const ws = resolveConcreteWorkspaceId(workspaceId);
   // EI-9013: query work_items DIRECTLY, covering BOTH families. The previous read
   // went through the engineer_issues VIEW, which filters item_kind IN
-  // ('bug','change','task') — so a held FEATURE/chunk item (e.g. WI-3535, the
+  // (...ISSUE_FAMILY_ROUTE_KINDS) — so a held FEATURE/chunk item (e.g. WI-3535, the
   // incident item) never appeared in the fold at all, checkpoint or not. The
   // scope CASE mirrors the view's mapping so harnessOfScope() semantics are
   // unchanged (EI-8813). Terminal filters stay per-family, but BOTH halves now
@@ -609,7 +610,7 @@ export async function readHeldWorkItems(
        -- receipts can still look held to this reader.
        AND NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')
        AND (
-         (item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+         (item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
          OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[])))
        )
      ORDER BY feature_id DESC
@@ -859,7 +860,7 @@ export async function readDeferredWorkItems(
                false AS commented_this_session
           FROM harness_shared.work_items AS wi
          WHERE wi.workspace_id = ${ws}
-           AND wi.item_kind IN ('bug', 'change', 'task')
+           AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND NULLIF(wi.payload #>> '{_ei,created_by}', '') = ${ownerId}
            AND wi.created_ts >= ${Math.floor(sessionStartedAtMs)}
            -- WI-10004968: observation-lane rows are turn-end reflections
@@ -888,7 +889,7 @@ export async function readDeferredWorkItems(
            AND (
              (
                thread.parent_kind = 'issue'
-               AND wi.item_kind IN ('bug', 'change', 'task')
+               AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
                AND thread.parent_ref = wi.feature_id
              )
              OR (
@@ -1876,11 +1877,13 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
   const parts: string[] = [
     'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls',
   ];
-  if (brief.directives.length > 0) {
+  const ownDirectives = brief.directives.filter((directive) => directive.recordedBy === brief.ownerId);
+  if (ownDirectives.length > 0) {
     // EI-11484: open owner directives outrank even walls — ids only (the
     // store re-renders them mechanically on every wake; copying wastes focus).
+    // Match the body renderer's ownership rule; workspace awareness is not an assignment.
     parts.push(
-      `OPEN OWNER DIRECTIVES ${brief.directives.map((d) => `#${d.id}`).join(', ')} — re-rendered every wake, keep the ids`,
+      `OPEN OWNER DIRECTIVES ${ownDirectives.map((d) => `#${d.id}`).join(', ')} — re-rendered every wake, keep the ids`,
     );
   }
   if (brief.walls.length > 0) {

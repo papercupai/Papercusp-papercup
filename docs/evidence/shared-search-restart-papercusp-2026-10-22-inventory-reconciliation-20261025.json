@@ -1,0 +1,554 @@
+{
+  "schemaVersion": 1,
+  "kind": "frozen-inventory-source-reconciliation",
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "observedAt": "2026-10-25T19:44:32.668935+00:00",
+  "priorInventory": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-inventory-20261023-v2.json",
+    "sha256": "42c2be9bea124d343066f5191f940388e43f2358bd361aca38f1f22cc025940a"
+  },
+  "method": {
+    "sourcePopulation": "Exactly every file in priorInventory.sourceSnapshots; no new discovery claim.",
+    "sourceRead": "SHA256 before/after, recorded repository HEAD byte equality, root and nested HEAD stability.",
+    "declarationRead": "Import current surface-registry.ts exports and compare with frozen inventory using node:util isDeepStrictEqual.",
+    "runtimeValidation": "Not executed by this reconciliation; existing native receipts remain bounded contributing proof."
+  },
+  "repositories": {
+    "papercusp": {
+      "rootHarness": "papercusp",
+      "rootCommitBefore": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "rootCommitAfter": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "stable": true,
+      "repos": [
+        {
+          "repo": ".",
+          "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+          "headStableAfter": true
+        },
+        {
+          "repo": "libs/generic/search",
+          "commit": "750f845ad7071b3b9ddbbb7d5a11a267f1f87b8c",
+          "headStableAfter": true
+        },
+        {
+          "repo": "libs/generic/search-core",
+          "commit": "48c944b60b576f4143a8922b15895359cbb88b63",
+          "headStableAfter": true
+        }
+      ]
+    },
+    "restart": {
+      "rootHarness": "restart",
+      "rootCommitBefore": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "rootCommitAfter": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "stable": true,
+      "repos": [
+        {
+          "repo": ".",
+          "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+          "headStableAfter": true
+        }
+      ]
+    }
+  },
+  "declarationComparisons": {
+    "surfaces": {
+      "count": 23,
+      "population": "declared registry; not runtime census"
+    },
+    "proseSources": {
+      "count": 10,
+      "equalsPrior": true
+    },
+    "applicationEntrypoints": {
+      "count": 14,
+      "equalsPrior": true
+    },
+    "proseFieldBoundaries": {
+      "count": 26,
+      "equalsPrior": true
+    },
+    "applicationFieldBoundaries": {
+      "count": 51,
+      "equalsPrior": true
+    }
+  },
+  "files": [
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/search/surface-registry.ts",
+      "repo": ".",
+      "priorSha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+      "sha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+      "repo": ".",
+      "priorSha256": "c65d7b85eb7b5394ac3049a328ae5225972180b072470d210265511baed2738b",
+      "sha256": "c65d7b85eb7b5394ac3049a328ae5225972180b072470d210265511baed2738b",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.ts",
+      "repo": ".",
+      "priorSha256": "c1ce37b2dc299c219f61304b43aca5337c6ece87a714c2a1dd1ce0493d5b82d8",
+      "sha256": "c1ce37b2dc299c219f61304b43aca5337c6ece87a714c2a1dd1ce0493d5b82d8",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/report-source.ts",
+      "repo": ".",
+      "priorSha256": "afdf2b85b503035a9ea3a885420506d37e52f689912eac45028dd2081dcde89d",
+      "sha256": "afdf2b85b503035a9ea3a885420506d37e52f689912eac45028dd2081dcde89d",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/semantic.ts",
+      "repo": ".",
+      "priorSha256": "6527894e0b1a679c966241499a06bd5c5b0c0a1910f28d51a83f94659ededb93",
+      "sha256": "6527894e0b1a679c966241499a06bd5c5b0c0a1910f28d51a83f94659ededb93",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/fulltext.ts",
+      "repo": ".",
+      "priorSha256": "644a772c6b3b226d28211d38e605e416744cd543d2f9311e0e45c330a0d51b11",
+      "sha256": "644a772c6b3b226d28211d38e605e416744cd543d2f9311e0e45c330a0d51b11",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/search/filters.ts",
+      "repo": ".",
+      "priorSha256": "cfe2839a610bc95425292b05e6fa009bc0482df9fb2217e92c73af63a854fb76",
+      "sha256": "cfe2839a610bc95425292b05e6fa009bc0482df9fb2217e92c73af63a854fb76",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/memory/configure.ts",
+      "repo": ".",
+      "priorSha256": "84c8f5c3278b829a80849f319254fb2e151a3e055e935cc4ffc3b9db52bed07d",
+      "sha256": "84c8f5c3278b829a80849f319254fb2e151a3e055e935cc4ffc3b9db52bed07d",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/memory/injection.ts",
+      "repo": ".",
+      "priorSha256": "a05b3fa473a2fed3e88332bfc6d21221ebb2bec4b1311f34b67e6fe0dbe0b5f1",
+      "sha256": "a05b3fa473a2fed3e88332bfc6d21221ebb2bec4b1311f34b67e6fe0dbe0b5f1",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/memory/corpus-recall-io.ts",
+      "repo": ".",
+      "priorSha256": "e11f889954e6f28b1da0f1d41a52c0c47139078dde25341214bd361fde9eb06e",
+      "sha256": "e11f889954e6f28b1da0f1d41a52c0c47139078dde25341214bd361fde9eb06e",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/memory/search.ts",
+      "repo": ".",
+      "priorSha256": "82e61cb6794055d1e3ee325ecb05d65228cef635117521e115cb9b77e0fe258e",
+      "sha256": "82e61cb6794055d1e3ee325ecb05d65228cef635117521e115cb9b77e0fe258e",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+      "repo": ".",
+      "priorSha256": "5427a5bd94642703ffed9a1c49f9a48b147793e176dbce9a2c1d23ce0c354d82",
+      "sha256": "3605342e4626550792fd8125c67d57c7cbd296b49ee54f855c55f3872b95a0b6",
+      "changed": true,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+      "repo": ".",
+      "priorSha256": "8f15c8c17300f33fffc73b9e889ea521e34e04117b68a0b06b7f80a0eead5b8c",
+      "sha256": "313f64d762a3a10d014a806133fc5be43aacdce706efc8844037e6b8930ddf82",
+      "changed": true,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "libs/generic/search/src/types.ts",
+      "repo": "libs/generic/search",
+      "priorSha256": "062764ce130f7db4a95c9ff1b3fabe1f8c33de3336dc144601c49097f22cac0a",
+      "sha256": "062764ce130f7db4a95c9ff1b3fabe1f8c33de3336dc144601c49097f22cac0a",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "750f845ad7071b3b9ddbbb7d5a11a267f1f87b8c",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "libs/generic/search/src/hybrid.ts",
+      "repo": "libs/generic/search",
+      "priorSha256": "015a412da34ec64ee555bc29518acd442b077d4e1175845d97f93284357c2374",
+      "sha256": "015a412da34ec64ee555bc29518acd442b077d4e1175845d97f93284357c2374",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "750f845ad7071b3b9ddbbb7d5a11a267f1f87b8c",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "libs/generic/search-core/src/relevance-eval.ts",
+      "repo": "libs/generic/search-core",
+      "priorSha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+      "sha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "48c944b60b576f4143a8922b15895359cbb88b63",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "libs/generic/search-core/src/relevance-eval.spec.ts",
+      "repo": "libs/generic/search-core",
+      "priorSha256": "21d4ae5575f3d5ca92f16744d7d2a3faf19ff50b6c926617451c26fac1ba54d9",
+      "sha256": "21d4ae5575f3d5ca92f16744d7d2a3faf19ff50b6c926617451c26fac1ba54d9",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "48c944b60b576f4143a8922b15895359cbb88b63",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "libs/generic/search-core/src/index.ts",
+      "repo": "libs/generic/search-core",
+      "priorSha256": "11cafe7020db5b2a5a7888b9b009c7da053730da66afa08fe6f7b20c478a9486",
+      "sha256": "11cafe7020db5b2a5a7888b9b009c7da053730da66afa08fe6f7b20c478a9486",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "48c944b60b576f4143a8922b15895359cbb88b63",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/personal/search.ts",
+      "repo": ".",
+      "priorSha256": "2c1fc8082d17bc67aa7217d061b44c2b2693cacd644fcb46e954f324f4f91e52",
+      "sha256": "2c1fc8082d17bc67aa7217d061b44c2b2693cacd644fcb46e954f324f4f91e52",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/social/search.ts",
+      "repo": ".",
+      "priorSha256": "7538faa69150aebb090ed19c8838c97bae999f36f0cff83fdcff9d916fa7b470",
+      "sha256": "2cbd735c14234fd59be88e47f509bf7ec1beddb71906e691d2369575af7284dc",
+      "changed": true,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/agent-tools/documents/search.ts",
+      "repo": ".",
+      "priorSha256": "08ccc03b9e9b74800bf13ab3b2672610df56af0cd7ffbe3aa7d3212207691bba",
+      "sha256": "7cd604f2496bc22844a3daf459f02853360c1c1c2c8eda7a7a1dd2a422b706a7",
+      "changed": true,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/personal-vault/store.ts",
+      "repo": ".",
+      "priorSha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "sha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/personal-vault/authorization.ts",
+      "repo": ".",
+      "priorSha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "sha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts",
+      "repo": ".",
+      "priorSha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "sha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/data-sources/documents-corpus.ts",
+      "repo": ".",
+      "priorSha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+      "sha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/data-sources/live-search-adapter.ts",
+      "repo": ".",
+      "priorSha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+      "sha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "papercusp",
+      "path": "packages/operator-core/lib/capability-verbs/social-read.ts",
+      "repo": ".",
+      "priorSha256": "1c1d869d2b9537d021c5ef47d979bcafc4879fd56293d876c3c39a6baf8e65ed",
+      "sha256": "ed0a0e69ed71468d28d048368b83fc2cfc12934ad8e6045aff8b5b3869587559",
+      "changed": true,
+      "equalsRecordedCommit": true,
+      "commit": "737afe86458adb2220ba0c9a4d021c21397514d9",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "libs/catalog-search/src/config.ts",
+      "repo": ".",
+      "priorSha256": "aefdef92a60b5578e52b2fc02f2a76263a1299f9280144140f294b61efb1002b",
+      "sha256": "aefdef92a60b5578e52b2fc02f2a76263a1299f9280144140f294b61efb1002b",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "libs/catalog-search/src/params.ts",
+      "repo": ".",
+      "priorSha256": "62ba42a9392f5de655f371c0fca8842979391fa8247b4d41d33d6ed460180964",
+      "sha256": "62ba42a9392f5de655f371c0fca8842979391fa8247b4d41d33d6ed460180964",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "libs/catalog-search/src/useCatalogSearch.ts",
+      "repo": ".",
+      "priorSha256": "eb9986299948f63a54bb0c80244a855cabfe06e4339ccab33a328aba3e3c1b25",
+      "sha256": "eb9986299948f63a54bb0c80244a855cabfe06e4339ccab33a328aba3e3c1b25",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "libs/catalog-search/src/useLiveStockOverlay.ts",
+      "repo": ".",
+      "priorSha256": "7ba2fb09f36764b4bdc3689e68eef498a68d3287f6b7f6a3560c57e99ab96d7b",
+      "sha256": "7ba2fb09f36764b4bdc3689e68eef498a68d3287f6b7f6a3560c57e99ab96d7b",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/shop-api/src/catalog/catalog.controller.ts",
+      "repo": ".",
+      "priorSha256": "9509aa25ac214fcb036008d3918b1ccf21f43f49cccb41986d5a80530f5e03bd",
+      "sha256": "9509aa25ac214fcb036008d3918b1ccf21f43f49cccb41986d5a80530f5e03bd",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/shop-api/src/catalog/catalog.service.ts",
+      "repo": ".",
+      "priorSha256": "d195a7f7b81e458b99c8efd18908571b8b45f8339d16d615328a1180c1befc73",
+      "sha256": "d195a7f7b81e458b99c8efd18908571b8b45f8339d16d615328a1180c1befc73",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/shop-api/src/tooldef/tools/catalog.reads.tool.ts",
+      "repo": ".",
+      "priorSha256": "4750338a33078bc3fe45d09f050319b53e675a69f5ab229979330effd9c4cd57",
+      "sha256": "4750338a33078bc3fe45d09f050319b53e675a69f5ab229979330effd9c4cd57",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/scout-service/src/scout/scout.service.ts",
+      "repo": ".",
+      "priorSha256": "8ef72912bb028df6584de017774b8012dc49c75c53e369206c8052fe83e1b3b3",
+      "sha256": "8ef72912bb028df6584de017774b8012dc49c75c53e369206c8052fe83e1b3b3",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/scout-service/src/scout/memory-scopes.ts",
+      "repo": ".",
+      "priorSha256": "9eecdd1a35bf5ae4d06f34cb49ec9576218d86d1ced1a042657d47ef4c403121",
+      "sha256": "9eecdd1a35bf5ae4d06f34cb49ec9576218d86d1ced1a042657d47ef4c403121",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "apps/scout-service/src/memory/memory.service.ts",
+      "repo": ".",
+      "priorSha256": "8e6987a0f4f9ba030388976ec65b144739a7d70763184ffa390ce7841b65c59f",
+      "sha256": "8e6987a0f4f9ba030388976ec65b144739a7d70763184ffa390ce7841b65c59f",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    },
+    {
+      "product": "restart",
+      "path": "scripts/search-eval/run-eval.ts",
+      "repo": ".",
+      "priorSha256": "172a281ae59404834e4f4ef4cc308fbd3f74aa8ef6d7292bbd60bca1e29e08f2",
+      "sha256": "172a281ae59404834e4f4ef4cc308fbd3f74aa8ef6d7292bbd60bca1e29e08f2",
+      "changed": false,
+      "equalsRecordedCommit": true,
+      "commit": "f8ff162adc8a7551290ef26a8a2d7b90f3504f5d",
+      "bytesStableAfter": true
+    }
+  ],
+  "summary": {
+    "files": 38,
+    "unchanged": 33,
+    "changed": 5,
+    "unreadable": 0,
+    "missing": 0
+  },
+  "semanticChanges": [
+    {
+      "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+      "change": "Explicit identity-safe probe eligibility, retained candidate dispositions, and replay configuration identity excludes disposable database name/port. No benchmark target is broadened by this record.",
+      "existingEvidence": "docs/evidence/shared-search-restart-papercusp-2026-10-22-baseline-qualification-20261025-r10.json"
+    },
+    {
+      "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+      "change": "Callable maintained entrypoint plus prospective sampling/candidate receipts and overwrite protection. R10 remains contributing evidence only.",
+      "existingEvidence": "docs/evidence/shared-search-restart-papercusp-2026-10-22-baseline-qualification-20261025-r10.json"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/documents/search.ts",
+      "change": "Use verified same-workspace user principal; reject malformed/unverified/cross-workspace user principal before falling back for non-user context.",
+      "existingEvidence": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-personal-dispatch-witness-20261025.json"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/social/search.ts",
+      "change": "Pass disclosureSubject identity to the actual social reader.",
+      "existingEvidence": "spec-evidence:70427"
+    },
+    {
+      "path": "packages/operator-core/lib/capability-verbs/social-read.ts",
+      "change": "Apply shared disclosure guard before delivery of mintable hits; retain privacy labels/restricted counts and withhold restricted results for explicit absent identity.",
+      "existingEvidence": "EI-26979212698172588#completion"
+    }
+  ],
+  "repair": {
+    "workItem": "EI-26979212698172588",
+    "state": "done",
+    "completionAuthority": "committed",
+    "nativeTestRunId": 22052393,
+    "specEvidenceId": 70427,
+    "currentness": "unknown",
+    "unknownReason": "test-run-worktree-not-clean",
+    "originalDirtyProvenanceRetained": true
+  },
+  "limits": [
+    "This records source reconciliation, not runtime population acceptance.",
+    "New or unregistered source paths outside the original frozen population are not discovered by this check.",
+    "Provider/candidate revisions and current-authority epochs remain unqualified.",
+    "Native dirty provenance and every original baseline population exclusion are retained.",
+    "Quality judgments, measured retrieval cost, per-product/adapter/query-class budgets and full runtime closure remain open.",
+    "No ranking treatment, independent acceptance or shipment is asserted."
+  ],
+  "qualification": {
+    "qualifiedBaseline": false,
+    "rankingTreatment": false,
+    "shipped": false
+  }
+}

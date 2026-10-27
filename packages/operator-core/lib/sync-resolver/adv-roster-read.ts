@@ -98,6 +98,20 @@ export interface ReadAdvRosterOptions {
   nowMs?: () => number;
 }
 
+type PrimaryRosterSnapshot = Awaited<ReturnType<typeof import('../adv-roster').mergeRosterWithAssignments>>;
+interface PrimaryRosterTiming {
+  startedAtMs: number;
+  phases: Map<string, {
+    state: 'started' | 'completed' | 'failed';
+    elapsedMs: number;
+    observedAtMs: number;
+  }>;
+}
+// A caller's deadline does not cancel the underlying merge. Keep that work
+// single-flight until IT settles, including polls with a different endedLimit.
+const primaryRosterInFlight = new Map<string, Promise<PrimaryRosterSnapshot>>();
+const primaryRosterTimings = new WeakMap<Promise<PrimaryRosterSnapshot>, PrimaryRosterTiming>();
+
 /**
  * Read the Sessions roster: the live fleet plus the ended / pending / starting
  * sections, bounded by one shared deadline. This is the UNCACHED read — see
@@ -132,9 +146,41 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
   };
 
   const withinBudget = createReadDeadline(budgetMs);
+  // Keep the real cold-read failure attributable; a later fast probe cannot
+  // explain which database or host-discovery leg was pending at its deadline.
+  const freshTiming: PrimaryRosterTiming = { startedAtMs: performance.now(), phases: new Map() };
+  // notify-classification: {"id":"packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/readAdvRosterUncached:b0b11673e093686c765e:1","classification":"durable","reason":"Single-flight roster work reaches owner and lifecycle notification paths; share their existing terminal obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+  const primaryRead = dedupeInFlight(
+    primaryRosterInFlight,
+    JSON.stringify(workspaceId),
+    () =>
+    // notify-classification: {"id":"packages/operator-core/lib/sync-resolver/adv-roster-read.ts#<module>/readAdvRosterUncached/<callback>:076f290d7184642dda79:1","classification":"durable","reason":"Roster merging can reach owner and lifecycle notifications; preserve their existing durable requirement, with delivery still unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    mergeRosterWithAssignments({
+      workspaceId,
+      onTiming: ({ phase, state, elapsedMs }) => {
+        freshTiming.phases.set(phase, { state, elapsedMs, observedAtMs: performance.now() });
+      },
+    }));
+  const activeTiming = primaryRosterTimings.get(primaryRead) ?? freshTiming;
+  primaryRosterTimings.set(primaryRead, activeTiming);
+  const activeRead = withinBudget(primaryRead, 'roster active').catch((error) => {
+    try {
+      console.warn('[advRoster.list] active read failed:', {
+        reason: classifyReadFailure(error).reason,
+        elapsedMs: Math.round(performance.now() - activeTiming.startedAtMs),
+        phases: [...activeTiming.phases].map(([phase, timing]) => ({
+          phase,
+          state: timing.state,
+          elapsedMs: Math.round(timing.state === 'started'
+            ? performance.now() - timing.observedAtMs : timing.elapsedMs),
+        })),
+      });
+    } catch { /* diagnostics must preserve the primary read's failure */ }
+    throw error;
+  });
   const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
     // PRIMARY: a lapse propagates, as a throw from this reader does today.
-    withinBudget(mergeRosterWithAssignments({ workspaceId }), 'roster active'),
+    activeRead,
     withinBudget(listEndedAdvSessions({ workspaceId, limit: endedLimit }), 'roster ended').catch(
       (err) => noteDegraded('ended', err),
     ),
@@ -270,6 +316,7 @@ function refreshRosterCache(key: string, opts: ReadAdvRosterOptions): Promise<Ro
 export function _resetRosterCacheForTests(): void {
   rosterCache.clear();
   rosterInFlight.clear();
+  primaryRosterInFlight.clear();
 }
 
 /**

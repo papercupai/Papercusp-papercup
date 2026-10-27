@@ -232,6 +232,7 @@ node_modules.pinned-deps-old.*/
 **/vitest-tmp/
 .papercusp/vitest-tmp/
 .papercusp/scratch/
+.papercusp/private-desktop-candidates/
 **/scratch/relgit-*/
 **/scratch/lockdom-*/
 

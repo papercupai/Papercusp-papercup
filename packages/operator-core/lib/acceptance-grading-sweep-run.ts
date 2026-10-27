@@ -23,6 +23,8 @@ import {
   type AcceptanceGradingDecision,
   type AcceptanceGradingThresholds,
 } from './acceptance-grading-sweep';
+import { withBoundedTimeout } from './bounded-timeout';
+import type { AwaitingAcceptancePlanRow } from './acceptance-awaiting-plans';
 
 /**
  * How many candidate plans one tick will observe before it stops looking. Distinct
@@ -38,17 +40,7 @@ export function acceptanceGradingStallConditionKey(planSlug: string): string {
 }
 
 /** A plan the SQL prefilter thinks might be stuck, with the timestamps already read. */
-export interface ObservedPlanRow {
-  planSlug: string;
-  harnessSlug: string | null;
-  rubricRef: string | null;
-  /**
-   * When the plan became GRADEABLE — the later of "acceptance rubric exists" and
-   * "completion audit recorded", because both are required before a grader has
-   * anything to grade. Null when neither could be established.
-   */
-  gradeableSinceMs: number | null;
-}
+export type ObservedPlanRow = AwaitingAcceptancePlanRow;
 
 export interface GraderObservation {
   /** A grader task for this plan is alive right now. */
@@ -59,9 +51,9 @@ export interface GraderObservation {
 
 export interface AcceptanceGradingSweepDeps {
   /** The SQL prefilter: non-shipped plans that already have a rubric and an audit. */
-  listCandidates(limit: number): Promise<ObservedPlanRow[]>;
+  listCandidates(limit: number, after?: ObservedPlanRow | null): Promise<ObservedPlanRow[]>;
   /** The ONE definition of stuck-ness (R7) — evaluatePlanAcceptanceGate in production. */
-  evaluateGate(planSlug: string): Promise<{ satisfied: boolean; code?: string | null }>;
+  evaluateGate(planSlug: string, row?: ObservedPlanRow): Promise<{ satisfied: boolean; code?: string | null }>;
   /** Liveness + last-dispatch for this plan's grader, from the task ledger. */
   observeGrader(row: ObservedPlanRow): Promise<GraderObservation>;
   /** Whether an escalation work-item already owns this condition. */
@@ -78,6 +70,8 @@ export interface AcceptanceGradingSweepDeps {
 }
 
 export type AcceptanceGradingSweepEvent =
+  | { kind: 'observe-started'; planSlug: string; operation: 'gate' | 'grader' | 'escalation' }
+  | { kind: 'observe-settled'; planSlug: string; operation: 'gate' | 'grader' | 'escalation'; outcome: 'completed' | 'failed'; durationMs: number }
   | { kind: 'dispatched'; planSlug: string; state?: string }
   | { kind: 'dispatch-failed'; planSlug: string; error: string }
   | { kind: 'escalated'; planSlug: string; workItemId: string; created: boolean }
@@ -95,11 +89,16 @@ export interface AcceptanceGradingSweepResult {
   failures: Array<{ planSlug: string; stage: 'observe' | 'dispatch' | 'escalate'; error: string }>;
   deferredByCap: number;
   decisions: AcceptanceGradingDecision[];
+  budgetExhausted: boolean;
+  /** Complete scope and order key; the next database page rotates past it. */
+  nextCursor: ObservedPlanRow | null;
 }
 
 export interface AcceptanceGradingSweepOpts extends AcceptanceGradingThresholds {
   maxPerTick?: number;
   maxScanPerTick?: number;
+  timeBudgetMs?: number;
+  after?: ObservedPlanRow | null;
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -119,6 +118,22 @@ export async function runAcceptanceGradingSweep(
   const maxScan = Math.max(0, opts.maxScanPerTick ?? ACCEPTANCE_GRADING_SWEEP_MAX_SCAN_PER_TICK);
   const maxPerTick = opts.maxPerTick ?? ACCEPTANCE_GRADING_SWEEP_MAX_PER_TICK;
   const now = deps.now();
+  const deadline = Date.now() + Math.min(45_000, Math.max(1, opts.timeBudgetMs ?? 45_000));
+  let budgetExhausted = false;
+  let nextCursor: ObservedPlanRow | null = opts.after ?? null;
+  const bounded = async <T>(work: () => Promise<T>): Promise<T> => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) { budgetExhausted = true; throw new Error('grading sweep wall-time budget exhausted'); }
+    const result = await withBoundedTimeout(work, {
+      timeoutMs: Math.min(5_000, remaining), fallback: null, warn: false,
+      label: 'acceptance-grading-sweep',
+    });
+    if (result.degraded) {
+      if (Date.now() >= deadline) budgetExhausted = true;
+      throw new Error(result.errorMessage ?? `grading sweep observation ${result.reason}`);
+    }
+    return result.value as T;
+  };
 
   const failures: AcceptanceGradingSweepResult['failures'] = [];
   const emit = (e: AcceptanceGradingSweepEvent) => deps.onEvent?.(e);
@@ -126,19 +141,40 @@ export async function runAcceptanceGradingSweep(
   // Ask for one MORE than the cap purely to learn whether the corpus overflowed it,
   // so `scanCapped` reports a real overflow rather than the coincidence of an exactly
   // -full page.
-  const rows = maxScan === 0 ? [] : await deps.listCandidates(maxScan + 1);
+  const rows = maxScan === 0 ? [] : await bounded(() => deps.listCandidates(maxScan + 1, opts.after));
   const scanCapped = rows.length > maxScan;
   const scanned = scanCapped ? rows.slice(0, maxScan) : rows;
+  let observed = 0;
 
   const byPlan = new Map<string, ObservedPlanRow>();
   const candidates: AcceptanceGradingCandidate[] = [];
 
   for (const row of scanned) {
+    if (Date.now() >= deadline) { budgetExhausted = true; break; }
+    nextCursor = row;
+    observed++;
+    // A count cap cannot identify an await that holds the tick's guard. Report
+    // the plan and operation before awaiting it, including failed settlements.
+    const observe = async <T>(
+      operation: 'gate' | 'grader' | 'escalation',
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      const startedAt = deps.now();
+      emit({ kind: 'observe-started', planSlug: row.planSlug, operation });
+      let outcome: 'completed' | 'failed' = 'failed';
+      try {
+        const result = await bounded(work);
+        outcome = 'completed';
+        return result;
+      } finally {
+        emit({ kind: 'observe-settled', planSlug: row.planSlug, operation, outcome, durationMs: deps.now() - startedAt });
+      }
+    };
     try {
       const [gate, grader, escalated] = await Promise.all([
-        deps.evaluateGate(row.planSlug),
-        deps.observeGrader(row),
-        deps.escalationExists(row.planSlug),
+        observe('gate', () => deps.evaluateGate(row.planSlug, row)),
+        observe('grader', () => deps.observeGrader(row)),
+        observe('escalation', () => deps.escalationExists(row.planSlug)),
       ]);
       byPlan.set(row.planSlug, row);
       candidates.push({
@@ -164,12 +200,13 @@ export async function runAcceptanceGradingSweep(
   const escalationsAlreadyOwned: string[] = [];
 
   for (const decision of plan.actionable) {
+    if (Date.now() >= deadline) { budgetExhausted = true; break; }
     const row = byPlan.get(decision.planSlug);
     if (!row) continue;
 
     if (decision.action === 'dispatch') {
       try {
-        const res = await deps.dispatchGrader(row);
+        const res = await bounded(() => deps.dispatchGrader(row));
         if (res.ok) {
           dispatched.push(decision.planSlug);
           emit({ kind: 'dispatched', planSlug: decision.planSlug, ...(res.state ? { state: res.state } : {}) });
@@ -187,7 +224,7 @@ export async function runAcceptanceGradingSweep(
     }
 
     try {
-      const res = await deps.mintEscalation(row, decision);
+      const res = await bounded(() => deps.mintEscalation(row, decision));
       // `created:false` means the condition already had an owner — the unique index
       // did its job. Recorded separately so a test can prove the second tick minted
       // nothing rather than merely "did not crash".
@@ -202,7 +239,7 @@ export async function runAcceptanceGradingSweep(
   }
 
   return {
-    scanned: scanned.length,
+    scanned: observed,
     scanCapped,
     dispatched,
     escalated,
@@ -210,6 +247,8 @@ export async function runAcceptanceGradingSweep(
     failures,
     deferredByCap: plan.deferredByCap,
     decisions: plan.decisions,
+    budgetExhausted,
+    nextCursor,
   };
 }
 

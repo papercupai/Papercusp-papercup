@@ -1022,7 +1022,7 @@ describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
     expect(toolResultNotOkReason({ ok: false })).toBe('no reason given');
     expect(toolResultNotOkReason({ ok: true, results: [{ ok: true }, { ok: false, error: 'duplicate key' }] }))
       .toBe('1 of 2 result(s) ok:false; first: duplicate key');
-    // Only an explicit ok:false is a refusal: projections, prose and arrays are not.
+    // Projections, prose and arrays do not imply a refusal.
     for (const answer of [{ ok: true }, { results: [{ ok: true }] }, { state: 'open' }, [{ ok: false }], 'ok:false', null, undefined]) {
       expect(toolResultNotOkReason(answer)).toBeNull();
     }
@@ -1039,13 +1039,50 @@ describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
     const run = await withFakeMcpEndpoint(refusal, runMcpCall);
     expect(run.code, run.stderr).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
     expect(JSON.parse(run.stdout)).toEqual(refusal);
-    expect(run.stderr).toContain('the tool answered ok:false (1 of 1 result(s) ok:false; first: duplicate key)');
+    expect(run.stderr).toContain('the tool reported failure (1 of 1 result(s) ok:false; first: duplicate key)');
   });
 
   it('still exits 0 when the answer does not report failure', async () => {
     const run = await withFakeMcpEndpoint({ ok: true, id: 'EI-1' }, runMcpCall);
     expect(run.code, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ ok: true, id: 'EI-1' });
+  });
+});
+
+describe('mcp-call output error envelopes (EI-26807000988480218)', () => {
+  const failedOutput = {
+    schemaVersion: 'papercusp.output-envelope/v1',
+    summary: '',
+    content: [],
+    state: 'error',
+    error: {
+      code: 'output_spill_failed',
+      message: 'Output exceeded its hard budget and the spill write failed.',
+      retryable: true,
+    },
+  };
+
+  it('reports a canonical output error even without an ok field', () => {
+    expect(toolResultNotOkReason(failedOutput))
+      .toBe('output envelope error: output_spill_failed: Output exceeded its hard budget and the spill write failed.');
+    expect(toolResultNotOkReason({ ...failedOutput, error: undefined }))
+      .toBe('output envelope error: no reason given');
+  });
+
+  it('keeps ordinary state fields and non-error envelopes successful', () => {
+    for (const answer of [
+      { state: 'error', error: 'an application state, not a transport envelope' },
+      { ...failedOutput, state: 'complete', error: undefined },
+      { ...failedOutput, state: 'incomplete', error: undefined },
+    ]) expect(toolResultNotOkReason(answer)).toBeNull();
+  });
+
+  it.each([false, true])('exits 5 for an output error with allow-partial=%s', async (allowPartial) => {
+    const run = await withFakeMcpEndpoint(failedOutput, (port, home) =>
+      runMcpCall(port, home, allowPartial ? ['--allow-partial'] : []));
+    expect(run.code, run.stderr).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
+    expect(JSON.parse(run.stdout)).toEqual(failedOutput);
+    expect(run.stderr).toContain('the tool reported failure (output envelope error: output_spill_failed:');
   });
 });
 

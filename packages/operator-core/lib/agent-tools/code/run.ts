@@ -66,6 +66,8 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { readIdentity } from '../locks/identity';
 import { getTxPool } from '../locks/su-lock-store';
 import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
+import { MAX_ORCHESTRATION_SCRIPT_CHARS } from '../orchestration/public-contract';
+import { DURABLE_RUN_FOLLOW_UP, runDurableCode } from './durable-run';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -280,6 +282,17 @@ export default defineTool({
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    execution: z.object({
+      lifecycle: z.literal('background'),
+      durability: z.literal('durable'),
+      timeoutSec: z.number().int().min(1).max(3_600).optional(),
+    }).strict().optional().describe(
+      'Run once through the existing durable orchestration runtime. Returns durableRun.workflowId immediately; ' +
+      'execution.timeoutSec is the independent execution deadline (default 3600s). ' +
+      `${DURABLE_RUN_FOLLOW_UP} Use tools.runtime.sleep for checkpointed waits. ` +
+      'Current authority is checked on every tool step; unsafe replay/nondeterminism is refused before admission. ' +
+      'Cannot combine with a kernel, foreground timeoutSec, or dryRun.',
+    ),
     kernel: z.object({
       op: z.enum(['open', 'run', 'status', 'close']),
       id: z.string().uuid().optional(),
@@ -287,59 +300,26 @@ export default defineTool({
       if (kernel.op !== 'open' && !kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'id required for an existing kernel' });
       if (kernel.op === 'open' && kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'open creates a new kernel; omit id' });
     }).optional().describe(
-      'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
-      'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
-      'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
-      'Persistent kernels are refused on volatile staging :3170 because its process is recycled frequently. For restart-safe work, call store(key,value), persist the returned state, and pass it back through inputs on the next stateless or kernel call. ' +
-      'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+      'JavaScript VM scoped to owner/workspace/harness: open creates id; run/status/close execute/read/cancel. State lives on globalThis, not lexical locals; current authority per cell. No Python/restart recovery; timeout/cancel/5m idle loses state. Refused on :3170/dryRun. Persist store output and replay via inputs after restart.',
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
-      'Explicit JSON-only replay state for the sandbox inputs object. Use with store/load: a successful run returns state when store/load was used; persist that state outside the process and pass it here after an operator restart. Inputs never restore arbitrary globalThis objects or functions.',
+      'JSON replay state is deeply frozen. Clone nested values before mutation (JSON.parse(JSON.stringify(inputs.state))), or use store/load for state the script updates. Persist returned state and replay here after restart; arbitrary globalThis objects/functions cannot be restored.',
     ),
     work_item_id: z.string().min(1).max(120).optional().describe(
-      'Default work-item attribution for nested capability:bash calls. Use the exact held WI-/EI-/F- id when this session holds multiple work-items; an explicit nested work_item_id takes precedence.',
+      'Default attribution for nested capability:bash: use the exact held WI-/EI-/F- id when holding several items. Explicit nested work_item_id overrides it.',
     ),
     script: z
       .string()
       .min(1)
-      .max(20_000)
+      .max(MAX_ORCHESTRATION_SCRIPT_CHARS)
       .optional()
       .describe(
-        'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
-          'There is no tools.invoke shortcut in this sandbox; dynamic dispatch is tools.tools.invoke({ name, args }), or use tools.ns.verb(args) directly. ' +
-          'The recursive execution doors `tools.code.run` and `tools.orchestrate.run` are deliberately excluded from this facade; keep the sequence in this outer script. ' +
-          'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
-          'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. A timeout with settled work is marked `partial:true` in the public envelope; use the last recovered page\'s cursor/hash to resume without replaying settled reads. Write results are never included in timeout recovery. ' +
-          'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
-          'To run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
-          'If you hold multiple work-items, pass `work_item_id` naming a work-item you currently hold: ' +
-          '`await tools.capability.bash({ command, work_item_id: "WI-1234" })`. ' +
-          'Omission returns `work_item_id_required` before dispatch; a single held claim can remain implicit. ' +
-          'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +
-          'read `result.output`, `result.exit_code`, and `result.status` from capability:bash; do not read `result.content[0].text`. ' +
-          'For `dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`; relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`. ' +
-          'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
-          'media from intermediate tool calls is never emitted implicitly. ' +
-          'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
-          '`generatedImage({ image_url: "data:image/...;base64,...", output_hint? })` appends a validated image; ' +
-          '`store(key, value)` / `load(key)` use explicit replay state seeded from bindings/inputs and returned with the result -- never hidden session memory. ' +
-          'Replay state is capped at 200 keys and 65,536 UTF-8 bytes (64 KiB); `store` rejects larger state with `state_limit_exceeded` instead of truncating it. ' +
-          'Keep replay state to compact cursors, IDs, and bounded summaries: reduce large tool reads at the source with `projection.pick`, `limit`, or checkpoint pages, and use `payloadTier:\'full\'` only with a narrow projection. ' +
-          'For exact oversized returns, follow `summaryNotice.rawSummaryCursor` with `capability:read`; split recovery into bounded slices instead of storing the whole envelope, then pass the compact state through `inputs`. ' +
-          'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
-          'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
-          'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
-          "A shell-command STRING passed to `tools.capability.bash({ command })` needs JS escaping too: write " +
-          "`tr '\\\\0' ' ' </proc/self/cmdline` " +
-          '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs. ' +
-          "Literal shell backslashes need the same JS escaping: use String.raw for the script or double each backslash in a JS string, e.g. `find /tmp \\\\( -name '*.unlikely-no-match' \\\\)`; a single `\\(` becomes `(` before bash runs, breaking grouped predicates. " +
-          "Shell parameter expansion needs the same template-layer escape: inside a JavaScript template literal, write `\\${f##*/}` (or avoid the expansion) so the JavaScript compiler does not treat the shell `${f##*/}` as its own template expression; otherwise code:run returns `compile_error` before bash is dispatched. " +
-          'Multiline shell commands need the JavaScript string layer too: use a backtick template literal for `command` when it contains literal newlines, or escape each line break as `\\n`; a literal newline inside a single/double-quoted string causes `compile_error` before bash dispatch. ' +
-          'Regex literals containing path slashes are another string layer: an extra backslash before `/` can close the literal early and yield `compile_error: Invalid regular expression flags`; prefer `String.includes(...)` or `new RegExp("...")` when composing scripts through another string layer. ' +
-          'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
-          'Nested tools.capability.bash searches: apostrophe regexes break single-quoted arguments; use rg -F, -e per pattern, or quoted stdin/file. ' +
-          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument). ' +
-          "For inline Python `-c`, put the shell command in a JavaScript template literal and the Python program in single quotes, e.g. ``const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;``. This keeps Python's quotes from closing a JavaScript double-quoted command and prevents `compile_error` before bash is dispatched. Do not encode Python source line breaks as literal `\\n` inside the shell-quoted program: the shell preserves the backslash and Python raises a line-continuation SyntaxError. Use a quoted heredoc (`python3 - <<'PY' ... PY`) or a semicolon-delimited one-liner.",
+        'Plain JavaScript only; TypeScript annotations are unsupported. Call tools with `await tools.ns.verb(args)` and return a compact summary. Dynamic dispatch is `tools.tools.invoke({ name, args })`; recursive `code:run` and `orchestrate:run` calls are excluded. ' +
+          'The sandbox exposes tools, not Node imports or an ambient shell. For shell access use `tools.capability.bash({ command })`; pass a held `work_item_id` when you hold multiple items. Nested calls return typed result roots (for bash: `output`, `exit_code`, `status`), not MCP `content`/`text`; `dev:pg_query` returns `rows`, `fields`, and `rowCount`. ' +
+          'On timeout, `timeoutSettledReadRecovery.calls` contains only settled read-only results (up to 24 KiB/20 calls). Check `omittedReadCount`; writes are never recovered, and a slow sibling may not have settled. ' +
+          'Use `store`/`load` with explicit `inputs` for replay state; it is capped at 200 keys and 64 KiB. Persist compact cursors and summaries, reduce large reads with `projection.pick` or `limit`, and use `payloadTier:\'full\'` only with a narrow projection. For oversized output, follow `summaryNotice.rawSummaryCursor` with `capability:read` in bounded slices. ' +
+          'No timers are available; use `await sleep(ms)` for a bounded delay (maximum 10 seconds) and use its returned duration when measuring time. `notify` and `yield_control` stream output; `generatedImage` appends validated media. Return `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }` to emit final media. ' +
+          'Shell commands are nested inside JavaScript strings: preserve backslashes and `${...}` at each layer. For multiline or complex payloads, use a template literal or quoted heredoc; pass serialized JSON through quoted stdin or an argument instead of interpolating it into a shell string. Use fixed-string search or separate `-e` patterns when shell quoting is awkward.',
       ),
     title: z
       .string()
@@ -369,16 +349,11 @@ export default defineTool({
       .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
       .optional()
       .describe(
-        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). EFFECTIVE CEILING IS ` +
-          `${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s. EI-9239: code:run has no run_in_background — ` +
-          `every call is foreground, and the papercusp-su MCP transport hard-caps a foreground call ` +
-          `at ~55s. Values above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s are rejected by the input ` +
-          `schema; the runtime clamp remains a defense for internal callers that bypass transport ` +
-          `validation. For work that genuinely needs longer, split it into multiple code:run calls ` +
-          `or fall back to individual tool calls.`,
+        `Foreground wall-clock budget: default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s, maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s (transport cap ~55s). For longer work use execution:{lifecycle:"background",durability:"durable",timeoutSec:120}; read it later with orchestrate:inspect { durableRun }.`,
       ),
   }),
   async handler(args, ctx) {
+    if (args.execution) return runDurableCode(args, ctx);
     const runStartedAtMs = Date.now();
     // Keep the whole foreground handler below the transport ceiling, including all best-effort
     // host-side work after the orchestration worker returns. The worker's own timeout is only one
@@ -403,7 +378,10 @@ export default defineTool({
         catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
       }
     }
-    if (!args.script) return kernelReply({ ok: false, error: 'script_required', executed: false });
+    if (!args.script) {
+      return kernelReply({ ok: false, error: 'script_required', executed: false,
+        hint: `Pass script. To read or cancel a durable run: ${DURABLE_RUN_FOLLOW_UP}` });
+    }
     const script = args.script;
     // The proof is about this exact validated request body. Compute it at the
     // server boundary; neither the script nor a caller-supplied result field

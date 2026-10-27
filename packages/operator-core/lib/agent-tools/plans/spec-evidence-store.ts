@@ -132,6 +132,69 @@ async function readRecordedTestCases(
   };
 }
 
+type UniqueMeasuredCaseTitle =
+  | { status: 'unmatched' }
+  | { status: 'unique'; title: string }
+  | { status: 'ambiguous'; matchingCaseTitles: string[] };
+
+/**
+ * Resolve the exact measured title to persist when a binding used a title suffix.
+ * An exact identity wins over longer titles of which it is also a suffix; otherwise
+ * a suffix is canonical only when it identifies one distinct measured title.
+ */
+function uniqueMeasuredCaseTitle(
+  testName: string,
+  matchedCaseTitles: readonly string[],
+): UniqueMeasuredCaseTitle {
+  if (matchedCaseTitles.length === 0) return { status: 'unmatched' };
+
+  const exactMatches = matchedCaseTitles.filter((title) => hasSameCaseTitleIdentity(testName, title));
+  const candidates = exactMatches.length > 0 ? exactMatches : matchedCaseTitles;
+  const distinctTitles: string[] = [];
+  for (const title of candidates) {
+    if (!distinctTitles.some((existing) => hasSameCaseTitleIdentity(existing, title))) {
+      distinctTitles.push(title);
+    }
+  }
+
+  return distinctTitles.length === 1
+    ? { status: 'unique', title: distinctTitles[0]! }
+    : { status: 'ambiguous', matchingCaseTitles: distinctTitles };
+}
+
+function ambiguousCaseTitlesMessage(
+  testRunId: number,
+  source: string,
+  ambiguousTestCases: Array<{ testCase: string; matchingCaseTitles: string[] }>,
+): string {
+  const rendered = ambiguousTestCases
+    .map(({ testCase, matchingCaseTitles }) =>
+      `${JSON.stringify(testCase)} -> ${matchingCaseTitles.map((title) => JSON.stringify(title)).join(', ')}`)
+    .join('; ');
+  return `${ambiguousTestCases.length} declared details.adequacy.testCases entries resolve to multiple ` +
+    `distinct measured full case titles in ${source} for test-run ${testRunId} (${rendered}). ` +
+    `Bind the full title or a suffix unique in the recorded source.`;
+}
+
+async function hasLedgerProvenPassingSelection(
+  row: EvidenceRow,
+  execution: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>,
+  workspaceId: string,
+): Promise<boolean> {
+  if (!row.test_run_id || execution.failed !== 0
+    || (execution.skipped !== 0 && !execution.testNamePattern)) return false;
+  try {
+    const pattern = execution.skipped !== 0 ? new RegExp(execution.testNamePattern!) : null;
+    const recorded = await withWorkspace(workspaceId, tx => readRecordedTestCases(tx, row.test_run_id!));
+    return recorded !== null
+      && recorded.cases.length === execution.passed + execution.skipped
+      && recorded.cases.filter(c => c.status === 'pass').length === execution.passed
+      && recorded.cases.filter(c => c.status === 'skip').length === execution.skipped
+      && (!pattern || recorded.cases.every(c =>
+        pattern.test(c.caseKey.replaceAll(' > ', ' ')) === (c.status === 'pass')));
+  } catch { return false; }
+}
+
 const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
 const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
 const MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES = 4096;
@@ -1255,6 +1318,8 @@ export interface DuplicateLiveTestRunBindingAdvisory {
 
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   harnessSlug?: string;
+  /** Explicit workspace for internal callers such as plan promotion; public tool calls use the active workspace. */
+  workspaceId?: string;
   /**
    * The plan whose spec clause this evidence binds to. OPTIONAL as of P-022: omit it for
    * an ad-hoc work-item that belongs to no plan, and the binding is scoped to
@@ -1303,6 +1368,48 @@ export type IndependentVerificationRefusalStatus =
 export type WorkItemPlanItemRefusalStatus = 'work_item_plan_item_mismatch';
 export type MutationCaughtCaseClaimRefusalStatus = 'mutation_caught_case_claim_mismatch';
 
+/**
+ * EI-27081440896857039: a test-run binding takes its environment ONLY from that run's own
+ * execution-time witness. A run that recorded none for the declared runtimeUnits is still
+ * stored (environment unproven, by design), but a live/deployed claim on it can never read
+ * environment=current — so the binder says so at bind time instead of leaving the caller to
+ * discover a NULL environment_fingerprint later.
+ */
+export interface TestRunEnvironmentUnprovenWarning {
+  reason: 'test_run_runtime_witness_missing';
+  testRunId: number;
+  runtimeUnits: string[];
+  evidencePlane: 'live' | 'deployed';
+  message: string;
+}
+
+/** Pure: the bind-time warning for a stored test-run row whose live/deployed environment is unprovable. */
+export function testRunEnvironmentUnprovenWarning(input: {
+  testRunId: number | null | undefined;
+  runtimeUnits: readonly string[] | undefined;
+  completedRuntime: boolean;
+  environmentFingerprint: string | null | undefined;
+  details: Record<string, unknown>;
+}): TestRunEnvironmentUnprovenWarning | undefined {
+  if (input.testRunId == null || !input.runtimeUnits?.length || input.completedRuntime) return undefined;
+  if (input.environmentFingerprint != null) return undefined;
+  const plane = readSpecEvidencePlane(input.details);
+  const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
+  if (normalizedPlane !== 'live' && normalizedPlane !== 'deployed') return undefined;
+  return {
+    reason: 'test_run_runtime_witness_missing',
+    testRunId: input.testRunId,
+    runtimeUnits: [...input.runtimeUnits],
+    evidencePlane: normalizedPlane,
+    message:
+      `Stored, but environment is UNPROVEN: test-run ${input.testRunId} recorded no stable execution-time ` +
+      `runtime witness for runtimeUnits ${JSON.stringify(input.runtimeUnits)}, so this ${normalizedPlane}-plane ` +
+      'binding can never read environment=current or satisfy that plane. Retract it and either omit testRunId ' +
+      'so the server stamps the binding-time runtime of the declared units (a live probe), or record a new run ' +
+      'whose execution carries runtimeEnvironmentBefore/After for exactly these units.',
+  };
+}
+
 export type BindSpecEvidenceResult =
   | {
       status: 'created' | 'unchanged';
@@ -1315,6 +1422,8 @@ export type BindSpecEvidenceResult =
       specFingerprint: string;
       bindingFingerprint: string;
       advisory?: DuplicateLiveTestRunBindingAdvisory;
+      /** EI-27081440896857039: the stored live/deployed row can never read environment=current. */
+      environmentUnproven?: TestRunEnvironmentUnprovenWarning;
     }
   | { status: 'work_item_not_found'; workItemId: string }
   | {
@@ -1346,6 +1455,14 @@ export type BindSpecEvidenceResult =
       verifiesBindingId: number;
       /** Each key on which resolveFixtureAbsenceVerifications would skip this review. */
       mismatched: FixtureAbsencePairingKey[];
+      message: string;
+    }
+  | {
+      status: 'test_cases_ambiguous_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
+      source: 'case-ledger' | 'passed-case-titles';
+      ambiguousTestCases: Array<{ testCase: string; matchingCaseTitles: string[] }>;
       message: string;
     }
   | {
@@ -1484,7 +1601,7 @@ interface PriorTestRunBindingRow {
 
 /** Resolve the selector and append one idempotent exact evidence binding. */
 export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
-  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug, workspaceId: input.workspaceId });
   const writeBinding = (): Promise<BindSpecEvidenceResult> => withWorkspace(scope.workspaceId, async (tx) => {
     // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
     // rather than being forced to invent a plan slug. Everything downstream then runs
@@ -1619,6 +1736,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     let executionRuntimeFingerprint: string | null = null;
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
+    let canonicalizedTestCases: string[] | undefined;
     if (input.testRunId != null) {
       const rows = await tx<{ id: number; status: string | null; source: string | null; execution_details?: unknown }[]>`
         SELECT id, status, source, execution_details FROM harness_shared.test_runs
@@ -1705,16 +1823,25 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
       // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
       // EVERY declared case must resolve to an executed recorded case through the shared
-      // resolver. The capped passedCaseTitles list below could only check "at least one
-      // matched" and skipped the check entirely when the list was incomplete.
+      // resolver. Accepted suffixes are rewritten to their unique measured full title so
+      // later falsifiability checks compare the same case identity. The capped passedCaseTitles
+      // fallback below remains non-authoritative whenever the list is incomplete.
       let judgedByCaseLedger = false;
       if (input.evidenceKind === 'test' && declaredTestCases.length > 0) {
         const recordedCases = await readRecordedTestCases(tx, input.testRunId);
         if (recordedCases !== null) {
           judgedByCaseLedger = true;
-          const unmatched = declaredTestCases.filter(
-            (testName) => !resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases).ok,
-          );
+          const resolved = declaredTestCases.map((testName) => {
+            const filter = resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases);
+            return {
+              testName,
+              filter,
+              canonical: filter.ok
+                ? uniqueMeasuredCaseTitle(testName, filter.matched.map((testCase) => testCase.caseKey))
+                : { status: 'unmatched' as const },
+            };
+          });
+          const unmatched = resolved.filter(({ filter }) => !filter.ok).map(({ testName }) => testName);
           if (unmatched.length > 0) {
             return {
               status: 'test_cases_not_in_run',
@@ -1732,6 +1859,24 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
                 "suffix at a ' > ' boundary) or bind a run that executed it.",
             };
           }
+          const ambiguousTestCases = resolved.flatMap(({ testName, canonical }) =>
+            canonical.status === 'ambiguous'
+              ? [{ testCase: testName, matchingCaseTitles: canonical.matchingCaseTitles.slice(0, 5) }]
+              : [],
+          );
+          if (ambiguousTestCases.length > 0) {
+            return {
+              status: 'test_cases_ambiguous_in_run',
+              testRunId: input.testRunId,
+              declaredCaseCount: declaredTestCases.length,
+              source: 'case-ledger',
+              ambiguousTestCases,
+              message: ambiguousCaseTitlesMessage(input.testRunId, 'the case ledger', ambiguousTestCases),
+            };
+          }
+          canonicalizedTestCases = resolved.map(({ testName, canonical }) =>
+            canonical.status === 'unique' ? canonical.title : testName,
+          );
         }
       }
       if (
@@ -1747,22 +1892,55 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         parsedRunExecution.passed > 0 &&
         passedCaseTitles !== undefined &&
         passedCaseTitles.length === parsedRunExecution.passed &&
-        !passedCaseTitlesIncomplete(parsedRunExecution) &&
-        !declaredTestCases.some((title) => hasMatchingDeclaredCaseTitle(title, passedCaseTitles))
+        !passedCaseTitlesIncomplete(parsedRunExecution)
       ) {
-        return {
-          status: 'test_cases_not_in_run',
-          testRunId: input.testRunId,
-          declaredCaseCount: declaredTestCases.length,
-          passedCaseTitleCount: passedCaseTitles.length,
-          source: 'passed-case-titles',
-          message:
-            'none of the ' + declaredTestCases.length +
-            ' declared details.adequacy.testCases entries matched any of the ' +
-            passedCaseTitles.length + ' recorded passedCaseTitles in test-run ' + input.testRunId +
-            '. Bind a run that executed at least one claimed case or correct the case labels; ' +
-            "titles match exactly or by bare-case suffix after ' > '.",
-        };
+        const resolved = declaredTestCases.map((testName) => {
+          const matchingCaseTitles = passedCaseTitles.filter((title) =>
+            hasMatchingDeclaredCaseTitle(testName, [title]),
+          );
+          return {
+            testName,
+            matchingCaseTitles,
+            canonical: uniqueMeasuredCaseTitle(testName, matchingCaseTitles),
+          };
+        });
+        const unmatched = resolved
+          .filter(({ canonical }) => canonical.status === 'unmatched')
+          .map(({ testName }) => testName);
+        if (unmatched.length > 0) {
+          return {
+            status: 'test_cases_not_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            passedCaseTitleCount: passedCaseTitles.length,
+            source: 'passed-case-titles',
+            unmatchedTestCases: unmatched,
+            message:
+              unmatched.length + ' of ' + declaredTestCases.length +
+              ' declared details.adequacy.testCases entries matched no recorded passed case among the ' +
+              passedCaseTitles.length + ' complete passedCaseTitles in test-run ' + input.testRunId +
+              ' (' + unmatched.map((title) => JSON.stringify(title)).join(', ') +
+              '). Bind a run that executed each claimed case or correct the case labels.',
+          };
+        }
+        const ambiguousTestCases = resolved.flatMap(({ testName, canonical }) =>
+          canonical.status === 'ambiguous'
+            ? [{ testCase: testName, matchingCaseTitles: canonical.matchingCaseTitles.slice(0, 5) }]
+            : [],
+        );
+        if (ambiguousTestCases.length > 0) {
+          return {
+            status: 'test_cases_ambiguous_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            source: 'passed-case-titles',
+            ambiguousTestCases,
+            message: ambiguousCaseTitlesMessage(input.testRunId, 'the complete passed-case title list', ambiguousTestCases),
+          };
+        }
+        canonicalizedTestCases = resolved.map(({ testName, canonical }) =>
+          canonical.status === 'unique' ? canonical.title : testName,
+        );
       }
       if (runtimeUnits) {
         const execution = parsedRunExecution;
@@ -1858,6 +2036,15 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         : undefined;
 
     let details = (input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {}) as Record<string, unknown>;
+    if (canonicalizedTestCases !== undefined) {
+      const rawAdequacy = details.adequacy;
+      if (rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)) {
+        details = {
+          ...details,
+          adequacy: { ...(rawAdequacy as Record<string, unknown>), testCases: canonicalizedTestCases },
+        };
+      }
+    }
     if (priorTestRunBinding) {
       const previousMeasurement = measurementFromDetails(priorTestRunBinding.details);
       const currentMeasurement = measurementFromDetails(details);
@@ -1915,6 +2102,16 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         details = { ...details, testRun: cited.testRun };
       }
     }
+
+    // EI-27081440896857039: completed-runtime recipes are exempt — their environment is
+    // certified from the completed runtime at read time, not from a bind-time witness.
+    const environmentUnproven = testRunEnvironmentUnprovenWarning({
+      testRunId: input.testRunId,
+      runtimeUnits,
+      completedRuntime: Boolean(runtimeRecipe?.kind === 'repo-files' && runtimeRecipe.completedRuntime),
+      environmentFingerprint,
+      details,
+    });
 
     // P-008 (D-005): an independent-verification row is a non-implementer re-observing the
     // SAME thing the implementer bound. It must cite a live, non-independent binding on the
@@ -2174,6 +2371,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       specFingerprint: revision.content_hash,
       bindingFingerprint,
       ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
+      ...(environmentUnproven ? { environmentUnproven } : {}),
     };
   });
   // Pin explicitly retained bytes before accepting a receipt binding. The
@@ -2902,6 +3100,174 @@ export async function ensureWorkItemSpecRevisionEdges(
   });
 }
 
+export interface CarryForwardCurrentSpecEvidenceInput {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItemId: string;
+  workItemId: string;
+  actorId: string;
+}
+
+export interface CarryForwardCurrentSpecEvidenceResult {
+  sourceWorkItemId: string | null;
+  copiedBindingIds: number[];
+}
+
+interface CarryForwardSpecEvidenceRow {
+  source_work_item_id: string;
+  id: number | string;
+  spec_id: string;
+  spec_revision: number | string;
+  evidence_kind: SpecEvidenceKind;
+  evidence_ref: string;
+  source_fingerprint: string;
+  test_fingerprint: string | null;
+  fixture_fingerprint: string | null;
+  rubric_fingerprint: string | null;
+  environment_fingerprint: string | null;
+  coverage_evidence_ref: number | string | null;
+  test_run_id: number | string | null;
+  details: Record<string, unknown> | null;
+  observed_at: Date | string;
+  created_by: string | null;
+  verifies_binding_id: number | string | null;
+}
+
+/**
+ * Preserve current-clause evidence when promotion replaces a completed plan-item
+ * work-item. This copies only unretracted bindings for the clause's current
+ * revision from the newest completed or replaced (dropped) work-item with the
+ * exact plan-item stamp. Reopening a plan item can drop its former canonical
+ * work-item even though its exact, current proof remains reusable.
+ * Each copied row goes through the normal binder, which revalidates the new
+ * work-item's plan-item provenance and referenced runs. The old rows remain
+ * untouched, and the adequacy gate still evaluates evidence for the exact
+ * current work-item id and current fingerprints.
+ */
+export async function carryForwardCurrentSpecEvidence(
+  input: CarryForwardCurrentSpecEvidenceInput,
+): Promise<CarryForwardCurrentSpecEvidenceResult> {
+  const planItemId = input.planItemId.trim();
+  if (!planItemId) throw new Error('spec_evidence_continuity_plan_item_required');
+
+  const candidates = await withWorkspace(input.workspaceId, async (tx) => {
+    const [target] = await tx<{
+      feature_id: string;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+      stamped_plan_slug: string | null;
+      stamped_item_id: string | null;
+    }[]>`
+      SELECT feature_id, source_plan_slug, source_plan_item_ids,
+             payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND feature_id = ${input.workItemId}`;
+    if (!target) throw new Error('spec_evidence_continuity_target_missing:' + input.workItemId);
+    const targetProvenance = planItemProvenanceFromRow(target);
+    if (targetProvenance.planSlug !== input.planSlug || !targetProvenance.itemIds.includes(planItemId)) {
+      throw new Error('spec_evidence_continuity_target_plan_item_mismatch:' + input.workItemId + ':' +
+        input.planSlug + '#' + planItemId);
+    }
+
+    return tx<CarryForwardSpecEvidenceRow[]>`
+      WITH current_clauses AS (
+        SELECT c.spec_id, c.current_revision, r.content_hash
+          FROM harness_shared.plan_spec_clauses c
+          JOIN harness_shared.plan_spec_clause_revisions r
+            ON r.workspace_id = c.workspace_id
+           AND r.harness_slug = c.harness_slug
+           AND r.plan_slug = c.plan_slug
+           AND r.spec_id = c.spec_id
+           AND r.revision = c.current_revision
+         WHERE c.workspace_id = ${input.workspaceId}
+           AND c.harness_slug = ${input.harnessSlug}
+           AND c.plan_slug = ${input.planSlug}
+           AND r.plan_item_id = ${planItemId}
+      )
+      SELECT wi.feature_id AS source_work_item_id,
+             b.id, b.spec_id, b.spec_revision, b.evidence_kind, b.evidence_ref,
+             b.source_fingerprint, b.test_fingerprint, b.fixture_fingerprint,
+             b.rubric_fingerprint, b.environment_fingerprint, b.coverage_evidence_ref,
+             b.test_run_id, b.details, b.observed_at, b.created_by, b.verifies_binding_id
+        FROM harness_shared.work_items wi
+        JOIN harness_shared.spec_evidence_bindings b
+          ON b.workspace_id = wi.workspace_id
+         AND b.harness_slug = wi.harness_slug
+         AND b.work_item_id = wi.feature_id
+        JOIN current_clauses c
+          ON c.spec_id = b.spec_id
+         AND c.current_revision = b.spec_revision
+         AND c.content_hash = b.spec_fingerprint
+       WHERE wi.workspace_id = ${input.workspaceId}
+         AND wi.harness_slug = ${input.harnessSlug}
+         AND wi.feature_id <> ${input.workItemId}
+         AND wi.status = ANY(${['done', 'resolved', 'passed', 'closed', 'dropped']}::text[])
+         AND b.plan_slug = ${input.planSlug}
+         AND b.retracted_at IS NULL
+         AND (
+           (wi.source_plan_slug = ${input.planSlug}
+             AND ${planItemId} = ANY(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])))
+           OR (
+             wi.payload -> 'plan_item' ->> 'plan_slug' = ${input.planSlug}
+             AND wi.payload -> 'plan_item' ->> 'item_id' = ${planItemId}
+           )
+         )
+       ORDER BY wi.updated_ts DESC NULLS LAST, wi.feature_id DESC, b.created_at, b.id`;
+  });
+
+  if (candidates.length === 0) return { sourceWorkItemId: null, copiedBindingIds: [] };
+  const sourceWorkItemId = candidates[0].source_work_item_id;
+  const sourceRows = candidates.filter((row) => row.source_work_item_id === sourceWorkItemId);
+  const copiedBindingIds: number[] = [];
+  const copiedIds = new Map<number, number>();
+
+  const copy = async (row: CarryForwardSpecEvidenceRow, verifiesBindingId?: number): Promise<void> => {
+    const result = await bindSpecEvidence({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      planSlug: input.planSlug,
+      workItemId: input.workItemId,
+      specId: row.spec_id,
+      specRevision: Number(row.spec_revision),
+      evidenceKind: row.evidence_kind,
+      evidenceRef: row.evidence_ref,
+      sourceFingerprint: row.source_fingerprint,
+      testFingerprint: row.test_fingerprint,
+      fixtureFingerprint: row.fixture_fingerprint,
+      rubricFingerprint: row.rubric_fingerprint,
+      environmentFingerprint: row.environment_fingerprint,
+      coverageEvidenceRef: row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref),
+      testRunId: row.test_run_id == null ? null : Number(row.test_run_id),
+      ...(verifiesBindingId === undefined ? {} : { verifiesBindingId }),
+      details: row.details ?? {},
+      observedAt: new Date(row.observed_at).toISOString(),
+      actorId: row.created_by ?? input.actorId,
+    });
+    if (result.status !== 'created' && result.status !== 'unchanged') {
+      throw new Error('spec_evidence_continuity_bind_refused:' + sourceWorkItemId + ':' +
+        row.id + ':' + result.status);
+    }
+    copiedIds.set(Number(row.id), result.id);
+    copiedBindingIds.push(result.id);
+  };
+
+  for (const row of sourceRows) {
+    if (row.evidence_kind === 'independent-verification') continue;
+    await copy(row);
+  }
+  for (const row of sourceRows) {
+    if (row.evidence_kind !== 'independent-verification' || row.verifies_binding_id == null) continue;
+    const targetBindingId = copiedIds.get(Number(row.verifies_binding_id));
+    if (targetBindingId === undefined) continue;
+    await copy(row, targetBindingId);
+  }
+  return { sourceWorkItemId, copiedBindingIds };
+}
+
 /**
  * Attach current clause revisions to every already-existing work-item that
  * names one of the supplied plan items. Activation can run after promotion,
@@ -3025,6 +3391,8 @@ export async function listWorkItemSpecRevisionEdges(options: {
 
 export interface RetractSpecEvidenceOptions {
   harnessSlug?: string;
+  /** Internal callers already holding a scoped target must retain its workspace. */
+  workspaceId?: string;
   /**
    * The exact binding row to withdraw, as returned by plans:get-spec-evidence.
    *
@@ -3105,7 +3473,7 @@ export async function retractSpecEvidence(
   options: RetractSpecEvidenceOptions,
   deps: SpecEvidenceGradingAuditNotificationDeps = {},
 ) {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug, workspaceId: options.workspaceId });
   const reason = options.reason.trim();
   const actorId = options.actorId.trim();
   const result = await withWorkspace(scope.workspaceId, async (tx) => {
@@ -3593,14 +3961,35 @@ function completedNativeMutationCalibration(row: EvidenceRow,
   return Number.isFinite(before) && before <= after && after <= mutantBefore ? baseline : null;
 }
 
+export interface CompletedRuntimeRefusal {
+  category: 'selector-mismatch' | 'execution-ineligible' | 'runtime-witness-missing-or-unstable'
+    | 'invalid-test-interval' | 'unproven-case-selection' | 'retained-evidence-ineligible'
+    | 'lifecycle-mismatch' | 'source-population-mismatch' | 'source-receipt-mismatch'
+    | 'unqualified-source' | 'source-drift' | 'retained-evidence-unavailable';
+  paths?: string[];
+  pathCount?: number;
+  omittedPathCount?: number;
+}
+
 export async function measureCompletedTestRuntime(
   row: EvidenceRow,
   recipe: RepoFilesEvidenceMeasurement,
   currentFiles: readonly MeasuredRepoFile[],
   scope: { workspaceId: string; harnessSlug: string },
   root: string,
-  options: { onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void } = {},
+  options: {
+    onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void;
+    onRefusal?: (value: CompletedRuntimeRefusal) => void;
+  } = {},
 ): Promise<string | null> {
+  const refuse = (category: CompletedRuntimeRefusal['category'], paths?: string[]): null => {
+    const unique = paths ? [...new Set(paths)].sort() : undefined;
+    options.onRefusal?.({ category, ...(unique ? {
+      paths: unique.slice(0, 20).map(path => path.slice(0, 240)),
+      pathCount: unique.length, omittedPathCount: Math.max(0, unique.length - 20),
+    } : {}) });
+    return null;
+  };
   const selector = recipe.completedRuntime;
   if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
   const directVerifier = selector?.kind === 'verification-harness'
@@ -3612,7 +4001,7 @@ export async function measureCompletedTestRuntime(
   // journey; shared staging receipts cannot acquire that provenance later.
   if (directVerifier && (selector.journeyRunId !== selector.verifierRunId
     || recipe.runtimeUnits?.length !== 1
-    || !/^verify-tauri-headless:[1-9]\d*$/.test(recipe.runtimeUnits[0]))) return null;
+    || !/^verify-tauri-headless:[1-9]\d*$/.test(recipe.runtimeUnits[0]))) return refuse('selector-mismatch');
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
@@ -3641,14 +4030,15 @@ export async function measureCompletedTestRuntime(
       ? row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? '')
       : execution.testLayer === (selector.kind === 'llm-in-process' ? 'llm' : 'e2e'))
     || execution.worktreeDirty
-    || execution.collectionFailed || execution.skipped !== 0
+    || execution.collectionFailed || (!directVerifier && execution.skipped !== 0)
     || (!mutationCalibration && (execution.failed !== 0 || execution.passed < 1))
     || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
     || execution.commitSha !== row.test_run_commit_sha || !witness
     || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...recipe.runtimeUnits].sort())
     || !recipe.testPaths?.includes(execution.filePath)
-    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug) return null;
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug)
+    return refuse(!witness ? 'runtime-witness-missing-or-unstable' : 'execution-ineligible');
   const instant = (value: unknown): number =>
     value instanceof Date || typeof value === 'string' ? new Date(value).getTime() : NaN;
   const before = instant(execution.runtimeEnvironmentBefore!.observedAt);
@@ -3656,7 +4046,11 @@ export async function measureCompletedTestRuntime(
   const start = instant(row.test_run_started_at);
   const end = instant(row.test_run_finished_at);
   if (![before, after, start, end].every(Number.isFinite)
-    || before > start || start > end || end > after) return null;
+    || before > start || start > end || end > after) return refuse('invalid-test-interval');
+  // Focused native runs collect excluded cases as skips. The complete case
+  // ledger must prove they were outside the selector and every selected case passed.
+  if (directVerifier && execution.skipped !== 0
+    && !await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return refuse('unproven-case-selection');
   if (selector.kind === 'llm-in-process') {
     try {
       // The original recorder measured these kernel pins while the process was
@@ -3704,7 +4098,7 @@ export async function measureCompletedTestRuntime(
       || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
       || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
       || (!verifierSourceJourney && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
-        || manifest.sourceFingerprints.length === 0))) return null;
+        || manifest.sourceFingerprints.length === 0))) return refuse('retained-evidence-ineligible');
     const phase = (name: string) => {
       const matches = verifier.phases.filter((entry: any) => entry.phase === name);
       return matches.length === 1 ? matches[0] : null;
@@ -3712,7 +4106,7 @@ export async function measureCompletedTestRuntime(
     const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
     if (mutationCalibration && (!boot || !assertions
       || instant(boot.endedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt)
-      || instant(assertions.startedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt))) return null;
+      || instant(assertions.startedAt) > instant(mutationCalibration.runtimeEnvironmentBefore!.observedAt))) return refuse('lifecycle-mismatch');
     // Reporter intervals derive from measured duration and can round before
     // the harness writes its completion receipt. The original paired runtime
     // observations bracket the actual test lifetime; use those exact bounds
@@ -3721,10 +4115,10 @@ export async function measureCompletedTestRuntime(
     if (!prepare || !boot || !assertions
       || !(instant(prepare.endedAt) <= instant(boot.startedAt)
         && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
-        && instant(assertions.endedAt) >= after)) return null;
+        && instant(assertions.endedAt) >= after)) return refuse('lifecycle-mismatch');
     if (directVerifier) {
       if (!(instant(verifier.startedAt) <= instant(prepare.startedAt)
-        && instant(assertions.endedAt) <= instant(verifier.endedAt))) return null;
+        && instant(assertions.endedAt) <= instant(verifier.endedAt))) return refuse('lifecycle-mismatch');
     } else if (operatorE2e) {
       // This driver wraps preparation, boot, assertions and teardown. Its
       // interval encloses the verifier, while the original paired observations
@@ -3739,8 +4133,8 @@ export async function measureCompletedTestRuntime(
           && instant(verifier.startedAt) <= instant(prepare.startedAt)
           && instant(assertions.endedAt) <= instant(verifier.endedAt)
           && instant(verifier.endedAt) <= instant(suite[0].endedAt)
-          && instant(suite[0].endedAt) <= journeyEnd)) return null;
-    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
+          && instant(suite[0].endedAt) <= journeyEnd)) return refuse('lifecycle-mismatch');
+    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return refuse('lifecycle-mismatch');
     // A retained JSON receipt alone is not code identity. Read the immutable Git
     // objects too, then compare each current source/test/fixture byte measurement.
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
@@ -3749,15 +4143,21 @@ export async function measureCompletedTestRuntime(
     const journeyFiles = new Map((verifierSourceJourney ? receipt.testedInputs : manifest.sourceFingerprints)
       .map((file: any) => [file.path, file.sha256]));
     const guidanceChanged: string[] = [];
-    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
+    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return refuse('source-population-mismatch');
+    const unqualifiedPaths = currentFiles.filter(file => {
+      const original = recordedFiles.get(`${file.dimension}:${file.path}`);
+      return original && (verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+        && journeyFiles.get(file.path) !== original.sha256;
+    }).map(file => file.path);
     for (const file of currentFiles) {
       const original = recordedFiles.get(`${file.dimension}:${file.path}`);
-      if (!original || receiptFiles.get(file.path) !== original.sha256
-        || ((verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
-          && journeyFiles.get(file.path) !== original.sha256)) return null;
+      if (!original || receiptFiles.get(file.path) !== original.sha256)
+        return refuse('source-receipt-mismatch', [file.path]);
+      if ((verifierSourceJourney || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+        && journeyFiles.get(file.path) !== original.sha256) return refuse('unqualified-source', unqualifiedPaths);
       if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
         && selector.guidanceOnlySourcePaths?.includes(file.path)
-        && await onlyStaticToolGuidanceChanged(root, original, file))) return null;
+        && await onlyStaticToolGuidanceChanged(root, original, file))) return refuse('source-drift', [file.path]);
       if (file.sha256 !== original.sha256) guidanceChanged.push(file.path);
     }
     if (guidanceChanged.length && recorded.sourceFingerprint === row.source_fingerprint) {
@@ -3766,7 +4166,7 @@ export async function measureCompletedTestRuntime(
         measuredFingerprint: repoFileSetFingerprint(currentFiles.filter(file => file.dimension === 'source')) });
     }
     return witness.fingerprint;
-  } catch { return null; }
+  } catch { return refuse('retained-evidence-unavailable'); }
 }
 
 function isolatedIntegrationFingerprint(receipts: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>['isolatedRuntimeReceipts']): string {
@@ -3809,15 +4209,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
       // a selected skip or missing case ledger remains unverified. Several
       // passing cases may share one original lifetime, but their complete
       // passing case ledger must still corroborate the execution counts.
-      if (!row.test_run_id || (execution.skipped !== 0 && !execution.testNamePattern)) return null;
-      const pattern = execution.skipped !== 0 ? new RegExp(execution.testNamePattern!) : null;
-      const recordedCases = await withWorkspace(scope.workspaceId,
-        tx => readRecordedTestCases(tx, row.test_run_id!));
-      if (!recordedCases || recordedCases.cases.length !== execution.passed + execution.skipped
-        || recordedCases.cases.filter(c => c.status === 'pass').length !== execution.passed
-        || recordedCases.cases.filter(c => c.status === 'skip').length !== execution.skipped
-        || (pattern && recordedCases.cases.some(c => pattern.test(c.caseKey.replaceAll(' > ', ' ')) !== (c.status === 'pass'))))
-        return null;
+      if (!await hasLedgerProvenPassingSelection(row, execution, scope.workspaceId)) return null;
     }
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
     const originals = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
@@ -4041,7 +4433,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            AND tr.source = 'mutation-probe'
            AND tr.execution_details->'mutation'->>'leg' = 'mutant'
            AND baseline.workspace_id = tr.workspace_id
-           AND baseline.harness_slug = tr.harness_slug
+           -- EI-26696103067780835: binding a mutant adopts only that row into the
+           -- plan harness; its same-invocation calibration rows can stay harness
+           -- NULL. A NULL-harness calibration row from the SAME probe invocation
+           -- (same workspace/file/probeInvocationId/subjectBeforeSha256) is the
+           -- same measurement, never another harness's evidence, so accept it.
+           -- A calibration attributed to a DIFFERENT harness still never matches.
+           AND (baseline.harness_slug = tr.harness_slug OR baseline.harness_slug IS NULL)
            AND baseline.file_path = tr.file_path
            AND baseline.source = 'mutation-probe'
            AND baseline.status = 'pass'
@@ -4050,7 +4448,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                = tr.execution_details->'mutation'->>'probeInvocationId'
            AND baseline.execution_details->'mutation'->>'subjectBeforeSha256'
                = tr.execution_details->'mutation'->>'subjectBeforeSha256'
-         ORDER BY baseline.id DESC
+         ORDER BY (baseline.harness_slug IS NULL), baseline.id DESC
          LIMIT 1
       ) mutation_baseline ON TRUE
       JOIN harness_shared.plan_spec_clauses c
@@ -4260,6 +4658,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         let files: MeasuredRepoFile[] | null = null;
         let measuredAtCommit: string | null = null;
         let sourceEquivalence: StaticGuidanceSourceEquivalence | undefined;
+        let completedRuntimeRefusal: CompletedRuntimeRefusal | undefined;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(
@@ -4399,7 +4798,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               scope.workspaceId, scope.harnessSlug, recipe.nativeInstrumentKey) } : {}),
             ...(recipe.runtimeUnits ? { environmentFingerprint: completedRecipe
               ? await measureCompletedTestRuntime(row, completedRecipe, detailed.files, scope, measurementRoot,
-                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
+                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; },
+                  onRefusal: value => { completedRuntimeRefusal = value; } })
               : await measureRuntimeEnvironment(
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,
                 { memo: remoteRuntimeIdentities }) } : {}),
@@ -4412,6 +4812,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           files,
           measuredAtCommit,
           sourceEquivalence,
+          completedRuntimeRefusal,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -4668,6 +5069,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     // working-tree (non-git root) or ledger measurement.
                     ...(measured.measuredAtCommit ? { measuredAtCommit: measured.measuredAtCommit } : {}),
                     current: measured.current,
+                    ...(measured.completedRuntimeRefusal ? { completedRuntimeRefusal: measured.completedRuntimeRefusal } : {}),
                     ...(movement
                       ? movement.pinned
                         ? { pinned: true, movedPaths: movement.moved }

@@ -266,6 +266,25 @@ describe('native CLI fixture runtime and deadline guards', () => {
       })).toThrow(/requires its maintained MCP proxy/);
     }
   });
+  it('negotiates the shell exit receipt while preserving private identity and route pins', () => {
+    const base = 'http://127.0.0.1:42615/api/mcp?workspace=test-runtime-shell&client=controlled-cli';
+    const plan = nativeCliPlan(base, 'capability:bash', { command: 'exit 3' }, {});
+    const url = new URL(plan.cliUrl);
+    expect(url.origin).toBe('http://127.0.0.1:42615');
+    expect(url.pathname).toBe('/api/mcp');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ workspace: 'test-runtime-shell',
+      client: 'controlled-cli', structured: '1' });
+    expect(resolvePtoolInvocationCandidates({ url: plan.cliUrl }, plan.env)).toEqual([plan.cliUrl]);
+    const staging = nativeCliPlan('http://localhost:3170', 'capability:bash', {}, {});
+    expect(new URL(staging.cliUrl).port).toBe('9171');
+    expect(staging.env.PAPERCUSP_MCP_PROXY_BASE).toBe(staging.cliUrl);
+    expect(new URL(staging.cliUrl).searchParams.get('structured')).toBe('1');
+    expect(() => nativeCliResult({ status: 0,
+      stdout: JSON.stringify({ ok: false, status: 'failed', exit_code: 3 }), stderr: '' }))
+      .toThrow(/tool refused[\s\S]*exit_code/);
+    expect(() => nativeCliResult({ status: 0, stdout: 'exit 0 · 0.2s\n(no output)', stderr: '' }))
+      .toThrow(/invalid JSON/);
+  });
   it('preserves stdout, stderr and process failure evidence', () => {
     expect(() => nativeCliResult({ status: 1, stdout: 'typed-worker-error', stderr: 'connection trace',
       error: new Error('ETIMEDOUT'), signal: 'SIGTERM' })).toThrow(/ETIMEDOUT[\s\S]*typed-worker-error[\s\S]*connection trace/);

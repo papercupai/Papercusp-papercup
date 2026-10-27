@@ -39,6 +39,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 
 /// Why a candidate path cannot become an attachment.
 ///
@@ -194,6 +195,33 @@ pub fn attach(root: &Path, candidate: &Path) -> Result<Attachment, Refusal> {
         reference: format!("@{path}"),
         path,
     })
+}
+
+/// Build the exact durable input snapshot at the async send boundary. The
+/// caller supplies the attached session's recorded project and workspace;
+/// retries reuse the prepared command instead of reading changed files again.
+pub fn typed_inputs(root: &Path, references: &[String], workspace_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    references.iter().map(|reference| {
+        let path = reference.strip_prefix('@').ok_or_else(|| "Invalid project attachment reference".to_string())?;
+        let attachment = attach(root, Path::new(path)).map_err(|e| e.reason())?;
+        let ext = Path::new(&attachment.path).extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+        let media_type = match ext.as_str() {
+            "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp",
+            "txt" | "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "sh" | "css" | "html" | "toml" | "yaml" | "yml" => "text/plain",
+            "md" | "mdx" => "text/markdown", "json" => "application/json",
+            _ => return Err(format!("Unsupported attachment type: {}", attachment.path)),
+        };
+        let canonical = root.join(&attachment.path);
+        let limit = if media_type.starts_with("image/") { 5 * 1024 * 1024 } else { 1024 * 1024 };
+        let mut file = std::fs::File::open(&canonical).map_err(|_| format!("Attachment is unreadable: {}", attachment.path))?;
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        file.by_ref().take(limit + 1).read_to_end(&mut bytes).map_err(|_| format!("Attachment is unreadable: {}", attachment.path))?;
+        if bytes.len() as u64 > limit { return Err(format!("Attachment exceeds {}-byte limit: {}", limit, attachment.path)); }
+        Ok(serde_json::json!({"type":"file", "uri":format!("project:{}", attachment.path),
+            "mediaType":media_type, "name":attachment.path, "workspaceId":workspace_id,
+            "sha256":format!("{:x}", Sha256::digest(&bytes))}))
+    }).collect()
 }
 
 /// The composer's attachment list.
@@ -560,5 +588,28 @@ mod tests {
         let attachments = Attachments::default();
         let draft = "  exact draft λ  \n";
         assert_eq!(attachments.attach_to_prompt(draft), draft);
+    }
+
+    #[test]
+    fn typed_references_preserve_image_identity_and_workspace_without_plain_text_conversion() {
+        let (_tmp, root, _outside) = fixture();
+        fs::write(root.join("image.png"), b"image bytes").unwrap();
+        let parts = typed_inputs(&root, &["@image.png".into()], "workspace-a").unwrap();
+        assert_eq!(parts[0]["type"], "file");
+        assert_eq!(parts[0]["mediaType"], "image/png");
+        assert_eq!(parts[0]["uri"], "project:image.png");
+        assert_eq!(parts[0]["workspaceId"], "workspace-a");
+        assert_eq!(parts[0]["sha256"], format!("{:x}", Sha256::digest(b"image bytes")));
+        fs::write(root.join("image.png"), b"changed").unwrap();
+        assert_ne!(typed_inputs(&root, &["@image.png".into()], "workspace-a").unwrap()[0]["sha256"], parts[0]["sha256"]);
+    }
+
+    #[test]
+    fn typed_references_refuse_missing_cross_project_and_unsupported_files() {
+        let (_tmp, root, outside) = fixture();
+        assert!(typed_inputs(&root, &["@missing.png".into()], "workspace-a").is_err());
+        assert!(typed_inputs(&root, &[format!("@{}", outside.display())], "workspace-a").is_err());
+        fs::write(root.join("document.pdf"), b"pdf").unwrap();
+        assert!(typed_inputs(&root, &["@document.pdf".into()], "workspace-a").unwrap_err().contains("Unsupported"));
     }
 }

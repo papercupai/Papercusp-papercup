@@ -2,10 +2,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
@@ -16,6 +16,7 @@ import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-ga
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
+import { linuxProcStateFromStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
@@ -258,27 +259,245 @@ export function privateClaudeModelConfig(argv: readonly string[], env: NodeJS.Pr
     mcpWorkspace: mcp.searchParams.get('workspace') };
 }
 
-/** Stop admission before reaping descendants that can keep the host's pipes open. */
-export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+export interface PrivateHostStopObservation {
+  pid: number | null;
+  phase: string;
+  elapsedMs: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  sigtermAccepted: boolean | null;
+  sigkillAccepted: boolean | null;
+  exitObserved: boolean;
+  closeObserved: boolean;
+  signal?: NodeJS.Signals;
+  accepted?: boolean;
+  /** Pinned while still descended from this host; redirected stdio is not an exit fence. */
+  postgres?: Array<{ pid: number; identity: string; postmaster: boolean; state: string | null }>;
+  /** Diagnostic kernel evidence, never a replacement for exit/close events. */
+  kernelProcess?: {
+    status: 'present' | 'absent' | 'unavailable' | 'unsupported';
+    state: string | null;
+    startTicks: string | null;
+    waitChannel: string | null;
+  };
+}
+
+interface PrivatePostgresProcess { pid: number; identity: string; postmaster: boolean }
+const privateHostPostgres = new WeakMap<ChildProcess, Map<number, PrivatePostgresProcess>>();
+
+function privatePostgresState(pin: PrivatePostgresProcess): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pin.pid}/stat`, 'utf8');
+    const identity = readProcessIdentity(pin.pid);
+    if (!identity && !existsSync(`/proc/${pin.pid}`)) return null;
+    assert.ok(identity, 'private PostgreSQL identity is unreadable');
+    if (identity !== pin.identity) return null;
+    const state = linuxProcStateFromStat(stat);
+    assert.ok(state, 'private PostgreSQL process state is unreadable');
+    return state;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function privatePostgresAlive(pin: PrivatePostgresProcess) {
+  const state = privatePostgresState(pin);
+  return state !== null && state !== 'Z' && state !== 'X';
+}
+
+/** Inspect only this host's descendant tree, never a host-wide PID/name search.
+ * A root must also own its exact PGDATA pid file. Retain stable kernel identities
+ * across host exit/reparenting, and recheck them before sending any signal. */
+function capturePrivatePostgres(host: ChildProcess) {
+  const pins = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
+  privateHostPostgres.set(host, pins);
+  if (process.platform !== 'linux' || !host.pid) return pins;
+  const visited = new Set<number>();
+  const visit = (pid: number, identity: string, owned: boolean) => {
+    if (visited.has(pid) || readProcessIdentity(pid) !== identity) return;
+    visited.add(pid);
+    assert.ok(visited.size <= 256, 'private PostgreSQL descendant census exceeded its bound');
+    let children: string;
+    try { children = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    for (const raw of children.trim().split(/\s+/).filter(Boolean)) {
+      const childPid = Number(raw), childIdentity = readProcessIdentity(childPid);
+      if (!childIdentity) {
+        assert.ok(!existsSync(`/proc/${childPid}`), 'private descendant identity is unreadable');
+        continue;
+      }
+      if (!privatePostgresAlive({ pid: childPid, identity: childIdentity, postmaster: false })) continue;
+      let postmaster = false;
+      if (!owned) {
+        try {
+          if (basename(readlinkSync(`/proc/${childPid}/exe`)) === 'postgres') {
+            const argv = readFileSync(`/proc/${childPid}/cmdline`, 'utf8').split('\0');
+            const at = argv.lastIndexOf('-D');
+            assert.ok(at >= 0 && argv[at + 1], 'private postmaster must name its PGDATA');
+            const dataDir = realpathSync(argv[at + 1]);
+            const [recordedPid, recordedDir] = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8').split('\n');
+            assert.equal(Number(recordedPid), childPid, 'private postmaster pid file identity mismatch');
+            assert.equal(realpathSync(recordedDir), dataDir, 'private postmaster PGDATA mismatch');
+            postmaster = true;
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          assert.ok(!privatePostgresAlive({ pid: childPid, identity: childIdentity, postmaster: false }),
+            'live private postmaster ownership could not be verified');
+        }
+      }
+      if (readProcessIdentity(childPid) !== childIdentity) continue;
+      if (owned || postmaster) pins.set(childPid, { pid: childPid, identity: childIdentity, postmaster });
+      visit(childPid, childIdentity, owned || postmaster);
+    }
+  };
+  // Once Node has reaped the host, its numeric PID may be reused. Only the
+  // already-pinned PG identities remain ours to inspect after that boundary.
+  if (host.exitCode === null && host.signalCode === null) {
+    const hostIdentity = readProcessIdentity(host.pid);
+    if (hostIdentity) visit(host.pid, hostIdentity, false);
+  }
+  for (const pin of pins.values()) if (privatePostgresAlive(pin)) visit(pin.pid, pin.identity, true);
+  return pins;
+}
+
+/** Stop admission before reaping descendants that can keep the host's pipes open.
+ * A rejected stop retains observations on the error, independently of the optional
+ * diagnostic sink. Neither a signal attempt nor ended pipes prove process exit. */
+export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000,
+  observe?: (observation: PrivateHostStopObservation) => void) {
+  const started = Date.now();
+  const alreadyExited = host.exitCode !== null || host.signalCode !== null;
+  const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
+  let exitObserved = alreadyExited, closeObserved = alreadyExited && pipesEnded();
+  let sigtermAccepted: boolean | null = null, sigkillAccepted: boolean | null = null;
+  let phase = 'start';
+  const observations: PrivateHostStopObservation[] = [];
+  let postgres = privateHostPostgres.get(host) ?? new Map<number, PrivatePostgresProcess>();
+  privateHostPostgres.set(host, postgres);
+  const kernelProcess = (): NonNullable<PrivateHostStopObservation['kernelProcess']> => {
+    const unknown = { state: null, startTicks: null, waitChannel: null };
+    if (process.platform !== 'linux') return { ...unknown, status: 'unsupported' };
+    if (!host.pid) return { ...unknown, status: 'unavailable' };
+    try {
+      const stat = readFileSync(`/proc/${host.pid}/stat`, 'utf8');
+      let waitChannel: string | null = null;
+      try { waitChannel = readFileSync(`/proc/${host.pid}/wchan`, 'utf8').trim() || null; }
+      catch { /* the process may exit between these two diagnostic reads */ }
+      return { status: 'present', state: linuxProcStateFromStat(stat),
+        startTicks: linuxStartTicksFromProcStat(stat), waitChannel };
+    } catch (error) {
+      return { ...unknown, status: (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ? 'absent' : 'unavailable' };
+    }
+  };
+  const snapshot = (name: string): PrivateHostStopObservation => ({
+    pid: host.pid ?? null, phase: name, elapsedMs: Date.now() - started,
+    exitCode: host.exitCode, signalCode: host.signalCode,
+    sigtermAccepted, sigkillAccepted, exitObserved, closeObserved,
+    kernelProcess: kernelProcess(),
+    ...(postgres.size ? { postgres: [...postgres.values()].map(pin => {
+      try { return { ...pin, state: privatePostgresState(pin) }; }
+      catch { return { ...pin, state: 'unavailable' }; }
+    }) } : {}),
+  });
+  const record = (name: string, detail: Partial<PrivateHostStopObservation> = {}) => {
+    const observation = { ...snapshot(name), ...detail };
+    observations.push(observation);
+    try { observe?.(observation); } catch { /* diagnostics must not prevent teardown */ }
+  };
+  let resolveExit!: () => void, resolveClose!: () => void;
+  const exited = new Promise<void>(done => { resolveExit = done; });
+  const closed = new Promise<void>(done => { resolveClose = done; });
+  const onExit = () => { exitObserved = true; record('exit'); resolveExit(); };
+  const onClose = () => { closeObserved = true; record('close'); resolveClose(); };
+  if (exitObserved) resolveExit();
+  else host.once('exit', onExit);
+  if (closeObserved) resolveClose();
+  else host.once('close', onClose);
   const bounded = async (promise: Promise<void>, label: string) => {
+    phase = label;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([promise, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`Private host ${label} did not settle`)), graceMs);
       })]);
     } finally { clearTimeout(timer); }
   };
-  const alreadyExited = host.exitCode !== null || host.signalCode !== null;
-  const exited = alreadyExited ? Promise.resolve() : new Promise<void>(done => host.once('exit', () => done()));
-  const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
-  const closed = alreadyExited && pipesEnded() ? Promise.resolve() : new Promise<void>(done => host.once('close', () => done()));
-  if (!alreadyExited) {
-    host.kill('SIGTERM');
-    try { await bounded(exited, 'exit'); }
-    catch { host.kill('SIGKILL'); await bounded(exited, 'forced exit'); }
+  const signal = (value: 'SIGTERM' | 'SIGKILL') => {
+    phase = 'signal';
+    let accepted = false;
+    try { accepted = host.kill(value); }
+    finally {
+      if (value === 'SIGTERM') sigtermAccepted = accepted;
+      else sigkillAccepted = accepted;
+      record('signal', { signal: value, accepted });
+    }
+  };
+  try {
+    record('start');
+    // Capture before the parent disappears: PG can outlive a successful host
+    // exit without holding either of its stdout/stderr descriptors open.
+    let captureError: unknown;
+    try { postgres = capturePrivatePostgres(host); }
+    catch (error) { captureError = error; }
+    if (postgres.size) record('postgres captured');
+    if (!alreadyExited) {
+      signal('SIGTERM');
+      try { await bounded(exited, 'exit'); }
+      catch { signal('SIGKILL'); await bounded(exited, 'forced exit'); }
+    }
+    if (captureError) { phase = 'postgres capture'; throw captureError; }
+    if (postgres.size) {
+      phase = 'postgres shutdown';
+      const signalPostgres = (pin: PrivatePostgresProcess, value: NodeJS.Signals) => {
+        if (!privatePostgresAlive(pin)) return;
+        try { process.kill(pin.pid, value); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      };
+      for (const pin of postgres.values()) if (pin.postmaster) signalPostgres(pin, 'SIGINT');
+      const wait = async () => {
+        const deadline = Date.now() + graceMs;
+        while ([...capturePrivatePostgres(host).values()].some(privatePostgresAlive)) {
+          if (Date.now() >= deadline) return false;
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        return true;
+      };
+      if (!await wait()) {
+        record('postgres shutdown timed out');
+        // A disposable fixture must not leave live PG behind for its task's
+        // service teardown. Even observed forced cleanup remains a failed run.
+        for (const pin of postgres.values()) signalPostgres(pin, 'SIGKILL');
+        const stopped = await wait();
+        throw new Error(stopped ? 'Private PostgreSQL required forced cleanup'
+          : 'Private PostgreSQL exit did not settle');
+      }
+      record('postgres stopped');
+    }
+    phase = 'dependent cleanup';
+    await afterExit?.();
+    await bounded(closed, 'stdio drainage');
+    // A native crash can close every pipe and release PG while still being a
+    // failed teardown. Finish dependent cleanup first, then retain the failure.
+    if (host.signalCode && ['SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE', 'SIGTRAP', 'SIGSYS'].includes(host.signalCode)) {
+      phase = 'native process termination';
+      throw new Error(`Private host crashed during teardown: ${host.signalCode}`);
+    }
+    record('complete');
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    record('failed');
+    Object.assign(failure, { privateHostStop: { ...snapshot(phase), observations } });
+    throw failure;
+  } finally {
+    host.removeListener('exit', onExit);
+    host.removeListener('close', onClose);
   }
-  await afterExit?.();
-  await bounded(closed, 'stdio drainage');
 }
 
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive
@@ -420,6 +639,8 @@ function assertCommittedReaderClosure(closure: CommittedReaderClosure) {
 }
 
 const digestBytes = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+
+export { censusPrivateRuntimeArtifact, type PrivateArtifactReadAdvice } from './private-runtime-artifact-census.mts';
 function inside(root: string, path: string) {
   const rel = relative(realpathSync(root), realpathSync(path));
   return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
@@ -859,10 +1080,37 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
+/** A nested Git clone has its own source pin, not its donor archive's marker. */
+export function privateGitCloneBundleEnv(root: string, selectedCommit: string,
+  env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  assert.match(selectedCommit, /^[a-f0-9]{40}$/, 'Private clone needs the full selected source commit');
+  assert.ok(!existsSync(join(root, '.verifier-source.json')), 'Private clone must be a Git checkout, not an archive');
+  const git = (args: string[]) => execFileSync('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: 10_000 }).trim();
+  assert.equal(realpathSync(git(['rev-parse', '--show-toplevel'])), realpathSync(root),
+    'Private clone must own its Git source root');
+  assert.equal(git(['rev-parse', 'HEAD']), selectedCommit, 'Private clone source differs from the selected commit');
+  const environment = { ...env };
+  delete environment.VERIFY_TAURI_SOURCE_RECEIPT;
+  delete environment.VERIFY_TAURI_SOURCE_REF;
+  return environment;
+}
+
 type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Original diagnostics must outlive a disposable bundle/source directory. */
+  retainedEvidenceDir?: string;
   onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
+/** Preserve a retired build before rebuilding at the runtime's canonical output path. */
+export function archivePrivateOperatorApiBuild(evidenceDir: string, archive: string): string {
+  assert.ok(!existsSync(archive), 'Previous private build archive must not be overwritten');
+  assert.ok(statSync(evidenceDir).isDirectory(), 'Private build output must be a directory');
+  renameSync(evidenceDir, archive);
+  mkdirSync(evidenceDir);
+  return archive;
+}
+
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   builder: PrivateBundleBuilder & { maxMs: number }): Promise<PrivateBundleReceipt>;
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
@@ -919,6 +1167,13 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
     }
     writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
       endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
+    if (builder?.retainedEvidenceDir) {
+      mkdirSync(builder.retainedEvidenceDir, { recursive: true });
+      for (const name of ['operator-api-build.log', 'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl']) {
+        const original = join(evidenceDir, name);
+        if (existsSync(original)) copyFileSync(original, join(builder.retainedEvidenceDir, name));
+      }
+    }
   };
   const command = builder?.command ?? 'bash';
   const args = builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path];

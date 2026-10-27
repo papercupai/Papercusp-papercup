@@ -44,6 +44,7 @@
  * produced no loop-origin turn and recorded that failure in lastDeliveryOutcome.
  */
 import type { LoopStatus } from '../../harness/routines/loop';
+import { HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER } from '../../events/await/cancel-reasons';
 import type { ActiveLoopRewakeBlockedReason } from '../coordination/tools/continuation-gate';
 
 export type LoopNextWakeInput =
@@ -83,7 +84,7 @@ export type LoopNextWakeInput =
 
 /**
  * P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: did this
- * loop's most recent fire PARK undelivered on a path that will park again?
+ * loop's most recent fire remain undelivered without a durable retry?
  *
  * Measured: a cold loop re-armed and was told `rewakeGuaranteed:true` while its previous
  * fire had parked with "eligible cold loop wake has no injectable psu host"; the next
@@ -91,6 +92,8 @@ export type LoopNextWakeInput =
  * active, in-bounds loop is not a guarantee when its delivery path is the thing that is
  * broken.
  *
+ * A dropped delivery has exhausted its retry budget, even if its captured error still
+ * describes an earlier durable retry. Queue/arm metadata cannot revive that delivery.
  * Two park shapes are EXCLUDED because they already carry a durable retry on a path that
  * demonstrably works: a psu host that accepted the delivery but has not yet proven turn
  * start, and a quota-recovery operation retry. Their reasons end "retry remains durable".
@@ -98,6 +101,12 @@ export type LoopNextWakeInput =
 export function lastLoopFireParked(
   loop: Partial<Pick<LoopStatus, 'lastWakeStatus' | 'lastWakeError'>> | null | undefined,
 ): boolean {
+  // WI-6554700010030084: a drop that records the psu host had already accepted the delivery is a
+  // cold reset whose own SessionEnd cancelled the old session's inbox wake — delivered by the
+  // respawn, not stuck. Without this, every cold-wake turn read rewakeGuaranteed:false.
+  if (loop?.lastWakeStatus === 'dropped') {
+    return !(loop.lastWakeError ?? '').includes(HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER);
+  }
   if (loop?.lastWakeStatus !== 'parked') return false;
   return !/retry remains durable/i.test(loop.lastWakeError ?? '');
 }

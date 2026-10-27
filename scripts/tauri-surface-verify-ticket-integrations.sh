@@ -32,9 +32,20 @@ vh_init ticket-integrations "$OUT_DIR/harness"
 vh_bracket_trap
 vh_begin preflight
 
+capture_screenshot() {
+  local target="$1" status
+  "$T" screenshot --pid "$VERIFY_TAURI_PID" --output "$target" >"$target.stdout.log" 2>"$target.stderr.log"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    cat "$target.stderr.log" >&2
+    cat "$target.stdout.log" >&2
+    return "$status"
+  fi
+  [ -s "$target" ] || { echo "Screenshot command produced no image: $target" >&2; return 1; }
+}
 fail() {
   echo "VERIFY_FAIL: $*"
-  "$T" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/failure.png" >/dev/null 2>&1 || true
+  capture_screenshot "$OUT_DIR/failure.png" || true
   echo "P007_TAURI_SURFACE_VERIFY_FAIL leg=$LEG output=$OUT_DIR"
   exit 1
 }
@@ -75,7 +86,7 @@ for NAME in Linear Asana; do
     || fail "no 'Connect $NAME' button :: $(body)"
 done
 step "Connect Linear and Connect Asana offered"
-"$T" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/integrations.png" >/dev/null 2>&1 || fail "screenshot failed"
+capture_screenshot "$OUT_DIR/integrations.png" || fail "screenshot failed"
 
 # Negative control: the same check against a provider that is not registered must fail, so a
 # passing check above is a real observation, not an instrument that always says yes.
@@ -141,7 +152,7 @@ grep -q 'Verify Org' <<<"$ADMIN" || fail "admin table lacks the source: $ADMIN"
 HREF="$(ev "document.querySelector('section[aria-label=\"Ticket sources\"] a[href*=\"source=\"]').getAttribute('href')" | unq)"
 [ "$HREF" = "/settings/integrations?source=$SOURCE_ID&panel=scope" ] || fail "Configure link is $HREF"
 step "admin Ticket sources row + Configure link ok"
-"$T" screenshot --pid "$VERIFY_TAURI_PID" --output "$OUT_DIR/admin-ticket-sources.png" >/dev/null 2>&1 || fail "screenshot failed"
+capture_screenshot "$OUT_DIR/admin-ticket-sources.png" || fail "screenshot failed"
 
 echo "VERIFY_OK: integrations page, live updates, containers fallback, config write, admin table"
 echo "P007_TAURI_SURFACE_VERIFY_OK leg=$LEG output=$OUT_DIR"

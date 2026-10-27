@@ -696,6 +696,26 @@ describe('fleet:respawn-member (P-008)', () => {
     );
   });
 
+  it.each(['stable', 'spawn-host'] as const)('forwards the explicit %s MCP route to the replacement launcher', async (mcpTarget) => {
+    const res = await tool.handler(
+      { member: MEMBER, mcpTarget, verifySec: 0 } as never,
+      {} as never,
+    );
+
+    expect(parse(res)).toMatchObject({ ok: true, fleet: SLUG, oldMember: MEMBER });
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpTarget, members: [expect.objectContaining({ account: 'default' })] }),
+      expect.anything(),
+    );
+  });
+
+  it('keeps the replacement launcher default when the MCP route is omitted', async () => {
+    const res = await tool.handler({ member: MEMBER, verifySec: 0 } as never, {} as never);
+
+    expect(parse(res)).toMatchObject({ ok: true });
+    expect(launchHandler.mock.calls[0]?.[0]).not.toHaveProperty('mcpTarget');
+  });
+
   it('still refuses an unrecognized model id before killing the old member', async () => {
     const res = await tool.handler(
       { member: MEMBER, agent: 'codex', model: 'unknown-full-id', effort: 'high' } as never,

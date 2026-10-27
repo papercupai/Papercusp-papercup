@@ -10,7 +10,9 @@ function isolatedLauncherImport() {
     const output = execFileSync(process.execPath, ['--input-type=module'], {
       encoding: 'utf8',
       timeout: 15_000,
-      env: { ...process.env, HOME: home },
+      // Production psu starts in bare Node. A test-runner loader must not
+      // resolve extensionless imports that would crash that real entrypoint.
+      env: { ...process.env, HOME: home, NODE_OPTIONS: '' },
       input: `
         import childProcess from 'node:child_process';
         import { syncBuiltinESMExports } from 'node:module';

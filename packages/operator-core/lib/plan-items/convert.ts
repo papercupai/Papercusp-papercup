@@ -40,6 +40,7 @@ import {
   releaseWorkItem,
   getWorkItem,
   linkWorkItem,
+  updateWorkItem,
   isWorkItemKind,
   isClaimHoldParked,
   ISSUE_FAMILY_KINDS,
@@ -54,7 +55,10 @@ import type { ForceReleaseBasis } from '../agent-tools/work_items/release-force-
 import { releaseClaim, type LivenessMode, type PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 import { planItemTextHash } from './text-drift';
+import { readPlanItemAnchors } from './anchor-store';
+import { codePayloadForPlanItems } from '../plan-workitem-promotion';
 import { resolveGoalContext } from '../modes/goal-context';
+import { resolveVerification } from '../plan-verification-profile';
 import type { Sql } from 'postgres';
 
 /** The link rel from a work_item to the plan item it executes. */
@@ -92,9 +96,10 @@ export interface ConvertPlanItemOpts {
   harnessSlug: string;
   planSlug: string;
   itemId: string;
-  /** Work-item kind to mint (D-002 vocabulary). Default 'task' — the generic
-   *  "an agent is executing this" record; pass feature/research-task/bug/… when
-   *  the item warrants a pipeline-shaped unit. */
+  /** Explicit work-item kind override (D-002 vocabulary). When omitted, derive
+   *  the kind from the plan's verification profile and this item's declared
+   *  deliverable: code → change, non-code → task. `task` is refused for a
+   *  code-deliverable item because completion treats task as non-code. */
   kind?: WorkItemKind;
   /** Override the work-item title (default: the plan item's text, truncated). */
   title?: string;
@@ -632,8 +637,9 @@ export async function stampPromotedWorkItemProvenance(args: {
  * mint-or-resume the work_item → claim it → link it back. See module header.
  */
 export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<ConvertPlanItemResult> {
-  const kind = opts.kind ?? 'task';
-  if (!isWorkItemKind(kind)) return { status: 'refused', reason: `unknown work_item kind '${kind}'` };
+  if (opts.kind !== undefined && !isWorkItemKind(opts.kind)) {
+    return { status: 'refused', reason: `unknown work_item kind '${opts.kind}'` };
+  }
 
   // ── The plan item itself ───────────────────────────────────────────────────
   const read = await readPlanBySlug(opts.planSlug, {
@@ -643,14 +649,46 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   if (!read) return { status: 'refused', reason: `plan '${opts.planSlug}' not found` };
   const items =
     read.row.items.length > 0
-      ? read.row.items.map((i) => ({ id: i.id, status: i.status as string | null, text: i.text as string | null }))
-      : read.parsed.items.map((i) => ({ id: i.id, status: i.storedStatus as string | null, text: i.text ?? null }));
+      ? read.row.items.map((i) => ({
+          id: i.id,
+          status: i.status as string | null,
+          text: i.text as string | null,
+          deliverable: i.deliverable ?? null,
+        }))
+      : read.parsed.items.map((i) => ({
+          id: i.id,
+          status: i.storedStatus as string | null,
+          text: i.text ?? null,
+          deliverable: i.deliverable ?? null,
+        }));
   const item = items.find((i) => i.id === opts.itemId);
   if (!item) {
     return { status: 'refused', reason: `plan item ${opts.itemId} not found in '${opts.planSlug}'` };
   }
   if (item.status === 'done' || item.status === 'dropped') {
     return { status: 'refused', reason: `plan item ${opts.itemId} is already ${item.status}` };
+  }
+
+  // Use the same resolver that completion and plan certification use. Plan text is
+  // canonical; prefer its parsed deliverable over the derived JSON index, which can
+  // lag older rows. An absent/unknown declaration stays at the profile default, and
+  // an unresolvable plan/item type fails safe to the code module.
+  const parsedItem = read.parsed.items.find((i) => i.id === opts.itemId);
+  const verification = resolveVerification(
+    {
+      verificationProfile: read.row.verificationProfile,
+      planType: read.parsed.frontmatter.type ?? null,
+    },
+    { deliverable: parsedItem ? parsedItem.deliverable ?? null : item.deliverable },
+  );
+  const kind = opts.kind ?? (verification.codeDeliverable ? 'change' : 'task');
+  if (opts.kind === 'task' && verification.codeDeliverable) {
+    return {
+      status: 'refused',
+      reason:
+        `plan item ${opts.planSlug}#${opts.itemId} resolves to code (${verification.itemType ?? verification.deliverable ?? 'profile default'}); ` +
+        "'task' is the non-code work-item kind. Omit kind to derive 'change', or declare a non-code deliverable.",
+    };
   }
 
   // ── 0. WI-10008137: no new work on an unaudited draft plan ─────────────────
@@ -814,7 +852,35 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
         { harness: wiForLink.harness ?? undefined, by: opts.owner },
       );
     }
-    const resumedWi = resumed ?? existing;
+    let resumedWi = resumed ?? existing;
+    // Legacy pickup rows were minted as `task` before kind followed the plan's
+    // profile/deliverable. Once this caller owns the execution record, heal that
+    // classification through the shared work-item writer so it can satisfy the
+    // same code verification contract as a newly converted item.
+    if (opts.kind === undefined && kind === 'change' && resumedWi.kind === 'task') {
+      const retyped = await updateWorkItem(
+        resumedWi.id,
+        { kind: 'change' },
+        opts.owner,
+        { harness: resumedWi.harness ?? opts.harnessSlug },
+      );
+      if (!retyped.ok) {
+        await releaseWorkItem(resumedWi.id, { harness: resumedWi.harness ?? undefined }).catch(() => false);
+        await releaseClaim(
+          opts.workspaceId,
+          opts.harnessSlug,
+          opts.planSlug,
+          opts.itemId,
+          claimRes.claim.claimId,
+          opts.owner,
+        ).catch(() => false);
+        return {
+          status: 'refused',
+          reason: `could not reclassify legacy task ${resumedWi.id} as change: ${retyped.reason}`,
+        };
+      }
+      resumedWi = retyped.item;
+    }
     // D-005 obligation 3: heal first-class provenance on resume too — rows
     // promoted before the stamp existed stay drain-lane-invisible otherwise.
     await stampPromotedWorkItemProvenance({
@@ -856,12 +922,20 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
           decisions: decisionsForItem(read.parsed, opts.itemId),
         }) || undefined
       : undefined);
+  const anchorsByItem = await readPlanItemAnchors(opts);
+  let codePayload = codePayloadForPlanItems([opts.itemId], anchorsByItem, item.text ?? '');
+  if (codePayload && !codePayload.anchors) {
+    const { resolveProject } = await import('../harness-core');
+    const repoRoot = (await resolveProject(opts.harnessSlug, opts.workspaceId))?.path;
+    codePayload = codePayloadForPlanItems([opts.itemId], anchorsByItem, item.text ?? '', repoRoot);
+  }
   const created = await createWorkItem({
     kind,
     title,
     summary: item.text ?? undefined,
     harness: opts.harnessSlug,
     payload: {
+      ...codePayload,
       plan_item: stamp,
       ...(opts.planRun ? { plan_run: opts.planRun } : {}),
       ...(effectiveBrief ? { brief: effectiveBrief } : {}),

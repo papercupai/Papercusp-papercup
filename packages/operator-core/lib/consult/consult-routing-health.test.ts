@@ -230,18 +230,21 @@ describe('routingHealthFromRows request cohort', () => {
       // Experts were selected but none could be launched: its own bucket, not 'unavailable' (R-2).
       make('unlaunchable', { state: 'no_launchable_responder', dispatch_attempts: [launch(T0 + H, 'answerer', [{ outcome: 'failed', reason: 'launch-failed' }])] }),
       make('unknown-result'),
+      // Expired before any responder was dispatched: no delivery was attempted, so expiry alone
+      // is not a delivery failure. It stays unmeasured, apart from the dispatched 'failure' row (P-007).
+      make('expired-undispatched', { state: 'expired' }),
       make('old', { created_at: iso(T0 - H), has_feedback: true }),
       make('future', { created_at: iso(UNTIL), has_feedback: true }),
     ];
     const health = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
     const counts = health.requestCohort.totals;
     expect(counts).toEqual({
-      requests: 10, dispatchRequested: 8, retrievalOnly: 1, legacyIntentUnknown: 1,
-      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, unlaunchable: 1, failed: 1, unmeasured: 1 },
+      requests: 11, dispatchRequested: 9, retrievalOnly: 1, legacyIntentUnknown: 1,
+      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, unlaunchable: 1, failed: 1, unmeasured: 2 },
       followThrough: {
-        applicable: 10, notApplicable: 0, applicabilityUnknown: 0,
+        applicable: 11, notApplicable: 0, applicabilityUnknown: 0,
         recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
-        unknown: 10, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+        unknown: 11, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
       },
     });
     expect(counts.dispatchRequested + counts.retrievalOnly + counts.legacyIntentUnknown).toBe(counts.requests);

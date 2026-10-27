@@ -166,7 +166,19 @@ describe('resolver parity', () => {
     const inputs = enumerateResolverInputs();
     expect(inputs.length).toBeGreaterThan(1000);
     for (const { plan, item } of inputs) {
-      expect(registry(plan, item), JSON.stringify({ plan, item })).toEqual(resolveVerificationLegacy(plan, item));
+      const resolved = registry(plan, item);
+      const { itemTypeContract, ...behavior } = resolved;
+      // The legacy resolver has no contract metadata; every existing resolution field must match.
+      expect(behavior, JSON.stringify({ plan, item })).toEqual(resolveVerificationLegacy(plan, item));
+      if (resolved.itemType) {
+        expect(itemTypeContract).toMatchObject({
+          id: resolved.itemType,
+          revision: 1,
+          contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        });
+      } else {
+        expect(itemTypeContract).toBeUndefined();
+      }
     }
   });
 

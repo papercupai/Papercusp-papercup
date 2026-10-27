@@ -29,6 +29,10 @@ const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
 const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+const directiveRecovery = vi.hoisted(() => ({ closureError: vi.fn(async (..._args: unknown[]): Promise<string | null> => null) }));
+vi.mock('../../owner-directive-recovery', () => ({
+  directiveRecoveryClosureError: (...args: unknown[]) => directiveRecovery.closureError(...args),
+}));
 const contentIdentityPreview = vi.hoisted(() => ({ stamp: vi.fn() }));
 vi.mock('./completion-freshness', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./completion-freshness')>();
@@ -109,6 +113,8 @@ const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
 const listWorkItems = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
+const assessWorkItemHeldOpenTerminalTransition = vi.fn();
+const workItemPlanLaneTransitionRefusal = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
@@ -128,6 +134,8 @@ const attachCompletionEvidenceToSettledItem = vi.fn();
 const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  assessWorkItemHeldOpenTerminalTransition: (...a: unknown[]) => assessWorkItemHeldOpenTerminalTransition(...a),
+  workItemPlanLaneTransitionRefusal: (...a: unknown[]) => workItemPlanLaneTransitionRefusal(...a),
   getWorkItemsByIds: (...a: unknown[]) => getWorkItemsByIds(...a),
   listWorkItems: (...a: unknown[]) => listWorkItems(...a),
   // The improvement-review module is imported through complete.ts's analysis
@@ -144,6 +152,7 @@ vi.mock('../../work-items', () => ({
   readWorkItemClaimHoldProvenance: vi.fn(),
   readUnresolvedDepBlockers: vi.fn(),
   ACTIVE_FEATURE_FAMILY_KINDS: ['feature'],
+  ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
   attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
   commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
@@ -403,6 +412,7 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  directiveRecovery.closureError.mockReset().mockResolvedValue(null);
   contentIdentityPreview.stamp.mockReset();
   completionBriefPort.read.mockReset();
   completionBriefPort.read.mockResolvedValue(null);
@@ -428,6 +438,10 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   getWorkItem.mockReset();
+  assessWorkItemHeldOpenTerminalTransition.mockReset();
+  assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({ allowed: true, staleHoldOpen: false });
+  workItemPlanLaneTransitionRefusal.mockReset();
+  workItemPlanLaneTransitionRefusal.mockResolvedValue(null);
   listWorkItems.mockReset();
   listWorkItems.mockResolvedValue([]);
   setWorkItemStateWithAliasInfo.mockReset();
@@ -477,10 +491,16 @@ describe('P039 completion source brief delivery', () => {
       harness: 'papercup', paths: ['packages/operator-core/lib/code-intelligence/task-brief.ts'],
     }), expect.objectContaining({ runs: expect.any(Function) }));
     const readRuns = completionBriefPort.read.mock.calls[0]![1].runs;
-    const invocation = { invoked_at: new Date(), duration_ms: 10, files: ['target.test.ts'], work_item_id: 'WI-brief' };
-    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
-      { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },
-    ]);
+    // Telemetry stamps dispatch SETTLEMENT; the test finished before that stamp.
+    // Model the real ledger's window predicate so a start/end mix-up cannot pass
+    // by returning a matching row regardless of the SQL parameters.
+    const settledAt = new Date();
+    const invocation = { invoked_at: settledAt, duration_ms: 30_000, files: ['target.test.ts'], work_item_id: 'WI-brief' };
+    const testFinishedAt = settledAt.getTime() - 250;
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockImplementationOnce(
+      (_sql: TemplateStringsArray, _paths: string[], from: Date, to: Date) => Promise.resolve(
+        from.getTime() <= testFinishedAt && testFinishedAt <= to.getTime()
+          ? [{ file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' }] : []));
     expect(await readRuns(['target.test.ts'])).toEqual([{ path: 'target.test.ts', status: 'pass', runGroupId: 'bound-run' }]);
     dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
       { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },
@@ -507,6 +527,30 @@ describe('P039 completion source brief delivery', () => {
 // byte-identical single-gate invariant that keeps every pre-existing caller valid, and the
 // CALIBRATION proves the accumulator still lets a good completion through (without it, a
 // gate that refused unconditionally would pass the first two tests).
+describe('owner directive recovery must settle its directive before completing', () => {
+  const recovery = { id: 'WI-recovery', kind: 'task', family: 'issue', state: 'open', harness: 'papercup',
+    payload: { ownerDirectiveRecovery: { directiveId: 42 } } };
+  it('refuses success before a directive disposition and writes no terminal transition', async () => {
+    getWorkItem.mockResolvedValue(recovery);
+    directiveRecovery.closureError.mockResolvedValue('Directive #42 is still open');
+    const result = await one({ id: recovery.id, state: 'done', completion: { summary: 'Finished recovery' } });
+    expect(result).toMatchObject({ ok: false, error: 'owner_directive_still_open' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it('fails closed on an unreadable directive rather than treating it as settled', async () => {
+    getWorkItem.mockResolvedValue(recovery);
+    directiveRecovery.closureError.mockRejectedValue(new Error('database unavailable'));
+    const result = await one({ id: recovery.id, state: 'done', completion: { summary: 'Finished recovery' } });
+    expect(result).toMatchObject({ ok: false, error: 'owner_directive_verification_unavailable', retryable: true });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it('does not impose a directive check on ordinary work', async () => {
+    getWorkItem.mockResolvedValue(item);
+    await one({ id: item.id, completion: { summary: 'Ordinary progress' } });
+    expect(directiveRecovery.closureError).not.toHaveBeenCalled();
+  });
+});
+
 describe('EI-20286699547467039 — unmet completion gates accumulate into one refusal', () => {
   const bug = { id: 'WI-acc', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
 
@@ -1041,6 +1085,48 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(preview.authorityWarning).toBeUndefined();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+  });
+
+  it('refuses a nonholder held-open terminal preview with the shared writer reason', async () => {
+    const closeItem = {
+      ...item,
+      id: 'WI-held-open-preview',
+      kind: 'bug',
+      family: 'issue',
+      state: 'open',
+      payload: { held_open_by: 'su-peer', held_open_reason: 'release criterion pending' },
+    };
+    const refusal = "work_item 'WI-held-open-preview' is HELD OPEN by su-peer — closing it into 'resolved' requires the holder.";
+    getWorkItem.mockResolvedValue(closeItem);
+    assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({
+      allowed: false,
+      staleHoldOpen: false,
+      refusal,
+    });
+
+    const preview = await one({
+      id: closeItem.id,
+      state: 'resolved',
+      validateOnly: true,
+      completion: { summary: 'verified', testsRun: 'complete.test.ts', testResult: 'passed' },
+    });
+
+    expect(preview).toMatchObject({
+      ok: false,
+      validationOnly: true,
+      error: refusal,
+      stateError: refusal,
+    });
+    expect(assessWorkItemHeldOpenTerminalTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: closeItem.id,
+        payload: closeItem.payload,
+        currentState: 'open',
+        targetState: 'resolved',
+        by: 'su-tester',
+      }),
+    );
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('settles validateOnly with the same authority as the identical real close', async () => {
@@ -1807,6 +1893,34 @@ describe('work_items:complete (keyed-array)', () => {
   describe('WI-4529 — ok reflects whether the item actually CLOSED', () => {
     const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
 
+    it('previews the same plan-lane refusal as a real close without writing or claiming persistence', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const refusal = "work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-001 is STILL effectively 'owner-gated'";
+      workItemPlanLaneTransitionRefusal.mockResolvedValue(refusal);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(refusal));
+      const args = { id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } };
+      const preview = await one({ ...args, validateOnly: true });
+      expect(preview).toMatchObject({ ok: false, validationOnly: true, stateError: refusal });
+      expect(workItemPlanLaneTransitionRefusal).toHaveBeenCalledWith(issue, 'resolved');
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({ key: 'plan-item-lane', applicable: true, satisfied: false }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+      const actual = await one(args);
+      expect(actual).toMatchObject({ ok: false, stateError: refusal, completionEvidenceStored: false, completionReturnedOnly: true });
+      expect(actual.stateWarning).toMatch(/returned.*completion.*not persisted/i);
+      expect(actual.stateWarning).not.toMatch(/recorded a completion/i);
+      expect(actual.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('previews an actionable plan lane without persisting a completion', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const preview = await one({ id: 'WI-1', state: 'resolved', validateOnly: true,
+        completion: { summary: 'fixed it', tests: '5 green' } });
+      expect(preview).toMatchObject({ ok: true, validationOnly: true });
+      expect(workItemPlanLaneTransitionRefusal).toHaveBeenCalledWith(issue, 'resolved');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockRejectedValue(
@@ -2461,6 +2575,80 @@ describe('work_items:complete (keyed-array)', () => {
   });
 
   describe("completion-boundary runtime guard — unbacked verifiedHow:'live-service' REJECTS the close (EI-20096763429995249)", () => {
+    it.each([
+      { name: 'unit tests only', testsRun: 'npm run test:file -- bundle-host.test.ts', testResult: '18/18 tests passed' },
+      { name: 'runtime observations without a service', testsRun: 'dev:restart target staging', testResult: 'ActiveState=active; MainPID=4242; HTTP 200' },
+      { name: 'named service without an observation', testsRun: 'systemctl --user restart papercup-staging-api.service', testResult: 'restart command completed' },
+    ])('refuses the same preview and close for $name without preview writes', async ({ testsRun, testResult }) => {
+      getWorkItem.mockResolvedValue(item);
+      const args = {
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed the service startup path', testsRun, testResult, verifiedHow: 'live-service' },
+      };
+
+      const preview = await one({ ...args, validateOnly: true });
+
+      expect(preview.ok).toBe(false);
+      expect(preview.validationOnly).toBe(true);
+      expect(preview.error).toMatch(/live-service/);
+      expect(preview.stateError).toBe(preview.error);
+      expect(preview.countsTowardBurnDown).toBe(false);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: true, satisfied: false,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+
+      const close = await one(args);
+      expect(close.ok).toBe(false);
+      expect(close.stateError).toBe(preview.stateError);
+      expect(close.error).toContain(preview.error);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('accepts backed preview and close with nested evidence=%s', async (nested) => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const evidence = {
+        testsRun: 'systemctl --user show papercup-staging-api.service',
+        testResult: 'ActiveState=active; MainPID=4242; GET http://localhost:3170/api/health -> 200',
+        verifiedHow: 'live-service',
+      };
+      const args = {
+        id: 'F-12', state: 'passed',
+        completion: { summary: 'fixed the service startup path', ...(nested ? { verification: evidence } : evidence) },
+      };
+
+      const preview = await one({ ...args, validateOnly: true });
+      expect(preview.ok).toBe(true);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: true, satisfied: true,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+
+      const close = await one(args);
+      expect(close.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+    });
+
+    it('keeps record-only live-service previews outside the close requirement', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const preview = await one({
+        id: 'F-12', validateOnly: true,
+        completion: { summary: 'progress note', verifiedHow: 'live-service' },
+      });
+      expect(preview.ok).toBe(true);
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'live-service-evidence', applicable: false, satisfied: null,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(commentWorkItem).not.toHaveBeenCalled();
+    });
+
     it('rejects a unit-test-only close and never attempts the state write', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({
@@ -2939,14 +3127,18 @@ describe('work_items:complete (keyed-array)', () => {
         ...(proof ? { specAdequacy: proof } : {}),
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedTask,
-        attestation: proof,
-        changedPaths: [
-          ...('filesChanged' in completion ? (completion.filesChanged ?? []) : []),
-          ...('filesDeleted' in completion ? (completion.filesDeleted ?? []) : []),
-        ],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedTask,
+          attestation: proof,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'implemented', ...completion }),
+          changedPaths: [
+            ...('filesChanged' in completion ? (completion.filesChanged ?? []) : []),
+            ...('filesDeleted' in completion ? (completion.filesDeleted ?? []) : []),
+          ],
+        }),
+      );
       expect(r).toMatchObject({ ok: false, specAdequacy: { applicable: true, retryable: true } });
       expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -3211,10 +3403,14 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-101', state: 'resolved', completion, specAdequacy });
 
       expect(r.ok).toBe(true);
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedIssue,
-        attestation: specAdequacy,
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedIssue,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining(completion),
+        }),
+      );
       expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
     });
 
@@ -3242,11 +3438,15 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: specAdequacy,
-        changedPaths: [behaviorChangePath],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'shipped', filesChanged: [behaviorChangePath] }),
+          changedPaths: [behaviorChangePath],
+        }),
+      );
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
         ctx,
@@ -3346,11 +3546,15 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: specAdequacy,
-        changedPaths: [],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'verification-only feature complete' }),
+          changedPaths: [],
+        }),
+      );
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
         ctx,
@@ -3383,11 +3587,15 @@ describe('work_items:complete (keyed-array)', () => {
         completion: { summary: 'read-only inventory complete', filesChanged: [inventoryPath] },
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedFeature,
-        attestation: undefined,
-        changedPaths: [inventoryPath],
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedFeature,
+          attestation: undefined,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'read-only inventory complete', filesChanged: [inventoryPath] }),
+          changedPaths: [inventoryPath],
+        }),
+      );
       expect(r).toMatchObject({
         ok: true,
         specAdequacy: { applicable: false, checked: [], exempted },
@@ -3426,10 +3634,14 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy,
       });
 
-      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
-        workItem: linkedIssue,
-        attestation: specAdequacy,
-      });
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItem: linkedIssue,
+          attestation: specAdequacy,
+          workspaceId: 'default',
+          completion: expect.objectContaining({ summary: 'fixed', filesChanged: [behaviorChangePath] }),
+        }),
+      );
       expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
@@ -8336,6 +8548,8 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
       changeKindProof: { kinds: ['logic'], missing: expect.any(Array), problems: expect.any(Array) },
     });
     expect(r.validationOnly).toBe(true);
+    expect(r.error).not.toContain('completion is recorded');
+    expect(r).not.toHaveProperty('completion');
     expect(r.completionContract.requirements).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: false })]),
     );
@@ -8360,6 +8574,8 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
         problems: expect.arrayContaining([expect.stringContaining('no change kind has been declared')]),
       },
     });
+    expect(r.error).not.toContain('completion is recorded');
+    expect(r).not.toHaveProperty('completion');
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 

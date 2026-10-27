@@ -454,6 +454,16 @@ export class WorkspaceBackup {
     // inserted. Keep it in the local lifecycle from the first instruction so
     // an early INSERT/step failure still releases the transferred session.
     let migrationLock: BackupMigrationLock | undefined = opts?.migrationLock;
+    let migrationLockReleasedForGuard = false;
+    const acquireSnapshotMigrationLock = async () => {
+      const acquire = backupHost().acquireMigrationLock;
+      if (!acquire) return undefined;
+      const lock = await acquire(opts?.onMigrationLockWaiting
+        ? { onWaiting: opts.onMigrationLockWaiting }
+        : undefined);
+      if (!lock) throw new Error('migration rendezvous acquisition returned no lock');
+      return lock;
+    };
 
     const finalizeFailure = async (message: string): Promise<void> => {
       if (snapshotRowId === undefined || receiptFinalized) return;
@@ -555,11 +565,7 @@ export class WorkspaceBackup {
       // cross-process admission happened before scheduler state was consumed,
       // and this operation must keep the same session lock through completion.
       if (!migrationLock) {
-        migrationLock = await backupHost().acquireMigrationLock?.(
-          opts?.onMigrationLockWaiting
-            ? { onWaiting: opts.onMigrationLockWaiting }
-            : undefined,
-        );
+        migrationLock = await acquireSnapshotMigrationLock();
       }
       if (opts?.resumeSnapshotId !== undefined) {
         // The orphan sweep can terminalize a lost producer before its explicit
@@ -619,6 +625,29 @@ export class WorkspaceBackup {
             workspaceId: this.workspaceId,
             workspaceRoot: this.workspaceRoot,
             triggerReason: reason,
+          }, {
+            beforeGuardWait: async () => {
+              // The shared Kopia flock is the outer lock. Release the
+              // scheduler-probed advisory lock before waiting for it, or a
+              // host db-backup holding the flock can deadlock while it waits
+              // for the same migration rendezvous.
+              if (!backupHost().acquireMigrationLock) return;
+              migrationLockReleasedForGuard = true;
+              const held = migrationLock;
+              if (!held) return;
+              try {
+                await held.release();
+              } finally {
+                if (migrationLock === held) migrationLock = undefined;
+              }
+            },
+            onGuardReady: async () => {
+              if (!migrationLockReleasedForGuard || migrationLock) return;
+              // The guard owns the shared Kopia flock now. Reacquire the
+              // migration rendezvous before the hook rechecks host coverage
+              // and ACKs whether pg_dump should start.
+              migrationLock = await acquireSnapshotMigrationLock();
+            },
           }).then(async (result) => {
             await this.event(snapshotRowId!, 'hook_pg_dump', { ...result });
             return { ok: result.ok, error: result.error, deferred: result.deferred };
@@ -630,6 +659,14 @@ export class WorkspaceBackup {
               return { ok: false, error: String(err) };
             }),
       );
+      if (migrationLockReleasedForGuard && !migrationLock) {
+        // The guard can fail before READY (for example, its bounded flock
+        // wait expires). Reacquire without the shared flock before allowing
+        // the filesystem snapshot to proceed. This preserves the original
+        // snapshot/migration fence without blocking migrations on the guard.
+        migrationLock = await acquireSnapshotMigrationLock();
+      }
+      migrationLockReleasedForGuard = false;
       // Step runners can replay an older cached `undefined` result, or a
       // malformed value from an older host. Preserve that as unknown rather
       // than turning it into a false/true assertion.
@@ -1000,7 +1037,10 @@ export class WorkspaceBackup {
       throw new Error(`snapshot ${snapshotId} has a protected terminal receipt; refusing to overwrite it`);
     }
     if ((await this.taggedSnapshotManifests(snapshotId)).length !== 0) {
-      throw new Error(`snapshot ${snapshotId} already has a tagged artifact; refusing orphan producer recovery`);
+      // Do not reopen a producer when its artifact already exists. Let the
+      // receipt reconciler validate that exact row-tagged artifact and attach
+      // its verified result instead of treating it as a reason to fail closed.
+      return null;
     }
     const updated = await sql<{ id: number }[]>`
       UPDATE harness_shared.backup_snapshots
@@ -1028,6 +1068,7 @@ export class WorkspaceBackup {
     const rows = await sql<{
       id: number;
       status: SnapshotInfo['status'];
+      error_text: string | null;
       db_dump_ok: boolean | null;
       kopia_snapshot_id: string | null;
       started_at: string;
@@ -1042,6 +1083,7 @@ export class WorkspaceBackup {
              snapshot.kopia_snapshot_id,
              snapshot.started_at,
              snapshot.finished_at,
+             snapshot.error_text,
              snapshot.bytes_added,
              snapshot.bytes_total,
              (
@@ -1061,8 +1103,14 @@ export class WorkspaceBackup {
     const row = rows[0];
     if (!row) throw new Error(`backup snapshot row ${snapshotId} was not found in ${this.workspaceId}`);
     const knownDbDumpOk = resolveDbDumpOk(row.db_dump_ok, row.hook_payload);
+    const recoverableOrphan = row.status === 'failed'
+      && /^orphan-sweep: status='running' for >\d+min$/.test(row.error_text ?? '')
+      && row.kopia_snapshot_id === null
+      && row.db_dump_ok !== false
+      && row.finished_at !== null
+      && Number.isFinite(Date.parse(row.finished_at));
 
-    if (row.status !== 'running') {
+    if (row.status !== 'running' && !recoverableOrphan) {
       return {
         snapshotId,
         reconciled: false,
@@ -1079,18 +1127,21 @@ export class WorkspaceBackup {
 
     const manifests = await this.taggedSnapshotManifests(snapshotId);
     if (manifests.length === 0) {
+      const stillRunning = row.status === 'running';
       return {
         snapshotId,
         reconciled: false,
-        stillRunning: true,
-        status: 'running',
+        stillRunning,
+        status: stillRunning ? 'running' : 'failed',
         dbDumpOk: knownDbDumpOk,
         kopiaSnapshotId: null,
         bytesAdded: null,
         bytesTotal: null,
         durationMs: null,
         artifactAbsent: row.kopia_snapshot_id === null,
-        note: 'No completed Kopia artifact carries this row id yet; keep polling the receipt.',
+        note: stillRunning
+          ? 'No completed Kopia artifact carries this row id yet; keep polling the receipt.'
+          : 'The failed orphan receipt has no completed tagged artifact to reconcile.',
       };
     }
     if (manifests.length !== 1) {
@@ -1138,8 +1189,13 @@ export class WorkspaceBackup {
              db_dump_ok        = ${dbDumpOk}
        WHERE workspace_id = ${this.workspaceId}
          AND id = ${snapshotId}
-         AND status = 'running'
          AND kopia_snapshot_id IS NULL
+         AND status = ${row.status}
+         AND (status <> 'failed' OR (
+           error_text = ${row.error_text}
+           AND finished_at = ${row.finished_at}::timestamptz
+           AND db_dump_ok IS NOT DISTINCT FROM ${row.db_dump_ok}
+         ))
        RETURNING id
     `;
     if (updated.length === 0) {

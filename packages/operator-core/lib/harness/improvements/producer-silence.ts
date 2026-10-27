@@ -62,7 +62,7 @@ export interface ProducerSilenceProbe {
   output: string;
   /** Last-output epoch ms per pot slug (or {@link ANY_POT} for a workspace-level producer). */
   readLastOutput: (sql: Sql, workspaceId: string) => Promise<Map<string, number>>;
-  /** A recent, explicit producer-side gate that explains why no output was expected. */
+  /** A producer-side condition that explains why no output was expected (a gate or no due work). */
   readIntentionalSilence?: (sql: Sql, workspaceId: string, nowMs: number) => Promise<Map<string, string>>;
 }
 
@@ -190,10 +190,22 @@ export const PRODUCER_SILENCE_PROBES: Record<LearningProducer, ProducerSilencePr
     loopPot: namedLoop('calibration-markets'),
     routine: { name: 'bp-singleton-calibration-0', perPot: false },
     silenceHours: 7 * 24,
-    output: 'a calibration_predictions row',
+    output: 'a calibration prediction created or resolved by the maturity sweep',
     readLastOutput: async (sql, ws) =>
       singleMax(await sql<Array<{ last: unknown }>>`
-        SELECT max(created_at) AS last FROM harness_shared.calibration_predictions WHERE workspace_id = ${ws}`),
+        SELECT greatest(max(created_at), max(resolved_at)) AS last
+          FROM harness_shared.calibration_predictions WHERE workspace_id = ${ws}`),
+    readIntentionalSilence: async (sql, ws, nowMs) => {
+      const nowIso = new Date(nowMs).toISOString();
+      const rows = await sql<Array<{ has_due: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1 FROM harness_shared.calibration_predictions
+           WHERE workspace_id = ${ws} AND resolved_at IS NULL AND horizon_ts <= ${nowIso}::timestamptz
+        ) AS has_due`;
+      return rows[0]?.has_due === false
+        ? new Map([[ANY_POT, 'no matured unresolved calibration predictions are due']])
+        : new Map();
+    },
   },
   transfer: {
     loopPot: namedLoop('frontier:transfer-harness'),
@@ -219,7 +231,7 @@ export interface ProducerSilenceFacts {
   routines: ReadonlyArray<{ name: string; installSlug: string; active: boolean }>;
   /** Last-output epoch ms keyed `${producer}:${pot}` (or `${producer}:*`). Absent = never produced. */
   lastOutputMs: ReadonlyMap<string, number>;
-  /** Explicit recent gates that make a producer's lack of output expected. */
+  /** Producer-side conditions that make no output expected, including explicit gates or no due work. */
   intentionalSilence?: ReadonlyMap<string, string>;
   /** Producer-specific off-switches keyed `${producer}:${pot}` → why it is off. */
   switchedOff?: ReadonlyMap<string, string>;
@@ -331,7 +343,10 @@ export function producerSilenceVerdict(facts: ProducerSilenceFacts, opts: Produc
       const hours = opts.producerSilenceHours?.[producer] ?? probe.silenceHours;
       const last = facts.lastOutputMs.get(key) ?? facts.lastOutputMs.get(`${producer}:${ANY_POT}`) ?? null;
       if (last !== null && facts.nowMs - last <= hours * HOUR_MS) { record('producing'); continue; }
-      if (facts.intentionalSilence?.has(key)) { record('intentionally-gated'); continue; }
+      if (facts.intentionalSilence?.has(key) || facts.intentionalSilence?.has(producer + ':' + ANY_POT)) {
+        record('intentionally-gated');
+        continue;
+      }
 
       record('silent');
       const since = last === null ? 'has never produced' : `last produced ${fmtAge(facts.nowMs - last)} ago (${new Date(last).toISOString()})`;

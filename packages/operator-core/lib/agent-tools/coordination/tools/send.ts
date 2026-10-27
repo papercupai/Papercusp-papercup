@@ -155,6 +155,13 @@ import {
   type GoalOwnerReportStamp,
 } from '../../../goal-owner-report';
 import type { GoalOwnerReportTruthVerdict } from '../../../goal-owner-report-truth';
+import {
+  CITED_ITEM_STATES_FIELD,
+  REPEAT_REPORT_REFUSAL,
+  citedWorkItemRefs,
+  describeRepeatReportRefusal,
+  type RepeatReportVerdict,
+} from '../repeat-report';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -419,6 +426,53 @@ type ChunkRecipientValidation = {
  *  those). Used by the wakeOnReply default only when the sender expects a reply. */
 function isDirected(to: string[]): boolean {
   return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
+}
+
+/**
+ * WI-6554700010029331 — read + judge the `repeat_report_no_delta` rail for one
+ * send (see ../repeat-report). Null = the rail does not apply or its reads did
+ * not finish in the enrichment budget: the message is sent, unstamped.
+ *
+ * Applies to a directed, unchunked send that cites work items and is not a
+ * condition/goal-report message. A threaded reply (related_msg_id) is stamped
+ * but never judged — replying to your own earlier message is the door the
+ * refusal points at.
+ */
+async function readRepeatReportVerdict(input: {
+  msg: SendMsg;
+  bodyText: string | undefined;
+  to: string[];
+  identity: AgentIdentity;
+  threaded: boolean;
+  chunked: boolean;
+  ownMsgId?: string;
+  requestSignal?: AbortSignal;
+}): Promise<RepeatReportVerdict | null> {
+  const { msg } = input;
+  if (input.chunked || !isDirected(input.to)) return null;
+  if (msg.conditionKey || msg.resolvesCondition || msg.report) return null;
+  const refs = citedWorkItemRefs(msg.summary, input.bodyText);
+  if (refs.length === 0) return null;
+  return withOptionalSendEnrichment(
+    'repeat-report',
+    async () => {
+      try {
+        const { evaluateRepeatReport } = await import('../repeat-report-reads');
+        return await evaluateRepeatReport({
+          from: input.identity.ownerId,
+          to: input.to,
+          refs,
+          workspaceId: input.identity.workspaceId ?? '',
+          judge: !input.threaded,
+          ownMsgId: input.ownMsgId,
+        });
+      } catch {
+        return null;
+      }
+    },
+    null,
+    input.requestSignal,
+  );
 }
 
 /** WI-41323: read the per-message unverified-claim kind back off a bulk item
@@ -1667,6 +1721,33 @@ async function sendOne(
   // refusal that teaches the split instead of a generic "unrecognized key".
   if (Array.isArray(msg.body)) assertEnvelopeSectionSplit(msg.body);
   const sections = toSections(msg.body);
+  // WI-6554700010029331 — repeat_report_no_delta: refuse a directed re-send of
+  // work items this sender already reported to these exact recipients inside
+  // the window when none of them changed since (../repeat-report). Judged
+  // before the enrichment reads below, so a refused repeat costs two reads.
+  const repeatVerdict = await readRepeatReportVerdict({
+    msg,
+    bodyText: sections.length ? sectionsToText(sections) : undefined,
+    to: toSend,
+    identity,
+    threaded: Boolean(recipientAuthRelatedMsgId),
+    chunked: chunkRecipientValidation !== undefined,
+    ownMsgId:
+      idempotencyKey !== undefined && itemIndex !== undefined
+        ? idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex)
+        : undefined,
+    requestSignal,
+  });
+  if (repeatVerdict?.kind === 'refuse') {
+    return {
+      ok: false,
+      to: msg.to,
+      error: REPEAT_REPORT_REFUSAL,
+      message: describeRepeatReportRefusal(repeatVerdict.repeats),
+      repeats: repeatVerdict.repeats,
+    };
+  }
+  if (repeatVerdict?.stamps.length) extra[CITED_ITEM_STATES_FIELD] = repeatVerdict.stamps;
   // P-008 last leg / D-084: `basedOn` — the sender's information provenance,
   // DERIVED from what it actually read (the invocation log), never authored
   // (D-002's never-author economics; it is not a caller argument at all).

@@ -531,7 +531,8 @@ describe('THIRD-PARTY-NOTICES (P-017 step 5)', () => {
     expect(text).toContain('### MPL-2.0 (1)\n\naxe-core@4.0.0');
     expect(text.indexOf('### MIT')).toBeLessThan(text.indexOf('### MPL-2.0'));
     expect(text).toContain('## Rust crates (1)');
-    expect(text).toContain('Elastic License 2.0');
+    expect(text).toContain('Sustainable Use License');
+    expect(text).toContain('separately licensed');
   });
 
   it('lists installer components with their obligations and a written source offer for GPL/LGPL ones (P-015)', () => {

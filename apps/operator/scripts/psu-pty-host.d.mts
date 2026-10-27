@@ -681,9 +681,9 @@ export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): a
  *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
  * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
  *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
- *   home?: string, maxScanBytes?: number}} options
- * @returns {{available: boolean, started: boolean}} */
-export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, }: {
+ *   home?: string, maxScanBytes?: number, includeTerminalFailure?: boolean}} options
+ * @returns {{available: boolean, started: boolean, failure?: NativeExecutionFailure}} */
+export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, includeTerminalFailure, }: {
     agent?: string;
     env?: EnvironmentMap;
     transcriptPath?: string | null;
@@ -692,9 +692,11 @@ export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPat
     anchor?: KickoffMarkerAnchor | null;
     home?: string;
     maxScanBytes?: number;
+    includeTerminalFailure?: boolean;
 }): {
     available: boolean;
     started: boolean;
+    failure?: NativeExecutionFailure;
 };
 /** A queued kickoff retry may wait behind the original turn. At the final
  * write boundary only positive native execution proof cancels the retry;
@@ -1229,10 +1231,12 @@ export function readLinuxStartupCounters(pid: any, readFile?: typeof readFileSyn
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
- * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
- * few generations and accept a process whose kernel comm identifies Codex. */
-export function resolveLinuxCodexStartupPid(rootPid: any, { readFile, readCounters, maxDepth, }?: {
+ * race-tolerant descendant index under each /proc/PID/task/TID/children;
+ * worker-thread forks need every TID, just like the diagnostic tree reader.
+ * Walk only a few generations and accept a kernel-identified Codex process. */
+export function resolveLinuxCodexStartupPid(rootPid: any, { readFile, readDir, readCounters, maxDepth, }?: {
     readFile?: typeof readFileSync | undefined;
+    readDir?: typeof readdirSync | undefined;
     readCounters?: typeof readLinuxStartupCounters | undefined;
     maxDepth?: number | undefined;
 }): any;
@@ -2084,7 +2088,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2105,7 +2109,9 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     yieldAfterDefer?: (() => Promise<any>) | undefined;
     onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
+    getRearmExpiryReason?: ((_msg: any) => string | null) | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
+    isCancelled?: ((_msg: any) => boolean) | undefined;
     readWakeMode?: (() => Promise<string>) | undefined;
     wakeModeRetryMs?: number | undefined;
     nativeBindingRetryMs?: number | undefined;
@@ -2146,7 +2152,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "superseded" | "queued" | "closed" | "duplicate";
+    schedule(msg: any): "queued" | "superseded" | "closed" | "duplicate";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -2589,12 +2595,84 @@ export function decodeQuotaRecovery(o: any): {
     quotaRecovery?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
         cause: string;
     };
 };
+/** Input/custody state for one identity handoff in this managed host. This
+ * prerequisite deliberately advertises no capability: the launcher must wire
+ * native response observation and clean target bootstrap before enabling it.
+ *
+ * `freeze` fences NEW input/lifecycle effects, not the currently executing
+ * tool. Stopping that native process here would prevent it receiving its own
+ * tool result. `begin` is the only replacement boundary: it requires the exact
+ * persisted result and a later successful completion from that same child.
+ * Neither an application socket ACK nor observedAt (a reader clock) is proof.
+ * @param {{identity:()=>any, canFreeze:()=>boolean, now?:()=>number}} ports
+ */
+export function makeIdentityAssumeFence({ identity, canFreeze, now }: {
+    identity: () => any;
+    canFreeze: () => boolean;
+    now?: () => number;
+}): {
+    freeze(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: any;
+    };
+    queue(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: any;
+    };
+    begin(request: any, proof: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: string;
+        request: any;
+    };
+    thaw(request: any): {
+        ok: boolean;
+        reason: any;
+    } | {
+        ok: boolean;
+        phase: string;
+    };
+    blocksInput(): boolean;
+    state(): {
+        phase: any;
+        expired: boolean;
+    } | null;
+};
+/** Find a matching receipt ONLY in a native tool-result row. The caller must
+ * supply rows from readIsolatedNativeTranscriptRows for the exact pinned
+ * native id, then independently reread the durable receipt/custody at launch.
+ * Caller/assistant prose, PTY paint and a socket ACK cannot satisfy this probe.
+ * @param {any[]} rows
+ * @param {{agent:string, request:any, sinceMs:number, nowMs?:number}} options
+ */
+export function identityAssumeResponseFromRows(rows: any[], { agent, request, sinceMs, nowMs }: {
+    agent: string;
+    request: any;
+    sinceMs: number;
+    nowMs?: number;
+}): {
+    caller: any;
+    transitionKey: any;
+    preparationHash: any;
+    state: string;
+    durable: boolean;
+    atMs: number;
+} | null;
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
  *  Pure — exported for tests. */
@@ -2605,6 +2683,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2619,6 +2699,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2632,6 +2714,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2645,6 +2729,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2658,6 +2744,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2671,6 +2759,36 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
+} | {
+    mode: string;
+    data: string;
+    gated: boolean;
+    ownerId: any;
+    action: any;
+    request: any;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
+} | {
+    mode: string;
+    data: string;
+    gated: boolean;
+    ownerId: any;
+    request: any;
+    action?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2690,6 +2808,8 @@ export function decodeControl(payload: any): {
     expectedChildGeneration: any;
     expectedHostCodeVersion: any;
     expiresAtMs: any;
+    action?: undefined;
+    request?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2701,6 +2821,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2710,6 +2832,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2724,6 +2847,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2742,6 +2867,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2751,6 +2878,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2765,6 +2893,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2783,6 +2913,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2792,6 +2924,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2806,6 +2939,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2824,6 +2959,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2833,6 +2970,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2847,6 +2985,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2865,6 +3005,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2874,6 +3016,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2888,6 +3031,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2906,6 +3051,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2915,6 +3062,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2929,6 +3077,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2947,6 +3097,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2956,6 +3108,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -2970,6 +3123,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2988,6 +3143,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -2997,6 +3154,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3011,6 +3169,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3029,6 +3189,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3038,6 +3200,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3052,6 +3215,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3070,6 +3235,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3079,6 +3246,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3093,6 +3261,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3111,6 +3281,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3120,6 +3292,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3134,6 +3307,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3152,6 +3327,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3161,6 +3338,7 @@ export function decodeControl(payload: any): {
     expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
+        defaultToAuto?: any;
         operationId: any;
         ownerId: any;
         startedAtMs: any;
@@ -3175,6 +3353,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3193,15 +3373,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
@@ -3214,15 +3398,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
@@ -3235,15 +3423,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
@@ -3256,15 +3448,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
@@ -3277,15 +3473,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
@@ -3298,15 +3498,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
@@ -3319,15 +3523,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
@@ -3340,15 +3548,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
@@ -3361,15 +3573,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
@@ -3382,15 +3598,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
@@ -3403,15 +3623,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
@@ -3424,15 +3648,19 @@ export function decodeControl(payload: any): {
     sessionClass: string;
     gated: boolean;
     sourceTranscriptPath?: any;
+    carryNonce?: any;
+    workspaceId?: any;
+    expectedAdvSessionId?: any;
+    expectedNativeSessionId?: any;
+    expectedHostStartedAt?: any;
+    expectedChildGeneration?: any;
+    expectedHostCodeVersion?: any;
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
-    expectedAdvSessionId?: undefined;
-    expectedNativeSessionId?: undefined;
-    expectedHostStartedAt?: undefined;
-    expectedChildGeneration?: undefined;
-    expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
     ownerId: any;
@@ -3440,6 +3668,8 @@ export function decodeControl(payload: any): {
     data: string;
     focus: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3453,6 +3683,8 @@ export function decodeControl(payload: any): {
     data: string;
     focus: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3466,6 +3698,8 @@ export function decodeControl(payload: any): {
     force?: boolean | undefined;
     mode: string;
     data: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3479,6 +3713,8 @@ export function decodeControl(payload: any): {
     force?: boolean | undefined;
     mode: string;
     data: string;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3502,6 +3738,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3523,6 +3761,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3544,6 +3784,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3565,6 +3807,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3586,6 +3830,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3607,6 +3853,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3628,6 +3876,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3649,6 +3899,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3670,6 +3922,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3691,6 +3945,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3712,6 +3968,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3733,6 +3991,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3754,6 +4014,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3775,6 +4037,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3796,6 +4060,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3817,6 +4083,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3838,6 +4106,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3859,6 +4129,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3880,6 +4152,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3901,6 +4175,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3922,6 +4198,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3943,6 +4221,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3964,6 +4244,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -3985,6 +4267,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4006,6 +4290,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4027,6 +4313,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4048,6 +4336,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4069,6 +4359,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4090,6 +4382,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4111,6 +4405,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4132,6 +4428,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4153,6 +4451,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4174,6 +4474,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4195,6 +4497,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4216,6 +4520,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -4237,6 +4543,8 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    action?: undefined;
+    request?: undefined;
     observationVersion?: undefined;
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
@@ -5398,6 +5706,34 @@ export function resetWritesForAgent(decoded: any, agent: any, env?: EnvironmentM
     data: string;
     delayMs: any;
 }[];
+/** The native session id a Claude transcript path names, or null. Pure — exported for tests. */
+export function claudeNativeIdFromTranscriptRef(nativeRef: any): string | null;
+/** EI-26957152622357153 / EI-27033376159376450: an in-place RESET-CONTEXT `/clear`
+ *  rotates Claude's native session id inside the SAME child process, so none of the
+ *  respawn paths (recycle / carry-respawn / host adoption) ever re-anchors
+ *  adv_sessions to it. Every owner-by-native-session consumer — the PreToolUse lock
+ *  hook, mcp-call's foreign-session guard, the loop turn-start stamp's
+ *  indexedLoopLaunchBinding — then reads the session's own turns as foreign
+ *  (`superuser_foreign_native_session`, `lastLoopTurnAt: null`).
+ *
+ *  After a verified reset, find the transcript holding THIS reset's carry-turn
+ *  marker (the exact marker behind the submit-time fence — never "the newest
+ *  file"), take the rotated id from its file name, and hand it to the same
+ *  `onRespawn` report a recycle uses (the launcher's is durable: it resolves with
+ *  the first attempt's verdict and keeps retrying in the background). A bare clear
+ *  has no carry marker, so it is skipped and says so. Codex resets are routed
+ *  through recycle, which reports on its own. Every outcome is recorded via
+ *  `appendEvent`. Never throws. Exported with injectables for tests. */
+export function reanchorAfterContextReset({ agent, marker, findNativeRef, onRespawn, isCurrent, timeoutMs, pollMs, appendEvent, }: {
+    agent: any;
+    marker: any;
+    findNativeRef: any;
+    onRespawn: any;
+    isCurrent?: (() => boolean) | undefined;
+    timeoutMs?: number | undefined;
+    pollMs?: number | undefined;
+    appendEvent?: (() => void) | undefined;
+}): Promise<any>;
 /**
  * The OSC recolor bytes for a fleet-bound session, from the PAPERCUSP_FLEET_BG /
  * PAPERCUSP_FLEET_FG / PAPERCUSP_FLEET_CURSOR env vars bootstrap-su resolves from
@@ -5523,7 +5859,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
- * @param {()=>any} [o.onSpawn] lifecycle callback invoked immediately after
+ * @param {(startup?: {ptyPid: number})=>any} [o.onSpawn] lifecycle callback invoked immediately after
  *   the initial pty.spawn succeeds; this is concrete resume-finalization evidence.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
@@ -5550,6 +5886,9 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
+ * @param {{attachmentId?:string, verify:(request:any)=>Promise<boolean>, prepare:(request:any)=>Promise<any>}|null} [o.identityAssume]
+ *   Trusted launcher port: verify durable preparation/custody; prepare only
+ *   parent-bound clean target orders (never launch). Absent until fully wired.
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
  *   injectable dead-operator-pin heal, run before each in-place respawn
@@ -5570,7 +5909,9 @@ export function hostThroughPty(o: {
         stdout?: any;
     } | undefined;
     onExit?: ((code: number, killedBySignal: string | null) => void) | undefined;
-    onSpawn?: (() => any) | undefined;
+    onSpawn?: ((startup?: {
+        ptyPid: number;
+    }) => any) | undefined;
     bridgeTty?: boolean | undefined;
     kickoff?: string | null | undefined;
     kickoffFile?: string | undefined;
@@ -5620,6 +5961,11 @@ export function hostThroughPty(o: {
     resolveRespawnNativeId?: ((pid: number) => string | null) | null | undefined;
     emitCompacted?: typeof fireSessionCompactedEvent | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
+    identityAssume?: {
+        attachmentId?: string;
+        verify: (request: any) => Promise<boolean>;
+        prepare: (request: any) => Promise<any>;
+    } | null | undefined;
     hostCodeStalenessFn?: (() => any) | undefined;
     healOperatorPin?: ((env: EnvironmentMap) => Promise<{
         from: string;
@@ -5963,6 +6309,9 @@ export const SUBMIT_RECOVERY_MAX_AGE_MS: number;
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY: string;
+/** Outcomes where a re-anchor was attempted and did not land; everything else that is
+ *  not ok is a benign skip (unsupported-agent, no-carry-marker, superseded-child). */
+export const REANCHOR_FAILURE_REASONS: Set<string>;
 /**
  * A plain launch's marker proves submission. A native task-start or assistant
  * row AFTER that exact marker proves model activity, including a short turn
@@ -6056,4 +6405,5 @@ export type McpReconnectMacroBudgets = {
 };
 import { readSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

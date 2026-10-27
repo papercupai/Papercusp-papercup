@@ -25,6 +25,7 @@
 import { describe, expect, it } from "vitest";
 import inboxTool from "./inbox";
 import { isDirectedDelivery } from "../inbox-visibility";
+import { BUDGET, promptWeight } from "../../tool-guidance-budget";
 
 type Redirect = string | { tool: string; args: Record<string, unknown>; note?: string };
 
@@ -33,17 +34,29 @@ function redirects(): Record<string, Redirect> {
     ?.argRedirects ?? {};
 }
 
+/** WI-6554700010029664: args is a preprocess pipe (alias fold); `out` is the declared object. */
+function declaredShape(): Record<string, { description?: string }> {
+  const args = inboxTool.args as unknown as { out?: { shape?: Record<string, { description?: string }> } };
+  const shape = args.out?.shape;
+  if (!shape) throw new Error("could not read coord:inbox's declared object shape");
+  return shape;
+}
+
 function declaredKeys(): string[] {
-  const shape = (inboxTool.args as unknown as { shape?: Record<string, unknown> })?.shape;
-  return shape ? Object.keys(shape) : [];
+  return Object.keys(declaredShape());
 }
 
 describe("coord:inbox argument contract (P-001)", () => {
+  it("explains unread FYI receipts without conflating reading with answering, within the prompt budget", () => {
+    expect(inboxTool.description).toContain('clears the unread-mail reminder');
+    expect(inboxTool.description).toContain('FYIs (expects:none) need no reply');
+    expect(inboxTool.description).toContain('Reading does not fulfill ack/answer/action requests');
+    expect(inboxTool.description).toContain('re-reading does not empty it');
+    expect(promptWeight(inboxTool as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
   it("documents that the limit uses priority ranking rather than newest-first overall", () => {
-    const shape = inboxTool.args as unknown as {
-      shape: Record<string, { description?: string }>;
-    };
-    const description = shape.shape.limit.description ?? "";
+    const description = declaredShape().limit?.description ?? "";
     expect(description).toMatch(/priority-ranked/i);
     expect(description).toMatch(/newest-first overall is not guaranteed/i);
     expect(description).not.toMatch(/most-recent kept/i);
@@ -52,17 +65,21 @@ describe("coord:inbox argument contract (P-001)", () => {
   // The alias half. `unanswered` is a genuine, unambiguous synonym for
   // `unanswered_only` — the plan's ALIAS rule — so it is ACCEPTED rather than
   // redirected, and the caller's first call succeeds instead of round-tripping.
-  it("declares `unanswered` as an accepted alias, not a redirect", () => {
-    expect(declaredKeys()).toContain("unanswered");
+  it("accepts `unanswered` as an alias (folded before parse), not a redirect", () => {
+    // WI-6554700010029664: accepted via the schema's preprocess fold, not declared.
+    expect(inboxTool.args.safeParse({ unanswered: true }).data).toMatchObject({ unanswered_only: true });
     // A key cannot be both accepted and redirected: unknownArgHint only fires for
     // keys the schema REJECTS, so a redirect here would be dead text.
     expect(redirects().unanswered).toBeUndefined();
   });
 
-  it("keeps the canonical snake_case key and its existing camelCase alias", () => {
-    const keys = declaredKeys();
-    expect(keys).toContain("unanswered_only");
-    expect(keys).toContain("unansweredOnly");
+  it("keeps the canonical snake_case key and still accepts its camelCase alias", () => {
+    expect(declaredKeys()).toContain("unanswered_only");
+    expect(inboxTool.args.safeParse({ unansweredOnly: true }).data).toMatchObject({ unanswered_only: true });
+    // The canonical key wins when several spellings are supplied.
+    expect(inboxTool.args.safeParse({ unanswered_only: false, unansweredOnly: true }).data).toMatchObject({
+      unanswered_only: false,
+    });
   });
 
   it("declares `directed` as a real filter (the capability the item asked for)", () => {

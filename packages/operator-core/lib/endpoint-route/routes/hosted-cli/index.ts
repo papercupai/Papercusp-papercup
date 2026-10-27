@@ -469,6 +469,11 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
             // every pong, so an active row with a stale stamp is a machine whose link died.
             reachable: isHostedConnectorLive(row.connector, now),
             connectorHeartbeatAt: row.connector?.heartbeatAt?.toISOString() ?? null,
+            connector: row.connector ? {
+              state: row.connector.state, routeLabel: row.connector.routeLabel,
+              transport: row.connector.transport, generation: row.connector.generation,
+              lastSeenAt: row.connector.heartbeatAt?.toISOString() ?? null,
+            } : null,
           })),
         },
         { headers: { 'cache-control': 'no-store' } },

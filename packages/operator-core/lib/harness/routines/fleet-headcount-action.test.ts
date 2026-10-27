@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { FleetHeadcountTarget, FleetLaunchTransaction } from '../../agent-fleets-store';
 import {
   assessFleetHeadcountGovernor,
+  bootFailureFingerprint,
+  bootFailureStreak,
+  bootFailureWaveFingerprint,
+  FLEET_HEADCOUNT_BOOT_FAILURE_STREAK,
   computeHeadcountDeficit,
   FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT,
   FLEET_HEADCOUNT_BULK_WAVE_SIZE,
@@ -395,7 +399,11 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     });
   });
 
-  it('waits on a stale non-ready attestation outside the current probe cohort until its fate is proven', () => {
+  // WI-6554700010029353 superseded the original "wait until its fate is proven" policy
+  // for this shape. Outside the probe cohort nothing ever re-takes the attestation, so
+  // its fate is never proven and that wait was unbounded, which contradicts P-004's
+  // bounded retry. The member is still never pruned, and the deficit is refilled.
+  it('refills past a stale non-ready attestation outside the current probe cohort without pruning it', () => {
     const current = transaction(['su-ready', 'su-stale-unready'], {
       openedMemberIds: [],
       verifiedMemberIds: ['su-ready'],
@@ -424,10 +432,11 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     })).toMatchObject({
       productiveMemberCount: 1,
       deficit: 1,
-      action: 'wait',
-      spawnCount: 0,
+      action: 'spawn',
+      spawnCount: 1,
       pruneCandidateIds: [],
       unreadyMemberIds: ['su-stale-unready'],
+      frozenUnreadyMemberIds: ['su-stale-unready'],
     });
   });
 
@@ -653,7 +662,163 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       transaction: member,
       now: 20_000,
     });
-    expect(resumed).toMatchObject({ action: 'wait', pruneCandidateIds: [], productiveMemberCount: 1 });
+    // WI-6554700010029346: `none` (verdict `productive`), not `wait` (verdict
+    // `unverified`) — a `wait` here IS the stale attestation outweighing the work
+    // evidence, which is what this case exists to forbid.
+    expect(resumed).toMatchObject({
+      action: 'none',
+      pruneCandidateIds: [],
+      unreadyMemberIds: [],
+      productiveMemberCount: 1,
+    });
+  });
+
+  // WI-6554700010029346 — the Luna Max wedge (2026-10-26): a verified carry-respawned
+  // member whose boot attestation was recorded ready:false, outside probeOwnerIds (so
+  // never re-attested, never retryable) and with no attempt count. It is executing, so
+  // it is never a prune candidate either. Before the fix it fell through to
+  // `wait: prune is unsafe` on every tick and the fleet sat under target forever.
+  it('does not let an EXECUTING member with a stale ready:false attestation block refill', () => {
+    const live = ['su-respawn-stale', 'su-b', 'su-c'];
+    const current = transaction(['su-c93062c0-dead'], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-respawn-stale'],
+      unconfirmedMemberIds: [],
+      workerAttestations: [workerAttestation('su-respawn-stale', false)],
+      failed: [{ phase: 'spawn', ownerId: 'su-c93062c0-dead', reason: 'died at boot (exit 1)' }],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: live,
+      executingMemberIds: new Set(live),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual([]);
+    expect(assessment.pruneCandidateIds).toEqual([]);
+    expect(assessment).toMatchObject({ action: 'spawn', productiveMemberCount: 3, deficit: 6 });
+    expect(assessment.reason).not.toContain('prune is unsafe');
+  });
+
+  // WI-6554700010029353 — the other half of the same boundary. The identical stale
+  // attestation on a member that is NOT executing is still non-ready evidence, so it is
+  // never pruned without a verified-start or terminal-failure proof. But it sits outside
+  // probeOwnerIds, so nothing ever re-takes it: holding refill on it was an unbounded
+  // wait (Luna Max, 10:15Z: one member silent 28m kept a 42/50 fleet at `wait`). It is
+  // already excluded from the productive count, so the deficit refills past it.
+  it('refills past a frozen stale ready:false member that is NOT executing, without pruning it', () => {
+    const current = transaction([], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-respawn-stale'],
+      unconfirmedMemberIds: [],
+      waves: [],
+      workerAttestations: [workerAttestation('su-respawn-stale', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-respawn-stale', 'su-b', 'su-c'],
+      executingMemberIds: new Set(['su-b', 'su-c']),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual(['su-respawn-stale']);
+    expect(assessment.frozenUnreadyMemberIds).toEqual(['su-respawn-stale']);
+    expect(assessment.pruneCandidateIds).toEqual([]);
+    expect(assessment).toMatchObject({
+      action: 'spawn',
+      actionOwnerId: null,
+      productiveMemberCount: 2,
+      deficit: 7,
+    });
+    expect(assessment.reason).toContain('1 unready member(s) outside the probe cohort hold frozen non-ready evidence');
+    expect(assessment.reason).not.toContain('prune is unsafe');
+  });
+
+  // Control for the boundary above: a member the governor IS still probing keeps
+  // holding refill once its retry budget is spent without a verified-start or
+  // terminal-failure proof. Its evidence is re-taken every tick, so that wait is the
+  // bounded one the fail-closed rule exists for.
+  it('still waits on a PROBED unready member whose retry budget is spent without proof', () => {
+    const current = transaction([], {
+      openedMemberIds: [],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: ['su-probed-unproven'],
+      waves: [],
+      workerAttestations: [workerAttestation('su-probed-unproven', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-probed-unproven'],
+        attestationAttempts: { 'su-probed-unproven': 99 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const assessment = assessFleetHeadcountGovernor({
+      target: 9,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-probed-unproven', 'su-b', 'su-c'],
+      executingMemberIds: new Set(['su-b', 'su-c']),
+      transaction: current,
+      now: 1_000 + 300_000 + 1,
+    });
+    expect(assessment.unreadyMemberIds).toEqual(['su-probed-unproven']);
+    expect(assessment.frozenUnreadyMemberIds).toEqual([]);
+    expect(assessment.pruneCandidateIds).toEqual([]);
+    expect(assessment).toMatchObject({
+      action: 'wait',
+      reason: 'non-ready evidence lacks a verified-start or terminal-failure proof; prune is unsafe',
+    });
+  });
+
+  // And the live-attestation boundary: a CURRENT probe owner inside its retry budget
+  // is still being re-attested, so its not-ready attestation is live evidence even
+  // while it executes (an attestation mismatch — wrong model — is exactly this shape)
+  // and the retry machinery keeps owning the decision.
+  it('keeps an executing probe owner inside its retry budget on the retry path', () => {
+    const current = transaction(['su-probing'], {
+      verifiedMemberIds: ['su-probing'],
+      unconfirmedMemberIds: [],
+      workerAttestations: [workerAttestation('su-probing', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-probing'],
+        attestationAttempts: { 'su-probing': FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT - 1 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    expect(assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-probing'],
+      executingMemberIds: new Set(['su-probing']),
+      transaction: current,
+      now: 20_000,
+    })).toMatchObject({
+      action: 'retry',
+      actionOwnerId: 'su-probing',
+      unreadyMemberIds: ['su-probing'],
+      pruneCandidateIds: [],
+    });
   });
 
   it('refuses a prune even at the retry cap when start/failure proof is still unknown', () => {
@@ -740,5 +905,54 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       action: 'spawn',
       reason: 'productive-capacity floor is not yet evidenced; open one canary only',
     });
+  });
+});
+
+describe('deterministic boot-failure hold (WI-6554700010029299)', () => {
+  // The exact boot-death shape console-spawn recorded for nonp2p-bug-drain-luna-max-0930
+  // on 10-25, including the OSC title sequences the psu banner emits.
+  const bootDeath = (session: number) =>
+    'headless member launched but its agent command died at boot (exit 1) — the shell stays open holding a DEAD session, '
+    + 'so this never surfaced as a process exit (EI-19311623077693508) — log tail: '
+    + '\u001b]0;SH: fleet · governor member 1/1 (claim-spec)\u0007papercusp superuser launcher (psu): launcher\n'
+    + `psu: codex (su)  ·  no plan  ·  session ${session}\n`
+    + 'psu: fleet — joined fleet nonp2p-bug-drain-luna-max-0930 as member.\n'
+    + 'psu: SU launch account route differs from its resolved bootstrap\n\n'
+    + '[papercusp] initial terminal command exited with status 1; headless launch exiting.';
+
+  it('fingerprints a boot death by its last substantive log line, independent of session ids', () => {
+    expect(bootFailureFingerprint(bootDeath(52595))).toBe('psu: su launch account route differs from its resolved bootstrap');
+    expect(bootFailureFingerprint(bootDeath(52595))).toBe(bootFailureFingerprint(bootDeath(61234)));
+    expect(bootFailureFingerprint('headless member launched but its agent command died at boot (exit 2)'))
+      .toBe('died at boot (exit #)');
+    // Not a boot death: transient spawn errors must never trip the hold.
+    expect(bootFailureFingerprint('spawn ENOENT')).toBeNull();
+    expect(bootFailureFingerprint(null)).toBeNull();
+  });
+
+  it('a wave counts only when EVERY requested member died at boot with one cause', () => {
+    const failed = [
+      { ownerId: 'a', reason: bootDeath(1) },
+      { ownerId: 'b', reason: bootDeath(2) },
+    ];
+    expect(bootFailureWaveFingerprint(failed, ['a', 'b'])).toBe('psu: su launch account route differs from its resolved bootstrap');
+    // One member opened fine, so the wave is mixed and says nothing deterministic.
+    expect(bootFailureWaveFingerprint(failed, ['a', 'b', 'c'])).toBeNull();
+    expect(bootFailureWaveFingerprint([{ ownerId: 'a', reason: 'spawn ENOENT' }], ['a'])).toBeNull();
+    expect(bootFailureWaveFingerprint([], [])).toBeNull();
+  });
+
+  it('counts the trailing run of identical boot-failure waves; boot-ok or a new cause ends it', () => {
+    const fp = 'psu: su launch account route differs from its resolved bootstrap';
+    const bf = (reason = fp) => ({ action: 'boot-failure', reason });
+    const noise = { action: 'terminal', reason: 'failed/spawn: 1/1 headless governor spawn(s) failed' };
+    expect(bootFailureStreak([bf(), noise, bf(), { action: 'retry', reason: 'x' }, bf()]))
+      .toEqual({ fingerprint: fp, count: 3 });
+    expect(bootFailureStreak([bf(), bf(), { action: 'boot-ok', reason: 'ok' }, bf()]))
+      .toEqual({ fingerprint: fp, count: 1 });
+    expect(bootFailureStreak([bf('other cause'), bf(), bf()])).toEqual({ fingerprint: fp, count: 2 });
+    expect(bootFailureStreak([noise])).toBeNull();
+    // The hold threshold is reachable by exactly this run length.
+    expect(bootFailureStreak([bf(), bf(), bf()])!.count).toBeGreaterThanOrEqual(FLEET_HEADCOUNT_BOOT_FAILURE_STREAK);
   });
 });

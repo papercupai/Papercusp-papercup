@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -124,6 +124,38 @@ describe('papercusp-db-backup.sh .kopiaignore provisioning (WI-2146225)', () => 
       rmSync(dump, { recursive: true, force: true });
     }
   });
+
+  it('rejects missing transcript exclusions with the real Kopia engine before accepting local-only eligibility', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kopia-eligibility-'));
+    const dump = join(root, 'dump');
+    const config = join(root, 'repository.config');
+    const kopia = (...args: string[]) => execFileSync('/usr/bin/kopia', [
+      '--config-file', config, '--password=isolated-fixture', '--no-use-keyring',
+      '--disable-file-logging', '--no-progress', ...args,
+    ], { encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+    try {
+      for (const tier of ['state', 'transcript']) {
+        mkdirSync(join(dump, 'pg', `papercusp-${tier}`), { recursive: true });
+        writeFileSync(join(dump, 'pg', `papercusp-${tier}`, `${tier}-sentinel`), tier);
+      }
+      kopia('repository', 'create', 'filesystem', '--path', join(root, 'repository'));
+      kopia('policy', 'set', '--global', '--add-dot-ignore=.kopiaignore');
+      runProvisioning(dump, [['*.tmp']]);
+      const missingRule = kopia('snapshot', 'estimate', dump, '--show-files');
+      expect(missingRule).toContain('state-sentinel');
+      expect(missingRule).toContain('transcript-sentinel');
+      const eligible = (listing: string) => listing.includes('state-sentinel') && !listing.includes('transcript-sentinel');
+      expect(eligible(missingRule)).toBe(false);
+
+      runProvisioning(dump, [['papercusp-transcript']]);
+      const excluded = kopia('snapshot', 'estimate', dump, '--show-files');
+      expect(excluded).toContain('state-sentinel');
+      expect(excluded).not.toContain('transcript-sentinel');
+      expect(eligible(excluded)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('never eats operator-added exclusions (append-only)', () => {
     const dump = mkdtempSync(join(tmpdir(), 'kopiaignore-'));

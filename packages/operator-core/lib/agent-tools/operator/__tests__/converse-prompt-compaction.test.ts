@@ -27,8 +27,7 @@ vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: vi.fn(async () => null),
   lastUserContext: vi.fn(() => ''),
 }));
-vi.mock('../../../harness-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../harness-registry')>()),
+vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
 }));
 vi.mock('../../../workspace-registry', () => ({
@@ -128,6 +127,28 @@ describe('buildOperatorPrompt — compaction context', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('P010 rendered summary and history share the configured hard budget', async () => {
+    h.prefs = { operatorContextMode: 'compaction', operatorHistoryTokenBudget: 5000 };
+    h.summary = 'summary decision '.repeat(400).slice(0, 6000); // Existing stored-summary cap.
+    const messages = [
+      { role: 'user' as const, content: 'old-marker ' + 'x'.repeat(7900) },
+      { role: 'assistant' as const, content: 'assistant-marker ' + 'a'.repeat(7900) },
+      { role: 'user' as const, content: 'latest-marker ' + 'u'.repeat(7900) },
+    ];
+    const out = await buildOperatorPrompt({ messages, trigger: 'user_message', conversationId: 'conv-1' }, null);
+    const history = out.userPromptText.split('\n\n---\n\nTrigger:')[0];
+    expect(history).toContain(h.summary);
+    expect(history).toContain('latest-marker');
+    expect(history).not.toContain('assistant-marker');
+    expect(history).not.toContain('old-marker');
+    expect(Math.ceil(history.length / 4)).toBeLessThanOrEqual(5000);
+    h.prefs = { operatorContextMode: 'compaction', operatorHistoryTokenBudget: 8000 };
+    const allowed = await buildOperatorPrompt({ messages, trigger: 'user_message', conversationId: 'conv-1' }, null);
+    expect(allowed.userPromptText).toContain('old-marker');
+    expect(allowed.userPromptText).toContain('assistant-marker');
+    expect(allowed.userPromptText).toContain('latest-marker');
   });
 
   it('long-conversation guarantee: an early decision outside the verbatim window reaches the prompt via the summary', async () => {

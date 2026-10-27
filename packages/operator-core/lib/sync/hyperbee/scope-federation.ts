@@ -42,7 +42,8 @@ import type { AnnounceConnectionContext } from './swarm';
 /** Any refused scoped decision the caller should turn into an M15 counter. */
 export type ScopeFederationRefusal =
   | { kind: 'inbound-announce'; refusal: ScopedAdmissionRefusal }
-  | { kind: 'serve' | 'admit-core'; refusal: ScopeCoreRefusal };
+  | { kind: 'serve' | 'admit-core'; refusal: ScopeCoreRefusal }
+  | { kind: 'roster-authority'; refusal: { reason: 'roster-unavailable' } };
 
 export interface ScopeFederationDeps {
   registry: ScopeCoreRegistry;
@@ -113,12 +114,21 @@ export class ScopeFederation {
 
   /** The subset of OUR disclosures a given peer is a member of (what it may see). */
   private async visibleTo(peerGithubUserId: number): Promise<ScopedLogDisclosure[]> {
-    const own = await this.ownDisclosures();
-    const visible: ScopedLogDisclosure[] = [];
-    for (const d of own) {
-      if (await this.roster.isMember(d.scope, peerGithubUserId)) visible.push(d);
+    try {
+      const own = await this.ownDisclosures();
+      const visible: ScopedLogDisclosure[] = [];
+      for (const d of own) {
+        if (await this.roster.isMember(d.scope, peerGithubUserId)) visible.push(d);
+      }
+      return visible;
+    } catch {
+      // An unavailable authority must cut existing attachments too. Returning
+      // no disclosures lets redisclose perform its normal detach transition.
+      try {
+        this.onRefusal?.({ kind: 'roster-authority', refusal: { reason: 'roster-unavailable' } });
+      } catch { /* telemetry cannot prevent the read cut */ }
+      return [];
     }
-    return visible;
   }
 
   /**

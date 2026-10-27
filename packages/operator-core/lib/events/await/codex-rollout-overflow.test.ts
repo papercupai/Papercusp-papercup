@@ -39,6 +39,8 @@ describe('analyzeCodexRolloutText on the captured over-window rollout', () => {
       trailingContextOverflowTurns: 1,
       lastOverflowAt: '2026-10-12T11:28:18.659Z',
       modelContextWindow: 828400,
+      currentTurnOutcome: 'usage-limit',
+      currentTurnErrorEvidence: expect.stringMatching(/^Error running remote compact task: You.ve hit your usage limit/),
     });
   });
 
@@ -67,6 +69,44 @@ describe('analyzeCodexRolloutText on the captured over-window rollout', () => {
   it('usage-limit turns between overflows neither count nor break', () => {
     const walled = [...overflowTurn, ...usageLimitTurn, ...usageLimitTurn, ...overflowTurn].join('\n');
     expect(analyzeCodexRolloutText(walled).trailingContextOverflowTurns).toBe(2);
+  });
+});
+
+// WI-6554700010029533: a consult answer session's first turn is judged by how the
+// turn opened by the newest task_started ended — never by an older turn's ending.
+describe('analyzeCodexRolloutText current-turn outcome', () => {
+  const started = '{"timestamp":"2026-10-26T15:24:03.445Z","type":"event_msg","payload":{"type":"task_started"}}';
+  const failed = (error: unknown): string =>
+    JSON.stringify({ timestamp: '2026-10-26T15:24:09.108Z', type: 'event_msg', payload: { type: 'task_complete', error } });
+
+  it('reports the usage-limit wall of the newest turn with the provider message as evidence', () => {
+    const walled = [...completedTurn, started, failed({ message: 'You’ve hit your usage limit. Upgrade to Pro' })].join('\n');
+    const analysis = analyzeCodexRolloutText(walled);
+    expect(analysis.currentTurnOutcome).toBe('usage-limit');
+    expect(analysis.currentTurnErrorEvidence).toBe('You’ve hit your usage limit. Upgrade to Pro');
+  });
+
+  it('is null while the newest turn is still running, even after an older turn ended', () => {
+    const running = [...overflowTurn, ...completedTurn, started].join('\n');
+    expect(analyzeCodexRolloutText(running).currentTurnOutcome).toBeNull();
+    expect(analyzeCodexRolloutText(running).currentTurnErrorEvidence).toBeNull();
+  });
+
+  it('distinguishes ok, context overflow, abort and any other provider error', () => {
+    expect(analyzeCodexRolloutText(completedTurn.join('\n'))).toMatchObject({ currentTurnOutcome: 'ok', currentTurnErrorEvidence: null });
+    const overflow = analyzeCodexRolloutText(overflowTurn.join('\n'));
+    expect(overflow.currentTurnOutcome).toBe('context-overflow');
+    expect(overflow.currentTurnErrorEvidence).toMatch(/exceeds the context window/);
+    expect(analyzeCodexRolloutText(lines.slice(0, 5).join('\n'))).toMatchObject({ currentTurnOutcome: 'aborted', currentTurnErrorEvidence: null });
+    expect(analyzeCodexRolloutText([started, failed({ message: 'stream disconnected before completion' })].join('\n')))
+      .toMatchObject({ currentTurnOutcome: 'error', currentTurnErrorEvidence: 'stream disconnected before completion' });
+  });
+
+  it('bounds the evidence and is null when the text holds no turn start', () => {
+    const long = analyzeCodexRolloutText([started, failed('x'.repeat(1000))].join('\n'));
+    expect(long.currentTurnOutcome).toBe('error');
+    expect(long.currentTurnErrorEvidence).toHaveLength(200);
+    expect(analyzeCodexRolloutText('').currentTurnOutcome).toBeNull();
   });
 });
 

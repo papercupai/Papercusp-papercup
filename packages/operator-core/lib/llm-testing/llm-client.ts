@@ -41,6 +41,8 @@ import { loopbackFetch } from '../loopback-fetch';
 import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel } from './codex-model-pricing';
 import { captureSourceHash } from '@papercusp/eval-battery';
 import { REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER } from '../inference-gateway/provider-adapters';
+import { expectSuccessfulToolModelTrace } from '../observability/runtime';
+import { MODEL_REQUEST_ID_HEADER } from '../observability/tracing';
 
 const LLM_CLIENT_SOURCE_HASH = captureSourceHash(import.meta.url);
 
@@ -255,6 +257,9 @@ async function llmCallViaCodexGateway(
     throw failure;
   }
 
+  // Persist the expected model event with this invocation even if PostHog
+  // never receives it. A tool's successful status alone cannot establish this.
+  expectSuccessfulToolModelTrace(res.headers.get(MODEL_REQUEST_ID_HEADER));
   const finalText = extractResponsesText(raw);
   const usage =
     raw && typeof raw === 'object'

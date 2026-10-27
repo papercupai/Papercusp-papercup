@@ -34,10 +34,11 @@
  * guard below). See GitSyncStepRunner for the replay-safety contract.
  */
 import { spawn } from 'node:child_process';
+import pLimit from 'p-limit';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
 import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-checkouts';
@@ -74,7 +75,10 @@ import {
   mergeImportLinkedGroups,
   attributionMapForRepo,
   diffDerivedSubject,
+  inheritCompanionDeclarationAttribution,
   parseNumstat,
+  readCommitAgents,
+  COMMIT_MESSAGE_FORMAT,
   DEFAULT_GIT_SYNC_SUBJECT,
   type FileAttribution,
   type AttributionRosterEntry,
@@ -1992,7 +1996,15 @@ export function expandNpmManifestClosure(
  * only defers the superproject (see runGitSync). `status` is the worst outcome:
  * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
  */
+export interface GitSyncRootCommit {
+  sha: string;
+  /** Observation immediately after successful root publication, never replay time. */
+  committedAtMs: number;
+}
+
 export type GitSyncOutcome = {
+  /** Per-publication proof retained by the commit checkpoint, including on replay. */
+  localCommits?: GitSyncRootCommit[];
   /**
    * Exact root commit created by this pass, captured before fetch/merge/push.
    * Unlike aggregate committedCount or a measured existing headSha, this proves
@@ -2121,12 +2133,13 @@ export class GitSyncYieldError extends Error {
   readonly localCommitAtMs?: number;
   /** Every root commit published before the yield, oldest first (WI-6554700010019053). */
   readonly localCommitShas?: readonly string[];
+  readonly localCommits?: readonly GitSyncRootCommit[];
   constructor(
     reason: string,
     boundary: GitSyncYieldBoundary,
     submodulesSynced: number,
     submodulesTotal: number,
-    landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[] },
+    landed?: { localCommitSha: string; localCommitAtMs: number; localCommitShas?: readonly string[]; localCommits?: readonly GitSyncRootCommit[] },
   ) {
     super(`git-sync yielded at ${boundary} (${submodulesSynced}/${submodulesTotal} submodules synced): ${reason}`);
     this.name = 'GitSyncYieldError';
@@ -2137,6 +2150,7 @@ export class GitSyncYieldError extends Error {
     if (landed) {
       this.localCommitSha = landed.localCommitSha;
       this.localCommitAtMs = landed.localCommitAtMs;
+      this.localCommits = landed.localCommits;
       if (landed.localCommitShas && landed.localCommitShas.length > 0) this.localCommitShas = landed.localCommitShas;
     }
   }
@@ -2157,6 +2171,9 @@ export interface RunGitSyncOpts {
   beforePush?: (args: readonly string[], cwd: string) => Promise<void>;
   /** Called whenever the default git runner observes command progress. */
   onProgress?: () => void;
+  /** Best-effort notification at each successful ROOT publication, before later
+   * groups/push. Replayed commit checkpoints deliver the saved producer proof. */
+  onRootCommit?: (commit: GitSyncRootCommit) => void;
   /** Abort a default git child when the owning fire is declared stalled. */
   signal?: AbortSignal;
   /** WI-1416: run each pipeline phase as a checkpointed durable step (see
@@ -4128,6 +4145,11 @@ type RepoSyncResult = {
  */
 // Exported for the exact-boundary table test (test-coverage-gap G22): the size
 // comparison is strict `>` — a file AT maxBytes must be INCLUDED, not excluded.
+// Each lstat yields to the host loop. Serial scans multiplied that scheduling
+// delay by the entire dirty census; bound the outstanding reads without changing
+// census freshness, result order, or either size guard's exclusion rules.
+const DIRTY_SIZE_STAT_CONCURRENCY = 16;
+
 export async function findOversizedDirtyFiles(
   runGit: RunGit,
   repoPath: string,
@@ -4136,7 +4158,7 @@ export async function findOversizedDirtyFiles(
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
-  const out: OversizedFile[] = [];
+  const paths: string[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     if (e.length < 4) continue;
@@ -4144,14 +4166,19 @@ export async function findOversizedDirtyFiles(
     const path = e.slice(3);
     if (xy.includes('R') || xy.includes('C')) i++; // -z renames: "XY new\0old" — skip the origin path
     if (xy.includes('D')) continue; // deletions have no blob to size
+    paths.push(path);
+  }
+  const limit = pLimit(DIRTY_SIZE_STAT_CONCURRENCY);
+  const sized = await Promise.all(paths.map(path => limit(async () => {
     try {
       const st = await lstat(join(repoPath, path));
-      if (st.isFile() && st.size > maxBytes) out.push({ path, sizeBytes: st.size });
+      return st.isFile() && st.size > maxBytes ? { path, sizeBytes: st.size } : null;
     } catch {
       /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+      return null;
     }
-  }
-  return out;
+  })));
+  return sized.filter((file): file is OversizedFile => file !== null);
 }
 
 /**
@@ -4210,19 +4237,18 @@ export async function findBulkDirtyExcess(
   alreadyExcluded: ReadonlySet<string> = new Set(),
 ): Promise<OversizedFile[]> {
   const paths = await dirtyFiles(runGit, repoPath);
-  const sized: OversizedFile[] = [];
-  let total = 0;
-  for (const path of paths) {
-    if (alreadyExcluded.has(path)) continue; // its bytes are not being committed
+  const limit = pLimit(DIRTY_SIZE_STAT_CONCURRENCY);
+  const measurements = await Promise.all(paths.filter(path => !alreadyExcluded.has(path)).map(path => limit(async () => {
     try {
       const st = await lstat(join(repoPath, path));
-      if (!st.isFile()) continue;
-      sized.push({ path, sizeBytes: st.size });
-      total += st.size;
+      return st.isFile() ? { path, sizeBytes: st.size } : null;
     } catch {
       /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+      return null;
     }
-  }
+  })));
+  const sized = measurements.filter((file): file is OversizedFile => file !== null);
+  let total = sized.reduce((sum, file) => sum + file.sizeBytes, 0);
   if (total <= maxTotalBytes) return [];
   // Peel in three tiers, each largest-first, stopping as soon as the remainder fits
   // (EI-21906459740652039 + WI-10004416; see the header):
@@ -4945,18 +4971,38 @@ function attributedMessageArgs(
   const args = ['-m', `${subject}${suffix}`];
   if (intentBody) args.push('-m', intentBody);
   if (sweepMessageBody) args.push('-m', sweepMessageBody);
-  if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
-  // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
-  // trailers so the commit↔work-item link travels IN git history (and is read back
-  // post-sync into git_sync_commit_attribution). Deterministic — from the ledger-derived
-  // attribution, no LLM (D-004/D-006).
-  if (g.agent) args.push('-m', `Papercusp-Agent: ${g.agent}`);
-  if (g.workItems && g.workItems.length > 0) {
-    args.push('-m', `Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
-  }
-  if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
-  if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
+  const trailers = attributionTrailers(g);
+  if (trailers.length > 0) args.push('-m', trailers.join('\n'));
   return args;
+}
+
+/**
+ * The provenance trailers of one attributed commit, as ONE final paragraph.
+ *
+ * P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance trailers so
+ * the commit↔work-item link travels IN git history (and is read back post-sync into
+ * git_sync_commit_attribution). Deterministic — from the ledger-derived attribution, no LLM.
+ *
+ * WI-6554700010029864: they must share one paragraph. git reads trailers only from a message's
+ * LAST paragraph, and until 2026-10-27 each trailer was its own `-m`, so
+ * `%(trailers:key=Papercusp-Agent)` returned nothing for every git-sync commit and the delta
+ * check's trailer routing and the drift sweep's attribution both read null.
+ */
+export function attributionTrailers(g: ReturnType<typeof groupFilesForAttribution>[number]): string[] {
+  const out: string[] = [];
+  for (const coAuthor of g.coAuthors ?? (g.coAuthor ? [g.coAuthor] : [])) out.push(`Co-Authored-By: ${coAuthor}`);
+  for (const agent of g.agents ?? (g.agent ? [g.agent] : [])) out.push(`Papercusp-Agent: ${agent}`);
+  if (g.workItems && g.workItems.length > 0) out.push(`Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
+  if (g.sessionId) out.push(`Papercusp-Session: ${g.sessionId}`);
+  if (g.planSlug) out.push(`Papercusp-Plan: ${g.planSlug}`);
+  // D-001 part 2: name the import-linked files no ledger row backs, so the agent trailer above
+  // is not read as having authored them.
+  const absorbed = g.absorbedUnattributed ?? [];
+  if (absorbed.length > 0) {
+    const more = absorbed.length > 20 ? ` (+${absorbed.length - 20} more)` : '';
+    out.push(`Papercusp-Unattributed-Files: ${absorbed.slice(0, 20).join(', ')}${more}`);
+  }
+  return out;
 }
 
 /** Where a git-sync commit builds private indexes (WI-10006705 / WI-10006725). */
@@ -5135,6 +5181,7 @@ async function publishPrivateIndexCommit(
     reflogMessage: string;
     messageArgs: () => Promise<string[]>;
     beforePublish?: (commit: string, tree: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+    onPublished?: (sha: string) => void;
   },
 ): Promise<
   | { status: 'nothing' }
@@ -5162,6 +5209,7 @@ async function publishPrivateIndexCommit(
   }
   const cas = await runGit(['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''], repoPath);
   if (cas.code !== 0) return { status: 'cas-refused', detail: gitFailureDetail(cas) };
+  p.onPublished?.(commit);
   return { status: 'committed', commit, tree };
 }
 
@@ -5178,6 +5226,7 @@ async function commitPriorityPaths(
   diffSubjects: boolean | undefined,
   beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>,
   log: (m: string) => void = () => {},
+  onPublished?: (sha: string) => void,
 ): Promise<
   | { status: 'nothing' }
   | { status: 'committed' }
@@ -5208,6 +5257,7 @@ async function commitPriorityPaths(
       baseTree: seeded.baseTree,
       label: 'priority path commit',
       reflogMessage: 'git-sync: priority submodule gitlinks',
+      onPublished,
       messageArgs: async () => {
         if (diffSubjects === false) return ['-m', message];
         const numstat = await privateGit(
@@ -5263,6 +5313,186 @@ async function commitPriorityPaths(
 
 /** Argv batch size for the vanished-path `ls-files` probe. */
 const VANISHED_PATH_PROBE_BATCH = 500;
+
+/** Local object custody, deliberately outside every normal branch push refspec. */
+export const SOURCE_CUSTODY_REF_PREFIX = 'refs/papercusp/source-custody/';
+
+interface SourceCustodyManifest {
+  version: 1;
+  repository: string;
+  path: string;
+  oid: string;
+  mode: string;
+  owner: string;
+  base: string | null;
+}
+
+export type SourceCustodyResult =
+  | { ok: true; protectedPaths: string[]; refs: string[] }
+  | { ok: false; error: string };
+
+/** Never include Git output here: it may contain the source being protected. */
+const custodyRefused = (reason: string): { ok: false; error: string } => ({
+  ok: false,
+  error: `source-custody-refused:${reason}`,
+});
+
+/** The exact scratch leaves written by dependency-generation.sh, not a directory heuristic. */
+function isGeneratedCustodyPhantom(path: string): boolean {
+  return /^\.papercusp\/dependency-exact-ref\/[^/]+\/\.(?:live|ref)-inputs$/.test(path);
+}
+
+/**
+ * Preserve readable SHARED-index objects before any index consumer can forget them.
+ * The payload uses its existing blob OID, so binary/invalid-UTF8 bytes never round-trip
+ * through RunGit's text stdout. An EMPTY private tree jointly roots that blob and its
+ * manifest. No HEAD, shared-index or worktree write is part of taking custody.
+ */
+export async function preserveVanishedStagedSources(
+  sharedGit: RunGit,
+  repoPath: string,
+  attribution: ReadonlyMap<string, FileAttribution> = new Map(),
+  log: (message: string) => void = () => {},
+): Promise<SourceCustodyResult> {
+  try {
+    return await preserveVanishedStagedSourcesPass(sharedGit, repoPath, attribution, log);
+  } catch {
+    return custodyRefused('preflight-exception');
+  }
+}
+
+async function preserveVanishedStagedSourcesPass(
+  sharedGit: RunGit,
+  repoPath: string,
+  attribution: ReadonlyMap<string, FileAttribution> = new Map(),
+  log: (message: string) => void = () => {},
+): Promise<SourceCustodyResult> {
+  // Do NOT combine --deleted with --stage: --stage also enables --cached,
+  // which includes still-present staged additions in Git's output.
+  const deleted = await sharedGit(['ls-files', '--deleted', '-z'], repoPath);
+  if (deleted.code !== 0) return custodyRefused('shared-index-read');
+  const observedMissing = [...new Set(deleted.stdout.split('\0').filter(Boolean))];
+  if (observedMissing.length === 0) return { ok: true, protectedPaths: [], refs: [] };
+  if (observedMissing.some((path) => isAbsolute(path) || path.split('/').some((part) => part === '..' || part === '.'))) {
+    return custodyRefused('unsafe-index-path');
+  }
+  const entries = new Map<string, { mode: string; oid: string; stage: string }>();
+  const observedSet = new Set(observedMissing);
+  for (let i = 0; i < observedMissing.length; i += VANISHED_PATH_PROBE_BATCH) {
+    const listed = await sharedGit(['ls-files', '--stage', '-z', '--', ...observedMissing.slice(i, i + VANISHED_PATH_PROBE_BATCH)], repoPath, { env: { GIT_LITERAL_PATHSPECS: '1' } });
+    if (listed.code !== 0) return custodyRefused('shared-index-read');
+    for (const record of listed.stdout.split('\0').filter(Boolean)) {
+      const match = /^(\d{6}) ([a-f0-9]+) ([0-3])\t([\s\S]+)$/.exec(record);
+      if (!match) return custodyRefused('malformed-index-entry');
+      const [, mode, oid, stage, path] = match;
+      if (!observedSet.has(path)) return custodyRefused('unexpected-index-path');
+      if (stage !== '0') return custodyRefused('unmerged-index-entry');
+      entries.set(path, { mode, oid, stage });
+    }
+  }
+  if (entries.size < observedMissing.length) log('[git-sync] source custody not-available for vanished path(s) without a shared-index entry');
+  if (entries.size === 0) return { ok: true, protectedPaths: [], refs: [] };
+  // --deleted is the observed-missing snapshot. A peer may restore the path
+  // immediately after that read; lstat must not revoke custody for this pass.
+  const missing = [...entries.keys()];
+  const head = await sharedGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
+  if (head.code !== 0 && head.code !== 1) return custodyRefused('base-read');
+  if (head.code === 0 && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head.stdout.trim())) return custodyRefused('base-read');
+  const base = head.code === 0 ? head.stdout.trim() : null;
+  const tracked = new Set<string>();
+  if (base) {
+    for (let i = 0; i < missing.length; i += VANISHED_PATH_PROBE_BATCH) {
+      const tree = await sharedGit(
+        ['ls-tree', '-z', '--full-tree', base, '--', ...missing.slice(i, i + VANISHED_PATH_PROBE_BATCH)],
+        repoPath,
+        { env: { GIT_LITERAL_PATHSPECS: '1' } },
+      );
+      if (tree.code !== 0) return custodyRefused('base-tree-read');
+      for (const row of tree.stdout.split('\0').filter(Boolean)) {
+        const tab = row.indexOf('\t');
+        if (tab < 0) return custodyRefused('malformed-base-tree');
+        tracked.add(row.slice(tab + 1));
+      }
+    }
+  }
+  const candidates = missing.filter((path) => !tracked.has(path) && !isGeneratedCustodyPhantom(path));
+  if (candidates.length === 0) return { ok: true, protectedPaths: [], refs: [] };
+  const opened = await openPrivateIndexSite(sharedGit, repoPath, 'source custody', 'source-custody');
+  if (!opened.ok) return custodyRefused('private-index-isolation');
+  const repository = await realpath(repoPath);
+  const refs: string[] = [];
+  for (const path of candidates) {
+    const entry = entries.get(path)!;
+    if (!['100644', '100755', '120000'].includes(entry.mode)) return custodyRefused('unsupported-index-mode');
+    if (![40, 64].includes(entry.oid.length)) return custodyRefused('unsupported-object-format');
+    const type = await sharedGit(['cat-file', '-t', entry.oid], repoPath);
+    if (type.code !== 0 || type.stdout.trim() !== 'blob') return custodyRefused('source-blob-read');
+    const manifest: SourceCustodyManifest = {
+      version: 1, repository, path, oid: entry.oid, mode: entry.mode,
+      owner: attribution.get(path)?.agent || 'unknown', base,
+    };
+    const manifestText = JSON.stringify(manifest) + '\n';
+    const key = createHash('sha256').update(manifestText).digest('hex');
+    const ref = SOURCE_CUSTODY_REF_PREFIX + key;
+    const verify = async (): Promise<boolean> => {
+      const objectType = await sharedGit(['cat-file', '-t', ref], repoPath);
+      if (objectType.code !== 0 || objectType.stdout.trim() !== 'tree') return false;
+      const target = await sharedGit(['rev-parse', '--verify', '-q', `${ref}^{tree}`], repoPath);
+      if (target.code !== 0 || !target.stdout.trim()) return false;
+      const tree = await sharedGit(['ls-tree', '-z', target.stdout.trim()], repoPath);
+      if (tree.code !== 0) return false;
+      const rows = tree.stdout.split('\0').filter(Boolean);
+      if (rows.length !== 2 || !rows.includes(`${entry.mode} blob ${entry.oid}\tpayload`)) return false;
+      const metadata = rows.find((row) => row.endsWith('\tmanifest.json'));
+      const metadataMatch = metadata && /^100644 blob ([a-f0-9]+)\tmanifest\.json$/.exec(metadata);
+      if (!metadataMatch) return false;
+      const readback = await sharedGit(['cat-file', 'blob', metadataMatch[1]], repoPath);
+      const payload = await sharedGit(['cat-file', '-e', `${entry.oid}^{blob}`], repoPath);
+      return readback.code === 0 && readback.stdout === manifestText && payload.code === 0;
+    };
+    const existing = await sharedGit(['show-ref', '--verify', '--quiet', ref], repoPath);
+    if (existing.code === 0) {
+      if (!(await verify())) return custodyRefused('existing-ref-mismatch');
+      refs.push(ref);
+      continue;
+    }
+    if (existing.code !== 1) return custodyRefused('recovery-ref-read');
+    const indexFile = opened.site.newIndexFile();
+    const manifestFile = indexFile + '.manifest';
+    const privateGit = opened.site.bindIndex(indexFile);
+    try {
+      const empty = await privateGit(['read-tree', '--empty'], repoPath);
+      if (empty.code !== 0) return custodyRefused('empty-private-tree');
+      await writeFile(manifestFile, manifestText, { mode: 0o600, flag: 'wx' });
+      const hashed = await sharedGit(['hash-object', '-w', '--no-filters', '--', manifestFile], repoPath);
+      if (hashed.code !== 0 || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(hashed.stdout.trim())) {
+        return custodyRefused('manifest-blob-write');
+      }
+      const inserted = await privateGit([
+        'update-index', '--add', '--cacheinfo', entry.mode, entry.oid, 'payload',
+        '--cacheinfo', '100644', hashed.stdout.trim(), 'manifest.json',
+      ], repoPath);
+      if (inserted.code !== 0) return custodyRefused('payload-manifest-root');
+      const tree = await privateGit(['write-tree'], repoPath);
+      const oid = tree.stdout.trim();
+      if (tree.code !== 0 || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(oid)) return custodyRefused('private-tree-write');
+      // A concurrent identical creator is safe only after the same complete readback.
+      const written = await sharedGit(['update-ref', ref, oid, '0'.repeat(oid.length)], repoPath);
+      if (!(await verify())) return custodyRefused(written.code === 0 ? 'recovery-ref-readback' : 'recovery-ref-write');
+      refs.push(ref);
+    } catch {
+      return custodyRefused('persistence-exception');
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => {});
+      await rm(indexFile + '.lock', { force: true }).catch(() => {});
+      await rm(manifestFile, { force: true }).catch(() => {});
+    }
+  }
+  for (const ref of refs) log(`[git-sync] source custody verified ${ref}`);
+  // Keep these paths out of every subsequent private tree, including a peer's later
+  // same-byte or different-byte restoration. They stay pending for the next pass.
+  return { ok: true, protectedPaths: candidates, refs };
+}
 
 /**
  * WI-6554700010018197: drop the group paths that exist in NEITHER the working tree NOR the
@@ -5361,6 +5591,56 @@ export interface AttributionTally {
   agentCommitCount: number;
   failedGroups: number;
   error: string | null;
+  /** P-003 (gate-systems-as-designed-2026-10-27): files this pass committed that the
+   *  edit ledger attributes to an agent. Absent when the share could not be measured. */
+  attributableFileCount?: number;
+  /** Of `attributableFileCount`, the files that landed in a commit naming an agent. */
+  attributedFileCount?: number;
+}
+
+/**
+ * P-003 (gate-systems-as-designed-2026-10-27): of the files a commit pass published that
+ * the edit ledger attributes to an agent, how many landed in a commit that names one.
+ *
+ * Group counts could not see the failure P-001 measured: one sweep merged 8 groups into 2
+ * and sent 36 files to the anonymous catch-all while `agentCommitCount` stayed non-zero,
+ * so the zero-attribution alarm never fired. This counts files, read back from the
+ * commits that actually published, so every route an attributable file takes into an
+ * anonymous commit counts against the share (residual absorption, a failed or
+ * CAS-refused group swept by the catch-all), and a file held out of every commit does
+ * not. `forceCatchAllPaths` are anonymous on purpose (a regenerated declaration pair) and
+ * are left out. A commit git cannot read is skipped; this never throws.
+ */
+export async function measureAttributedFileShare(
+  runGit: RunGit,
+  repoPath: string,
+  publishedShas: readonly string[],
+  attribution: ReadonlyMap<string, unknown> | undefined,
+  forceCatchAllPaths: readonly string[] = [],
+): Promise<{ attributableFileCount: number; attributedFileCount: number }> {
+  let attributableFileCount = 0;
+  let attributedFileCount = 0;
+  if (!attribution || attribution.size === 0) return { attributableFileCount, attributedFileCount };
+  const forced = new Set(forceCatchAllPaths);
+  for (const sha of new Set(publishedShas)) {
+    try {
+      const message = await runGit(['log', '-1', `--format=${COMMIT_MESSAGE_FORMAT}`, sha], repoPath);
+      const changed = await runGit(
+        ['diff-tree', '--no-commit-id', '--name-only', '-r', '-z', '--no-renames', '--root', sha],
+        repoPath,
+      );
+      if (message.code !== 0 || changed.code !== 0) continue;
+      const named = readCommitAgents(message.stdout).agents.length > 0;
+      for (const file of changed.stdout.split('\0')) {
+        if (!file || forced.has(file) || !attribution.has(file)) continue;
+        attributableFileCount += 1;
+        if (named) attributedFileCount += 1;
+      }
+    } catch {
+      // An unreadable commit drops out of both counts.
+    }
+  }
+  return { attributableFileCount, attributedFileCount };
 }
 
 /** What one attributed phase did (WI-6554700010018197, WI-6554700010018198). */
@@ -5374,6 +5654,10 @@ export interface AttributedGroupsResult {
    *  anonymous catch-all. */
   agentCommitCount: number;
   error?: string;
+  /** Custody failure is repository-fatal, unlike ordinary per-group failures. */
+  custodyFatal?: true;
+  /** Retained by the outer catch-all even if the path was restored meanwhile. */
+  custodyProtectedPaths?: string[];
   /** Present only when at least one group failed (WI-6554700010018197). */
   groupFailures?: AttributedGroupFailure[];
 }
@@ -5387,8 +5671,13 @@ export async function commitAttributedGroups(
   opts: CommitAttributedGroupsOpts = {},
 ): Promise<AttributedGroupsResult> {
   const tally = { agentGroupCount: 0, agentCommitCount: 0 };
-  const res = await commitAttributedGroupsPass(runGit, repoPath, attribution, excludePaths, message, opts, tally);
-  return { ...res, ...tally };
+  const custody = await preserveVanishedStagedSources(runGit, repoPath, attribution, opts.log);
+  if (!custody.ok) return { ...tally, committedAny: false, committedCount: 0, custodyFatal: true, error: custody.error };
+  const res = await commitAttributedGroupsPass(
+    runGit, repoPath, attribution, [...excludePaths, ...custody.protectedPaths], message,
+    { ...opts, custodyPaths: [...(opts.custodyPaths ?? []), ...custody.protectedPaths] }, tally,
+  );
+  return { ...res, ...tally, ...(custody.protectedPaths.length > 0 ? { custodyProtectedPaths: custody.protectedPaths } : {}) };
 }
 
 type CommitAttributedGroupsOpts = Parameters<typeof commitAttributedGroupsPass>[5];
@@ -5403,6 +5692,8 @@ async function commitAttributedGroupsPass(
     diffSubjects?: boolean;
     /** Paths that must stay in the anonymous residual group even when attributed. */
     forceCatchAllPaths?: string[];
+    /** Captured paths remain unpublished even if a peer restores them during this pass. */
+    custodyPaths?: readonly string[];
     /** Paths that must land before attributed source groups, normally superproject gitlinks. */
     priorityPaths?: string[];
     /** Keep attributed sources out of the catch-all when a protected priority path cannot land. */
@@ -5412,6 +5703,7 @@ async function commitAttributedGroupsPass(
      *  group's PRIVATE index and must guard through it. A failure skips that group only
      *  (WI-6554700010018197). */
     beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
+    onPublished?: (sha: string) => void;
     /** WI-6554700010019415: working-tree text for the import edges that merge linked groups.
      *  Defaults to reading `repoPath`. */
     readText?: (relPath: string) => Promise<string | null>;
@@ -5448,10 +5740,14 @@ async function commitAttributedGroupsPass(
   // files must not wait behind every per-agent group in a long local-sync pass.
   // The caller's final add -A remains the safety net for arrivals and failed groups.
   const forceCatchAll = new Set(opts.forceCatchAllPaths ?? []);
-  const groupAttribution =
+  // WI-6554700010029864: a declaration git-sync regenerated beside an attributed source joins that
+  // source's group instead of sitting in the residual and pulling the group in with it.
+  const groupAttribution = inheritCompanionDeclarationAttribution(
+    dirty.filter((path) => !forceCatchAll.has(path)),
     forceCatchAll.size === 0
       ? attribution
-      : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path)));
+      : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path))),
+  );
   // The durable edit ledger supplies native-edit ages. Sample working-tree mtimes only for
   // attributed paths without a ledger row, so presence-only/script edits still get an age without
   // adding a filesystem read for normally recorded native edits. These are scheduling hints only;
@@ -5544,6 +5840,7 @@ async function commitAttributedGroupsPass(
       opts.diffSubjects,
       opts.beforeCommit,
       log,
+      opts.onPublished,
     );
     if (priority.status === 'committed') {
       committedAny = true;
@@ -5611,12 +5908,26 @@ async function commitAttributedGroupsPass(
       if (present.vanished.length > 0) {
         log(
           `[git-sync] ${repoPath}: ${groupLabel} dropped ${present.vanished.length} path(s) present in neither ` +
-            `the working tree nor HEAD (shared-index-only entries): ${present.vanished.slice(0, 5).join(', ')}` +
+            `the working tree nor HEAD (custody not-available or ineligible generated phantom): ${present.vanished.slice(0, 5).join(', ')}` +
             (present.vanished.length > 5 ? ', …' : ''),
         );
       }
       if (present.files.length === 0) continue;
-      const add = await privateGit(['add', '--', ...present.files], repoPath);
+      let add = await privateGit(['add', '--', ...present.files], repoPath);
+      if (add.code !== 0 && addFailureIgnoredPaths(`${add.stdout}\n${add.stderr}`).length > 0) {
+        // EI-26936210212113630: the census uses the shared index, but this add uses
+        // a HEAD-seeded private index. A shared-only addition can therefore be
+        // ignored here; an ignore edit after the census creates the same mismatch.
+        // Ask this index which paths are ignored, preserving tracked updates even
+        // beneath a reported ignored ancestor. Never force private candidates in.
+        const { ignoredUntracked } = await classifyProtectedPathExclusions(privateGit, repoPath, present.files);
+        if (ignoredUntracked.size > 0) {
+          const eligible = present.files.filter((file) => !ignoredUntracked.has(file));
+          log(`[git-sync] ${repoPath}: ${groupLabel} omitted ${ignoredUntracked.size} ignored untracked path(s) from explicit staging`);
+          if (eligible.length === 0) continue;
+          add = await privateGit(['add', '--', ...eligible], repoPath);
+        }
+      }
       if (add.code !== 0) {
         fail(`${groupLabel} add failed: ${gitFailureDetail(add)}`);
         continue;
@@ -5650,6 +5961,9 @@ async function commitAttributedGroupsPass(
           };
         }
         const committedPaths = changed.stdout.split('\0').filter(Boolean);
+        if (committedPaths.some((path) => opts.custodyPaths?.includes(path))) {
+          return custodyRefused('attributed-publication-fence');
+        }
         // ⚠ never reset with an EMPTY pathspec: that resets the whole shared index.
         if (committedPaths.length === 0) return { ok: true };
         const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
@@ -5683,6 +5997,7 @@ async function commitAttributedGroupsPass(
         baseTree,
         label: groupLabel,
         reflogMessage: g.agent ? `git-sync: attributed commit for ${g.agent}` : 'git-sync: residual catch-all',
+        onPublished: opts.onPublished,
         beforePublish: refreshSharedIndex,
         messageArgs: async () => {
           let subject = g.subject;
@@ -5742,6 +6057,7 @@ async function commitAttributedGroupsPass(
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
 interface CommitRepoOpts {
+  onPublished?: (sha: string) => void;
   /** Public scope name used in skipped-path diagnostics. */
   scope: string;
   /** Harness identity for log labels; `scope` remains the repo-relative diagnostic coordinate. */
@@ -6071,12 +6387,49 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // WI-10006725: scratch files the catch-all creates (its private index, the shared-index
     // refresh pathspec) are removed on EVERY exit path, a thrown runner included.
     const scratch: string[] = [];
+    // P-003 (gate-systems-as-designed-2026-10-27): the attributed phase reports its tally
+    // before the catch-all runs, but the attributed-file share depends on what the catch-all
+    // sweeps too. Hold the tally until the pass ends (on every exit path) and add the share
+    // measured from the commits this pass published.
+    const published: string[] = [];
+    const held: { tally: AttributionTally | null } = { tally: null };
+    const passOpts: CommitRepoOpts = {
+      ...o,
+      onPublished: (sha) => {
+        published.push(sha);
+        o.onPublished?.(sha);
+      },
+      ...(o.onAttribution
+        ? {
+            onAttribution: (t: AttributionTally) => {
+              held.tally = t;
+            },
+          }
+        : {}),
+    };
     try {
-      return await commitOneRepoWithScratch(runGit, repoPath, o, scratch);
+      return await commitOneRepoWithScratch(runGit, repoPath, passOpts, scratch);
     } finally {
       for (const file of scratch) {
         await rm(file, { force: true }).catch(() => {});
         await rm(`${file}.lock`, { force: true }).catch(() => {});
+      }
+      if (held.tally && o.onAttribution) {
+        const share = await measureAttributedFileShare(
+          runGit,
+          repoPath,
+          published,
+          o.attribution,
+          o.forceCatchAllPaths,
+        ).catch(() => null);
+        if (share && share.attributableFileCount > 0) {
+          o.log(
+            `[git-sync] ${o.harnessSlug}/${o.scope}: attributed-file share ` +
+              `${share.attributedFileCount}/${share.attributableFileCount} ledger-attributed file(s) ` +
+              'committed under an agent trailer',
+          );
+        }
+        o.onAttribution({ ...held.tally, ...(share ?? {}) });
       }
     }
   };
@@ -6161,6 +6514,12 @@ async function commitOneRepoWithScratch(
       contentErrors,
       skippedPaths: [],
     };
+  }
+  // This must precede every shared-index consumer, including quarantine/untrack
+  // repairs and both attributed and catch-all refresh/fallback boundaries.
+  const custody = await preserveVanishedStagedSources(runGit, repoPath, o.attribution, o.log);
+  if (!custody.ok) {
+    return { committedLocal: false, dirtyPathCount: 0, committedCount, error: custody.error, oversized, contentErrors, skippedPaths: [] };
   }
   const dependencyGenerationRepair = await untrackLegacyDependencyGenerationStore(runGit, repoPath, o.log);
   noteSlowPhase('dependency generation repair');
@@ -6411,6 +6770,7 @@ async function commitOneRepoWithScratch(
     let effectiveExcludePaths = [
       ...new Set([
         ...o.excludePaths,
+        ...custody.protectedPaths,
         ...protectedHoldings.map((holding) => holding.path),
         ...migrationQuarantinedPaths,
         ...migrationDependencyFenceSkippedPaths.map((entry) => entry.path),
@@ -6446,6 +6806,7 @@ async function commitOneRepoWithScratch(
       effectiveExcludePaths = [
         ...new Set([
           ...o.excludePaths,
+          ...custody.protectedPaths,
           ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean),
           ...migrationQuarantinedPaths,
           ...migrationDependencyFenceSkippedPaths.map((entry) => entry.path),
@@ -6707,10 +7068,17 @@ async function commitOneRepoWithScratch(
             );
           },
           beforeCommit: (privateRunGit) => postStageGuard(privateRunGit),
+          onPublished: o.onPublished,
+          custodyPaths: custody.protectedPaths,
           readText: (rel) => o.readText(repoPath, rel),
           log: o.log,
         },
       );
+      if (res.custodyFatal) {
+        return { committedLocal: committedAny, dirtyPathCount, committedCount, error: res.error, oversized, contentErrors, skippedPaths };
+      }
+      custody.protectedPaths = [...new Set([...custody.protectedPaths, ...(res.custodyProtectedPaths ?? [])])];
+      stagingExcludePaths = [...new Set([...stagingExcludePaths, ...custody.protectedPaths])];
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
         // index.lock race under heavy fleet contention — must NEVER short-circuit the
@@ -6745,6 +7113,14 @@ async function commitOneRepoWithScratch(
     // commit-tree → update-ref CAS. STRANDING GUARD: when the runner does not forward
     // GIT_INDEX_FILE, or the seed fails, it falls back to the shared index + `git commit`;
     // committing the tree outranks isolating it.
+    // Attributed work can take long enough for another staged source to vanish.
+    // Recheck the SHARED index before either private seeding or shared fallback.
+    const catchAllCustody = await preserveVanishedStagedSources(runGit, repoPath, o.attribution, o.log);
+    if (!catchAllCustody.ok) {
+      return { committedLocal: committedAny, dirtyPathCount, committedCount, error: catchAllCustody.error, oversized, contentErrors, skippedPaths };
+    }
+    custody.protectedPaths = [...new Set([...custody.protectedPaths, ...catchAllCustody.protectedPaths])];
+    stagingExcludePaths = [...new Set([...stagingExcludePaths, ...custody.protectedPaths])];
     let stageGit: RunGit = runGit;
     let catchAllPrivate: { base: string | null; baseTree: string; gitDir: string } | null = null;
     const catchAllSite = await openPrivateIndexSite(runGit, repoPath, 'catch-all commit', 'catch-all');
@@ -6984,6 +7360,9 @@ async function commitOneRepoWithScratch(
           return { ok: false, error: `catch-all commit not published: could not list its paths: ${gitFailureDetail(changed)}` };
         }
         const committedPaths = changed.stdout.split('\0').filter(Boolean);
+        if (committedPaths.some((path) => custody.protectedPaths.includes(path))) {
+          return custodyRefused('catch-all-publication-fence');
+        }
         if (committedPaths.length === 0) return { ok: true };
         const pathspecFile = join(privateBase.gitDir, `papercusp-git-sync-catch-all-${process.pid}-${randomUUID()}.pathspec`);
         scratch.push(pathspecFile);
@@ -7011,6 +7390,7 @@ async function commitOneRepoWithScratch(
         baseTree: privateBase.baseTree,
         label: 'catch-all commit',
         reflogMessage: 'git-sync: catch-all commit',
+        onPublished: o.onPublished,
         messageArgs: async () => messageArgs,
         beforePublish: refreshSharedIndex,
       });
@@ -7043,6 +7423,10 @@ async function commitOneRepoWithScratch(
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
+      if (o.onPublished) {
+        const sha = await headSha(runGit, repoPath);
+        if (sha) o.onPublished(sha);
+      }
     } else if (!nothingToCommit(c)) {
       // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
       // a merge conflict. If the still-dirty tree fell through to the merge phase it
@@ -7898,6 +8282,24 @@ async function runGitSyncPass(
     /** Persist the discovered repo coordinates so a resumed pointer-bump can still
      * filter submodule-relative protected paths out of the superproject stage. */
     submodulePaths: string[];
+    /** Bounded evidence from the execution that produced this checkpoint, not its replay. */
+    submoduleTiming?: {
+      schemaVersion: 1;
+      runId: string;
+      repoRoot: string;
+      pid: number;
+      sourceUrl: string;
+      startedAt: string;
+      setupMs: number;
+      batches: Array<{
+        index: number;
+        depth: number;
+        startOffsetMs: number;
+        durationMs: number;
+        repositories: Array<{ scope: string; durationMs: number; status: RepoSyncResult['status'] | 'rejected' }>;
+      }>;
+      omittedBatches: number;
+    };
     didSomething: boolean;
     /** WI-10007606: set when the walk stopped at a batch boundary to yield. Part of the
      *  checkpointed output, so a crash-replay of this step yields again instead of
@@ -7972,6 +8374,25 @@ async function runGitSyncPass(
   // pass, after which a resumed fire never re-commits/re-pushes the submodules.
   const sub = await step('git-sync:submodules', async (): Promise<PhaseCollect> => {
     const out = emptyPhase();
+    const phaseStartedAt = performance.now();
+    const timing = out.submoduleTiming = {
+      schemaVersion: 1 as const,
+      runId: randomUUID(),
+      repoRoot: repo,
+      pid: process.pid,
+      sourceUrl: import.meta.url,
+      startedAt: new Date().toISOString(),
+      setupMs: 0,
+      batches: [] as NonNullable<PhaseCollect['submoduleTiming']>['batches'],
+      omittedBatches: 0,
+    };
+    // Diagnostics must not change sync behavior, including if an injected sink fails.
+    const timingLog = (event: string, detail: object): void => {
+      try {
+        log(`[git-sync:submodule-timing] ${JSON.stringify({ event, slug, runId: timing.runId, repoRoot: repo, pid: timing.pid, ...detail })}`);
+      } catch { /* diagnostic-only */ }
+    };
+    timingLog('phase-start', { sourceUrl: timing.sourceUrl, startedAt: timing.startedAt });
     let subPaths: string[] = [];
     if (doSub) {
       // EI-20329530284626235: `.gitmodules` is the canonical transport declaration,
@@ -8018,6 +8439,7 @@ async function runGitSyncPass(
         }
       }
       if (urlSync.code !== 0) {
+        timing.setupMs = Math.round(performance.now() - phaseStartedAt);
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
         const message = `canonical submodule URL sync failed: ${detail}`;
         out.errors.push({ scope: 'submodule-config', message });
@@ -8056,6 +8478,7 @@ async function runGitSyncPass(
       }
       out.submodulePaths = [...subPaths];
     }
+    timing.setupMs = Math.round(performance.now() - phaseStartedAt);
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
@@ -8104,9 +8527,36 @@ async function runGitSyncPass(
           return out;
         }
         const batch = subPaths.slice(batchStart, Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd));
+        const batchStartedAt = performance.now();
+        const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
+          index: timing.batches.length + timing.omittedBatches,
+          depth,
+          startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
+          durationMs: 0,
+          repositories: [],
+        };
+        timingLog('batch-start', { batch: measurement.index, depth, scopes: batch });
         // allSettled is a safety barrier: an unexpected rejection must not let a
         // sibling start more Git commands after the action releases its locks.
-        const results = await Promise.allSettled(batch.map(syncSubmodule));
+        const results = await Promise.allSettled(batch.map(async (scope) => {
+          const startedAt = performance.now();
+          let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
+          try {
+            const result = await syncSubmodule(scope);
+            status = result.status;
+            return result;
+          } finally {
+            const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
+            measurement.repositories.push(repository);
+            timingLog('repository-settled', { batch: measurement.index, ...repository });
+          }
+        }));
+        measurement.durationMs = Math.round(performance.now() - batchStartedAt);
+        // Retain at most 256 repositories in the durable phase output. Logs retain
+        // later batches; the omission count makes the checkpoint's coverage explicit.
+        if (timing.batches.length < 64) timing.batches.push(measurement);
+        else timing.omittedBatches++;
+        timingLog('batch-settled', measurement);
         for (let i = 0; i < results.length; i++) {
           const result = results[i]!;
           if (result.status === 'rejected') throw result.reason;
@@ -8183,6 +8633,17 @@ async function runGitSyncPass(
   // commits (the residual and earlier per-agent groups publish before a later group's
   // probe). Pin the pre-phase root HEAD so such a yield carries its commit proof.
   const superprojectHeadBefore = await headSha(runGit, repo);
+  const localCommits: GitSyncRootCommit[] = [];
+  const notifiedRootCommits = new Set<string>();
+  const notifyRootCommit = (commit: GitSyncRootCommit): void => {
+    if (notifiedRootCommits.has(commit.sha)) return;
+    notifiedRootCommits.add(commit.sha);
+    try {
+      opts.onRootCommit?.(commit);
+    } catch (error) {
+      log(`[git-sync] ${slug}: root commit notification failed: ${String(error)}`);
+    }
+  };
   const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
     const reason = await checkYield();
     if (!reason) return;
@@ -8191,8 +8652,9 @@ async function runGitSyncPass(
       headNow && headNow !== superprojectHeadBefore
         ? {
             localCommitSha: headNow,
-            localCommitAtMs: Date.now(),
+            localCommitAtMs: localCommits.at(-1)?.committedAtMs ?? Date.now(),
             localCommitShas: await commitsSince(runGit, repo, superprojectHeadBefore, headNow),
+            localCommits,
           }
         : undefined;
     throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length, landed);
@@ -8281,13 +8743,19 @@ async function runGitSyncPass(
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
       yieldIfRequested: yieldSuperproject,
+      onPublished: (sha) => {
+        const commit = { sha, committedAtMs: Date.now() };
+        localCommits.push(commit);
+        notifyRootCommit(commit);
+      },
     });
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.
-    const localCommitAtMs = committed.committedLocal ? Date.now() : undefined;
+    const localCommitAtMs = localCommits.at(-1)?.committedAtMs ?? (committed.committedLocal ? Date.now() : undefined);
     const landedHead = committed.committedLocal ? await headSha(runGit, repo) : undefined;
     return {
       ...committed,
+      localCommits,
       localCommitSha: landedHead,
       localCommitAtMs,
       // Every root commit this phase created (one per attributed group), oldest first.
@@ -8299,6 +8767,10 @@ async function runGitSyncPass(
   const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
   const localCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
   const localCommitShas = 'localCommitShas' in commitRes ? commitRes.localCommitShas : undefined;
+  // Outside the durable step: a replay skips the body, but must recover the same
+  // per-commit notifications before any later phase, with their original times.
+  const savedLocalCommits = 'localCommits' in commitRes ? commitRes.localCommits : undefined;
+  for (const commit of savedLocalCommits ?? []) notifyRootCommit(commit);
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -8470,6 +8942,7 @@ async function runGitSyncPass(
     ...(localCommitSha ? { localCommitSha } : {}),
     ...(localCommitSha && localCommitAtMs != null ? { localCommitAtMs } : {}),
     ...(localCommitSha && localCommitShas && localCommitShas.length > 0 ? { localCommitShas } : {}),
+    ...(savedLocalCommits ? { localCommits: savedLocalCommits } : {}),
   };
 
   if (conflicts.length > 0)

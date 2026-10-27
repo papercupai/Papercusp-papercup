@@ -49,4 +49,23 @@ describe('retained BAR re-review evidence custody (EI-25992283418918681)', () =>
     expect(await previewThreadHasLaterPost({ ...preview, authorId: 'judge-new', afterPostRef: refs.evidence! }, db.adminSql)).toBe(true);
     expect(await previewThreadHasLaterPost({ ...preview, authorId: 'other-workspace', afterPostRef: refs.evidence! }, db.adminSql)).toBe(false);
   });
+
+  it('excludes requester artifact posts but preserves later reviewer activity', async () => {
+    const [requesterPreview] = await db.adminSql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${workspaceId}, 'requester-artifact-thread', 'applier', 'Preview approval JSON', 'local')
+      RETURNING id`;
+    await db.adminSql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${workspaceId}, 'requester-artifact-thread', 'applier', 'Persisted request payload', 'local')`;
+
+    const previewPostRef = `thread-post:${requesterPreview!.id}`;
+    expect(await previewThreadHasLaterPost({ workspaceId, previewPostRef }, db.adminSql)).toBe(true);
+    expect(await previewThreadHasLaterPost({ workspaceId, previewPostRef, excludeAuthorId: 'applier' }, db.adminSql)).toBe(false);
+    expect(await previewThreadHasLaterPost({
+      workspaceId,
+      previewPostRef: refs.preview!,
+      excludeAuthorId: 'applier',
+    }, db.adminSql)).toBe(true);
+  });
 });

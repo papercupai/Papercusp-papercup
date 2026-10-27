@@ -86,6 +86,50 @@ export type ColdWakeDecision =
   | { cold: true; mode: 'reset' | 'recycle'; carryNote: string };
 
 /**
+ * WI-6554700010029492: the LAST cold-wake disposition of a loop that expected to
+ * go cold, persisted on its routine row (`routines.metadata.lastColdDecision`)
+ * and surfaced verbatim by loop:status.
+ *
+ * Before this the wake executor computed the {@link ColdWakeDecision} on every
+ * cold-eligible fire and then dropped its `reason`. A cold fire that stayed warm
+ * (D-005 human-presence guard, master gate off, no carry-note anchor, a
+ * resolution that threw) therefore looked exactly like a reset that was
+ * attempted and failed. Observed on su-fe99c651 (2026-10-26): its 14:44Z cold fire
+ * arrived as a plain turn inject with no record of why it stayed warm.
+ * Never carries the carry-note text — only the disposition.
+ */
+export interface LoopColdDecisionRecord {
+  /** ISO instant the executor decided. */
+  at: string;
+  cold: boolean;
+  /** The cold lifecycle chosen; null when the fire stayed warm. */
+  mode: 'reset' | 'recycle' | null;
+  /** Why — `decideColdWake`'s warm reason verbatim, or the cold mode taken. */
+  reason: string;
+  /** The loop fire number from the marker, when stamped. */
+  wakeCount: number | null;
+  /** The wake delivery this decision was made for, when known. */
+  deliveryId: string | null;
+}
+
+/** Pure projection of a {@link ColdWakeDecision} into its persisted record. */
+export function coldDecisionRecord(
+  decision: ColdWakeDecision,
+  ctx: { at: Date; wakeCount?: number | null; deliveryId?: string | number | null },
+): LoopColdDecisionRecord {
+  const wakeCount =
+    typeof ctx.wakeCount === 'number' && Number.isFinite(ctx.wakeCount) && ctx.wakeCount > 0 ? ctx.wakeCount : null;
+  return {
+    at: ctx.at.toISOString(),
+    cold: decision.cold,
+    mode: decision.cold ? decision.mode : null,
+    reason: decision.cold ? `cold ${decision.mode} — context reset requested from the carry-note` : decision.reason,
+    wakeCount,
+    deliveryId: ctx.deliveryId == null ? null : String(ctx.deliveryId),
+  };
+}
+
+/**
  * The HYBRID cadence (D-002 / P-005): a hard RECYCLE every Nth cold wake to shed
  * process cruft (wedged MCP / slow leak), the cheap in-place RESET-CONTEXT the
  * rest. `wakeCount` is the 1-based fire number; the Nth, 2Nth… recycle. An

@@ -378,6 +378,20 @@ afterAll(() => {
 });
 
 describe('mutation-probe.sh --in-tree sweep-race gate', () => {
+  it('awaits the committed-source hold before mutation-probe preflight (EI-26711926174293071)', () => {
+    const source = readFileSync(PROBE, 'utf8');
+    const retainSourceBlockStart = source.indexOf(
+      'if ! node --input-type=module - "$RUNNER_ROOT/scripts/lint-as-committed.mjs"',
+    );
+    const nextPreflight = source.indexOf('# A writable TMPDIR', retainSourceBlockStart);
+    expect(retainSourceBlockStart).toBeGreaterThanOrEqual(0);
+    expect(nextPreflight).toBeGreaterThan(retainSourceBlockStart);
+
+    const retainSourceBlock = source.slice(retainSourceBlockStart, nextPreflight);
+    expect(retainSourceBlock).toMatch(/[ \t]*await retainCommittedWorkRoot\(root, marker\.sha, scratch\);/);
+    expect(retainSourceBlock).toContain('die "could not retain the committed source for this probe"');
+  });
+
   it('REFUSES --in-tree from a capability:bash foreground child before touching the tracked file', () => {
     const { status, out } = runProbe(
       [

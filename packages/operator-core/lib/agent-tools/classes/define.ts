@@ -56,6 +56,7 @@ export const defineCapabilityClassTool = defineTool({
     tags: z.array(z.string().min(1).max(80)).max(32).optional(),
   }),
   async handler(args, ctx) {
+    ctx.signal.throwIfAborted();
     const reply = (data: unknown) => ({ data });
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) return reply({ ok: false, reason: 'no_workspace' });
@@ -84,13 +85,16 @@ export const defineCapabilityClassTool = defineTool({
     const resolved = await buildQueryEmbedderResolved({
       acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
     }).catch(() => null);
+    ctx.signal.throwIfAborted();
     const embeddingProfile =
       resolved && capabilityClassVectorStorageAcceptsProfile(resolved.profile)
         ? resolved.profile
         : null;
     const embedding = resolved && embeddingProfile
-      ? await resolved.embed(`${args.title}\n${args.description}`).catch(() => null)
+      ? await resolved.embed(`${args.title}\n${args.description}`, ctx.signal).catch(() => null)
       : null;
+    // Cancellation must not degrade into an unembedded registry write.
+    ctx.signal.throwIfAborted();
     const ident = resolveAgentIdentity(ctx);
     const result = await defineCapabilityClass(getOrgPg().sql, {
       workspaceId,

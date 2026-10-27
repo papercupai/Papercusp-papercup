@@ -39,6 +39,7 @@ import {
   retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
 
 /** The postgres-js client type the org handle exposes (same alias pg-read-query uses). */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
@@ -500,6 +501,27 @@ export interface BoundedOrgTxnOptions {
  */
 export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: BoundedOrgTxnOptions = {}): Promise<T> {
   const sql = opts.client ?? getOrgPg().sql;
+  // Workspace dispatch supplies TransactionSql, which has savepoint but no
+  // begin. Keep its RLS identity and atomicity instead of acquiring another pool.
+  const transaction = sql as unknown as Partial<TransactionSql>;
+  const nested = typeof sql.begin !== 'function' && typeof transaction.savepoint === 'function';
+  if (nested && opts.readOnly) {
+    throw new Error('boundedOrgTxn cannot change transaction read-only mode inside a savepoint');
+  }
+  const begin = nested
+    ? (work: (tx: OrgSql) => Promise<unknown>) => transaction.savepoint!(async rawTx => {
+      const tx = rawTx as unknown as OrgSql;
+      const [before] = await tx`SELECT current_setting('lock_timeout') AS lock_timeout,
+        current_setting('statement_timeout') AS statement_timeout`;
+      const value = await work(tx);
+      // RELEASE SAVEPOINT preserves SET LOCAL. Restore successful scopes so a
+      // search cannot change its dispatcher's remaining statement budget. On
+      // failure PostgreSQL restores these settings with ROLLBACK TO SAVEPOINT.
+      await tx`SELECT set_config('lock_timeout', ${before.lock_timeout}, true),
+        set_config('statement_timeout', ${before.statement_timeout}, true)`;
+      return value;
+    })
+    : (work: (tx: OrgSql) => Promise<unknown>) => sql.begin(tx => work(tx as unknown as OrgSql));
   const stmtMs = Math.max(100, Math.trunc(opts.statementTimeoutMs ?? ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS));
   const lockMs = Math.max(100, Math.trunc(opts.lockTimeoutMs ?? ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS));
   // Injected clients are test/non-pool backends, so they must not be counted
@@ -525,7 +547,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
         ({ disarm, expired }) =>
           retryBeforeCallbackStarts(
             (markStarted) =>
-              sql.begin(async (rawTx) => {
+              begin(async (rawTx) => {
                 const assertWithinAcquisitionDeadline = () => {
                   if (expired()) {
                     throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);

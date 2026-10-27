@@ -47,6 +47,8 @@ import {
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { runConditionStalenessTick } from '../system-health/condition-staleness-alarm';
+import type { ConditionState as StalenessConditionState } from '../agent-tools/coordination/tools/conditions';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -387,6 +389,91 @@ describe('open → resolve → RE-OPEN (the cycle the rejected closed_ts predica
   });
 });
 
+describe('WI-6554700010016789 — degraded retrieval stays open when its emitter exits', () => {
+  it('does not broadcast recovery or terminalize the persisted singleton below the recovery threshold', async () => {
+    const key = 'degraded:retrieval:mixed';
+    const { workItem, created } = await bridge.acquireConditionOwner(key, {
+      ...spec('degraded retrieval below recovery threshold'),
+      summary:
+        '60m fallback observations: 154/223 (69.06%); 15m 17/26 (65.38%). ' +
+        'Recovery threshold is 75%; positive controls passed; unknown_samples=0.',
+    });
+    expect(created).toBe(true);
+    expect(workItem).toBeTruthy();
+
+    const now = Date.parse('2026-10-17T10:00:00.000Z');
+    const state: StalenessConditionState = {
+      condition_key: key,
+      open: true,
+      from: 'system-watchdog',
+      category: 'degradation',
+      first_seen: '2026-10-17T08:00:00.000Z',
+      open_since: '2026-10-17T08:00:00.000Z',
+      last_seen: '2026-10-17T09:30:00.000Z',
+      alarm_count: 1,
+      latest_summary: 'Retrieval fallback remains below the 75% recovery threshold',
+      latest_body:
+        '60m fallback observations: 154/223 (69.06%); 15m 17/26 (65.38%). ' +
+        'Recovery threshold is 75%; positive controls passed; unknown_samples=0.',
+      latest_emitter: {
+        pid: 4242,
+        startedAt: '2026-10-17T08:00:00.000Z',
+        uptimeSec: 3600,
+        cwd: '/repo',
+        host: 'condition-bridge-test',
+        processIdentity: 'linux:condition-bridge-test:4242',
+      },
+      one_shot: true,
+      resolved_at: null,
+      resolved_summary: null,
+    };
+    const resolutionBroadcasts: string[][] = [];
+    const result = await runConditionStalenessTick({
+      readStates: async () => [state],
+      probeEmitter: () => 'dead',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        resolutionBroadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => undefined,
+      now: () => now,
+      staleMs: 4 * 60 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+      homeHarness: () => H,
+      bridgeConditions: (states, opts) => bridge.reconcileConditions(states, opts),
+    });
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.fired).toEqual([]);
+    expect(resolutionBroadcasts).toEqual([]);
+    expect(result.bridged.released).toEqual([]);
+    expect(result.bridged.acquired).toEqual([
+      expect.objectContaining({ conditionKey: key, workItem, created: false }),
+    ]);
+
+    const [row] = await db.sql<{
+      status: string;
+      terminal_owner: string | null;
+      terminal_completion_ref: string | null;
+      completion_evidence: unknown;
+    }[]>`
+      SELECT status, terminal_owner, terminal_completion_ref,
+             payload -> '_completionEvidence' AS completion_evidence
+        FROM harness_shared.work_items
+       WHERE feature_id = ${workItem}`;
+    expect(row).toMatchObject({
+      status: 'open',
+      terminal_owner: null,
+      terminal_completion_ref: null,
+      completion_evidence: null,
+    });
+  });
+});
+
 describe('D-020 — settle is gated on the bridge mint marker', () => {
   it('the MINT path stamps payload._bridge, and it survives the createIssue jsonb round-trip', async () => {
     // The storage question no unit test can answer: the marker is written three
@@ -476,6 +563,77 @@ describe('D-020 — settle is gated on the bridge mint marker', () => {
     const [after] = await db.sql<{ marker: unknown }[]>`
       SELECT payload -> '_bridge' AS marker FROM harness_shared.work_items WHERE feature_id = ${workItem}`;
     expect(after.marker).toEqual(before.marker);
+  });
+});
+
+describe('WI-6554700010029296 — holder-side sweep settles orphaned bridge items', () => {
+  // The recycling defect: 214 `alarm:*` items were minted while `alarm:` was in the
+  // actionable catalog, the catalog was narrowed, and reconcileConditions (gated on
+  // that catalog) could never settle them again. Simulate the narrowing by minting
+  // with an actionable key and moving the row onto a non-actionable one.
+  async function orphan(alarmKey: string, mintKey: string): Promise<string> {
+    const { workItem } = await bridge.acquireConditionOwner(mintKey, spec('provider failing'));
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = ${alarmKey} WHERE feature_id = ${workItem!}`;
+    return workItem!;
+  }
+
+  it('a RESOLVED orphan with a non-actionable key is settled and its key freed', async () => {
+    const alarmKey = 'alarm:codex-rollout-provider:orphan-resolved';
+    const workItem = await orphan(alarmKey, 'green-stall:orphan-a');
+    const asked: string[] = [];
+
+    const out = await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set(),
+      readKeyOpen: async (key) => {
+        asked.push(key);
+        return false;
+      },
+      workspaceId: WS,
+    });
+
+    expect(asked).toEqual([alarmKey]);
+    expect(out).toEqual([expect.objectContaining({ conditionKey: alarmKey, released: workItem, settled: true })]);
+    expect(await isTerminal(workItem)).toBe(true);
+    expect(await holdersOf(alarmKey)).toEqual([]);
+  });
+
+  it('leaves OPEN, UNKNOWN, COVERED and HAND-FILED holders untouched, and honours the limit', async () => {
+    const openItem = await orphan('alarm:carry-delivery:still-open', 'green-stall:orphan-b');
+    const unknownItem = await orphan('alarm:loop-dead-man:no-evidence', 'green-stall:orphan-c');
+    const coveredKey = 'green-stall:covered';
+    const { workItem: coveredItem } = await bridge.acquireConditionOwner(coveredKey, spec('covered'));
+    const handFiled = await handFiledOwner('single-primary:no-primary', 'documented root cause');
+    const asked: string[] = [];
+    const verdicts: Record<string, boolean | null> = {
+      'alarm:carry-delivery:still-open': true,
+      'alarm:loop-dead-man:no-evidence': null,
+    };
+
+    const out = await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set([coveredKey]),
+      readKeyOpen: async (key) => {
+        asked.push(key);
+        return key in verdicts ? verdicts[key]! : false;
+      },
+      workspaceId: WS,
+    });
+
+    expect(out).toEqual([]);
+    // The covered key belongs to the aggregate reconcile; the hand-filed row has no mint marker.
+    expect(asked.sort()).toEqual(['alarm:carry-delivery:still-open', 'alarm:loop-dead-man:no-evidence']);
+    for (const id of [openItem, unknownItem, coveredItem!, handFiled]) expect(await isTerminal(id)).toBe(false);
+
+    const limited: string[] = [];
+    await bridge.reconcileHeldConditionOwners({
+      coveredKeys: new Set(),
+      readKeyOpen: async (key) => {
+        limited.push(key);
+        return true;
+      },
+      workspaceId: WS,
+      limit: 1,
+    });
+    expect(limited).toHaveLength(1);
   });
 });
 

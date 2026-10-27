@@ -82,12 +82,116 @@ export interface R11TargetSnapshot {
   predicateHash: string;
   rows: R11Row[];
 }
+export interface R11SystemJournalSuppressionNotice {
+  cursor: string;
+  realtimeTimestamp: string;
+  message: string;
+  suppressedCount: number;
+}
+export interface R11SystemJournalSuppressionEvidence {
+  status: 'complete' | 'unavailable';
+  windowStart: string;
+  windowEnd: string;
+  checkedAt: string;
+  rawOutput: string;
+  rawOutputBytes: number;
+  rawOutputSha256: string;
+  notices: R11SystemJournalSuppressionNotice[];
+  error?: string;
+}
 export interface R11Snapshot {
   stage: R11Stage;
   capturedAt: string;
   mode: string;
   profileId: string;
   targets: R11TargetSnapshot[];
+  systemJournalSuppression?: R11SystemJournalSuppressionEvidence;
+}
+
+function parseR11SystemJournalSuppressionOutput(rawOutput: string, windowStart: string, windowEnd: string): {
+  notices: R11SystemJournalSuppressionNotice[];
+  error?: string;
+} {
+  const startMs = Date.parse(windowStart);
+  const endMs = Date.parse(windowEnd);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return { notices: [], error: 'Invalid frozen system-journal window' };
+  }
+
+  const notices: R11SystemJournalSuppressionNotice[] = [];
+  for (const [index, line] of rawOutput.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      entry = parsed as Record<string, unknown>;
+    } catch {
+      return { notices: [], error: `Malformed system-journal JSON record at line ${index + 1}` };
+    }
+    if (typeof entry.MESSAGE !== 'string') {
+      return { notices: [], error: `System-journal record at line ${index + 1} has no MESSAGE` };
+    }
+    const message = entry.MESSAGE;
+    if (!/\bsuppressed\b/i.test(message) || !message.includes('user@1000.service')) {
+      return { notices: [], error: `Unexpected system-journal record returned by the suppression query at line ${index + 1}` };
+    }
+
+    const match = /^Suppressed\s+(\d+)\s+messages?\s+from\s+user@1000\.service\s*$/i.exec(message);
+    if (!match) return { notices: [], error: `Unrecognized user@1000.service suppression notice at line ${index + 1}` };
+    const suppressedCount = Number(match[1]);
+    const cursor = entry.__CURSOR;
+    const realtimeTimestamp = entry.__REALTIME_TIMESTAMP;
+    const occurredAtMs = typeof realtimeTimestamp === 'string' ? Number(realtimeTimestamp) / 1000 : NaN;
+    if (!Number.isSafeInteger(suppressedCount) || suppressedCount <= 0 || typeof cursor !== 'string' || !cursor ||
+        typeof realtimeTimestamp !== 'string' || !Number.isFinite(occurredAtMs) || occurredAtMs < startMs || occurredAtMs > endMs) {
+      return { notices: [], error: `Incomplete or out-of-window user@1000.service suppression notice at line ${index + 1}` };
+    }
+    notices.push({ cursor, realtimeTimestamp, message, suppressedCount });
+  }
+  return { notices };
+}
+
+/** Read and preserve the host journal's suppression records for the exact frozen window. */
+export async function captureR11SystemJournalSuppression(
+  windowStart: string,
+  windowEnd: string,
+  executeProcess: typeof executeGovernedByteProcess = executeGovernedByteProcess,
+  now: () => number = Date.now,
+): Promise<R11SystemJournalSuppressionEvidence> {
+  const buildEvidence = (status: R11SystemJournalSuppressionEvidence['status'], rawOutput: string,
+    notices: R11SystemJournalSuppressionNotice[], error?: string): R11SystemJournalSuppressionEvidence => ({
+    status, windowStart, windowEnd, checkedAt: new Date(now()).toISOString(), rawOutput,
+    rawOutputBytes: Buffer.byteLength(rawOutput),
+    rawOutputSha256: createHash('sha256').update(rawOutput).digest('hex'), notices,
+    ...(error ? { error } : {}),
+  });
+
+  const startMs = Date.parse(windowStart);
+  const endMs = Date.parse(windowEnd);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return buildEvidence('unavailable', '', [], 'Invalid frozen system-journal window');
+  }
+
+  let result: Awaited<ReturnType<typeof executeGovernedByteProcess>>;
+  try {
+    result = await executeProcess('journalctl', [
+      '--system', '--no-pager', '--output=json', `--since=${windowStart}`, `--until=${windowEnd}`,
+      '--grep=Suppressed.*user@1000\\.service',
+    ], new Uint8Array(), { namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 16 * 1024 * 1024 });
+  } catch (error) {
+    return buildEvidence('unavailable', '', [], `journalctl could not be run: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const rawOutput = typeof result.stdout === 'string' ? result.stdout : '';
+  if (result.error || result.status !== 0 || result.signal || result.stderr.trim()) {
+    const detail = result.error?.code ?? result.stderr.trim() ?? '';
+    return buildEvidence('unavailable', rawOutput, [],
+      `journalctl did not provide a complete system-journal read${detail ? ` (${detail})` : ` (status ${result.status ?? result.signal ?? 'unknown'})`}`);
+  }
+  const parsed = parseR11SystemJournalSuppressionOutput(rawOutput, windowStart, windowEnd);
+  if (parsed.error) return buildEvidence('unavailable', rawOutput, [], parsed.error);
+  return buildEvidence('complete', rawOutput, parsed.notices);
 }
 
 export interface R11TimerSpec {
@@ -526,6 +630,31 @@ export function evaluateR11Snapshots(t0: R11Snapshot, cut: R11Snapshot, t1: R11S
   }
   if (targets.some((target) => target.t0Stale > 0 && target.t0Retained === 0)) {
     return { verdict: 'inconclusive', targets, reason: 'A target lost every originally stale eligible row before T1, so clause 1 is unproven' };
+  }
+  const suppressionEvidence = t1.systemJournalSuppression;
+  if (!suppressionEvidence || suppressionEvidence.status !== 'complete' ||
+      suppressionEvidence.windowStart !== t0.capturedAt || suppressionEvidence.windowEnd !== t1.capturedAt ||
+      !Number.isFinite(Date.parse(suppressionEvidence.checkedAt)) || typeof suppressionEvidence.rawOutput !== 'string' ||
+      suppressionEvidence.rawOutputBytes !== Buffer.byteLength(suppressionEvidence.rawOutput) ||
+      suppressionEvidence.rawOutputSha256 !== createHash('sha256').update(suppressionEvidence.rawOutput).digest('hex') ||
+      !Array.isArray(suppressionEvidence.notices)) {
+    return { verdict: 'inconclusive', targets, reason: 'Host system-journal suppression evidence is missing, malformed, or incomplete for [T0,T1]' };
+  }
+  const parsedSuppression = parseR11SystemJournalSuppressionOutput(
+    suppressionEvidence.rawOutput, t0.capturedAt, t1.capturedAt);
+  const recordedNoticesMatch = !parsedSuppression.error &&
+    suppressionEvidence.notices.length === parsedSuppression.notices.length &&
+    suppressionEvidence.notices.every((notice, index) => {
+      const parsed = parsedSuppression.notices[index];
+      return !!parsed && notice?.cursor === parsed.cursor && notice?.realtimeTimestamp === parsed.realtimeTimestamp &&
+        notice?.message === parsed.message && notice?.suppressedCount === parsed.suppressedCount;
+    });
+  if (!recordedNoticesMatch) {
+    return { verdict: 'inconclusive', targets, reason: 'Host system-journal suppression evidence is malformed or does not match its preserved output' };
+  }
+  if (parsedSuppression.notices.length > 0) {
+    return { verdict: 'inconclusive', targets,
+      reason: `Host system journal recorded ${parsedSuppression.notices.length} suppression notice(s) for user@1000.service during [T0,T1]` };
   }
   return targets.every((target) => target.passed)
     ? { verdict: 'healthy', targets, reason: 'All nonempty retained cohorts met the progress rule' }

@@ -55,6 +55,29 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
     ).toBe(false);
   });
 
+  it("exempts the frozen candidate a ready-to-test queue judges even after an admission moved its head (EI-27020811282666044)", () => {
+    // markFrozenRepairAdmitted KEEPS ready-to-test on admission so the candidate's own red seeds the
+    // signature, and decideFrozenCandidateRepairQueue then tests queue.candidate, not repairHead.
+    // Keying on repairHead alone withheld that red as a fossil on every run (measured: two
+    // consecutive ~2h15m runs on 8c03b5dc, no signature ever published).
+    const readyToTestMovedHead = { ...ACTIVE_QUEUE, phase: "ready-to-test" as const };
+    expect(
+      isJudgingPinnedActiveRepair({ candidate: BASE, repairQueue: readyToTestMovedHead }),
+    ).toBe(true);
+    // awaiting-fixer renders no new suite verdict; the red it holds was computed on the candidate.
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: BASE,
+        repairQueue: { ...ACTIVE_QUEUE, phase: "awaiting-fixer" as const },
+      }),
+    ).toBe(true);
+    // ...and in that phase the moved head is NOT what the gate judges, so a verdict naming it is a
+    // stray and must stay withheld.
+    expect(
+      isJudgingPinnedActiveRepair({ candidate: HEAD, repairQueue: readyToTestMovedHead }),
+    ).toBe(false);
+  });
+
   it("does NOT exempt when repairHead names a DIFFERENT sha than the one being judged", () => {
     // The dangerous confusion: a queue exists, but this verdict is about some other candidate, so
     // publishing it would be exactly the mis-dispatch the withholding prevents.
@@ -78,10 +101,11 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
       }),
     ).toBe(false);
     // blockedReason alone is disqualifying, so a phase/reason skew cannot publish a dead repair's
-    // red.
+    // red. (ready-to-test judges the candidate, so judge BASE here — otherwise the sha mismatch
+    // alone would make this pass and the blockedReason check would go unexercised.)
     expect(
       isJudgingPinnedActiveRepair({
-        candidate: HEAD,
+        candidate: BASE,
         repairQueue: {
           ...ACTIVE_QUEUE,
           phase: "ready-to-test",

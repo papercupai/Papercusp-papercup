@@ -36,6 +36,7 @@ import workScopeRoutes from './work-scope/set';
 import governancePolicyRoutes from './governance-policy/policy';
 import governanceSiemExportRoutes from './governance-policy/siem-export';
 import governanceLegalHoldRoutes from './governance-policy/legal-holds';
+import codeCleanupResetThrottleRoutes from './code-cleanup/reset-throttle';
 import customerDataSupportRoutes from './admin/customer-data';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
@@ -166,6 +167,7 @@ import harnessBranchActionRun from './harness/branch-action-run';
 import harnessBranchActionStream from './harness/branch-action-stream';
 import harnessBranchActionByNameRun from './harness/branch-action-by-name-run';
 import uiPresence from './ui/presence';
+import uiCardLink from './ui/card-link';
 import uiIntentsStream from './ui/intents-stream';
 import uiIntentResult from './ui/intent-result';
 import zeroHarnessSse from './zero-harness/sse';
@@ -657,6 +659,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(governancePolicyRoutes as AnyRoute[]),
   ...flatten(governanceSiemExportRoutes as AnyRoute[]),
   ...flatten(governanceLegalHoldRoutes as AnyRoute[]),
+  ...flatten(codeCleanupResetThrottleRoutes as AnyRoute[]),
   ...flatten(customerDataSupportRoutes as AnyRoute[]),
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
@@ -785,6 +788,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBranchActionStream as AnyRoute),
   ...flatten(harnessBranchActionByNameRun as AnyRoute),
   ...flatten(uiPresence as AnyRoute),
+  ...flatten(uiCardLink as AnyRoute),
   ...flatten(uiIntentsStream as AnyRoute),
   ...flatten(uiIntentResult as AnyRoute),
   ...flatten(zeroHarnessSse as AnyRoute),

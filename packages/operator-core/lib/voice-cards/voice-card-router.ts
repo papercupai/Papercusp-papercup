@@ -33,12 +33,16 @@ import {
 export interface RouterCard {
   correlationId: string;
   runId: string;
+  conversationId?: string;
+  workspaceId?: string;
   card: OpenCardSnapshot;
 }
 
 export type RouterOutcome =
-  | { kind: 'submit'; correlationId: string; runId: string; payload: { picks: string[] } }
-  | { kind: 'decline'; correlationId: string; runId: string }
+  | ({ kind: 'submit'; correlationId: string; runId: string; payload: { picks: string[] } }
+    & Pick<RouterCard, 'conversationId' | 'workspaceId'>)
+  | ({ kind: 'decline'; correlationId: string; runId: string }
+    & Pick<RouterCard, 'conversationId' | 'workspaceId'>)
   | { kind: 'ambiguous'; correlationId: string; runId: string; prompt: string; round: number }
   | { kind: 'buffered' }
   | { kind: 'fall_through' };
@@ -98,6 +102,10 @@ export function routeTranscript(
     // No match: fall through. Card stays active for the next utterance.
     return { kind: 'fall_through' };
   }
+  const scope = {
+    ...(state.active.conversationId === undefined ? {} : { conversationId: state.active.conversationId }),
+    ...(state.active.workspaceId === undefined ? {} : { workspaceId: state.active.workspaceId }),
+  };
 
   if (result.action === 'submit') {
     const out: RouterOutcome = {
@@ -105,6 +113,7 @@ export function routeTranscript(
       correlationId: state.active.correlationId,
       runId: state.active.runId,
       payload: result.payload,
+      ...scope,
     };
     clearActive(state);
     return out;
@@ -113,6 +122,7 @@ export function routeTranscript(
   if (result.action === 'decline') {
     const out: RouterOutcome = {
       kind: 'decline',
+      ...scope,
       correlationId: state.active.correlationId,
       runId: state.active.runId,
     };

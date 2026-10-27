@@ -340,6 +340,7 @@ export interface SocialSearchHit {
   snippet: string;
   score: number;
   replyable: SocialWriteAvailability;
+  privacy?: DocumentLabel | null;
 }
 
 export interface SocialSearchOutcome {
@@ -353,6 +354,10 @@ export interface SocialSearchOutcome {
    * difference matters when an agent concludes the owner never posted about it.
    */
   skipped: Array<{ reason: MintRefusal; count: number }>;
+  restrictedResults?: number;
+  restrictionNote?: string;
+  withheldRestricted?: number;
+  withheldReason?: string;
 }
 
 export class SocialSearchNotGranted extends Error {
@@ -380,6 +385,7 @@ export async function searchSocialPosts(
   params: {
     workspaceId: string;
     userId: string;
+    agentOwnerId?: string | null;
     query: string;
     grantedScopes: readonly string[];
     platforms?: readonly string[];
@@ -414,7 +420,28 @@ export async function searchSocialPosts(
     queryEmbedding: params.queryEmbedding ?? null,
   });
 
-  return { scopesSearched: scopes, ...collectSocialHits(rows, registry) };
+  // Only mintable hits will reach the agent. Do not constrain it for a row
+  // discarded by the reference fence, but ledger every restricted delivered hit
+  // in the same transaction as this read, before its snippet is returned.
+  const collected = collectSocialHits(rows, registry);
+  const deliverable = rows.filter(row => mintSocialPostRef(row.source, row.externalId, registry).ok);
+  const disclosed = await discloseDocuments(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    agentOwnerId: params.agentOwnerId ?? null,
+    documents: deliverable,
+    via: 'social:search',
+  });
+  return {
+    scopesSearched: scopes,
+    hits: collectSocialHits(disclosed.documents, registry).hits,
+    skipped: collected.skipped,
+    ...(disclosed.disclosed ? {
+      restrictedResults: disclosed.disclosed,
+      restrictionNote: 'Results carrying privacy are restricted to their privacy.readerSet (intersected across restricted content you have read) or the owner.',
+    } : {}),
+    ...(disclosed.withheld ? { withheldRestricted: disclosed.withheld, withheldReason: 'disclosure_identity_unresolved' } : {}),
+  };
 }
 
 /**
@@ -427,7 +454,7 @@ export async function searchSocialPosts(
  * ref or accounted for.
  */
 export function collectSocialHits(
-  rows: readonly PersonalSearchResult[],
+  rows: readonly (PersonalSearchResult & { privacy?: DocumentLabel | null })[],
   registry: ProviderRegistry = providerRegistry(),
 ): { hits: SocialSearchHit[]; skipped: Array<{ reason: MintRefusal; count: number }> } {
   const hits: SocialSearchHit[] = [];
@@ -448,7 +475,7 @@ export function collectSocialHits(
 }
 
 function hitFromRow(
-  row: PersonalSearchResult,
+  row: PersonalSearchResult & { privacy?: DocumentLabel | null },
   platformRow: SocialProviderInfo,
   postId: string,
   registry: ProviderRegistry,
@@ -462,6 +489,7 @@ function hitFromRow(
     occurredAt: row.occurredAt,
     title: row.title,
     snippet: row.snippet,
+    ...('privacy' in row ? { privacy: row.privacy } : {}),
     score: row.score,
     replyable: socialWriteAvailability(platformRow.id, 'reply', registry),
   };

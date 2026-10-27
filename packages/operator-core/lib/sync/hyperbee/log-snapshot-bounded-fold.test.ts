@@ -20,6 +20,7 @@ import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   buildSnapshotOps,
   buildSnapshotOpsFromRows,
@@ -28,17 +29,19 @@ import {
   SnapshotAbortedError,
   SnapshotRowFolder,
   SNAPSHOT_READ_CONCURRENCY,
+  snapshotFoldKey,
   type SnapshotFoldCheckpointStore,
   type SnapshotFoldWorkerFactory,
   type SnapshotFoldWorkerLike,
   type SnapshotValueTransform,
 } from './log-snapshot';
-import { SnapshotIndexFolder } from './snapshot-index-fold';
+import { scanFilteredSnapshotIndex, SnapshotIndexFolder } from './snapshot-index-fold';
 import { SnapshotFoldWorker } from './snapshot-fold-offload';
 import { encodeStoredBlock } from './snapshot-fold-protocol';
 import { openOwnLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import { shouldDropGovernorReceiptSnapshotRow, type GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
+import { processHlc } from '@papercusp/locks-core';
 
 const NOW = 50_000_000_000;
 const SV = CURRENT_SCHEMA_VERSION;
@@ -96,7 +99,7 @@ function history(count: number, pad = 0, salt = ''): PeerLogOp[] {
             ts: NOW - 1000 + i,
             schema_version: SV,
             author_pubkey: '',
-            ...(i % 7 === 0 ? { hlc: `${i}:0000:${salt || 'n'}` } : {}),
+            ...(i % 7 === 0 ? { hlc: `${String(i).padStart(15, '0')}:00000` } : {}),
           },
     );
   }
@@ -217,6 +220,63 @@ describe('legacy engineer-issue receipt filtering across both folds', () => {
 });
 
 describe('R-1 bounded: the scan retains winning positions only', () => {
+  it('streams originals and privacy projections with exact producer order, without retaining row JSON', async () => {
+    const events: PeerLogOp[] = [3, 1, 2].map(ts => ({ type: 'put', table: 'usage', hbKey: 'shared',
+      value: { ts }, ts, schema_version: SV, author_pubkey: `author-${ts}` }));
+    const raw = [...history(100, 500), ...events];
+    const prior = buildSnapshotOps({ ops: raw, coversUpTo: raw.length, author_pubkey: 'a', ts: NOW,
+      schema_version: SV, maxChunkBytes: 1000 });
+    const ops = [...raw, ...prior, ...history(20, 1000, 'tail')];
+    const transformValue: SnapshotValueTransform = (value, context) =>
+      context.hbKey === 'K-2' ? DROP_SNAPSHOT_ROW : value;
+    const expected = new SnapshotRowFolder();
+    const projected = new SnapshotRowFolder({ transformValue });
+    ops.forEach((op, i) => { expected.add(op, op.value, i); projected.add(op, op.value, i); });
+    const projectedByGroup = new Map(projected.finish({ now: NOW }).map(row => [snapshotFoldKey(row), row]));
+    const source = { length: ops.length, get: async (i: number) => ops[i]! };
+    const scan = await scanFilteredSnapshotIndex(source, { priorSnapshotHint: { coversUpTo: raw.length,
+      chunkCount: prior.length } });
+    const before = scan.folder.exportCheckpoint({ logKey: 'k', cursor: ops.length });
+    const streamed = [];
+    for await (const entry of scan.folder.streamRows(source.get, { now: NOW, transformValue })) streamed.push(entry);
+    expect(streamed).toEqual(expected.finish({ now: NOW }).map(row => ({ row,
+      projected: projectedByGroup.get(snapshotFoldKey(row)) ?? null })));
+    expect(scan.folder.exportCheckpoint({ logKey: 'k', cursor: ops.length })).toEqual(before);
+    const old = JSON.parse(new TextDecoder().decode(before)); old.v = 1;
+    expect(new SnapshotIndexFolder().restoreCheckpoint(Buffer.from(JSON.stringify(old)),
+      { logKey: 'k', maxCursor: ops.length })).toEqual({ ok: false, reason: 'version 1' });
+  });
+
+  it('scans and streams a 256 MiB snapshot under a 96 MiB native heap', () => {
+    const module = new URL('./snapshot-index-fold.ts', import.meta.url).href;
+    const script = `
+      const loaded = await import(${JSON.stringify(module)});
+      const { scanFilteredSnapshotIndex } = loaded.default ?? loaded;
+      const count = 1024, prefix = 16;
+      let active = 0, maxActive = 0;
+      const source = { length: count + prefix, get: async index => {
+        maxActive = Math.max(maxActive, ++active);
+        try { return JSON.parse(JSON.stringify({ type: 'put', table: '__snapshot__', hbKey: 'chunk', ts: 1,
+          schema_version: 1, value: { coversUpTo: prefix, chunkIdx: index - prefix, chunkCount: count,
+            rows: [{ table: 't', hbKey: String(index).padStart(6, '0'), ts: 1, schema_version: 1,
+              value: String(index) + 'x'.repeat(256 * 1024) }] } })); } finally { active--; }
+      } };
+      const scan = await scanFilteredSnapshotIndex(source, { priorSnapshotHint: { coversUpTo: prefix, chunkCount: count } });
+      let rows = 0, bytes = 0;
+      for await (const { row } of scan.folder.streamRows(source.get)) { rows++; bytes += row.value.length; }
+      const checkpointBytes = scan.folder.exportCheckpoint({ logKey: 'k', cursor: source.length }).length;
+      console.log(JSON.stringify({ rows, bytes, maxActive, checkpointBytes, seedIndex: scan.seedIndex }));
+    `;
+    const result = spawnSync(process.execPath, ['--max-old-space-size=96', '--import', 'tsx',
+      '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 60_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.error).toBeUndefined();
+    const measured = JSON.parse(result.stdout.trim());
+    expect(measured).toMatchObject({ rows: 1024, maxActive: 1, seedIndex: 16 });
+    expect(measured.bytes).toBeGreaterThanOrEqual(256 * 1024 * 1024);
+    expect(measured.checkpointBytes).toBeLessThan(128 * 1024);
+  }, 65_000);
+
   it('scan state is identical whether values are 1 byte or 64 KiB (retention independent of value size)', () => {
     const small = history(2_000, 1);
     const big = history(2_000, 64 * 1024);
@@ -265,6 +325,31 @@ describe('R-1 bounded: the scan retains winning positions only', () => {
 });
 
 describe('R-1 equivalence: the index fold emits the old folder’s bytes', () => {
+  it('preserves same-key immutable events across scan checkpoint and prior snapshot expansion', () => {
+    const events: PeerLogOp[] = ['claims', 'usage', 'hive-members', 'p2p-receipts'].flatMap(table =>
+      [1, 2, 3].map(ts => ({ type: 'put' as const, table, hbKey: 'shared', value: { ts },
+        ts, author_pubkey: `author-${ts % 2}`, schema_version: SV })));
+    const prior = buildSnapshotOps({ ops: events, coversUpTo: events.length,
+      author_pubkey: 'snapshot-author', ts: NOW, schema_version: SV });
+    for (const ops of [events, [...events, ...prior]]) {
+      expect(indexFoldBlocks(ops, {})).toEqual(rowFoldBlocks(ops, {}));
+      const f = new SnapshotIndexFolder();
+      ops.forEach((op, i) => f.add(op, i));
+      const resumed = new SnapshotIndexFolder();
+      expect(resumed.restoreCheckpoint(f.exportCheckpoint({ logKey: 'k', cursor: ops.length }),
+        { logKey: 'k', maxCursor: ops.length })).toEqual({ ok: true, cursor: ops.length });
+      expect(resumed.keyCount).toBe(events.length);
+    }
+  });
+
+  it('applies address privacy drops to raw deletes without turning retained deletes into content', () => {
+    const ops: PeerLogOp[] = ['private', 'public'].map(hbKey => ({ type: 'del', table: 't', hbKey,
+      value: null, ts: NOW, author_pubkey: '', schema_version: SV }));
+    const transformValue: SnapshotValueTransform = (_value, context) =>
+      context.hbKey === 'private' ? DROP_SNAPSHOT_ROW : { cannotResurrect: true };
+    expect(indexFoldBlocks(ops, { transformValue })).toEqual(rowFoldBlocks(ops, { transformValue }));
+  });
+
   const opArb = fc.record({
     kind: fc.constantFrom('put', 'put', 'put', 'del', 'snapshot'),
     table: fc.constantFrom('a', 'a-b', 't', 'excluded'),
@@ -353,7 +438,11 @@ function recordingWorker(record: { foldStarts: number[]; aborted: { value: boole
 
 describe('R-1 resume: an interrupted fold continues from its persisted cursor', () => {
   it('resumes AT the saved cursor (not index 0) and appends the bytes of an uninterrupted fold', async () => {
-    const ops = history(SNAPSHOT_READ_CONCURRENCY * 5 + 13, 256);
+    // Both logs replay the same captured HLCs. Letting appendBatch stamp each
+    // independently would compare two different source histories.
+    const ops = history(SNAPSHOT_READ_CONCURRENCY * 5 + 13, 256).map((op, i) => ({
+      ...op, hlc: `${String(NOW - 1000 + i).padStart(15, '0')}:00000`,
+    }));
     const interrupted = await freshLog();
     const reference = await freshLog();
     await interrupted.appendBatch(ops);
@@ -379,6 +468,9 @@ describe('R-1 resume: an interrupted fold continues from its persisted cursor', 
     // Run 2: resumes. The first window scanned starts at the cursor, never at 0.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     cleanups.push(() => errors.mockRestore());
+    // Only new envelope clocks are controlled; every captured row remains verbatim.
+    const clock = vi.spyOn(processHlc(), 'now').mockReturnValue({ ms: NOW, count: 0 });
+    cleanups.push(() => clock.mockRestore());
     const second = { foldStarts: [] as number[], aborted: { value: false } };
     const resumed = await produceLogSnapshot(interrupted, {
       ...base,
@@ -390,13 +482,11 @@ describe('R-1 resume: an interrupted fold continues from its persisted cursor', 
     expect(errors).toHaveBeenCalledWith(expect.stringContaining(`resuming the fold from checkpoint cursor ${savedCursor}`));
     expect(store.bytes, 'a successful append clears the superseded checkpoint').toBeNull();
 
-    // Same bytes as a fold that was never interrupted (the old inline folder).
     const inline = await produceLogSnapshot(reference, base);
     expect({ ...resumed, appendsHeldMs: 0 }).toEqual({ ...inline, appendsHeldMs: 0 });
     for (let i = 0; i < interrupted.length; i++) {
-      expect(Buffer.from((await interrupted.getRaw!(i))!).equals(Buffer.from((await reference.getRaw!(i))!))).toBe(
-        true,
-      );
+      expect(Buffer.from((await interrupted.getRaw!(i))!).equals(Buffer.from((await reference.getRaw!(i))!)),
+        `block ${i}`).toBe(true);
     }
   });
 

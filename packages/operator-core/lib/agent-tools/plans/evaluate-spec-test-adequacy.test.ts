@@ -17,11 +17,25 @@ const acceptanceRubricMocks = vi.hoisted(() => ({
 }));
 const adhocContractMocks = vi.hoisted(() => ({ workItem: vi.fn(), contract: vi.fn() }));
 const scorecardMocks = vi.hoisted(() => ({ readEvidence: vi.fn() }));
+const sourceBarMocks = vi.hoisted(() => ({
+  requirements: { status: 'not-required' } as import('./source-bar-test-requirements').SourceBarTestRequirements,
+}));
+vi.mock('./source-bar-test-requirements', async (original) => ({
+  ...(await original<typeof import('./source-bar-test-requirements')>()),
+  resolveSourceBarTestRequirements: async () => sourceBarMocks.requirements,
+}));
 
-vi.mock('../../work-items', () => ({ getWorkItem: adhocContractMocks.workItem }));
+vi.mock('../../work-items', async () => {
+  const { ISSUE_FAMILY_ROUTE_KINDS } = await import('../../work-nature/agent-work-predicate');
+  return {
+    ISSUE_FAMILY_KINDS: ISSUE_FAMILY_ROUTE_KINDS,
+    getWorkItem: adhocContractMocks.workItem,
+  };
+});
 vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
 
-vi.mock('../../harness-registry', () => ({
+vi.mock('../../harness-registry', async (original) => ({
+  ...(await original<typeof import('../../harness-registry')>()),
   loadHarnessRegistry: async () => ({
     projects: [{ slug: 'papercusp', path: harnessRoot.path }],
   }),
@@ -136,6 +150,7 @@ const clause = (lifecycleStatus: 'draft' | 'active' | 'accepted' = 'draft') =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sourceBarMocks.requirements = { status: 'not-required' };
   listEvidence.mockResolvedValue([{ specId: 'SPEC-001' } as never]);
   listClauses.mockResolvedValue([clause()]);
   listAcceptanceRubrics.mockResolvedValue([
@@ -149,6 +164,106 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  describe('live mechanical test checks', () => {
+    const file = 'src/guard.test.ts';
+    const mutation: import('@papercusp/test-config/mutation-descriptor').MutationDescriptor = {
+      schemaVersion: 1, probeInvocationId: 'mechanical-handler', leg: 'mutant', mode: 'copy-out',
+      subjectPath: 'src/guard.ts', mutateExpression: 's/reject/accept/', againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '-reject\n+accept', mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64),
+    };
+    function proof(kind: 'test' | 'mutation'): EvidenceRow {
+      const id = kind === 'test' ? 1 : 2;
+      return {
+        id, workItemId: 'WI-123', planSlug: 'plan-a', specId: 'SPEC-001', sourceValId: null,
+        specRevision: 1, currentRevision: 1, specFingerprint: 'sha256:spec-001',
+        evidenceKind: kind, evidenceRef: `run:${id}`, testRunId: id, coverageEvidenceRef: null,
+        fingerprints: { sourceFingerprint: 's', testFingerprint: 't', fixtureFingerprint: null,
+          rubricFingerprint: null, environmentFingerprint: null },
+        testRunExecution: { status: kind === 'test' ? 'pass' : 'fail', passed: kind === 'test' ? 1 : 0,
+          failed: kind === 'test' ? 0 : 1, skipped: 0, collectionFailed: false, filePath: file },
+        testRunProvenance: { filePath: file, framework: 'vitest',
+          source: kind === 'test' ? 'local' : 'mutation-probe',
+          mutationPhase: kind === 'mutation' ? 'mutant' : null, mutationFailedCaseTitles: [],
+          commitSha: 'e'.repeat(40), worktreeDirty: false,
+          ...(kind === 'mutation' ? { mutationPhase: 'mutant', mutation,
+            mutationBaseline: { testRunId: 3, status: 'pass', passed: 1, failed: 0, skipped: 0,
+              collectionFailed: false, mutation: { ...mutation, leg: 'baseline' } } } : {}) },
+        details: { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
+          sourcePaths: ['src/guard.ts'], testPaths: [file] } },
+        currentness: { comparisonSupplied: true, provenance: 'server-measured', overall: 'current',
+          dimensions: { spec: 'current', source: 'current', test: 'current', fixture: 'not-applicable',
+            rubric: 'not-applicable', environment: 'not-applicable', coverageEvidence: 'not-applicable', testRun: 'current' },
+          staleReasons: [], unknownReasons: [] },
+        serverMeasurement: { status: 'measured', measuredDimensions: ['source', 'test'], pinned: false, current: {
+          planSlug: 'plan-a', specId: 'SPEC-001', specRevision: 1, specFingerprint: 'sha256:spec-001',
+          evidenceKind: kind, evidenceRef: `run:${id}`, sourceFingerprint: 's', testFingerprint: 't',
+        } },
+        observedAt: '2026-09-07T00:00:00.000Z', createdAt: '2026-09-07T00:00:00.000Z',
+        bindingFingerprint: `binding-${id}`, createdBy: 'su-test',
+      };
+    }
+    beforeEach(() => {
+      sourceBarMocks.requirements = { status: 'required', files: [file] };
+      listClauses.mockResolvedValue([clause('active')]);
+      listEvidence.mockResolvedValue([proof('test'), proof('mutation')]);
+    });
+
+    it.each(['summary', 'full'] as const)('returns ledger proof without judgment ratings or a draft in %s', async detail => {
+      const result = await call({ harness: 'papercusp', slug: 'plan-a', detail });
+      expect(result).toMatchObject({ verdicts: { pass: 1, fail: 0 }, rows: [{
+        evaluationMode: 'mechanical', specId: 'SPEC-001', verdict: 'pass', wouldBlock: [],
+        mechanicalProof: { requiredFiles: [file], passingTestBindingIds: { [file]: 1 },
+          caughtMutantBindingIds: [2], gaps: [] },
+        measurementEvidence: { status: 'measured', measuredBindings: 2 },
+      }] });
+      expect(result.rows[0]).not.toHaveProperty('ratings');
+      expect(result.rows[0]).not.toHaveProperty('scorecardDraft');
+      expect(result).not.toHaveProperty('certifyPassing');
+    });
+
+    it('keeps mechanical proof intact under judgment criteria filters and diagnostic notes', async () => {
+      const result = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'full',
+        criteria: ['freshness'], workItemIds: ['WI-123'],
+        evaluatorBuild: { sha: 'old-build', version: '1.0' } });
+      expect(result.governing).toBe(false);
+      expect(result.rows[0]).toMatchObject({ evaluationMode: 'mechanical', verdict: 'pass',
+        mechanicalProof: { caughtMutantBindingIds: [2] } });
+      expect(result.rows[0]).not.toHaveProperty('scorecardDraft');
+      expect(result.rows[0]).not.toHaveProperty('scorecardDraftOmitted');
+    });
+
+    it.each(['missing-test', 'missing-mutant', 'descriptorless', 'uncalibrated', 'stale-test', 'stale-mutant'])(
+      'fails closed on %s without inventing criterion grades', async defect => {
+        let evidence = [proof('test'), proof('mutation')];
+        if (defect === 'missing-test') evidence = evidence.slice(1);
+        if (defect === 'missing-mutant') evidence = evidence.slice(0, 1);
+        if (defect === 'descriptorless') delete evidence[1]!.testRunProvenance!.mutation;
+        if (defect === 'uncalibrated') evidence[1]!.testRunProvenance!.mutationBaseline = null;
+        if (defect.startsWith('stale-')) evidence[defect === 'stale-test' ? 0 : 1]!.currentness.overall = 'stale';
+        listEvidence.mockResolvedValue(evidence);
+        const result = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'summary' });
+        expect(result.rows[0]).toMatchObject({ evaluationMode: 'mechanical', verdict: 'fail',
+          wouldBlock: ['mechanical-test-adequacy'], mechanicalProof: { verdict: 'fail' } });
+        expect(result.rows[0].mechanicalProof.gaps.length).toBeGreaterThan(0);
+        expect(result.rows[0]).not.toHaveProperty('ratings');
+        expect(result.rows[0]).not.toHaveProperty('scorecardDraft');
+        expect(result).not.toHaveProperty('nonPassingDetail');
+      },
+    );
+
+    it('preserves judgment drafts for immutable scorecard replay', async () => {
+      const result = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'full',
+        specIds: ['SPEC-001'], specRevision: 1, specFingerprint: 'sha256:spec-001', replaySnapshot: true });
+      expect(result.rows[0].evaluationMode).toBe('judgment');
+      expect(result.governing).toBe(false);
+      expect(result.governingNote).toContain('IMMUTABLE JUDGMENT REPLAY');
+      expect(result.rows[0]).toHaveProperty('scorecardDraft.rerunRecipe');
+      expect(result.rows[0]).not.toHaveProperty('mechanicalProof');
+    });
+  });
+
   it('declares a nested replay budget above the flat MCP transport deadline', () => {
     expect((tool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
   });

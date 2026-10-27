@@ -53,6 +53,8 @@ import {
   LocalCardHost,
   PendingCardsBar,
   ReportBlockCard,
+  StructuredResults,
+  type StructuredResultHost,
   type ReportBlockRenderContext,
 } from '@papercusp/chat-cards';
 import type { CardResponse, ChatTurn, ChatTurnToolCall, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
@@ -306,6 +308,8 @@ export interface PapercupChatProps {
   renderToolCard?: (tool: ChatTurnToolCall, turn: ChatTurn, index: number) => ReactNode | null;
   /** Host override for a turn's report card (default: chat-cards ReportBlockCard). */
   renderReport?: (report: ReportBlock, turn?: ChatTurn) => ReactNode;
+  /** Host-owned scope/revocation epoch and resource operations, never model-supplied authority. */
+  resultContext?: { authorizationKey: string; host: StructuredResultHost };
   /** Client-side cards (the host's `askUserLocal` queue) — rendered by chat-cards' LocalCardHost. */
   localCards?: readonly OpenCardSnapshot[];
   onLocalCardResponse?: (response: CardResponse) => void;
@@ -400,6 +404,7 @@ interface TurnRowProps {
   renderAvatar?: PapercupChatProps['renderAvatar'];
   renderToolCard?: PapercupChatProps['renderToolCard'];
   renderReport: (report: ReportBlock, turn?: ChatTurn) => ReactNode;
+  resultContext?: PapercupChatProps['resultContext'];
   answerPersistedCard: PapercupChatController['answerPersistedCard'];
   cardBusy: boolean;
   focused: boolean;
@@ -407,7 +412,7 @@ interface TurnRowProps {
 
 const TurnRow = memo(function TurnRow(props: TurnRowProps) {
   const { row, index, start, measureElement, hostTrust, allowImages, harnessSlug, planSlug, onWorkRefActivate } = props;
-  const { assistantLabel, userLabel, renderActionBar, renderAvatar, renderToolCard, renderReport, answerPersistedCard, cardBusy, focused } = props;
+  const { assistantLabel, userLabel, renderActionBar, renderAvatar, renderToolCard, renderReport, resultContext, answerPersistedCard, cardBusy, focused } = props;
   const isOwner = hostTrust === 'owner';
   const style = { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${start}px)` } as const;
 
@@ -534,11 +539,19 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
                 onWorkRefActivate={onWorkRefActivate}
               />
             </div>
-          ) : turn.role === 'assistant' && cards.length === 0 ? (
+          ) : turn.role === 'assistant' && cards.length === 0 && !turn.results?.length ? (
             <p className="pc-chat__body pc-chat__body--empty" role="status">
               <em>{tools.length > 0 ? 'Papercup ran its tools but returned no answer for this turn.' : 'Papercup returned no answer for this turn.'} Ask again to retry.</em>
             </p>
           ) : null}
+          {turn.results?.length ? resultContext ? (
+            <StructuredResults blocks={turn.results} authorizationKey={resultContext.authorizationKey}
+              host={{ ...resultContext.host, renderMarkdown: source => (
+                <ChatMarkdown content={source} hostTrust={hostTrust} allowImages={allowImages}
+                  harnessSlug={harnessSlug} planSlug={turn.planSlug ?? planSlug}
+                  onWorkRefActivate={onWorkRefActivate} />
+              ) }} />
+          ) : <p role="status">This result is unavailable.</p> : null}
           {cards}
           <div className="pc-chat__turn-footer">
             <Provenance provenance={turn.provenance} />
@@ -578,7 +591,7 @@ const REPORT_ITEM_COMPONENTS: Record<string, unknown> = {
  * The default now CARRIES the behaviour — a host opts OUT by passing its own
  * `renderReport`, instead of having to know to opt in.
  */
-function ReportItemText({
+const ReportItemText = memo(function ReportItemText({
   text,
   hostTrust,
   harnessSlug,
@@ -630,7 +643,7 @@ function ReportItemText({
       {withHardBreaks(text)}
     </ReactMarkdown>
   );
-}
+});
 
 export function PapercupChat(props: PapercupChatProps) {
   const {
@@ -649,6 +662,7 @@ export function PapercupChat(props: PapercupChatProps) {
     composerChrome,
     renderToolCard,
     renderReport: renderReportProp,
+    resultContext,
     localCards,
     onLocalCardResponse,
     inputValue,
@@ -893,6 +907,7 @@ export function PapercupChat(props: PapercupChatProps) {
                 renderAvatar={renderAvatar}
                 renderToolCard={renderToolCard}
                 renderReport={renderReport}
+                resultContext={resultContext}
                 answerPersistedCard={chat.answerPersistedCard}
                 cardBusy={chat.cardBusy}
                 focused={row.kind === 'turn' && vi.index === resolvedFocusIndex}

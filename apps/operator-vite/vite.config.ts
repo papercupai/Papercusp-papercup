@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, type Plugin, type UserConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
@@ -13,6 +13,7 @@ import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { flagsBootstrapPlugin } from './flags-bootstrap';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
+import { desktopPortalPlugin } from './desktop-portal-plugin';
 import { createDevWatchIgnore } from './dev-watch-ignore';
 import {
   filterInitialModulePreloadDependencies,
@@ -109,7 +110,7 @@ const initialLazyStylesheetFilterPlugin: Plugin = {
 // flagsBootstrapPlugin (./flags-bootstrap) seeds dev-server flags. It is
 // `apply: 'serve'`, so a built index.html carries no seed (WI-10004079).
 
-export default defineConfig({
+export default defineConfig(async (): Promise<UserConfig> => ({
   // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,
   // onnx/wasm voice models, …) live in the operator's own `public/`.
   // operator-vite has no `public/` of its own, so point Vite's
@@ -388,6 +389,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    await desktopPortalPlugin({ papercuspRoot: resolve(import.meta.dirname, '../..') }),
     noViteClientPlugin,
     flagsBootstrapPlugin,
     initialLazyStylesheetFilterPlugin,
@@ -444,4 +446,4 @@ export default defineConfig({
     // No-op for a one-shot production/CI build. See watch-heartbeat.ts.
     watchHeartbeatPlugin(),
   ],
-});
+}));

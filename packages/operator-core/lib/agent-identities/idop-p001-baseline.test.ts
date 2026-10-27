@@ -116,7 +116,8 @@ describe('IDOP P-001 frozen baseline', () => {
 
   it('requires exact population equality, even when duplicate observations meet a count floor', () => {
     const observed = { identity: 'one', ownerId: 'su-receipt', observedAt: '2026-10-22T16:00:00Z',
-      status: 'observed' as const, toolInvocationId: 1 };
+      status: 'observed' as const, toolInvocationId: 1,
+      nativeSessionId: '11111111-1111-4111-8111-111111111111' };
     const input = { population: { roles: [], builtInIdentities: [{ id: 'one' }, { id: 'two' }] },
       observations: Array.from({ length: 30 }, () => ({ ...observed })) };
     expect(inspectIdopP001Coverage(input)).toMatchObject({ complete: false, missing: ['identity:two'] });
@@ -125,6 +126,23 @@ describe('IDOP P-001 frozen baseline', () => {
     input.population.builtInIdentities.push({ id: 'three' });
     expect(inspectIdopP001Coverage(input)).toMatchObject({ complete: false, missing: ['identity:three'] });
   });
+
+  it.each([undefined, null, '', ' \t\n'])(
+    'rejects an observed census receipt without a native source session (%j)',
+    (nativeSessionId) => {
+      const observed = { identity: 'one', ownerId: 'su-receipt',
+        observedAt: '2026-10-22T16:00:00Z', status: 'observed' as const,
+        toolInvocationId: 1, nativeSessionId };
+      const population = { roles: [], builtInIdentities: [{ id: 'one' }] };
+      expect(inspectIdopP001Coverage({ population, observations: [observed] })).toMatchObject({
+        complete: false, checked: [], missing: ['identity:one'], invalid: ['identity:one'],
+      });
+      expect(inspectIdopP001Coverage({ population, observations: [{ ...observed,
+        nativeSessionId: '11111111-1111-4111-8111-111111111111' }] })).toMatchObject({
+        complete: true, checked: ['identity:one'], missing: [], invalid: [],
+      });
+    },
+  );
 
   it('resolves each captured launch tool to its exact schema without assuming selected modes were worn', () => {
     const manifest = JSON.parse(readFileSync(join(root,
@@ -170,7 +188,8 @@ describe('IDOP P-001 frozen baseline', () => {
   it('rejects duplicate population members, unknown identities and receipt-free assertions', () => {
     const input = { population: { roles: [], builtInIdentities: [{ id: 'one' }, { id: 'one' }] },
       observations: [{ identity: 'one', ownerId: 'su-receipt', observedAt: '2026-10-22T16:00:00Z',
-        status: 'observed' as const, toolInvocationId: 1 }] };
+        status: 'observed' as const, toolInvocationId: 1,
+        nativeSessionId: '11111111-1111-4111-8111-111111111111' }] };
     expect(inspectIdopP001Coverage(input)).toMatchObject({ complete: false, duplicatePopulation: ['identity:one'] });
     input.population.builtInIdentities.pop();
     input.observations[0].toolInvocationId = 0;
@@ -182,7 +201,8 @@ describe('IDOP P-001 frozen baseline', () => {
   it('keeps authentic access refusals explicit without treating them as complete tool-set evidence', () => {
     const input = { population: { roles: [{ id: 'reviewer' }], builtInIdentities: [] },
       observations: [{ identity: 'reviewer', ownerId: 'su-reviewer', observedAt: '2026-10-22T16:00:00Z',
-        status: 'tool-refused' as const, toolInvocationId: 1, refusal: 'role_not_allowed' }] };
+        status: 'tool-refused' as const, toolInvocationId: 1, refusal: 'role_not_allowed',
+        nativeSessionId: '11111111-1111-4111-8111-111111111111' }] };
     expect(inspectIdopP001Coverage(input)).toMatchObject({
       complete: false, checked: [], refused: ['role:reviewer'], missing: [], invalid: [],
     });

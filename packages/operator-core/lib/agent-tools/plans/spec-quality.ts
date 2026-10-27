@@ -324,15 +324,30 @@ function exemptSourceBarProjectionMismatches(input: {
  * URL. Served paths (`/architecture/index.html`, `https://…/x.json`) start
  * with `/` or a scheme and are observable boundaries, so they are skipped.
  * A directory token counts only with a trailing slash, a second segment or a
- * file extension, so English such as "opt out/in" stays independent.
+ * file extension, so English such as "opt out/in" stays independent. An
+ * unqualified test/run/case-style category chain in a parallel conceptual
+ * list is ambiguous, not evidence of a filesystem prescription.
  */
 const REPO_DIR_TOKEN_RE =
   /(?:^|[\s(\[`'"])((?:\.\/)?(?:src|tests?|libs?|packages|apps|scripts|fixtures|dist|out)\/[\w*.-]*(?:\/[\w*.-]*)*)/gi;
 const NON_CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])([^\s()[\]`'"]+\.(?:html?|css|json|ya?ml|toml))\b/gi;
+// A code-file NAME needs a basename before its extension, like NON_CODE_FILE_TOKEN_RE.
+// A bare extension used as a population qualifier ("500 .ts edit-ledger rows") names a
+// file TYPE, not a file (WI-6554700010029504). Non-global: used with .test().
+const CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])[^\s()[\]`'"]+\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i;
 
 function repositoryPathReason(text: string): string | null {
   for (const match of text.matchAll(REPO_DIR_TOKEN_RE)) {
     const token = match[1].replace(/\.+$/, '');
+    // "between test/run/case, invocation/workflow" lists domain categories.
+    // Require a bare singular test chain, the list introducer, and a peer
+    // that is not another source-tree path. Quotes, ./, extensions, globs,
+    // trailing slashes and explicit path qualifiers retain the path check.
+    const peer = /^\s*,\s*([a-z]+(?:\/[a-z]+)+)\b/i.exec(text.slice(match.index! + match[0].length));
+    if (/^test\/[a-z]+(?:\/[a-z]+)+$/i.test(token) &&
+        match[0].trimStart() === token &&
+        /\b(?:between|among|across)$/i.test(text.slice(0, match.index).trimEnd()) &&
+        peer && !new RegExp(REPO_DIR_TOKEN_RE.source, 'i').test(peer[1])) continue;
     const rest = token.replace(/^(?:\.\/)?[^/]+\//, '');
     if (rest === '' || rest.includes('/') || /\.\w+$/.test(rest) || rest.includes('*')) {
       return 'names a repository path ' + JSON.stringify(token);
@@ -364,7 +379,7 @@ function clauseImplementationCouplingReason(clause: SpecClauseRevision): string 
 function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
-  if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
+  if (CODE_FILE_TOKEN_RE.test(behavior)) return 'names an implementation file';
   const repositoryPath = repositoryPathReason(behavior);
   if (repositoryPath) return repositoryPath;
   const internalRouteCall =
@@ -839,6 +854,8 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'A clickable block has no clip in src/cup-audio/.', expected: 'coupled' as const },
     { behavior: 'Wording from tests/fixtures/cupboard-brief.json appears outside a label.', expected: 'coupled' as const },
     { behavior: 'The built out/*/index.html leaves a placeholder behind.', expected: 'coupled' as const },
+    { behavior: 'Readers see correlation between `test/run/case`, invocation/workflow and trace/span.', expected: 'coupled' as const },
+    { behavior: 'Readers see correlation between test/run/case, invocation/workflow and trace/span.', expected: 'independent' as const },
     { behavior: 'An existing customer sees their subscription after signing in.', expected: 'independent' as const },
     { behavior: 'GET /architecture/index.html returns 200 with the map.', expected: 'independent' as const },
     { behavior: 'A visitor who opts out/in keeps that choice after a reload.', expected: 'independent' as const },

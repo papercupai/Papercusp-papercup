@@ -621,12 +621,15 @@ async function reclaimAbandonedLock(
   staleMs,
   io = {},
   measureSubphase = (_name, operation) => operation(),
+  observeOwner = (_owner) => {},
 ) {
   let owner;
   try {
-    owner = await measureSubphase("abandoned-lock.owner-read", async () =>
-      JSON.parse(await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8")),
-    );
+    owner = await measureSubphase("abandoned-lock.owner-read", async () => {
+      const rawOwner = await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8");
+      observeOwner(rawOwner);
+      return JSON.parse(rawOwner);
+    });
   } catch {
     // The age fallback below handles unreadable and unparseable records.
   }
@@ -669,7 +672,7 @@ async function reclaimAbandonedLock(
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
+async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, observeHead = () => {}) {
   let entries;
   try {
     entries = await readdir(ticketsDir, { withFileTypes: true });
@@ -682,7 +685,10 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
     .sort();
   for (const ticketName of ticketNames) {
     const ticketDir = join(ticketsDir, ticketName);
-    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase)) continue;
+    let observedOwner = "(unreadable)";
+    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase, (rawOwner) => {
+      observedOwner = rawOwner;
+    })) continue;
     try {
       // Another waiter may have cleaned this candidate after our directory
       // snapshot. Skip that vanished entry and continue through the ordered
@@ -692,6 +698,9 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase) {
       if (error?.code === "ENOENT") continue;
       return null;
     }
+    // Reuse the liveness check's owner read. FIFO-only waiters never reach the
+    // writer-lock reclaim path, and diagnostics must not require onWaiting.
+    observeHead(ticketDir, observedOwner);
     return ticketDir;
   }
   return null;
@@ -781,7 +790,7 @@ async function waitForReaders(
  * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -877,7 +886,13 @@ export async function withFsMutex(name, fn, opts = {}) {
     Number(opts.waitingNoticeIntervalMs) > 0
       ? Number(opts.waitingNoticeIntervalMs)
       : 0;
+  const deferAfterHolderAgeMs = Number(opts.deferAfterHolderAgeMs) > 0
+    ? Number(opts.deferAfterHolderAgeMs)
+    : null;
+  const holderAgeCheckIntervalMs = Math.max(1_000, waitingNoticeIntervalMs || 1_000);
+  let lastHolderAgeCheckMs = -Infinity;
   let lastObservedOwner = "(not observed)";
+  let lastObservedQueueHead;
   let timeoutReported = false;
   const reportTimedOut = (error, waitedMs = Date.now() - startedAt) => {
     if (timeoutReported) return error;
@@ -909,7 +924,8 @@ export async function withFsMutex(name, fn, opts = {}) {
     if (waitedMs < timeoutMs) return;
     const error = new Error(
       "Timed out after " + timeoutMs + "ms waiting for fs-mutex \"" + name +
-      "\" (" + lockDir + "); holder (last observed): " + lastObservedOwner,
+      "\" (" + lockDir + "); holder (last observed): " + lastObservedOwner +
+      (lastObservedQueueHead ? "; FIFO head (last observed): " + lastObservedQueueHead : ""),
     );
     throw reportTimedOut(error, waitedMs);
   };
@@ -937,12 +953,46 @@ export async function withFsMutex(name, fn, opts = {}) {
     lastObservedOwner = await readOwner(lockDir, io);
     opts.onWaiting({ owner: lastObservedOwner, elapsedMs });
   };
+  const deferForAgedHolder = async () => {
+    if (deferAfterHolderAgeMs == null) return;
+    const now = Date.now();
+    if (now - lastHolderAgeCheckMs < holderAgeCheckIntervalMs) return;
+    lastHolderAgeCheckMs = now;
+    let rawOwner;
+    try {
+      rawOwner = await readOwner(lockDir, io);
+    } catch {
+      return; // A lock that disappeared or has no readable owner cannot establish holder age.
+    }
+    lastObservedOwner = rawOwner;
+    let owner;
+    try {
+      owner = JSON.parse(rawOwner);
+    } catch {
+      return;
+    }
+    const acquiredAtMs = Date.parse(owner?.acquiredAt ?? "");
+    const holderAgeMs = now - acquiredAtMs;
+    if (!Number.isFinite(acquiredAtMs) || holderAgeMs < deferAfterHolderAgeMs) return;
+    const error = new Error(
+      `Admission deferred: unreclaimed fs-mutex "${name}" holder age ${Math.floor(holderAgeMs)}ms ` +
+        `has reached this waiter's remaining queue budget ${deferAfterHolderAgeMs}ms; holder: ` +
+        `${JSON.stringify({ pid: owner.pid, host: owner.host, ownerId: owner.ownerId, intent: owner.intent })}`,
+    );
+    error.code = "EADMISSIONDEFERRED";
+    error.holderAgeMs = holderAgeMs;
+    error.deferAfterHolderAgeMs = deferAfterHolderAgeMs;
+    error.mutexName = name;
+    throw error;
+  };
   try {
     for (;;) {
       if (ticketRegistered) {
         const oldest = await measureAdmissionSubphase(
           "ticket-scan",
-          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase),
+          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase, (ticketDir, rawOwner) => {
+            if (ticketDir !== myTicketDir) lastObservedQueueHead = ticketDir + "; owner: " + rawOwner;
+          }),
         );
         throwIfAdmissionTimedOut();
         if (oldest != null && oldest !== myTicketDir) {
@@ -984,18 +1034,25 @@ export async function withFsMutex(name, fn, opts = {}) {
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
 
-        const elapsed = Date.now() - startedAt;
-        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
-        throwIfAdmissionTimedOut();
         const reclaimed = await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
-          () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase),
+          () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase, (rawOwner) => {
+            // Reuse the required reclaim read even without a progress callback.
+            // A slow read can exhaust admission before another notice is possible.
+            lastObservedOwner = rawOwner;
+          }),
         );
         // Reclamation can itself take longer than the admission budget. Re-check
         // its completion time before retrying or sleeping so one slow reclaim
         // cannot start another unbounded reclaim cycle.
         throwIfAdmissionTimedOut();
         if (reclaimed) continue;
+
+        const elapsed = Date.now() - startedAt;
+        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
+        throwIfAdmissionTimedOut();
+        await measureAdmissionSubphase("aged-holder-preflight", deferForAgedHolder);
+        throwIfAdmissionTimedOut();
         await sleepWithinAdmissionBudget();
       }
     }
@@ -1071,7 +1128,164 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @returns {Promise<T>}
+ */
+/**
+ * A task-sized, weighted reader lease on the existing mutex. Legacy writers
+ * still exclude these readers. The short allocator only protects inspection
+ * and publication; it never holds a lock while a child runs. Unknown readers
+ * and wildcard resources fail closed. A blocked duplicate does not prevent an
+ * older eligible, disjoint request from using spare capacity.
+ * @template T
+ * @param {string} name
+ * @param {(workers: number) => Promise<T>} fn
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @returns {Promise<T>}
+ */
+export async function withFsMutexBudget(name, fn, opts) {
+  for (const key of ['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']) {
+    if (!Number.isSafeInteger(opts[key]) || opts[key] < 1) throw new Error(`Invalid admission ${key}`);
+  }
+  if (typeof opts.resource !== 'string' || !opts.resource || opts.resource.length > 500)
+    throw new Error('Invalid admission resource');
+  const validScope = a => a.memoryBudgetScope === undefined
+    ? a.sharedMemoryBudgetMb === undefined
+    : typeof a.memoryBudgetScope === 'string' && a.memoryBudgetScope.trim().length > 0 &&
+      a.memoryBudgetScope.length <= 500 && Number.isSafeInteger(a.sharedMemoryBudgetMb) &&
+      a.sharedMemoryBudgetMb > 0;
+  if (!validScope(opts)) throw new Error('Scoped admission requires a shared memory budget and non-empty scope');
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') return fn(opts.workers);
+  const root = await ensureFsMutexLockRoot(undefined, { lockRootDir: opts.lockRootDir });
+  const writer = join(root, `${safeName(name)}.lock`), readers = readerRoot(root, name);
+  const queue = queueRoot(root, name), started = Date.now();
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
+  const retryMs = opts.retryMs ?? DEFAULT_RETRY_MS;
+  const staleMs = intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
+  const ticket = join(queue, `${ticketId(started)}.ticket`);
+  const reader = join(readers, `${process.pid}-${randomUUID()}.lock`);
+  const request = { workers: opts.workers, workerMemoryMb: opts.workerMemoryMb,
+    workerBudget: opts.workerBudget, memoryBudgetMb: opts.memoryBudgetMb,
+    ...(opts.memoryBudgetScope ? { memoryBudgetScope: opts.memoryBudgetScope,
+      sharedMemoryBudgetMb: opts.sharedMemoryBudgetMb } : {}),
+    maxConcurrentTasks: opts.maxConcurrentTasks, resource: opts.resource };
+  const owner = { pid: process.pid, ...processIdentity(process.pid), host: hostname(),
+    name, startedAt: new Date(started).toISOString(), admission: request,
+    ownerId: process.env.PAPERCUSP_SID,
+    taskId: process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID,
+    intent: opts.intent };
+  const remaining = () => opts.remainingMs ? opts.remainingMs() : timeoutMs - (Date.now() - started);
+  const readAdmission = async path => {
+    const value = JSON.parse(await readOwner(path));
+    const a = value.admission;
+    const valid = a && validScope(a) && typeof a.resource === 'string' && a.resource &&
+        ['workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'maxConcurrentTasks']
+          .every(key => Number.isSafeInteger(a[key]) && a[key] > 0);
+    return { owner: value, admission: valid ? a : null };
+  };
+  const allocation = (candidate, active) => {
+    if (active.some(a => !a)) return { workers: 0, constraints: ['unknown-reader'] };
+    if (active.some(a => a.resource === '*' || candidate.resource === '*' || a.resource === candidate.resource))
+      return { workers: 0, constraints: ['resource-exclusion'] };
+    const taskCap = Math.min(candidate.maxConcurrentTasks, ...active.map(a => a.maxConcurrentTasks));
+    const workers = Math.min(candidate.workerBudget, ...active.map(a => a.workerBudget)) - active.reduce((n, a) => n + a.workers, 0);
+    // A private cgroup ceiling constrains only processes in that cgroup. All
+    // readers still pay into the host envelope; legacy readers describe that
+    // shared envelope with memoryBudgetMb and retain conservative accounting.
+    const sharedBudget = a => a.memoryBudgetScope ? a.sharedMemoryBudgetMb : a.memoryBudgetMb;
+    const sharedMemory = Math.min(sharedBudget(candidate), ...active.map(sharedBudget)) -
+      active.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0);
+    const local = candidate.memoryBudgetScope
+      ? active.filter(a => a.memoryBudgetScope === candidate.memoryBudgetScope) : [];
+    const privateMemory = candidate.memoryBudgetScope
+      ? Math.min(candidate.memoryBudgetMb, ...local.map(a => a.memoryBudgetMb)) -
+        local.reduce((n, a) => n + a.workers * a.workerMemoryMb, 0) : Infinity;
+    const memory = Math.min(sharedMemory, privateMemory);
+    const constraints = [];
+    if (active.length >= taskCap) constraints.push('task-cap');
+    if (workers < 1) constraints.push('worker-budget');
+    if (memory < candidate.workerMemoryMb) constraints.push('memory-reservation');
+    return { workers: constraints.length ? 0 : Math.max(0, Math.min(candidate.workers, workers, Math.floor(memory / candidate.workerMemoryMb))),
+      constraints, availableWorkers: workers, availableMemoryMb: memory, activeTasks: active.length, taskCap };
+  };
+  let granted = 0, announced = -Infinity, waitState;
+  await mkdir(queue, { recursive: true });
+  await mkdir(readers, { recursive: true });
+  await mkdir(ticket);
+  try {
+    await writeFile(join(ticket, 'owner.json'), JSON.stringify(owner));
+    while (!granted) {
+      if (remaining() <= 0) throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${writer})`);
+      await withFsMutex(`${name}-allocator`, async () => {
+        if (await writerLockIsHeld(writer, staleMs)) {
+          let writerOwner;
+          try { writerOwner = JSON.parse(await readOwner(writer)); } catch { writerOwner = { unreadable: true }; }
+          waitState = { constraints: ['writer'], writer: writerOwner };
+          return;
+        }
+        const activeLeases = [];
+        for (const lease of await listReaderLocks(readers)) {
+          if (await reclaimAbandonedLock(lease, staleMs)) continue;
+          try { activeLeases.push(await readAdmission(lease)); }
+          catch { activeLeases.push({ owner: { lease, unreadable: true }, admission: null }); }
+        }
+        const active = activeLeases.map(lease => lease.admission);
+        waitState = { ...allocation(request, active), request,
+          readerCount: activeLeases.length, readers: activeLeases.slice(0, 8).map(lease => lease.owner) };
+        // Keep the existing FIFO ticket format and dead-owner recovery. Skip
+        // only predecessors whose resource/budget cannot currently be admitted.
+        const entries = (await readdir(queue)).filter(n => n.endsWith('.ticket')).sort();
+        for (const entry of entries) {
+          const path = join(queue, entry);
+          if (path === ticket) break;
+          if (await reclaimAbandonedLock(path, staleMs)) continue;
+          let previous;
+          try { previous = await readAdmission(path); }
+          catch { previous = { owner: { ticket: entry, unreadable: true }, admission: null }; }
+          if (!previous.admission || allocation(previous.admission, active).workers > 0) {
+            waitState = { ...waitState, constraints: ['queue-predecessor'], predecessor: previous.owner };
+            return;
+          }
+        }
+        const { workers } = allocation(request, active);
+        if (!workers || remaining() <= 0) return;
+        await mkdir(reader);
+        await writeFile(join(reader, 'owner.json'), JSON.stringify({ ...owner,
+          acquiredAt: new Date().toISOString(), mode: 'read', admission: { ...request, workers } }));
+        // Writer/reader handshake: a legacy writer that wins the race drains
+        // this marker; back out before executing any user callback.
+        if (await writerLockIsHeld(writer, staleMs) || remaining() <= 0) {
+          await rm(reader, { recursive: true, force: true }); return;
+        }
+        granted = workers;
+        await rm(ticket, { recursive: true, force: true });
+      }, { lockRootDir: root, timeoutMs: Math.max(1, remaining()), retryMs });
+      if (!granted) {
+        const elapsedMs = Date.now() - started;
+        if (elapsedMs - announced >= 60_000) {
+          announced = elapsedMs;
+          if (opts.onWaiting) {
+            const primary = waitState?.writer ?? waitState?.predecessor ?? waitState?.readers?.[0] ?? {};
+            opts.onWaiting({ owner: JSON.stringify({ ...primary, admissionWait: waitState }), elapsedMs });
+          }
+        }
+        await sleep(Math.max(1, Math.min(retryMs, remaining())));
+      }
+    }
+    opts.onAcquired?.({ waitedMs: Date.now() - started });
+    return await fn(granted);
+  } finally {
+    await rm(ticket, { recursive: true, force: true });
+    await rm(reader, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Existing unweighted reader lease; writers drain these readers as before.
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -1080,7 +1294,9 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;
   const admissionSubphaseTimingsMs =
-    typeof opts.onAcquired === "function" ? {} : undefined;
+    typeof opts.onAcquired === "function" || typeof opts.onTimedOut === "function"
+      ? {}
+      : undefined;
   const measureAdmissionSubphase = admissionSubphaseTimingsMs
     ? async (name, operation) => {
       const phaseStartedAt = performance.now();
@@ -1108,10 +1324,14 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const retryMs =
     opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
-  const readerDir = join(
-    readersDir,
-    `${process.pid}-${Date.now()}-${randomUUID()}.lock`,
-  );
+  const readerMarkerName = `${process.pid}-${Date.now()}-${randomUUID()}.lock`;
+  const readerDir = join(readersDir, readerMarkerName);
+  // Publish from a sibling path so a killed reader cannot leave an ownerless
+  // directory inside the set that writers drain. The rename stays on the same
+  // filesystem and makes the fully written lease visible in one operation.
+  const readerStagingRoot = join(root, `${safeName(name)}.readers-staging`);
+  const readerStagingDir = join(readerStagingRoot, readerMarkerName);
+  const intent = sanitizeIntent(opts.intent);
   const owner = {
     pid: process.pid,
     ...processIdentity(process.pid),
@@ -1119,6 +1339,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     startedAt: new Date(startedAt).toISOString(),
     name,
     mode: "read",
+    ...(intent ? { intent } : {}),
   };
 
   await mkdir(readersDir, { recursive: true });
@@ -1134,24 +1355,31 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       : 0;
   for (;;) {
     let markerCreated = false;
+    let stagingCreated = false;
     let ready = false;
     try {
       // A reserved writer already prevents admission. Publishing markers on
       // every retry in that state makes its drain observe readers that will
       // never enter, and a stream of newcomers can keep that drain occupied.
-      if (!(await writerLockIsHeld(writerDir, staleMs, io))) {
-        await mkdir(readerDir);
-        markerCreated = true;
+      if (!(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)))) {
+        await mkdir(readerStagingRoot, { recursive: true });
+        await mkdir(readerStagingDir);
+        stagingCreated = true;
         await writeFileIo(
-          join(readerDir, "owner.json"),
+          join(readerStagingDir, "owner.json"),
           `${JSON.stringify(owner, null, 2)}\n`,
         );
+        await rename(readerStagingDir, readerDir);
+        stagingCreated = false;
+        markerCreated = true;
         // Keep this second check: a writer can reserve after the preflight
         // but before publication. Its drain must see our marker until we
         // notice that reservation and remove it.
-        ready = !(await writerLockIsHeld(writerDir, staleMs, io));
+        ready = !(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)));
       }
     } catch (error) {
+      if (stagingCreated)
+        await rm(readerStagingDir, { recursive: true, force: true });
       if (error.code !== "EEXIST") {
         if (markerCreated)
           await rm(readerDir, { recursive: true, force: true });
@@ -1174,12 +1402,25 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       opts.onWaiting({ owner: await readOwner(writerDir, io), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {
-      const currentOwner = await readOwner(writerDir, io);
-      throw new Error(
+      const currentOwner = await measureAdmissionSubphase("writer-owner-read", () => readOwner(writerDir, io));
+      const observation = {
+        waitedMs: Date.now() - startedAt,
+        timeoutMs,
+        ...(admissionSubphaseTimingsMs
+          ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
+          : {}),
+      };
+      const error = Object.assign(new Error(
         `Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`,
-      );
+      ), { code: "ETIMEDOUT", ...observation });
+      try {
+        opts.onTimedOut?.(observation);
+      } catch {
+        // Diagnostic callbacks must never replace the admission timeout.
+      }
+      throw error;
     }
-    await sleep(retryMs);
+    await measureAdmissionSubphase("retry-wait", () => sleep(retryMs));
   }
 
   try {

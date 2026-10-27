@@ -135,8 +135,9 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     const [cmd1] = spawnMock.mock.calls[0] as [string, string[]];
     const [cmd2, args2] = spawnMock.mock.calls[1] as [string, string[]];
     expect(cmd1).toBe('systemd-run');
-    expect(cmd2).toBe('npx');
-    expect(args2[0]).toBe('tsx');
+    expect(cmd2).toBe(process.execPath);
+    expect(args2[0]).toBe('--import');
+    expect(args2[1]).toContain('tsx');
   });
 
   it('does not retry on a payload failure inside a healthy scope', async () => {

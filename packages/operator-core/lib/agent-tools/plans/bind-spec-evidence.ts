@@ -131,17 +131,17 @@ const instrumentDeclarationSchema = z
     path: z
       .string()
       .optional()
-      .describe('Repository-relative path to the committed instrument that produced the evidence.'),
+      .describe('Committed instrument path.'),
     testPath: z
       .string()
       .optional()
-      .describe('Repository-relative path to a committed test that imports or exercises the instrument.'),
-    none: z.literal(true).optional().describe('Set true only when the observation used no program or script.'),
-    reason: z.string().optional().describe('Explain why no instrument was used when none is true.'),
+      .describe('Committed instrument test.'),
+    none: z.literal(true).optional(),
+    reason: z.string().optional(),
   })
   .passthrough()
   .describe(
-    'For operational/manual evidence, declare either { path, testPath } for the committed instrument and its committed test, or { none: true, reason } when no instrument was used.',
+    'Committed {path,testPath} or {none:true,reason}.',
   );
 const bindingDetailsSchema = z.preprocess((value) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
@@ -214,22 +214,22 @@ export const bindingSchema = z
     evidenceRef: z.string().trim().min(1).max(2000),
     sourceFingerprint: fingerprint
       .optional()
-      .describe('Caller-declared fingerprint for opaque evidence. Pass this OR measurement, never both.'),
+      .describe('Opaque proof; XOR measurement.'),
     testFingerprint: fingerprint.nullable().optional(),
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional().describe(
-      "Fingerprint the runtime/environment observed by live or deployed evidence. For details.evidencePlane 'live' or 'deployed', omitting this leaves environment currentness unknown unless details.currentMeasurement is a validated ledger-only measurement with no runtimeUnits.",
+      "Live environment; validated ledger-only proof may omit runtimeUnits.",
     ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
     measurement: evidenceMeasurementSchema
       .optional()
       .describe(
-        "Server-measured basis, discriminated on `kind`: 'repo-files' hashes bounded source/test files; 'work-items' hashes a bounded work-item id set, which is how a NON-CODE outcome reaches source=current. Stores the recipe, so later reads recompute it and a reopened row goes stale.",
+        "File/row hashes; changes stale.",
       ),
     details: bindingDetailsSchema.optional().describe(
-      "For a clause declaring requiredEvidence, set details.evidencePlane to a matching plane (for example { evidencePlane: 'live' }); details.adequacy.evidencePlane is accepted as a fallback. A matching live/deployed label alone is not enough for currentness: provide environmentFingerprint above.",
+      "Nest adequacy; evidencePlane falls back to adequacy.evidencePlane; live needs environmentFingerprint.",
     ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z
@@ -239,7 +239,7 @@ export const bindingSchema = z
       .nullable()
       .optional()
       .describe(
-        "Required for evidenceKind 'independent-verification' and refused for every other kind: the id of the implementer's live binding on the same spec that this observation independently reproduces. Its source and environment fingerprints must match yours.",
+        "Independent live binding; same fingerprints.",
       ),
   })
   .refine((b) => (b.evidenceKind === 'independent-verification') === (b.verifiesBindingId != null), {
@@ -364,16 +364,13 @@ const retractionSchema = z.object({
     .int()
     .positive()
     .describe(
-      'The exact binding row id, from plans:get-spec-evidence — never a (workItemId, evidenceRef) pair, which routinely matches several history rows.',
+      'Exact plans:get-spec-evidence row.',
     ),
   reason: z
     .string()
     .trim()
     .min(12)
-    .max(2000)
-    .describe(
-      'Why this proof is withdrawn (e.g. the bound run was never executed). Stored on the row: an unexplained retraction is indistinguishable from the evidence-shedding D-011 forbids.',
-    ),
+    .max(2000),
 });
 
 /**
@@ -405,30 +402,27 @@ type ResolvedBinding =
 
 const argsSchema = refineEvenWithShapeIssues(
   z.object({
-    harness: harnessArg,
+    harness: harnessArg.describe('Inferred when scoped; all=unscoped.'),
     slug: z
       .string()
       .min(1)
       .optional()
-      .describe(
-        'Plan owning the referenced spec revisions. Omit for an ad-hoc work-item with no plan — its clauses use the harness-wide ad-hoc spec scope.',
-      ),
-    binding: bindingOrTestRunSchema.optional().describe('Single-binding shorthand (n=1 of items).'),
+      .describe('Plan; omit for ad-hoc.'),
+    binding: bindingOrTestRunSchema.optional(),
     items: z.array(bindingOrTestRunSchema).min(1).max(500).optional(),
     dependencies: dependencyQueriesSchema.optional().describe(
-      'Bounded native compiler dependency queries. Expand repo-files sourcePaths before hashing; retain graph provenance and refuse unmeasured or truncated answers. This never revalidates a prior passing proof.',
+      'Expand sourcePaths; reject truncated/unmeasured; no revalidation.',
     ),
     retract: z
       .array(retractionSchema)
       .min(1)
       .max(100)
-      .optional()
-      .describe('Withdraw already-bound evidence instead of appending it. Mutually exclusive with binding/items.'),
+      .optional(),
     supersedeAtRevision: z
       .boolean()
       .optional()
       .describe(
-        'After binding, retract the OTHER live rows it replaces at the same clause revision: same evidenceKind AND same subject (test file, else evidenceRef), claiming no adequacy.targeted or causalPairIds the new row lacks. Stamped "superseded by binding N". Other-subject siblings stay live and are listed in supersession[].kept with a reason; retract those explicitly. Only a successful ledger-backed executable binding may supersede; a weaker one supersedes nothing (reported in supersession).',
+      'Executable: same revision/kind/subject, targeted+causalPairIds cover; rest supersession[].kept.',
       ),
   }),
   // RSR-P-008-A: both combination rules are reported alongside any shape defect.
@@ -958,11 +952,11 @@ function bindSpecEvidenceAbortCompletionReceipt(
 export default defineTool({
   name: 'plans:bind-spec-evidence',
   description:
-    'Bind test, fixture, coverage-census, mutation/counterexample, check, manual or operational proof to an immutable spec revision and work item. For fromTestRun, omit canonicalTestPath for local/Playwright rows; supply it only for a cargo test\'s defining .rs file or an unavailable mutation-probe mirror\'s copy-out run. Supply fixturePaths/fixtureGlobs BEFORE the first bind when calibration is needed; include the test file for inline fixtures. fixtureCalibrated run evidence adds direct relative first-party test-support imports; transitive, external and non-imported inputs need an explicit recipe. Missing recipes leave calibration unknown; adding one after binding is refused. details.adequacy.fixtureCalibrated=true requires paths; fixtureFree=true is no independent absence proof. Repository evidence uses measurement for server hashing and bounded source/test remeasurement; opaque evidence supplies caller-attested sourceFingerprint. Exact replays are idempotent; changed fingerprints append history. retract requires row id and reason; stamped history remains but default reads exclude it.',
+    "Bind proof to exact workItem/spec revision. fromTestRun: canonicalTestPath only for cargo's defining .rs or unavailable copy-out mirror, never ordinary local/Playwright rows. FIRST bind must declare fixturePaths/fixtureGlobs (include inline-fixture test); calibration adds direct relative first-party support imports only, so declare transitive/external/non-imported inputs. Late recipe changes refuse; absent recipe leaves calibration unknown. fixtureCalibrated needs paths; fixtureFree alone proves no absence. Repo measurement hashes/rechecks files; opaque proof uses sourceFingerprint. Exact replays dedupe; changed fingerprints append. Retract by row id/reason; history remains, hidden by default.",
   guidance: {
     when: `Recording execution proof for one or more plan specs before work-item completion or plan acceptance. AUTO-BAR proof: vet first (${VET_BEFORE_PROOF_ORDER}).`,
     notWhen: 'Authoring behavior — plans:set-specs. Running a test — testing:run.',
-    chaining: 'plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints.',
+    chaining: 'plans:get-specs → bind exact workItemId/specId/specRevision/fromTestRun/sourcePaths/fixturePaths → plans:get-spec-evidence current → graph:query evidence. Declare calibration inputs on FIRST bind (also inline fixtures). Only qualifying newer clean verification.check.files runs autobind; newer failure/error withdraws that file’s support. Unrelated passes do not supply missing links.',
     seeAlso: ['plans:get-spec-evidence (inspect proof/currentness)', 'plans:get-specs (resolve exact revisions)'],
   },
   capability: 'plans:write',

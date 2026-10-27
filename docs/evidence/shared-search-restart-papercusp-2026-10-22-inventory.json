@@ -1,0 +1,664 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "purpose": "source inventory before ranking treatment",
+  "capturedAt": "2026-10-23T03:59:03.068Z",
+  "measurement": {
+    "status": "not-run",
+    "baselineDeclaration": null,
+    "corpusPin": null,
+    "queryPopulationPin": null,
+    "attemptLedger": null
+  },
+  "inventory": {
+    "surfaces": [
+      {
+        "id": "work_items:search",
+        "entry": "agent-tools/work_items/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "docs:search",
+        "entry": "agent-tools/docs/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "plans:search",
+        "entry": "agent-tools/plans/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "sessions:search",
+        "entry": "agent-tools/sessions/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "search:semantic",
+        "entry": "agent-tools/search/semantic.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "coordination:ask-knowledge-tier",
+        "entry": "agent-tools/coordination/ask-knowledge-tier.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "search:fulltext",
+        "entry": "agent-tools/search/fulltext.ts",
+        "engine": "fulltext"
+      },
+      {
+        "id": "recipes:search",
+        "entry": "agent-tools/recipes/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "orchestrate:search",
+        "entry": "agent-tools/recipes/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "memory:search",
+        "entry": "agent-tools/memory/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "rubrics:search",
+        "entry": "agent-tools/rubrics/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "cupboard:search",
+        "entry": "agent-tools/cupboard/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "personal:search",
+        "entry": "agent-tools/personal/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "documents:search",
+        "entry": "agent-tools/documents/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "social:search",
+        "entry": "agent-tools/social/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "people:search",
+        "entry": "agent-tools/people/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "reports:search",
+        "entry": "agent-tools/reports/search.ts",
+        "engine": "none"
+      },
+      {
+        "id": "GET /adv/sessions/search",
+        "entry": "omp-sessions.ts",
+        "engine": "none"
+      },
+      {
+        "id": "GET /adv/sessions/search-transcripts",
+        "entry": "endpoint-route/routes/adv/sessions.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "GET /user/search",
+        "entry": "endpoint-route/routes/user/search.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "memory:corpus-recall",
+        "entry": "memory/corpus-recall-io.ts",
+        "engine": "hybrid"
+      },
+      {
+        "id": "coord:feed (q= filter)",
+        "entry": "agent-tools/coordination/feed.ts",
+        "engine": "none"
+      },
+      {
+        "id": "transcript-search-warmup",
+        "entry": "transcript-search-warmup.ts",
+        "engine": "hybrid"
+      }
+    ],
+    "proseSources": [
+      {
+        "source": "escalations",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.harness_escalations",
+        "canonicalAuthority": "harness_shared.harness_escalations",
+        "partition": "workspace + harness",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": null,
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "brainstorm",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.harness_brainstorm",
+        "canonicalAuthority": "harness_shared.harness_brainstorm",
+        "partition": "workspace + harness",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": null,
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "turns",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.operator_turns",
+        "canonicalAuthority": "harness_shared.operator_turns",
+        "partition": "operator_conversations.workspace_id join",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": null,
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "decisions",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.harness_decisions",
+        "canonicalAuthority": "harness_shared.harness_decisions",
+        "partition": "workspace + harness",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": null,
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "work_item",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.engineer_issues",
+        "canonicalAuthority": "harness_shared.work_items via engineer_issues view",
+        "partition": "workspace + derived scope",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": "coalesce(updated_at, created_at)",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "session_turn",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.session_turns",
+        "canonicalAuthority": "registered session transcript + ingest/provenance ledger",
+        "partition": "workspace OR host-global default; harness and disclosure reader fence",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [
+          "owners",
+          "speaker",
+          "turnOrigin",
+          "ownerOnly",
+          "ownerCandidates",
+          "sessionId",
+          "sourceKind",
+          "since",
+          "until",
+          "readerIds"
+        ],
+        "rankingTimestamp": "ts",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "coord_message",
+        "entry": "agent-tools/search/sources.ts",
+        "relation": "harness_shared.coord_event_log",
+        "canonicalAuthority": "harness_shared.coord_event_log",
+        "partition": "workspace OR host-global default; harness",
+        "lexical": true,
+        "vector": false,
+        "filterKeys": [
+          "owners",
+          "since",
+          "until",
+          "sessionId"
+        ],
+        "rankingTimestamp": null,
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "report",
+        "entry": "agent-tools/search/report-source.ts",
+        "relation": "harness_shared.report_library",
+        "canonicalAuthority": "report_library current visible lineage edition",
+        "partition": "workspace + server viewer + harness + audience exclusions",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [
+          "owners",
+          "since",
+          "until"
+        ],
+        "rankingTimestamp": "published_at",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "plan",
+        "entry": "agent-tools/search/knowledge-sources.ts",
+        "relation": "harness_shared.harness_plans",
+        "canonicalAuthority": "harness_shared.harness_plans",
+        "partition": "workspace + harness + audience exclusions",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": "updated_at",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "source": "doc",
+        "entry": "agent-tools/search/knowledge-sources.ts",
+        "relation": "harness_shared.doc_sections",
+        "canonicalAuthority": "registered docs-engine source; doc_sections is a derived complete-body cache",
+        "partition": "framework-shared OR workspace harness membership; retirement + audience exclusions",
+        "lexical": true,
+        "vector": true,
+        "filterKeys": [],
+        "rankingTimestamp": "updated_at",
+        "fieldFreshness": "unmeasured"
+      }
+    ],
+    "applicationEntrypoints": [
+      {
+        "product": "papercusp",
+        "surface": "memory:search",
+        "entry": "agent-tools/memory/search.ts",
+        "configurationRef": "memory/configure.ts:HybridBackend construction",
+        "audience": "user + resolved harness memory pools",
+        "rankingPolicyRef": "memory:search pull policy in SEARCH_SURFACES",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "papercusp",
+        "surface": "memory:auto-injection",
+        "entry": "memory/injection.ts",
+        "configurationRef": "memory/recall-query.ts",
+        "audience": "identity-declared user/harness pools",
+        "rankingPolicyRef": "memory/injection.ts cosine-gated precision policy",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "papercusp",
+        "surface": "memory:corpus-recall",
+        "entry": "memory/corpus-recall-io.ts",
+        "configurationRef": "memory/corpus-recall-io.ts:CORPUS_SOURCE_NAMES",
+        "audience": "identity-declared corpus and host authority",
+        "rankingPolicyRef": "memory/corpus-recall-io.ts admission/rerank policy",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "restart",
+        "surface": "storefront:search",
+        "entry": "libs/catalog-search/src/useCatalogSearch.ts",
+        "configurationRef": "libs/catalog-search/src/config.ts:SURFACE_PRESETS.search",
+        "audience": "public region catalog",
+        "rankingPolicyRef": "apps/shop-api/src/catalog/catalog.service.ts:listProducts",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "restart",
+        "surface": "storefront:wholesale",
+        "entry": "libs/catalog-search/src/useCatalogSearch.ts",
+        "configurationRef": "libs/catalog-search/src/config.ts:SURFACE_PRESETS.wholesale",
+        "audience": "public region catalog",
+        "rankingPolicyRef": "apps/shop-api/src/catalog/catalog.service.ts:listProducts",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "restart",
+        "surface": "storefront:autocomplete",
+        "entry": "libs/catalog-search/src/useCatalogSearch.ts",
+        "configurationRef": "libs/catalog-search/src/config.ts:SURFACE_PRESETS.autocomplete",
+        "audience": "public region catalog",
+        "rankingPolicyRef": "apps/shop-api/src/catalog/catalog.service.ts:listProducts",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "restart",
+        "surface": "scout:search_products",
+        "entry": "apps/scout-service/src/scout/scout.service.ts",
+        "configurationRef": "apps/shop-api/src/tooldef/tools/catalog.reads.tool.ts:catalog.search",
+        "audience": "public region catalog via scout service principal",
+        "rankingPolicyRef": "apps/shop-api/src/catalog/catalog.service.ts:listProducts",
+        "fieldFreshness": "unmeasured"
+      },
+      {
+        "product": "restart",
+        "surface": "scout:shopper-memory",
+        "entry": "apps/scout-service/src/memory/memory.service.ts",
+        "configurationRef": "apps/scout-service/src/scout/memory-scopes.ts:memoryScopes",
+        "audience": "signed-in user + store; guest store-only and no writes",
+        "rankingPolicyRef": "apps/scout-service/src/memory/memory.service.ts:recall",
+        "fieldFreshness": "unmeasured"
+      }
+    ]
+  },
+  "inheritedBudgets": [
+    {
+      "product": "papercusp",
+      "source": "work_item",
+      "adapter": "runHybridSearch before rerank",
+      "queryClass": "R-13/R-18 known-item benchmark population only",
+      "temperature": "warm",
+      "maxP95LatencyMs": 200
+    },
+    {
+      "product": "papercusp",
+      "source": "work_item",
+      "adapter": "runHybridSearch before rerank",
+      "queryClass": "R-13/R-18 known-item benchmark population only",
+      "temperature": "cold",
+      "maxP95LatencyMs": 1000
+    },
+    {
+      "product": "papercusp",
+      "source": "session_turn",
+      "adapter": "runHybridSearch before rerank",
+      "queryClass": "R-13/R-18 known-item benchmark population only",
+      "temperature": "warm",
+      "maxP95LatencyMs": 400
+    },
+    {
+      "product": "papercusp",
+      "source": "session_turn",
+      "adapter": "runHybridSearch before rerank",
+      "queryClass": "R-13/R-18 known-item benchmark population only",
+      "temperature": "cold",
+      "maxP95LatencyMs": 1200
+    }
+  ],
+  "budgetAuthority": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts LATENCY_P95_CEILING_MS/COLD_LATENCY_P95_CEILING_MS; do not apply these to a different population",
+  "sourceSnapshots": {
+    "papercusp": {
+      "schemaVersion": 1,
+      "files": [
+        {
+          "path": "packages/operator-core/lib/search/surface-registry.ts",
+          "dimension": "source",
+          "sha256": "0645b3a312c6ab76e2caddd8e25316a58c2ed6e30ecd0723a99a032de95c82b1",
+          "repo": ".",
+          "headBlob": "1cc09e806acd58a67bdcac96dd0ee1c7c1dc7750",
+          "clean": false
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+          "dimension": "source",
+          "sha256": "c65d7b85eb7b5394ac3049a328ae5225972180b072470d210265511baed2738b",
+          "repo": ".",
+          "headBlob": "57465b9540c12b48ade9cf2b3048e7cedeecf199",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.ts",
+          "dimension": "source",
+          "sha256": "c1ce37b2dc299c219f61304b43aca5337c6ece87a714c2a1dd1ce0493d5b82d8",
+          "repo": ".",
+          "headBlob": "392a411da4dd8de30af32a9e4ec6375ad89772f0",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/report-source.ts",
+          "dimension": "source",
+          "sha256": "afdf2b85b503035a9ea3a885420506d37e52f689912eac45028dd2081dcde89d",
+          "repo": ".",
+          "headBlob": "5cb96ab720b91ab9e1fab4853e00c35fcda9d5f7",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/semantic.ts",
+          "dimension": "source",
+          "sha256": "6527894e0b1a679c966241499a06bd5c5b0c0a1910f28d51a83f94659ededb93",
+          "repo": ".",
+          "headBlob": "d6b12c2f7bc3247bd9f1709d0d238e1f5a084a95",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/fulltext.ts",
+          "dimension": "source",
+          "sha256": "644a772c6b3b226d28211d38e605e416744cd543d2f9311e0e45c330a0d51b11",
+          "repo": ".",
+          "headBlob": "a721794a33aeb8b747cc9fcc4a79c130d7a41088",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/search/filters.ts",
+          "dimension": "source",
+          "sha256": "cfe2839a610bc95425292b05e6fa009bc0482df9fb2217e92c73af63a854fb76",
+          "repo": ".",
+          "headBlob": "92586e6b7c0a0421822d3f72978941baa11294d7",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/memory/configure.ts",
+          "dimension": "source",
+          "sha256": "84c8f5c3278b829a80849f319254fb2e151a3e055e935cc4ffc3b9db52bed07d",
+          "repo": ".",
+          "headBlob": "84335c35639d7bd6adbaf5ba79936649d19495e4",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/memory/injection.ts",
+          "dimension": "source",
+          "sha256": "a05b3fa473a2fed3e88332bfc6d21221ebb2bec4b1311f34b67e6fe0dbe0b5f1",
+          "repo": ".",
+          "headBlob": "30b9248e65fd95f9cf945c936a102b37ae25aa2a",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/memory/corpus-recall-io.ts",
+          "dimension": "source",
+          "sha256": "d6d8627fd57382164a1dd47debadde18cf2d3d1f22769bdd6369b63702e667cd",
+          "repo": ".",
+          "headBlob": "293d7b0ba720e72c5fb16ba058ef29fe3799973e",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/memory/search.ts",
+          "dimension": "source",
+          "sha256": "82e61cb6794055d1e3ee325ecb05d65228cef635117521e115cb9b77e0fe258e",
+          "repo": ".",
+          "headBlob": "45eff4ec4a688c9984a5917225dfdf5a14b6911e",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+          "dimension": "source",
+          "sha256": "5c68c7d656b7f2599357f1bd7d96b3ac2d1ed2437c16cf3e9564dd6d60e361d1",
+          "repo": ".",
+          "headBlob": "be44977c5561c0785041e724527e1a20a659497f",
+          "clean": true
+        },
+        {
+          "path": "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+          "dimension": "source",
+          "sha256": "53a4c52bb6e83b7b6bf2cb7dd52eb5bbe12c0e3149a731e19fcbe0e8a0355e0b",
+          "repo": ".",
+          "headBlob": "08d5104f9a60b69f0072c7e4d81f72f79dfc41e6",
+          "clean": true
+        },
+        {
+          "path": "libs/generic/search/src/types.ts",
+          "dimension": "source",
+          "sha256": "062764ce130f7db4a95c9ff1b3fabe1f8c33de3336dc144601c49097f22cac0a",
+          "repo": "libs/generic/search",
+          "headBlob": "f01070789cf8f464969b8e26b923f341ccdee3d6",
+          "clean": true
+        },
+        {
+          "path": "libs/generic/search/src/hybrid.ts",
+          "dimension": "source",
+          "sha256": "015a412da34ec64ee555bc29518acd442b077d4e1175845d97f93284357c2374",
+          "repo": "libs/generic/search",
+          "headBlob": "636429457cec7f55cc29713e649bf644b69afb3e",
+          "clean": true
+        },
+        {
+          "path": "libs/generic/search-core/src/relevance-eval.ts",
+          "dimension": "source",
+          "sha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+          "repo": "libs/generic/search-core",
+          "headBlob": "ddaa71cbd416874a304b9c4cc17117c31bd92cfd",
+          "clean": true
+        },
+        {
+          "path": "libs/generic/search-core/src/relevance-eval.spec.ts",
+          "dimension": "source",
+          "sha256": "21d4ae5575f3d5ca92f16744d7d2a3faf19ff50b6c926617451c26fac1ba54d9",
+          "repo": "libs/generic/search-core",
+          "headBlob": "522595d9e1df331f96620f58aaf87b470527eae0",
+          "clean": true
+        },
+        {
+          "path": "libs/generic/search-core/src/index.ts",
+          "dimension": "source",
+          "sha256": "11cafe7020db5b2a5a7888b9b009c7da053730da66afa08fe6f7b20c478a9486",
+          "repo": "libs/generic/search-core",
+          "headBlob": "73fe95daab9018ea135836e1833dc5ad5080b531",
+          "clean": true
+        }
+      ],
+      "repos": [
+        {
+          "repo": ".",
+          "head": "811b4febecdd34c3ff452c840f54f4605dbd2ffc",
+          "gitlink": null
+        },
+        {
+          "repo": "libs/generic/search",
+          "head": "750f845ad7071b3b9ddbbb7d5a11a267f1f87b8c",
+          "gitlink": "750f845ad7071b3b9ddbbb7d5a11a267f1f87b8c"
+        },
+        {
+          "repo": "libs/generic/search-core",
+          "head": "48c944b60b576f4143a8922b15895359cbb88b63",
+          "gitlink": "e1ada15e2af9e636fc2a8a25c79f4e199b73efd3"
+        }
+      ],
+      "rootCommit": "811b4febecdd34c3ff452c840f54f4605dbd2ffc",
+      "observedAt": "2026-10-23T03:59:02.975Z",
+      "errors": []
+    },
+    "restart": {
+      "schemaVersion": 1,
+      "files": [
+        {
+          "path": "libs/catalog-search/src/config.ts",
+          "dimension": "source",
+          "sha256": "aefdef92a60b5578e52b2fc02f2a76263a1299f9280144140f294b61efb1002b",
+          "repo": ".",
+          "headBlob": "b94c54702493f09aa233c7ccaa0ea6cda7da6223",
+          "clean": true
+        },
+        {
+          "path": "libs/catalog-search/src/params.ts",
+          "dimension": "source",
+          "sha256": "62ba42a9392f5de655f371c0fca8842979391fa8247b4d41d33d6ed460180964",
+          "repo": ".",
+          "headBlob": "57722b24529f049119fafa46d979679abc4aab09",
+          "clean": true
+        },
+        {
+          "path": "libs/catalog-search/src/useCatalogSearch.ts",
+          "dimension": "source",
+          "sha256": "eb9986299948f63a54bb0c80244a855cabfe06e4339ccab33a328aba3e3c1b25",
+          "repo": ".",
+          "headBlob": "5e6f1e6a7ce803315fb5a3a8956718d51fdadb8f",
+          "clean": true
+        },
+        {
+          "path": "libs/catalog-search/src/useLiveStockOverlay.ts",
+          "dimension": "source",
+          "sha256": "7ba2fb09f36764b4bdc3689e68eef498a68d3287f6b7f6a3560c57e99ab96d7b",
+          "repo": ".",
+          "headBlob": "04f7e3c6a90b47cfda3047cae07fc81604193942",
+          "clean": true
+        },
+        {
+          "path": "apps/shop-api/src/catalog/catalog.controller.ts",
+          "dimension": "source",
+          "sha256": "9509aa25ac214fcb036008d3918b1ccf21f43f49cccb41986d5a80530f5e03bd",
+          "repo": ".",
+          "headBlob": "acab5b43a38efd09deeb1bc1d1709e60acb95462",
+          "clean": true
+        },
+        {
+          "path": "apps/shop-api/src/catalog/catalog.service.ts",
+          "dimension": "source",
+          "sha256": "d195a7f7b81e458b99c8efd18908571b8b45f8339d16d615328a1180c1befc73",
+          "repo": ".",
+          "headBlob": "ea4d6700145eb251e16b6294fdda278033fa4153",
+          "clean": true
+        },
+        {
+          "path": "apps/shop-api/src/tooldef/tools/catalog.reads.tool.ts",
+          "dimension": "source",
+          "sha256": "4750338a33078bc3fe45d09f050319b53e675a69f5ab229979330effd9c4cd57",
+          "repo": ".",
+          "headBlob": "a1dac43558e9328e24e84dd22e8691201230eacb",
+          "clean": true
+        },
+        {
+          "path": "apps/scout-service/src/scout/scout.service.ts",
+          "dimension": "source",
+          "sha256": "8ef72912bb028df6584de017774b8012dc49c75c53e369206c8052fe83e1b3b3",
+          "repo": ".",
+          "headBlob": "421cb6b179e94f906c4d014f2092c438cd660480",
+          "clean": true
+        },
+        {
+          "path": "apps/scout-service/src/scout/memory-scopes.ts",
+          "dimension": "source",
+          "sha256": "9eecdd1a35bf5ae4d06f34cb49ec9576218d86d1ced1a042657d47ef4c403121",
+          "repo": ".",
+          "headBlob": "a203bd0cf9c83223a286b77dbebde6f6d5ac0f36",
+          "clean": true
+        },
+        {
+          "path": "apps/scout-service/src/memory/memory.service.ts",
+          "dimension": "source",
+          "sha256": "8e6987a0f4f9ba030388976ec65b144739a7d70763184ffa390ce7841b65c59f",
+          "repo": ".",
+          "headBlob": "3e321a84a883e9a88eb183e626eee2ac03d571bb",
+          "clean": true
+        },
+        {
+          "path": "scripts/search-eval/run-eval.ts",
+          "dimension": "source",
+          "sha256": "172a281ae59404834e4f4ef4cc308fbd3f74aa8ef6d7292bbd60bca1e29e08f2",
+          "repo": ".",
+          "headBlob": "efafe7852b08ad768273d7a978e0f960a8440afa",
+          "clean": true
+        }
+      ],
+      "repos": [
+        {
+          "repo": ".",
+          "head": "518eb6113755552dd0c343ad096e52dff7a055ec",
+          "gitlink": null
+        }
+      ],
+      "rootCommit": "518eb6113755552dd0c343ad096e52dff7a055ec",
+      "observedAt": "2026-10-23T03:59:03.068Z",
+      "errors": []
+    }
+  },
+  "remaining": [
+    "Reconcile dedicated/private/federated and actual Restart adapter capability boundaries",
+    "Declare per-field numeric freshness/epoch/read-after-write policies after baseline inventory",
+    "Pin actual corpus/query/configuration and execute baseline requests",
+    "Freeze all product/adapter/query-class/cold-warm numeric budgets and minimum sample identities before treatment"
+  ]
+}

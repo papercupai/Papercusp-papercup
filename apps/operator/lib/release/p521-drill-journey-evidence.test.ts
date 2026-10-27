@@ -28,6 +28,13 @@ function input(over: Partial<DrillJourneyEvidenceInput> = {}): DrillJourneyEvide
     expectedDebSha256: DEB,
     observer: 'su-test',
     command: ['bash hive-git-physical-scenario.sh'],
+    precheckSubject: { artifactDigest: 'd'.repeat(64), installerSha256: DEB },
+    localPrechecks: DRILL_LEG_JOURNEYS.map(({ journey }) => ({
+      journey, check: 'p521-local-precheck:' + journey, verdict: 'pass',
+      startedAt: '2026-10-01T11:58:00.000Z', finishedAt: '2026-10-01T11:59:00.000Z',
+      subject: { artifactDigest: 'd'.repeat(64), installerSha256: DEB },
+      command: ['local-fixture'], evidence: [{ ref: 'local-fixture', kind: 'local-precheck' }],
+    })),
     ...over,
   };
 }

@@ -610,6 +610,7 @@ export async function readNativePushOutcomes(
     WITH pushes AS MATERIALIZED (
       SELECT * FROM harness_shared.code_intel_pushes
       WHERE workspace_id = ${window.workspaceId}
+        AND chars > 0
         AND pushed_at >= ${window.windowStart}::timestamptz AND pushed_at < ${end}::timestamptz
     ), candidates AS MATERIALIZED (
       SELECT p.id, j.session_id, j.source_kind, u.ts AS started_at, j.turn_ts AS ended_at

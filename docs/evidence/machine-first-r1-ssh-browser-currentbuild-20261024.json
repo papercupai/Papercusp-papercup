@@ -1,0 +1,213 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "2b52d41675fe92a1d4b1d68c107299dd17fae43547bf3a4159620d796ab5b52d.supporting-original",
+      "sha256": "2b52d41675fe92a1d4b1d68c107299dd17fae43547bf3a4159620d796ab5b52d",
+      "byteLength": 7404
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": "machine-first-ssh-browser-prerequisite-v1",
+  "recordedAt": "2026-10-24T09:14:38.682687+00:00",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "workItem": "WI-6554700010016648",
+  "result": "two-gui-authenticated-pty-pass",
+  "fullR1Accepted": false,
+  "shipmentVerified": false,
+  "scope": "Real source operator processes and retained immutable local-mode Portal build in one owned container/private PG; authenticated SSH/PTY and selected session routing only.",
+  "candidate": {
+    "release": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.machine-first-r1-session-candidate-20261024/releases/qVahiXvTXFkvxlgH9NQAV-20261024080006860-1772033-4e4c989c",
+    "buildLog": "/tmp/machine-first-r1-portal-session-build-v3-20261024.log",
+    "taskId": "0mvm3nhyn1arxun810h",
+    "exitCode": 0,
+    "portalRootSourceSha256": {
+      "apps/host/src/web-runtime.ts": "9f8bd81d92af82f06f39f4434d52f9af9e2bd84caa9ea2e355ef8845e18db24f",
+      "tests/web-runtime-auth.test.ts": "d83d9c396b2eb2ceb21c2614add5d9ed263b563f3d666efa73c0f78bc80b1aa2",
+      "tests/operator-passthrough.test.ts": "b68fce1006013aab5ce1f14ee2e8db6b889f9d8a11fa0ec50062bcd476161827"
+    }
+  },
+  "sourceOperatorHashesAtStart": {
+    "apps/operator/bin/host-app.ts": "88e883103ca017e39f7a6045fd593179501565281d9c29b8f950de5c8f6809cd",
+    "apps/operator/bin/hosted-handler.ts": "4280a7899febdcfac54dc447527671bcbd17c3fbd1c25a4c731ef35a5c55496d",
+    "packages/operator-core/lib/workspace-host/local-machine-operator-transport.ts": "dba505d5c30a25286d7792a83efbfa076f8dc6fbc192098053bd7027b3ac9749",
+    "packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts": "feee70d21f1b3afb9f5f4cb6984183908fc1c3634457e532b275260b89caf7e4",
+    "packages/operator-core/lib/workspace-host/hosted-session-host.ts": "f6eb17aa03dd0dc11e313f4dd9844eb6c30d3abd065794eb884b2183b374bbdd",
+    "packages/operator-core/lib/workspace-host/hosted-operator-http.ts": "835d45220f798e0a4ab324fb250146f019d670c1696d4c6e608a447bff3ae13b",
+    "packages/operator-core/lib/workspace-host/operator-relay-client.ts": "8ef6b427d9e43456ff44395452ed22374d725f7a61303ce51aa638a0706d2ef9",
+    "packages/operator-core/lib/endpoint-route/routes/hosted-cli/index.ts": "9cb602590405819f08463ec7efc4bb81bbdf9e45441b20026a7205e82ec0faad",
+    "packages/operator-core/lib/endpoint-route/routes/hosted-cli/store.ts": "f8bff2eb115a5c45316629f29f357b3b8484b6abca71ef91e261db49f94ebba6",
+    "packages/operator-core/lib/workspace-context-middleware.ts": "fe97211d2fef0e27d2c5e3963223deb65b53b295b05fef22a9598d56938d66c9",
+    "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts": "4c0c17b2147eb357bd5360fd99bbe5d1c1f60781b569a6c89dde54c5ef88b153"
+  },
+  "sourceDriftAtReceipt": [],
+  "sshPrerequisite": {
+    "account": "papercusp-workspace",
+    "network": "owned-container-loopback",
+    "verified": true
+  },
+  "destinations": [
+    {
+      "hostId": "r1-host-a",
+      "workspaceId": "test-runtime-aedfeee9-3e2-a",
+      "status": 200,
+      "displayName": "R1 destination a"
+    },
+    {
+      "hostId": "r1-host-b",
+      "workspaceId": "test-runtime-aedfeee9-3e2-b",
+      "status": 200,
+      "displayName": "R1 destination b"
+    }
+  ],
+  "sessions": [
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "expectedWorkspace": "test-runtime-aedfeee9-3e2-a",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-a"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-b",
+      "expectedWorkspace": "test-runtime-aedfeee9-3e2-b",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-b"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "mode": "query",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-a"
+        }
+      }
+    },
+    {
+      "gui": "portal",
+      "host": "r1-host-a",
+      "mode": "referer",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-a"
+        }
+      }
+    },
+    {
+      "gui": "local",
+      "host": "r1-host-a",
+      "expectedWorkspace": "test-runtime-aedfeee9-3e2-a",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-a"
+        }
+      }
+    },
+    {
+      "gui": "local",
+      "host": "r1-host-b",
+      "expectedWorkspace": "test-runtime-aedfeee9-3e2-b",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "session": {
+          "workspaceId": "test-runtime-aedfeee9-3e2-b"
+        }
+      }
+    }
+  ],
+  "connections": [
+    {
+      "gui": "portal",
+      "url": "http://127.0.0.1:37709/?app=desktops&ws=test-runtime-aedfeee9-3e2-a&desktopHost=r1-host-a&host=r1-host-a&step=operate&tab=desktops",
+      "health": "healthy",
+      "events": [
+        {
+          "type": "session.bound"
+        },
+        {
+          "type": "pty.ready"
+        },
+        {
+          "type": "file.result"
+        },
+        {
+          "type": "desktop.roster.result"
+        },
+        {
+          "type": "operation.error",
+          "code": "desktop_start_failed"
+        },
+        {
+          "type": "desktop.roster.result"
+        },
+        {
+          "type": "desktop.roster.result"
+        }
+      ],
+      "screenshot": "docs/evidence/machine-first-r1-ssh-browser-portal-20261024.png"
+    },
+    {
+      "gui": "local",
+      "url": "http://127.0.0.1:39479/desktops?ws=test-runtime-aedfeee9-3e2-a&desktopHost=r1-host-a",
+      "health": "healthy",
+      "events": [
+        {
+          "type": "session.bound"
+        },
+        {
+          "type": "pty.ready"
+        },
+        {
+          "type": "pty.snapshot"
+        },
+        {
+          "type": "file.result"
+        },
+        {
+          "type": "desktop.roster.result"
+        }
+      ],
+      "screenshot": "docs/evidence/machine-first-r1-ssh-browser-local-20261024.png"
+    }
+  ],
+  "pageErrors": [],
+  "portalCleanup": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "artifactSha256": {
+    "docs/evidence/machine-first-r1-ssh-browser-portal-20261024.png": "adb9b7e0a3c2ed80e935c1d552f454d379fc16be0871c9c6d68c27a6cb4a0dc5",
+    "docs/evidence/machine-first-r1-ssh-browser-local-20261024.png": "9f685341499194dc97d08409fcab569242761d611449a119f985d7be00b2baa8"
+  },
+  "retainedRawReceipt": "/tmp/machine-first-r1-ssh-container-v8-20261024/runtime/gui-v8d.json",
+  "retainedTrace": "/tmp/machine-first-r1-ssh-container-v8-20261024/runtime/gui-v8d.zip",
+  "fixture": "packages/operator-core/lib/workspace-host/machine-first-browser-container.fixture.ts",
+  "limits": [
+    "Full two-GUI/two-window case table and independent acceptance remain open.",
+    "Actual desktop.start reports desktop_start_failed; the fixture has no maintained desktop pack.",
+    "Launch-context probe reaches psu_not_installed inside this container; actual agent launch/continuity is not accepted.",
+    "fontconfig/fonts-dejavu-core were installed into this owned container and added to bootstrap source after startup.",
+    "Final release and publisher authorization remain separate."
+  ]
+}

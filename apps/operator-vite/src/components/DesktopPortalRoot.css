@@ -1,0 +1,9 @@
+/* The shared shell fills its desktop-owned viewport below the native env bar. */
+[data-desktop-interface='portal-candidate'] .portal-shell {
+  height: 100%;
+}
+main:has(> [data-desktop-interface='portal-candidate']) {
+  margin: 0;
+  padding: 0;
+  max-width: none;
+}

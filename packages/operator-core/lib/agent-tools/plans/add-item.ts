@@ -46,6 +46,7 @@ import { writePlanItemAnchors } from '../../plan-items/anchor-store';
 import { resolvePlanScope } from './source';
 import { effectivePlanProfile } from '../../plan-verification-escape';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { authoringReuse } from '../../code-intelligence/reuse-authoring';
 import { notifySyncInvalidate } from '../../sync-sse';
 
 /**
@@ -540,9 +541,16 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   // or grammar-breaking text silently corrupts the built line, the item fails to
   // parse back and we surface a warning instead of a clean-looking success.
   const item = writtenBody ? echoParsedItem(writtenBody, result.value.itemId) : null;
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/add-item.ts#<module>/addItemOne:ec3df5e4bd6815dbed9b:2","classification":"durable","reason":"Scope resolution can reach notification paths through detached callers; no safe-to-lose proof is recorded.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+  const adviceScope = scope ?? await resolvePlanScope({ harnessSlug,
+    workspaceId: (sctx as { workspaceId?: string }).workspaceId });
+  const reuseAdvice = await authoringReuse(ctx, { workspaceId: adviceScope.workspaceId,
+    harness: adviceScope.harnessSlug, plan: it.slug, item: result.value.itemId, text: it.text,
+    paths: anchors?.flatMap(anchor => anchor.path ? [anchor.path] : []) });
   return {
     ...result.value,
     ...(anchors !== undefined ? { anchors } : {}),
+    ...(reuseAdvice ? { reuseAdvice } : {}),
     ...(warnNoLinks ? { warnings: ['This code plan item has no code links; add symbols or paths as anchors.'] } : {}),
     ...(item
       ? { item }
@@ -563,7 +571,7 @@ export default defineTool({
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:
-      'Before writing a code item, run graph:query impact on the symbols it changes; pass symbols or paths as anchors (code links). plans:add-item → plans:set-status when work starts.',
+      'Before writing a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass symbols or paths as anchors (code links). Name/import similarity is not ownership. Use graph:query { op:"evidence", plan, item } to inspect exact linked specs and proof; missing declarations need explicit anchors/specs. plans:add-item → plans:set-specs → plans:set-status when work starts.',
     seeAlso: [
       'plans:set-status (advance an item you just added off todo)',
       'plans:set-importance (re-rank the new item vs its siblings)',

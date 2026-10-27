@@ -7,11 +7,11 @@
  * Exercises the behaviour the file-lock tables can't express: a named
  * resource with MANY shared holders + ONE exclusive holder, gated by a
  * writer-priority drain. Mirrors su-locks.integration.test.ts: live
- * papercusp_su, .skipIf(!live), a unique coordination domain per test so
- * lock state is isolated (the registry rows are global + read-only here).
+ * papercusp_su, .skipIf(!live), unique test domains, and test-only tree-scoped
+ * resource names so fixtures do not contend with live host-global resources.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import {
   ensureBootstrap,
   getTxPool,
@@ -35,27 +35,47 @@ import { acquireResourceExclusiveWithWait } from '../resource-acquire-wait';
 import { _resetListenersForTests } from '../workspace-listener';
 
 async function dbLive(): Promise<boolean> {
-  try {
-    const sql = getTxPool();
-    await sql`SELECT 1`;
-    return true;
-  } catch {
-    return false;
-  }
+  // Fresh with-test-pg servers do not have the side database until bootstrap.
+  // Setup failures must abort collection, never turn this suite into 24 skips.
+  await ensureBootstrap();
+  await getTxPool()`SELECT 1`;
+  return true;
 }
 
 let wsSeq = 0;
-const uniqueWs = () => `res-test-ws-${Date.now()}-${wsSeq++}`;
+const activeTestDomains = new Set<string>();
+const TEST_RESOURCE = 'locks-test-resource-locks';
+const TEST_RESOURCE_ALT = 'locks-test-resource-locks-alt';
+let testResourcesReady: Promise<void> | null = null;
+const uniqueWs = () => {
+  const ws = `res-test-ws-${Date.now()}-${wsSeq++}`;
+  activeTestDomains.add(ws);
+  return ws;
+};
 
-const acq = (
+async function ensureTestResources(ws: string): Promise<void> {
+  if (!testResourcesReady) {
+    testResourcesReady = (async () => {
+      for (const resource of [TEST_RESOURCE, TEST_RESOURCE_ALT]) {
+        await inWorkspaceTxn(ws, 'admin', (tx) =>
+          registerResource(tx, { resource, description: 'resource-locks integration test fixture' }),
+        );
+      }
+    })();
+  }
+  await testResourcesReady;
+}
+
+const acq = async (
   ws: string,
   owner: string,
   resource: string,
   mode: ResourceMode,
   ttlSec = 60,
   queueOnConflict = false,
-) =>
-  inWorkspaceTxn(ws, owner, (tx) =>
+) => {
+  await ensureTestResources(ws);
+  return inWorkspaceTxn(ws, owner, (tx) =>
     tryAcquireResource(tx, {
       coordinationDomain: ws,
       resource,
@@ -67,7 +87,7 @@ const acq = (
       queueOnConflict,
     }),
   );
-
+};
 const rel = (ws: string, owner: string, lockId: string) =>
   inWorkspaceTxn(ws, owner, (tx) =>
     tryReleaseResource(tx, { coordinationDomain: ws, owner, lockId }),
@@ -77,6 +97,27 @@ const status = (lockId: string) => readResourceLockStatus(getTxPool(), lockId);
 
 describe('resource-locks (named, shared/exclusive, drain)', async () => {
   const live = await dbLive();
+
+  afterEach(async () => {
+    if (!live || activeTestDomains.size === 0) {
+      activeTestDomains.clear();
+      return;
+    }
+    const sql = getTxPool();
+    for (const ws of activeTestDomains) {
+      const owners = await sql<Array<{ owner: string }>>`
+        SELECT owner FROM agent_resource_locks WHERE coordination_domain = ${ws}
+        UNION
+        SELECT owner FROM agent_resource_exclusive_queue WHERE coordination_domain = ${ws}
+        UNION
+        SELECT owner FROM agent_resource_waiters WHERE coordination_domain = ${ws}
+      `;
+      for (const { owner } of owners) {
+        await inWorkspaceTxn(ws, owner, (tx) => releaseAllResourcesForOwner(tx, ws, owner));
+      }
+    }
+    activeTestDomains.clear();
+  });
 
   it.skipIf(!live)('rejects an unregistered resource name with unknown_resource', async () => {
     await ensureBootstrap();
@@ -89,7 +130,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('grants exclusive immediately when no shared holders exist', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (x.ok) expect(x.status).toBe('held');
   });
@@ -98,23 +139,23 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
 
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
-    const b = await acq(ws, 'B', 'dev-server', 'shared');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
+    const b = await acq(ws, 'B', TEST_RESOURCE, 'shared');
     expect(a.ok && b.ok).toBe(true);
     if (!a.ok || !b.ok) return;
 
     // Two shared holders are visible in the queue.
-    const q1 = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const q1 = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     expect(q1.holders.filter((h) => h.mode === 'shared').length).toBe(2);
 
     // Exclusive requested while shared holders exist → accepted but DRAINING.
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
     expect(x.status).toBe('draining');
 
     // Writer-priority: a NEW shared acquire is refused while draining.
-    const c = await acq(ws, 'C', 'dev-server', 'shared');
+    const c = await acq(ws, 'C', TEST_RESOURCE, 'shared');
     expect(c.ok).toBe(false);
     if (!c.ok) expect(c.reason).toBe('exclusive_pending');
 
@@ -131,11 +172,11 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
 
-    const a = await acq(ws, 'A', 'dev-server', 'shared', 60);
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared', 60);
     expect(a.ok).toBe(true);
     if (!a.ok) return;
 
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive', 60);
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive', 60);
     expect(x.ok).toBe(true);
     if (!x.ok) return;
     expect(x.status).toBe('draining');
@@ -143,7 +184,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     // The git-sync action refreshes shared leases through tryAcquireResource,
     // not tryHeartbeatResource. Renewal must not be mistaken for a new entrant
     // while the restart's exclusive is still waiting for A to finish.
-    const refreshed = await acq(ws, 'A', 'dev-server', 'shared', 120);
+    const refreshed = await acq(ws, 'A', TEST_RESOURCE, 'shared', 120);
     expect(refreshed.ok).toBe(true);
     if (!refreshed.ok) return;
     expect(refreshed.lock_id).toBe(a.lock_id);
@@ -156,15 +197,15 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('unscoped queue identifies each simultaneous holder by named resource', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const dev = await acq(ws, 'dev-owner', 'dev-server', 'shared');
-    const db = await acq(ws, 'db-owner', 'db-schema', 'shared');
+    const dev = await acq(ws, 'dev-owner', TEST_RESOURCE, 'shared');
+    const db = await acq(ws, 'db-owner', TEST_RESOURCE_ALT, 'shared');
     expect(dev.ok && db.ok).toBe(true);
 
     const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws });
     expect(q.holders).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ owner: 'dev-owner', resource: 'dev-server' }),
-        expect.objectContaining({ owner: 'db-owner', resource: 'db-schema' }),
+        expect.objectContaining({ owner: 'dev-owner', resource: TEST_RESOURCE }),
+        expect.objectContaining({ owner: 'db-owner', resource: TEST_RESOURCE_ALT }),
       ]),
     );
 
@@ -182,7 +223,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const ws = uniqueWs();
 
     // A holds shared on a long TTL — it will NOT drain within B's budget.
-    const a = await acq(ws, 'A', 'dev-server', 'shared', 600);
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared', 600);
     expect(a.ok).toBe(true);
     if (!a.ok) return;
 
@@ -201,7 +242,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
       coordinationDomain: ws,
       owner: 'B',
       ownerLabel: 'res:B',
-      resource: 'dev-server',
+      resource: TEST_RESOURCE,
       reason: 'restart attempt (will time out)',
       ttlSec: 600,
       maxWaitSec: 1,
@@ -215,37 +256,37 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(bWaited).toBeGreaterThanOrEqual(900); // actually waited ~1s, no instant give-up
 
     // C now queues an exclusive waiter behind B's still-present draining exclusive.
-    const c = await acq(ws, 'C', 'dev-server', 'exclusive', 60, true);
+    const c = await acq(ws, 'C', TEST_RESOURCE, 'exclusive', 60, true);
     expect(c.ok).toBe(false);
     if (c.ok) return;
     expect(c.reason).toBe('held_exclusive'); // B's draining exclusive blocks C → C recorded as waiter
 
     // The queue shows A (shared, held) + B (exclusive, draining) — and NOT a
     // grant for C. B timing out granted B NOTHING destructive.
-    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     const bRow = q.holders.find((h) => h.owner === 'B');
     expect(bRow?.mode).toBe('exclusive');
     expect(bRow?.status).toBe('draining'); // never flipped to held — A blocks
     expect(q.holders.some((h) => h.owner === 'C')).toBe(false); // C holds nothing
 
-    // Now B gives up its claim (release its still-parked exclusive). The waiter
-    // ledger names C as the queued audience — fairness: C is next, not B again.
+    // B gives up its claim and the cascade promotes C into a draining exclusive.
+    // The resource is still unavailable to shared waiters, so it is not back up.
     const relB = await rel(ws, 'B', bRow!.lock_id);
-    expect(relB.exclusiveResources).toContain('dev-server');
-    expect(relB.waiters['dev-server'] ?? []).toContain('C'); // C is the queued grantee-to-be
+    expect(relB.exclusiveResources).not.toContain(TEST_RESOURCE);
+    expect(relB.waiters[TEST_RESOURCE]).toBeUndefined();
 
-    // A is still holding shared, so C's exclusive still has to drain A — but C
-    // (not B) is the one now contending for the slot. Drain A; then C acquires.
+    // A is still holding shared, so C's exclusive remains draining. Drain A;
+    // the cascade makes C held without a back-up hint for an occupied resource.
     await rel(ws, 'A', a.lock_id);
-    const cGot = await acq(ws, 'C', 'dev-server', 'exclusive');
-    expect(cGot.ok).toBe(true);
-    if (!cGot.ok) return;
-    expect(cGot.status).toBe('held'); // no shared holders left → C is granted
+    const afterA = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
+    const cGot = afterA.holders.find((h) => h.owner === 'C' && h.mode === 'exclusive');
+    expect(cGot?.status).toBe('held');
 
     // B did NOT silently re-acquire: only C holds the exclusive now.
-    const q2 = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const q2 = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     const excl = q2.holders.filter((h) => h.mode === 'exclusive');
     expect(excl.map((h) => h.owner)).toEqual(['C']);
+    if (cGot) await rel(ws, 'C', cGot.lock_id);
 
     await _resetListenersForTests();
     await _resetForTests();
@@ -255,19 +296,19 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
 
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
     expect(a.ok).toBe(true);
     if (!a.ok) return;
 
     // B becomes the active draining exclusive. C and D are refused but retain
     // durable tickets; a retry by D must not jump ahead of C after B releases.
-    const b = await acq(ws, 'B', 'dev-server', 'exclusive');
+    const b = await acq(ws, 'B', TEST_RESOURCE, 'exclusive');
     expect(b.ok).toBe(true);
     if (!b.ok) return;
     expect(b.status).toBe('draining');
 
-    const c = await acq(ws, 'C', 'dev-server', 'exclusive', 60, true);
-    const d = await acq(ws, 'D', 'dev-server', 'exclusive', 60, true);
+    const c = await acq(ws, 'C', TEST_RESOURCE, 'exclusive', 60, true);
+    const d = await acq(ws, 'D', TEST_RESOURCE, 'exclusive', 60, true);
     expect(c.ok && d.ok).toBe(false);
     if (c.ok || d.ok) return;
     expect(c.queue_ticket).toBeDefined();
@@ -275,25 +316,27 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(c.queue_position).toBe(1);
     expect(d.queue_position).toBe(2);
 
-    const queued = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const queued = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     expect(queued.queue?.map((entry) => entry.owner)).toEqual(['C', 'D']);
 
     // Releasing the last shared holder makes B effective, but does not admit C
     // until B itself releases. The queue remains ordered while B is held.
-    await rel(ws, 'A', a.lock_id);
+    const releasedA = await rel(ws, 'A', a.lock_id);
+    expect(releasedA.exclusiveResources).not.toContain(TEST_RESOURCE);
+    expect(releasedA.waiters[TEST_RESOURCE]).toBeUndefined();
     expect((await status(b.lock_id)).status).toBe('held');
-    expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' })).queue?.map((entry) => entry.owner)).toEqual(['C', 'D']);
+    expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE })).queue?.map((entry) => entry.owner)).toEqual(['C', 'D']);
 
     // B's release promotes only C, leaving D pending behind it.
     await rel(ws, 'B', b.lock_id);
-    const afterB = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const afterB = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     const cHolder = afterB.holders.find((holder) => holder.owner === 'C' && holder.mode === 'exclusive');
     expect(cHolder?.status).toBe('held');
     expect(afterB.queue?.map((entry) => entry.owner)).toEqual(['D']);
 
     // C's release then promotes D; no later retry can have leapfrogged C.
     await rel(ws, 'C', cHolder!.lock_id);
-    const afterC = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const afterC = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     const dHolder = afterC.holders.find((holder) => holder.owner === 'D' && holder.mode === 'exclusive');
     expect(dHolder?.status).toBe('held');
     expect(afterC.queue).toEqual([]);
@@ -304,11 +347,11 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
 
-    const a = await acq(ws, 'A', 'dev-server', 'exclusive');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'exclusive');
     expect(a.ok).toBe(true);
     if (!a.ok) return;
-    expect((await acq(ws, 'B', 'dev-server', 'exclusive', 60, true)).ok).toBe(false);
-    expect((await acq(ws, 'C', 'dev-server', 'exclusive', 60, true)).ok).toBe(false);
+    expect((await acq(ws, 'B', TEST_RESOURCE, 'exclusive', 60, true)).ok).toBe(false);
+    expect((await acq(ws, 'C', TEST_RESOURCE, 'exclusive', 60, true)).ok).toBe(false);
 
     // B abandoned its request. Expiry GC must remove it so C becomes the head
     // when A releases, while agent_resource_waiters remains an independent
@@ -317,7 +360,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
       UPDATE agent_resource_exclusive_queue
          SET expires_ts = clock_timestamp() - interval '1 second'
        WHERE coordination_domain = ${ws}
-         AND resource = 'dev-server'
+         AND resource = ${TEST_RESOURCE}
          AND owner = 'B'
     `;
 
@@ -325,26 +368,29 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
       SELECT owner
         FROM agent_resource_waiters
        WHERE coordination_domain = ${ws}
-         AND resource = 'dev-server'
+         AND resource = ${TEST_RESOURCE}
     `;
     expect(waiterRowsBeforeRelease.map((row) => row.owner).sort()).toEqual(['B', 'C']);
 
     await rel(ws, 'A', a.lock_id);
 
-    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     expect(q.queue).toEqual([]);
     expect(q.holders.find((holder) => holder.owner === 'C' && holder.mode === 'exclusive')?.status).toBe('held');
-    // The existing owner-keyed waiter ledger is consumed by the release's
-    // targeted back-up broadcast; queue-ticket GC must not replace that
-    // ledger, and the release still clears it as before.
+    // C is the promoted successor, so the resource is not back up yet. The
+    // independent waiter ledger remains until C releases or its TTL expires.
     const waiterRowsAfterRelease = await getTxPool()`
       SELECT owner
         FROM agent_resource_waiters
        WHERE coordination_domain = ${ws}
-         AND resource = 'dev-server'
+         AND resource = ${TEST_RESOURCE}
     `;
-    expect(waiterRowsAfterRelease).toEqual([]);
-    await rel(ws, 'C', q.holders.find((holder) => holder.owner === 'C')!.lock_id);
+    expect(waiterRowsAfterRelease.map((row) => row.owner).sort()).toEqual(['B']);
+    const cHolder = q.holders.find((holder) => holder.owner === 'C' && holder.mode === 'exclusive');
+    if (!cHolder) return;
+    const releasedC = await rel(ws, 'C', cHolder.lock_id);
+    expect(releasedC.exclusiveResources).toContain(TEST_RESOURCE);
+    expect(releasedC.waiters[TEST_RESOURCE]).toContain('B');
   });
 
   it.skipIf(!live)('keeps expired resource waiters off the hot path and janitor-cleans them', async () => {
@@ -359,11 +405,11 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
       INSERT INTO agent_resource_waiters
         (coordination_domain, resource, owner, owner_label, expires_ts)
       VALUES
-        (${ws}, 'dev-server', 'expired-waiter', 'expired',
+        (${ws}, ${TEST_RESOURCE}, 'expired-waiter', 'expired',
          clock_timestamp() - interval '1 second')
     `;
 
-    const acquired = await acq(ws, 'fresh-owner', 'dev-server', 'shared');
+    const acquired = await acq(ws, 'fresh-owner', TEST_RESOURCE, 'shared');
     expect(acquired.ok).toBe(true);
     const afterHotPath = await sql<Array<{ owner: string }>>`
       SELECT owner
@@ -388,9 +434,9 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('refuses an in-place upgrade: a shared holder requesting exclusive gets holds_shared', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
     expect(a.ok).toBe(true);
-    const up = await acq(ws, 'A', 'dev-server', 'exclusive');
+    const up = await acq(ws, 'A', TEST_RESOURCE, 'exclusive');
     expect(up.ok).toBe(false);
     if (!up.ok) expect(up.reason).toBe('holds_shared');
   });
@@ -398,7 +444,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('heartbeat extends a held resource lease', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const a = await acq(ws, 'A', 'dev-server', 'shared', 30);
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared', 30);
     expect(a.ok).toBe(true);
     if (!a.ok) return;
     const h = await inWorkspaceTxn(ws, 'A', (tx) =>
@@ -414,7 +460,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
       await ensureBootstrap();
       const acquiredIn = uniqueWs(); // e.g. the staging checkout's domain
       const servedFrom = uniqueWs(); // e.g. the release checkout's domain
-      const a = await acq(acquiredIn, 'A', 'dev-server', 'shared', 30);
+      const a = await acq(acquiredIn, 'A', TEST_RESOURCE, 'shared', 30);
       expect(a.ok).toBe(true);
       if (!a.ok) return;
       // The defect: the serving operator's inferred domain does not hold the row.
@@ -437,10 +483,10 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('refuses a second exclusive requester while one is held (held_exclusive)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const y = await acq(ws, 'Y', 'dev-server', 'exclusive'); // granted (no shared holders)
+    const y = await acq(ws, 'Y', TEST_RESOURCE, 'exclusive'); // granted (no shared holders)
     expect(y.ok).toBe(true);
     if (y.ok) expect(y.status).toBe('held');
-    const z = await acq(ws, 'Z', 'dev-server', 'exclusive'); // a different owner
+    const z = await acq(ws, 'Z', TEST_RESOURCE, 'exclusive'); // a different owner
     expect(z.ok).toBe(false);
     if (!z.ok) expect(z.reason).toBe('held_exclusive');
   });
@@ -448,24 +494,24 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('does not late-grant a terminal exclusive conflict by default', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const holder = await acq(ws, 'holder', 'dev-server', 'exclusive');
+    const holder = await acq(ws, 'holder', TEST_RESOURCE, 'exclusive');
     expect(holder.ok).toBe(true);
     if (!holder.ok) return;
 
     // A caller that returns held_exclusive has no pending/grant contract. The
     // default must therefore leave neither a durable ticket nor a waiter that
     // could be promoted after this call has exited.
-    const refused = await acq(ws, 'terminal', 'dev-server', 'exclusive');
+    const refused = await acq(ws, 'terminal', TEST_RESOURCE, 'exclusive');
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
     expect(refused.reason).toBe('held_exclusive');
     expect(refused.queue_ticket).toBeUndefined();
-    const beforeRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const beforeRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     expect(beforeRelease.queue).toEqual([]);
 
     const released = await rel(ws, 'holder', holder.lock_id);
-    expect(released.waiters['dev-server'] ?? []).not.toContain('terminal');
-    const afterRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    expect(released.waiters[TEST_RESOURCE] ?? []).not.toContain('terminal');
+    const afterRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     expect(afterRelease.queue).toEqual([]);
     expect(afterRelease.holders.some((entry) => entry.owner === 'terminal')).toBe(false);
   });
@@ -473,19 +519,20 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
   it.skipIf(!live)('release reports the resources whose exclusive was released (for back-up broadcast)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
     const r = await rel(ws, 'X', x.lock_id);
-    expect(r.exclusiveResources).toContain('dev-server');
+    expect(r.exclusiveResources).toContain(TEST_RESOURCE);
   });
 
   it.skipIf(!live)('release reports when the selected resource hold expired before release', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
+    expect((await acq(ws, 'C', TEST_RESOURCE, 'shared')).ok).toBe(false);
 
     // Simulate a paused holder whose TTL lapsed before it resumed to release.
     await getTxPool()`
@@ -499,44 +546,88 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(r.expired).toHaveLength(1);
     expect(r.expired[0]).toMatchObject({
       lockId: x.lock_id,
-      resource: 'dev-server',
+      resource: TEST_RESOURCE,
       mode: 'exclusive',
     });
     expect(r.expired[0]?.expiredAt).toBeDefined();
+    expect(r.exclusiveResources).toContain(TEST_RESOURCE);
+    expect(r.waiters[TEST_RESOURCE]).toContain('C');
     expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws })).holders).toEqual([]);
   });
 
-  it.skipIf(!live)('records refused acquirers as waiters; the exclusive release returns + clears them (A4)', async () => {
+  it.skipIf(!live)('does not report back up when an expired exclusive is immediately re-granted', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
+    expect(x.ok).toBe(true);
+    if (!x.ok) return;
+    expect((await acq(ws, 'C', TEST_RESOURCE, 'shared')).ok).toBe(false);
+    expect((await acq(ws, 'D', TEST_RESOURCE, 'exclusive', 60, true)).ok).toBe(false);
+
+    await getTxPool()`
+      UPDATE agent_resource_locks
+         SET expires_ts = clock_timestamp() - interval '1 hour'
+       WHERE coordination_domain = ${ws} AND lock_id = ${x.lock_id}::uuid
+    `;
+
+    const r = await rel(ws, 'X', x.lock_id);
+    expect(r.expired).toHaveLength(1);
+    expect(r.exclusiveResources).not.toContain(TEST_RESOURCE);
+    expect(r.waiters[TEST_RESOURCE]).toBeUndefined();
+
+    const afterX = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
+    const dHolder = afterX.holders.find((holder) => holder.owner === 'D' && holder.mode === 'exclusive');
+    expect(dHolder?.status).toBe('held');
+    expect((await getTxPool()`
+      SELECT owner FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws} AND resource = ${TEST_RESOURCE}
+       ORDER BY owner
+    `).map((row) => row.owner)).toEqual(['C']);
+    if (!dHolder) return;
+
+    const releasedD = await rel(ws, 'D', dHolder.lock_id);
+    expect(releasedD.exclusiveResources).toContain(TEST_RESOURCE);
+    expect([...(releasedD.waiters[TEST_RESOURCE] ?? [])].sort()).toEqual(['C']);
+  });
+
+  it.skipIf(!live)('keeps shared waiters until the exclusive successor actually releases (A4)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
 
     // X holds exclusive; C (shared) + D (exclusive) are refused → recorded waiters.
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
-    expect((await acq(ws, 'C', 'dev-server', 'shared')).ok).toBe(false); // exclusive_pending
-    expect((await acq(ws, 'D', 'dev-server', 'exclusive', 60, true)).ok).toBe(false); // held_exclusive
+    expect((await acq(ws, 'C', TEST_RESOURCE, 'shared')).ok).toBe(false); // exclusive_pending
+    expect((await acq(ws, 'D', TEST_RESOURCE, 'exclusive', 60, true)).ok).toBe(false); // held_exclusive
 
     // Releasing X's exclusive returns the waiters (the targeted back-up audience).
     const r = await rel(ws, 'X', x.lock_id);
-    expect(r.exclusiveResources).toContain('dev-server');
-    expect([...(r.waiters['dev-server'] ?? [])].sort()).toEqual(['C', 'D']);
+    expect(r.exclusiveResources).not.toContain(TEST_RESOURCE);
+    expect(r.waiters[TEST_RESOURCE]).toBeUndefined();
 
-    // The queued D request is promoted by X's release. Release that promoted
-    // lease before checking a fresh request, so this A4 assertion does not
-    // bypass the FIFO admission rule under test elsewhere.
-    const afterX = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    // D is promoted immediately, so C stays in the waiter ledger until D
+    // actually releases. D's stale waiter row is cleared at promotion time.
+    const afterX = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
     const dHolder = afterX.holders.find((holder) => holder.owner === 'D' && holder.mode === 'exclusive');
     expect(dHolder?.status).toBe('held');
     if (!dHolder) return;
-    await rel(ws, 'D', dHolder.lock_id);
+    expect((await getTxPool()`
+      SELECT owner FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws} AND resource = ${TEST_RESOURCE}
+       ORDER BY owner
+    `).map((row) => row.owner)).toEqual(['C']);
+
+    const releasedD = await rel(ws, 'D', dHolder.lock_id);
+    expect(releasedD.exclusiveResources).toContain(TEST_RESOURCE);
+    expect([...(releasedD.waiters[TEST_RESOURCE] ?? [])].sort()).toEqual(['C']);
 
     // …and clears them — a second exclusive's release re-reads no waiters.
-    const x2 = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x2 = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x2.ok).toBe(true);
     if (!x2.ok) return;
     const r2 = await rel(ws, 'X', x2.lock_id);
-    expect(r2.waiters['dev-server'] ?? []).toEqual([]);
+    expect(r2.waiters[TEST_RESOURCE] ?? []).toEqual([]);
   });
 
   it.skipIf(!live)('clears a waiter row when that owner successfully acquires (no spurious re-notify) (A4)', async () => {
@@ -544,43 +635,49 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const ws = uniqueWs();
 
     // X holds exclusive; C is refused → recorded as a waiter on dev-server.
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
-    expect((await acq(ws, 'C', 'dev-server', 'shared')).ok).toBe(false);
+    expect((await acq(ws, 'C', TEST_RESOURCE, 'shared')).ok).toBe(false);
 
     // C's exclusive lease on a DIFFERENT resource is irrelevant; what matters is
     // that once C acquires dev-server, its dev-server waiter row is gone. X
     // releases (read-clears existing waiters), then C acquires successfully.
     await rel(ws, 'X', x.lock_id);
-    const cGot = await acq(ws, 'C', 'dev-server', 'shared');
+    const cGot = await acq(ws, 'C', TEST_RESOURCE, 'shared');
     expect(cGot.ok).toBe(true);
     if (!cGot.ok) return;
     await rel(ws, 'C', cGot.lock_id);
 
     // A fresh exclusive by Z finds no leftover 'C' waiter (cleared on C's acquire).
-    const z = await acq(ws, 'Z', 'dev-server', 'exclusive');
+    const z = await acq(ws, 'Z', TEST_RESOURCE, 'exclusive');
     expect(z.ok).toBe(true);
     if (!z.ok) return;
     const rz = await rel(ws, 'Z', z.lock_id);
-    expect(rz.waiters['dev-server'] ?? []).toEqual([]);
+    expect(rz.waiters[TEST_RESOURCE] ?? []).toEqual([]);
   });
 
   it.skipIf(!live)('releaseAllResourcesForOwner clears every lock the owner holds (session-end, P-019)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
-    const b = await acq(ws, 'A', 'db-schema', 'exclusive');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
+    const b = await acq(ws, 'A', TEST_RESOURCE_ALT, 'exclusive');
     expect(a.ok && b.ok).toBe(true);
+    expect((await acq(ws, 'C', TEST_RESOURCE_ALT, 'exclusive', 60, true)).ok).toBe(false);
 
     const r = await inWorkspaceTxn(ws, 'A', (tx) =>
       releaseAllResourcesForOwner(tx, ws, 'A'),
     );
     expect(r.released).toBe(2);
-    expect(r.exclusiveResources).toContain('db-schema');
+    expect(r.exclusiveResources).not.toContain(TEST_RESOURCE_ALT);
 
     const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws });
     expect(q.holders.some((h) => h.owner === 'A')).toBe(false);
+    const successor = q.holders.find((h) => h.owner === 'C' && h.mode === 'exclusive');
+    expect(successor?.status).toBe('held');
+    if (!successor) return;
+    const releasedC = await rel(ws, 'C', successor.lock_id);
+    expect(releasedC.exclusiveResources).toContain(TEST_RESOURCE_ALT);
   });
 
   it.skipIf(!live)('releaseAllResourcesForOwner (all_mine) on a long domain (>54 chars) does not raise "channel name too long" and still flips a draining waiter to held (EI-39)', async () => {
@@ -602,10 +699,10 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
 
     // A holds shared; X requests exclusive → draining (writer-priority, A still in).
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
     expect(a.ok).toBe(true);
     if (!a.ok) return;
-    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    const x = await acq(ws, 'X', TEST_RESOURCE, 'exclusive');
     expect(x.ok).toBe(true);
     if (!x.ok) return;
     expect(x.status).toBe('draining');
@@ -640,8 +737,8 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     // A holds shared; B's exclusive parks in `draining` behind it. The NOTIFY
     // that used to overflow fires only when the cascade flips a draining
     // exclusive to held — exactly what A's session-end sweep triggers.
-    const a = await acq(ws, 'A', 'dev-server', 'shared');
-    const b = await acq(ws, 'B', 'dev-server', 'exclusive');
+    const a = await acq(ws, 'A', TEST_RESOURCE, 'shared');
+    const b = await acq(ws, 'B', TEST_RESOURCE, 'exclusive');
     expect(a.ok && b.ok).toBe(true);
     if (!a.ok || !b.ok) return;
     expect(b.status).toBe('draining');
@@ -679,7 +776,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const any = await listLiveResourceDomains(getTxPool());
     expect(any).toEqual(expect.arrayContaining([wsA, wsB]));
     // A different name never reports these domains.
-    expect(await listLiveResourceDomains(getTxPool(), 'db-schema')).not.toContain(wsA);
+    expect(await listLiveResourceDomains(getTxPool(), TEST_RESOURCE_ALT)).not.toContain(wsA);
 
     // B's 1s lease lapses; an expired row must not read as a holder.
     await new Promise((r) => setTimeout(r, 1500));

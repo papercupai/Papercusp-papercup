@@ -334,7 +334,16 @@ async function refreshIncumbent(
  */
 export async function adoptConditionIncumbent(
   conditionKey: string,
-  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'> & { includeTerminal?: boolean },
+  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'> & {
+    includeTerminal?: boolean;
+    /**
+     * Terminal rows closed by one of these actors are NOT adopted. A writer that
+     * auto-closes its own findings (the clone sweep's clean re-scan) passes itself
+     * here, so a finding that comes back is re-filed instead of staying closed while
+     * it is reported again. A human disposition is still honoured.
+     */
+    skipTerminalOwners?: readonly string[];
+  },
 ): Promise<string | null> {
   const key = conditionKey.trim();
   if (!key) throw new Error('adoptConditionIncumbent: empty conditionKey');
@@ -349,6 +358,7 @@ export async function adoptConditionIncumbent(
          AND (condition_key = ${key}
            OR payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${key})
          AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+         AND NOT (COALESCE(terminal_owner, '') = ANY(${[...(input.skipTerminalOwners ?? [])]}::text[]))
        ORDER BY created_ts, feature_id LIMIT 1`;
     if (rows[0]) return rows[0].feature_id;
   }

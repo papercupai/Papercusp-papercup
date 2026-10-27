@@ -20,7 +20,7 @@ import type { ChatEvent } from '@papercusp/chat-protocol';
 import { dispatchProjectedTool, dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { harnessQuery, withWorkspace } from '@papercusp/db-org';
 import { assembleRolePrompt as assembleHarnessRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { assembleRolePrompt as assembleOperatorRolePrompt } from '../../../prompt-assembly';
+import { assembleRolePrompt as assembleOperatorRolePrompt, rolePromptUnavailableDetails } from '../../../prompt-assembly';
 import {
   buildPlanContextSection,
   buildWorkItemDossierSections,
@@ -691,6 +691,8 @@ export function createAgentChatMessagesRoute(
         const systemText = `${rolePrompt.text}${dossierSection}${uiContextSection}${lockNotice}${planContextSection}${memorySection}`;
         assembled = { text: promptText, runId: rolePrompt.runId, systemText };
       } catch (e) {
+        const unavailable = rolePromptUnavailableDetails(e);
+        if (unavailable) return Response.json({ error: unavailable.message, ...unavailable }, { status: 503 });
         return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
       }
 

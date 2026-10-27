@@ -29,6 +29,44 @@ export function reportsClearFiltersExpression(): string {
   })()`;
 }
 
+/** Measure real WebKit geometry, including the last column after horizontal scrolling. */
+export function reportsLayoutExpression(fullscreen: boolean): string {
+  return `(() => {
+    const reader = document.querySelector('.reports-reader');
+    const article = reader?.querySelector('.reports-article-main');
+    const body = article?.querySelector('.reports-body');
+    const scroller = body?.querySelector('.reports-table-scroll');
+    const table = scroller?.querySelector('table');
+    const last = table?.querySelector('tbody tr:last-child td:last-child');
+    if (!reader || !article || !body || !scroller || !table || !last) return false;
+    scroller.scrollLeft = scroller.scrollWidth;
+    const box = scroller.getBoundingClientRect();
+    const end = last.getBoundingClientRect();
+    const style = getComputedStyle(article);
+    const available = article.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const actual = {
+      fullscreen: reader.classList.contains('reports-reader--fullscreen'),
+      readerWidth: reader.getBoundingClientRect().width, readerHeight: reader.getBoundingClientRect().height,
+      viewportWidth: innerWidth, viewportHeight: innerHeight,
+      available, bodyWidth: body.getBoundingClientRect().width,
+      articleClientWidth: article.clientWidth, articleScrollWidth: article.scrollWidth,
+      tableClientWidth: scroller.clientWidth, tableScrollWidth: scroller.scrollWidth,
+      tableScrollLeft: scroller.scrollLeft, lastRight: end.right, scrollerRight: box.right,
+      lastText: last.textContent, whiteSpace: getComputedStyle(last).whiteSpace,
+      overflowX: getComputedStyle(scroller).overflowX, tabIndex: scroller.tabIndex,
+    };
+    window.__reportsLayoutWitness = actual;
+    return actual.fullscreen === ${fullscreen} && available > 100
+      && Math.abs(actual.bodyWidth - available) <= 3
+      && actual.articleScrollWidth <= actual.articleClientWidth + 2
+      && actual.tableScrollWidth > actual.tableClientWidth + 20
+      && actual.tableScrollLeft > 0 && end.left >= box.left - 2 && end.right <= box.right + 2
+      && actual.lastText?.includes('RIGHTMOST EVIDENCE') && actual.whiteSpace !== 'nowrap'
+      && actual.overflowX === 'auto' && actual.tabIndex === 0
+      ${fullscreen ? '&& Math.abs(actual.readerWidth - innerWidth) <= 2 && Math.abs(actual.readerHeight - innerHeight) <= 2' : ''};
+  })()`;
+}
+
 /** Keep the native history/filter witness testable against the real Reports DOM. */
 export function reportsHistoryFilterExpression(expected: {
   originalTitle: string; correctedTitle: string; subjectValue: string; subjectLabel: string;
@@ -292,7 +330,11 @@ async function verifyReports(evidenceDir: string) {
     writeFileSync(join(evidenceDir, `assert-${++step}.json`), output);
   };
   const title = 'Reports native verification';
-  const body = '# Findings\n\nA complete private report.\n\n```mermaid\ngraph TD; A[Published] --> B[Reader]\n```\n';
+  const columns = Array.from({ length: 16 }, (_, i) => `Column ${i + 1}`);
+  const body = '# Findings\n\nA complete private report with text that should use the available article width.\n\n'
+    + '| ' + columns.join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n'
+    + '| ' + columns.map((_, i) => i === columns.length - 1 ? 'RIGHTMOST EVIDENCE preserved in full' : 'Long authored finding with ' + 'unbrokenevidence'.repeat(6)).join(' | ') + ' |\n\n'
+    + '```mermaid\ngraph TD; A[Published] --> B[Reader]\n```\n';
   const subject = { kind: 'external', ref: 'reports-native-fixture', label: 'Native acceptance subject' };
   const runTool = (name: string, args: Record<string, unknown>) => {
     native('eval', `window.__reportsPublication = { done: false }; void (async () => {
@@ -352,6 +394,29 @@ async function verifyReports(evidenceDir: string) {
         && fields['Report ID'] === ${JSON.stringify(original.report_id)}
         && ['Written by', 'Pot', 'Published', 'Source'].every(key => !!fields[key]); })()`);
     poll(`Array.from(document.querySelectorAll('.reports-reader svg')).some(svg => svg.textContent.includes('Published') && svg.textContent.includes('Reader'))`);
+    poll(reportsLayoutExpression(false));
+    save('layout-normal.json', JSON.parse(native('eval', 'JSON.stringify(window.__reportsLayoutWitness)')));
+    native('eval', `document.querySelector('.reports-table-scroll').scrollIntoView({block:'center'}); window.__reportsTableNode = document.querySelector('.reports-body table')`);
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-table-normal.png'));
+    native('click', '[aria-label="Fullscreen report reader"]');
+    poll(reportsLayoutExpression(true));
+    save('layout-fullscreen.json', JSON.parse(native('eval', 'JSON.stringify(window.__reportsLayoutWitness)')));
+    // The same rendered fixture must reject the original width cap and a
+    // clipped table. Restore each perturbation before collecting final proof.
+    native('eval', `window.__reportsLayoutCounterexample = document.createElement('style');
+      window.__reportsLayoutCounterexample.textContent = '.reports-body { max-width:760px !important; }';
+      document.head.append(window.__reportsLayoutCounterexample)`);
+    assert.equal(JSON.parse(native('eval', reportsLayoutExpression(true))), false, 'Geometry must catch the old width cap');
+    save('layout-width-cap-rejected.json', JSON.parse(native('eval', 'JSON.stringify(window.__reportsLayoutWitness)')));
+    native('eval', `window.__reportsLayoutCounterexample.textContent = '.reports-table-scroll { overflow-x:hidden !important; }'`);
+    assert.equal(JSON.parse(native('eval', reportsLayoutExpression(true))), false, 'Geometry must catch unreachable table overflow');
+    native('eval', 'window.__reportsLayoutCounterexample.remove()');
+    poll(reportsLayoutExpression(true));
+    native('eval', `document.querySelector('.reports-table-scroll').scrollIntoView({block:'center'})`);
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-table-fullscreen.png'));
+    native('click', '[aria-label="Restore report reader"]');
+    poll(reportsLayoutExpression(false));
+    poll(`document.querySelector('.reports-body table') === window.__reportsTableNode`);
     native('eval', `window.__reportsCopied = null; Object.defineProperty(navigator, 'clipboard', { configurable:true,
       value:{ writeText:async text => { window.__reportsCopied = text; } } });
       Array.from(document.querySelectorAll('.reports-actions button')).find(b => b.textContent === 'Copy as Markdown').click()`);
@@ -491,7 +556,8 @@ async function verifyReports(evidenceDir: string) {
       sse: { before: transportBefore.sync, afterPublish: transportAfter.sync,
         beforeRetire: transportBeforeRetire.sync, afterRetire: transportAfterRetire.sync },
       checked: ['publish-tool', 'publish-exact-readback', 'unknown-citation-isolation',
-        'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
+        'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'reader-full-width-normal', 'reader-full-width-fullscreen',
+        'wide-table-last-column-normal', 'wide-table-last-column-fullscreen', 'fullscreen-preserves-table', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
         'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
         'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read',
@@ -501,6 +567,7 @@ async function verifyReports(evidenceDir: string) {
     const failure: Record<string, unknown> = { error: String(error), step, sourceFingerprints: before };
     try {
       failure.historyFilterWitness = JSON.parse(native('eval', 'JSON.stringify(window.__reportsHistoryFilterWitness ?? null)'));
+      failure.layoutWitness = JSON.parse(native('eval', 'JSON.stringify(window.__reportsLayoutWitness ?? null)'));
       failure.transport = transportSnapshot();
       failure.ui = native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})');
       native('eval', `window.__reportsReadProbe = { done: false }; void (async () => {

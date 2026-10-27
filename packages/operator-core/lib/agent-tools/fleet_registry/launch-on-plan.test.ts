@@ -17,6 +17,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import launchOnPlan, {
+  recipeModeField,
+  resolveWaveLaunchMode,
   fleetAdmissionRefusalResult,
   DEAD_WAVE_OVERRIDE_MIN_AGE_MS,
   deadWaveSlotOverride,
@@ -482,6 +484,33 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
 // knob threads into the member operating baseline. renderMemberBaseline / composeMemberLaunchContext
 // always make the selected carry explicit on loop:arm, because a headless caller's omitted
 // carry default can otherwise silently override the fleet's warm default.
+// WI-6554700010029298: DRAIN lived only on the founding leader's identity, so Luna Max's
+// three successor leaders (none ever held DRAIN) launched 721 AUTO-only members in 7 days.
+describe('fleet launch mode survives leader succession (WI-6554700010029298)', () => {
+  const callerDrain = { mode: 'drain' as const, subject: 'drain the bug queue', instructions: null, ownerDirected: true };
+
+  it('a fresh drain fleet persists mode:drain on its recipe; a non-drain launch persists nothing', () => {
+    expect(recipeModeField(callerDrain)).toEqual({ mode: 'drain' });
+    expect(recipeModeField(null)).toEqual({});
+    expect(recipeModeField({ mode: 'grade', subject: null, instructions: null, ownerDirected: false })).toEqual({});
+  });
+
+  it('a successor caller without DRAIN still launches the recipe mode, member-shaped', () => {
+    const mode = resolveWaveLaunchMode({ callerMode: null, recipe: { mode: 'drain' } });
+    expect(mode).toEqual({ mode: 'drain', subject: null, instructions: null, ownerDirected: false });
+    const member = memberLaunchCommand({ ...base, launchMode: mode });
+    expect(member).toContain('--mode=drain');
+    expect(member).not.toContain('--mode-owner-directed');
+  });
+
+  it('the caller\'s own DRAIN row wins over the recipe; neither present means no mode', () => {
+    expect(resolveWaveLaunchMode({ callerMode: callerDrain, recipe: { mode: 'drain' } })).toBe(callerDrain);
+    expect(resolveWaveLaunchMode({ callerMode: null, recipe: {} })).toBeNull();
+    expect(resolveWaveLaunchMode({ callerMode: null, recipe: { mode: 'bogus' } })).toBeNull();
+    expect(resolveWaveLaunchMode({ callerMode: null, recipe: undefined })).toBeNull();
+  });
+});
+
 describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () => {
   const opts = { fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 };
 

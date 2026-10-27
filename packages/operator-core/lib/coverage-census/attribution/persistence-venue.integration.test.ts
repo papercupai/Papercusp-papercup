@@ -14,10 +14,14 @@
  * final assertion reads testing_surface_depth, so a green result proves the
  * evidence is persistent and capable of moving the ladder above depth zero.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import postgres, { type Sql } from 'postgres';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import * as orgDb from '@papercusp/db-org';
+import { createOrgTestDb } from '../../../test/_org-test-db';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { registerRoute } from '../../endpoint-route/define-route';
@@ -28,6 +32,7 @@ import { toWorkspaceRel } from '@papercusp/test-config/admin-test-runs-reporter'
 import {
   ATTRIBUTION_ENV,
   resetAttributionArmingForTests,
+  setAmbientTestContext,
 } from './context';
 import {
   attributionStatus,
@@ -36,6 +41,10 @@ import {
   setEvidenceStoreForTests,
 } from './sink';
 import { createPgEvidenceStore } from './pg-evidence-store';
+import { contractFixture, cleanupContractFixtures } from '../../code-intelligence/scoped-contracts.fixture';
+import type { RuntimeCodeEvidence } from '../../code-intelligence/runtime-code-evidence';
+import * as serving from '../../serving-host-identity';
+import '../../agent-tools/gitnexus/query';
 
 // Register the real tools before looking them up in the projected catalog. The change-queue
 // probes below deliberately select each tool's non-mutating path.
@@ -59,6 +68,7 @@ const CHANGE_QUEUE_SURFACES = [
 ] as const;
 
 let sql: Sql;
+let runGroup: string;
 const savedEnv = new Map<string, string | undefined>();
 const PINNED_ENV = [
   ATTRIBUTION_ENV,
@@ -108,6 +118,9 @@ async function dispatchTool(toolName: string, args: Record<string, unknown>): Pr
 }
 
 beforeAll(() => {
+  const configuredRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
+  if (!configuredRunGroup) throw new Error('Persistent attribution requires PAPERCUSP_TEST_RUN_GROUP');
+  runGroup = configuredRunGroup;
   for (const key of PINNED_ENV) savedEnv.set(key, process.env[key]);
   process.env[ATTRIBUTION_ENV] = '1';
   process.env.PAPERCUSP_WORKSPACE_ID = WORKSPACE;
@@ -115,7 +128,7 @@ beforeAll(() => {
 
   // The handle points at the same canonical admin URL the production store
   // resolves. Injection exists only so this test can close the pool cleanly.
-  sql = postgres(getHarnessAdminUrl(), {
+  sql = postgres(process.env.PAPERCUSP_TEST_RUNS_DB_URL ?? getHarnessAdminUrl(), {
     max: 1,
     connect_timeout: 5,
     idle_timeout: 1,
@@ -126,8 +139,13 @@ beforeAll(() => {
 beforeEach(() => {
   resetAttributionSinkForTests();
   resetAttributionArmingForTests();
+  // This fixture arms in beforeAll, after shared setup may have skipped its
+  // hooks. Publish the same ambient identity explicitly for this fixture's calls.
+  setAmbientTestContext({ file: TEST_FILE, case: expect.getState().currentTestName ?? null });
   setEvidenceStoreForTests(createPgEvidenceStore({ getSql: () => sql }));
 });
+
+afterEach(() => setAmbientTestContext(null));
 
 afterAll(async () => {
   resetAttributionSinkForTests();
@@ -185,6 +203,7 @@ describe('persistent coverage-attribution venue', () => {
          AND d.surface_id = ANY(${[...EXPECTED_SURFACES]}::text[])
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(EXPECTED_SURFACES));
@@ -291,6 +310,7 @@ describe('persistent coverage-attribution venue', () => {
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
          AND e.test_case LIKE '%non-mutating change-queue intake%'
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(new Set(rows.map((row) => row.surface_id))).toEqual(new Set(CHANGE_QUEUE_SURFACES));
@@ -359,6 +379,7 @@ describe('persistent coverage-attribution venue', () => {
          AND e.evidence_kind = 'traffic'
          AND e.test_file = ${TEST_FILE}
          AND e.test_case LIKE '%Learning observations REST transport%'
+         AND e.details->>'runGroupId' = ${runGroup}
     `;
 
     expect(rows).toHaveLength(1);
@@ -371,4 +392,85 @@ describe('persistent coverage-attribution venue', () => {
     });
     expect(rows[0]?.test_case).toContain('Learning observations REST transport');
   });
+
+  it('P017 marks observed linked implementation executed through graph:query and persists authored L3 traffic', async () => {
+    // Fail before compiler/fixture work if the measuring instrument cannot
+    // attribute this run or resolve the live registry population.
+    expect(attributionStatus().armed).toBe(true);
+    const testCase = expect.getState().currentTestName;
+    if (typeof testCase !== 'string') throw new Error('Persistent attribution query requires the current test name');
+    const surfaces = await sql`SELECT id FROM harness_shared.testing_surfaces
+      WHERE workspace_id=${WORKSPACE} AND harness_slug=${HARNESS}
+        AND kind='mcp-tool' AND surface_id='graph:query' AND retired_at IS NULL`;
+    expect(surfaces, 'the canonical census must already contain the dispatched surface').toHaveLength(1);
+    // Functional data follows the owned integration database. The venue's existing
+    // explicit reporter/evidence sink is the only connection allowed to persist it.
+    const functionalDb = await createOrgTestDb();
+    const functional = functionalDb.adminSql;
+    vi.spyOn(orgDb, 'getOrgPg').mockReturnValue({ sql: functional } as ReturnType<typeof orgDb.getOrgPg>);
+    const run = promisify(execFile);
+    const fixture = contractFixture();
+    fixture.projects[0]!.slug = HARNESS;
+    try {
+      // A disposable fixture repository supplies an actual source/build match;
+      // these commands never operate on the shared checkout.
+      for (const args of [['init', '-q'], ['add', 'api.ts', 'routes.ts', 'tsconfig.json'],
+        ['-c', 'user.name=P017 fixture', '-c', 'user.email=p017@example.invalid', 'commit', '-qm', 'fixture']]) {
+        await run('git', ['-C', fixture.service, ...args]);
+      }
+      const { stdout } = await run('git', ['-C', fixture.service, 'rev-parse', 'HEAD']);
+      const buildSha = stdout.trim();
+      vi.spyOn(serving, 'getServingHostIdentity').mockReturnValue({
+        host: 'p017-private-fixture', processId: String(process.pid), buildSha,
+      });
+      await functional`INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, tool_name, plugin_name, role, spawn_id, window_key,
+         status, invoked_at, serving_build_sha)
+        VALUES (${WORKSPACE}, ${HARNESS}, 'service:read', 'papercusp', 'operator',
+          'p017-private-journey', 'fixture', 'ok', now() - interval '1 minute', ${buildSha})`;
+
+      const tool = lookupByMcpName('graph:query');
+      expect(tool).toBeTruthy();
+      if (!tool) throw new Error('graph:query is absent from the projected catalog');
+      const dispatched = await dispatchProjectedTool(tool, 'graph:query', {
+        op: 'contracts', harnesses: [HARNESS], paths: ['api.ts', 'routes.ts'], runtime_evidence: true,
+      }, { ...dispatchContext(), projectDir: fixture.service, tx: functional } as never, PROJECTED_DEPS);
+      expect(dispatched.ok, JSON.stringify(dispatched.error)).toBe(true);
+      const content = dispatched.result?.content.find(item => item.type === 'text');
+      expect(content?.type).toBe('text');
+      if (!content || content.type !== 'text') throw new Error('graph:query returned no serialized report');
+      const result = JSON.parse(content.text) as { error: string | null;
+        runtimeEvidence: { repositories: RuntimeCodeEvidence[] } };
+      expect(result.error, content.text).toBeNull();
+      const report = result.runtimeEvidence.repositories[0]!;
+      expect(report.error).toBeNull();
+      expect(report.population).toMatchObject({ workspaceId: WORKSPACE, buildSha });
+      expect(report.implementations.find(row => row.tools.includes('service:read'))).toMatchObject({
+        state: 'executed', successfulDispatches: 1, implementation: { path: 'api.ts', line1: 2 },
+      });
+      expect(report.completeness.retention.status).toBe('unknown');
+      expect(report.completeness.absenceKnown).toBe(false);
+
+      await flushPendingTelemetry();
+      await flushTrafficEvidence();
+      expect(attributionStatus()).toMatchObject({ armed: true, disabled: false, buffered: 0,
+        unmatchedSurfaces: 0, lastError: null });
+      expect(attributionStatus().written).toBeGreaterThanOrEqual(1);
+      const rows = await sql<{ id: string; meets_l3: boolean; verdict: string; generated: boolean }[]>`
+        SELECT e.id, d.meets_l3, e.verdict, e.generated
+          FROM harness_shared.coverage_evidence e
+          JOIN harness_shared.testing_surface_depth d ON d.id=e.surface_ref
+         WHERE d.workspace_id=${WORKSPACE} AND d.harness_slug=${HARNESS}
+           AND d.surface_id='graph:query' AND e.evidence_kind='traffic'
+           AND e.test_file=${TEST_FILE} AND e.test_case=${testCase}
+           AND e.details->>'runGroupId'=${runGroup}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ meets_l3: true, verdict: 'pass', generated: false });
+    } finally {
+      await flushPendingTelemetry();
+      vi.restoreAllMocks();
+      cleanupContractFixtures();
+      await functionalDb.cleanup();
+    }
+  }, 120_000);
 });

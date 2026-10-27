@@ -64,8 +64,10 @@
 import {
   explainReadQuery,
   extractPgErrorInfo,
+  stripSqlLiteralsAndComments,
   type PgErrorInfo,
 } from './pg-read-query';
+import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 
 /**
  * Matches the start of a top-level SQL read statement embedded in prose. `SELECT` alone
@@ -284,6 +286,35 @@ export interface ReplicationSqlFinding {
   undeterminableReason?: string;
 }
 
+interface RubricSqlCriterion {
+  key: string;
+  replication?: string;
+  method?: string;
+  check?: RubricCriterionCheck;
+}
+
+/** Diagnose the unambiguous single-tool/two-cohort mismatch without executing a probe. */
+export function lintSqlCohortMethod(criterion: RubricSqlCriterion): ReplicationSqlFinding[] {
+  if (!/\bboth\s+(?:named\s+)?cohorts\b/i.test(criterion.method ?? '')) return [];
+  const probe = criterion.check?.kind === 'probe' ? criterion.check.probe : undefined;
+  if (!probe || typeof probe !== 'object' || !('kind' in probe) || probe.kind !== 'sql'
+    || !('sql' in probe) || typeof probe.sql !== 'string' || !probe.sql) return [];
+  const sql = stripSqlLiteralsAndComments(probe.sql);
+  // Deliberately decline complex or dynamic populations. Removing SQL noise prevents
+  // a comment or string containing tool_name from becoming a fictitious cohort.
+  if (/\b(?:OR|UNION|JOIN)\b/i.test(sql)) return [];
+  if ((sql.match(/\btool_name\b/gi) ?? []).length !== 1) return [];
+  if (!/\bWHERE\b[\s\S]*\btool_name\s*=\s*''/i.test(sql)) return [];
+  return [{
+    criterionKey: criterion.key,
+    sql: probe.sql,
+    error: {
+      code: 'METHOD_COHORT_MISMATCH',
+      message: 'The method requires both cohorts, but the bound SQL selects one literal tool_name cohort. Describe that single cohort or correct the procedure before grading.',
+    },
+  }];
+}
+
 export interface ReplicationSqlValidationResult {
   /** Total embedded statements isolated + checked across all criteria. */
   checked: number;
@@ -357,7 +388,7 @@ export function summarizeReplicationSqlCheck(
  * check never breaks the write path it's advising on.
  */
 export async function validateRubricReplicationSql(
-  criteria: ReadonlyArray<{ key: string; replication?: string }>,
+  criteria: ReadonlyArray<RubricSqlCriterion>,
 ): Promise<ReplicationSqlValidationResult> {
   const findings: ReplicationSqlFinding[] = [];
   const undeterminable: ReplicationSqlFinding[] = [];
@@ -365,6 +396,9 @@ export async function validateRubricReplicationSql(
   let placeholderOnly = 0;
   try {
     outer: for (const c of criteria) {
+      const cohortFindings = lintSqlCohortMethod(c);
+      findings.push(...cohortFindings);
+      checked += cohortFindings.length;
       for (const sql of extractReplicationSqlStatements(c.replication)) {
         if (checked >= MAX_STATEMENTS_CHECKED) break outer;
         checked++;

@@ -20,6 +20,7 @@
  *   - replay and a full backfill converge on the same rows.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
@@ -30,7 +31,7 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
 import { listProvenanceKey } from './merge';
-import { getPeople, mergePeople, searchPeople } from './people';
+import { getPeople, mergePeople, searchPeople, readPersonQualificationEvidence } from './people';
 import {
   acceptEntityField,
   mergeEntities,
@@ -56,6 +57,23 @@ const CRM = 'graph-crm-fixture';
 const PHONE = 'graph-phone-fixture';
 
 const MAIL = 'graph-mail-fixture';
+const SIGNUPS = 'papercusp-signups';
+const signupConfig = { accountId: 'a'.repeat(32), namespaceId: 'b'.repeat(32) };
+const signupKey = 'signup:2026-10-26T12:00:00.000Z:abc12345';
+const signupCapture = {
+  email: 'Ada@Acme.com', what: 'Automate support', ts: '2026-10-26T12:00:00.000Z',
+  attribution: { distinct_id: 'PER-forged', first_touch: { utm_campaign: 'launch' } },
+  personId: 'PER-forged', consent: true, activated: true,
+};
+const { providerAdapter: signupAdapter } = createRequire(import.meta.url)(
+  '../../../../libs/papercusp/plugins/papercusp-signups/index.cjs',
+) as { providerAdapter: ProviderAdapter };
+const signupFetch: HostFetch = async ({ request }) => ({
+  status: 200, headers: {}, bodyEncoding: 'utf8',
+  body: JSON.stringify(new URL(request.url).pathname.endsWith('/keys')
+    ? { success: true, result: [{ name: signupKey }], result_info: { cursor: '' } }
+    : signupCapture),
+});
 const FIXTURE_DATATYPES = ['person', 'organization', 'email-message', 'calendar-event', 'call'] as const;
 
 interface FixtureRecord {
@@ -109,12 +127,12 @@ async function ingest(db: Sql, input: IngestExternalTriggerInput) {
   });
 }
 
-async function sync(sourceId: string): Promise<void> {
+async function sync(sourceId: string, hostFetch: HostFetch = noFetch): Promise<void> {
   await sql`UPDATE harness_shared.data_sources SET sync_next_attempt_at = NULL WHERE id = ${sourceId}::uuid`;
   const result = await runConnectorSync(
     sql,
     { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId] },
-    { registry, ingest, hostFetchFor: () => noFetch, leaseOwner: 'relationship-graph-it' },
+    { registry, ingest, hostFetchFor: () => hostFetch, leaseOwner: 'relationship-graph-it' },
   );
   expect(result.sources, JSON.stringify(result.sources)).toEqual([
     expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 }),
@@ -127,7 +145,7 @@ async function connect(kind: string, policy: Record<string, string[]> = { person
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
        destination_policy, permission_mapping)
     VALUES (${WS}, ${kind}, ${alice}, ${`${kind}-account-${Date.now()}-${Math.random()}`}, 'connected',
-            ${sql.json({ harnessSlug: HARNESS })}, 'organization',
+            ${sql.json({ harnessSlug: HARNESS, ...(kind === SIGNUPS ? signupConfig : {}) })}, 'organization',
             ${sql.json(policy)}, ${sql.json({ mode: 'source-acl' })})
     RETURNING id::text`;
   return row!.id;
@@ -152,14 +170,14 @@ const live = (rows: GraphRow[]) => rows.filter((r) => !r.payload.mergedInto);
 
 async function clean(): Promise<void> {
   const sources = await sql<{ id: string }[]>`
-    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL})`;
+    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL}, ${SIGNUPS})`;
   const ids = sources.map((s) => s.id);
   await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND item_kind IN ('person', 'organization')
              AND (feature_id LIKE 'PER-%' OR feature_id LIKE 'ORG-%' OR payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[]))`;
   if (ids.length > 0) {
     await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array(ids)}::uuid[])`;
   }
-  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL})`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL}, ${SIGNUPS})`;
   feeds[CRM] = [];
   feeds[PHONE] = [];
   feeds[MAIL] = [];
@@ -179,7 +197,8 @@ beforeAll(async () => {
     // leave the registry empty and surface only as every sync returning `sources: []`.
     await registry.register({ descriptor, adapter, pluginName: id, runtime: 'js' } as never);
   }
-  expect(registry.list().map((p) => p.descriptor.id).sort()).toEqual([CRM, MAIL, PHONE].sort());
+  await registry.register({ descriptor: await signupAdapter.describe(), adapter: signupAdapter, pluginName: SIGNUPS, runtime: 'js' } as never);
+  expect(registry.list().map((p) => p.descriptor.id).sort()).toEqual([CRM, MAIL, PHONE, SIGNUPS].sort());
 });
 
 afterAll(async () => {
@@ -193,6 +212,80 @@ beforeEach(async () => {
 });
 
 describe('platform relationship graph (P-002, R-1)', () => {
+  it('reads cited signup fit inputs from canonical membership, without promoting attribution or consent (P-019)', async () => {
+    const source = await connect(SIGNUPS, { person: ['record'] });
+    await sync(source, signupFetch);
+    const [person] = live(await graphRows('PER-', 'person'));
+    const recordId = dataSourceRecordId(WS, source, 'person', signupKey);
+    const result = await readPersonQualificationEvidence(sql, WS, person!.feature_id);
+    expect(result).toMatchObject({ status: 'available', person: { id: person!.feature_id }, sources: [{
+      recordId, evidenceRef: `work-item:${recordId}`, provider: SIGNUPS, dataSourceId: source,
+      selfReportedUseCase: signupCapture.what,
+    }] });
+    expect(JSON.stringify(result)).not.toMatch(/PER-forged|communicationConsent|emailVerified|distinct_id|productIdentityBinding/);
+    expect(await readPersonQualificationEvidence(sql, 'foreign-workspace', person!.feature_id))
+      .toEqual({ status: 'unknown', reason: 'person_unavailable' });
+    expect(await readPersonQualificationEvidence(sql, WS, recordId))
+      .toEqual({ status: 'unknown', reason: 'person_unavailable' });
+    // A concurrent source retirement must not become a partial assessment.
+    await sql`UPDATE harness_shared.work_items SET payload = payload || '{"retiredAt":"2026-10-27T00:00:00Z"}'::jsonb
+      WHERE workspace_id = ${WS} AND feature_id = ${recordId}`;
+    expect(await readPersonQualificationEvidence(sql, WS, person!.feature_id))
+      .toEqual({ status: 'unknown', reason: 'source_records_unavailable' });
+  });
+  it('ingests a packaged signup as a cited person record and converges on replay (P-019)', async () => {
+    const source = await connect(SIGNUPS, { person: ['record'] });
+    await sync(source, signupFetch);
+
+    const recordId = dataSourceRecordId(WS, source, 'person', signupKey);
+    const [person] = live(await graphRows('PER-', 'person'));
+    expect(person).toMatchObject({ nature: 'record', payload: {
+      canonical: true, emails: ['ada@acme.com'], memberRecordIds: [recordId],
+      provenance: { 'emails:ada@acme.com': {
+        source: { kind: 'record', recordId, dataSourceId: source, provider: SIGNUPS },
+        observedAt: signupCapture.ts,
+      } },
+    } });
+    expect(person!.feature_id).not.toBe('PER-forged');
+    const [record] = await graphRows('DSR-', 'person');
+    expect(record).toMatchObject({ feature_id: recordId, nature: 'record', payload: {
+      personId: person!.feature_id, dataSourceId: source,
+      extensions: { [SIGNUPS]: {
+        signupEventId: signupKey, capturedAt: signupCapture.ts,
+        evidenceRef: `cloudflare-kv:${signupConfig.accountId}:${signupConfig.namespaceId}:${signupKey}`,
+        emailVerified: false, communicationConsent: false,
+        selfReported: { useCase: signupCapture.what, attribution: {
+          distinct_id: 'PER-forged', first_touch: { utm_campaign: 'launch' },
+        } },
+      } },
+    } });
+    expect(record!.payload.consent).toBeUndefined();
+    expect(record!.payload.activated).toBeUndefined();
+
+    await sync(source, signupFetch);
+    await resolveIdentities(sql, { workspaceId: WS, datatype: 'person' });
+    expect((await graphRows('DSR-', 'person')).map(r => r.feature_id)).toEqual([recordId]);
+    expect(live(await graphRows('PER-', 'person')).map(r => r.feature_id)).toEqual([person!.feature_id]);
+    const deliveries = await sql<{ sink_kind: string; error: string | null }[]>`
+      SELECT sink_kind, error FROM harness_shared.trigger_deliveries
+       WHERE workspace_id = ${WS} AND source_id = ${source}::uuid`;
+    expect(deliveries.filter(d => d.error)).toEqual([]);
+    expect(deliveries.map(d => d.sink_kind)).toEqual(expect.arrayContaining(['data-source-record', 'relationship-graph-resolve']));
+  });
+
+  it('requires the signup source to grant the person record destination (P-019)', async () => {
+    const source = await connect(SIGNUPS, {});
+    await sync(source, signupFetch);
+    expect(await graphRows('DSR-', 'person')).toEqual([]);
+    expect(await graphRows('PER-', 'person')).toEqual([]);
+
+    await sql`UPDATE harness_shared.data_sources SET destination_policy = ${sql.json({ person: ['record'] })}
+               WHERE workspace_id = ${WS} AND id = ${source}::uuid`;
+    await sync(source, signupFetch);
+    expect(await graphRows('DSR-', 'person')).toHaveLength(1);
+    expect(live(await graphRows('PER-', 'person'))).toHaveLength(1);
+  });
+
   it('registers person/organization/commitment as records and call as a document (migration 1383)', async () => {
     const rows = await sql<Array<{ id: string; tier: string; work_item_kind: string | null; nature: string }>>`
       SELECT id, tier, work_item_kind, nature FROM harness_shared.datatype_registry

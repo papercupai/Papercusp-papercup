@@ -6,8 +6,8 @@
  * Identity chain (never envelope fields): the op's provenance authorPubkey is
  * the VERIFIED source-log device → `hive_members` attestation → the stable
  * numeric github_user_id → comms-trust resolution (local override →
- * owner-signed policy default → conservative fallback). Both legs TTL-cached —
- * this sits on the merge hot path.
+ * owner-signed policy default → conservative fallback). Device authority is read
+ * live, including every row's revocation set; only the policy tier is TTL-cached.
  *
  * Scope: enforcement only applies when the projection is HIVE-BOUND
  * (potHomeSlug present) — the same scoping as the WI-259 member-content gate.
@@ -23,6 +23,7 @@
 // wrong scope makes the device→user map EMPTY, which fails every author to
 // FALLBACK_COMMS_TIER — silently quarantining legitimate remote coord messages.
 import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
+import { resolveGithubUserIdForDevicePubkey } from './hive-member-identity-set';
 import {
   effectiveCommsTier,
   FALLBACK_COMMS_TIER,
@@ -30,13 +31,6 @@ import {
 } from '../../trust/comms-trust';
 
 const CACHE_TTL_MS = Number(process.env.PAPERCUSP_COMMS_TIER_CACHE_MS) || 30_000;
-
-interface DeviceMapCacheEntry {
-  at: number;
-  /** device_pubkey → github_user_id */
-  map: Map<string, number>;
-}
-const deviceMaps = new Map<string, DeviceMapCacheEntry>(); // key ws::home
 
 interface TierCacheEntry {
   at: number;
@@ -54,28 +48,6 @@ let deps: CommsTierGateDeps = {
   effectiveCommsTier,
 };
 
-async function deviceToUser(
-  workspaceId: string,
-  potHomeSlug: string,
-  devicePubkey: string,
-  now: number,
-): Promise<number | null> {
-  const key = `${workspaceId}::${potHomeSlug}`;
-  let entry = deviceMaps.get(key);
-  if (!entry || now - entry.at >= CACHE_TTL_MS) {
-    const map = new Map<string, number>();
-    const members = await deps.listHiveMembers(workspaceId, potHomeSlug);
-    for (const m of members) {
-      for (const a of m.deviceAttestations ?? []) {
-        if (a?.device_pubkey) map.set(a.device_pubkey, m.githubUserId);
-      }
-    }
-    entry = { at: now, map };
-    deviceMaps.set(key, entry);
-  }
-  return entry.map.get(devicePubkey) ?? null;
-}
-
 /**
  * The author device's effective comms tier toward THIS owner. Fail-soft to the
  * conservative fallback — the merge path must never throw on a tier lookup.
@@ -88,7 +60,10 @@ export async function resolveAuthorCommsTier(input: {
 }): Promise<{ tier: CommsTier; githubUserId: number | null }> {
   const now = input.nowMs ?? Date.now();
   try {
-    const user = await deviceToUser(input.workspaceId, input.potHomeSlug, input.devicePubkey, now);
+    const user = await resolveGithubUserIdForDevicePubkey(
+      input.workspaceId, input.potHomeSlug, input.devicePubkey, undefined,
+      { loadMembers: deps.listHiveMembers },
+    );
     if (user == null) return { tier: FALLBACK_COMMS_TIER, githubUserId: null };
     const tkey = `${input.workspaceId}::${input.potHomeSlug}::${user}`;
     const cached = tiers.get(tkey);
@@ -112,6 +87,5 @@ export function __setCommsTierGateDeps(d: Partial<CommsTierGateDeps>): void {
 }
 export function __resetCommsTierGate(): void {
   deps = { listHiveMembers: listHiveMembersForLocalPot, effectiveCommsTier };
-  deviceMaps.clear();
   tiers.clear();
 }

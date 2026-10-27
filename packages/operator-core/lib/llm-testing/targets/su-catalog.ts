@@ -532,7 +532,7 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'reports:publish',
-    description: 'Publish a complete owner-facing Markdown deliverable into the Reports library. Origin is server-stamped; visibility defaults owner; corrections supersede. After publishing, call reports:get { id: report_id } and verify the complete body and visibility before citing the path or claiming delivery.',
+    description: 'Publish a complete owner-facing Markdown deliverable into the Reports library. Origin is server-stamped; visibility defaults workspace (public within this workspace); private access requires an explicit request; corrections supersede. After publishing, call reports:get { id: report_id } and verify the complete body and visibility before citing the path or claiming delivery.',
     input: obj({ title: { type: 'string', minLength: 1, maxLength: 500 }, body_md: { type: 'string' }, summary: { type: 'string', maxLength: 4000 },
       kind: { type: 'string', enum: [...REPORT_KINDS] }, visibility: { type: 'string', enum: [...REPORT_VISIBILITIES] },
       request_key: { type: 'string' }, supersedes: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, ['title']),

@@ -51,6 +51,16 @@ describe('voice-card-router — no active, no pending', () => {
 });
 
 describe('voice-card-router — active', () => {
+  it.each([['yes', 'submit'], ['cancel', 'decline']])('retains owning card scope on %s after clearing active state', (text, kind) => {
+    const state = createRouterState();
+    attachActive(state, { correlationId: 'original-card', runId: 'original-run',
+      conversationId: 'original-conversation', workspaceId: 'original-workspace', card: card(yesNo) });
+    expect(routeTranscript(state, { text, tsMs: 200 }, composeAmbiguityPrompt)).toMatchObject({
+      kind, conversationId: 'original-conversation', workspaceId: 'original-workspace',
+      correlationId: 'original-card', runId: 'original-run',
+    });
+    expect(state.active).toBeNull();
+  });
   it('submit on exact id match', () => {
     const state = createRouterState();
     attachActive(state, { correlationId: 'c1', runId: 'r1', card: card(yesNo) });

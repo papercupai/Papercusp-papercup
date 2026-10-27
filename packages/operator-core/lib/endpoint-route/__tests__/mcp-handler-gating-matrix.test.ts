@@ -48,6 +48,7 @@ import { AGENT_MCP_AUTH_META, startAgentMcpServer } from '../routes/transport/_m
 import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import { mintConverseChatBinding } from '../../agent-tools/operator/converse-chat-binding';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
@@ -169,12 +170,18 @@ const h = vi.hoisted(() => {
       content: Array<Record<string, unknown>>;
       _meta?: Record<string, unknown>;
       structuredContent?: unknown;
+      replaySource?: {
+        content: Array<Record<string, unknown>>;
+        _meta?: Record<string, unknown>;
+        structuredContent?: unknown;
+      };
     } | null,
     /**
      * WI-6792: every telemetry row the handler/dispatcher recorded. A replayed
      * call returns before dispatch, so this is the ONLY place its row can come
      * from — an empty log for a replay is exactly the invisible-replay bug.
      */
+    deliveryBackfills: [] as Array<{ toolName: string; mcpRequestTraceId?: string | null; metadataJson: Record<string, unknown> }>,
     invocations: [] as Array<{
       toolName: string;
       status: string;
@@ -335,9 +342,17 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
         : h.storedReplay;
       return stored ? { ...stored, _meta: { ...(stored._meta ?? {}), replayed: true } } : null;
     },
-    storeMcpResult: async (a: { ownerKey: string; idempotencyKey: string; result: unknown }): Promise<void> => {
+    storeMcpResult: async (a: {
+      ownerKey: string;
+      idempotencyKey: string;
+      result: unknown;
+      replaySource?: unknown;
+    }): Promise<void> => {
       h.txEvents.push('store');
-      h.replayStores.push({ ownerKey: a.ownerKey, idempotencyKey: a.idempotencyKey, result: a.result });
+      const result = a.replaySource && a.result && typeof a.result === 'object'
+        ? { ...(a.result as Record<string, unknown>), replaySource: a.replaySource }
+        : a.result;
+      h.replayStores.push({ ownerKey: a.ownerKey, idempotencyKey: a.idempotencyKey, result });
       await h.afterReplayStore?.();
     },
   };
@@ -351,6 +366,9 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
   const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
   return {
     ...actual,
+    backfillToolInvocationMetadataByMcpRequestTraceId: async (input: (typeof h.deliveryBackfills)[number]) => {
+      h.deliveryBackfills.push(input);
+    },
     PROJECTED_DEPS: {
       ...realDeps,
       recordInvocation: async (input: (typeof h.invocations)[number]): Promise<void> => {
@@ -1165,6 +1183,8 @@ const POWER_CLAIMS = {
 
 interface ToolsListEntry {
   name: string;
+  description?: string;
+  inputSchema?: unknown;
   annotations?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 }
@@ -1335,6 +1355,75 @@ async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T
     await cleanupWire();
   }
 }
+
+describe('final report delivery through the MCP host', () => {
+  it.each(['direct', 'nested', 'projected', 'spill'])(
+    'backfills only the caller-visible edition after the final door: %s', async route => {
+      const tool = lookupByMcpName('reports:get');
+      if (!tool) throw new Error('Expected the production report tool registration');
+      const original = tool.fn, body = 'Complete native handler report é'.repeat(route === 'spill' ? 600 : 1);
+      const bodySha256 = createHash('sha256').update(body).digest('hex');
+      tool.fn = async () => ({ content: [{ type: 'text', text: JSON.stringify({ ok: true, results: [{
+        ok: true, id: 'rpt-delivery', report: { body_md: body, body_sha256: bodySha256,
+          body_bytes: Buffer.byteLength(body), visibility: 'owner', published_at: '2026-10-24T00:00:00Z' },
+      }] }) }], ...(route === 'spill' ? { _meta: { explicitFullRequest: true } } : {}) });
+      const trace = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+      try {
+        const args = { id: 'rpt-delivery', ...(route === 'projected' ? { projection: { pick: ['results[].id'] } } : {}) };
+        const result = await callTool(route === 'nested' ? 'tools:invoke' : 'reports:get',
+          route === 'nested' ? { name: 'reports:get', args } : args,
+          superuserExtra('&workspace=ws-test&client=su-final-delivery', { [MCP_REQUEST_TRACE_HEADER]: trace }),
+          { format: 'json' });
+        expect(result.isError).not.toBe(true);
+        const receipt = h.deliveryBackfills.find(row => row.toolName === 'reports:get' && row.metadataJson.reportResultDelivery);
+        expect(receipt?.mcpRequestTraceId).toBe(trace);
+        expect(receipt?.metadataJson).toMatchObject({ reportResultDelivery: { version: 1,
+          inline: route === 'projected' || route === 'spill' ? [] : [{ id: 'rpt-delivery', bodySha256, bodyBytes: Buffer.byteLength(body) }],
+          ...(route === 'spill' ? { spill: { reports: [{ id: 'rpt-delivery', bodySha256 }] } } : {}),
+        } });
+        expect(textOf(result).includes(body)).toBe(route !== 'projected' && route !== 'spill');
+      } finally { tool.fn = original; }
+    });
+});
+
+describe('tools/list schema cache preserves actual-use detail', () => {
+  it.each(['full-first', 'compact-first'])('isolates discovery schemas and compact schemas with %s', async order => {
+    const name = 'gating-cache:detail';
+    const pluginName = 'gating-cache-regression';
+    const schema = {
+      type: 'object',
+      properties: { value: { type: 'string', description: 'Original argument guidance must survive promotion.' } },
+      additionalProperties: false,
+    };
+    registerProjectedTool({
+      pluginName, description: 'Original complete definition. Further guidance for continued use.',
+      // MCP discovery and flattened model schemas need not share an object.
+      inputSchema: structuredClone(schema), discoveryInputSchema: schema,
+      capabilities: [], expose: { mcp: { name } }, fn: probeFn(name),
+    });
+    const { recordSessionToolUse, sessionToolSurfaceKey } = await import('../routes/transport/tool-allowlist');
+    const owner = `su-schema-cache-${order}`;
+    const listing = async (compact: boolean) => (await listTools(superuserExtra(
+      `&workspace=ws-test&client=${owner}-${compact ? 'compact' : 'full'}&tools=${name}` +
+      (compact ? `&tools_compact=${name}` : ''),
+    ))).tools.find(tool => tool.name === name)!;
+    try {
+      let full: Awaited<ReturnType<typeof listing>>;
+      let compact: Awaited<ReturnType<typeof listing>>;
+      if (order === 'full-first') { full = await listing(false); compact = await listing(true); }
+      else { compact = await listing(true); full = await listing(false); }
+      expect(full.inputSchema).toEqual(schema);
+      expect(compact.inputSchema).not.toEqual(schema);
+      expect(recordSessionToolUse(sessionToolSurfaceKey(`${owner}-compact`, 'ws-test'), [name])).toBe(true);
+      const promoted = await listing(true);
+      expect(promoted.description).toBe(full.description);
+      expect(promoted.inputSchema).toEqual(schema);
+      expect((await listing(false)).inputSchema).toEqual(schema);
+    } finally {
+      unregisterProjectedToolsForPlugin(pluginName);
+    }
+  });
+});
 
 function assertCatalogParity(native: { tools: { name: string }[] }, http: unknown) {
   expect(native).toEqual(http);
@@ -1550,6 +1639,73 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
     `${MCP}?principal=pi&workspace=${workspace}&tools=chat%3Aask_choice`,
     { authorization: 'Bearer test-pi-card-bearer' },
   );
+
+  it('verifies a signed parent while minting independent PI child runs and retaining current credential checks', async () => {
+    h.signingRows = [{ value_b64: Buffer.alloc(32, 9).toString('base64'), rotated_at: '2026-01-01' }];
+    const actual = h.realSpawnSigning!;
+    actual._resetSpawnSigningKeyCache();
+    h.verifySpawnParams.mockImplementation((input, options) => actual.verifySpawnParams(input as URL, options));
+    h.resolveBearer.mockResolvedValue(principal);
+    try {
+      const parent = { workspaceId: principal.workspaceId, conversationId: 'conv-parent', turnId: 'turn-parent', runId: 'parent-run',
+        authority: { kind: 'system' as const, principalId: 'system:operator', credentialSha256: 'a'.repeat(64) } };
+      const token = await mintConverseChatBinding(parent, 'test-pi-card-bearer');
+      const request = () => extraFor(`${MCP}?principal=pi&workspace=${parent.workspaceId}&chat_binding=${encodeURIComponent(token)}`,
+        { authorization: 'Bearer test-pi-card-bearer' });
+      const first = await tryBuildSpawnContext(request());
+      const second = await tryBuildSpawnContext(request());
+      expect(first.kind).toBe('ok');
+      expect(second.kind).toBe('ok');
+      if (first.kind !== 'ok' || second.kind !== 'ok') throw new Error('parent-positive-control-failed');
+      expect(first.ctx.chatParent).toMatchObject(parent);
+      expect(second.ctx.chatParent).toEqual(first.ctx.chatParent);
+      expect(first.ctx.runId).not.toBe(parent.runId);
+      expect(second.ctx.runId).not.toBe(first.ctx.runId);
+      expect(first.ctx.isSuperuser).not.toBe(true);
+      expect(await tryBuildSpawnContext(extraFor(`${MCP}?principal=pi&workspace=${parent.workspaceId}&chat_binding=${encodeURIComponent(token)}`,
+        { authorization: 'Bearer another-valid-pi-bearer' }))).toMatchObject({ kind: 'failed', reason: 'chat_parent_invalid_binding' });
+      h.resolveBearer.mockResolvedValue({ ...principal, capabilities: new Set() });
+      const denied = await callTool('chat:ask_choice', cardInput, request());
+      expect(denied.isError).toBe(true);
+      expect(textOf(denied)).toContain('chat:write');
+      h.resolveBearer.mockResolvedValue(null);
+      expect(await tryBuildSpawnContext(request())).toMatchObject({ kind: 'failed', reason: 'pi_principal_invalid_bearer' });
+    } finally { h.signingRows = null; actual._resetSpawnSigningKeyCache(); }
+  });
+
+  it('carries the signed parent through owner dispatch without trusting raw run or conversation parameters', async () => {
+    h.signingRows = [{ value_b64: Buffer.alloc(32, 9).toString('base64'), rotated_at: '2026-01-01' }];
+    const actual = h.realSpawnSigning!;
+    actual._resetSpawnSigningKeyCache();
+    h.verifySpawnParams.mockImplementation((input, options) => actual.verifySpawnParams(input as URL, options));
+    try {
+      const parent = { workspaceId: 'ws-test', conversationId: 'conv-owner', turnId: 'turn-owner', runId: 'parent-owner',
+        authority: { kind: 'system' as const, principalId: 'system:operator', credentialSha256: 'a'.repeat(64) } };
+      const token = await mintConverseChatBinding(parent, 'test-su-bearer');
+      const raw = '&workspace=ws-test&run=forged-child&conversationId=forged&turnId=forged';
+      const unsigned = await tryBuildSpawnContext(superuserExtra(raw));
+      expect(unsigned.kind).toBe('ok');
+      if (unsigned.kind !== 'ok') throw new Error('owner-positive-control-failed');
+      expect(unsigned.ctx.chatParent).toBeUndefined();
+      expect(unsigned.ctx.interactiveCardCapability).toBeUndefined();
+      const query = `${raw}&chat_binding=${encodeURIComponent(token)}`;
+      for (let index = 0; index < 2; index++) {
+        const result = await callTool('gatingtest:scoped', {}, superuserExtra(query));
+        expect(result.isError, textOf(result)).not.toBe(true);
+      }
+      expect(seen).toHaveLength(2);
+      for (const call of seen) {
+        expect(call.ctx.chatParent).toMatchObject(parent);
+        expect(call.ctx.interactiveCardCapability).toBe(true);
+        expect(call.ctx.askUser).toEqual(expect.any(Function));
+        expect(call.ctx.runId).not.toBe(parent.runId);
+        expect(call.ctx.runId).not.toBe('forged-child');
+      }
+      expect(seen[0].ctx.runId).not.toBe(seen[1].ctx.runId);
+      expect(await tryBuildSpawnContext(superuserExtra(`${query}&chat_binding=${encodeURIComponent(token)}`)))
+        .toMatchObject({ kind: 'failed', reason: 'chat_parent_invalid_transport' });
+    } finally { h.signingRows = null; actual._resetSpawnSigningKeyCache(); }
+  });
 
   it('displays and answers an actual ask_choice through authenticated tools/call', async () => {
     h.resolveBearer.mockResolvedValue(principal);
@@ -2115,6 +2271,9 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
         expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
         expect(modelContent.state).toBe('incomplete');
+        const replaySource = (stored as CallResult & { replaySource?: CallResult }).replaySource;
+        expect(replaySource).toBeDefined();
+        expect(jsonOf(replaySource as CallResult)).toEqual(expected);
       } else {
         expect(jsonOf(stored)).toEqual(expected);
       }
@@ -2131,20 +2290,12 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
           _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
         });
         if (large) {
-          // A stored envelope is not tool data. The handler should return it as
-          // an explicit MCP tool error so the SDK's outputSchema validator does
-          // not replace its recoverable reference with -32600.
+          // The first receipt's content is an incomplete result-door envelope,
+          // but its retained pre-door source must satisfy this structured retry.
           const replayed = await replay as CallResult;
-          expect(replayed.isError).toBe(true);
-          expect(replayed.structuredContent).toBeUndefined();
-          expect(replayed._meta).toMatchObject({
-            replayed: true,
-            structuredUnavailable: { reason: 'result-door-envelope-is-not-tool-data' },
-          });
-          expect(jsonOf(replayed)).toMatchObject({
-            schemaVersion: 'papercusp.output-envelope/v1',
-            state: 'incomplete',
-          });
+          expect(replayed.isError).not.toBe(true);
+          expect(replayed.structuredContent).toEqual(expected);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
         } else {
           const replayed = await replay as CallResult;
           expect(replayed.structuredContent).toEqual(expected);
@@ -2240,6 +2391,7 @@ beforeEach(() => {
   h.afterReplayStore = null;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.deliveryBackfills.length = 0;
   replayValidationSeen.length = 0;
   replayBusinessErrorSeen.length = 0;
   resetResultDoorAggregatesForTests();
@@ -5410,6 +5562,22 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
   // directly. Mirrors the "scoped-superuser hive clamp" describe block's direct-call
   // assertions, through the nested path.
   const hiveScoped = () => superuserExtra('&workspace=ws-test&harness=hiveA-home');
+
+  it('avoids an unused hive-home read for argument-free local tools', async () => {
+    h.scopedClampFlag.value = true;
+    h.potHomeSlugForHarness.mockClear();
+    const res = await callTool('gatingtest:scoped', {}, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(h.potHomeSlugForHarness).not.toHaveBeenCalled();
+  });
+
+  it('avoids a second hive-home read for an argument-free nested target', async () => {
+    h.scopedClampFlag.value = true;
+    h.potHomeSlugForHarness.mockClear();
+    const res = await callTool('tools:invoke', { name: 'gatingtest:scoped', args: {} }, hiveScoped());
+    expect(res.isError).not.toBe(true);
+    expect(h.potHomeSlugForHarness).toHaveBeenCalledTimes(1);
+  });
 
   it('flag ON: rejects a per-call `harness` in a DIFFERENT hive via nested tools:invoke, same as direct', async () => {
     h.scopedClampFlag.value = true;

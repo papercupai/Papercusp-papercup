@@ -24,6 +24,7 @@ import {
 import { AWS_SPOT_MARKET_OPTIONS, createAwsWorkspaceHostProvider } from './aws-provider';
 import { AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC, renderAwsHostBootstrapPush } from './aws-host-bootstrap-push';
 import { planAwsSdkCredentialProvider, preflightAwsWorkspaceHostConnection } from './aws-connection';
+import { awsCanaryDeadlineStackFragment } from './aws-customer-setup-template';
 
 // The credential-provider factories reach the network and the operator's ~/.aws, so they are
 // replaced by tagged fakes that resolve a fixed identity carrying KNOWN secret material.
@@ -363,6 +364,186 @@ async function provision(provider: ReturnType<typeof setup>['provider'], idempot
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('finite AWS canary uses live regional IAM/SSM/STS readbacks', () => {
+  function trial(bind = false) {
+    let clock = NOW;
+    const state = setup(undefined, { now: () => clock });
+    const input = { runId: 'p544-sdk-trial', workspaceId: 'hosted-fixture-p544-sdk-trial',
+      organizationId: 'org-p544', hostId: 'host-p544-sdk',
+      workloadDeadlineAt: '2026-10-01T20:30:00.000Z', teardownDeadlineAt: '2026-10-01T20:41:00.000Z' };
+    const foundation = awsCanaryDeadlineStackFragment({ ...input, accountId: ACCOUNT, region: REGION,
+      principalArn: `arn:aws:iam::${ACCOUNT}:root` }, Date.parse(NOW));
+    const launcher = foundation.Resources.CanaryLauncherRole.Properties;
+    const cleanup = foundation.Resources.CanaryCleanupRole.Properties;
+    const executionId = '11111111-1111-4111-a111-111111111111';
+    const identity = { Account: ACCOUNT, Arn: `arn:aws:sts::${ACCOUNT}:assumed-role/${launcher.RoleName}/session`,
+      UserId: 'AROA_TRIAL:session' };
+    const roles = new Map<string, Record<string, any>>([
+      [launcher.RoleName, { Arn: `arn:aws:iam::${ACCOUNT}:role/${launcher.RoleName}`, RoleId: 'AROA_TRIAL' }],
+      [cleanup.RoleName, { Arn: foundation.plan.input.cleanupRoleArn,
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify(cleanup.AssumeRolePolicyDocument)) }],
+    ]);
+    const policies = new Map<string, any>([
+      [launcher.RoleName, structuredClone(launcher.Policies[0].PolicyDocument)],
+      [cleanup.RoleName, structuredClone(cleanup.Policies[0].PolicyDocument)],
+    ]);
+    const document = { Name: foundation.plan.documentName, DocumentVersion: '1', Status: 'Active',
+      DocumentType: 'Automation', DocumentFormat: 'JSON', CreatedDate: new Date(Date.parse(NOW) - 60_000),
+      Content: JSON.stringify(Object.fromEntries(Object.entries(foundation.plan.document).reverse())) };
+    const execution: Record<string, any> = { AutomationExecutionId: executionId,
+      DocumentName: document.Name, DocumentVersion: '1', AutomationExecutionStatus: 'InProgress',
+      ExecutionStartTime: new Date(Date.parse(NOW) - 30_000), Mode: 'Auto', Parameters: {},
+      CurrentStepName: 'AwaitCreationCutoff', CurrentAction: 'aws:sleep',
+      StepExecutions: [{ StepName: 'AwaitCreationCutoff', Action: 'aws:sleep', StepStatus: 'InProgress' }] };
+    state.aws.overrides.set('sts:GetCallerIdentityCommand', () => identity);
+    state.aws.overrides.set('iam:GetRoleCommand', request => ({ Role: roles.get(request.RoleName) }));
+    state.aws.overrides.set('iam:GetRolePolicyCommand', request => ({
+      PolicyDocument: encodeURIComponent(JSON.stringify(policies.get(request.RoleName))) }));
+    state.aws.overrides.set('iam:ListRolePoliciesCommand', request => ({ PolicyNames: [
+      request.RoleName === launcher.RoleName ? launcher.Policies[0].PolicyName : cleanup.Policies[0].PolicyName] }));
+    state.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({ AttachedPolicies: [] }));
+    state.aws.overrides.set('ssm:GetDocumentCommand', () => document);
+    state.aws.overrides.set('ssm:StartAutomationExecutionCommand', () => ({ AutomationExecutionId: executionId }));
+    state.aws.overrides.set('ssm:GetAutomationExecutionCommand', () => ({ AutomationExecution: execution }));
+    const binding = { ...input, executionId };
+    const client = bind ? createAwsSdkWorkspaceHostClient({ connection: connection(),
+      createClients: state.aws.createClients, now: () => clock, finiteCanary: binding,
+      waiter: { maxWaitTimeSec: 0.05, minDelaySec: 0.001, maxDelaySec: 0.002 } }) : state.client;
+    return { ...state, client, input, foundation, identity, roles, policies, document, execution,
+      binding, setNow: (value: string) => { clock = value; } };
+  }
+
+  it('arms one immutable, automatic execution with the original deterministic ClientToken on retry', async () => {
+    const t = trial();
+    // Setup runs as an administrative principal, independently of the limited launcher.
+    t.identity.Arn = `arn:aws:iam::${ACCOUNT}:user/Setup`;
+    await expect(t.client.armCanaryDeadline(t.input)).resolves.toEqual({ executionId: t.binding.executionId });
+    await t.client.armCanaryDeadline(t.input);
+    expect(t.aws.commands('StartAutomationExecutionCommand').map(sent => sent.input)).toEqual([
+      { DocumentName: t.foundation.plan.documentName, DocumentVersion: '1',
+        ClientToken: t.foundation.plan.clientToken, Mode: 'Auto' },
+      { DocumentName: t.foundation.plan.documentName, DocumentVersion: '1',
+        ClientToken: t.foundation.plan.clientToken, Mode: 'Auto' },
+    ]);
+    expect(t.aws.sent.filter(sent => sent.service === 'ec2')).toEqual([]);
+    await expect(t.client.assertCanaryDeadline(t.binding)).rejects.toThrow(/dedicated launcher/);
+  });
+
+  it('reads actual policy, immutable content and sleep each time through the bound region', async () => {
+    const t = trial();
+    await t.client.assertCanaryDeadline(t.binding);
+    expect(t.aws.commands('GetDocumentCommand')[0].input).toEqual({
+      Name: t.foundation.plan.documentName, DocumentVersion: '1', DocumentFormat: 'JSON' });
+    expect(t.aws.commands('GetAutomationExecutionCommand')[0].input).toEqual({ AutomationExecutionId: t.binding.executionId });
+    expect(t.aws.sent.every(sent => sent.region === REGION)).toBe(true);
+    // A previously verified execution can be cancelled; no cached approval is usable.
+    t.execution.AutomationExecutionStatus = 'Cancelled';
+    await expect(t.client.assertCanaryDeadline(t.binding)).rejects.toThrow(/not verified sleeping/);
+    expect(t.aws.commands('GetCallerIdentityCommand')).toHaveLength(2);
+    expect(t.aws.commands('GetAutomationExecutionCommand')).toHaveLength(2);
+  });
+
+  it.each([
+    'wrong-account', 'ordinary-role', 'recreated-launcher', 'missing-cutoff', 'missing-retag',
+    'missing-workspace-tag-deny', 'cleanup-trust', 'cleanup-policy', 'document-version', 'document-content',
+    'document-recreated', 'future-execution', 'wrong-execution', 'wrong-execution-document',
+    'interactive', 'truncated-steps', 'wrong-current-action', 'wrong-sleep-status', 'duplicate-sleep',
+    'parameters', 'other-region-target', 'missing-start-time', 'expired',
+  ])('refuses %s using provider state rather than caller-authored proof', async scenario => {
+    const t = trial();
+    const launcher = t.foundation.Resources.CanaryLauncherRole.Properties.RoleName;
+    const cleanup = t.foundation.Resources.CanaryCleanupRole.Properties.RoleName;
+    switch (scenario) {
+      case 'wrong-account': t.identity.Account = '123456789012'; break;
+      case 'ordinary-role': t.identity.Arn = `arn:aws:sts::${ACCOUNT}:assumed-role/Other/session`; break;
+      case 'recreated-launcher': t.roles.get(launcher)!.RoleId = 'AROA_REPLACED'; break;
+      case 'missing-cutoff': t.policies.get(launcher).Statement = t.policies.get(launcher).Statement
+        .filter((statement: any) => statement.Sid !== 'NoCreationAfterTrialCutoff'); break;
+      case 'missing-retag': t.policies.get(launcher).Statement = t.policies.get(launcher).Statement
+        .filter((statement: any) => statement.Sid !== 'NoRetaggingTrialResources'); break;
+      case 'missing-workspace-tag-deny': t.policies.get(launcher).Statement = t.policies.get(launcher).Statement
+        .filter((statement: any) => !statement.Condition?.StringNotEquals?.['aws:RequestTag/papercusp:workspace-id']); break;
+      case 'cleanup-trust': t.roles.get(cleanup)!.AssumeRolePolicyDocument = JSON.stringify({ Statement: [] }); break;
+      case 'cleanup-policy': t.policies.get(cleanup).Statement.pop(); break;
+      case 'document-version': t.document.DocumentVersion = '$LATEST'; break;
+      case 'document-content': t.document.Content = '{}'; break;
+      case 'document-recreated': t.document.CreatedDate = new Date(Date.parse(NOW) - 10_000); break;
+      case 'future-execution': t.execution.ExecutionStartTime = new Date(Date.parse(NOW) + 1000); break;
+      case 'wrong-execution': t.execution.AutomationExecutionId = '22222222-2222-4222-a222-222222222222'; break;
+      case 'wrong-execution-document': t.execution.DocumentName = 'other'; break;
+      case 'interactive': t.execution.Mode = 'Interactive'; break;
+      case 'truncated-steps': t.execution.StepExecutionsTruncated = true; break;
+      case 'wrong-current-action': t.execution.CurrentAction = 'aws:executeScript'; break;
+      case 'wrong-sleep-status': t.execution.StepExecutions[0].StepStatus = 'Success'; break;
+      case 'duplicate-sleep': t.execution.StepExecutions.push({ ...t.execution.StepExecutions[0] }); break;
+      case 'parameters': t.execution.Parameters = { Override: ['foreign'] }; break;
+      case 'other-region-target': t.execution.TargetLocations = [{ Regions: ['us-west-2'] }]; break;
+      case 'missing-start-time': delete t.execution.ExecutionStartTime; break;
+      case 'expired': t.setNow(t.input.workloadDeadlineAt); break;
+    }
+    await expect(t.client.assertCanaryDeadline(t.binding)).rejects.toThrow();
+    expect(t.aws.commands('StartAutomationExecutionCommand')).toEqual([]);
+    expect(t.aws.sent.filter(sent => sent.service === 'ec2')).toEqual([]);
+  });
+
+  it('will not arm a document whose installed launcher cutoff has been removed', async () => {
+    const t = trial();
+    t.policies.get(t.foundation.Resources.CanaryLauncherRole.Properties.RoleName).Statement = [];
+    await expect(t.client.armCanaryDeadline(t.input)).rejects.toThrow(/IAM foundation/);
+    expect(t.aws.commands('StartAutomationExecutionCommand')).toEqual([]);
+  });
+
+  it.each(['extra-inline', 'extra-managed', 'incomplete-inline', 'incomplete-managed', 'omitted-inventory'])
+  ('refuses %s policies that could bypass the dedicated cleanup authority boundary', async scenario => {
+    const t = trial();
+    if (scenario === 'extra-inline') t.aws.overrides.set('iam:ListRolePoliciesCommand', () => ({
+      PolicyNames: ['PapercuspCanaryLaunch', 'CanCancelCleanup'] }));
+    if (scenario === 'extra-managed') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({
+      AttachedPolicies: [{ PolicyArn: `arn:aws:iam::${ACCOUNT}:policy/CanCancelCleanup` }] }));
+    if (scenario === 'incomplete-inline') t.aws.overrides.set('iam:ListRolePoliciesCommand', () => ({
+      PolicyNames: ['PapercuspCanaryLaunch'], IsTruncated: true }));
+    if (scenario === 'incomplete-managed') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({
+      AttachedPolicies: [], Marker: 'another-page' }));
+    if (scenario === 'omitted-inventory') t.aws.overrides.set('iam:ListAttachedRolePoliciesCommand', () => ({}));
+    await expect(t.client.assertCanaryDeadline(t.binding)).rejects.toThrow(/policy inventory/);
+    expect(t.aws.commands('StartAutomationExecutionCommand')).toEqual([]);
+  });
+
+  it('requires the original controller identity and copies the administrative binding', async () => {
+    const t = trial(true);
+    const original = { workspaceId: t.input.workspaceId, hostId: t.input.hostId,
+      runId: t.input.runId, teardownDeadlineAt: t.input.teardownDeadlineAt };
+    await t.client.assertCanaryAdmission(original);
+    for (const change of [{ runId: 'other' }, { hostId: 'other' }, { workspaceId: 'other' },
+      { teardownDeadlineAt: '2026-10-02T20:41:00.000Z' }, { runId: undefined }]) {
+      await expect(t.client.assertCanaryAdmission({ ...original, ...change })).rejects.toThrow(/original administrative binding/);
+    }
+    // A caller retaining the options object cannot renew the original cutoff after construction.
+    t.binding.teardownDeadlineAt = '2026-10-02T20:41:00.000Z';
+    await t.client.assertCanaryAdmission(original);
+    const unbound = trial();
+    await expect(unbound.client.assertCanaryAdmission(original)).rejects.toThrow(/no original administrative/);
+  });
+
+  it.each(['volume', 'instance', 'start', 'snapshot', 'repair'])
+  ('refuses actual %s mutation when the independent execution stops sleeping', async operation => {
+    const t = trial(true);
+    t.execution.AutomationExecutionStatus = 'Cancelled';
+    const calls: Record<string, () => Promise<unknown>> = {
+      volume: () => t.client.createVolume({} as any), instance: () => t.client.runInstances({} as any),
+      start: () => t.client.startInstances(['i-1']),
+      snapshot: () => t.client.createSnapshot({ ClientToken: 'snap-trial' } as any),
+      repair: () => t.client.repairInstance('i-1'),
+    };
+    t.aws.overrides.set('ec2:DescribeInstancesCommand', () => ({ Reservations: [{ Instances: [{
+      InstanceId: 'i-1', State: { Name: 'stopped' } }] }] }));
+    await expect(calls[operation]()).rejects.toThrow(/not verified sleeping/);
+    for (const name of ['CreateVolumeCommand', 'RunInstancesCommand', 'StartInstancesCommand', 'CreateSnapshotCommand']) {
+      expect(t.aws.commands(name)).toEqual([]);
+    }
+  });
 });
 
 describe('createAwsSdkCredentialProvider — every credential source in aws-connection.ts', () => {

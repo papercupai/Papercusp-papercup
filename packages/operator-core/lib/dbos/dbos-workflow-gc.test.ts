@@ -96,13 +96,29 @@ describe('DBOS-independent history ceiling', () => {
   });
 });
 
-it('schedules a cleanup pass every hour across a full day', () => {
-  let previous = new Date('2026-10-22T00:30:00Z');
-  for (let i = 0; i < 25; i++) {
+it('schedules cleanup every half hour across a full day, away from the hour boundary', () => {
+  let previous = new Date('2026-10-22T00:15:00Z');
+  for (let i = 0; i < 49; i++) {
     const next = computeNextFireAt(DBOS_WORKFLOW_GC_CRONTAB, previous);
     expect(next).not.toBeNull();
-    expect(next!.getTime() - previous.getTime()).toBe(3_600_000);
+    expect(next!.getTime() - previous.getTime()).toBe(1_800_000);
+    expect([15, 45]).toContain(next!.getUTCMinutes());
     previous = next!;
+  }
+});
+
+it('leaves half an hour of dispatch headroom before cleanup starts exceed the hourly bound', () => {
+  const hourMs = 3_600_000;
+  let slot = new Date('2026-10-22T00:15:00Z');
+  let previousStart = slot.getTime();
+  // DBOS schedules wall-clock slots. Actual invocation can start later; the
+  // old hourly schedule failed this bound even with only ten seconds of lag.
+  for (const delayMs of [10_000, 0, 20 * 60_000, 0, 30 * 60_000, 0]) {
+    slot = computeNextFireAt(DBOS_WORKFLOW_GC_CRONTAB, slot)!;
+    const actualStart = slot.getTime() + delayMs;
+    expect(actualStart - previousStart).toBeLessThanOrEqual(hourMs);
+    expect(actualStart).toBeGreaterThanOrEqual(previousStart);
+    previousStart = actualStart;
   }
 });
 

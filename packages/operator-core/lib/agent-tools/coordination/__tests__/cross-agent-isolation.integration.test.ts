@@ -26,7 +26,7 @@
  * isolation. Every case uses a UNIQUE workspace_id + unique ownerIds so the
  * shared table never leaks rows between cases.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
@@ -42,6 +42,23 @@ import { configureCoordLog, resetCoordLog } from '../log';
 import { readAckedMsgIds, readInbox, sendMessage } from '../messages';
 import { deliverInject, type InjectEvent } from '../fanout-delivery';
 import type { AgentIdentity } from '../identity';
+
+// These cases own their workspace and exact recipient ids; they do not seed a
+// shared hive or a live host roster. Keep those host lookups inside the fixture
+// boundary, as messages.test.ts does, while retaining the real PgCoordLog,
+// PgPresenceStore and acknowledgement SQL under test. The integration live-PG
+// guard and fail-on-console remain enabled to catch any other escaped reader.
+vi.mock('../federation-scope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../federation-scope')>();
+  return {
+    ...actual,
+    resolveWorkspaceHiveScope: async () => ({ kind: 'none' }),
+  };
+});
+
+vi.mock('../recipient-resolve', () => ({
+  resolveBestEffortAgainstRoster: async (ids: string[]) => ids,
+}));
 
 // Provision the database at MODULE TOP-LEVEL (not in beforeAll) so a final
 // readiness/bootstrap failure aborts collection and makes the test command

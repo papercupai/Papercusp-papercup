@@ -33,7 +33,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
       h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql)),
   };
 });
-vi.mock('../../harness-registry', () => ({
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  // Real tool imports also use registry exports through the P2P sync graph.
+  // Override fixture routing while preserving that production module contract.
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
   loadHarnessRegistry: async () => ({
     projects: [
       { slug: 'web', path: h.repoRoot },
@@ -92,6 +95,7 @@ const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
 // 1478 adds the per-case results ledger (test-rubric-unification P-002): the bind path
 // resolves declared testCases against it when the run recorded its cases.
 const MIGRATION_1478 = migration('1478-test-case-runs.sql');
+const MIGRATION_1536 = migration('1536-plan-verification-profile-columns.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -284,6 +288,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1445);
   await applyMigrationForTest(db.sql, MIGRATION_1478);
+  // Lazy ad-hoc scopes stamp the same verification profile as plans:new.
+  await applyMigrationForTest(db.sql, MIGRATION_1536);
   const [{ present }] = await db.sql<{ present: boolean }[]>`SELECT EXISTS (
     SELECT 1 FROM information_schema.columns WHERE table_schema = 'harness_shared'
       AND table_name = 'spec_evidence_bindings' AND column_name = 'verifies_binding_id'
@@ -327,6 +333,92 @@ beforeEach(async () => {
       (workspace_id, harness_slug, feature_id, source_plan_slug, source_plan_item_ids)
     VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[]),
            (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan', ARRAY['P-003', 'P-004']::text[])`;
+});
+
+describe('promotion carry-forward of current spec evidence', () => {
+  it('copies exact proof from a dropped predecessor to the canonical item and remaps its verification citation', async () => {
+    const observedAt = '2026-10-20T01:02:03.000Z';
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261025T000000Z-257';
+    const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+      lifecycleSha256: 'c'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      mutationPhase: null, commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const testRun = { id: testRunId, filePath: 'test/reconnect.test.ts' };
+    const sourceBinding = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts',
+      testRunId, sourceFingerprint: 'source-v1', observedAt,
+      details: { evidencePlane: 'live', testRun, currentMeasurement },
+    });
+    expect(sourceBinding).toMatchObject({ status: 'created' });
+    const sourceBindingId = (sourceBinding as { id: number }).id;
+    const sourceVerification = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-reviewer', evidenceKind: 'independent-verification',
+      verifiesBindingId: sourceBindingId, evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source-v1',
+      environmentFingerprint: 'reviewer-supplied-runtime', observedAt: '2026-10-20T01:03:04.000Z',
+      details: { note: 'independent re-observation', currentMeasurement },
+    });
+    expect(sourceVerification).toMatchObject({ status: 'created' });
+
+    // Plan reopen retires the old canonical row before promoting its replacement.
+    await db.sql`UPDATE harness_shared.work_items SET status = 'dropped', updated_ts = 1000
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND feature_id = 'WI-101'`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, status, payload, source_plan_slug, source_plan_item_ids)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'WI-103', 'open',
+        ${JSON.stringify({ plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' } })}::text::jsonb,
+        'reconnect-plan', ARRAY['P-003']::text[])`;
+    await evidenceStore.ensureWorkItemSpecRevisionEdges({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemIds: ['P-003'], workItemId: 'WI-103', actorId: 'su-promoter',
+    });
+
+    const transferInput = {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemId: 'P-003', workItemId: 'WI-103', actorId: 'su-promoter',
+    };
+    const transferred = await evidenceStore.carryForwardCurrentSpecEvidence(transferInput);
+    expect(transferred.sourceWorkItemId).toBe('WI-101');
+    expect(transferred.copiedBindingIds).toHaveLength(2);
+
+    const rows = await db.sql<{
+      id: number | string;
+      work_item_id: string;
+      evidence_kind: string;
+      created_by: string;
+      observed_at: Date | string;
+      test_run_id: number | string | null;
+      verifies_binding_id: number | string | null;
+    }[]>`SELECT id, work_item_id, evidence_kind, created_by, observed_at, test_run_id, verifies_binding_id
+          FROM harness_shared.spec_evidence_bindings
+         WHERE work_item_id IN ('WI-101', 'WI-103') ORDER BY id`;
+    const originalRows = rows.filter((row) => row.work_item_id === 'WI-101');
+    const copiedRows = rows.filter((row) => row.work_item_id === 'WI-103');
+    expect(originalRows).toHaveLength(2);
+    expect(copiedRows).toHaveLength(2);
+    const originalTest = originalRows.find((row) => row.evidence_kind === 'test')!;
+    const copiedTest = copiedRows.find((row) => row.evidence_kind === 'test')!;
+    const copiedVerification = copiedRows.find((row) => row.evidence_kind === 'independent-verification')!;
+    expect(copiedTest.created_by).toBe('su-original-implementer');
+    expect(new Date(copiedTest.observed_at).toISOString()).toBe(observedAt);
+    expect(Number(copiedTest.test_run_id)).toBe(testRunId);
+    expect(Number(copiedVerification.verifies_binding_id)).toBe(Number(copiedTest.id));
+    expect(Number(copiedVerification.verifies_binding_id)).not.toBe(Number(originalTest.id));
+
+    expect(await evidenceStore.carryForwardCurrentSpecEvidence(transferInput)).toEqual(transferred);
+    const [targetCount] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM harness_shared.spec_evidence_bindings WHERE work_item_id = 'WI-103'`;
+    expect(targetCount.count).toBe(2);
+  });
 });
 
 describe('test execution carries mappings into the real evidence ledger', () => {
@@ -963,18 +1055,22 @@ describe('exact spec evidence bindings', () => {
         schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], runtimeUnits: ['bg-host'] } } };
     const first = await evidenceStore.bindSpecEvidence(input);
     expect(first).toMatchObject({ status: 'created' });
+    expect(first, 'a witnessed live row carries no unproven warning').not.toHaveProperty('environmentUnproven');
     const [pinned] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings`;
     expect(pinned.environment_fingerprint).toBe(witness.fingerprint);
     execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
     await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
       WHERE id = ${testRunId}`;
     const drift = await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#drift' });
-    expect(drift).toMatchObject({ status: 'created' });
+    // EI-27081440896857039: still stored (unproven by design), but the binder says so now.
+    expect(drift).toMatchObject({ status: 'created', environmentUnproven: {
+      reason: 'test_run_runtime_witness_missing', testRunId, runtimeUnits: ['bg-host'], evidencePlane: 'live' } });
     const [unproven] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#drift'`;
     expect(unproven.environment_fingerprint).toBeNull();
     await db.sql`UPDATE harness_shared.test_runs SET execution_details = NULL WHERE id = ${testRunId}`;
-    await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' });
+    expect(await evidenceStore.bindSpecEvidence({ ...input, evidenceRef: 'test/reconnect.test.ts#historical' }))
+      .toMatchObject({ status: 'created', environmentUnproven: { reason: 'test_run_runtime_witness_missing' } });
     const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
     expect(historical.environment_fingerprint).toBeNull();
@@ -3295,6 +3391,22 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
     });
     expect(accepted).toMatchObject({ ok: true, status: 'created' });
+    const acceptedEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    const acceptedBinding = acceptedEvidence.find((row) => row.testRunId === runId);
+    expect(acceptedBinding).toBeDefined();
+    const storedTestCases = (acceptedBinding!.details as { adequacy: { testCases: string[] } }).adequacy.testCases;
+    expect(storedTestCases).toEqual(['outer > suite > selected case']);
+    const { mutationMeasuredFailedCase } = await import('./spec-test-adequacy');
+    const measuredMutation = {
+      testRunProvenance: { mutationFailedCaseTitles: ['outer > suite > selected case'] },
+    } as never;
+    expect(mutationMeasuredFailedCase(measuredMutation, storedTestCases[0])).toBe(true);
+    expect(mutationMeasuredFailedCase(measuredMutation, 'selected case')).toBe(false);
 
     const rejected = await bindFromRun(runId, 'WI-102', {
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case from another file'] },
@@ -3339,6 +3451,8 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       passedCaseTitlesIncomplete: true,
     });
     expect(incompleteEvidence[0]?.testRunExecution?.passedCaseTitles).toHaveLength(64);
+    expect((incompleteEvidence[0]?.details as { adequacy: { testCases: string[] } }).adequacy.testCases)
+      .toEqual(['case omitted from title cap']);
   });
 
   it('resolves declared cases against the per-case ledger, closing the title-cap bypass (P-002 / R-2)', async () => {
@@ -3369,6 +3483,14 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case beyond the title cap'] },
     });
     expect(beyondCap).toMatchObject({ ok: true, status: 'created' });
+    const beyondCapEvidence = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect((beyondCapEvidence?.details as { adequacy: { testCases: string[] } }).adequacy.testCases)
+      .toEqual(['outer > case beyond the title cap']);
 
     // A declared case the run never executed is refused, even though the capped title list
     // could not have proved it absent — and even beside a declared case that DID match.
@@ -3396,6 +3518,106 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         evidenceRefs: [DERIVE_TEST],
       }),
     ).toEqual([]);
+  });
+
+  it('refuses ambiguous suffixes from authoritative title sources while preferring exact identities', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const exactTitle = 'outer > suite alpha > selected case';
+    const nestedTitle = `legacy > ${exactTitle}`;
+    const titles = [exactTitle, nestedTitle];
+    const runId = await recordRun();
+    await setRunExecutionDetails(runId, {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: titles.length,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: titles,
+    });
+
+    const exact = await bindFromRun(runId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: [exactTitle] },
+    });
+    expect(exact).toMatchObject({ ok: true, status: 'created' });
+    const exactEvidence = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect((exactEvidence?.details as { adequacy: { testCases: string[] } }).adequacy.testCases).toEqual([exactTitle]);
+
+    const ambiguousTitleList = await bindFromRun(runId, 'WI-102', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(ambiguousTitleList).toMatchObject({
+      ok: false,
+      error: 'test_cases_ambiguous_in_run',
+      status: 'test_cases_ambiguous_in_run',
+      testRunId: runId,
+      declaredCaseCount: 1,
+      source: 'passed-case-titles',
+      ambiguousTestCases: [{ testCase: 'selected case', matchingCaseTitles: titles }],
+    });
+    expect(await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    })).toEqual([]);
+
+    const ledgerRunId = await recordRun();
+    await setRunExecutionDetails(ledgerRunId, {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: titles.length,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: titles,
+    });
+    for (const [index, caseKey] of titles.entries()) {
+      await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status, duration_ms)
+        VALUES (${ledgerRunId}, ${index}, ${caseKey}, 'pass', 3)`;
+    }
+    const ambiguousLedger = await bindFromRun(ledgerRunId, 'WI-101', {
+      adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
+    });
+    expect(ambiguousLedger).toMatchObject({
+      ok: false,
+      error: 'test_cases_ambiguous_in_run',
+      status: 'test_cases_ambiguous_in_run',
+      testRunId: ledgerRunId,
+      declaredCaseCount: 1,
+      source: 'case-ledger',
+      ambiguousTestCases: [{ testCase: 'selected case', matchingCaseTitles: titles }],
+    });
+    const ledgerEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(ledgerEvidence.filter((row) => row.testRunId === ledgerRunId)).toEqual([]);
   });
 
   it('refuses mutation adequacy cases that contradict the measured failed mutant case', async () => {
@@ -3594,6 +3816,58 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       actorId: 'su-test',
     });
     expect(byHand).toMatchObject({ status: 'test_run_not_found', scopeMismatch: { rowHarnessSlug: null } });
+  });
+
+  it('links a bound mutant to its same-invocation calibration row left harness-NULL, never a foreign one (EI-26696103067780835)', async () => {
+    await specs.setSpecClause(clause());
+    const failedCase = 'guard > catches the mutant';
+    const descriptor = {
+      schemaVersion: 1, probeInvocationId: 'probe-null-harness-calibration-0001', mode: 'copy-out',
+      // A subject the fixture checkout really contains: the bind fingerprints it as a source path.
+      subjectPath: 'src/reconnect.ts', mutateExpression: 's/true/false/', againstCommit: null,
+      subjectBeforeSha256: 'b'.repeat(64), subjectAfterSha256: 'c'.repeat(64),
+      mutantDiff: '-verified\n+true\n', mutantDiffTruncated: false,
+      testCommandSha256: 'd'.repeat(64), testFileSha256: 'a'.repeat(64),
+    };
+    const execution = (leg: string, failed: number) => ({
+      schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+      workspaceId: WORKSPACE, harnessSlug: null, testNamePattern: null,
+      passed: 10, failed, skipped: 0, collectionFailed: false, mutationPhase: leg,
+      commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'unit',
+      ...(failed > 0 ? { failedCaseTitles: [failedCase] } : {}),
+      mutation: { ...descriptor, leg },
+    });
+    // The probe records every leg with harness NULL (it is env-stamped).
+    const calibration = await recordRun({ harnessSlug: null, source: 'mutation-probe' });
+    await setRunExecutionDetails(calibration, execution('copy-baseline', 0));
+    // A HIGHER-id row with the same invocation identity already attributed to another
+    // harness: the reader picks newest-first, so only the harness rule keeps it out.
+    const foreign = await recordRun({ harnessSlug: 'some-other-harness', source: 'mutation-probe' });
+    await setRunExecutionDetails(foreign, execution('copy-baseline', 0));
+    const mutant = await recordRun({ harnessSlug: null, source: 'mutation-probe', status: 'fail' });
+    await setRunExecutionDetails(mutant, execution('mutant', 1));
+
+    // Bound WITHOUT causalControls: only the mutant row is adopted into the plan harness.
+    const bound = await bindFromRun(mutant, 'WI-101', {
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCase] },
+    });
+    if (!bound?.ok) throw new Error(JSON.stringify(bound));
+    expect(bound).toMatchObject({ ok: true, status: 'created' });
+    const harnesses = await db.sql<{ id: number; harness_slug: string | null }[]>`
+      SELECT id, harness_slug FROM harness_shared.test_runs
+       WHERE id IN (${calibration}, ${foreign}, ${mutant}) ORDER BY id`;
+    expect(harnesses.map((r) => [Number(r.id), r.harness_slug])).toEqual([
+      [calibration, null], [foreign, 'some-other-harness'], [mutant, HARNESS],
+    ]);
+
+    const [evidence] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
+    });
+    expect(evidence?.testRunId).toBe(mutant);
+    expect(evidence?.testRunProvenance?.mutationBaseline).toMatchObject({
+      testRunId: calibration, status: 'pass',
+      mutation: { leg: 'copy-baseline', probeInvocationId: descriptor.probeInvocationId },
+    });
   });
 
   it('refuses CI rows, foreign-harness rows, and adequacy the run contradicts', async () => {

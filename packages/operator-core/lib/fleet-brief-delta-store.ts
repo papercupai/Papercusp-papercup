@@ -31,6 +31,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { coerceJson } from './pg-jsonb';
+import { readJoinActivation } from './fleet-membership-store';
 import {
   rotateBriefSnapshot,
   computeFleetBriefDelta,
@@ -128,7 +129,23 @@ export async function readMembershipChurn(
        AND at           > ${args.since}::timestamptz
   `) as Array<{ joined: string | number; left: string | number }>;
   const row = rows[0];
-  return { joined: Number(row?.joined ?? 0), left: Number(row?.left ?? 0) };
+  // Split arrivals by whether they ever became active — the one shared definition, so the
+  // brief and fleet:campaign cannot disagree about what a dead launch is. A failed split is
+  // reported as unknown (null), never as "no dead launches".
+  let neverActive: number | null = null;
+  let pending: number | null = null;
+  try {
+    const activation = await readJoinActivation(
+      { workspaceId: args.workspaceId, fleetSlug: args.fleetSlug, since: args.since },
+      sql,
+    );
+    neverActive = activation.neverActive;
+    pending = activation.pending;
+  } catch {
+    neverActive = null;
+    pending = null;
+  }
+  return { joined: Number(row?.joined ?? 0), left: Number(row?.left ?? 0), neverActive, pending };
 }
 
 /**

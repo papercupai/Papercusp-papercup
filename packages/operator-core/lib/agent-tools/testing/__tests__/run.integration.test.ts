@@ -22,8 +22,8 @@
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
-import { execFile, type ChildProcess } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFile, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -73,6 +73,7 @@ import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit 
 import { restrictedHoldRefusal } from '../restricted-hold-fence';
 import { __resetShutdownStateForTest, markShuttingDown } from '../../../shutdown-state';
 import type { TestRunArtifactPaths, TestRunDeadline } from '../run-artifacts';
+import { createNativeArtifactPersister } from '../../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -213,6 +214,7 @@ let selectorRequested = '';
 let org: OrgTestDb | undefined;
 const databaseEnvKeys = [
   'HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL',
+  'PAPERCUSP_TEST_RUNS_DB_URL',
   'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY',
 ] as const;
 const savedDatabaseEnv = new Map(databaseEnvKeys.map((key) => [key, process.env[key]]));
@@ -276,6 +278,10 @@ beforeAll(async () => {
   process.env.HARNESS_DATABASE_URL = org.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = org.adminDsn;
   process.env.DATABASE_URL = org.adminDsn;
+  // Nested runs are queried through this suite's org connection. Keep their
+  // reporter in the same disposable database instead of inheriting the outer
+  // runner's durable sink (which records this integration file itself).
+  process.env.PAPERCUSP_TEST_RUNS_DB_URL = org.adminDsn;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   _resetHarnessAdminUrlCacheForTests();
@@ -488,6 +494,19 @@ describe('scratch checkout custody census (WI-10007684)', () => {
 });
 
 describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
+  it('preserves exact Node group results when stderr evicts their stdout from the display tail', () => {
+    const capture = createBoundedRouterOutputCapture();
+    capture.append('stdout', 'ROUTE cwd=papercusp-desktop runner=node:test\n  requested test/a.test.js\nℹ tests 4\nℹ pass 3\nℹ fail 1\n');
+    capture.append('stdout', 'TEST_FILE_GROUP_RESULT cwd=papercusp-desktop runner=node:test executed=1 status=failed\n');
+    capture.append('stdout', 'ROUTE cwd=packages/operator-core config=vitest.config.ts\n');
+    capture.append('stdout', 'ℹ tests 99\nℹ pass 99\nℹ fail 0\n');
+    capture.append('stderr', 'COMMITTED_SOURCE unrelated child diagnostic\n'.repeat(1000));
+    expect(capture.finish()).not.toContain('ℹ tests 4');
+    expect(parseNodeTestGroupRuns(capture.nodeTestOutput(), ['papercusp-desktop/test/a.test.js']))
+      .toMatchObject([{ files: 1, passed: 3, failed: 1,
+        byFile: { 'papercusp-desktop/test/a.test.js': { passed: 3, failed: 1 } } }]);
+  });
+
   it('keeps a failing first-group marker after later progress displaces it from the raw tail', () => {
     const capture = createBoundedRouterOutputCapture();
     const refusal = 'TEST_FILE_ROUTE_ERROR (group cwd=apps/operator) requested=4 matched=0; use testing:run';
@@ -1137,7 +1156,10 @@ describe('bounded foreground process termination', () => {
         {
           root: roots[0]!,
           files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
-          timeoutMs: 10_000,
+          // The injected child already supplies the timeout. This case tests
+          // pending-writer recovery, so preparation gets the classification
+          // budget rather than racing an unrelated ten-second deadline.
+          timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS,
         },
         { runRouterFn },
       );
@@ -1153,12 +1175,23 @@ describe('bounded foreground process termination', () => {
       expect(runRouterFn).toHaveBeenCalledTimes(1);
       expect(existsSync(reportDir)).toBe(true);
 
+      const pendingManifest = JSON.parse(await readFile(join(dirname(reportDir), 'manifest.json'), 'utf8'));
+      expect(pendingManifest.nativeCustody).toMatchObject({ writerState: 'pending', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      const pendingLocator = pendingManifest.nativeCustody.locator;
+      const pendingObject = join(dirname(reportDir), 'native-proof/objects', pendingLocator.manifest.ref);
+      const pendingBytes = await readFile(pendingObject);
       close();
       // The run's artifact packet is RETAINED by design (TestRunArtifactPacket.finish stages
       // 'retained'). A late close records its cleanup receipt in the packet. It does not delete
       // the evidence (WI-6554700010018388).
       const packetDir = dirname(reportDir);
       await vi.waitFor(() => expect(existsSync(join(packetDir, 'late-cleanup.json'))).toBe(true), { timeout: 10_000 });
+      const settled = JSON.parse(await readFile(join(packetDir, 'manifest.json'), 'utf8'));
+      expect(settled.nativeCustody).toMatchObject({ writerState: 'settled', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      expect(settled.nativeCustody.locator.manifest.sha256).not.toBe(pendingLocator.manifest.sha256);
+      const successor = JSON.parse(await readFile(join(packetDir, 'native-proof/objects', settled.nativeCustody.locator.manifest.ref), 'utf8'));
+      expect(successor.predecessor).toEqual(pendingLocator);
+      expect(await readFile(pendingObject)).toEqual(pendingBytes);
       expect(existsSync(reportDir)).toBe(true);
     } finally {
       close();
@@ -1472,6 +1505,28 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a real test router in test mode when the operator host is in production', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-production-env-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'observed-test-environment.json');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ nodeEnv: process.env.NODE_ENV }));`,
+      "if (process.env.NODE_ENV !== 'test') throw new Error('Production host mode reached the test worker');",
+      "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, failed: 0 });
+      expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual({ nodeEnv: 'test' });
+      expect(process.env.NODE_ENV).toBe('production');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('binds parked scorecard live setup to its authenticated caller before the router starts', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-scorecard-profile-');
     const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';
@@ -1782,6 +1837,38 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it.each([0, 1])('keeps the leading setup error and logs after exit %s with an empty JSON report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-empty-report-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const cause = 'Error: fixture setup failed before any test file was measured';
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `process.stderr.write(${JSON.stringify(`${cause}\n`)});`,
+      "process.stdout.write('startup progress\\n'.repeat(1000));",
+      "const report = process.argv.find((arg) => arg.startsWith('--outputFile='));",
+      "writeFileSync(report.slice('--outputFile='.length), JSON.stringify({ testResults: [] }));",
+      `process.exitCode = ${code};`,
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+    if (out.error !== 'no_report') throw new Error(JSON.stringify(out));
+    const logs = out.diagnostics?.routerLogPaths ?? [];
+    try {
+      expect(out.ok).toBe(false);
+      expect(out.hint).toContain('no test verdict was measured');
+      expect(out).not.toHaveProperty('passed');
+      expect(out).not.toHaveProperty('failed');
+      expect(out).not.toHaveProperty('files');
+      expect(out.routerOutput).toContain(cause);
+      expect(out.diagnostics).toMatchObject({ routerExit: code, markerSeen: false, summarySeen: 'none' });
+      expect(logs).toHaveLength(2);
+      expect(await readFile(logs[0]!, 'utf8')).toContain('startup progress');
+      expect(await readFile(logs[1]!, 'utf8')).toBe(`${cause}\n`);
+    } finally {
+      await Promise.all(logs.map((path) => rm(path, { force: true })));
+    }
+  });
+
   it('retains the original router log and source/cleanup packet after a measured successful verdict', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
     await mkdir(join(root, 'scripts'), { recursive: true });
@@ -1804,6 +1891,138 @@ describe('testing:run (integration)', () => {
     expect(await readFile(join(out.artifacts!.directory, 'source.json'), 'utf8')).toContain('package-lock.json');
     expect(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')).toContain(logPath);
     expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('P003 reopens real runner bytes in a separate retained-only process after scratch producer retirement', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-p003-retirement-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    // A real child exercises the maintained runner's stream and cleanup seam.
+    // The controlled node summary is not a claim of native Vitest execution.
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      'process.stdout.write(Buffer.from([0,255,10]));',
+      'process.stderr.write(Buffer.from([255,0,10]));',
+      "console.log('# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const runId = randomUUID();
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], runId,
+      workspaceId: 'p003-custody', harnessSlug: 'papercusp', timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS });
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: true, passed: 1, failed: 0, cleanup: { complete: true, errors: [] } });
+    const paths = out.artifacts!;
+    const manifest = JSON.parse(await readFile(paths.manifest, 'utf8'));
+    expect(manifest).toMatchObject({ childState: 'closed', cleanup: { complete: true },
+      nativeCustody: { byteCustody: 'complete', writerState: 'settled', producerRetirement: 'not-performed',
+        nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    // Derive the expected auxiliary population from original packet surfaces,
+    // independently of the native manifest that the consumer will verify.
+    const auxiliary: Array<{ role: string; state: 'produced'; path: string }> = [];
+    for (const name of ['source.json', 'configuration.json', 'router.json', 'ledger.json', 'phases.jsonl'])
+      auxiliary.push({ role: name, state: 'produced', path: join(paths.directory, name) });
+    async function inventory(directory: string, role: string): Promise<void> {
+      for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (entry.isDirectory()) await inventory(join(directory, entry.name), `${role}/${entry.name}`);
+        else auxiliary.push({ role: `${role}/${entry.name}`, state: 'produced', path: join(directory, entry.name) });
+      }
+    }
+    for (const [role, directory] of [['reports', paths.reports], ['owned-databases', paths.ownedDatabases],
+      ['executed-inputs', paths.runtimeInputs]]) await inventory(directory, role);
+    const logs: string[] = JSON.parse(await readFile(join(paths.directory, 'router.json'), 'utf8')).outputLogPaths;
+    expect(logs).toHaveLength(2);
+    logs.forEach((path, index) => auxiliary.push({ role: `router-output/${index}`, state: 'produced', path }));
+    const expectedBytes = await Promise.all(auxiliary.map(async entry => {
+      const bytes = await readFile(entry.path);
+      return { role: entry.role, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length };
+    }));
+    const contract = { identity: { workspace: 'p003-custody', harness: 'papercusp', runId }, expected: [{
+      id: 'packet', attempt: 'primary', selected: [join(root, 'packages/x/real.test.ts')],
+      runner: 'unsupported', armed: false, out: null, auxiliary }] };
+    // Copy the immutable retained directory alone; remove the producer checkout,
+    // original logs and packet metadata so the consumer has no original fallback.
+    const consumerRoot = await mkdtemp(join(tmpdir(), 'p003-retained-consumer-'));
+    selectorRoots.push(consumerRoot);
+    const { cp } = await import('node:fs/promises');
+    await cp(paths.nativeProof, join(consumerRoot, 'native-proof'), { recursive: true });
+    await rm(root, { recursive: true });
+    await Promise.all(logs.map(path => rm(path, { force: true })));
+    await rm(paths.directory, { recursive: true });
+    expect(existsSync(root)).toBe(false);
+    expect(existsSync(paths.directory)).toBe(false);
+    const consume = (locator = manifest.nativeCustody.locator, expectedContract = contract) => spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import {verifyNativeProofPacket} from ' + JSON.stringify(join(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'try { const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({pid:process.pid,status:r.status,verdicts:r.manifest.verdicts,' +
+      'pins:r.manifest.groups[0].auxiliary.map(a=>({role:a.role,sha256:a.artifact.sha256,byteLength:a.artifact.byteLength}))})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({pid:process.pid,refused:true,error:String(error)})); }',
+      JSON.stringify([join(consumerRoot, 'native-proof'), locator, expectedContract])],
+    { encoding: 'utf8', timeout: 15_000 });
+    const child = consume();
+    expect({ error: child.error, status: child.status, stderr: child.stderr })
+      .toEqual({ error: undefined, status: 0, stderr: '' });
+    const read = JSON.parse(child.stdout);
+    expect(read.pid).not.toBe(process.pid);
+    expect(read.pins).toEqual(expectedBytes);
+    expect(read).toMatchObject({ status: 'complete', verdicts: { protocol: 'unqualified', producerRetirement: 'not-performed',
+      cleanup: { complete: true }, nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    const objects = join(consumerRoot, 'native-proof', 'objects');
+    const altered = JSON.parse(await readFile(join(objects, manifest.nativeCustody.locator.manifest.ref), 'utf8'));
+    altered.groups[0].auxiliary.pop();
+    const pin = createNativeArtifactPersister(objects).persist(Buffer.from(JSON.stringify(altered)), 'native-proof.json');
+    for (const refusal of [consume({ ...manifest.nativeCustody.locator, manifest: pin }),
+      consume(manifest.nativeCustody.locator, { ...contract, expected: [] })]) {
+      expect({ error: refusal.error, status: refusal.status, stderr: refusal.stderr })
+        .toEqual({ error: undefined, status: 0, stderr: '' });
+      expect(JSON.parse(refusal.stdout)).toMatchObject({ refused: true });
+    }
+  }, 120_000);
+
+  it('P003 preserves unavailable custody and cleanup receipts after a real unsealed router is hard-killed', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-p003-interrupted-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const ready = join(root, 'writer-ready');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import {mkdirSync,writeFileSync} from 'node:fs'; import {join} from 'node:path';",
+      "const directory=join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,'native-router-interrupted');",
+      'mkdirSync(directory,{mode:448});',
+      "writeFileSync(join(directory,'expected.json'),JSON.stringify({identity:{workspace:'p003-interrupted',harness:'papercusp',runId:process.env.PAPERCUSP_TEST_RUN_GROUP},expected:[]}));",
+      'process.stdout.write("P003 writer pending\\n");',
+      'writeFileSync(' + JSON.stringify(ready) + ',"ready");',
+      'process.kill(process.pid,"SIGKILL");',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], workspaceId: 'p003-interrupted',
+      harnessSlug: 'papercusp', timeoutMs: IN_PROCESS_CLASSIFICATION_CEILING_MS,
+      allowDetachedRecovery: false });
+    expect(existsSync(ready)).toBe(true);
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: false, error: 'no_report', cleanup: { complete: true, errors: [] } });
+    expect(out).not.toHaveProperty('passed');
+    expect(out).not.toHaveProperty('detachedRunId');
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest).toMatchObject({ childState: 'closed', cleanup: { complete: true }, nativeCustody: {
+      byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'retained' } });
+    expect(manifest.nativeCustody.error).toContain('locator.json');
+    expect(existsSync(join(out.artifacts!.directory, 'native-router-interrupted', 'expected.json'))).toBe(true);
+    expect(existsSync(join(out.artifacts!.directory, 'native-router-interrupted', 'locator.json'))).toBe(false);
+    // The maintained shell wrapper normalizes the child's SIGKILL to 128 + 9.
+    expect(JSON.parse(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')))
+      .toMatchObject({ code: 137, signal: null, childState: 'closed' });
+  }, 120_000);
+
+  it('completes confirmed-close cleanup when private native custody refuses a redirected root (P002)', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-custody-refusal-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const runRouterFn = vi.fn(async (_args: string[], _cwd: string, env: NodeJS.ProcessEnv) => {
+      await symlink(root, join(env.PAPERCUSP_TEST_ARTIFACT_DIR!, 'native-proof'));
+      return { code: 0, signal: null, timedOut: false, aborted: false,
+        output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed' };
+    });
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: true, cleanup: { complete: true, errors: [] } });
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest.nativeCustody).toMatchObject({ byteCustody: 'unavailable', nativeProof: 'unqualified',
+      acceptance: 'unmeasured', producerRetirement: 'retained' });
+    expect(manifest.nativeCustody.error).toContain('custody redirected ancestor');
   });
 
   it.each([0, 1])('keeps the real router child log after exit %s without a report', async (code) => {
@@ -2297,6 +2516,7 @@ describe('testing:run (integration)', () => {
     ]);
     expect(request.detachedReportArtifacts?.[0]?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.env).toEqual({
+      NODE_ENV: 'test',
       PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',

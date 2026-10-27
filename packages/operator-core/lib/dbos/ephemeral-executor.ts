@@ -139,15 +139,34 @@ export async function armEphemeralExecutor(deps: EphemeralExecutorDeps): Promise
   if (armed) return { stop: disarmEphemeralExecutor };
   armed = new Map();
   liveDeps = deps;
-  const specs = await deps.list();
+  let specs: EphemeralRoutineSpec[] = [];
+  let initializationPending = false;
+  try {
+    specs = await deps.list();
+  } catch (error) {
+    initializationPending = true;
+    logWith(deps, `initial catalog unavailable; heartbeat will retry: ${error instanceof Error ? error.message : error}`);
+  }
   for (const spec of specs) armed.set(spec.id, armOne(spec, deps));
-  if (deps.heartbeat) {
+  if (deps.heartbeat || initializationPending) {
     heartbeatHandle = managedSetInterval(
       'ephemeral-executor-heartbeat',
       EPHEMERAL_HEARTBEAT_INTERVAL_MS,
       async () => {
+        if (initializationPending) {
+          try {
+            await refreshEphemeralExecutor();
+            initializationPending = false;
+            if (!deps.heartbeat) {
+              heartbeatHandle?.stop();
+              heartbeatHandle = null;
+            }
+          } catch (error) {
+            logWith(deps, `initial catalog recovery failed; heartbeat will retry: ${error instanceof Error ? error.message : error}`);
+          }
+        }
         try {
-          await deps.heartbeat!();
+          await deps.heartbeat?.();
         } catch {
           /* best-effort */
         }

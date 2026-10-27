@@ -129,7 +129,14 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // neutral evidence: failures are recorded by their own failure kinds.
     kind === 'control-carry-origin-stamped' ||
     kind === 'owner-stop-requested' ||
-    kind === 'pty-child-exited'
+    kind === 'pty-child-exited' ||
+    // An in-place context reset re-anchored its rotated native id, or had nothing to
+    // re-anchor (no carry marker, superseded child, unsupported agent). A re-anchor that
+    // did not land is `reset-reanchor-failed` and classifies as a failure below.
+    kind === 'reset-reanchor-reported' ||
+    kind === 'reset-reanchor-skipped' ||
+    // A carry fence was accepted; a refused fence is `pending-carry-fence-refused`.
+    kind === 'pending-carry-fenced'
   ) return 'routine';
 
   if (
@@ -175,6 +182,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'codex-starting-stuck-early-drop' ||
     // A respawn whose compaction was never reported to the operator.
     kind === 'respawn-compaction-unannounced' ||
+    // An identity-assume preparation threw; the caller stays fenced for reconciliation.
+    kind === 'identity-assume-boundary-unavailable' ||
+    // A kickoff refused by provider quota terminates the child.
+    kind === 'kickoff-provider-quota-rejected-terminating' ||
     /(?:^|-)(?:failed|error|expired|timeout|timed-out|unconfirmed|unverified|exhausted|truncated|dropped|refused|stuck|starvation|suspected|partial)$/.test(kind)
   ) return 'failure';
 

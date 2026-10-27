@@ -67,6 +67,29 @@ const ALLOWED_BARE_VERDICTS: readonly AllowedBareVerdict[] = [
       'describes provider usage walls or local pacing policy; the two signals are intentionally ' +
       'reported together in this capacity summary.',
   },
+  {
+    file: 'packages/operator-core/lib/inference-gateway/burn-alert.ts',
+    match: 'was DOWNGRADED from',
+    reason:
+      "The Codex PLAN-tier alarm (WI-6554700010029499). `${t.from}`/`${t.to}` interpolate a " +
+      "subscription tier read from x-codex-plan-type ('pro', 'plus', 'free') — not a burn action — " +
+      'so there is no burn verdict and no disposition to state. It is caught only because the ' +
+      'PlanTransition shares the from/to field names with the burn transition in the same module.',
+  },
+  {
+    file: 'packages/operator-core/lib/inference-gateway/burn-alert.ts',
+    match: '(x-codex-plan-type) for account',
+    reason:
+      'The body of the same Codex PLAN-tier alarm: `${t.from}`/`${t.to}` are subscription tiers, ' +
+      'not burn actions, so there is no burn disposition this string could carry.',
+  },
+  {
+    file: 'packages/operator-core/lib/inference-gateway/burn-alert.ts',
+    match: 'subscription for this account',
+    reason:
+      'The remedy line of the same Codex PLAN-tier alarm: `${t.from}` is the subscription tier to ' +
+      'renew, not a burn action.',
+  },
 ];
 
 const SKIP_DIRS = new Set([

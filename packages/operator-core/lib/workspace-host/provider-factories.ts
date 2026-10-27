@@ -35,6 +35,8 @@ export interface WorkspaceHostProviderFactoryDeps {
    * `AwsWorkspaceHostSdkClient` the operator runs.
    */
   awsTransport?: Pick<AwsFactoryOptions, 'createClients' | 'waiter' | 'now'>;
+  /** Private finite qualification binds the original administrative execution on the server. */
+  awsCanaryDeadline?: (connection: Parameters<typeof createConfiguredAwsWorkspaceHostProvider>[0]) => AwsFactoryOptions['finiteCanary'];
 }
 
 /** Register the 'gcp' and 'aws' workspace-host provider factories with the deployment driver. */
@@ -52,6 +54,7 @@ export function registerWorkspaceHostProviderFactories(deps: WorkspaceHostProvid
     createConfiguredAwsWorkspaceHostProvider(connection, {
       resolveExternalId: resolveOrganizationExternalIdRef,
       ...deps.awsTransport,
+      ...(deps.awsCanaryDeadline ? { finiteCanary: deps.awsCanaryDeadline(connection) } : {}),
       ...deps.obligationObservers('aws'),
     }),
   );

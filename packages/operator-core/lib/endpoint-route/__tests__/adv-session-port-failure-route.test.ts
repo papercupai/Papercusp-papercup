@@ -21,8 +21,11 @@ const parsePortTokenMock = vi.fn();
 const verifyPortTokenMock = vi.fn();
 const updateAdvSessionPortStatusMock = vi.fn();
 const recordSessionPortTelemetryMock = vi.fn();
+const assertSessionPortStorageReadyMock = vi.fn();
+const getAdvSessionInWorkspaceMock = vi.fn();
 
 vi.mock('../../session-port/store', () => ({
+  assertSessionPortStorageReady: (...args: unknown[]) => assertSessionPortStorageReadyMock(...args),
   getSessionPort: (...args: unknown[]) => getSessionPortMock(...args),
   transitionSessionPort: (...args: unknown[]) => transitionSessionPortMock(...args),
 }));
@@ -47,6 +50,7 @@ vi.mock('../../workspace-registry', () => ({
 
 vi.mock('../../adv-sessions', async (importActual) => ({
   ...(await importActual<typeof import('../../adv-sessions')>()),
+  getAdvSessionInWorkspace: (...args: unknown[]) => getAdvSessionInWorkspaceMock(...args),
   updateAdvSessionPortStatus: (...args: unknown[]) =>
     updateAdvSessionPortStatusMock(...args),
 }));
@@ -129,6 +133,8 @@ beforeEach(() => {
   verifyPortTokenMock.mockImplementation((value: string) => value === TOKEN);
   updateAdvSessionPortStatusMock.mockResolvedValue(true);
   recordSessionPortTelemetryMock.mockResolvedValue(true);
+  assertSessionPortStorageReadyMock.mockReset().mockResolvedValue(undefined);
+  getAdvSessionInWorkspaceMock.mockReset().mockResolvedValue(null);
 });
 
 describe('POST /adv/sessions/port/delivery — post-prepare failure finalization', () => {
@@ -221,13 +227,76 @@ describe('POST /adv/sessions/port/delivery — post-prepare failure finalization
  * of the targetBackend refusal — so that refusal's wording is a contract too
  * (pinned from the launcher side in apps/operator/lib/psu-session-port-capabilities.test.ts).
  */
-describe('session-port capability advertisement (WI-6554700010011137)', () => {
+describe('session-port capability advertisement and preflight cancellation', () => {
   async function route(method: string, path: string): Promise<Route> {
     const routes = (await import('../routes/adv/sessions')).default as Route[];
     const found = routes.find((candidate) => candidate.method === method && candidate.path === path);
     if (!found) throw new Error(`${method} ${path} not registered`);
     return found;
   }
+
+  function preflightRequest(path: string): Request {
+    return new Request('http://localhost:3170/api' + path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+        sourceAdvSessionId: 41,
+        targetBackend: 'codex',
+        expectedSourceHash: 'a'.repeat(64),
+      }),
+    });
+  }
+
+  it.each(['inspect', 'prepare'])('does not read storage for an already-aborted %s request', async (verb) => {
+    const path = '/adv/sessions/port/' + verb;
+    const target = await route('POST', path);
+    const controller = new AbortController();
+    controller.abort(new Error('preflight deadline expired'));
+
+    const response = await target.handler(preflightRequest(path), { signal: controller.signal });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'preflight deadline expired' });
+    expect(assertSessionPortStorageReadyMock).not.toHaveBeenCalled();
+    expect(getAdvSessionInWorkspaceMock).not.toHaveBeenCalled();
+    expect(recordSessionPortTelemetryMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['inspect', 'prepare'])('does not start a later read after the %s deadline expires during storage inspection', async (verb) => {
+    const path = '/adv/sessions/port/' + verb;
+    const target = await route('POST', path);
+    const controller = new AbortController();
+    assertSessionPortStorageReadyMock.mockImplementationOnce(async () => {
+      controller.abort(new Error('preflight deadline expired'));
+    });
+
+    const response = await target.handler(preflightRequest(path), { signal: controller.signal });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'preflight deadline expired' });
+    expect(assertSessionPortStorageReadyMock).toHaveBeenCalledTimes(1);
+    expect(getAdvSessionInWorkspaceMock).not.toHaveBeenCalled();
+    expect(recordSessionPortTelemetryMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['inspect', 'prepare'])('cancels the active tracked-source read with the %s watchdog signal', async (verb) => {
+    const path = '/adv/sessions/port/' + verb;
+    const target = await route('POST', path);
+    const controller = new AbortController();
+    getAdvSessionInWorkspaceMock.mockImplementationOnce(async (_id, _workspace, options) => {
+      expect(options?.signal).toBe(controller.signal);
+      controller.abort(new Error('tracked source read abandoned'));
+      options.signal.throwIfAborted();
+    });
+
+    const response = await target.handler(preflightRequest(path), { signal: controller.signal });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'tracked source read abandoned' });
+    expect(recordSessionPortTelemetryMock).not.toHaveBeenCalled();
+  });
 
   it('GET /adv/sessions/port/capabilities advertises every ordered cross-backend pair and the wire versions', async () => {
     const { SESSION_PORT_SUPPORTED_PAIRS } = await import('../../session-port/types');

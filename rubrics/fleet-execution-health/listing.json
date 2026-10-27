@@ -1,10 +1,10 @@
 {
   "ref": "fleet-execution-health",
   "id": "fleet-execution-health",
-  "title": "Fleet execution health (per-wave leader scorecard)",
-  "description": "Per-wave fleet-leader scorecard (13 criteria, healthy/degraded/broken/unknown): claim flow, report integrity, blocker escalation, member liveness, capacity discipline, work actually shipping, backlog hygiene, comms economy, context budget.",
+  "title": "Fleet behavior and execution health (leader + member scorecard)",
+  "description": "Per-fleet, per-window scorecard (24 criteria, healthy/degraded/broken/unknown) in three role scopes: [fleet] outcome (burn-down, shipping), [leader] conduct (continuity, rulings, dispatch verification, supervision economy, charter, churn, capacity, liveness, routing, backlog) and [member] conduct (claims/locks, report integrity, fix quality, responsiveness, lane restraint, filing, comms, context budget).",
   "category": "fleet-execution",
   "scope": "rubric",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "source": "first-party"
 }

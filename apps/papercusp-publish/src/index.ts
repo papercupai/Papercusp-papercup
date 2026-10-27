@@ -8,6 +8,7 @@ import { publishStatusRoute } from './routes/publish-status.ts';
 import { rotateSecretRoute } from './routes/rotate-secret.ts';
 import { adminRoute } from './routes/admin.ts';
 import { handleVanity } from './vanity-proxy.ts';
+import { configuredGcsObjectStore } from '@papercusp/artifact-registry';
 
 const api = new Hono<{ Bindings: Env }>();
 
@@ -36,7 +37,7 @@ export default {
     ) {
       return handleVanity(req, env);
     }
-    return api.fetch(req, env, ctx);
+    return api.fetch(req, { ...env, get ARCHIVE() { return configuredGcsObjectStore(env); } }, ctx);
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {

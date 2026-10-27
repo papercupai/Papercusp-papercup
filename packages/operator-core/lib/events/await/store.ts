@@ -17,6 +17,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
 import { readWakeFanoutPacing, reserveWakeFanout, withWakeFanoutPacing, WAKE_FANOUT_BURST } from '../../agent-tools/coordination/wake-fanout-pacing';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -51,7 +52,11 @@ import {
   type SystemClearedBlockerItem,
 } from '../../work-item-ref-blocker-auto-clear';
 import { fireCertifiesCondition } from '../../external-condition-reachability';
-import { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
+import {
+  AWAIT_CANCEL_REASONS,
+  HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER,
+  type AwaitSystemCancelReason,
+} from './cancel-reasons';
 export { AWAIT_CANCEL_REASONS, type AwaitSystemCancelReason } from './cancel-reasons';
 import type {
   AwaitPolicy,
@@ -2087,7 +2092,7 @@ export async function countActiveAwaitsByKeyShapes(
  *  - **standing** watches (`once = false`, the pot-style recurring watch) are MATCHED but
  *    NOT consumed — they keep firing on every emit until cancelled or expired.
  */
-export async function fireAwaitsForKey(input: {
+interface AwaitFireInput {
   eventKey: string;
   reason?: 'event' | 'timeout';
   /** Emitter attribution used for source-specific matching safeguards. */
@@ -2095,8 +2100,28 @@ export async function fireAwaitsForKey(input: {
   /** EI-8998: the emitted payload — tested against any active payload_filter before a
    *  matching row is allowed to fire. Rows with no payload_filter are unaffected. */
   payload?: unknown;
-}): Promise<AwaitRow[]> {
+  taskTerminal?: TaskTerminalFence;
+}
+
+export async function fireAwaitsForKey(input: AwaitFireInput): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
+  if (input.taskTerminal) {
+    // The latch can have been accepted before a newer terminal close. Fence the
+    // actual claims too, including the filtered/pattern second UPDATE. Only store
+    // queries run under this lock; engine fan-out never retains a pooled client.
+    return await sql.begin(async (tx) => {
+      const current = await currentTaskTerminal(tx, input.eventKey, input.taskTerminal!, input.payload);
+      if (current.length === 0) return [];
+      return fireAwaitsForKeyInStore(input, tx);
+    }) as unknown as AwaitRow[];
+  }
+  return fireAwaitsForKeyInStore(input, sql);
+}
+
+async function fireAwaitsForKeyInStore(
+  input: AwaitFireInput,
+  sql: postgres.Sql | postgres.TransactionSql,
+): Promise<AwaitRow[]> {
   const ws = eventsWs();
   // A fired one-shot row is itself the durable delivery intent. Keep the
   // event payload on that same committed row so the sweeper can reconstruct a
@@ -3224,6 +3249,22 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
   };
 
   let owned = await readOwnedState();
+  const ackQueuedDelivery = async (): Promise<boolean> => {
+    // The pump can claim a parked row after the first ACK UPDATE, then repark
+    // it before this read. Retry the conditional update against the observed
+    // owned row instead of turning that state transition into a false miss.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!owned || (owned.status !== 'pending' && owned.status !== 'parked')) return false;
+      if (await markDeliveryAcked(input, { pendingOrParked: true, delivering: false })) return true;
+      owned = await readOwnedState();
+    }
+    return false;
+  };
+  if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
+  if (owned?.status === 'pending' || owned?.status === 'parked') {
+    return { acked: false, alreadySettled: false, status: owned.status };
+  }
+
   if (recallableHostWake(owned)) {
     const cancellation = await requestDirectDeliveryCancellation(input);
     if (cancellation === 'confirmed-before-write') {
@@ -3240,6 +3281,7 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     // The pump can win the terminal update while the host request is in flight.
     // Re-read rather than returning a stale snapshot.
     owned = await readOwnedState();
+    if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
     if (owned && (owned.status === 'pending' || owned.status === 'parked' || owned.status === 'delivering' || owned.status === 'delivered')) {
       return {
         acked: false,
@@ -3361,10 +3403,16 @@ export async function settleQueuedDeliveriesForCancelledAwaits(
   if (ids.length === 0) return 0;
   const sql = opts.client ?? getOrgPg().sql;
   const ws = eventsWs();
+  // WI-6554700010030084: keep the host-accepted fact on a parked row the host already owns.
+  const acceptedReason = `${reason} ${HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER}; the host-owned commit is not an undelivered wake (WI-1062047, WI-6554700010030084)`;
   const rows = await sql<Array<{ id: number }>>`
     UPDATE harness_shared.event_wake_deliveries AS d
        SET status = 'dropped',
-           last_error = ${`${reason} (WI-1062047)`}
+           last_error = CASE
+             WHEN d.status = 'parked' AND d.last_error LIKE ${'%delivery accepted before turn-start proof%'}
+               THEN ${acceptedReason}
+             ELSE ${`${reason} (WI-1062047)`}
+           END
       FROM harness_shared.event_awaits AS a
      WHERE d.workspace_id = ${ws}
        AND d.await_id = ANY(${ids}::bigint[])
@@ -4072,6 +4120,32 @@ function mapKeyFire(row: any): KeyFireRow {
  *  and resets only when clearKeyFire drops the row, and `count` is taken under the
  *  row lock. `firstFiredAtUs` is decimal text because a bigint's wire form depends
  *  on driver config (string vs BigInt); text is exact under both. */
+export interface TaskTerminalFence {
+  taskId: string;
+  workspaceId: string;
+  revision: number;
+}
+
+function currentTaskTerminal(
+  sql: postgres.Sql | postgres.TransactionSql,
+  eventKey: string,
+  fence: TaskTerminalFence,
+  payload: unknown,
+) {
+  const terminal = payload as { state?: string; exitCode?: number | null; exitReason?: string | null } | undefined;
+  return sql`
+    SELECT task_id FROM harness_shared.task_ledger
+     WHERE task_id = ${fence.taskId} AND workspace_id = ${fence.workspaceId}
+       AND ${eventKey} = 'task:terminal:' || task_id
+       AND ended_at IS NOT NULL
+       AND COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) = ${fence.revision}
+       AND state = ${terminal?.state ?? null}
+       AND exit_code IS NOT DISTINCT FROM ${terminal?.exitCode ?? null}::int
+       AND exit_reason IS NOT DISTINCT FROM ${terminal?.exitReason ?? null}::text
+     FOR SHARE
+  `;
+}
+
 export async function recordKeyFire(input: {
   eventKey: string;
   firedBy?: string | null;
@@ -4080,7 +4154,10 @@ export async function recordKeyFire(input: {
    *  standing event-key subscribers (the emit fan-out's read) from this
    *  subscription workspace — saving the emit a separate round trip. */
   subscribersFrom?: { workspaceId: string; targetKind: string };
+  taskTerminal?: TaskTerminalFence;
 }): Promise<{
+  /** A fenced producer no longer matches the authoritative outbox value. */
+  superseded?: boolean;
   announcementPending: boolean;
   /** event-wait-settlement-2026-10-20 P-004: some work item waits on this key (an
    *  active event/gate blocker or a durable park) AND a fire of it proves its
@@ -4098,6 +4175,14 @@ export async function recordKeyFire(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const subs = input.subscribersFrom;
+  const fence = input.taskTerminal;
+  const fenceUpdate = fence ? sql`
+    COALESCE((harness_shared.event_key_fires.last_payload ->> 'terminalEventRevision')::bigint, 0)
+      <= ${fence.revision}
+  ` : sql`TRUE`;
+  // A short statement takes the ledger's share lock before the latch lock.
+  // Concurrent terminal upgrades serialize here; no connection spans engine I/O.
+  const currentTerminal = fence ? currentTaskTerminal(sql, input.eventKey, fence, input.payload) : sql`SELECT 1`;
   // P-004 (R-21): the waiter probe rides THIS statement, so an emit nobody waits on
   // costs no extra round trip; and it is only written for a key whose fire certifies
   // its condition (fireCertifiesCondition), so the common broad emits (inbox wakes,
@@ -4139,17 +4224,18 @@ export async function recordKeyFire(input: {
       ) AS event_subscribers`
     : sql``;
   const rows = await sql`
-    WITH latch AS (
+    WITH current_terminal AS MATERIALIZED (${currentTerminal}), latch AS (
       INSERT INTO harness_shared.event_key_fires
         (workspace_id, event_key, first_fired_at, last_fired_at, last_fired_by, last_payload, fire_count)
-      VALUES
-        (${ws}, ${input.eventKey}, now(), now(), ${input.firedBy ?? null},
-         ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1)
+      SELECT ${ws}, ${input.eventKey}, now(), now(), ${input.firedBy ?? null},
+             ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1
+       WHERE EXISTS (SELECT 1 FROM current_terminal)
       ON CONFLICT (workspace_id, event_key) DO UPDATE
          SET last_fired_at = now(),
              last_fired_by = ${input.firedBy ?? null},
              last_payload = ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb,
              fire_count = harness_shared.event_key_fires.fire_count + 1
+       WHERE ${fenceUpdate}
       RETURNING fire_count,
                 floor(extract(epoch FROM first_fired_at) * 1000000)::bigint::text AS first_fired_at_us
     )
@@ -4166,6 +4252,7 @@ export async function recordKeyFire(input: {
   const count = Number(rows[0]?.fire_count);
   const firstFiredAtUs = rows[0]?.first_fired_at_us;
   return {
+    ...(fence ? { superseded: !Number.isInteger(count) || count < 1 } : {}),
     announcementPending: rows[0]?.announcement_pending !== false,
     // Conservative like announcementPending: a probed key with no readable answer settles.
     provingWaiterPending: probeWaiters && rows[0]?.proving_waiter_pending !== false,

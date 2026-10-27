@@ -140,9 +140,13 @@ describe('resolveShimNode', () => {
  * wrote the shim.
  */
 describe('ensureBundledNodeLinked', () => {
+  const retainedNode = async (p: string) => {
+    await fs.mkdir(path.dirname(p), { recursive: true });
+    await fs.symlink(origExecPath, p);
+  };
   it('links ~/.local/bin/node → the bundled node when resolvable (primary operator run)', async () => {
     const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
-    await touch(bundled);
+    await retainedNode(bundled);
     vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
     const home = path.join(tmp, 'home');
 
@@ -162,7 +166,7 @@ describe('ensureBundledNodeLinked', () => {
 
   it('does NOT clobber an existing working node (user-installed or already linked)', async () => {
     const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
-    await touch(bundled);
+    await retainedNode(bundled);
     vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
     const home = path.join(tmp, 'home');
     const existing = path.join(home, '.local', 'bin', 'node');
@@ -175,7 +179,7 @@ describe('ensureBundledNodeLinked', () => {
 
   it('replaces a DANGLING link (stale from a prior app version) with a fresh one', async () => {
     const bundled = path.join(tmp, 'sidecar', 'bin', 'node');
-    await touch(bundled);
+    await retainedNode(bundled);
     vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
     const home = path.join(tmp, 'home');
     const dest = path.join(home, '.local', 'bin', 'node');

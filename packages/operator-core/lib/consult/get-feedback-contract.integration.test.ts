@@ -14,13 +14,21 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../te
 import '../agent-tools/index';
 import tool from '../agent-tools/consult/get-feedback';
 import { acceptFeedbackRequestCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
-import { appendDispatchRecord, dispatchConsultResponder, readSourceDispatchRecords,
+import { appendDispatchRecord, dispatchConsultResponder, readIndexedConsultCitedTurns, readSourceDispatchRecords,
   type ConsultDispatchDeps } from './consult-dispatch';
 
 const WS = 'public-consult-contract';
 let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('consult-contract');
+  // Migration 501's indexed-turn columns and composite identity. Exercise the
+  // production cited-turn reader against this private DB, never an ambient index.
+  await db.sql.unsafe(`CREATE TABLE harness_shared.session_turns (
+    workspace_id text NOT NULL DEFAULT 'default', source_kind text NOT NULL,
+    session_id text NOT NULL, turn_idx integer NOT NULL, ts timestamptz,
+    speaker text NOT NULL, text text NOT NULL,
+    PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
+  )`);
   await db.sql.unsafe(`CREATE TABLE harness_shared.coord_conversations (
     workspace_id text NOT NULL, id text NOT NULL, kind text NOT NULL,
     PRIMARY KEY (workspace_id, id)
@@ -115,7 +123,7 @@ describe('registered consult contract and persisted recovery', () => {
 });
 
 describe('source preflight and persisted dispatch attempts', () => {
-  it.each(['eligible', 'cyclic', 'non-plain', 'missing'] as const)(
+  it.each(['eligible', 'cyclic', 'non-plain', 'missing', 'unreadable'] as const)(
     'validates the %s source before crossing the launch seam and persists its verdict', async (kind) => {
       const dir = await mkdtemp(join(tmpdir(), 'consult-contract-source-'));
       const path = join(dir, 'source.jsonl');
@@ -123,6 +131,7 @@ describe('source preflight and persisted dispatch attempts', () => {
       const sourceSessionId = `contract-session-${kind}`;
       const answeringOwnerId = `contract-answer-${kind}`;
       let launches = 0;
+      const citedReads: Array<[string, string, readonly number[]]> = [];
       try {
         if (kind !== 'missing') {
           await writeFile(path, [
@@ -132,6 +141,12 @@ describe('source preflight and persisted dispatch attempts', () => {
               message: { role: 'assistant', content: 'exact source answer' } }),
           ].join('\n') + '\n');
         }
+        // A healthy file alone cannot authorize conversion or a fresh brief.
+        // The unreadable control has only another workspace's indexed evidence.
+        await db.sql`INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, speaker, text)
+          VALUES (${kind === 'unreadable' ? 'foreign-consult-contract' : WS},
+            'claude', ${sourceSessionId}, 1, 'assistant', 'exact source answer')`;
         const accepted = await acceptFeedbackRequestCore(request(`preflight-${kind}`), deps);
         const conversationId = accepted.conversation_id!;
         // Acceptance is initially routing. Simulate the completed routing
@@ -148,6 +163,10 @@ describe('source preflight and persisted dispatch attempts', () => {
             binding: { coordOwnerId: sourceOwnerId, sessionId: sourceSessionId,
               startedAt: '2026-09-22T00:00:00Z' } }),
           checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
+          readCitedTurns: (workspaceId, sessionId, turnIndices) => {
+            citedReads.push([workspaceId, sessionId, turnIndices]);
+            return readIndexedConsultCitedTurns(db.sql, workspaceId, sessionId, turnIndices);
+          },
           // Omit checkPortTranscript: exercise the production reader and native adapter.
           readSourceDispatchRecords: (...args) => readSourceDispatchRecords(db.sql, ...args),
           recordDispatchAttempts: (record) => appendDispatchRecord(db.sql, record, new Date().toISOString()),
@@ -170,8 +189,16 @@ describe('source preflight and persisted dispatch attempts', () => {
             launches++;
             expect(input.coordOwnerId).toBe(answeringOwnerId);
             expect(input.envelope.greetingCmd).toContain('--agent=codex');
-            expect(JSON.parse(input.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN!))
-              .toMatchObject({ sessionId: sourceSessionId, turnIndices: [1] });
+            if (kind === 'eligible') {
+              expect(JSON.parse(input.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN!))
+                .toMatchObject({ sessionId: sourceSessionId, turnIndices: [1] });
+            } else {
+              expect(input.envelope.greetingCmd).not.toMatch(/--resume|--fork/);
+              expect(input.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBeUndefined();
+              expect(input.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain(`${sourceSessionId}#1`);
+              expect(input.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('exact source answer');
+              expect(input.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('NOT your own history');
+            }
             const rows = await db.sql`SELECT responder_id FROM harness_shared.consult_state
               WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
             expect(rows[0].responder_id).toBe(answeringOwnerId);
@@ -189,16 +216,28 @@ describe('source preflight and persisted dispatch attempts', () => {
               WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
           },
         }, { workspaceId: WS, harnessSlug: null, launchedBy: 'contract-requester' }, dispatchDeps);
-        expect(result.dispatched, JSON.stringify(result)).toBe(kind === 'eligible');
-        expect(launches).toBe(kind === 'eligible' ? 1 : 0);
+        expect(citedReads).toEqual([[WS, sourceSessionId, [1]]]);
+        expect(result.dispatched, JSON.stringify(result)).toBe(kind !== 'unreadable');
+        expect(launches).toBe(kind === 'unreadable' ? 0 : 1);
         if (kind === 'eligible') {
           expect(result).toMatchObject({ operation: 'convert', answeringOwnerId, verified: true });
-          expect(answeringOwnerId).not.toBe(sourceOwnerId);
+          expect(result.attempts).toHaveLength(1);
+        } else if (kind === 'unreadable') {
+          expect(result.attempts).toHaveLength(2);
+          expect(result.attempts[0]).toMatchObject({ operation: 'convert', reason: 'conversion-unavailable' });
+          expect(result.attempts[0].detail).toContain('exact cited turns are not all readable');
+          expect(result.attempts[1]).toMatchObject({ operation: 'brief', reason: 'evidence-span-unavailable' });
         } else {
+          // D-035: rejection of native conversion still permits a distinct fresh
+          // answering session grounded in readable cited turns.
+          expect(result).toMatchObject({ operation: 'brief', answeringOwnerId, verified: true });
+          expect(result.attempts).toHaveLength(2);
           expect(result.attempts[0]).toMatchObject({ outcome: 'skipped', reason: 'conversion-unavailable' });
           expect(result.attempts[0].detail).toContain(kind === 'cyclic' ? 'cycle detected'
             : kind === 'non-plain' ? 'plain tracked SU' : 'preflight refused');
+          expect(result.attempts[1]).toMatchObject({ operation: 'brief', outcome: 'dispatched' });
         }
+        expect(answeringOwnerId).not.toBe(sourceOwnerId);
         const rows = await db.sql`SELECT dispatch_attempts FROM harness_shared.consult_state
           WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}`;
         expect(rows[0].dispatch_attempts).toHaveLength(1);

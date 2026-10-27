@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "scope": "One occupied-source-lease Codex-to-Claude native acceptance attempt",
+  "outcome": "Target capacity unavailable; no answering session or passing native execution",
+  "governingDecisions": ["D-006", "D-017", "D-021", "D-030", "D-034"],
+  "request": {
+    "mechanism": "testing:run.nativeConsult",
+    "invocationId": 44651642,
+    "acceptedAt": "2026-10-26T06:18:08.767Z",
+    "requestKey": "gf-p002-live-codex-claude-source-lease-20261026-v1",
+    "conversationId": "conv-request-a6fc7394a57e31bb71d771ceae3c741d3ff10f8bb233d7021e17430c43716fd4",
+    "constraints": {
+      "sourceBackend": "codex",
+      "sourceState": "live",
+      "targetBackend": "claude",
+      "requireSourcePlanClaims": true
+    },
+    "question": "Which concrete receipts from your prior implementation distinguish preservation of an occupied native source plan lease from release/reacquire ABA while an isolated answering session runs on a different backend? Cite the actual lease or observer writer, the source and answering native identities, and any measured limitation that prevents an immutability verdict."
+  },
+  "sourceBoundary": {
+    "status": "measured",
+    "capturedAt": "2026-10-26T06:18:12.526Z",
+    "completedAt": "2026-10-26T06:18:12.557Z",
+    "sourceOwnerId": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+    "sourceAdvSessionId": 51637,
+    "sourceNativeSessionId": "01a176d7-1eda-70d0-9e17-d4c33a834d1d",
+    "snapshot": {
+      "kind": "live-jsonl",
+      "completeBytes": 625457,
+      "highWaterBytes": 625457,
+      "sha256": "d80108e9cc038b61bf8e13a6e8b8d7827a2204a10a0d7ac63aa95734fa1f5f9a",
+      "device": 66306,
+      "inode": 41156615,
+      "links": 1
+    },
+    "planLease": {
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": "papercusp",
+      "planSlug": "main-greening-durable-continuation-2026-10-22",
+      "itemId": "P-006",
+      "claimId": "95bc4f8e-0fdb-411d-a09c-fe42c6dabed2",
+      "owner": "su-12da384f-8b83-4dd0-8884-cd15f2cd6231",
+      "expired": false,
+      "expiresAt": "2026-10-26T06:38:10.232Z"
+    },
+    "qualification": "Sequential source and claim endpoint reads. This is not an atomic snapshot, a native answering execution, transition history, actor attribution, or an after observation. The source plan name is an identity reference, not an inspection of its live gate."
+  },
+  "canonicalDispatch": {
+    "at": "2026-10-26T06:18:14.245Z",
+    "dispatched": false,
+    "answeringOwnerId": null,
+    "operation": null,
+    "detail": "native target claude capacity unavailable: every claude provider account reads full or paused; automatic launch was not attempted",
+    "attempts": [
+      {"rank": 1, "agent": "claude", "model": "fable", "outcome": "skipped", "reason": "account-walled", "accountRoute": "auto", "operation": null},
+      {"rank": 2, "agent": "claude", "model": "opus", "outcome": "skipped", "reason": "account-walled", "accountRoute": "auto", "operation": null}
+    ],
+    "qualification": "This records the capacity preflight's verdict. No independent provider quota measurement or resource-causality claim is made."
+  },
+  "terminal": {
+    "state": "expired",
+    "expiresAt": "2026-10-26T06:18:14.247Z",
+    "closedAt": "2026-10-26T06:20:51.939Z",
+    "cascadeCursor": 0,
+    "digestKind": "dispatch_failed",
+    "posts": [],
+    "expiryDispatchRecord": "answer-window-expired; no live answering session found",
+    "await": {"id": 371054, "cancelled": true, "droppedDeliveries": 0, "inFlightDeliveries": 0},
+    "qualification": "The persisted consult result retains its earlier routed/awaiting_responder acknowledgement. Canonical consult state and dispatch_attempts determine this terminal outcome; acceptance and routing were not execution. No unchanged retry or monitor remains on this request."
+  },
+  "preservedEvidence": {
+    "originalOperationalBindings": [28326, 28545],
+    "retainedBindings": [69704, 69782],
+    "cleanD006Run": 22120850,
+    "supplementalD006Binding": 70950,
+    "d006Artifact": "docs/evidence/get-feedback-p002-d006-claims-2026-10-26.json",
+    "d006ArtifactSha256": "fb2de82ea252d82b18b8d18cd1411b80da05cd397bc291a5cb3a85b0aa59d5a3",
+    "d006LocalAutosyncCommit": "3c681170b0e02115e4619267480148358daaa7ea",
+    "d006OwnerReport": "rpt_f55ca427-c19a-45da-a543-a0a2372b24b6",
+    "qualification": "Original native bindings remain dated and source-stale. Exact D006 bytes were verified in the worktree and local autosync commit. Remote publication and shipment are separate checks; no test proof was replayed."
+  },
+  "limitations": [
+    "This attempt adds no passing native test, full matrix, occupied-lease preservation, ABA absence, native actor, custody, admission or approval verdict.",
+    "The D006 observer's actor labels remain controlled fixture instrumentation, not trusted native attribution or historical live lease transitions.",
+    "Original cohort populations, requester usefulness, independent acceptance and exact shipment requirements remain unchanged and open.",
+    "Do not repeat this unchanged request while the same target capacity prerequisite is unavailable."
+  ],
+  "evidenceRefs": [
+    "harness_shared.consult_state exact workspace and conversation_id; routing.nativeConsultSources, dispatch_attempts and cascade_digest",
+    "conversations:get exact conversation_id; terminal expired, no posts",
+    "harness_shared.tool_invocations id44651642",
+    "events:cancel await_id371054 successful receipt"
+  ]
+}

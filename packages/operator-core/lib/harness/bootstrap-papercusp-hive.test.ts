@@ -30,11 +30,11 @@ import {
   __resetBootstrapInFlight,
   seedTargetDirs,
   defaultSetHomeWorkspace,
-  dogfoodHiveDisabled,
   PAPERCUP_DOGFOOD_REPO_URL,
   GIT_SEED_RETRY_DELAYS_MS,
   type BootstrapPapercuspHiveDeps,
 } from './bootstrap-papercusp-hive';
+import { dogfoodHiveDisabled } from './dogfood-hive-kill-switch';
 
 beforeEach(() => __resetBootstrapInFlight());
 import { join } from 'node:path';

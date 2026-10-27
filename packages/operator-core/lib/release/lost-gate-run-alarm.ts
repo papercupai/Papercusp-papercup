@@ -28,6 +28,7 @@ import type { Sql } from 'postgres';
 import type { SevereEventRoute } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import type { AttentionNotifyInput } from '../attention-notify';
+import { currentRepairLimbExecutor, type RepairLimbExecutor } from './repair-limb-executor';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
   isPostVerdictHang,
@@ -162,6 +163,9 @@ export async function claimLostRunAlarm(
   target: { installSlug: string; workspaceId: string; alarmField?: 'lostRunAlarm' | 'qualificationProgressAlarm' },
   key: string,
   nowMs: number,
+  // gate-repair-plane-on-current-build-2026-10-15 R-1: the alarm record names the host and the
+  // build of the process that raised it, from that process's getBuildInfo().
+  executor: RepairLimbExecutor = currentRepairLimbExecutor(),
 ): Promise<boolean> {
   const alarmField = target.alarmField ?? 'lostRunAlarm';
   const result = await sql`
@@ -170,7 +174,9 @@ export async function claimLostRunAlarm(
              COALESCE(metadata, '{}'::jsonb),
              '{gate_health}',
              COALESCE(metadata->'gate_health', '{}'::jsonb)
-               || jsonb_build_object(${alarmField}::text, jsonb_build_object('key', ${key}::text, 'alarmedAtMs', ${nowMs}::bigint)),
+               || jsonb_build_object(${alarmField}::text,
+                    jsonb_build_object('key', ${key}::text, 'alarmedAtMs', ${nowMs}::bigint)
+                      || ${JSON.stringify(executor)}::text::jsonb),
              true
            )
      WHERE install_slug = ${target.installSlug}

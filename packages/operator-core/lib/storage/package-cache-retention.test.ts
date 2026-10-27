@@ -1,16 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRetentionPin } from './retention-pins';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  DEFAULT_PACKAGE_CACHE_MAX_BYTES,
   PRESSURE_PACKAGE_CACHE_MAX_BYTES,
+  measurePackageCache,
   resolvePackageCacheTargets,
   runPackageCacheRetention,
   type PackageCacheMeasurement,
   type PackageCacheTarget,
 } from './package-cache-retention';
+import { RETENTION_POLICY, validatePolicy } from './retention-policy';
 import { type DiskSnapshot } from './disk-space-alarm';
 import * as diskSpaceAlarm from './disk-space-alarm';
 
@@ -28,6 +31,15 @@ const targets: PackageCacheTarget[] = [
 ];
 
 describe('resolvePackageCacheTargets', () => {
+  it('declares the finite native cache cap in the canonical retention policy', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'package-caches')!;
+    expect(cls.keep.kind).toBe('native');
+    expect(cls.maxBytes).toBe(DEFAULT_PACKAGE_CACHE_MAX_BYTES);
+    expect(Number.isSafeInteger(cls.maxBytes)).toBe(true);
+    expect(cls.maxBytes).toBeGreaterThan(0);
+    expect(validatePolicy(RETENTION_POLICY)).toEqual([]);
+  });
+
   it('uses manager-owned cache roots and pins native cleanup to those exact paths', () => {
     const resolved = resolvePackageCacheTargets({
       homeDir: '/home/agent',
@@ -65,6 +77,46 @@ describe('resolvePackageCacheTargets', () => {
   });
 });
 
+describe('measurePackageCache allocated no-follow census', () => {
+  it('counts sparse files and cross-directory hardlinks by their physical allocation once', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-allocation-'));
+    try {
+      const a = join(root, 'a'), b = join(root, 'b');
+      mkdirSync(a); mkdirSync(b);
+      const sparse = join(a, 'sparse'), shared = join(a, 'shared');
+      writeFileSync(sparse, ''); truncateSync(sparse, 8 * 1024 ** 2);
+      writeFileSync(shared, Buffer.alloc(64 * 1024, 1));
+      linkSync(shared, join(b, 'alias'));
+      const measured = await measurePackageCache(root);
+      const expected = [root, a, b, sparse, shared].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+      expect(measured).toEqual({ bytes: expected, truncated: false });
+      expect(measured.bytes).toBeLessThan(8 * 1024 ** 2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('counts only a child symlink allocation and refuses a symlink cache root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-no-follow-'));
+    try {
+      const cache = join(root, 'cache'), outside = join(root, 'outside');
+      mkdirSync(cache); mkdirSync(outside);
+      writeFileSync(join(outside, 'owner-data'), Buffer.alloc(1024 ** 2, 1));
+      const link = join(cache, 'link'); symlinkSync(outside, link);
+      expect(await measurePackageCache(cache)).toEqual({ bytes: (lstatSync(cache).blocks + lstatSync(link).blocks) * 512, truncated: false });
+      const alias = join(root, 'alias'); symlinkSync(cache, alias);
+      expect((await measurePackageCache(alias)).truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('distinguishes absent caches from an invalid regular-file root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'package-cache-root-'));
+    try {
+      expect(await measurePackageCache(join(root, 'absent'))).toEqual({ bytes: 0, truncated: false });
+      const file = join(root, 'file'); writeFileSync(file, 'invalid root');
+      expect((await measurePackageCache(file)).truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('runPackageCacheRetention', () => {
   let sandbox: string;
   beforeEach(() => {
@@ -77,6 +129,17 @@ describe('runPackageCacheRetention', () => {
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(sandbox, { recursive: true, force: true }); });
 
+  it('enforces the canonical default cap through native cleanup and final measurement', async () => {
+    const cap = RETENTION_POLICY.find(cls => cls.id === 'package-caches')!.maxBytes!;
+    const sizes = [measurement(cap + 1), measurement(cap + 1), measurement(cap)];
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({ targets: [targets[0]!],
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).toHaveBeenCalledExactlyOnceWith(targets[0], process.cwd());
+    expect(out[0]).toMatchObject({ status: 'pruned', maxBytes: cap,
+      beforeBytes: cap + 1, afterBytes: cap, reclaimedBytes: 1 });
+  });
+
   it.each([false, true])('protects pinned descendants and releases expired pins (expired=%s)', async (expired) => {
     const cache = join(sandbox, 'cache'); const descendant = join(cache, 'needed');
     mkdirSync(descendant, { recursive: true });
@@ -84,10 +147,52 @@ describe('runPackageCacheRetention', () => {
       expiresAt: new Date(Date.now() + (expired ? -1000 : 60_000)).toISOString() },
     { nowMs: Date.now() - 2000 });
     const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const sizes = [measurement(9), measurement(9), { ...measurement(2), pinnedBytes: 2 }];
     const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
-      measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
     expect(out[0]?.status).toBe(expired ? 'pruned' : 'pinned');
     expect(runCommand).toHaveBeenCalledTimes(expired ? 1 : 0);
+  });
+
+  it.each(['root', 'child', 'alias'] as const)('accounts only the exact %s pin allocation and exposes unrelated excess', async (scope) => {
+    const cache = join(sandbox, 'cache'), needed = join(cache, 'needed');
+    mkdirSync(needed, { recursive: true });
+    const proof = join(needed, 'proof'), bulk = join(cache, 'bulk');
+    writeFileSync(proof, Buffer.alloc(64 * 1024, 1));
+    writeFileSync(bulk, Buffer.alloc(128 * 1024, 1));
+    linkSync(proof, join(cache, 'shared-proof'));
+    const alias = join(sandbox, 'cache-alias'); symlinkSync(cache, alias);
+    createRetentionPin({ path: scope === 'root' ? cache : scope === 'alias' ? join(alias, 'needed') : needed,
+      owner: 'test', reason: 'review', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 1,
+      runCommand, withMutex: async (_name, run) => run() });
+    const total = [cache, needed, proof, bulk].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+    const pinned = scope === 'root' ? total : [needed, proof].reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ status: scope === 'root' ? 'pinned' : 'prune-failed',
+      beforeBytes: total, afterBytes: total, pinnedBytes: pinned, pinnedOverageBytes: pinned - 1,
+      unprotectedOverageBytes: total - Math.max(1, pinned), measurementTruncated: false });
+    expect(lstatSync(bulk).isFile()).toBe(true);
+    if (scope !== 'root') expect(out[0]?.note).toMatch(/non-pin.*excess/);
+  });
+
+  it.each([
+    { final: { ...measurement(9), pinnedBytes: 9 }, status: 'pinned', truncated: false },
+    { final: { ...measurement(9), pinnedBytes: 2 }, status: 'prune-failed', truncated: false },
+    { final: { ...measurement(9, true), pinnedBytes: 9 }, status: 'prune-failed', truncated: true },
+    { final: measurement(9), status: 'prune-failed', truncated: true },
+    { final: { ...measurement(9), pinnedBytes: 10 }, status: 'prune-failed', truncated: true },
+  ])('requires complete exact allocation before exempting pinned excess: $final', async ({ final, status, truncated }) => {
+    const cache = join(sandbox, 'cache'); mkdirSync(cache);
+    createRetentionPin({ path: cache, owner: 'test', reason: 'review', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const sizes = [measurement(9), measurement(9), final];
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
+      measure: async () => sizes.shift()!, runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]).toMatchObject({ status, measurementTruncated: truncated });
+    if (status === 'prune-failed') expect(out[0]?.note).toMatch(/unmeasured|non-pin/);
   });
 
   it('refuses native cleanup when the pin store cannot be decoded', async () => {
@@ -98,6 +203,18 @@ describe('runPackageCacheRetention', () => {
       measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
     expect(runCommand).not.toHaveBeenCalled();
     expect(out[0]?.note).toContain('retention pins unreadable');
+  });
+
+  it('refuses native cleanup of an invalid cache root instead of following its symlink', async () => {
+    const outside = join(sandbox, 'outside'), alias = join(sandbox, 'alias');
+    mkdirSync(outside); writeFileSync(join(outside, 'owner-data'), Buffer.alloc(64 * 1024, 1));
+    symlinkSync(outside, alias);
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: alias }], maxBytes: 1,
+      runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]?.status).toBe('prune-failed');
+    expect(out[0]?.note).toContain('measurement');
   });
 
   it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {
@@ -299,6 +416,26 @@ describe('runPackageCacheRetention', () => {
     ]);
     expect(out.map((row) => row.status)).toEqual(['pruned', 'below-threshold', 'pruned']);
     expect(out.map((row) => row.reclaimedBytes)).toEqual([7, 0, 3]);
+  });
+
+  it.each([
+    { after: measurement(8), status: 'pruned', note: undefined },
+    { after: measurement(9), status: 'prune-failed', note: /still measures above the high-water mark/ },
+    { after: measurement(1, true), status: 'prune-failed', note: /final measurement was truncated/ },
+  ])('verifies the cap after native cleanup: $status, $after', async ({ after, status, note }) => {
+    const sizes = [measurement(10), measurement(10), after];
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: 'ok' }));
+    const out = await runPackageCacheRetention({
+      targets: [targets[0]!], maxBytes: 8,
+      measure: async () => sizes.shift()!, runCommand,
+      withMutex: async (_name, run) => run(),
+    });
+
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(out[0]).toMatchObject({ status, maxBytes: 8, afterBytes: after.bytes,
+      reclaimedBytes: 10 - after.bytes, measurementTruncated: after.truncated });
+    if (note) expect(out[0]?.note).toMatch(note);
+    else expect(out[0]?.note).toBeUndefined();
   });
 
   it('does not run a stale cleanup when the cache fell below the threshold while waiting', async () => {

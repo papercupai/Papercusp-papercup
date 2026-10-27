@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
@@ -169,11 +169,12 @@ describe('loadExecutedSourceMap', () => {
         };
       },
     };
-    const { map, rows } = await loadExecutedSourceMap({ client, workspaceName: '@x/w', repoRoot: ROOT, gitDir: GIT_DIR });
+    const { map, rows } = await loadExecutedSourceMap({ client, workspaceName: '@x/w', repoRoot: ROOT, gitDir: GIT_DIR, runnerIdentity: 'node' });
     expect(rows).toBe(1);
     expect(map.get('/repo/w/t.test.ts')?.recordedSha).toBe('abc');
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR]);
+    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR, 'node']);
+    expect(calls[0]!.text).toMatch(/runner_identity = \$3/);
     expect(calls[0]!.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]!.text).toMatch(/harness_shared\.test_executed_sources/);
     expect(calls[0]!.text).toMatch(/\(recorded_git_dir = \$2 OR recorded_git_dir IS NULL\)/);
@@ -202,13 +203,14 @@ describe('loadExecutedSourceMap', () => {
       repoRoot: ROOT,
       files,
       gitDir: GIT_DIR,
+      runnerIdentity: 'node',
     });
     expect(rows).toBe(1);
     expect(map.has('/repo/w/a.test.ts')).toBe(true);
     expect(map.has('/repo/w/b.test.ts')).toBe(false);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR, files]);
-    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$3::text\[\]\)/);
+    expect(calls[0]!.values).toEqual(['@x/w', GIT_DIR, 'node', files]);
+    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$4::text\[\]\)/);
   });
 
   it('skips the executed-source query when static selection has no candidates', async () => {
@@ -607,11 +609,12 @@ describe('reuse proofs loader', () => {
         return { rows: [row()] };
       },
     };
-    const out = await loadReuseProofs({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
+    const out = await loadReuseProofs({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', runnerIdentity: 'node' });
     expect(out.rows).toBe(1);
     expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
     // The default object store is the one this module was loaded from (WI-6554700010019324).
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', resolveRecordedGitDir(REAL_ROOT)]);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', resolveRecordedGitDir(REAL_ROOT), 'node']);
+    expect(calls[0]?.text).toMatch(/runner_identity = \$4/);
     expect(calls[0]?.values?.[2]).toMatch(/\/\.git$/);
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]?.text).toMatch(/run_context = \$2/);
@@ -643,11 +646,12 @@ describe('reuse proofs loader', () => {
       runContext: 'green-checkpoint',
       files: ['pkg/a.test.ts', 'pkg/a.test.ts', ''],
       gitDir: GIT_DIR,
+      runnerIdentity: 'node',
     });
     expect(out.rows).toBe(1);
     expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR, ['pkg/a.test.ts']]);
-    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$4::text\[\]\)/);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR, 'node', ['pkg/a.test.ts']]);
+    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$5::text\[\]\)/);
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
   });
 
@@ -677,12 +681,22 @@ describe('reuse proofs loader', () => {
         return { rows: [{ test_file: 'pkg/a.test.ts' }, { test_file: 'pkg/b.test.ts' }] };
       },
     };
-    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', gitDir: GIT_DIR });
+    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint', gitDir: GIT_DIR, runnerIdentity: 'node' });
     expect(out).toEqual({ files: ['pkg/a.test.ts', 'pkg/b.test.ts'], rows: 2 });
-    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR]);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', GIT_DIR, 'node']);
     expect(calls[0]?.text).toMatch(/\(recorded_git_dir = \$3 OR recorded_git_dir IS NULL\)/);
     expect(calls[0]?.text).toMatch(/SELECT DISTINCT test_file/);
     expect(calls[0]?.text).not.toMatch(/executed_modules|read_paths/);
+  });
+
+  it.each([undefined, null, '', '  '])('does not read unknown runtime identity %s', async (runnerIdentity) => {
+    const query = vi.fn(async () => ({ rows: [row()] }));
+    const options = { client: { query }, workspaceName: '@x/w', runContext: 'green-checkpoint',
+      gitDir: GIT_DIR, runnerIdentity };
+    expect(await loadReuseProofs(options)).toEqual({ proofs: new Map(), rows: 0 });
+    expect(await loadReuseProofFiles(options)).toEqual({ files: [], rows: 0 });
+    expect(await loadExecutedSourceMap({ ...options, repoRoot: ROOT })).toEqual({ map: new Map(), rows: 0 });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('loadPassDurations reads the newest CI PASS per file, and drops unusable durations (P-013)', async () => {

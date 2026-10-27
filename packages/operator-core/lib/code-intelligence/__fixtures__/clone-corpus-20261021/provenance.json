@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "plan": "code-intel-reuse-signals-2026-10-21",
+  "workItem": "WI-6554700010021936",
+  "purpose": "Prerequisite-only frozen historical regression oracle. Not a clone-index implementation or an implementation acceptance verdict.",
+  "decision": "D-012",
+  "rubricRevision": 5,
+  "independentApproval": "thread-post:1198490",
+  "sourceEvidence": [
+    "thread-post:1197880",
+    "thread-post:1198228",
+    "thread-post:1198464",
+    "thread-post:1198482"
+  ],
+  "originalInputIdentity": "UNPROVEN: the original working tree had no complete saved input manifest. This is the approved reconstructed historical regression oracle, never a current-tree replacement.",
+  "candidateCommit": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+  "originalSession": "2589f593-aa14-4892-9abd-c152eca07a4d",
+  "originalArchiveSha256": "35e07a12f3825dab44bc18012515d5637b149454cf755660ecadb86ac5ad1208",
+  "archivedTools": {
+    "probeWrite": "toolu_018ssraVKDWDBSkGb6vDb5jE",
+    "probeLaunch": "toolu_016UkmLyJ4owYXqMFPFRUqa3",
+    "postfilter": "toolu_01WN2TTL4FJf4vizprW7Dta3"
+  },
+  "minMass": 80,
+  "compilerVersion": "6.0.2",
+  "selectedPaths": 10339,
+  "submodulePins": 39,
+  "rawFamilies": 327,
+  "filteredFamilies": 164,
+  "filteredMembers": 404,
+  "governorMembers": 10,
+  "countTolerance": 0,
+  "originalQualifyingFunctions": 36185,
+  "historicalQualifyingFunctions": 36183,
+  "censusDifference": 2,
+  "manifestErratum": {
+    "issue": "EI-26742762259332807",
+    "supplement": "submodule-pin-corrections.json",
+    "finding": "One original submodule pin has 39 hex characters; the separate correction is anchored in the candidate superproject gitlink and materialized submodule HEAD. Preserve the original manifest digest."
+  },
+  "postfilter": {
+    "excludePathRegex": "(^|/)_retired/|^templates/|/template-kit/|^apps/operator/app/",
+    "retain": "Remove excluded members, then retain groups with at least two distinct file paths. Preserve labels and masses; canonicalize filtered ordering only."
+  },
+  "reconstruction": {
+    "materializeCommand": "npm run lint:as-committed -- --materialize-only --ref=7395c59c0032f6810f995a1ecf7966c92ac83448 --keep",
+    "verifyCommand": "node packages/operator-core/lib/code-intelligence/__fixtures__/clone-corpus-20261021/reconstruct.cjs --root <materialized-root>",
+    "replayCommand": "node packages/operator-core/lib/code-intelligence/__fixtures__/clone-corpus-20261021/reconstruct.cjs --root <materialized-root> --run-probe",
+    "sideEffect": "--run-probe executes the unchanged archived probe in the verified historical materialization and writes its original .papercusp/scratch/dup-probe-out.json output. Requires pinned TypeScript installation. Never run against canonical staging."
+  },
+  "artifacts": {
+    "original-probe.mjs": {
+      "sha256": "4ba94672525ef5670cca480392f7830c128383d53f8f6e5125eb933226bf4e04",
+      "bytes": 5366
+    },
+    "original-output.json": {
+      "sha256": "fe06ebbe35adb9b434a7d4eaa7a50b9af411467e135c9d894f5883f35e9fb187",
+      "bytes": 83253
+    },
+    "historical-output.json": {
+      "sha256": "a53173474d977680a08bbb8f5797cf9d547cb3cf5db2a860c6f371e88cae6263",
+      "bytes": 83253
+    },
+    "candidate-manifest-v2.json": {
+      "sha256": "5b818f5451a60b02263da5d672c5ef82306d8d563d580d7c2539d87367351e21",
+      "bytes": 2911921
+    },
+    "original-filtered-family-labels.json": {
+      "sha256": "257b5054da620c062a815b03de02fd0dc6b82e2f18cd2630373b5a7763ae8ec3",
+      "bytes": 35216
+    },
+    "submodule-pin-corrections.json": {
+      "sha256": "304473cd3f115c4855cf204223404a57fc9ce9c24de179c0563fac41da2b87f0",
+      "bytes": 1023
+    },
+    "governor-sources.json": {
+      "sha256": "15e8aa54a4b048d7241343eef46e15d4f291935d4847d2c167cbac12ed7bc1a5",
+      "bytes": 38206
+    }
+  }
+}

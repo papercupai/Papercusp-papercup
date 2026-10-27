@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "r2gcs-current-local-tests-v1",
+  "recordedAt": "2026-10-24T05:26:05.899527+00:00",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "workItems": [
+    "WI-6554700010025562",
+    "WI-6554700010025563"
+  ],
+  "runs": [
+    {
+      "filePath": "libs/generic/artifact-registry/src/gcs-credentials.test.ts",
+      "runId": 21868563,
+      "receiptId": "9c549a29-d6b5-40f3-9708-6c433ba2c484",
+      "status": "pass",
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "unit",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "609c08b674585c82c13b104cf4534397c2ed60b582113fb1bb1b759bbc6448f1",
+      "map": "/tmp/f9dd6-migration-current-executed.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "67272b933049803dd0dd79dc134c92adecd674c6a9d3b5c194b9c68829bf3ca1"
+      },
+      "sourceEvidenceStatus": "stable",
+      "sourceEvidenceReasons": []
+    },
+    {
+      "filePath": "libs/generic/artifact-registry/src/gcs-object-store.test.ts",
+      "runId": 21868564,
+      "receiptId": "b31ca0e8-a17a-4c71-b988-0068e8fec94b",
+      "status": "pass",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "unit",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "5e3eee8e98f42f5078e64c020b82de48f7d40f474b84b7b866c79e156fbd57ed",
+      "map": "/tmp/f9dd6-migration-current-executed.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "67272b933049803dd0dd79dc134c92adecd674c6a9d3b5c194b9c68829bf3ca1"
+      },
+      "sourceEvidenceStatus": "stable",
+      "sourceEvidenceReasons": []
+    },
+    {
+      "filePath": "apps/operator-public/src/routes/release-files.test.ts",
+      "runId": 21868566,
+      "receiptId": "f532b87e-6f2a-4401-bde8-0ea207ba2946",
+      "status": "pass",
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "integration",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "43cec6660251cce28c5458870df6e3f8b74b560984a69cf7211082f27a2f47e1",
+      "map": "/tmp/f9dd6-migration-current-executed.1.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "99c45781b2e35f2f2f3517e2f3f1d0f09e483100d256c06fb637977052cf4e02"
+      },
+      "sourceEvidenceStatus": "unknown",
+      "sourceEvidenceReasons": [
+        "source-map-unavailable:apps/operator-public/src/attestation-trusted-root.json"
+      ]
+    },
+    {
+      "filePath": "apps/operator-public/src/routes/gcs-storage.test.ts",
+      "runId": 21868567,
+      "receiptId": "3e7ec314-04cf-45ca-8ba1-1768c7a11a34",
+      "status": "pass",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "integration",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "8fa16ad081e1d0c05a864eb103ec436de1701a382f67d6383c6a695506ab71f7",
+      "map": "/tmp/f9dd6-migration-current-executed.1.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "99c45781b2e35f2f2f3517e2f3f1d0f09e483100d256c06fb637977052cf4e02"
+      },
+      "sourceEvidenceStatus": "unknown",
+      "sourceEvidenceReasons": [
+        "source-map-unavailable:apps/operator-public/src/attestation-trusted-root.json"
+      ]
+    },
+    {
+      "filePath": "apps/operator-public/src/routes/workspace-host-artifacts.test.ts",
+      "runId": 21868568,
+      "receiptId": "2b9a2868-cbf9-4740-8233-6cce1f253956",
+      "status": "pass",
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "integration",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "0a7581252122f3dcc92bac92b0b76e29352e5c2ad4ebcabd77cc6130aa9307a1",
+      "map": "/tmp/f9dd6-migration-current-executed.1.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "99c45781b2e35f2f2f3517e2f3f1d0f09e483100d256c06fb637977052cf4e02"
+      },
+      "sourceEvidenceStatus": "unknown",
+      "sourceEvidenceReasons": [
+        "source-map-unavailable:apps/operator-public/src/attestation-trusted-root.json"
+      ]
+    },
+    {
+      "filePath": "apps/papercusp-publish/src/archive-storage.test.ts",
+      "runId": 21868572,
+      "receiptId": "370279d0-896b-4b3b-9269-d87bf0c53bcd",
+      "status": "pass",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "integration",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "26b7a61aae6b0916631ec23ac5eef5934784aff03d818067e67ff57df83f19de",
+      "map": "/tmp/f9dd6-migration-current-executed.2.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "976f4bde0930966d7e016b5de827cf810a62a2eff7d8a1785ec34488ee208381"
+      },
+      "sourceEvidenceStatus": "stable",
+      "sourceEvidenceReasons": []
+    },
+    {
+      "filePath": "scripts/recover-release.test.ts",
+      "runId": 21868575,
+      "receiptId": "8711940f-9bdc-465e-a041-24acfe659f28",
+      "status": "pass",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "testLayer": "unit",
+      "harnessSlug": "papercusp",
+      "testFileSha256AfterRun": "601d1f86e6034bf49a74c130b45d60cfe751b61857b0f0b18836c2efe3a38e59",
+      "map": "/tmp/f9dd6-migration-current-executed.3.json",
+      "completionIntegrity": {
+        "schemaVersion": 1,
+        "sha256": "85e6572188a34d35332dc343e2e17b1643ccb0de93098eb673179cc76467639e"
+      },
+      "sourceEvidenceStatus": "stable",
+      "sourceEvidenceReasons": []
+    }
+  ],
+  "totals": {
+    "files": 7,
+    "passed": 62,
+    "failed": 0,
+    "skipped": 0
+  },
+  "runner": {
+    "exitCode": 0,
+    "resultLine": "TEST_FILE_RESULT requested=7 executed=7 matched=7 status=passed head=4fd59cac27 uncommittedPaths=5/7 provenance=stamped startedAt=2026-10-24T05:20:45.692Z childSubstituted=0 skippedTests=0",
+    "log": "/tmp/f9dd6-migration-current.log",
+    "receipts": "/tmp/f9dd6-migration-current-receipts.jsonl"
+  },
+  "acceptance": {
+    "canonicalAcceptance": false,
+    "reason": "Working-tree proof. Three Worker integration rows retain the source-map-unavailable boundary for attestation-trusted-root.json; tracked as EI-26832934854302456. Source, config and final deployed acceptance remain separate."
+  }
+}

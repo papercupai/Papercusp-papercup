@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
 import { LEARNING_PRODUCERS } from '../../experiment/lifecycle-adapter';
 import {
   ANY_POT,
@@ -264,5 +265,74 @@ describe('PRODUCER_SILENCE_PROBES', () => {
     expect(claims('frontier:transfer-harness')).toEqual(['transfer']);
     expect(claims('dream:papercusp')).toEqual([]);
     expect(claims('blender:')).toEqual([]);
+  });
+});
+
+describe('calibration producer silence activity', () => {
+  const probe = PRODUCER_SILENCE_PROBES.calibration;
+
+  it('counts a resolved prediction as calibration activity', async () => {
+    const queries: string[] = [];
+    const resolvedAt = new Date('2026-10-21T04:50:06.000Z');
+    const sql = (async (parts: TemplateStringsArray) => {
+      queries.push(parts.join('?'));
+      return [{ last: resolvedAt }];
+    }) as unknown as Sql;
+
+    const output = await probe.readLastOutput(sql, 'ws');
+
+    expect(output).toEqual(new Map([[ANY_POT, resolvedAt.getTime()]]));
+    expect(queries[0]).toMatch(/greatest\s*\(\s*max\(created_at\)\s*,\s*max\(resolved_at\)/i);
+  });
+
+  it('does not report silence when there is no matured unresolved work', async () => {
+    const queries: string[] = [];
+    const params: unknown[][] = [];
+    const sql = (async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(parts.join('?'));
+      params.push(values);
+      return [{ has_due: false }];
+    }) as unknown as Sql;
+    const readIntentionalSilence = probe.readIntentionalSilence;
+
+    expect(readIntentionalSilence).toBeTypeOf('function');
+    if (!readIntentionalSilence) return;
+
+    const probeSilence = await readIntentionalSilence(sql, 'ws', NOW);
+    const query = queries[0]?.toLowerCase() ?? '';
+    expect(query).toContain('resolved_at is null');
+    expect(query).toContain('horizon_ts <=');
+    expect(params[0]).toContain(new Date(NOW).toISOString());
+    expect(probeSilence.get(ANY_POT)).toBe('no matured unresolved calibration predictions are due');
+
+    const verdict = producerSilenceVerdict(facts({
+      loops: [loop('calibration-markets', 'papercusp')],
+      routines: [{ name: 'bp-singleton-calibration-0', installSlug: '@singleton', active: true }],
+      lastOutputMs: new Map([['calibration:papercusp', NOW - 8 * 24 * H]]),
+      intentionalSilence: new Map([['calibration:' + ANY_POT, probeSilence.get(ANY_POT)!]]),
+    }));
+
+    expect(verdict.signals).toEqual([]);
+    expect(verdict.checked[0]?.disposition).toBe('intentionally-gated');
+  });
+
+  it('keeps the alert when matured unresolved work is due', async () => {
+    const sql = (async () => [{ has_due: true }]) as unknown as Sql;
+    const readIntentionalSilence = probe.readIntentionalSilence;
+
+    expect(readIntentionalSilence).toBeTypeOf('function');
+    if (!readIntentionalSilence) return;
+
+    const intentionalSilence = await readIntentionalSilence(sql, 'ws', NOW);
+    const verdict = producerSilenceVerdict(facts({
+      loops: [loop('calibration-markets', 'papercusp')],
+      routines: [{ name: 'bp-singleton-calibration-0', installSlug: '@singleton', active: true }],
+      lastOutputMs: new Map([['calibration:papercusp', NOW - 8 * 24 * H]]),
+      intentionalSilence,
+    }));
+
+    expect(intentionalSilence).toEqual(new Map());
+    expect(verdict.signals).toHaveLength(1);
+    expect(verdict.checked[0]?.disposition).toBe('silent');
   });
 });

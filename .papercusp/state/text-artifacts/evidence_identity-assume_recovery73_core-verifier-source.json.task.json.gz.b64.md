@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery73/core-verifier-source.json.task.json.gz.b64"
+updated_at: 1792977558649
+_body: "content"
+---
+
+H4sIAAAAAAAC/21Ry07DMBC88xk5Y2InTR33BEJIcEBCqOLux6YxxLGxnRaE+Hc2lJaHuO3s7Ixn129F0j04+QAxWT8Wq2IL0XYWIskyPZEtK06LuboxyFG39Y87FgKjKgazY3ymIwR/733GgbL3DkonY+qJ7zqroQwyQNRTkJbsfHxKQX43U0B5sGhdV23FBEMUvYaUbgyM2eZX9BzsOL2sWioFN6ohTLVLslA1J6qWjDRU6cZ0i2XV8hWreCMWjUBXvYl+Cncy93OsKUE8S8OcZy4Jo5T+wOd7DHFrf4b7mjhiomTq/22SR68OhCb/nOlgjsn8bgRzuJcbc2lklmV2oTyeXnvn5GjIen3XXT/P2wwgxymgAqkwQAaDXTWZDaDNW2FAGrwTXAWv+9tUrBgXleBcNO2SV0f9Pcwx4HOgwpUpMr0dzOWU8bf+itt6L5bG2YwvXuRvcok0b/G/9Kd0He1mA/EwM07D8GV99WLzw36v3waiFTWn7+8nH3LsH06DAgAA

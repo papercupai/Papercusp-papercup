@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PassThrough } from 'node:stream';
 
 // ── side-effecting collaborators (all mocked) ──
 const { mugKettleSystemEnabled } = vi.hoisted(() => ({
@@ -233,19 +234,20 @@ vi.mock('node:child_process', async (orig) => {
 });
 
 function makeFakeChild(exitCode: number, options: { delayMs?: number } = {}) {
-  const stdoutCbs: Array<(d: unknown) => void> = [];
   const closeCbs: Array<(code: number) => void> = [];
   const child = {
     pid: 12345,
-    stdout: { on: (ev: string, cb: (d: unknown) => void) => ev === 'data' && stdoutCbs.push(cb) },
-    stderr: { on: (_ev: string, _cb: unknown) => {} },
+    // Match Node's decoding boundary used by the real invoke runner.
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
     on: (ev: string, cb: (code: number) => void) => {
       if (ev === 'close') closeCbs.push(cb);
     },
     kill: vi.fn(),
   };
   setTimeout(() => {
-    stdoutCbs.forEach((cb) => cb(Buffer.from('decision line\n')));
+    child.stdout.end(Buffer.from('decision line\n'));
+    child.stderr.end();
     closeCbs.forEach((cb) => cb(exitCode));
   }, options.delayMs ?? 0);
   return child;

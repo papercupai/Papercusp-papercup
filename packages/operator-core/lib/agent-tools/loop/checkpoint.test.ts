@@ -727,6 +727,20 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
       ).toBe('last-fire-parked');
     });
 
+    it.each(['queued', 'loop-armed'])('EI-26768128228185632: %s cannot hide an exhausted dropped delivery', (lastDeliveryOutcome) => {
+      expect(classifyLoopNextWake(loop({
+        lastDeliveryOutcome,
+        lastWakeStatus: 'dropped',
+        lastWakeError: 'loop turn delivery remained parked and exhausted 8 attempts: parked for a durable retry, never a second process',
+        lastFiredAt: '2026-10-23T09:48:56.876Z',
+        lastWakeAt: '2026-10-23T11:04:40.838Z',
+        lastLoopTurnAt: null,
+        lastFailedFireLoopTurnCompletedAt: null,
+        nextFireAt: null,
+        parked: true,
+      }))).toEqual({ guaranteed: false, reason: 'last-fire-parked' });
+    });
+
     it('still guarantees when the last fire was delivered, or its park already holds a durable retry', () => {
       expect(classifyLoopNextWake(loop({ lastWakeStatus: 'delivered', lastWakeError: null })).guaranteed).toBe(true);
       expect(

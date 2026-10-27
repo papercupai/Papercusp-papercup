@@ -13,6 +13,8 @@ import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
 import { WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim, type SqlClient } from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
+const GOVERNED_PROCESS_POOL_PURPOSE = 'governed-process';
+const GOVERNED_PROCESS_ACQUIRE_POOL = `org-admin-${GOVERNED_PROCESS_POOL_PURPOSE}`;
 
 /**
  * WI-10004631: every governed execution leases its receipt, and each lease used to
@@ -57,9 +59,54 @@ export type GovernedExecutionSettlement =
   | { readonly kind: 'release'; readonly actualDemand?: ResourceDemand }
   | { readonly kind: 'cancel'; readonly reason: string };
 
+export type GovernedExecutionAdmissionPhase = 'enqueue' | 'lease-receipt' | 'mark-running';
+export type GovernedExecutionAdmissionPhaseState = 'pending' | 'fulfilled' | 'rejected';
+export interface GovernedExecutionAdmissionPhaseEvent {
+  readonly phase: GovernedExecutionAdmissionPhase;
+  readonly state: GovernedExecutionAdmissionPhaseState;
+  readonly elapsedMs: number;
+}
+
+const detachedSettlements = new WeakSet<GovernedExecution>();
+
+/**
+ * Event emitters do not await their listeners. Observe settlement here and keep
+ * retrying the same terminal action, as the LSP admission controller does. A
+ * failed write leaves the durable lease charged; process death still leaves
+ * recovery to the queue's existing lease reconciliation.
+ */
+export function settleGovernedExecutionInBackground(
+  execution: GovernedExecution,
+  settlement: GovernedExecutionSettlement,
+): void {
+  // An error followed by exit must not replace a pending cancellation with a
+  // release, nor treat settleOnce's concurrent-call false as a completed write.
+  if (detachedSettlements.has(execution)) return;
+  detachedSettlements.add(execution);
+  let retryDelayMs = 1_000;
+  const settle = async (): Promise<void> => {
+    try {
+      if (settlement.kind === 'cancel') await execution.cancel(settlement.reason);
+      else await execution.finish(settlement.actualDemand);
+    } catch (error) {
+      console.error('[governed-execution] settlement failed; lease retained, retry pending', {
+        receiptId: execution.context.receiptId,
+        action: settlement.kind,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const timer = setTimeout(() => { void settle(); }, retryDelayMs);
+      timer.unref?.();
+      retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+    }
+  };
+  void settle();
+}
+
 export interface GovernedExecutionInput<T = unknown> {
   readonly owner: string;
   readonly leaseTtlMs?: number;
+  /** Observation-only phase timings; observer failures never change admission. */
+  readonly onAdmissionPhase?: (event: GovernedExecutionAdmissionPhaseEvent) => void;
   /**
    * Caller lifetime for this execution. When it aborts, the durable receipt
    * is cancelled even if the bounded operation itself does not understand
@@ -145,7 +192,9 @@ export async function withGovernedExecution<T>(
     signal.addEventListener('abort', onAbort, { once: true });
   }
   try {
-    execution = await beginGovernedExecution(request, { owner: input.owner, leaseTtlMs: input.leaseTtlMs }, deps);
+    execution = await beginGovernedExecution(request, {
+      owner: input.owner, leaseTtlMs: input.leaseTtlMs, onAdmissionPhase: input.onAdmissionPhase,
+    }, deps);
     // If the caller aborted while admission/lease acquisition was in flight,
     // the pre-begin cancel may have found no row yet. Re-issue cancellation
     // against the now-materialized execution before starting work.
@@ -204,6 +253,8 @@ export interface GovernedOperationInput<T = unknown> {
   readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
   readonly idempotencyKey?: string;
   readonly leaseTtlMs?: number;
+  /** Observation-only timings, including time before the operation can start. */
+  readonly onAdmissionPhase?: GovernedExecutionInput<T>['onAdmissionPhase'];
   /** Cancel the durable receipt when the caller abandons this operation. */
   readonly signal?: AbortSignal;
   /**
@@ -240,6 +291,7 @@ export function runGovernedOperation<T>(
   const executionInput = {
     owner: input.owner,
     leaseTtlMs: input.leaseTtlMs,
+    onAdmissionPhase: input.onAdmissionPhase,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.settle ? { settle: input.settle } : {}),
     ...(input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}),
@@ -254,10 +306,29 @@ export function runGovernedOperation<T>(
 
 export async function beginGovernedExecution<T = unknown>(
   request: AdmissionRequest,
-  input: Pick<GovernedExecutionInput<T>, 'owner' | 'leaseTtlMs'>,
+  input: Pick<GovernedExecutionInput<T>, 'owner' | 'leaseTtlMs' | 'onAdmissionPhase'>,
   deps: GovernedExecutionDeps,
 ): Promise<GovernedExecution> {
-  const outcome = await deps.governor.admit(request);
+  const reportPhase = (event: GovernedExecutionAdmissionPhaseEvent): void => {
+    try { input.onAdmissionPhase?.(event); } catch { /* diagnostics cannot own admission */ }
+  };
+  const measurePhase = async <R>(
+    phase: GovernedExecutionAdmissionPhase,
+    run: () => Promise<R>,
+  ): Promise<R> => {
+    const startedAt = performance.now();
+    const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
+    reportPhase({ phase, state: 'pending', elapsedMs: 0 });
+    try {
+      const result = await run();
+      reportPhase({ phase, state: 'fulfilled', elapsedMs: elapsedMs() });
+      return result;
+    } catch (error) {
+      reportPhase({ phase, state: 'rejected', elapsedMs: elapsedMs() });
+      throw error;
+    }
+  };
+  const outcome = await measurePhase('enqueue', () => deps.governor.admit(request));
   if (outcome.kind !== 'queued') {
     throw new Error(`governed execution requires a durable queued receipt; received '${outcome.kind}'`);
   }
@@ -304,11 +375,11 @@ export async function beginGovernedExecution<T = unknown>(
 
   let claim: AdmissionQueueLeaseClaim | null = null;
   try {
-    claim = await deps.driver.leaseReceipt({
+    claim = await measurePhase('lease-receipt', () => deps.driver.leaseReceipt({
       receiptId: outcome.receipt.receiptId,
       owner: input.owner,
       ttlMs: input.leaseTtlMs ?? GOVERNED_EXECUTION_LEASE_TTL_MS,
-    });
+    }));
   } catch (error) {
     throw await cancelStartFailure(
       error,
@@ -322,7 +393,7 @@ export async function beginGovernedExecution<T = unknown>(
 
   let running: Awaited<ReturnType<GovernedExecutionDeps['driver']['markRunning']>>;
   try {
-    running = await deps.driver.markRunning(claim.receiptId, claim.lease.leaseId);
+    running = await measurePhase('mark-running', () => deps.driver.markRunning(claim.receiptId, claim.lease.leaseId));
   } catch (error) {
     throw await cancelStartFailure(
       error,
@@ -455,7 +526,7 @@ export function governedProcessClientOptions(
 }
 
 function buildDefaultGovernedProcessClient(): GovernedProcessClient {
-  const { sql } = createDedicatedOrgPg('governed-process', governedProcessClientOptions());
+  const { sql } = createDedicatedOrgPg(GOVERNED_PROCESS_POOL_PURPOSE, governedProcessClientOptions());
   return {
     sql,
     async end() {
@@ -488,6 +559,7 @@ function governedProcessRuntime(workspaceId: string, namespace: string): Governe
       new PgAdmissionCutoverQueueStore({
         workspaceId,
         sql: processClient.sql,
+        acquirePool: GOVERNED_PROCESS_ACQUIRE_POOL,
         endedLeaseOwnerReuseMs: GOVERNED_EXECUTION_ENDED_OWNER_REUSE_MS,
       }),
       { namespace, leaseIdFactory: () => randomUUID() },

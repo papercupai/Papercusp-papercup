@@ -164,6 +164,17 @@ describe('session-confinement port — the deny', () => {
     expect(v?.decision).toBe('deny');
   });
 
+  it('admits only the declared hook origin to the released-operation continuation handler', async () => {
+    setSessionConfinementResolver(() => ({ ...CONFINEMENT, denyOutside: ['work_items:get'] }));
+    const toolName = 'sessions:continue-released-operation';
+    const hookCtx = { ...SUPERUSER_CTX,
+      requestOrigin: { transport: 'mcp', query: { origin: 'hook' } } } as UnifiedToolContext;
+    const modelCtx = { ...SUPERUSER_CTX,
+      requestOrigin: { transport: 'mcp', query: { origin: 'agent' } } } as UnifiedToolContext;
+    await expect(checkSessionConfinement({ toolName, ctx: hookCtx })).resolves.toBeNull();
+    await expect(checkSessionConfinement({ toolName, ctx: modelCtx })).resolves.toMatchObject({ decision: 'deny' });
+  });
+
   it('passes the ctx to the resolver so it can key on the calling session', async () => {
     const resolver = vi.fn(() => CONFINEMENT);
     setSessionConfinementResolver(resolver);

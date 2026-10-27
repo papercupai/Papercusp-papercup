@@ -42,7 +42,8 @@ import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites,
 import type { ArmAnswer, FairCase } from './fair-comparison';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
-import { taskIdFromScopeUnit } from '../task-manager/types';
+import { isTerminalState, taskIdFromScopeUnit, type TaskRow } from '../task-manager/types';
+import { fairLspTasksObserved, fairObservedScopeCosts, qualifyFairProcessWitness, startFairProcessObserver } from './fair-process-observer';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 export interface FrozenFairInputs {
@@ -381,9 +382,12 @@ export async function verifyFairWorkerSource(readSource?:
     return (await run('git', ['-C', root, 'show', `HEAD:${path}`], { maxBuffer: 1 << 24 })).stdout;
   });
   for (const path of ['packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts',
-    'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts']) {
+    'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts',
+    'packages/operator-core/lib/code-intelligence/fair-process-observer.ts', 'scripts/lib/fair-process-observer.py']) {
     if (await read(path, 'working') !== await read(path, 'committed'))
-      throw new Error(`fresh worker source differs from committed child: ${path}; wait for a containing commit and use lint:as-committed`);
+      throw new Error(`fresh worker source differs from committed child: ${path}; ` +
+        'arm git-sync:await for this harness and end the editing turn so git-sync turn holds can clear; ' +
+        'after wake, verify a containing commit and use lint:as-committed');
   }
 }
 
@@ -484,14 +488,56 @@ export function createFairWorkerChannel(io: FairWorkerChannelIo) {
   return { receive, failAll, rpc, query };
 }
 
-/** Prove the payload scope is gone before removing a repetition's private files. */
+/** A competing terminal writer may finish first. Accept it only from the exact
+ * task, workspace and scope; an unavailable completion alone proves nothing. */
+export async function fairWorkerCompletion(
+  expected: { taskId: string; workspaceId: string; scopeUnit: string | null;
+    completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] },
+  readTerminal: (id: string) => Promise<Pick<TaskRow, 'taskId' | 'workspaceId' | 'scopeUnit' | 'state' | 'endedAt'> | null> =
+    async id => (await import('../task-manager/store')).getTask(id),
+): Promise<import('../task-manager/managed-spawn').ManagedSpawnCompletion> {
+  const outcome = await expected.completion();
+  if (outcome.status === 'recorded') return outcome;
+  const task = await readTerminal(expected.taskId);
+  if (task?.taskId === expected.taskId && task.workspaceId === expected.workspaceId &&
+      task.scopeUnit === expected.scopeUnit && task.endedAt && isTerminalState(task.state))
+    return { status: 'recorded' };
+  return outcome;
+}
+
+/** A missing counter is not an empty scope. Only ENOENT on the directory itself
+ * proves collection; a present but unreadable scope remains unknown. */
+export function fairScopeKernelTasks(cgroupPath: string, fs = {
+  readFile: (path: string) => readFileSync(path, 'utf8'),
+  isDirectory: (path: string) => statSync(path).isDirectory(),
+}): number | null {
+  if (!cgroupPath.startsWith('/') || cgroupPath === '/' ||
+      cgroupPath.split('/').some(part => part === '..' || part === '.')) return null;
+  const directory = absCgroupDir(cgroupPath);
+  try {
+    const text = fs.readFile(`${directory}/pids.current`).trim();
+    const value = /^\d+$/.test(text) ? Number(text) : NaN;
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch {
+    try { fs.isDirectory(directory); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0; }
+    return null;
+  }
+}
+
+/** Prove every observed payload scope has drained before removing private files. */
 export async function stopFairWorker(
-  { taskId, scopeUnit, exited, owned }: {
+  { taskId, scopeUnit, exited, completion, owned, cgroupPaths = [] }: {
     taskId: string | null; scopeUnit: string | null; exited: Promise<void> | null; owned: string;
+    cgroupPaths?: readonly string[];
+    completion?: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null;
   },
   loadControls: () => Promise<Pick<typeof import('../task-manager/control'), 'killTask' | 'killScopeUnit'>> =
     () => import('../task-manager/control'),
+  readKernelTasks: (cgroupPath: string) => number | null = fairScopeKernelTasks,
 ): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  const remaining = () => Math.max(0, deadline - Date.now());
   const { killScopeUnit, killTask } = await loadControls();
   if (taskId) {
     const outcome = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
@@ -499,15 +545,21 @@ export async function stopFairWorker(
       // A terminal ledger row can outlive its now-empty kernel scope.
       const scope = outcome.error === 'not_live' && scopeUnit
         ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
-      if (!scope || (!scope.ok && scope.error !== 'already_gone'))
-        throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained`);
+      if (!scope || (!scope.ok && scope.error !== 'already_gone')) {
+        // The controller detail distinguishes descendant, scope-resolution and
+        // surviving-process failures. Keep it in the printable error as well
+        // as its cause: test reporters may serialize only message and stack.
+        const controls = { task: outcome, scope };
+        throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained (${JSON.stringify(controls)})`,
+          { cause: controls });
+      }
     }
   }
   if (exited) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const drained = await Promise.race([exited.then(() => true),
-        new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
+        new Promise<boolean>(done => { timer = setTimeout(() => done(false), remaining()); })]);
       if (!drained) {
         // The transient systemd-run client can withhold its close event after
         // the registered payload scope has emptied. Verify that scope directly.
@@ -516,6 +568,33 @@ export async function stopFairWorker(
           throw new Error('fresh worker task failed to drain; isolated files retained');
       }
     } finally { clearTimeout(timer); }
+  }
+  if (completion) {
+    // ChildProcess.close fences the pipe, while managedSpawn's retained promise
+    // fences the asynchronous terminal write. Keep private evidence until both
+    // have finished; a delegated or failed write cannot certify cleanup.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const recorded = await Promise.race([completion(),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() =>
+          reject(new Error('fresh worker terminal persistence deadline; isolated files retained')), remaining()); })]);
+      if (recorded.status !== 'recorded') throw new Error(
+        `fresh worker terminal persistence ${recorded.status}: ${recorded.reason}; isolated files retained`);
+    } finally { clearTimeout(timer); }
+  }
+  const paths = [...new Set(cgroupPaths)];
+  if (taskId && paths.length === 0)
+    throw new Error('fresh worker kernel task scopes unavailable; isolated files retained');
+  for (;;) {
+    const pending = paths.flatMap(path => {
+      let kernelTasks: number | null;
+      try { kernelTasks = readKernelTasks(path); } catch { kernelTasks = null; }
+      return kernelTasks === 0 ? [] : [{ path, kernelTasks }];
+    });
+    if (pending.length === 0) break;
+    if (remaining() === 0) throw new Error(
+      `fresh worker kernel task drain deadline; isolated files retained (${JSON.stringify(pending)})`);
+    await new Promise(done => setTimeout(done, Math.min(25, remaining())));
   }
   await rm(owned, { recursive: true, force: true });
 }
@@ -529,8 +608,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
   const admitted = await buildArm(id);
   return { capabilities: admitted.capabilities, unavailable: admitted.unavailable, async create(rep) {
     const { managedSpawn } = await import('../task-manager/managed-spawn');
-    const { absCgroupDir, readProcessCgroupPath, sampleCgroup } = await import('../task-manager/cgroup-read');
-    const { deriveUserManagerRoot, scopeCgroupRelPath } = await import('../task-manager/types');
+    const { readProcessCgroupPath } = await import('../task-manager/cgroup-read');
+    const { deriveUserManagerRoot, scopeCgroupRelPath, newTaskId, scopeUnitForTask } = await import('../task-manager/types');
     await mkdir(join(BENCH, 'repetitions'), { recursive: true });
     const owned = await mkdtemp(join(BENCH, 'repetitions', `${id}-${rep}-`));
     const treeRoot = join(owned, 'tree'), home = join(owned, 'home');
@@ -539,7 +618,23 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
     let taskId: string | null = null;
     let cgroupPath: string | null = null;
     let scopeUnit: string | null = null;
-    const stop = () => stopFairWorker({ taskId, scopeUnit, exited, owned });
+    let completion: import('../task-manager/managed-spawn').ManagedSpawnResult['waitForCompletion'] | null = null;
+    let observer: Awaited<ReturnType<typeof startFairProcessObserver>> | null = null;
+    const observedScopes = new Set<string>();
+    const rememberScopes = (paths: readonly string[]) => {
+      for (const path of paths) if (path.startsWith('/') &&
+        !path.split('/').some(part => part === '..' || part === '.') &&
+        (path === cgroupPath || taskIdFromScopeUnit(basename(path)))) observedScopes.add(path);
+    };
+    const stop = async () => {
+      try {
+        if (observer) rememberScopes((await observer.sample()).witness?.cgroupPaths ?? []);
+      } finally {
+        try { await stopFairWorker({ taskId, scopeUnit, exited, completion, owned,
+          cgroupPaths: [...observedScopes, ...(cgroupPath ? [cgroupPath] : [])] }); }
+        finally { await observer?.stop(); }
+      }
+    };
     try {
       // Copy-on-write rather than hardlinks: freshness controls must never mutate
       // the frozen donor when they replace or delete original source bytes.
@@ -551,22 +646,31 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
       const before = await indexFileCensus([treeRoot, home], new Set());
       if (!before) throw new Error('fresh repetition source/dependency census unreadable');
       const baseline = new Set(before.map(file => file.path));
+      // Mint through the existing managedSpawn seam, then arm the observer
+      // BEFORE this scope or any of its launchers can exist.
+      const reservedTaskId = newTaskId();
+      const reservedPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)),
+        'test-run', scopeUnitForTask(reservedTaskId));
+      observer = await startFairProcessObserver(reservedPath, createFairWorkerChannel, fairWorkerCompletion);
       const workerArgv = ['--import', 'tsx', fileURLToPath(import.meta.url), 'worker', '--arm', id];
       const launched = await managedSpawn(process.execPath, workerArgv,
         { class: 'test-run', title: `fair comparison ${id} repetition ${rep}`,
           argv: [process.execPath, ...workerArgv],
           launchedBy: process.env.PAPERCUSP_SID ?? 'human', workItemId: 'WI-10007889',
           runtimeMaxSec: FAIR_WORKER_RUNTIME_MAX_SEC },
-        { requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
+        { taskId: reservedTaskId, requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
           env: { ...process.env, P017_BENCH: BENCH, P017_TREE: treeRoot, P017_HOME: home,
             P017_VENDOR_HOME: VENDOR_HOME, P017_FROZEN: resolve(frozenPath) } } });
       child = launched.child;
       taskId = launched.taskId;
       scopeUnit = launched.scopeUnit;
+      completion = () => fairWorkerCompletion({ taskId: launched.taskId, scopeUnit: launched.scopeUnit,
+        workspaceId: launched.row.workspaceId, completion: launched.waitForCompletion });
       exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve()
         : new Promise(done => child!.once('close', () => done()));
       if (!launched.confined || !launched.scopeUnit) throw new Error('fresh worker task cgroup unavailable');
       cgroupPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit);
+      if (cgroupPath !== reservedPath) throw new Error('observed worker scope differs from reserved task');
       let buffer = '';
       const channel = createFairWorkerChannel({
         send: (line, sent) => { child!.stdin!.write(line, sent); },
@@ -607,21 +711,32 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         index: () => rpc('index'), query: kase => channel.query(kase), close },
       nativeGraphQuery: kase => rpc<Awaited<ReturnType<typeof replayFrozenGraphTask>>>('native-graph', kase),
       async sampleResources(_stage: ResourceStage) {
-        const sample = sampleCgroup(absCgroupDir(confinedPath));
+        const lspTasks = id === 'lsp-query' ? await rpc<{ taskId: string; rootPath: string }[]>('resource-tasks') : [];
+        const observation = await observer!.sample();
+        const qualified = observation.witness ? qualifyFairProcessWitness(observation.witness,
+          { cgroupPath: confinedPath, payloadPid: payload.pid, payloadIdentity: payload.identity })
+          : { peakChildProcesses: null, unknown: observation.unknown };
         const processCensus = fairProcessCensus(censusIdentity);
         if (processCensus.childProcesses !== null)
           observedChildProcessesMax = Math.max(observedChildProcessesMax ?? 0, processCensus.childProcesses);
         const indexFiles = await indexFileCensus([treeRoot, home], baseline);
-        const unknown: string[] = [...processCensus.unknown, 'descendant-process-lifetime-peak-not-measured'];
-        if (sample.memoryBytes === null) unknown.push('memory.current unreadable');
-        if (sample.peakMemoryBytes === null) unknown.push('memory.peak unreadable');
+        const costs = fairObservedScopeCosts(observation.witness?.cgroupPaths ?? [], confinedPath);
+        rememberScopes(costs.scopes.map(scope => scope.cgroupPath));
+        const unknown: string[] = [...processCensus.unknown, ...qualified.unknown, ...costs.unknown];
+        if (qualified.peakChildProcesses === null) unknown.push('descendant-process-lifetime-peak-not-measured');
+        if (costs.memoryCurrentBytes === null) unknown.push('memory.current unreadable');
+        if (costs.memoryPeakBytes === null) unknown.push('memory.peak unreadable');
         if (indexFiles === null) unknown.push('index census unreadable');
         // LSP adapters may start independently managed server tasks outside this
         // scope. A task-only counter must not certify those costs as included.
-        if (id === 'lsp-query') unknown.push('language-server-task-costs-not-in-worker-scope');
+        if (id === 'lsp-query' && !fairLspTasksObserved(treeRoot, lspTasks,
+          observation.witness?.cgroupPaths ?? [], qualified.peakChildProcesses))
+          unknown.push('language-server-task-costs-not-in-worker-scope');
         unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
-        return { sampledAt: new Date().toISOString(), memoryCurrentBytes: sample.memoryBytes,
-          memoryPeakBytes: sample.peakMemoryBytes, peakChildProcesses: null,
+        return { sampledAt: new Date().toISOString(), memoryCurrentBytes: costs.memoryCurrentBytes,
+          memoryPeakBytes: costs.memoryPeakBytes, memoryPeakBasis: costs.memoryPeakBasis,
+          scopeCosts: costs.scopes, peakChildProcesses: qualified.peakChildProcesses,
+          processObservation: observation,
           processCensus, observedChildProcessesMax, indexFiles, unknown };
       } };
     } catch (error) {
@@ -644,6 +759,7 @@ async function worker(id: FairArmId): Promise<void> {
         throw new Error('worker query before frozen source indexing');
       const control = request.method === 'query' ? await prepareFrozenControl(treeOf(id), request.kase!, inputs) : null;
       const result = request.method === 'native-graph' ? await replayFrozenGraphTask(treeOf(id), request.kase!, inputs) :
+        request.method === 'resource-tasks' ? (await import('./lsp-adapter')).lspClientInventory().map(({ taskId, rootPath }) => ({ taskId, rootPath })) :
         request.method === 'identity' ? { pid: process.pid, identity: readProcessIdentity(process.pid) } :
         request.method === 'index' ? await arm.index() : request.method === 'query' ?
         { ...await arm.query(request.kase!), control }

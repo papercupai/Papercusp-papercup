@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery69/production-phases-execute-lifecycle.json"
+updated_at: 1792972526739
+_body: "content"
+---
+
+{"schemaVersion":1,"runId":"20261025T234422Z-4175562","host":"main-server-Precision-7865-Tower","observedAt":"2026-10-25T23:44:37.622Z","observer":{"pid":4175562,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:12297910","parentPid":4160624},"supervisor":{"pid":1348,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:12300253","parentPid":4175562},"worker":{"pid":11577,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:12301238","parentPid":1348},"database":{"pid":3587,"identity":"linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:12300503","parentPid":1348},"argv":["/home/marsh-office/.local/node25/bin/node","--import","/mnt/data/tmp/verifier-command-nuhsy3/invoked-source/scripts/lib/isolated-runtime-start.mjs","--import","./scripts/lib/committed-source-loader.mjs","scripts/test-files.mjs","apps/operator/lib/psu-identity-assume-native.integration.test.ts","--testNamePattern=^uses production custody and routed responsibilities through the installed native handoff \\(native-resume\\)$"],"cwd":"/mnt/data/tmp/verifier-command-nuhsy3/invoked-source","workspace":"test-runtime-69060c07-faf","runtimeRoot":"/tmp/pcv/papercusp-test-runtime-ExHzyH","dataDir":"/tmp/pcv/papercusp-test-runtime-z8ZyER/tmp/papercusp-test-pg-FVhaAg","pgPort":37211,"ended":{"kind":"isolated-runtime-end","childPid":11577,"exitCode":0,"signal":null,"runtimeRemoved":true,"pgDataRemoved":true,"observedAt":"2026-10-25T23:46:49.715Z"}}

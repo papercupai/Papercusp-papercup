@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "plan": "shared-search-restart-papercusp-2026-10-22",
+  "item": "P-001",
+  "workItemId": "WI-6554700010022135",
+  "repairItem": "EI-26979212698172588",
+  "scope": "bounded actual personal/social projected dispatch; explicit-null identity at social reader boundary",
+  "test": {
+    "path": "packages/operator-core/lib/agent-tools/personal/search-freshness.integration.test.ts",
+    "sha256": "e55854ef6f74c818bbf451c63364034fcb9d4e18751f17e49e436b7edfd94136",
+    "nativeTestRunId": 22052393,
+    "receiptId": "db12685f-f246-463d-806a-06fa5fa42ada",
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "nativeExecSessionId": 65224,
+    "nativeExecExitCode": 0,
+    "commitSha": "f9439c620fe57d41387a5c7d2a9d13f83174a2fe",
+    "worktreeDirty": true
+  },
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-personal-social-freshness-protocol-20261025.json",
+    "sha256": "59774d28ce2c9f16f4dcda66b739a0b33c6556eb22400d315f86322ee166ce77"
+  },
+  "repair": {
+    "rootCause": "Social search projected raw vault hits without running discloseDocuments; unlike personal search/social read, it neither labelled nor ledgered restricted delivery.",
+    "fix": "Disclose only mintable social rows in the read transaction, propagate disclosureSubject identity and preserve labels/counts/withholding.",
+    "preFixRun": 22052350,
+    "preFixPassed": 4,
+    "preFixFailed": 2,
+    "firstFixedRun": 22052378,
+    "firstFixedPassed": 5,
+    "firstFixedFailed": 1,
+    "fixtureCorrection": "Null UI identity still resolved the host session. The explicit-null control now calls the real reader with agentOwnerId:null.",
+    "supportingRuns": [
+      {
+        "id": 22052377,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "id": 22052380,
+        "passed": 27,
+        "failed": 0,
+        "skipped": 0
+      }
+    ]
+  },
+  "declaredCases": [
+    "projected-fields",
+    "content-and-candidates",
+    "grant-transitions",
+    "personal-disclosure",
+    "social-disclosure",
+    "social-unattributed-withholding"
+  ],
+  "executedCases": [
+    "projected-fields",
+    "content-and-candidates",
+    "grant-transitions",
+    "personal-disclosure",
+    "social-disclosure",
+    "social-unattributed-withholding"
+  ],
+  "unexecutedCases": [],
+  "receiptCount": 15,
+  "returnedFieldComparisons": 56,
+  "oracleResults": {
+    "unknown": 56
+  },
+  "qualifiedFieldClaims": 0,
+  "sourcePinsCheckedBeforeAndAfter": 13,
+  "databaseCleanup": "dropped",
+  "artifacts": [
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/red-20261025.receipt.json",
+      "bytes": 6990,
+      "sha256": "3170b108c8a6079f9387e11cd4253734d926afd97dd78e570c53031e65f4f66e"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/red-20261025.witness.json",
+      "bytes": 230080,
+      "sha256": "777e4243c22f363547ac99eef2009c91d33e25af462d4819edc84e7530fbd34f"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/red-20261025.log",
+      "bytes": 871437,
+      "sha256": "22518ac6d89183711e2c7c67a452fe237554a007317ecd0ef8c0ff2e16954e37"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/green-20261025.receipt.json",
+      "bytes": 23067,
+      "sha256": "d4fa5823c6b187e028f953c7410ecc5286da3861c9a79eb1c25fa70b9d54a0a2"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/green-20261025.witness.json",
+      "bytes": 230970,
+      "sha256": "b9d20ff68db3d9c3089d8b8513220fe25cd19429be04822a3da5409b7f805395"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/green-20261025.log",
+      "bytes": 891185,
+      "sha256": "dc4be218447eab55f6275e0800c798a08d45512503dd2ad0144fd86d4c40adfc"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/fixed-20261025.receipt.json",
+      "bytes": 4222,
+      "sha256": "5a6218cbc1d195a8ce7998132e5b54dffc3073cc5ce52efe721358151ba6a8e7"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/fixed-20261025.witness.json",
+      "bytes": 214239,
+      "sha256": "4c4b358bb52c13aee83b001ebd5e977b2b2899ab0cc5b6040feb84ab9f4ddbf6"
+    },
+    {
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/fixed-20261025.log",
+      "bytes": 863367,
+      "sha256": "812934a39de33f711d6d75b3519376d2d3ab0f9563f769af96e1421aa53087cd"
+    }
+  ],
+  "readback": {
+    "fixedWitness": {
+      "pages": 11,
+      "completeEqual": true
+    },
+    "fixedReceipt": {
+      "pages": 1,
+      "completeEqual": true
+    },
+    "redReceipt": {
+      "pages": 1,
+      "completeEqual": true
+    },
+    "otherArtifacts": "complete saves accepted; not yet fully read back"
+  },
+  "limits": [
+    "Synthetic provider import and session-user/unavailable-embedding fixture seams.",
+    "Admin SQL injected; host authentication/RLS/full authority/runtime closure unmeasured.",
+    "No candidate/provider revision witness; all56 field oracles remain unknown.",
+    "Original dirty-source provenance retained; commitment does not upgrade original run.",
+    "Baseline quality/cost/budgets, acceptance and shipment remain open."
+  ],
+  "qualification": {
+    "qualifiedBaseline": false,
+    "rankingTreatment": false,
+    "shipped": false
+  }
+}

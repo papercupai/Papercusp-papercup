@@ -272,6 +272,25 @@ describe('fingerprintRepoFileSetAtCommit', () => {
     expect((await readCommittedFiles(root, commit, ['src/new.ts'])).get('src/new.ts')).toBeNull();
   });
 
+  it('uses the committed parent tree when a stale nested .git marker is not a gitlink', async () => {
+    const path = 'apps/operator/scripts/hooks/cc/ask-gate-mirror.sh';
+    mkdirSync(join(root, path, '..'), { recursive: true });
+    writeFileSync(join(root, path), '#!/bin/sh\nprintf hook\\n\n');
+    git(root, 'add', path);
+    git(root, 'commit', '-q', '-m', 'add hook under ordinary tree');
+    const commit = git(root, 'rev-parse', 'HEAD');
+
+    // A removed nested checkout can leave a .git marker behind in a reused measurement root.
+    writeFileSync(join(root, 'apps/operator/.git'), 'gitdir: stale\n');
+
+    const measured = await fingerprintRepoFileSetAtCommit(root, commit, [path]);
+    expect(measured.files.map((file) => file.path)).toEqual([path]);
+    expect(measured.files[0]?.sha256).toBe(sha256(path));
+    await expect(
+      listCommittedGlobMatches(root, commit, ['apps/operator/**/*.sh'], { maxMatches: 32, maxDepth: 16 }),
+    ).resolves.toEqual([path]);
+  });
+
   it.each([
     { kind: 'unterminated record', corrupt: (output: string) => output.slice(0, -1) },
     { kind: 'malformed header', corrupt: () => 'unreadable tree record\0' },

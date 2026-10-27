@@ -8,15 +8,22 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import {
   applyMcpBuildSelector,
+  CURRENT_BUILD_DEFAULT_TOOLS,
   isStagingTarget,
   MCP_BUILD_META_KEY,
   normalizeMcpBuild,
   selectTargetsForBuild,
+  applyMcpWorkerSelector,
+  selectWorkerForTarget,
 } from "./build-routing";
-import { createMcpProxy, staticMcpProxyTargets, type McpProxyTarget } from "./proxy";
+import { createMcpProxy, staticMcpProxyTargets, readMcpWorkerTargets, type McpProxyTarget } from "./proxy";
 
 const call = (
   name: string,
@@ -167,10 +174,10 @@ function freePort(): Promise<number> {
     });
   });
 }
-function post(p: number, body: string): Promise<{ status: number; body: string }> {
+function post(p: number, body: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const r = http.request(
-      { host: "127.0.0.1", port: p, method: "POST", path: "/api/mcp", headers: { "content-type": "application/json" } },
+      { host: "127.0.0.1", port: p, method: "POST", path: "/api/mcp", headers: { "content-type": "application/json", ...headers } },
       (res) => {
         const b = createTextCollector(res);
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b.text() }));
@@ -291,5 +298,268 @@ describe("MCP proxy build routing (end to end)", () => {
     expect(r.status).toBe(400);
     expect(JSON.parse(r.body).error).toBe("build_selector_conflict");
     expect(seen).toEqual([]);
+  });
+});
+
+// gate-repair-plane-on-current-build-2026-10-15 P-003 (D-004): release:repair-queue runs
+// the current build's logic whichever way it reaches this proxy.
+describe("current-build default for release:repair-queue", () => {
+  it("lists release:repair-queue as a current-build default tool", () => {
+    expect(CURRENT_BUILD_DEFAULT_TOOLS).toContain("release:repair-queue");
+  });
+
+  it("routes a selector-less repair-queue call to staging, directly or wrapped in tools:invoke", () => {
+    const forms = [
+      call("release:repair-queue", { op: "admit", paths: ["a.ts"] }),
+      call("release_repair-queue", { op: "status" }),
+      call("tools:invoke", { name: "release:repair-queue", args: { op: "admit" } }),
+      call("tools_invoke", JSON.stringify({ name: "release_repair_queue", args: {} })),
+    ];
+    for (const form of forms) {
+      const r = applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true });
+      expect(r.kind).toBe("routed");
+      if (r.kind !== "routed") continue;
+      expect(r.build).toBe("staging");
+      expect(r.defaultedTools).toEqual([expect.stringMatching(/^release:repair:?queue$/)]);
+      expect(JSON.parse(r.body.toString("utf8")).params._meta[MCP_BUILD_META_KEY]).toBe("staging");
+    }
+  });
+
+  it("routes a selector-less code:run whose script names the verb — nested calls run in-process on the code:run host", () => {
+    const forms = [
+      call("code:run", { script: "return await tools.release.repairQueue({ op: 'status' });" }),
+      call("code_run", { script: "return await tools.release['repair-queue']({ op: 'admit', paths: ['a.ts'] });" }),
+      call("tools:invoke", { name: "code:run", args: { script: "await tools.release.repair_queue({op:'status'})" } }),
+      call("code:run", JSON.stringify({ script: "const q = await tools.release.repairQueue({}); return q;" })),
+    ];
+    for (const form of forms) {
+      const r = applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true });
+      expect(r.kind).toBe("routed");
+      if (r.kind !== "routed") continue;
+      expect(r.build).toBe("staging");
+      expect(r.defaultedTools).toEqual([expect.stringMatching(/^release:repair:?queue$/)]);
+    }
+  });
+
+  it("leaves a code:run that never names a default verb unrouted, and honours an explicit selector on it", () => {
+    const plain = call("code:run", { script: "return await tools.work_items.get({ id: 'WI-1' });" });
+    expect(applyMcpBuildSelector(buf(plain), { defaultToCurrentBuild: true }).kind).toBe("none");
+    expect(applyMcpBuildSelector(buf(call("code:run", {})), { defaultToCurrentBuild: true }).kind).toBe("none");
+    const explicit = call("code:run", { script: "await tools.release.repairQueue({})", build: "main" });
+    const r = applyMcpBuildSelector(buf(explicit), { defaultToCurrentBuild: true });
+    expect(r).toMatchObject({ kind: "routed", build: "main" });
+    expect(r.kind === "routed" && r.defaultedTools).toBeFalsy();
+  });
+
+  it("never overrides an explicit selector", () => {
+    const r = applyMcpBuildSelector(buf(call("release:repair-queue", { op: "admit", build: "main" })), {
+      defaultToCurrentBuild: true,
+    });
+    expect(r).toMatchObject({ kind: "routed", build: "main" });
+    expect(r.kind === "routed" && r.defaultedTools).toBeFalsy();
+  });
+
+  it("leaves repair-queue unrouted when the default is off, and other tools unrouted when it is on", () => {
+    expect(applyMcpBuildSelector(buf(call("release:repair-queue", { op: "admit" }))).kind).toBe("none");
+    expect(applyMcpBuildSelector(buf(call("release:cut", { repair: true })), { defaultToCurrentBuild: true }).kind).toBe("none");
+    expect(
+      applyMcpBuildSelector(buf(call("tools:invoke", { name: "release:deploy", args: { why: "repair" } })), {
+        defaultToCurrentBuild: true,
+      }).kind,
+    ).toBe("none");
+  });
+
+  it("treats a defaulted call in a batch with an explicit main call as a conflict", () => {
+    const r = applyMcpBuildSelector(
+      buf([call("release:repair-queue", { op: "admit" }, undefined, 1), call("c:d", { build: "main" }, undefined, 2)]),
+      { defaultToCurrentBuild: true },
+    );
+    expect(r).toMatchObject({ kind: "conflict", builds: ["main", "staging"] });
+  });
+
+  it("end to end: a repair-queue call through the :9071-shaped proxy runs on staging, never main", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const staging = await listen(stubOperator("staging", seen));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+
+    const direct = await post(p, JSON.stringify(call("release:repair-queue", { op: "admit", paths: ["x.ts"] })));
+    const wrapped = await post(p, JSON.stringify(call("tools:invoke", { name: "release:repair-queue", args: {} }, undefined, 2)));
+    const other = await post(p, JSON.stringify(call("coord:presence", {}, undefined, 3)));
+    expect([direct.status, wrapped.status, other.status]).toEqual([200, 200, 200]);
+    expect(JSON.parse(direct.body).result.servedBy).toBe("staging");
+    expect(JSON.parse(wrapped.body).result.servedBy).toBe("staging");
+    expect(JSON.parse(other.body).result.servedBy).toBe("main");
+    expect(seen.map((s) => s.label)).toEqual(["staging", "staging", "main"]);
+    expect(JSON.parse(seen[0]!.body).params._meta[MCP_BUILD_META_KEY]).toBe("staging");
+  });
+
+  it("end to end: build:'main' is the explicit opt-out", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const staging = await listen(stubOperator("staging", seen));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+
+    const r = await post(p, JSON.stringify(call("release:repair-queue", { op: "status", build: "main" })));
+    expect(r.status).toBe(200);
+    expect(seen.map((s) => s.label)).toEqual(["main"]);
+  });
+
+  it("end to end: a proxy with no staging target (bg-host shape) keeps today's routing", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const bgHost = await listen(stubOperator("bg-host", seen));
+    const p = await proxyFor(() => [{ host: "127.0.0.1", port: port(bgHost), source: "static" }]);
+
+    const r = await post(p, JSON.stringify(call("release:repair-queue", { op: "admit" })));
+    expect(r.status).toBe(200);
+    expect(seen.map((s) => s.label)).toEqual(["bg-host"]);
+    const forwarded = JSON.parse(seen[0]!.body);
+    expect(forwarded.params._meta?.[MCP_BUILD_META_KEY]).toBeUndefined();
+  });
+
+  it("end to end: staging down answers staging_unavailable naming the default and never runs on main", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const stagingDown = await freePort();
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), stagingDown), 200);
+
+    const r = await post(p, JSON.stringify(call("release:repair-queue", { op: "admit", paths: ["y.ts"] })));
+    expect(r.status).toBe(503);
+    const body = JSON.parse(r.body);
+    expect(body).toMatchObject({ error: "staging_unavailable", reason: "refused", forwardingResult: "not_applied" });
+    expect(body.defaultedBy.decision).toBe("gate-repair-plane-on-current-build-2026-10-15#D-004");
+    expect(body.defaultedBy.override).toContain("build:'main'");
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('target-preserving worker routing', () => {
+  const target = { environment: 'staging' as const, buildSha: 'a'.repeat(40), installRoot: '/selected/install' };
+  const worker = (p: number): McpProxyTarget => ({ host: '127.0.0.1', port: p,
+    processRole: 'bg-host', executionTarget: target });
+  const request = (extra = {}) => JSON.stringify(call('git-sync:run', { installSlug: 'selected', target, ...extra },
+    { threadId: 'session-one', workspace: 'workspace-one' }));
+  async function routed(workers: McpProxyTarget[]) {
+    const proxy = track(createMcpProxy({ listenPort: 0, targetPort: 1, resolveWorkerTargets: () => workers,
+      retryWindowMs: 40, retryBackoffMs: 5, log: () => {} }));
+    await listen(proxy);
+    return port(proxy);
+  }
+
+  it('requires private live discovery with a matching process identity', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'mcp-worker-discovery-'));
+    const path = join(directory, 'endpoint-ipc.3271.json');
+    const descriptor = { port: 3271, pid: process.pid, processRole: 'bg-host', executionTarget: target,
+      executionProcessId: readProcessIdentity(process.pid) };
+    const write = (value: unknown, mode = 0o600) => { rmSync(path, { force: true }); writeFileSync(path, JSON.stringify(value), { mode }); };
+    try {
+      write(descriptor);
+      expect(readMcpWorkerTargets(directory)).toMatchObject([{ port: 3271, executionTarget: target }]);
+      write({ ...descriptor, executionProcessId: 'replaced-process' });
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+      write(descriptor, 0o644);
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+      write({ ...descriptor, processRole: 'operator' });
+      expect(readMcpWorkerTargets(directory)).toEqual([]);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('preserves the explicit environment, build and install at the selected worker', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const selected = await listen(stubOperator('selected', seen));
+    const p = await routed([worker(port(selected)), { ...worker(1), executionTarget: { ...target, environment: 'main' } }]);
+    const response = await post(p, request());
+    expect(response.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    const forwarded = JSON.parse(seen[0]!.body);
+    expect(forwarded.params.arguments).toMatchObject({ installSlug: 'selected', target });
+    expect(forwarded.params._meta).toMatchObject({ threadId: 'session-one', workspace: 'workspace-one', 'papercusp/build': 'staging' });
+  });
+
+  it('refuses ambiguous or unavailable targets without substitution', async () => {
+    for (const workers of [[], [worker(1), worker(2)],
+      [{ ...worker(1), executionTarget: { ...target, buildSha: 'b'.repeat(40) } }],
+      [{ ...worker(1), executionTarget: { ...target, installRoot: '/another' } }],
+      [{ ...worker(1), processRole: 'operator' }]]) {
+      const response = await post(await routed(workers), request());
+      expect(response.status).toBe(503);
+      expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_applied' });
+    }
+    expect(applyMcpWorkerSelector(buf(call('git-sync:run', { target: { ...target, buildSha: undefined } }))))
+      .toMatchObject({ kind: 'refused' });
+  });
+
+  it('preserves authentication and attribution without forwarding host-local principals', async () => {
+    let authorization: string | undefined;
+    let dispatched = 0;
+    const upstream = track(http.createServer((req, res) => {
+      authorization = req.headers.authorization;
+      dispatched++;
+      req.resume();
+      res.writeHead(401); res.end('authentication required');
+    }));
+    await listen(upstream);
+    const p = await routed([worker(port(upstream))]);
+    expect((await post(p, request(), { authorization: 'Bearer original-test-credential' })).status).toBe(401);
+    expect(authorization).toBe('Bearer original-test-credential');
+    expect(dispatched).toBe(1);
+    const refused = await post(p, request({ authenticatedPrincipal: { capabilities: ['all'] } }));
+    expect(refused.status).toBe(400);
+    expect(JSON.parse(refused.body).forwardingResult).toBe('not_applied');
+    expect(dispatched).toBe(1);
+  });
+
+  it('refuses host-local principals throughout direct and deferred envelopes before dispatch', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const upstream = await listen(stubOperator('must-not-receive-principal', seen));
+    const p = await routed([worker(port(upstream))]);
+    for (const deferred of [false, true]) {
+      for (const location of ['message', 'params', 'messageMeta', 'paramsMeta', 'outer', 'outerMeta', 'inner', 'innerMeta']) {
+        const inner = { target };
+        const outer = deferred ? { name: 'git-sync:run', args: inner } : inner;
+        const message = call(deferred ? 'tools:invoke' : 'git-sync:run', outer) as any;
+        const envelopes: Record<string, any> = { message, params: message.params,
+          messageMeta: message._meta = {}, paramsMeta: message.params._meta = {}, outer,
+          outerMeta: (outer as any)._meta ??= {}, inner, innerMeta: (inner as any)._meta ??= {} };
+        envelopes[location].authenticatedPrincipal = { capabilities: ['all'] };
+        const response = await post(p, JSON.stringify(message));
+        expect(response.status, `${deferred}:${location}`).toBe(400);
+        expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_applied' });
+        expect(seen).toHaveLength(0);
+      }
+    }
+  });
+
+  it('distinguishes no-dispatch, unknown and authenticated completion without replay', async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const upstream = await listen(stubOperator('worker-result', seen));
+    const p = await routed([worker(port(upstream))]);
+    const completed = await post(p, request());
+    expect(JSON.parse(completed.body)).toMatchObject({ result: { servedBy: 'worker-result' } });
+    expect(seen).toHaveLength(1);
+    const unavailable = await post(await routed([]), request());
+    expect(JSON.parse(unavailable.body).forwardingResult).toBe('not_applied');
+    // A preview remains on the existing request-only handler; zero worker dispatch.
+    expect(applyMcpWorkerSelector(Buffer.from(request({ dryRun: true })))).toEqual({ kind: 'none' });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('reports connection loss before dispatch as no-dispatch', async () => {
+    const response = await post(await routed([worker(await freePort())]), request());
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'not_forwarded' });
+  });
+
+  it('reports connection loss after possible dispatch as unknown without retry', async () => {
+    let dispatched = 0;
+    const upstream = track(http.createServer((req) => {
+      req.on('data', () => {});
+      req.on('end', () => { dispatched++; req.socket.destroy(); });
+    }));
+    await listen(upstream);
+    const response = await post(await routed([worker(port(upstream))]), request());
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body)).toMatchObject({ forwardingResult: 'outcome_unknown' });
+    expect(dispatched).toBe(1);
   });
 });

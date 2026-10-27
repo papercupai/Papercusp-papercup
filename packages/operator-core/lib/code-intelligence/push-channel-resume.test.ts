@@ -59,7 +59,7 @@ describe('R-4: a new epoch receives fresh facts for its predecessor\'s files', (
   it('pushes a resume fact for a previous-epoch file on the first tool batch, recomputed from the current snapshot', async () => {
     const { deps: resume, queries } = resumeDeps();
     const { deps, committed } = channel(resume);
-    const text = await codeIntelPushText(input(), 0, deps);
+    const text = await codeIntelPushText(input(), deps);
     expect(committed).toHaveLength(1);
     const [fact] = committed;
     expect(fact).toMatchObject({ leg: 'resume', subject: 'resume:lib/target.ts' });
@@ -74,19 +74,19 @@ describe('R-4: a new epoch receives fresh facts for its predecessor\'s files', (
 
   it('is pushed once per epoch, and a file touched in the same batch gets its ordinary first-touch brief instead', async () => {
     const already = channel(resumeDeps({ pushed: async () => ['resume:lib/target.ts'] }).deps);
-    await codeIntelPushText(input(), 0, already.deps);
+    await codeIntelPushText(input(), already.deps);
     expect(already.committed).toEqual([]);
     const touched = channel(resumeDeps().deps);
-    await codeIntelPushText(input([{ tool: 'Read', toolInput: { file_path: 'lib/target.ts' } }]), 0, touched.deps);
+    await codeIntelPushText(input([{ tool: 'Read', toolInput: { file_path: 'lib/target.ts' } }]), touched.deps);
     expect(touched.committed).toEqual([]);
   });
 
   it('a fresh owner (no previous epoch) resumes nothing, and the OFF flag skips the read entirely', async () => {
     const fresh = channel(resumeDeps({ epoch: async () => ({ epoch: 0, bumpedAt: null }) }).deps);
-    await codeIntelPushText(input(), 0, fresh.deps);
+    await codeIntelPushText(input(), fresh.deps);
     expect(fresh.committed).toEqual([]);
     const off = channel(resumeDeps().deps, async () => false);
-    await codeIntelPushText(input(), 0, off.deps);
+    await codeIntelPushText(input(), off.deps);
     expect(off.resumeContext).not.toHaveBeenCalled();
     expect(FLAG_DEFAULTS[PUSH_LEG_FLAGS.resume]).toBe(true);
   });
@@ -108,12 +108,12 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
   it('serves a late result to the next batch instead of re-reading (live run 1: >100ms under load, never fired)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const slow = slowChannel();
-    await codeIntelPushText(input(), 0, slow.deps);
+    await codeIntelPushText(input(), slow.deps);
     expect(slow.committed).toEqual([]);
     expect(parkedResumeContextCount()).toBe(1);
     slow.release();
     await vi.waitFor(async () => {
-      await codeIntelPushText(input(), 0, slow.deps);
+      await codeIntelPushText(input(), slow.deps);
       expect(slow.committed).toHaveLength(1);
     });
     expect(slow.committed[0]).toMatchObject({ leg: 'resume', subject: 'resume:lib/target.ts' });
@@ -185,10 +185,10 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
   it('joins an in-flight read rather than starting another, and keys it per (workspace, owner)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const slow = slowChannel();
-    await codeIntelPushText(input(), 0, slow.deps);
-    await codeIntelPushText(input(), 0, slow.deps);
+    await codeIntelPushText(input(), slow.deps);
+    await codeIntelPushText(input(), slow.deps);
     expect(slow.read).toHaveBeenCalledTimes(1);
-    await codeIntelPushText({ ...input(), owner: 'su-other' }, 0, slow.deps);
+    await codeIntelPushText({ ...input(), owner: 'su-other' }, slow.deps);
     expect(slow.read).toHaveBeenCalledTimes(2);
     expect(parkedResumeContextCount()).toBe(2);
     slow.release();
@@ -202,7 +202,7 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
       return { docs: null, specs: null, locks: null, byPath: { 'lib/target.ts': { docs: ['doc-carried'], specs: [] } } };
     });
     const resumeContext = vi.fn(async (i: PushInput) => { order.push('resume'); return base.resumeContext(i); });
-    await codeIntelPushText(input(), 0, { ...base.deps, context, resumeContext });
+    await codeIntelPushText(input(), { ...base.deps, context, resumeContext });
     expect(order).toEqual(['resume', 'links:lib/target.ts']);
     expect(base.committed).toHaveLength(1);
     expect(base.committed[0].text).toContain('Anchored docs: doc-carried.');
@@ -210,12 +210,12 @@ describe('P-006: a resume read that misses its bound is parked for the next batc
 
   it('an in-time read is consumed, not parked; a failed read is dropped', async () => {
     const fast = channel(resumeDeps().deps);
-    await codeIntelPushText(input(), 0, fast.deps);
+    await codeIntelPushText(input(), fast.deps);
     expect(fast.committed).toHaveLength(1);
     expect(parkedResumeContextCount()).toBe(0);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const failing = channel(resumeDeps({ epoch: async () => { throw new Error('ledger down'); } }).deps);
-    await codeIntelPushText(input(), 0, failing.deps);
+    await codeIntelPushText(input(), failing.deps);
     expect(failing.committed).toEqual([]);
     expect(parkedResumeContextCount()).toBe(0);
     expect(warn.mock.calls.map(([message]) => String(message)).some(line => line.includes('"errorMessage":"ledger down"'))).toBe(true);
@@ -229,7 +229,7 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
       foreign: async () => [{ itemId: 'WI-9', stamp: { owner: 'su-previous', epoch: 3, derivedAt: '', paths: ['lib/target.ts'], symbols: [] } }],
     });
     const { deps, committed } = channel(resume);
-    await codeIntelPushText(input(), 0, deps);
+    await codeIntelPushText(input(), deps);
     expect(committed).toHaveLength(1);
     expect(committed[0].subject).toBe('resume:lib/target.ts');
     expect(committed[0].text).toContain("Carried from WI-9's working set (stamped by su-previous); recomputed from the current snapshot");
@@ -285,7 +285,7 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
     };
     const run = async (resume: ReadResumeContextDeps) => {
       const base = channel(resume);
-      await codeIntelPushText(input(), 0, { ...base.deps, snapshot: async () => symbolSnapshot() });
+      await codeIntelPushText(input(), { ...base.deps, snapshot: async () => symbolSnapshot() });
       return base.committed;
     };
     // Previous epoch: eight edited files fill the file cap, so the queried definition

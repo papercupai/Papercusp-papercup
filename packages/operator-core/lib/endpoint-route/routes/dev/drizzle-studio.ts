@@ -24,6 +24,7 @@ import { createTextCollector } from '../../../child-output';
 import {
   beginGovernedExecution,
   governedExecutionRuntime,
+  settleGovernedExecutionInBackground,
   type GovernedExecution,
 } from '../../../resource-governor/execution';
 
@@ -176,10 +177,12 @@ const post = defineTool({
       },
     });
     child.once('error', (error) => {
-      void execution.cancel(`drizzle studio child error: ${error.message}`);
+      settleGovernedExecutionInBackground(execution, {
+        kind: 'cancel', reason: `drizzle studio child error: ${error.message}`,
+      });
     });
     child.on('exit', (code) => {
-      void execution.finish();
+      settleGovernedExecutionInBackground(execution, { kind: 'release' });
       if (STATE.proc === proc) {
         STATE.lastExitStderr = proc.lastStderr;
         STATE.lastExitCode = code;

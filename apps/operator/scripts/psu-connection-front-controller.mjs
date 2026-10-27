@@ -519,8 +519,13 @@ function validateStoredProfile(value) {
   );
 }
 
-export function defaultPsuConnectionStorePath(home = homedir()) {
-  return join(home, ".papercusp", "psu-connections.json");
+export function defaultPsuConnectionStorePath(home) {
+  // A private runtime home must also isolate saved machine credentials. An
+  // explicit home remains the caller's override (tests and profile migration).
+  const root = home === undefined
+    ? process.env.PAPERCUSP_HOME?.trim() || join(homedir(), ".papercusp")
+    : join(home, ".papercusp");
+  return join(root, "psu-connections.json");
 }
 
 export function loadPsuConnectionStore(path = defaultPsuConnectionStorePath()) {
@@ -1561,7 +1566,7 @@ function connectionDeps(overrides) {
   const home = overrides.home ?? homedir();
   return {
     home,
-    storePath: overrides.storePath ?? defaultPsuConnectionStorePath(home),
+    storePath: overrides.storePath ?? defaultPsuConnectionStorePath(overrides.home),
     platform: overrides.platform ?? process.platform,
     interactive:
       overrides.interactive ??

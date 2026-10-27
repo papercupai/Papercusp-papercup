@@ -201,7 +201,7 @@ describe('P-006 — Claude credential shape per attempt', () => {
     expect(betas(sent[0]!)).not.toContain(CLAUDE_OAUTH_BETA);
   });
 
-  it('R-10: an attempt on an api-key account keeps every client beta other than the oauth flag', async () => {
+  it('R-10: an attempt on an api-key account keeps active feature betas', async () => {
     const { sent } = await runAttempts({
       initial: apiKeyAccount(),
       baseHeaders: {
@@ -221,6 +221,29 @@ describe('P-006 — Claude credential shape per attempt', () => {
       },
     });
     expect(betas(sent[0]!)).toEqual([CLAUDE_CONTEXT_1M_BETA]);
+  });
+
+  it('sends GA effort without the retired beta header or any request-body change', async () => {
+    const body = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', max_tokens: 128,
+      output_config: { effort: 'high' }, messages: [{ role: 'user', content: 'Solve the task.' }] }));
+    const { sent, bodies } = await runAttempts({ initial: apiKeyAccount(), body,
+      baseHeaders: { 'Anthropic-Beta': `${CLAUDE_CODE_BETA},${CLAUDE_OAUTH_BETA},effort-2025-11-24`,
+        'anthropic-beta': ' effort-2025-11-24 ', 'anthropic-version': '2023-06-01' } });
+    expect(betas(sent[0]!)).toEqual([]);
+    expect(lower(sent[0]!)['anthropic-version']).toBe('2023-06-01');
+    expect(bodies).toEqual([body]);
+    expect(JSON.parse(Buffer.from(bodies[0]!).toString()).output_config.effort).toBe('high');
+  });
+
+  it('normalizes retired effort only on the API-key rotation while preserving active and unknown betas', async () => {
+    const body = Buffer.from(JSON.stringify({ model: 'claude-opus-4-8', max_tokens: 128,
+      output_config: { effort: 'high' }, messages: [{ role: 'user', content: 'Solve the task.' }] }));
+    const { sent, bodies } = await runAttempts({ initial: oauthAccount(), rotation: [apiKeyAccount()], body,
+      baseHeaders: { 'anthropic-beta': `effort-2025-11-24,${CLAUDE_CONTEXT_1M_BETA},unknown-feature-2099-01-01` },
+      responses: [res(429, '{"error":{"message":"You have hit your session limit · resets 10:50am"}}'), res(200)] });
+    expect(betas(sent[0]!)).toContain('effort-2025-11-24');
+    expect(betas(sent[1]!)).toEqual([CLAUDE_CONTEXT_1M_BETA, 'unknown-feature-2099-01-01']);
+    expect(bodies).toEqual([body, body]);
   });
 
   it('R-10c: an API-key fallback strips the Claude CLI user-agent, which Anthropic treats as subscription traffic', async () => {

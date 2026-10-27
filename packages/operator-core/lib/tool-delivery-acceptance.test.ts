@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
+import diagnosticPreregistration from './llm-testing/fixtures/tool-delivery-diagnostic-candidate-20261023.json';
 import { evaluateToolDeliveryRuns, measureToolDeliveryAcceptance, verifyToolDeliverySourceCustody, validateToolDeliveryBatchReceipt,
-  toolDeliveryExperiment, TOOL_DELIVERY_ARMS, TOOL_DELIVERY_SCENARIOS,
+  toolDeliveryExperiment, toolDeliveryPreregistration, readToolDeliveryCommittedSource, TOOL_DELIVERY_ARMS, TOOL_DELIVERY_SCENARIOS,
   type ToolDeliveryRun, type ToolDeliveryExperiment } from './tool-delivery-acceptance';
 import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
@@ -55,8 +56,8 @@ function candidateFixture() {
     matrix_group_id: `${row.scenario_id}:${row.variant}` }));
   return { experiment, rows: ordered };
 }
-function custodyFixture() {
-  const registration = structuredClone(candidatePreregistration);
+function custodyFixture(original: typeof candidatePreregistration | typeof diagnosticPreregistration = candidatePreregistration) {
+  const registration = structuredClone(original) as unknown as ReturnType<typeof toolDeliveryPreregistration>;
   const sources = new Map<string, Buffer>();
   for (const path of Object.keys(registration.sourcePins.files)) {
     const bytes = Buffer.from(`pinned source: ${path}`); sources.set(path, bytes);
@@ -75,7 +76,7 @@ function custodyFixture() {
   const privateCapture = Buffer.from(JSON.stringify(frozen));
   registration.capture.privateCapture.originalSha256 = createHash('sha256').update(privateCapture).digest('hex');
   const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
-  sources.set(oraclePath, Buffer.from('pinned oracle'));
+  if (!sources.has(oraclePath)) sources.set(oraclePath, Buffer.from('pinned oracle'));
   const amendment = { decisionRef: 'deterministic-tool-definition-delivery-2026-09-21#D-999', registeredAt: '2026-10-22T18:00:00Z',
     sourceReplacements: { 'packages/operator-core/lib/tool-delivery-acceptance.ts': {
       originalSha256: registration.sourcePins.files['packages/operator-core/lib/tool-delivery-acceptance.ts'],
@@ -85,6 +86,71 @@ function custodyFixture() {
   return { registration, privateCapture, buildSha: '0123456789abcdef', readSource: (path: string, _ref?: string) => sources.get(path)!, sources };
 }
 describe('tool-delivery acceptance instruments', () => {
+  it('selects distinct candidate custody without changing historical defaults or the D062 contract', () => {
+    const original = toolDeliveryPreregistration(candidatePreregistration.experiment.id);
+    const diagnostic = toolDeliveryPreregistration(diagnosticPreregistration.experiment.id);
+    expect(original).toEqual(candidatePreregistration);
+    expect(diagnostic).toEqual(diagnosticPreregistration);
+    expect(diagnostic.capture.privateCapture.originalSha256).not.toBe(original.capture.privateCapture.originalSha256);
+    expect(diagnostic.custodyPaths?.receiptDirectory).toBe('diagnostic-candidate-once-20261023');
+    expect(toolDeliveryExperiment(diagnostic.experiment.id).arms).toEqual(diagnostic.experiment.arms);
+    expect(toolDeliveryExperiment().arms).toEqual(TOOL_DELIVERY_ARMS);
+    expect(() => toolDeliveryPreregistration('unregistered')).toThrow('Unregistered');
+    for (const registration of [candidatePreregistration, diagnosticPreregistration]) {
+      expect(findBoxIdentityPaths(JSON.stringify(registration))).toEqual([]);
+      expect(findOwnerNameLeaks(JSON.stringify(registration))).toEqual([]);
+      for (const variant of Object.values(registration.variants)) expect(variant.configDelta).not.toHaveProperty('systemPromptText');
+    }
+  });
+  it('requires the current candidate catalog and scenario bytes in the loaded build', () => {
+    const input = custodyFixture(diagnosticPreregistration);
+    expect(verifyToolDeliverySourceCustody(input).verified).toBe(true);
+    const catalogPath = 'apps/operator/scripts/tool-delivery.generated.mjs';
+    const scenarioPath = Object.values(input.registration.sourcePins.scenarioPaths)[0]!;
+    for (const changedPath of [catalogPath, scenarioPath]) {
+      const changed = custodyFixture(diagnosticPreregistration);
+      changed.readSource = (path, ref) => path === changedPath && ref === changed.buildSha
+        ? Buffer.from('wrong loaded source') : changed.sources.get(path)!;
+      expect(verifyToolDeliverySourceCustody(changed).verified).toBe(false);
+    }
+    const old = custodyFixture();
+    old.readSource = (path, ref) => path === catalogPath && ref === old.buildSha
+      ? Buffer.from('current catalog is irrelevant to the frozen historical treatment') : old.sources.get(path)!;
+    expect(verifyToolDeliverySourceCustody(old).verified).toBe(true);
+    const mixed = custodyFixture(diagnosticPreregistration);
+    mixed.registration.capture.privateCapture.originalSha256 = candidatePreregistration.capture.privateCapture.originalSha256;
+    expect(verifyToolDeliverySourceCustody(mixed).verified).toBe(false);
+  });
+  it('reads nested runner source only from the loaded superproject gitlink and rejects a changed gitlink', () => {
+    const pin = 'a'.repeat(40), path = 'libs/testing-shell/src/llm/runner.ts';
+    const git = vi.fn((args: string[], directory?: string) => {
+      if (args[0] === 'rev-parse') return Buffer.from(`${pin}\n`);
+      expect(directory).toBe('libs/testing-shell');
+      expect(args).toEqual(['show', `${pin}:src/llm/runner.ts`]);
+      return Buffer.from('pinned nested runner');
+    });
+    expect(readToolDeliveryCommittedSource(path, 'loaded-build', { 'libs/testing-shell': pin }, git).toString()).toBe('pinned nested runner');
+    expect(git).toHaveBeenCalledWith(['rev-parse', 'loaded-build:libs/testing-shell']);
+    git.mockClear();
+    expect(() => readToolDeliveryCommittedSource(path, 'loaded-build', { 'libs/testing-shell': 'b'.repeat(40) }, git)).toThrow('gitlink');
+    expect(git).toHaveBeenCalledTimes(1);
+  });
+  it('binds the new candidate receipt independently and rejects the original candidate marker', () => {
+    const registration = custodyFixture(diagnosticPreregistration).registration;
+    const { rows, experiment } = candidateFixture();
+    for (const row of rows) row.variant = row.variant === experiment.arms.compactArm
+      ? registration.experiment.arms.compactArm : registration.experiment.arms.fullArm;
+    const marker = { at: '2026-10-22T18:59:00Z', experimentId: registration.experiment.id,
+      privateSha256: registration.capture.privateCapture.originalSha256 };
+    const receipt = registration.configuration.armOrder.flatMap(block => block.arms.map(arm => {
+      const variantId = arm === 'compact' ? registration.experiment.arms.compactArm : registration.experiment.arms.fullArm;
+      const subset = rows.filter(row => row.scenario_id === block.scenario && row.variant === variantId);
+      return { scenario: block.scenario, arm, variantId, ids: subset.map(row => row.id), statuses: subset.map(row => row.status) };
+    }));
+    expect(validateToolDeliveryBatchReceipt(rows, marker, receipt, registration)).toBeUndefined();
+    expect(validateToolDeliveryBatchReceipt(rows, { ...marker, experimentId: candidatePreregistration.experiment.id }, receipt, registration)).toBeTypeOf('string');
+    expect(validateToolDeliveryBatchReceipt(rows, marker, receipt, toolDeliveryPreregistration(candidatePreregistration.experiment.id))).toBeTypeOf('string');
+  });
   it('ships a portable preregistration while retaining the exact private prompt hash', () => {
     const serialized = JSON.stringify(candidatePreregistration);
     expect(findBoxIdentityPaths(serialized)).toEqual([]);
@@ -105,12 +171,32 @@ describe('tool-delivery acceptance instruments', () => {
     expect(result.compactAllPassed).toEqual(TOOL_DELIVERY_SCENARIOS);
     expect(result.runIds).toHaveLength(30);
   });
+  it('reports current format support, catches malformed formats, and preserves historical measurement limits', () => {
+    const formatSchemas = new Map([['work_items:list', {
+      type: 'object', properties: { email: { type: 'string', format: 'email' } },
+      required: ['email'], additionalProperties: false,
+    }]]);
+    const rows = fixture().map(row => ({ ...row,
+      transcript_norm_json: [{ toolCalls: [{ name: 'work_items:list', input: { email: 'valid@example.com' } }] }],
+    }));
+    const baseline = evaluateToolDeliveryRuns(rows, formatSchemas);
+    expect(baseline.invalidArguments.verdict).toBe('pass');
+    expect(baseline.limits.join(' ')).toContain('ajv-formats validates registered formats');
+    expect(baseline.limits.join(' ')).toContain('unknown custom formats/keywords are ignored');
+    expect(baseline.limits.join(' ')).toContain('Historical measurements retain their recorded validator and limits');
+    const malformed = rows.find(row => row.variant === TOOL_DELIVERY_ARMS.compactArm)!;
+    malformed.transcript_norm_json[0]!.toolCalls[0]!.input.email = 'invalid-email';
+    const result = evaluateToolDeliveryRuns(rows, formatSchemas);
+    expect(result.invalidArguments.verdict).toBe('fail');
+    expect(JSON.stringify(result.oracle)).toContain('format-violation');
+    expect(baseline.invalidArguments.verdict).toBe('pass');
+  });
   it('verifies immutable private treatment and fails closed on missing, altered or unregistered source custody', () => {
     expect(verifyToolDeliverySourceCustody(custodyFixture()).verified).toBe(true);
     const mutations: Array<(input: ReturnType<typeof custodyFixture>) => void> = [
       input => { input.privateCapture = Buffer.from('altered private original'); },
       input => { input.registration.experiment.manifestContract.systemSha256 = 'changed'; },
-      input => { input.registration.configuration.armOrder.reverse(); },
+      input => { input.registration.configuration.armOrder = [...input.registration.configuration.armOrder].reverse(); },
       input => { input.registration.sourcePins.head = 'different'; },
       input => { input.sources.set('packages/operator-core/lib/tool-delivery-acceptance.ts', Buffer.from('unregistered repair')); },
       input => { input.readSource = (path, ref) => ref === input.buildSha ? Buffer.from('different loaded build') : input.sources.get(path)!; },
@@ -202,12 +288,74 @@ describe('tool-delivery acceptance instruments', () => {
       expect(result.invalidArguments.verdict).toBe('unknown');
     }
   });
+  it('accepts reordered argument keys while retaining ordered calls, arrays and exact argument values', () => {
+    const sample = () => {
+      const { rows, experiment } = candidateFixture();
+      const row = rows[0]!;
+      const raw = row.raw_events as any[];
+      raw[1].data.input = { longKey: { nestedValue: 2, a: null }, ordered: [1, 2], a: true };
+      row.transcript_norm_json = [{ toolCalls: [{ name: 'work_items:list',
+        input: { a: true, ordered: [1, 2], longKey: { a: null, nestedValue: 2 } } }] }];
+      return { rows, experiment, row };
+    };
+    const reordered = sample();
+    expect(evaluateToolDeliveryRuns(reordered.rows, schemas, reordered.experiment).manifests).toHaveLength(30);
+    const mutations: Array<(calls: any[]) => void> = [
+      calls => { calls[0].input.longKey.nestedValue = 3; },
+      calls => { calls[0].input.ordered.reverse(); },
+      calls => { calls[0].input.a = 'true'; },
+      calls => { delete calls[0].input.longKey.a; },
+      calls => { calls[0].input.extra = null; },
+      calls => { calls[0].name = 'coord:orient'; },
+      calls => { calls.pop(); },
+      calls => { calls.push(structuredClone(calls[0])); },
+    ];
+    for (const mutate of mutations) {
+      const { rows, experiment, row } = sample();
+      mutate((row.transcript_norm_json as any[])[0].toolCalls);
+      const result = evaluateToolDeliveryRuns(rows, schemas, experiment);
+      expect(result.comprehension.verdict, result.comprehension.reason).toBe('unknown');
+      expect(result.comprehension.reason).toContain('raw/normalized');
+    }
+  });
   it('does not silently discard an extra scenario or an adverse candidate replication', () => {
     const { rows, experiment } = candidateFixture();
     expect(evaluateToolDeliveryRuns([...rows, { ...rows[0]!, id: 'extra', scenario_id: 'outside' }], schemas, experiment)
       .comprehension.verdict).toBe('unknown');
     rows[0]!.status = 'failed';
     expect(evaluateToolDeliveryRuns(rows, schemas, experiment).comprehension.verdict).toBe('fail');
+  });
+  it('rejects shifting calls between turns even when their global sequence and turn count match', () => {
+    const sample = () => {
+      const { rows, experiment } = candidateFixture();
+      const row = rows.find(row => row.variant === experiment.arms.fullArm)!;
+      const first = row.raw_events as any[];
+      const second = structuredClone(first);
+      second[0].data.usedCanonicalNames = ['work_items:list'];
+      second[1].data.input.limit = 3;
+      row.raw_events = [...first, ...second];
+      row.transcript_norm_json = [
+        { toolCalls: [{ name: 'work_items:list', input: { limit: 2 } }] },
+        { toolCalls: [{ name: 'work_items:list', input: { limit: 3 } }] },
+      ];
+      return { rows, experiment, row };
+    };
+    const valid = sample();
+    expect(evaluateToolDeliveryRuns(valid.rows, schemas, valid.experiment).manifests).toHaveLength(30);
+    for (const direction of ['earlier', 'later', 'missing-calls', 'no-completed-turn'] as const) {
+      const { rows, experiment, row } = sample();
+      const turns = row.transcript_norm_json as any[];
+      if (direction === 'earlier') turns[0].toolCalls.push(turns[1].toolCalls.shift());
+      if (direction === 'later') turns[1].toolCalls.unshift(turns[0].toolCalls.pop());
+      if (direction === 'missing-calls') delete turns[0].toolCalls;
+      if (direction === 'no-completed-turn') {
+        row.raw_events = [(row.raw_events as any[])[0]];
+        row.transcript_norm_json = [];
+      }
+      const result = evaluateToolDeliveryRuns(rows, schemas, experiment);
+      expect(result.comprehension.verdict).toBe('unknown');
+      expect(result.comprehension.reason).toContain('raw/normalized');
+    }
   });
   it('enforces the preregistered chronological blocks, registration anchor and unretried matrix indices', () => {
     const mutations: Array<(rows: ToolDeliveryRun[], experiment: ToolDeliveryExperiment) => void> = [

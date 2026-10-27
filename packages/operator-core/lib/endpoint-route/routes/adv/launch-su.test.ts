@@ -210,6 +210,29 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
+  it.each([null, '', 'sdk', ['pty', 'programmatic']].map(execution_kind => ({ execution_kind })))('refuses present invalid execution $execution_kind before any launcher is called', async ({ execution_kind }) => {
+    const result = await launch({ headless: true, execution_kind });
+    expect(result).toMatchObject({ status: 400, json: { code: 'invalid_execution_kind', retryable: false } });
+    expect(attachedMock).not.toHaveBeenCalled();
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards an explicit programmatic choice to the existing structured engine', async () => {
+    expect((await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', execution_kind: 'programmatic' })).status).toBe(200);
+    expect(attachedMock).toHaveBeenCalledWith(expect.any(Request), expect.objectContaining({ execution_kind: 'programmatic' }));
+  });
+
+  it.each([
+    { attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', execution_kind: 'pty' },
+    { headless: true, execution_kind: 'programmatic' },
+  ])('refuses an unavailable explicit execution path without falling back %j', async (body) => {
+    expect(await launch(body)).toMatchObject({ status: 409, json: { code: 'unsupported_execution_kind', retryable: false } });
+    expect(attachedMock).not.toHaveBeenCalled();
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   // WI-10004158 / D-011: an OMP gateway model runs only on the gateway, so an
   // omitted account follows it to `auto`; the default account would refuse it.
   it.each([

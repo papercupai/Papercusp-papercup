@@ -1,10 +1,46 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { closeTask, getTask, listTasks, reopenStrandedTask } from './store';
+import { classifyTerminalClose, closeTask, getTask, listTasks, markEndedUnobserved, markRecoveredFromJobLog, markStranded,
+  reopenStrandedTask, type CloseTaskEffectsForTask } from './store';
+import type { TaskTerminalProvenance } from './types';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
 }
+
+describe('service timeout evidence', () => {
+  const terminal: TaskTerminalProvenance = {
+    capturedAt: '2026-10-25T01:52:22.650Z', scopeUnit: 'pc-timeout-phase.service',
+    cgroupPath: null, invocationId: 'timeout-phase', loadState: 'loaded', activeState: 'failed',
+    serviceResult: 'timeout', execMainCode: 1, execMainStatus: 0,
+    memoryMaxBytes: null, peakMemoryBytes: null, peakMemorySource: 'unknown',
+  };
+
+  it('keeps successful main exit separate from a failed service without guessing its timeout phase', () => {
+    const result = classifyTerminalClose({ state: 'exited', exitCode: 1, terminalProvenance: terminal }, null);
+    expect(result).toMatchObject({ state: 'timed_out', exitCode: 0, exitReason: 'service-timeout-main-exit-0' });
+    expect(result.terminalProvenance).toMatchObject({ serviceResult: 'timeout', execMainCode: 1, execMainStatus: 0 });
+  });
+
+  it('retains an observed execution deadline when the signal handler exits zero', () => {
+    expect(classifyTerminalClose({ state: 'timed_out', exitCode: 0,
+      exitReason: 'exceeded 180000ms timeout', terminalProvenance: terminal }, null)).toMatchObject({
+      state: 'timed_out', exitCode: 0, exitReason: 'exceeded 180000ms timeout',
+    });
+  });
+
+  it.each([
+    { execMainCode: 2, execMainStatus: 15, expectedExit: 143 },
+    { execMainCode: 1, execMainStatus: 1, expectedExit: 1 },
+    { execMainCode: 0, execMainStatus: 0, expectedExit: 1 },
+    { execMainCode: null, execMainStatus: null, expectedExit: 1 },
+  ])('does not infer successful main exit from $execMainCode/$execMainStatus', ({ expectedExit, ...main }) => {
+    expect(classifyTerminalClose({ state: 'exited', exitCode: 1,
+      terminalProvenance: { ...terminal, ...main } }, null)).toMatchObject({
+      state: 'timed_out', exitCode: expectedExit, exitReason: 'timeout',
+    });
+  });
+});
 
 describe('task-manager/store row mapping', () => {
   it('parses JSONB detail when the worker returns it as a string', async () => {
@@ -86,6 +122,35 @@ describe('reopenStrandedTask', () => {
 });
 
 describe('closeTask terminal event', () => {
+  it.each(['stranded', 'unobserved', 'recovered'] as const)(
+    'retains the exact task and blocked close phase through a %s batch', async (kind) => {
+      const taskId = `batch-${kind}`;
+      const sql = fakeSql({ task_id: taskId, workspace_id: 'workspace-1', class: 'other',
+        state: 'running', ended_at: null, launched_by: 'fixture' });
+      const stages: Array<{ taskId: string; name: string }> = [];
+      const emit = vi.fn();
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const effects: CloseTaskEffectsForTask = (id) => ({
+        stage: (name) => stages.push({ taskId: id, name }),
+        cleanupVerifierDirectories: async () => { enter(); await gate; },
+        emitTerminal: emit,
+      });
+      const closing = kind === 'stranded' ? markStranded([{ taskId, reason: 'gone' }], sql, effects)
+        : kind === 'unobserved' ? markEndedUnobserved([{ taskId, reason: 'released' }], sql, effects)
+          : markRecoveredFromJobLog([{ taskId, state: 'exited', exitCode: 2, reason: 'runner-log' }], sql, effects);
+      try {
+        await entered;
+        expect(stages.at(-1)).toEqual({ taskId, name: 'task-close-cleanup' });
+        expect(emit).not.toHaveBeenCalled();
+      } finally { release(); }
+      await expect(closing).resolves.toBe(1);
+      expect(stages.at(-1)).toEqual({ taskId, name: 'task-close-event-complete' });
+      expect(emit).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(['read', 'cleanup', 'update', 'event'] as const)(
     'identifies a blocked %s phase without reporting later close phases or returning early', async (blockedPhase) => {
       const row = { task_id: 'phase-task', workspace_id: 'workspace-1', class: 'other',
@@ -125,7 +190,7 @@ describe('closeTask terminal event', () => {
       state: 'running', ended_at: null, launched_by: 'fixture' };
     let updates = 0;
     const sql = (async (strings: TemplateStringsArray) => {
-      if (strings.join('').includes('UPDATE harness_shared.task_ledger')) updates++;
+      if (strings.join('').includes('SET state =')) updates++;
       return [row];
     }) as unknown as Sql;
     const emitTerminal = vi.fn();
@@ -151,7 +216,9 @@ describe('closeTask terminal event', () => {
       class: 'pty',
       launched_by: 'su-a',
     };
-    const firstSql = (async () => [row]) as unknown as Sql;
+    const firstSql = (async (strings: TemplateStringsArray) => strings.join('').includes('AS revision')
+      ? [{ ...row, state: 'exited', exit_code: 0, exit_reason: null, revision: 1 }]
+      : [row]) as unknown as Sql;
     const replaySql = (async () => []) as unknown as Sql;
 
     await expect(
@@ -167,6 +234,7 @@ describe('closeTask terminal event', () => {
       state: 'exited',
       exitCode: 0,
       exitReason: null,
+      revision: 1,
     });
 
     await expect(

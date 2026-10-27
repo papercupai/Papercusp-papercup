@@ -17,7 +17,9 @@ export async function writePlanItemAnchors(tx: TransactionSql, scope: PlanAnchor
     SELECT ${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${write.itemId},
       x."anchorKind",x.requested,x."symbolId",x."symbolName",x.path,x.line,x.signature,x."contentHash",
       x.consumers,x."consumersTotal",x.tests,x.resolution,x."unknownReason",x.freshness,x."resolvedCommit",${actor},now(),x.resolution='resolved'
-    FROM jsonb_to_recordset(${rows}::jsonb) AS x("anchorKind" text,requested text,"symbolId" text,"symbolName" text,path text,line int,
+    -- Match plan-index-rows: bind pre-serialized JSON as TEXT before casting,
+    -- independent of whether this connection has the hybrid JSON serializer.
+    FROM jsonb_to_recordset(${rows}::text::jsonb) AS x("anchorKind" text,requested text,"symbolId" text,"symbolName" text,path text,line int,
       signature text,"contentHash" text,consumers jsonb,"consumersTotal" int,tests jsonb,resolution text,"unknownReason" text,freshness text,"resolvedCommit" text)`;
 }
 

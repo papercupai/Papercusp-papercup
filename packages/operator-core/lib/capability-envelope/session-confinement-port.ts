@@ -34,6 +34,7 @@ import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 import { evaluateSessionConfinement, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
+import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
 
 /**
  * Resolves the confinement declared for the calling session, or null/undefined if the
@@ -147,6 +148,13 @@ export async function checkSessionConfinement(input: {
       reason: 'Session confinement policy is unavailable; refusing the call until its authority can be read.' };
   }
   if (!confinement) return null;
+
+  // The recovery door is not added to (and therefore cannot widen) a frozen
+  // assignment ceiling. A readable confinement may stand down only for this
+  // hook-declared call; the handler then proves that the current identity is an
+  // accepted-operation worker with an exact released claim and captured owner
+  // turn. Unreadable confinement still fails closed above.
+  if (isHookReleasedOperationContinuationCall({ toolName: input.toolName, ctx: input.ctx })) return null;
 
   const decision = evaluateSessionConfinement({ toolName: input.toolName, args: input.args, confinement });
   if (decision.allowed) {

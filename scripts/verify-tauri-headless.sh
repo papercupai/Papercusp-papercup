@@ -245,6 +245,12 @@
 #                                refused without it: the seed is a WRITE, and
 #                                in the default (shared) mode it would land on
 #                                the owner's real live database.
+#   VERIFY_TAURI_ISOLATED_SHORTCUT
+#                                Optional Quick Panel shortcut preset, e.g.
+#                                CmdOrCtrl+Shift+K. Requires isolated DB mode.
+#                                Seeds only this run's PAPERCUSP_HOME before
+#                                native startup; never changes the user's HOME.
+#                                Empty by default (no shortcut choice seeded).
 #   VERIFY_TAURI_NATIVE_TERMINAL
 #                               1 = preserve the caller's native-terminal
 #                                strategy/command overrides and boot the dock for
@@ -252,8 +258,16 @@
 #                                dock disabled so ordinary UI verifiers remain
 #                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
+#   VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE
+#                               Explicit source workspace for eligible Codex
+#                                account references used by native workers.
+#                                Requires isolated DB mode; credentials remain
+#                                in their existing external stores.
 #   VERIFY_TAURI_BUDGET_FROM    prior native phases.jsonl; only a completed prepare
 #                                duration is used as an admission forecast.
+#   VERIFY_TAURI_PREPARE_ESTIMATE_MS
+#                               explicit preparation forecast before copying;
+#                               cannot lower a larger calibrated forecast.
 #   VERIFY_TAURI_ASSERT_ESTIMATE_MS
 #                               explicit assertion wall estimate; unset is unknown.
 #                               Neither observation is acceptance evidence.
@@ -426,9 +440,25 @@ export VERIFY_TAURI_TRACE_SESSION_CHAT_CSS
 # itself before any argument/resource work and re-exec the frozen copy; the
 # long-lived process then never reads the mutable checkout again.
 VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}"
+cleanup_verifier_spa_snapshot() {
+  [ -n "${WORK:-}" ] || return 0
+  local root
+  for root in "$WORK/spa" "$WORK/verifier-spa"; do
+    [ -d "$root" ] || continue
+    # Reuse the source snapshot's exact process/provenance guard. An early
+    # preparation failure runs this before full teardown is installed; a
+    # normal exit runs it after stop.sh. Never delete a tree still in use.
+    if ! reap_frozen_source_survivors "$root" "${TAURI_LAUNCH_PROVENANCE:-}"; then
+      echo "FATAL: refusing to clean frozen SPA with live survivors; preserving $root" >&2
+      return 1
+    fi
+    rm -rf -- "$root" || return 1
+  done
+}
+
 cleanup_verifier_source_snapshot() {
   if [ -n "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}" ]; then
-    rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" 2>/dev/null || true
+    rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH}.budget.jsonl" 2>/dev/null || true
     VERIFY_TAURI_SOURCE_SNAPSHOT_PATH=""
   fi
 }
@@ -437,7 +467,7 @@ if [ -n "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" ]; then
   # The re-exec'd copy owns this small file until normal teardown (or an early
   # preflight failure). The SPA snapshot has its own lifecycle and is cleaned
   # separately below.
-  trap cleanup_verifier_source_snapshot EXIT
+  trap 'cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
 else
   VERIFY_TAURI_SOURCE_PATH="${BASH_SOURCE[0]}"
   VERIFY_TAURI_SOURCE_DIR="$(cd "$(dirname -- "$VERIFY_TAURI_SOURCE_PATH")" 2>/dev/null && pwd -P)" || {
@@ -459,7 +489,7 @@ else
     echo "FATAL: could not allocate an immutable verifier source snapshot" >&2
     exit 1
   }
-  trap cleanup_verifier_source_snapshot EXIT
+  trap 'cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
   if ! cp -- "$VERIFY_TAURI_SOURCE_PATH" "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH"; then
     echo "FATAL: could not freeze verifier source before boot" >&2
     exit 1
@@ -563,6 +593,18 @@ DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
 # Share source-preview's absolute task admission before dependencies or native
 # capacity are allocated. Recheck the real clock at each expensive boundary;
 # elapsed preparation is deducted from an optional prior phase forecast.
+snapshot_verifier_budget_input() {
+  [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ] || return 0
+  # vh_init prunes completed runs, including the run supplying this forecast.
+  # Freeze validated bytes beside the wrapper before any retention can run,
+  # and reuse its cleanup lifecycle for early failures and normal teardown.
+  VERIFY_TAURI_BUDGET_ORIGINAL_PATH="$VERIFY_TAURI_BUDGET_FROM"
+  local snapshot="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH}.budget.jsonl"
+  node "$REPO_DIR/scripts/lib/verify-tauri-deadline.mjs" --snapshot-budget \
+    "$VERIFY_TAURI_BUDGET_FROM" "$snapshot" || return $?
+  export VERIFY_TAURI_BUDGET_FROM="$snapshot"
+}
+snapshot_verifier_budget_input || exit $?
 VERIFIER_TASK_PREPARE_STARTED_SECONDS=$SECONDS
 preflight_verifier_task_deadline() {
   node "$REPO_DIR/scripts/lib/verify-tauri-deadline.mjs" "${1:-prepare}" \
@@ -572,7 +614,9 @@ preflight_verifier_task_deadline() {
 preflight_verifier_task_deadline prepare || exit $?
 
 verifier_run_step() {
-  preflight_verifier_task_deadline prepare || return $?
+  # Admission has its own evidence boundary: a refusal must not overwrite the
+  # identity of the preceding successful command.
+  vh_run_step "${1}-budget-admission" preflight_verifier_task_deadline prepare || return $?
   vh_run_step "$@"
 }
 # WI-10005763 (D-012): this verifier boots the desktop FROM the live shared tree with network
@@ -629,7 +673,8 @@ install_in_flight_preflight() {
   # dependencies. Refuse a source-only/shadow donor before allocating WORK or
   # exporting another source snapshot; the snapshot repeats its full census.
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && \
-    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ]; }; then
+    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ] || \
+      [ -f "$REPO_DIR/.git/lint-as-committed-owner.json" ]; }; then
     echo "VERIFY_TAURI_DEPENDENCY_DONOR_INVALID: pinned source requires a physical installed dependency donor: $REPO_DIR" >&2
     echo 'Set PAPERCUSP_REPO_DIR to the installed canonical tree, independently of the frozen wrapper/source directory.' >&2
     return 2
@@ -670,6 +715,13 @@ NODE
 }
 
 install_in_flight_preflight || exit $?
+
+# Refuse an unbound external candidate before allocating WORK or copying source.
+# The same helper rechecks and freezes these exact bytes during preparation.
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
+  node "$VERIFY_TAURI_SOURCE_REPO_DIR/scripts/lib/verify-tauri-native-env.mjs" \
+    --candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" || exit $?
+fi
 
 # The parent script can pass bash -n while its generated launcher passes a
 # literal backslash to env. Reject malformed heredoc continuations before
@@ -1024,6 +1076,9 @@ if [ -f "$VH_SH" ]; then
   if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
     verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
   fi
+  if [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ]; then
+    verifier_retained_args+=(--retain-artifact phases/prepare/budget-calibration.jsonl)
+  fi
   # Resolve the placement once, before the first phase writer. The shared helper
   # rejects a stale implicit home-state root when /mnt/data/offload is mounted.
   VERIFY_TAURI_EVIDENCE_ROOT="${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
@@ -1031,8 +1086,11 @@ if [ -f "$VH_SH" ]; then
   vh_init verify-tauri-headless "$VERIFY_TAURI_EVIDENCE_ROOT" \
     ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
   verifier_begin_phase prepare
-  trap 'vh_capture_phase_stop' EXIT
+  trap 'vh_capture_phase_stop; cleanup_verifier_spa_snapshot; cleanup_verifier_source_snapshot' EXIT
   vh_capture_phase_start
+  if [ -n "${VERIFY_TAURI_BUDGET_FROM:-}" ]; then
+    cp -- "$VERIFY_TAURI_BUDGET_FROM" "$VH_PHASE_DIR/budget-calibration.jsonl" || exit $?
+  fi
   vh_step prepare-start
   vh_bracket_trap   # finalizes an exit before `trap teardown EXIT`; teardown calls vh_exit itself
 else
@@ -1277,6 +1335,33 @@ if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]
   exit 2
 fi
 
+# Reuse the real persisted configuration + native startup registrar, not a
+# replacement JavaScript shortcut callback. Validate before any expensive boot.
+validate_isolated_shortcut() {
+  ISOLATED_SHORTCUT="${VERIFY_TAURI_ISOLATED_SHORTCUT:-}"
+  [ -n "$ISOLATED_SHORTCUT" ] || return 0
+  if [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]; then
+    echo "FATAL: VERIFY_TAURI_ISOLATED_SHORTCUT requires VERIFY_TAURI_ISOLATED_DB=1." >&2
+    return 2
+  fi
+  case "$ISOLATED_SHORTCUT" in
+    'CmdOrCtrl+K'|'CmdOrCtrl+Shift+K'|'CmdOrCtrl+Shift+Space'|'CmdOrCtrl+/'|'Alt+Space') ;;
+    *) echo "FATAL: VERIFY_TAURI_ISOLATED_SHORTCUT must be a Quick Panel preset." >&2; return 2 ;;
+  esac
+}
+validate_isolated_shortcut || exit $?
+
+seed_isolated_shortcut() {
+  [ -n "$ISOLATED_SHORTCUT" ] || return 0
+  if [ "$ISOLATED_DB" != "1" ] || [ -z "$WORK" ] ||
+     [ "$ISOLATED_HOME" != "$WORK/papercusp-home" ]; then
+    echo "FATAL: refusing shortcut seed outside the per-run isolated home." >&2
+    return 2
+  fi
+  printf '{"accelerator":"%s"}\n' "$ISOLATED_SHORTCUT" > "$ISOLATED_HOME/docs-search-shortcut.json"
+  cmp -s "$ISOLATED_HOME/docs-search-shortcut.json" <(printf '{"accelerator":"%s"}\n' "$ISOLATED_SHORTCUT") || return 1
+}
+
 # R171 reached a reachable shared DB with unapplied, backup-conflicting DDL
 # only after its expensive source/dependency snapshot and host build. Check the
 # exact launch environment first. This SELECT-only probe neither applies DDL
@@ -1313,6 +1398,23 @@ verifier_run_step shared-schema-readiness shared_schema_readiness_preflight || e
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
+# Explicit opt-in for genuine native worker execution. Resolve the source pool
+# before isolation changes database/home routing; transfer references only.
+if [ -n "${VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE:-}" ]; then
+  [ "${VERIFY_TAURI_ISOLATED_DB:-0}" = 1 ] || { echo 'FATAL: worker account references require isolated DB mode' >&2; exit 1; }
+  export VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE="$WORK/account-pool-references.json"
+  node --import tsx --input-type=module - "$REPO_DIR" <<'SUPPORT_ACCOUNT_REFERENCES' || exit $?
+const { pathToFileURL } = await import('node:url');
+const { prepareSupportWorkerAccountReferences } = await import(pathToFileURL(
+  `${process.argv[2]}/apps/operator/e2e/_support-workflow-native-fixture.ts`).href);
+await prepareSupportWorkerAccountReferences(process.env.VERIFY_TAURI_ACCOUNT_SOURCE_WORKSPACE,
+  process.env.VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE);
+// The producer only needs database reads; close its pool before returning to
+// the verifier instead of retaining an idle process across isolation startup.
+const { getOrgPg } = await import('@papercusp/db-org');
+await getOrgPg().sql.end();
+SUPPORT_ACCOUNT_REFERENCES
+fi
 # The operator sidecar must not compile the mutable shared checkout while this
 # verifier is running. Keep an independent source tree (with a pinned
 # dependency farm) for the whole run; boot-only stop.sh owns its
@@ -1330,6 +1432,11 @@ VERIFIER_DISK_RESERVATIONS=("${NATIVE_CARGO_DISK_RESERVATION_FILE:-}")
 release_verifier_disk_reservations() {
   local reservation
   for reservation in "${VERIFIER_DISK_RESERVATIONS[@]}"; do
+    [ -n "$reservation" ] || continue
+    # An early snapshot failure can precede disk admission's helper load.
+    if ! declare -F papercusp_release_disk_reservation >/dev/null; then
+      . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
+    fi
     PAPERCUSP_DISK_RESERVATION_FILE="$reservation" papercusp_release_disk_reservation
   done
   VERIFIER_DISK_RESERVATIONS=()
@@ -1370,22 +1477,36 @@ frozen_source_process_rooted() {
 }
 
 frozen_source_rooted_processes() {
-  local root="$1" escaped_root
-  escaped_root="${root//\\/\\134}"
-  escaped_root="${escaped_root// /\\040}"
-  escaped_root="${escaped_root//$'\n'/\\012}"
-  {
-    # Let find resolve procfs links in C instead of spawning readlink once per
-    # pid; only matching processes need their environment inspected.
-    find /proc -mindepth 2 -maxdepth 2 -uid "$EUID" -type l \
-      \( -name cwd -o -name root -o -name exe \) \
-      \( -lname "$root" -o -lname "$root/*" \) -printf '%h\n' 2>/dev/null
-    # Search maps files in a bounded grep process set; include procfs's escaped
-    # spelling for roots containing whitespace or backslashes.
-    find /proc/[0-9]*/maps -uid "$EUID" -type f -print0 2>/dev/null |
-      xargs -0 -r grep -lF -e "$root/" -e "$escaped_root/" 2>/dev/null |
-      sed 's#/maps$##'
-  } | sort -u
+  # Read each account-owned process once. Walking every proc entry with find
+  # and then spawning a maps pipeline made the six cleanup censuses alone
+  # approach the generated-stop deadline. Node is already a verifier dependency.
+  node - "$1" "$EUID" <<'FROZEN_SOURCE_CENSUS'
+  const fs = require('node:fs');
+  const root = process.argv[2];
+  const uid = Number(process.argv[3]);
+  const prefix = root.endsWith('/') ? root : root + '/';
+  const escaped = prefix.replaceAll('\\', '\\134').replaceAll(' ', '\\040').replaceAll('\n', '\\012');
+  const patterns = [Buffer.from(prefix), Buffer.from(escaped)];
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    const proc = '/proc/' + entry;
+    try { if (fs.statSync(proc).uid !== uid) continue; } catch { continue; }
+    let rooted = false;
+    for (const link of ['cwd', 'root', 'exe']) {
+      try {
+        const path = fs.readlinkSync(proc + '/' + link).replace(/ \(deleted\)$/, '');
+        if (path === root || path.startsWith(prefix)) { rooted = true; break; }
+      } catch { /* An exiting process or inaccessible link is not a candidate. */ }
+    }
+    if (!rooted) {
+      try {
+        const maps = fs.readFileSync(proc + '/maps');
+        rooted = patterns.some(pattern => maps.includes(pattern));
+      } catch { /* Match the existing account-scoped procfs visibility contract. */ }
+    }
+    if (rooted) process.stdout.write(proc + '\n');
+  }
+FROZEN_SOURCE_CENSUS
 }
 
 frozen_source_process_start_ticks() {
@@ -1406,17 +1527,95 @@ frozen_source_process_owned() {
   return 1
 }
 
-frozen_source_process_matches() {
-  local pid="$1" expected_ticks="$2" root="$3" provenance="$4" ticks
+frozen_source_process_identity_matches() {
+  local pid="$1" expected_ticks="$2" provenance="$3" ticks
+  [ -n "$provenance" ] || return 1
   [ -d "/proc/$pid" ] || return 1
   ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null)" || return 1
   [ -n "$expected_ticks" ] && [ "$ticks" = "$expected_ticks" ] || return 1
-  frozen_source_process_owned "$pid" "$provenance" || return 1
+  frozen_source_process_owned "$pid" "$provenance"
+}
+
+frozen_source_process_matches() {
+  local pid="$1" expected_ticks="$2" root="$3" provenance="$4"
+  frozen_source_process_identity_matches "$pid" "$expected_ticks" "$provenance" || return 1
   frozen_source_process_rooted "$pid" "$root"
 }
 
+# A persisted PID is a hint, never signal authority. Reuse the source reaper's
+# nonce/start-time contract for processes (openbox/PG) not rooted in its tree.
+frozen_source_process_gone() {
+  local pid="$1" expected_ticks="$2" stat rest
+  local -a fields=()
+  [ -d "/proc/$pid" ] || return 0
+  # A zombie has exited even while its parent has not waited yet. An unreadable
+  # live identity is inconclusive, so it must not authorize directory deletion.
+  IFS= read -r stat <"/proc/$pid/stat" 2>/dev/null || return 1
+  rest="${stat##*) }"
+  read -r -a fields <<<"$rest"
+  [ "${#fields[@]}" -ge 20 ] && [ -n "$expected_ticks" ] || return 1
+  [ "${fields[19]}" != "$expected_ticks" ] ||
+    [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]
+}
+
+# Unlike the post-signal drain check, this must not accept a reused PID as
+# evidence that an unverified live process is safe to ignore.
+frozen_source_process_exited() {
+  local pid="$1" expected_ticks="$2" stat rest
+  local -a fields=()
+  [ -d "/proc/$pid" ] || return 0
+  if ! IFS= read -r stat 2>/dev/null <"/proc/$pid/stat"; then
+    [ ! -d "/proc/$pid" ]
+    return
+  fi
+  rest="${stat##*) }"
+  read -r -a fields <<<"$rest"
+  [ "${#fields[@]}" -ge 20 ] && [ -n "$expected_ticks" ] || return 1
+  [ "${fields[19]}" = "$expected_ticks" ] &&
+    { [ "${fields[0]}" = Z ] || [ "${fields[0]}" = X ]; }
+}
+
+stop_verify_process() {
+  local pid="$1" ticks="$2" provenance="$3" attempt
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 0
+  frozen_source_process_exited "$pid" "$ticks" && return 0
+  if ! frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
+    # A group member can exit during the ownership read. Reconcile that
+    # transition before reporting an unverified survivor; never signal it.
+    frozen_source_process_exited "$pid" "$ticks" && return 0
+    echo "VERIFY_PROCESS_UNVERIFIED pid=$pid; preserving teardown evidence" >&2
+    return 1
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  for attempt in {1..20}; do
+    frozen_source_process_gone "$pid" "$ticks" && return 0
+    sleep 0.1
+  done
+  if frozen_source_process_identity_matches "$pid" "$ticks" "$provenance"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  for attempt in {1..20}; do
+    frozen_source_process_gone "$pid" "$ticks" && return 0
+    sleep 0.1
+  done
+  echo "VERIFY_PROCESS_SURVIVOR pid=$pid; preserving teardown evidence" >&2
+  return 1
+}
+
+stop_verify_process_group() {
+  local group="$1" provenance="$2" pid ticks failed=0
+  [[ "$group" =~ ^[0-9]+$ ]] && [ "$group" -gt 1 ] || return 0
+  # Never signal the saved group number: a successor can reuse it. Each live
+  # member needs its own current start time and exact invocation provenance.
+  while IFS= read -r pid; do
+    ticks="$(frozen_source_process_start_ticks "$pid" 2>/dev/null || true)"
+    stop_verify_process "$pid" "$ticks" "$provenance" || failed=1
+  done < <(pgrep -g "$group" 2>/dev/null || true)
+  return "$failed"
+}
+
 reap_frozen_source_survivors() (
-  local root="$1" provenance="$2" proc pid uid ticks owned unowned=0
+  local root="$1" provenance="$2" proc pid uid ticks owned census unowned=0
   local attempt any_owned
   local -a owned_pids=() owned_ticks=()
   [ -n "$root" ] && [ -d "$root" ] || return 0
@@ -1431,6 +1630,10 @@ reap_frozen_source_survivors() (
   # Do not let the cleanup shell itself keep the snapshot busy through cwd.
   cd / || {
     echo "FATAL: cannot leave the frozen operator source before cleanup; preserving $root" >&2
+    return 1
+  }
+  census="$(frozen_source_rooted_processes "$root")" || {
+    echo "FATAL: cannot census frozen operator source; preserving $root" >&2
     return 1
   }
   while IFS= read -r proc; do
@@ -1452,7 +1655,7 @@ reap_frozen_source_survivors() (
       printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
       unowned=1
     fi
-  done < <(frozen_source_rooted_processes "$root")
+  done <<<"$census"
 
   local i
   for i in "${!owned_pids[@]}"; do
@@ -1480,6 +1683,10 @@ reap_frozen_source_survivors() (
 
   # Re-census after signalling. Any process still rooted here without the exact
   # run marker is outside our authority; fail closed and leave the source intact.
+  census="$(frozen_source_rooted_processes "$root")" || {
+    echo "FATAL: cannot census frozen operator source after reap; preserving $root" >&2
+    return 1
+  }
   while IFS= read -r proc; do
     [ -d "$proc" ] || continue
     pid="${proc##*/}"
@@ -1494,7 +1701,7 @@ reap_frozen_source_survivors() (
       printf 'FROZEN_SOURCE_SURVIVOR pid=%s ownership=unverified; preserving snapshot\n' "$pid" >&2
     fi
     unowned=1
-  done < <(frozen_source_rooted_processes "$root")
+  done <<<"$census"
   if [ "$unowned" -ne 0 ]; then
     echo "FATAL: frozen operator source still has unverified or unreaped process survivors; preserving $root" >&2
     return 1
@@ -1510,8 +1717,14 @@ write_frozen_source_reaper_script() {
     declare -f frozen_source_rooted_processes
     declare -f frozen_source_process_start_ticks
     declare -f frozen_source_process_owned
+    declare -f frozen_source_process_identity_matches
     declare -f frozen_source_process_matches
+    declare -f frozen_source_process_gone
+    declare -f frozen_source_process_exited
+    declare -f stop_verify_process
+    declare -f stop_verify_process_group
     declare -f reap_frozen_source_survivors
+    declare -f cleanup_verifier_spa_snapshot
   } >"$helper" || return 1
   chmod 700 "$helper"
 }
@@ -1591,8 +1804,9 @@ write_run_marker() {
 }
 
 verifier_run_step write-run-marker write_run_marker "$$" || {
+  marker_rc=$?
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
-  exit 1
+  exit "$marker_rc"
 }
 
 # EI-22478219188163557: freeze the operator source/dependency graph before the
@@ -1919,6 +2133,16 @@ snapshot_operator_source() {
   snapshot_root="$OPERATOR_SOURCE_ROOT"
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
 }
+preflight_verifier_runtime_assets() {
+  local source_repo="$1" setup_snapshot="$WORK/setup-porcupine-runtime.sh"
+  # Read the pin from the selected commit, before copying dependencies. The
+  # donor supplies bytes only; its mutable setup code never executes here.
+  git -C "$source_repo" cat-file blob \
+    "$VERIFY_TAURI_SOURCE_REF:apps/operator/scripts/setup-porcupine-runtime.sh" > "$setup_snapshot" || return $?
+  bash "$setup_snapshot" --check-source \
+    "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv"
+}
+
 snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
@@ -1943,6 +2167,7 @@ snapshot_committed_operator_source() {
   # verifier-prepare repeats this check after export as the race guard.
   node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
+  preflight_verifier_runtime_assets "$source_repo" || return $?
   source_bytes="$(node "$source_repo/scripts/source-preview.mjs" verifier-measure \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in
@@ -1978,7 +2203,7 @@ snapshot_committed_operator_source() {
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
-verifier_run_step operator-source-snapshot snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step operator-source-snapshot snapshot_operator_source || { snapshot_rc=$?; cleanup_operator_source_snapshot; exit "$snapshot_rc"; }
 
 # EI-22616267024724225: never boot the frozen operator through tsx's runtime
 # loader. bundle-host.sh documents the failure mechanism: every module
@@ -2093,11 +2318,15 @@ smoke_verifier_operator_host() {
 prepare_verifier_spa() {
   VERIFIER_SPA_DIST=""
   [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
-  # A committed archive has no ignored dist/. Never borrow the donor's bundle
-  # for a pinned source verdict: it can contain different UI bytes entirely.
+  # A qualified private portal candidate names its selected desktop commit and
+  # every output hash. Freeze only verified manifest bytes; generic donor dist
+  # overrides still fail closed before preparation.
   if [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
-    echo 'VERIFY_TAURI_SPA_UNBOUND: a pinned run must build its frozen source, not select an external SPA' >&2
-    return 3
+    VERIFIER_SPA_DIST="$WORK/verifier-spa/dist"
+    node "$VERIFY_TAURI_SOURCE_REPO_DIR/scripts/lib/verify-tauri-native-env.mjs" \
+      --candidate-spa "$VERIFY_TAURI_SOURCE_REPO_DIR" "$VERIFIER_SPA_DIST" || return $?
+    log "qualified private candidate SPA frozen at $VERIFIER_SPA_DIST"
+    return 0
   fi
   local app="$OPERATOR_SOURCE_ROOT/apps/operator-vite"
   # Hardlinked source stays on the donor device; generated output belongs on
@@ -2108,6 +2337,10 @@ prepare_verifier_spa() {
     return 3
   }
   log "building frozen operator SPA through the maintained workspace prebuild and singleflight builder"
+  # The ignored model is absent from a Git archive. Seed a private copy through
+  # the frozen helper's checksum contract before npm's normal asset prebuild.
+  bash "$OPERATOR_SOURCE_ROOT/apps/operator/scripts/setup-porcupine-runtime.sh" --source \
+    "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv" || return $?
   # Keep npm's asset prebuild and the existing admission/atomic-output contract.
   # Reset inherited build seams and pin output to this run's private work tree.
   (
@@ -2116,15 +2349,18 @@ prepare_verifier_spa() {
     export VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
       PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
       PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist"
-    bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run prebuild || exit $?
-    # Prebuild materializes runtime mirrors inside the archive. Validate the
-    # source boundary NOW, before spending a full Vite build on a tree that the
-    # subsequent host bundler would reject. Do not regenerate the source receipt.
-    node scripts/source-preview.mjs verifier-verify \
-      --out "$OPERATOR_SOURCE_ROOT" --receipt "$VERIFY_TAURI_SOURCE_RECEIPT" \
-      --runtime-artifacts || exit $?
-    # npm still runs the explicit build script, without repeating prebuild.
-    bash scripts/pc-heavy.sh -- npm --ignore-scripts --workspace @papercusp/operator-vite run build
+    # Admit this sequential pipeline once. Releasing the slot after asset
+    # prebuild used to send the same private preparation through a second
+    # queue, consuming the native task deadline before assertions could run.
+    bash scripts/pc-heavy.sh -- bash -c '
+      npm --workspace @papercusp/operator-vite run prebuild || exit $?
+      # Prebuild materializes runtime mirrors inside the archive. Validate the
+      # source boundary before the Vite build, keeping the original receipt.
+      node scripts/source-preview.mjs verifier-verify \
+        --out "$1" --receipt "$2" --runtime-artifacts || exit $?
+      # Run the explicit build without repeating npm lifecycle prebuild.
+      npm --ignore-scripts --workspace @papercusp/operator-vite run build
+    ' verifier-spa "$OPERATOR_SOURCE_ROOT" "$VERIFY_TAURI_SOURCE_RECEIPT"
   ) || return $?
   if [ ! -s "$build_root/dist/index.html" ] || [ ! -d "$build_root/dist/assets" ] \
     || [ -z "$(find "$build_root/dist/assets" -type f -size +0c -print -quit)" ]; then
@@ -2135,8 +2371,8 @@ prepare_verifier_spa() {
   log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
 }
 verifier_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
-verifier_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
-verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step verifier-host-bundle build_verifier_operator_host || { host_rc=$?; cleanup_operator_source_snapshot; exit "$host_rc"; }
+verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { smoke_rc=$?; cleanup_operator_source_snapshot; exit "$smoke_rc"; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"
   vh_end
@@ -2971,8 +3207,12 @@ write_boot_only_env_script() {
       if [ "${ISOLATED_DB:-0}" = "1" ]; then
         printf 'export PAPERCUSP_HOME=%q\n' "$ISOLATED_HOME"
         printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\n' "$ISOLATED_CODEX_HOMES_DIR"
+        printf 'export PAPERCUSP_PSU_PTY_DIR=%q\n' "$ISOLATED_HOME/psu-pty"
         printf 'export PAPERCUSP_WORKSPACE=%q\n' "$ISOLATED_WORKSPACE"
         printf 'export PAPERCUSP_WORKSPACE_ID=%q\n' "$ISOLATED_WORKSPACE"
+        if [ -n "${VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE:-}" ]; then
+          printf 'export VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE=%q\n' "$VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE"
+        fi
         printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\n' "$ISOLATED_WORKSPACES_ROOT"
         printf 'export PAPERCUSP_OPERATOR_BASE=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
         printf 'export PAPERCUSP_OPERATOR_URL=%q\n' "$(verify_tauri_dev_url "$DEV_PORT")"
@@ -3105,9 +3345,15 @@ XVFB_STOP
 }
 
 write_stop_script() {
+  local openbox_ticks pg_ticks
+  openbox_ticks="$(frozen_source_process_start_ticks "$OPENBOX_PID" 2>/dev/null || true)"
+  pg_ticks="$(frozen_source_process_start_ticks "$ISOLATED_PG_PID" 2>/dev/null || true)"
   write_xvfb_stop_script
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
+source "$WORK/frozen-source-reaper.sh" || exit 1
+SOURCE_CLEANUP_FAILED=0
+rm -f -- "$WORK/account-pool-references.json"
 # EI-20227529270079601 / EI-9748 Route A: stop sibling scopes first so no
 # detached descendant survives the process-group teardown below.
 if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
@@ -3119,7 +3365,7 @@ fi
 # the display-derived port. Instead we tear down the display/app and let the keeper
 # SELF-terminate once Xvfb is gone AND the port is free (it holds the lock through
 # that drain), so a next run reusing this display can't collide with a straggler.
-[ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
+stop_verify_process_group "$TAURI_PID" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
 # EI-18745117818375852: the group-kill above only reaches \$TAURI_PID's OWN
 # process group — under load, dev-operator-ifneeded.sh's WI-3042 restart-on-
 # nonzero-exit supervisor can have already spawned replacement sidecars that
@@ -3135,6 +3381,8 @@ for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
+  _ticks_p="\$(frozen_source_process_start_ticks "\$_p" 2>/dev/null || true)"
+  frozen_source_process_identity_matches "\$_p" "\$_ticks_p" "$TAURI_LAUNCH_PROVENANCE" || continue
   kill -TERM "\$_p" 2>/dev/null
 done
 sleep 1
@@ -3142,19 +3390,28 @@ for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
+  _ticks_p="\$(frozen_source_process_start_ticks "\$_p" 2>/dev/null || true)"
+  frozen_source_process_identity_matches "\$_p" "\$_ticks_p" "$TAURI_LAUNCH_PROVENANCE" || continue
   kill -9 "\$_p" 2>/dev/null
 done
-[ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
+stop_verify_process "$OPENBOX_PID" "$openbox_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
 # This helper matches this run's provenance and display before each signal.
 # Xvfb removes its own socket and lock during normal SIGTERM shutdown.
 "$WORK/stop-xvfb.sh" || true
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
-[ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
+stop_verify_process "$ISOLATED_PG_PID" "$pg_ticks" "$TAURI_LAUNCH_PROVENANCE" || SOURCE_CLEANUP_FAILED=1
+# Boot-only hands cleanup to this persisted script after disabling the parent
+# EXIT trap. Reuse its SPA survivor guard before removing any other snapshots.
+# Assertion teardown retains reports and owns its own SPA cleanup afterward.
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ]; then
+  if ! WORK="$WORK" TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" cleanup_verifier_spa_snapshot; then
+    SOURCE_CLEANUP_FAILED=1
+  fi
+fi
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
 # Assertion teardown retains reports first and owns its own snapshot cleanup.
-SOURCE_CLEANUP_FAILED=0
-if [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ] && [ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ]; then
   # The original verifier shell has exited in --boot-only mode, so use the
   # identical proc census/reaper that normal teardown calls.
   if ! source "$WORK/frozen-source-reaper.sh" \
@@ -3169,7 +3426,9 @@ fi
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.
-[ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
+if [ "\$SOURCE_CLEANUP_FAILED" -eq 0 ]; then
+  [ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
+fi
 echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
 if [ "\$SOURCE_CLEANUP_FAILED" -ne 0 ]; then
   exit 1
@@ -3305,6 +3564,9 @@ teardown() {
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
   trap - EXIT INT TERM HUP
+  if [ "${VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE:-}" = "$WORK/account-pool-references.json" ]; then
+    rm -f -- "$VERIFY_TAURI_ACCOUNT_POOL_REFERENCE_FILE"
+  fi
   local artifacts_retained=1
   if ! retain_boot_attempt_evidence; then
     artifacts_retained=0
@@ -3317,21 +3579,19 @@ teardown() {
     vh_step assertion-artifact-retention
   fi
   vh_capture_phase_stop
-  vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
-  # finalize returns 1 for a faithfully retained failing verdict; only 2+
-  # signals a finalization error. A test failure must not masquerade as lost proof.
-  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
-    artifacts_retained=0
-    [ "$ec" -ne 0 ] || ec=1
-    log "FATAL: pinned verifier completion evidence was not retained; preserving source at $OPERATOR_SOURCE_ROOT"
-  fi
   log "tearing down (exit=$ec)"
   capture_isolated_pg_diagnostics
   write_stop_script
-  "$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?
+  "$WORK/stop.sh" >"$WORK/stop.log" 2>&1 || stop_rc=$?
   if [ "$stop_rc" -ne 0 ]; then
-    [ "$ec" -ne 0 ] || ec=1
+    # Cleanup failure must not replace the step that originally aborted boot.
+    if [ "$ec" -eq 0 ]; then
+      ec=1
+      vh_step generated-stop-script
+    fi
+    artifacts_retained=0
     log "FATAL: generated stop script failed (exit=$stop_rc)"
+    tail -n 40 "$WORK/stop.log" >&2
   fi
   # EI-211769: the dev bridge writes a per-PID authentication token in the
   # runtime temp directory (the same os.tmpdir()/std::env::temp_dir contract
@@ -3365,16 +3625,30 @@ teardown() {
   # what a post-mortem reads and they cost kilobytes. `gc-verify-instances` removes
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
-  rm -rf "$WORK/spa" 2>/dev/null
+  if ! cleanup_verifier_spa_snapshot; then
+    [ "$ec" -ne 0 ] || ec=1
+    artifacts_retained=0
+    vh_step frozen-spa-cleanup
+    log "FATAL: could not safely clean frozen SPA; preserving source and work logs at $WORK"
+  fi
   if [ "$artifacts_retained" -eq 1 ]; then
     cleanup_operator_source_snapshot || {
       [ "$ec" -ne 0 ] || ec=1
+      vh_step frozen-source-cleanup
       log "FATAL: could not safely clean frozen operator source; preserving it"
     }
   else
     release_verifier_disk_reservations
   fi
   cleanup_assertion_script_snapshot
+  # A terminal PASS includes teardown. Finalizing before stop.sh or source
+  # cleanup produces a false green result when either later returns nonzero.
+  vh_exit "$ec"
+  # A retained failing verdict returns 1; 2+ means evidence finalization failed.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: pinned verifier completion evidence was not retained; work logs remain at $WORK"
+  fi
   cleanup_verifier_source_snapshot
   exit "$ec"
 }
@@ -3752,6 +4026,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_WEBVIEW_CACHE="$ISOLATED_WEBVIEW_ROOT/cache"
   ISOLATED_WEBVIEW_CONFIG="$ISOLATED_WEBVIEW_ROOT/config"
   mkdir -p "$ISOLATED_HOME" "$ISOLATED_CODEX_HOMES_DIR" "$ISOLATED_WEBVIEW_DATA" "$ISOLATED_WEBVIEW_CACHE" "$ISOLATED_WEBVIEW_CONFIG"
+  seed_isolated_shortcut || exit $?
   prepare_isolated_bearer
 
   select_isolated_pg_source || exit $?
@@ -4006,7 +4281,9 @@ PGWATCHDOG
   ISOLATED_UNSET_LINE="-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN"
   # IPC prefers OPERATOR_BASE over the listener port. Keep parent MCP pins
   # outside this disposable host's API boundary, including boot-only handoffs.
-  ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_OPERATOR_BASE=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_OPERATOR_URL=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
+  # PAPERCUSP_HOME does not scope the host-wide PTY discovery default. Without
+  # its dedicated pin, isolated owner-question replies can wake the live caller.
+  ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_OPERATOR_BASE=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_OPERATOR_URL=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_PSU_PTY_DIR=\"$ISOLATED_HOME/psu-pty\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
   # The disposable PG cluster has no data in common with the host backup.
   # Keep the guard, with a coordination namespace private to this run.
   ISOLATED_ENV_LINE+=" KOPIA_BACKUP_LOCK_PATH=\"$WORK/backup-guard/kopia.lock\" KOPIA_BACKUP_STATE_DIR=\"$WORK/backup-guard/state\""
@@ -4455,8 +4732,9 @@ if [ "$ISOLATED_DB" = "1" ]; then
      ! grep -Fxq "PAPERCUSP_OPERATOR_BASE=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_PSU_PTY_DIR=$ISOLATED_HOME/psu-pty" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"; then
-    echo "FATAL: isolated sidecar lost its workspace, private registry or owned API pin; refusing to verify another workspace." >&2
+    echo "FATAL: isolated sidecar lost its workspace, private registry, PTY discovery or owned API pin; refusing to verify another workspace." >&2
     exit 1
   fi
   SIDECAR_ADMIN_URL="$(sed -n 's/^HARNESS_ADMIN_DATABASE_URL=//p' <<<"$SIDECAR_ENVIRON")"
@@ -4922,9 +5200,14 @@ log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 # isolated profile starts without a stable sentinel, can write/read it, and can
 # clear it again. The private XDG/dataDirectory roots above make `before:null`
 # meaningful: an ambient desktop profile must never already contain this key.
-if [ "$ISOLATED_DB" = "1" ]; then
+verify_isolated_storage_sentinel() {
+  local evidence_dir="${VH_RUN_DIR:-$WORK}/phases/boot/isolated-storage" probe_status=0
+  mkdir -p -- "$evidence_dir" || return 1
   ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
-  ISOLATED_STORAGE_SENTINEL_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+  # A failed evaluation is unmeasured storage, not an empty sentinel result.
+  # Keep both streams and the real status before teardown destroys the WebView.
+  timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s" \
+    "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
     (function () {
       var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
       var value = 'verify-tauri-headless-isolated-v1';
@@ -4934,13 +5217,26 @@ if [ "$ISOLATED_DB" = "1" ]; then
       localStorage.removeItem(key);
       return JSON.stringify({ before: before, after: after, cleared: localStorage.getItem(key) === null });
     })()
-  " 2>&1)" || ISOLATED_STORAGE_SENTINEL_JSON=""
+  " >"$evidence_dir/probe.stdout" 2>"$evidence_dir/probe.stderr" || probe_status=$?
+  printf '%s\n' "$probe_status" >"$evidence_dir/probe.status" || return 1
+  ISOLATED_STORAGE_SENTINEL_JSON="$(cat "$evidence_dir/probe.stdout")" || return 1
+  if [ "$probe_status" -ne 0 ]; then
+    echo "FATAL: isolated WebView storage evaluation did not complete (exit=$probe_status); storage isolation is unmeasured. Evidence: $evidence_dir" >&2
+    cat "$evidence_dir/probe.stdout" "$evidence_dir/probe.stderr" >&2
+    return 1
+  fi
   if ! grep -Eq '"before"[[:space:]]*:[[:space:]]*null' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
     || ! grep -Eq '"after"[[:space:]]*:[[:space:]]*"verify-tauri-headless-isolated-v1"' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
     || ! grep -Eq '"cleared"[[:space:]]*:[[:space:]]*true' <<<"$ISOLATED_STORAGE_SENTINEL_JSON"; then
     echo "FATAL: isolated WebView localStorage profile failed its absent/write/read/clear sentinel check: $ISOLATED_STORAGE_SENTINEL_JSON" >&2
-    exit 1
+    echo "       Evaluation evidence: $evidence_dir" >&2
+    return 1
   fi
+}
+
+if [ "$ISOLATED_DB" = "1" ]; then
+  vh_step isolated-webview-storage
+  verify_isolated_storage_sentinel || exit 1
   # A real profile file is the second half of the guard: a mock/localStorage
   # shim could pass the JS round-trip without proving WebKit used our path.
   if ! find "$ISOLATED_WEBVIEW_ROOT" -type f -print -quit 2>/dev/null | grep -q .; then
@@ -5421,6 +5717,7 @@ export OPERATOR_SOURCE_ROOT
 if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_HOME="$ISOLATED_HOME"
   export PAPERCUSP_SU_CODEX_HOMES_DIR="$ISOLATED_CODEX_HOMES_DIR"
+  export PAPERCUSP_PSU_PTY_DIR="$ISOLATED_HOME/psu-pty"
   export PAPERCUSP_WORKSPACE="$ISOLATED_WORKSPACE"
   export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"
   export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"

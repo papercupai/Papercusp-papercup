@@ -98,7 +98,7 @@ export function baseRequest({ port, client, owner, cwd, env }: {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
@@ -106,6 +106,7 @@ export function baseRequest({ port, client, owner, cwd, env }: {
 export function postInjection(port: InjectionPort, body: InjectionRequest, opts?: {
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
+    now?: () => number;
 }): Promise<{
     text: string;
     deliveryToken: string | null;
@@ -127,6 +128,10 @@ export function collectInterfaceEdits(body: any, collect?: (path: any) => Promis
     changes: any[];
     checks: string[];
 } | null>, env?: NodeJS.ProcessEnv): Promise<void>;
+/** Async preparation shared by native Edit/Write/MultiEdit and apply_patch.
+ * The push registry receives only bounded findings; it never scans source. */
+export function collectCloneEdits(body: any, digest?: (path: any) => Promise<string | null>): Promise<void>;
+export function collectAntipatternEdits(body: any, prepare?: (path: any, root: any) => Promise<any>): Promise<void>;
 /** Keep native patch headers outside the lossy recall digest, including multi-file patches. */
 export function editedPathsFor(tool: any, input: any): string[];
 /**
@@ -161,6 +166,20 @@ export function buildDigest(calls: Array<{
     editedPaths?: string[];
     editedPath?: string;
 }>;
+/**
+ * The inner call of a `tools:invoke { name, args }` dispatch, one level only.
+ * Returns the original `{ tool, toolInput }` for any other call, or when the
+ * wrapper's input carries no usable name. About half of all `testing:run` calls
+ * arrive wrapped (measured 2026-10-27: 392 of 772 in 36h), and the incident leg
+ * matches on the inner tool name.
+ * @param {unknown} tool
+ * @param {unknown} input
+ * @returns {{ tool: unknown, toolInput: unknown }}
+ */
+export function unwrapInvokedCall(tool: unknown, input: unknown): {
+    tool: unknown;
+    toolInput: unknown;
+};
 /** Preserve observed failing-file identities outside the lossy recall prefix.
  * Requested files, refusals and passing rows are never failure evidence. */
 export function incidentResultFor(tool: any, response: any, depth?: number): any;

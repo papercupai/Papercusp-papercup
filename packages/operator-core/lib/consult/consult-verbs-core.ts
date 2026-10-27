@@ -746,7 +746,7 @@ export async function consultReplyCore(
         consultResponderVerbMenu({ conversationId: req.conversationId }),
     });
     woke = r.woke;
-    responderConfirmedDead = woke === 0 && r.confirmedDead === true;
+    responderConfirmedDead = r.confirmedDead === true;
   }
 
   // D-005 always-advance: the current responder's perspective advances the
@@ -838,7 +838,7 @@ export async function consultReplyCore(
         : req.kind === 'answer'
           ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
           : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
-      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'wake queued; turn pickup not confirmed' : responderConfirmedDead ? 'confirmed ended' : 'pinged; turn pickup not confirmed'}` : ''}${requesterRerouteHint}.`;
+      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${responderConfirmedDead ? 'confirmed ended' : woke > 0 ? 'wake queued; turn pickup not confirmed' : 'pinged; turn pickup not confirmed'}` : ''}${requesterRerouteHint}.`;
 
   return {
     ok: true,
@@ -852,7 +852,7 @@ export async function consultReplyCore(
           wake: {
             attempted: willWake,
             woke,
-            ...((willWake && woke === 0 || resumesUndelivered) && requesterReroute ? { reroute: requesterReroute } : {}),
+            ...(requesterReroute ? { reroute: requesterReroute } : {}),
           },
         }
       : {}),

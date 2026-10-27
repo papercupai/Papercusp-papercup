@@ -122,6 +122,16 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     )).toBe('transient');
   });
 
+  it('classifies PostgreSQL deadlocks as transient infrastructure failures', () => {
+    expect(classifyToolError('handler_error', 'error', 'deadlock detected')).toBe('transient');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'work_items:claimable',
+      errorCode: 'handler_error',
+      status: 'error',
+      message: 'deadlock detected',
+    })).toMatchObject({ class: 'transient', direct: false });
+  });
+
   it('classifies the release admission worker busy refusal as transient, while retaining structural fallback', () => {
     const message = 'an admission job is already running in this process; retry after it settles';
     expect(classifyToolError('handler_error', 'error', message)).toBe('transient');
@@ -1315,6 +1325,7 @@ describe('toolErrorKeyParts — error code + field path read out of the failure'
     ['not_found', 'handler_error: claim_conflict: held', 'not_found', 'field-unknown'],
     [null, 'Cannot read properties of undefined (reading "id")', 'error-code-unknown', 'field-unknown'],
     ['handler_error', 'Cannot read properties of undefined', 'handler_error', 'field-unknown'],
+    ['handler_error', 'column wi.duplicate_of does not exist', 'handler_error', 'duplicate_of'],
   ] as const)('(%s, %s) → %s @ %s', (code, message, wantCode, wantField) => {
     expect(toolErrorKeyParts(code, message)).toEqual({ errorCode: wantCode, fieldPath: wantField });
   });

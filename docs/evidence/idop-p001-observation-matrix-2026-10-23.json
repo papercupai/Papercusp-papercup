@@ -1,0 +1,617 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "capturedAt": "2026-10-23T22:49:57.680326+00:00",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a16ae7-71f7-7022-99cb-09f299993e3d",
+  "acceptance": "OPEN",
+  "kind": "remaining-observation-matrix; current-source preparation, not historical baseline",
+  "canonicalSpecs": [
+    {
+      "id": "P-001-BASELINE-CENSUS",
+      "revision": 3,
+      "hash": "aedda400a80e5f23a214ac6969bb171e8abcc5d0df4b860e420dd79821e77dc7"
+    },
+    {
+      "id": "SPEC-P-001-PROMPT",
+      "revision": 1,
+      "hash": "1a1f7b2ec4b5af42450664659c14673a0987d0dafc12f06a8f2a7491cb35c621"
+    },
+    {
+      "id": "SPEC-P-001-VAULT",
+      "revision": 2,
+      "hash": "755ad970436aa9ccdfe42e295504aecf9e1c5598130caa28fab017a6ce0393b3"
+    }
+  ],
+  "frozenBaseline": {
+    "path": "docs/evidence/idop-p001-baseline-2026-10-22.json",
+    "sha256": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "rewritten": false
+  },
+  "population": {
+    "kernelRoles": {
+      "source": "packages/agent-mcp/src/role-config.ts#AGENT_ROLES",
+      "liveReader": "roles:known -> getKnownRoles",
+      "entries": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "countControl": 54,
+      "observationStatus": "source population enumerated; authentic per-role tool/argument sessions still required"
+    },
+    "manifestRoles": {
+      "source": "role-registry.ts:listRoles -> .role.json and enabled plugins",
+      "entries": [
+        {
+          "id": "infra-reviewer"
+        },
+        {
+          "id": "security-reviewer"
+        }
+      ],
+      "countControl": 2,
+      "scope": "roles:list observed same entries; not the kernel population"
+    },
+    "frozenBuiltinIdentities": {
+      "source": "docs/evidence/idop-p001-baseline-2026-10-22.json#population.builtInIdentities",
+      "entries": [
+        {
+          "id": "blueprint-operation-worker",
+          "path": "libs/papercusp/packages/harness/blueprints/blueprint-operation-worker/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "domain"
+            }
+          ]
+        },
+        {
+          "id": "judge-acceptance",
+          "path": "libs/papercusp/packages/harness/blueprints/judge-acceptance/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "judge-domain",
+          "path": "libs/papercusp/packages/harness/blueprints/judge-domain/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "domain"
+            }
+          ]
+        },
+        {
+          "id": "judge-ensemble",
+          "path": "libs/papercusp/packages/harness/blueprints/judge-ensemble/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "judge-grading-integrity",
+          "path": "libs/papercusp/packages/harness/blueprints/judge-grading-integrity/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "judge-gym",
+          "path": "libs/papercusp/packages/harness/blueprints/judge-gym/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "operator.audience-engineer",
+          "path": "libs/papercusp/packages/harness/blueprints/operator.audience-engineer/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "audience"
+            }
+          ]
+        },
+        {
+          "id": "operator.audience-novice",
+          "path": "libs/papercusp/packages/harness/blueprints/operator.audience-novice/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "audience"
+            }
+          ]
+        },
+        {
+          "id": "papercup.audience-engineer",
+          "path": "libs/papercusp/packages/harness/blueprints/papercup.audience-engineer/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "audience"
+            }
+          ]
+        },
+        {
+          "id": "papercup.audience-novice",
+          "path": "libs/papercusp/packages/harness/blueprints/papercup.audience-novice/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "audience"
+            }
+          ]
+        },
+        {
+          "id": "papercusp-engineer",
+          "path": "libs/papercusp/packages/harness/blueprints/papercusp-engineer/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "domain"
+            }
+          ]
+        },
+        {
+          "id": "research-steward",
+          "path": "libs/papercusp/packages/harness/blueprints/research-steward/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "domain"
+            }
+          ]
+        },
+        {
+          "id": "scout.lens-analogical",
+          "path": "libs/papercusp/packages/harness/blueprints/scout.lens-analogical/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "scout.lens-constraint-removal",
+          "path": "libs/papercusp/packages/harness/blueprints/scout.lens-constraint-removal/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "scout.lens-first-principles",
+          "path": "libs/papercusp/packages/harness/blueprints/scout.lens-first-principles/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "scout.lens-reframing",
+          "path": "libs/papercusp/packages/harness/blueprints/scout.lens-reframing/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "su",
+          "path": "libs/papercusp/packages/harness/blueprints/su/blueprint.yaml",
+          "slots": []
+        },
+        {
+          "id": "su-collaborator",
+          "path": "libs/papercusp/packages/harness/blueprints/su-collaborator/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "collaboration-stance"
+            }
+          ]
+        },
+        {
+          "id": "su.fleet-leader",
+          "path": "libs/papercusp/packages/harness/blueprints/su.fleet-leader/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "fleet-posture"
+            }
+          ]
+        },
+        {
+          "id": "su.fleet-member",
+          "path": "libs/papercusp/packages/harness/blueprints/su.fleet-member/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "fleet-posture"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-audit",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-audit/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "audit"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-auto",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-auto/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "autonomy"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-drain",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-drain/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "objective"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-goal",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-goal/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "goal"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-grade",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-grade/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "grade"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-ideate",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-ideate/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "ideation"
+            }
+          ]
+        },
+        {
+          "id": "su.mode-test",
+          "path": "libs/papercusp/packages/harness/blueprints/su.mode-test/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "test"
+            }
+          ]
+        },
+        {
+          "id": "su.practice",
+          "path": "libs/papercusp/packages/harness/blueprints/su.practice/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        },
+        {
+          "id": "su.specialist-planner",
+          "path": "libs/papercusp/packages/harness/blueprints/su.specialist-planner/blueprint.yaml",
+          "slots": [
+            {
+              "slot": "practice"
+            }
+          ]
+        }
+      ],
+      "countControl": 29,
+      "scope": "historic population; cannot be replaced by current successful loader subset",
+      "notInCurrentReadableLoader": [
+        "judge-acceptance",
+        "judge-domain",
+        "judge-ensemble",
+        "judge-grading-integrity",
+        "judge-gym",
+        "scout.lens-analogical",
+        "scout.lens-constraint-removal",
+        "scout.lens-first-principles",
+        "scout.lens-reframing",
+        "su.fleet-leader",
+        "su.fleet-member"
+      ],
+      "absenceInterpretation": "These are missing from the readable loader subset, not absent from the system or accepted as not applicable."
+    },
+    "currentAuthoredIdentityLoader": {
+      "reader": "identities:list(repoDir canonical,limit100)",
+      "readableIds": [
+        "blueprint-operation-worker",
+        "operator.audience-engineer",
+        "operator.audience-novice",
+        "p008-j2-generic-domain",
+        "p008-j2r-generic-domain",
+        "p008-j2s-generic-domain",
+        "p008-j2t-generic-domain",
+        "p008-j2u-generic-domain",
+        "p008-j2v-generic-domain",
+        "papercup.audience-engineer",
+        "papercup.audience-novice",
+        "papercusp-engineer",
+        "research-steward",
+        "su",
+        "su-collaborator",
+        "su.mode-audit",
+        "su.mode-auto",
+        "su.mode-drain",
+        "su.mode-goal",
+        "su.mode-grade",
+        "su.mode-ideate",
+        "su.mode-test",
+        "su.practice",
+        "su.specialist-planner"
+      ],
+      "readableCount": 24,
+      "unreadable": [
+        {
+          "id": "oddsmith-ops",
+          "reason": "invalid kind; expected pot or harness"
+        },
+        {
+          "id": "su.fleet-leader",
+          "reason": "installed attestation-missing"
+        },
+        {
+          "id": "su.fleet-member",
+          "reason": "installed attestation-missing"
+        }
+      ],
+      "scannedSourceDocuments": 77,
+      "nextAfter": null,
+      "scope": "current live loader observation, not baseline identity population; unreadables retained as gaps",
+      "defectRef": "EI-26812178996820105"
+    },
+    "wornSuVariations": {
+      "required": [
+        "base su",
+        "AUTO",
+        "AUTO + AUDIT",
+        "AUTO + AUDIT + IDEATE",
+        "fleet leader",
+        "fleet member"
+      ],
+      "boundedPriorEvidence": [
+        "D-027",
+        "D-028",
+        "D-029",
+        "D-031",
+        "D-032",
+        "D-033",
+        "D-034",
+        "D-035",
+        "D-036"
+      ],
+      "remaining": "Join authentic native catalogs, exact source/applied tuples and exhaustive annotation partitions for each frozen population member; do not infer per-argument authority or coverage from activation."
+    }
+  },
+  "argumentObservation": {
+    "schemaSource": "docs/evidence/idop-p001-baseline-2026-10-22.json#toolCatalog",
+    "writer": "agent_tools/list.ts only checks role/capability allow flags; quotas and tool-handler resource/argument gates are not evaluated",
+    "requiredPerEntry": [
+      "actual source session id",
+      "observation timestamp",
+      "complete tool-name equality",
+      "exact input schema hash",
+      "role/capability annotations and count control",
+      "per-argument scope from real handler/boundary observation",
+      "full-access env/query/principal-kind override conditions"
+    ],
+    "status": "OPEN; schema or allowed=true does not prove effective argument scope",
+    "safeProbeRule": "Synthetic fixtures, read-only probes or isolated private identities; never exercise a live outward-facing side effect merely to fill the census",
+    "overrideChannels": [
+      {
+        "channel": "PAPERCUSP_SU_* / launch environment",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      },
+      {
+        "channel": "?superuser=1 legacy query parameter",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      },
+      {
+        "channel": "principal.kind / authenticated principal",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      },
+      {
+        "channel": "role envelope",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      },
+      {
+        "channel": "mode registry",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      },
+      {
+        "channel": "fleet posture",
+        "status": "OPEN: source/boundary observation and exact source-session proof required"
+      }
+    ]
+  },
+  "vaultRows": [
+    {
+      "setting": "grant terms",
+      "source": [
+        "authorization.ts:authorizePersonalAccess",
+        "store.ts:createPersonalGrant/revokePersonalGrant"
+      ],
+      "independentProbe": "Compare no-expiry/future-expiry/expired/revoked and repeated mail checks on a non-coding control; reject calendar; resolve su from fixture presence and observe refusal despite a non-expiring su grant.",
+      "scopeLimit": "Control grant behavior is not su all-effects/no-per-use authority. Coding-role refusal prevents such a conclusion.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: ten-case maintained migrated-fixture run21851787; local working tree only",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed in fixture: live no-expiry/future grants authorize the non-coding control; expired/revoked grants refuse; repeat checks succeed only in mail scope; su refuses coding_agent_denied despite a non-expiring grant.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log"
+      ]
+    },
+    {
+      "setting": "automatic recall",
+      "source": [
+        "ambient.ts:resolvePersonalAmbientToolContext/collectPersonalAmbientResults"
+      ],
+      "independentProbe": "Real fixture presence resolves su; actual authorizer denies; expect no recall bytes and no embed/search/disclosure call despite a synthetic su grant.",
+      "scopeLimit": "Production helper path with a migrated fixture, not a delivered normal turn-start or Avi personal data.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: ten-case maintained migrated-fixture run21851787; local working tree only",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed in fixture: presence-derived su yields null with zero embed/search/disclose calls despite a grant.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log"
+      ]
+    },
+    {
+      "setting": "after-read holds",
+      "source": [
+        "disclosure-ledger.ts:discloseDocuments/assertDisclosurePermits"
+      ],
+      "independentProbe": "Compare no-rule/unlabelled delivery with sender-only delivery for a su-shaped owner. Assert ledger row before recipient checks; permit sender and refuse outsider.",
+      "scopeLimit": "Independent injected delivery seam; does not assert the denied su read path can acquire that document.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: ten-case maintained migrated-fixture run21851787; local working tree only",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed at independent delivery seam: no rules yield zero ledger rows and unrestricted recipient check; sender-only delivery records one su disclosure then refuses outsider and permits sender.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log"
+      ]
+    },
+    {
+      "setting": "transcript visibility",
+      "source": [
+        "transcript-exclusion.ts:loadTranscriptExclusion/withholds"
+      ],
+      "independentProbe": "Use the same real disclosure-window timestamp; compare recording identity and another reader. Expect existing self exemption and peer withholding.",
+      "scopeLimit": "Helper observation; full sessions:read/search population is covered separately by existing transcript-exclusion integration suite. This documents legacy behavior, not D-020 compliance.",
+      "testPath": "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts",
+      "testVerdict": "PASS: ten-case maintained migrated-fixture run21851787; local working tree only",
+      "historicalBaselineAccepted": false,
+      "observation": "Observed at independent helper seam: current recorder exemption allows own stamp and peer gets disclosure-window refusal.",
+      "evidenceRefs": [
+        "test-run:21851787",
+        "/tmp/idop-vault-observation-fixed-20261023.log"
+      ]
+    }
+  ],
+  "testAttempt": {
+    "runId": "9c2f022f-e828-4caf-8052-b7d7877d7fd0",
+    "result": "no_report",
+    "testRunIds": [],
+    "nativeDiagnosticSession": null,
+    "logPath": "/tmp/idop-vault-observation-20261023.log",
+    "diagnosticDefect": "EI-26812122855566296",
+    "historicalNativeDiagnosticSession": 55031,
+    "correctedRun": {
+      "session": 55650,
+      "exitCode": 0,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "testRunId": 21851787,
+      "previousFailedTestRunId": 21851779,
+      "logPath": "/tmp/idop-vault-observation-fixed-20261023.log",
+      "testSha256": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df",
+      "provenance": "local working tree; ledger worktreeDirty=true, isScratchConfig=false",
+      "committedAcceptance": false
+    },
+    "focusedTypes": {
+      "status": "scoped PASS: LINT_TSC_RESULT exit=0 status=clean",
+      "historicalSession": 91649,
+      "logPath": "/tmp/idop-vault-observation-types-20261023.log",
+      "finalObservedTestSha256": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df",
+      "qualification": "Command started before fixture correction; no immutable compiler-input snapshot was retained. TSC service request timed out, then admitted full operator-core fallback completed clean for the explicitly named file. This is local scoped type evidence, not global type or committed-source acceptance."
+    }
+  },
+  "sourceSha256": {
+    "packages/operator-core/lib/personal-vault/authorization.ts": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+    "packages/operator-core/lib/personal-vault/coding-roles.ts": "4430a71a2047860187ed245a83c0b04f736b4e931bb0ff5ba0833bbfb35c223a",
+    "packages/operator-core/lib/personal-vault/ambient.ts": "bf98999206cea5bbde387b4bccadfe3837a2284f241e984b1a19b6203df6fd17",
+    "packages/operator-core/lib/personal-vault/disclosure-ledger.ts": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+    "packages/operator-core/lib/personal-vault/transcript-exclusion.ts": "c3ff4be3de5a90603c041dba4e7782f761447a5bda13dc8e2e7b3fbf27335ff7",
+    "packages/operator-core/lib/personal-vault/store.ts": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+    "packages/agent-mcp/src/role-config.ts": "c1707e860788e33af09f5f23aa798cd9a61a61024c4b81d5e0ea99122e31edce",
+    "packages/operator-core/lib/known-roles.ts": "5bcab2b257b071a2dda2a0a72900497e33827eca1d659b493ee3bc9a79218606",
+    "packages/operator-core/lib/role-registry.ts": "336c54895438c72d80d9aa340e5fac6b94245ce0cdf8ca77d73c5bbac66d5a63",
+    "packages/operator-core/lib/agent-tools/agent_tools/list.ts": "d980ea65a594dc7dabf2686b2b8ef42eb7cbebabec2434e183cf232eaaa90978",
+    "packages/operator-core/lib/personal-vault/idop-vault-observation.integration.test.ts": "f73fa2d23360936905732ccd947ccb618c70fc8430d72027c5675562a32837df"
+  },
+  "constraints": [
+    "Original18 archive=false; original22 token/archive/full-delivery=false; historical23 control ACK failed.",
+    "D-036 installed stdout/normal orientation ACK is settled bounded evidence; no new observer/mode/ACK cycle.",
+    "Raw confirmation HTTP body unretained.",
+    "Existing source question349651 under EI-26698597499949499/su-ebe9b requires a genuine answer; do not synthesize authority or duplicate the ask.",
+    "Activation audit through plan revision73, P001 acceptance, dependent P024 independent acceptance and shipment remain open.",
+    "No real personal payload, owner rule/grant or live gate operations were changed."
+  ],
+  "updatedAt": "2026-10-23T22:55:59.784858+00:00"
+}

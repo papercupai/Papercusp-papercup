@@ -91,7 +91,7 @@ export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutex<T>(name: string, fn: (context?: {
@@ -103,6 +103,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
     timeoutMs?: number;
     staleMs?: number;
     retryMs?: number;
+    deferAfterHolderAgeMs?: number;
     onWaiting?: (info: {
         owner: string;
         elapsedMs: number;
@@ -130,7 +131,49 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @returns {Promise<T>}
+ */
+/**
+ * A task-sized, weighted reader lease on the existing mutex. Legacy writers
+ * still exclude these readers. The short allocator only protects inspection
+ * and publication; it never holds a lock while a child runs. Unknown readers
+ * and wildcard resources fail closed. A blocked duplicate does not prevent an
+ * older eligible, disjoint request from using spare capacity.
+ * @template T
+ * @param {string} name
+ * @param {(workers: number) => Promise<T>} fn
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @returns {Promise<T>}
+ */
+export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Promise<T>, opts: {
+    workers: number;
+    workerMemoryMb: number;
+    workerBudget: number;
+    memoryBudgetMb: number;
+    memoryBudgetScope?: string;
+    sharedMemoryBudgetMb?: number;
+    maxConcurrentTasks: number;
+    resource: string;
+    intent?: Record<string, string | number | boolean>;
+    timeoutMs?: number;
+    retryMs?: number;
+    lockRootDir?: string;
+    remainingMs?: () => number;
+    onWaiting?: (info: {
+        owner: string;
+        elapsedMs: number;
+    }) => void;
+    onAcquired?: (info: {
+        waitedMs: number;
+    }) => void;
+}): Promise<T>;
+/**
+ * Existing unweighted reader lease; writers drain these readers as before.
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
@@ -146,6 +189,11 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
     waitingNoticeIntervalMs?: number;
     onAcquired?: (info: {
         waitedMs: number;
+        admissionSubphaseTimingsMs?: Record<string, number>;
+    }) => void;
+    onTimedOut?: (info: {
+        waitedMs: number;
+        timeoutMs: number;
         admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     io?: FsMutexIo;

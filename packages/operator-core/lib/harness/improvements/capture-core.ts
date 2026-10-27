@@ -37,6 +37,7 @@ import {
   mergeIssuePayload,
   tagIssue,
   untagIssue,
+  markLeaderTriage,
   setIssueState,
   type EngineerIssue,
   type IssueSeverity,
@@ -733,6 +734,12 @@ export interface CaptureDeps {
    * PG-free tests can prove ordering without importing the large work-items module.
    */
   setWorkItemStateWithAliasInfo?: CaptureLifecycleStateWriter;
+  /** Persist the named blocker before parking a review-required capture. */
+  markReviewBlocked?: (
+    id: string,
+    blockedReason: string,
+    by?: string,
+  ) => Promise<CaptureLifecycleStateResult>;
   /** Release the submitter claim when the review lifecycle cannot complete. */
   releaseIssue?: (id: string, opts?: { expectedAssignee?: string }) => Promise<EngineerIssue | null>;
   /**
@@ -776,12 +783,27 @@ const defaultSetWorkItemStateWithAliasInfo: CaptureLifecycleStateWriter = async 
   return setWorkItemStateWithAliasInfo(id, requestedState, opts);
 };
 
+const defaultMarkReviewBlocked: NonNullable<CaptureDeps['markReviewBlocked']> = async (id, blockedReason, by) => {
+  const issue = await markLeaderTriage(id, blockedReason, by);
+  const appliedState = issue?.state ?? null;
+  return {
+    workItem: issue ? { id: issue.id, state: issue.state } : null,
+    requestedState: 'blocked',
+    appliedState,
+  };
+};
+
 /** Shared lifecycle writer used by the agent wrapper after capture-core returns. */
 export async function setCaptureReviewState(
   id: string,
   requestedState: 'blocked' | 'open',
   opts: { harness?: string; by?: string; reason?: string } = {},
 ): Promise<CaptureLifecycleStateResult> {
+  if (requestedState === 'blocked') {
+    const blockedReason = opts.reason?.trim();
+    if (!blockedReason) throw new Error('capture review cannot enter blocked without a named blocker reason');
+    return defaultMarkReviewBlocked(id, blockedReason, opts.by);
+  }
   return defaultSetWorkItemStateWithAliasInfo(id, requestedState, opts);
 }
 
@@ -804,6 +826,7 @@ const defaultDeps: CaptureDeps = {
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
   readIssueAdmissionPressure,
+  markReviewBlocked: defaultMarkReviewBlocked,
   // Lazy on purpose: work-items.ts is a large PG-bound module, and capture-core
   // is imported by pure/vitest paths that must not pull it in. Resolving the
   // ObjectRef through the same `resolveWorkItemRef` the work_items:link tool
@@ -4007,14 +4030,10 @@ export async function captureImprovement(
   if (reviewRequired) {
     const at = new Date().toISOString();
     try {
-      const parked = await (deps.setWorkItemStateWithAliasInfo ?? defaultSetWorkItemStateWithAliasInfo)(
+      const parked = await (deps.markReviewBlocked ?? defaultMarkReviewBlocked)(
         issue.id,
-        'blocked',
-        {
-          ...(reviewHarness ? { harness: reviewHarness } : {}),
-          ...(input.createdBy ? { by: input.createdBy } : {}),
-          reason: 'agent-review enrollment pending',
-        },
+        'agent-review enrollment pending',
+        input.createdBy,
       );
       const appliedState = parked.appliedState ?? parked.workItem?.state;
       if (appliedState !== 'blocked') {

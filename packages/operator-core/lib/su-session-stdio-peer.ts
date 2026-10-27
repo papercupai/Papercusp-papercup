@@ -11,6 +11,9 @@ import { redactSensitiveText } from './sensitive-text';
 import { processMonotonicClock } from './process-monotonic-clock';
 
 export type RpcFrame = Record<string, unknown>;
+/** A correlated native refusal proves the request was rejected. Transport
+ * errors and missing acknowledgements deliberately do not use this type. */
+export class SuStdioRequestRefusal extends Error {}
 /** Process-local observations, not provider dispatch or billing receipts. A
  * write-started receipt records the attempt to enqueue a native RPC command;
  * only write-completed confirms the pipe accepted it, not native execution.
@@ -158,7 +161,7 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
           pending.delete(id); clearTimeout(request.timer);
           if (frame.success === false || frame.error) {
             const error = frame.error;
-            request.reject(new Error(typeof error === 'string' ? error : JSON.stringify(error)));
+            request.reject(new SuStdioRequestRefusal(typeof error === 'string' ? error : JSON.stringify(error)));
           } else request.resolve((frame.result ?? frame.data ?? {}) as RpcFrame);
         } else options.onMessage(frame);
       } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); return; }

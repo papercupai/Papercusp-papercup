@@ -16,6 +16,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { withPlanLock } from '../with-plan-lock';
 import { VALID_PLAN_SLUG } from '../source';
+import * as planSource from '../source';
 
 // A mutator that must never run for a rejected slug.
 const neverMutator = vi.fn(async () => ({ newBody: null, value: null }));
@@ -63,5 +64,34 @@ describe('withPlanLock — slug guard', () => {
     expect(VALID_PLAN_SLUG.test('foo/bar')).toBe(false);
     expect(VALID_PLAN_SLUG.test('../x')).toBe(false);
     expect(VALID_PLAN_SLUG.test('meeting-prep-brief@run-1/../../x')).toBe(false);
+  });
+});
+
+describe('withPlanLock — admitted workspace scope', () => {
+  it('keeps a home-harness write in the caller workspace before opening a transaction', async () => {
+    const stop = new Error('scope observed before database access');
+    const scope = vi.spyOn(planSource, 'resolvePlanScope').mockRejectedValueOnce(stop);
+    try {
+      await expect(withPlanLock(
+        { workspaceId: 'private-plan-workspace', harnessSlug: 'papercusp' },
+        { slug: 'private-plan-scope', intent: 'scope regression', harnessSlug: 'papercusp' },
+        neverMutator,
+      )).rejects.toBe(stop);
+      expect(scope).toHaveBeenCalledWith({ workspaceId: 'private-plan-workspace', harnessSlug: 'papercusp' });
+    } finally { scope.mockRestore(); }
+  });
+
+  it('preserves an explicitly resolved workspace override', async () => {
+    const stop = new Error('scope observed before database access');
+    const scope = vi.spyOn(planSource, 'resolvePlanScope').mockRejectedValueOnce(stop);
+    try {
+      await expect(withPlanLock(
+        { workspaceId: 'caller-workspace', harnessSlug: 'papercusp' },
+        { slug: 'explicit-plan-scope', intent: 'scope regression',
+          workspaceId: 'explicit-workspace', harnessSlug: 'papercusp' },
+        neverMutator,
+      )).rejects.toBe(stop);
+      expect(scope).toHaveBeenCalledWith({ workspaceId: 'explicit-workspace', harnessSlug: 'papercusp' });
+    } finally { scope.mockRestore(); }
   });
 });

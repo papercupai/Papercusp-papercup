@@ -38,13 +38,32 @@ export interface CodexRolloutOverflowAnalysis {
   lastOverflowAt: string | null;
   /** The window Codex reported on the newest `task_started`, when present. */
   modelContextWindow: number | null;
+  /**
+   * How the turn opened by the newest `task_started` ended (WI-6554700010029533).
+   * Null while that turn is still running, or when the text holds no turn start.
+   * A consult answer session is judged by this: a first turn that ended on a
+   * usage limit is a walled account, not a responder that is still thinking.
+   */
+  currentTurnOutcome: 'ok' | 'context-overflow' | 'usage-limit' | 'error' | 'aborted' | null;
+  /** Bounded provider error text of that ending, when it carried one. */
+  currentTurnErrorEvidence: string | null;
 }
 
 type TurnTerminal =
   | { kind: 'ok' }
-  | { kind: 'overflow'; at: string | null }
-  | { kind: 'neutral' }
-  | { kind: 'other' };
+  | { kind: 'overflow'; at: string | null; evidence: string }
+  | { kind: 'usage-limit'; evidence: string }
+  | { kind: 'error'; evidence: string }
+  | { kind: 'aborted' };
+
+const ERROR_EVIDENCE_MAX_CHARS = 200;
+
+/** The provider's own message when the error carries one, else its serialized form; bounded. */
+function errorEvidence(error: unknown, serialized: string): string {
+  const message = error && typeof error === 'object' ? (error as { message?: unknown }).message : null;
+  const text = typeof message === 'string' && message.trim() ? message.trim() : serialized;
+  return text.slice(0, ERROR_EVIDENCE_MAX_CHARS);
+}
 
 interface RolloutRecord {
   timestamp?: unknown;
@@ -56,12 +75,21 @@ function classifyTaskComplete(record: RolloutRecord): TurnTerminal {
   const error = record.payload?.error;
   if (error == null) return { kind: 'ok' };
   const text = typeof error === 'string' ? error : JSON.stringify(error);
+  const evidence = errorEvidence(error, text);
   if (OVERFLOW_RE.test(text)) {
-    return { kind: 'overflow', at: typeof record.timestamp === 'string' ? record.timestamp : null };
+    return { kind: 'overflow', at: typeof record.timestamp === 'string' ? record.timestamp : null, evidence };
   }
-  if (USAGE_LIMIT_RE.test(text)) return { kind: 'neutral' };
-  return { kind: 'other' };
+  if (USAGE_LIMIT_RE.test(text)) return { kind: 'usage-limit', evidence };
+  return { kind: 'error', evidence };
 }
+
+const CURRENT_TURN_OUTCOME: Record<TurnTerminal['kind'], NonNullable<CodexRolloutOverflowAnalysis['currentTurnOutcome']>> = {
+  ok: 'ok',
+  overflow: 'context-overflow',
+  'usage-limit': 'usage-limit',
+  error: 'error',
+  aborted: 'aborted',
+};
 
 /**
  * Analyse rollout JSONL text (possibly a tail that starts mid-line). Pure.
@@ -74,6 +102,7 @@ function classifyTaskComplete(record: RolloutRecord): TurnTerminal {
 export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnalysis {
   const terminals: TurnTerminal[] = [];
   let modelContextWindow: number | null = null;
+  let currentTurnStart: number | null = null;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     let record: RolloutRecord;
@@ -85,12 +114,14 @@ export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnaly
     if (record?.type !== 'event_msg' || !record.payload) continue;
     const kind = record.payload.type;
     if (kind === 'task_started') {
+      // The newest turn's ending is the first terminal recorded after it starts.
+      currentTurnStart = terminals.length;
       const window = record.payload.model_context_window;
       if (typeof window === 'number' && Number.isFinite(window) && window > 0) modelContextWindow = window;
     } else if (kind === 'task_complete') {
       terminals.push(classifyTaskComplete(record));
     } else if (kind === 'turn_aborted') {
-      terminals.push({ kind: 'other' });
+      terminals.push({ kind: 'aborted' });
     }
   }
 
@@ -98,12 +129,19 @@ export function analyzeCodexRolloutText(text: string): CodexRolloutOverflowAnaly
   let lastOverflowAt: string | null = null;
   for (let i = terminals.length - 1; i >= 0; i -= 1) {
     const terminal = terminals[i];
-    if (terminal.kind === 'neutral') continue;
+    if (terminal.kind === 'usage-limit') continue;
     if (terminal.kind !== 'overflow') break;
     trailing += 1;
     if (lastOverflowAt == null) lastOverflowAt = terminal.at;
   }
-  return { trailingContextOverflowTurns: trailing, lastOverflowAt, modelContextWindow };
+  const current = currentTurnStart === null ? undefined : terminals[currentTurnStart];
+  return {
+    trailingContextOverflowTurns: trailing,
+    lastOverflowAt,
+    modelContextWindow,
+    currentTurnOutcome: current ? CURRENT_TURN_OUTCOME[current.kind] : null,
+    currentTurnErrorEvidence: current && 'evidence' in current ? current.evidence : null,
+  };
 }
 
 /** Analyse the tail of a rollout file; null when it cannot be read. */

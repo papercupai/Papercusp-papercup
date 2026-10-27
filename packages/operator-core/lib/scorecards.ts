@@ -40,6 +40,10 @@ import { DREAM_CONTROL_LIVE_INSTRUMENT_KEY, DREAM_CONTROL_SOURCE_PLAN, measureDr
 import type { measureCarryDrillShipment } from './carry-drill-shipment';
 import { measureToolDeliveryAcceptance, toolDeliveryExperiment, TOOL_DELIVERY_INSTRUMENTS, TOOL_DELIVERY_PLAN } from './tool-delivery-acceptance';
 import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
+import {
+  DEFERRED_SPEND_ACCEPTANCE_PLAN, DEFERRED_SPEND_INSTRUMENT_KEYS, measureDeferredSpendAcceptance,
+  type DeferredSpendAcceptanceMeasurement, type DeferredSpendCriterion,
+} from './workspace-host/deferred-spend-acceptance-instruments';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
@@ -52,6 +56,7 @@ import {
   measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
   type NativePushOutcomeMetrics,
 } from './code-intelligence/native-adoption';
+import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-measurement';
 import {
   measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
   WORK_OVERHEAD_VERSION, type WorkOverheadMetrics, type WorkOverheadWindow,
@@ -171,6 +176,7 @@ import {
 import { trackDetached } from './detached-imports';
 import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wiring';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
 export const WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC = 'work-on-everything-stewardship-health';
@@ -427,6 +433,7 @@ export async function resolveScorecardInstrumentSnapshots(
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     providerPackages?: typeof measureProviderPackageAcceptance;
+    deferredSpend?: typeof measureDeferredSpendAcceptance;
     toolDelivery?: typeof measureToolDeliveryAcceptance;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
@@ -526,6 +533,7 @@ export async function resolveScorecardInstrumentSnapshots(
   ));
   let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
   let providerPackagesMeasured: ReturnType<typeof measureProviderPackageAcceptance> | null = null;
+  let deferredSpendMeasured: Promise<DeferredSpendAcceptanceMeasurement> | null = null;
   let toolDeliveryMeasured: ReturnType<typeof measureToolDeliveryAcceptance> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
@@ -565,6 +573,36 @@ export async function resolveScorecardInstrumentSnapshots(
       value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
+    const deferredSpendCriterion = (Object.keys(DEFERRED_SPEND_INSTRUMENT_KEYS) as DeferredSpendCriterion[])
+      .find(criterion => DEFERRED_SPEND_INSTRUMENT_KEYS[criterion] === key);
+    if (deferredSpendCriterion) {
+      const unavailable = (reason: string) => ({ ...unknown(reason), evidenceRef: 'deferred-spend:measurement-unavailable' });
+      if (subject?.kind !== 'plan' || subject.ref !== DEFERRED_SPEND_ACCEPTANCE_PLAN ||
+          input.rubric.subjectPlan !== subject.ref || input.rubric.subjectHarnessSlug !== 'papercusp' ||
+          !subject.windowStart || !subject.windowEnd || Date.parse(subject.windowEnd) > Date.parse(measuredAt)) {
+        snapshots[key] = unavailable('exact deferred-spend plan, harness and completed observation interval required');
+        continue;
+      }
+      try {
+        deferredSpendMeasured ??= (deps.deferredSpend ?? measureDeferredSpendAcceptance)({
+          workspaceId: input.rubric.workspaceId, harness: 'papercusp', planSlug: DEFERRED_SPEND_ACCEPTANCE_PLAN,
+          rubricRef: input.rubric.rubricId, rubricRevision: input.rubric.revision as number,
+          criteriaHash: input.rubric.criteriaHash as string, subjectRef: subject.ref,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+        });
+        const result = await deferredSpendMeasured;
+        const criterion = result.criteria[deferredSpendCriterion];
+        snapshots[key] = result.identity && result.manifestRef && result.manifestHash
+          ? { verdict: criterion.verdict, measuredAt: result.identity.observation.observedAt, provenance: 'platform-computed',
+            evidenceRef: result.manifestRef, window,
+            value: { resolver: key, scope: result.scope, manifestHash: result.manifestHash,
+              evidenceIdentity: result.identity, criterion: deferredSpendCriterion, reasons: criterion.reasons } }
+          : unavailable(criterion.reasons.join('; ') || 'durable identified measurement unavailable');
+      } catch {
+        snapshots[key] = unavailable('deferred-spend resolver failed');
+      }
+      continue;
+    }
     if (key === DREAM_CONTROL_LIVE_INSTRUMENT_KEY) {
       const evidenceRef = 'spec-evidence:Dream-R4-live-edition';
       if (subject?.kind !== 'plan' || subject.ref !== DREAM_CONTROL_SOURCE_PLAN
@@ -833,6 +871,28 @@ export async function resolveScorecardInstrumentSnapshots(
           cannotObserve: measured.metrics.cannotObserve,
         },
       };
+      continue;
+    }
+    if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
+      const evidenceRef = 'harness_shared.code_intel_pushes:reuse-metrics-v1';
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      if (subject.kind !== 'plan' || subject.ref !== input.rubric.subjectPlan || !workspaceId || !harnessSlug
+        || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('An exact completed workspace/harness subject-plan window is required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const instrument = getRegisteredInstrument(key);
+        if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('Reuse metric resolver is not registered.');
+        const result = await instrument.rescore.resolve({ workspaceId, harnessSlug,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug },
+          value: { resolver: key, resolverVersion: 1, detail: result.detail,
+            ...(result.value === undefined ? {} : { quantity: result.value, unit: instrument.rescore.unit }) } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Reuse metric unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
       continue;
     }
     const pushCriterion = nativePushCriterionForInstrument(key);
@@ -2439,7 +2499,7 @@ export async function retractScorecardAtomically(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const row = rows[0];
     if (!row) return null;
@@ -2488,7 +2548,7 @@ export async function retractScorecardAtomically(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
       RETURNING feature_id`;
     if (!updated[0]) return null;
     return { retraction, updated: true };
@@ -2527,14 +2587,14 @@ export async function cancelSupersededPendingGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
        AND target.feature_id = ${issueId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND EXISTS (
          SELECT 1
            FROM harness_shared.work_items AS superseder
           WHERE superseder.workspace_id = target.workspace_id
             AND superseder.feature_id = ${supersedingIssueId}
-            AND superseder.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+            AND superseder.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
             AND superseder.payload->'observation'->>'supersedes' = target.feature_id
             AND superseder.payload->'observation'->>'rubricRef' = target.payload->'observation'->>'rubricRef'
             AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM target.payload->'observation'->>'sourceHive'
@@ -2602,7 +2662,7 @@ export async function cancelStaleEvidencePendingGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
        AND target.feature_id = ${issueId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND target.payload->'observation'->'gradingAudit'->>'stampedAt' = ${expected.stampedAt}
        AND target.payload->'observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ${expected.evidenceFingerprint ?? null}
@@ -2671,7 +2731,7 @@ export async function cancelPendingGradingAuditsForBindingInTransaction(
          origin = 'local',
          updated_ts = ${Date.now()}
      WHERE target.workspace_id = ${workspaceId}
-       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
        AND jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'
        AND EXISTS (
@@ -2768,7 +2828,7 @@ async function retractGradingAuditAtomically(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ANY(${refs}::text[])
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        ORDER BY feature_id
        FOR UPDATE`;
     const auditRow = rows.find((row) => row.feature_id === auditIssueId);
@@ -2805,7 +2865,7 @@ async function retractGradingAuditAtomically(
                updated_ts = ${Date.now()}
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${auditIssueId}
-           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
         RETURNING feature_id`;
       if (!updated[0]) return null;
     }
@@ -2834,7 +2894,7 @@ async function retractGradingAuditAtomically(
                updated_ts = ${Date.now()}
          WHERE workspace_id = ${workspaceId}
            AND feature_id = ${subjectIssueId}
-           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
            AND (
              payload->'observation'->'gradingAudit'->>'auditIssueId' = ${auditIssueId}
              OR (
@@ -2996,14 +3056,14 @@ async function replaceSettledGradingAuditAtomically(
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${workspaceId}
        AND feature_id = ${issueId}
-       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND payload->'observation'->'retracted' IS NULL
        AND target.ctid = (
          SELECT candidate.ctid
            FROM harness_shared.work_items AS candidate
           WHERE candidate.workspace_id = ${workspaceId}
             AND candidate.feature_id = ${issueId}
-            AND candidate.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+            AND candidate.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
           ORDER BY candidate.updated_ts DESC NULLS LAST
           LIMIT 1
        )
@@ -3140,7 +3200,7 @@ export async function settlePendingGradingAuditAtomically(
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'retracted' IS NULL
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->>'metaRubricRef' = ${expected.metaRubricRef}
@@ -3241,14 +3301,16 @@ export const SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS = 30_000;
 
 export class ScorecardEmitMutexWaitTimeoutError extends Error {
   readonly code = 'scorecard_emit_mutex_timeout';
-  readonly phase: 'pool-reservation' | 'advisory-lock';
+  readonly phase: 'pool-reservation' | 'advisory-lock' | 'local-queue';
 
   constructor(
     mutex: 'dedup' | 'grading-audit-subject',
     timeoutMs: number,
-    phase: 'pool-reservation' | 'advisory-lock' = 'advisory-lock',
+    phase: 'pool-reservation' | 'advisory-lock' | 'local-queue' = 'advisory-lock',
   ) {
-    const waitingFor = phase === 'pool-reservation' ? 'pool connection' : 'mutex';
+    const waitingFor = phase === 'pool-reservation'
+      ? 'pool connection'
+      : phase === 'local-queue' ? 'in-process mutex queue' : 'mutex';
     super(
       `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} ${waitingFor}. ` +
         'No scorecard was persisted by this attempt; retry after the current emitter settles.',
@@ -3318,6 +3380,53 @@ function gradingAuditSubjectMutexKey(input: {
     .join('|');
 }
 
+// PostgreSQL remains the cross-process authority. This local keyed queue keeps
+// same-process waiters from each reserving a dedicated connection before they
+// reach that advisory lock, leaving pool capacity for unrelated subjects.
+const gradingAuditSubjectMutexTails = new Map<string, Promise<void>>();
+
+async function acquireGradingAuditSubjectLocalQueue(
+  key: string,
+  timeoutMs: number,
+): Promise<() => void> {
+  const previous = gradingAuditSubjectMutexTails.get(key);
+  let openGate!: () => void;
+  const gate = new Promise<void>((resolve) => { openGate = resolve; });
+  const tail = (previous ?? Promise.resolve()).then(() => gate);
+  gradingAuditSubjectMutexTails.set(key, tail);
+  void tail.then(() => {
+    if (gradingAuditSubjectMutexTails.get(key) === tail) gradingAuditSubjectMutexTails.delete(key);
+  });
+
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    openGate();
+  };
+
+  if (previous) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        previous,
+        new Promise<void>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            release();
+            reject(new ScorecardEmitMutexWaitTimeoutError(
+              'grading-audit-subject', timeoutMs, 'local-queue',
+            ));
+          }, Math.max(1, Math.trunc(timeoutMs)));
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  return release;
+}
+
 /**
  * Serialize grading-audit reservation and emission for one scorecard subject.
  * This uses a dedicated direct connection because session advisory locks must
@@ -3328,19 +3437,30 @@ export async function acquireGradingAuditSubjectMutex(input: {
   subjectIssueId: string;
 }, phases?: PhaseTracker, waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
+  const waitBudgetMs = Math.max(1, Math.trunc(waitTimeoutMs));
+  const deadlineAt = Date.now() + waitBudgetMs;
+  const localQueuePhase = 'scorecards:emit:mutex:grading-audit-subject:local-queue';
   const poolPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-reservation';
-  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitBudgetMs);
+  let advisoryTimeoutMs = waitBudgetMs;
+  let releaseLocal: (() => void) | undefined;
   let reserved: Awaited<ReturnType<ReturnType<typeof gradingAuditSubjectMutexSql>['reserve']>> | undefined;
   let acquired = false;
   try {
+    releaseLocal = await trackPhase(phases, localQueuePhase, () =>
+      acquireGradingAuditSubjectLocalQueue(key, waitBudgetMs),
+    );
+    const reserveBudgetMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
+    reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(reserveBudgetMs);
     const connection = await reserveScorecardMutexConnection(
       () => gradingAuditSubjectMutexSql().reserve(),
       phases,
       poolPhase,
-      waitTimeoutMs,
+      reserveBudgetMs,
     );
     reserved = connection;
-    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
+    advisoryTimeoutMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
+    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${advisoryTimeoutMs}ms`]);
     await connection.unsafe('SET statement_timeout = 0');
     await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
       connection.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
@@ -3354,16 +3474,24 @@ export async function acquireGradingAuditSubjectMutex(input: {
           .unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
           .catch(() => {});
       } finally {
-        connection.release();
+        try {
+          connection.release();
+        } finally {
+          releaseLocal?.();
+        }
       }
     };
   } catch (error) {
-    reserved?.release();
+    try {
+      reserved?.release();
+    } finally {
+      releaseLocal?.();
+    }
     if (isScorecardMutexPoolAcquisitionError(error)) {
       throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', reservationTimeoutMs, 'pool-reservation');
     }
     if ((error as { code?: string } | null)?.code === '55P03') {
-      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', waitTimeoutMs);
+      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', advisoryTimeoutMs);
     }
     throw error;
   }

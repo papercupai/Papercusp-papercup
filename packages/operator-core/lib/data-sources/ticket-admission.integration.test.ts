@@ -48,6 +48,7 @@ import {
   writeBackAdmission,
 } from '../work-admission/admit';
 import { createRecordAdmissionSource } from '../work-admission/record-source';
+import { reconcileAdmissionLifecycle } from '../work-admission/lifecycle';
 import { quoteEndUserTitle } from '../harness/improvements/untrusted-evidence';
 import { findAdmissionWriteBack, writeBacksForWorkItem } from '../work-admission/write-back-ledger';
 
@@ -94,9 +95,20 @@ function json(body: unknown): HostFetchResponse {
   return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), bodyEncoding: 'utf8' };
 }
 
-/** Recorded GitHub: one page of issues, no events or comments; enough for admission. */
+const githubClaimComments: Array<{ issueNumber: number; body: string }> = [];
+
+/** Recorded GitHub: one issue page and the lifecycle's claim-comment response. */
 const githubFetch: HostFetch = async ({ request }) => {
   const url = new URL(request.url);
+  if (request.method === 'POST') {
+    expect(url.origin).toBe('https://api.github.com');
+    const match = url.pathname.match(/\/issues\/(\d+)\/comments$/);
+    expect(match).not.toBeNull();
+    const body = JSON.parse(String(request.body)) as { body: string };
+    const issueNumber = Number(match![1]);
+    githubClaimComments.push({ issueNumber, body: body.body });
+    return { ...json(recordedGithubComment(issueNumber, 7300 + githubClaimComments.length, body.body)), status: 201 };
+  }
   const page = Number(url.searchParams.get('page') ?? '1');
   if (page > 1 || !url.pathname.endsWith('/issues')) return json([]);
   return json(issues);
@@ -207,7 +219,18 @@ async function sync(sourceId: string, hostFetch: HostFetch = githubFetch): Promi
   const result = await runConnectorSync(
     sql,
     { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId] },
-    { registry, ingest, hostFetchFor: () => hostFetch, leaseOwner: 'ticket-admission-it' },
+    {
+      registry, ingest, hostFetchFor: () => hostFetch, leaseOwner: 'ticket-admission-it',
+      // Keep the real lifecycle and write-back ledger on this fixture's provider
+      // port, just as the sync above uses its recorded HTTP responses.
+      afterSourceSynced: async (db, source) => {
+        const lifecycle = await reconcileAdmissionLifecycle(db, { workspaceId: WS, dataSourceId: source.id }, {
+          resolverFor: (kind) => kind === 'record'
+            ? createRecordAdmissionSource({ registry, hostFetchFor: () => hostFetch }) : undefined,
+        });
+        expect(lifecycle.failed).toEqual([]);
+      },
+    },
   );
   expect(result.sources).toEqual([expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 })]);
 }
@@ -313,6 +336,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await clean();
   invoked.length = 0;
+  githubClaimComments.length = 0;
   fixtureCategory = 'todo';
   readOnlyInvoke.mockClear();
   startedAt = new Date(Date.now() - 1000);
@@ -362,6 +386,14 @@ describe('ticket admission into work (P-020, R-14) through the shared connector 
       SELECT title, taken_by AS assignee FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
     // The re-sync quotes exactly as the admission did.
     expect(resynced).toEqual({ title: quoteEndUserTitle(`${OWNER}/${REPO}#1: Agents should fix the tulip build (retitled)`), assignee: PERSON });
+    expect(githubClaimComments).toEqual([{
+      issueNumber: 1,
+      body: `Picked up in Papercusp as ${rows[0]!.work_item_id}; ${PERSON} is working on it.`,
+    }]);
+    await sync(sourceId);
+    expect(githubClaimComments).toHaveLength(1);
+    expect(await admissions()).toHaveLength(1);
+    expect(await mintedWork()).toHaveLength(1);
   });
 
   it('a person promotes an unmatched ticket by hand; a second promote returns the same admission', async () => {

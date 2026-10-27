@@ -17,18 +17,23 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   TSC_SERVICE_MAX_CHECKED_FILES,
+  TSC_SERVICE_TIMEOUT_MS,
   checkedSetForCooperatively,
   namedSetFor,
   refreshProjectRootFiles,
   renderDiagnostics,
   tscServiceRequestId,
+  tscServiceIdentity,
+  assertTscCompilerIdentityCurrent,
+  closeTscServiceCompiler,
+  takeTscServiceProjectBatch,
   tscServiceSocketPath,
 } from '../lib/tsc-service.mjs';
 
 const ROOT = resolve(process.env.PAPERCUSP_TSC_SERVICE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const IDLE_MS = (Number(process.env.PAPERCUSP_TSC_SERVICE_IDLE_SEC) || 20 * 60) * 1000;
-// Two operator-sized programs fit the unit's 16 GB; a third project evicts the least recently used.
-const MAX_OPEN_PROJECTS = Number(process.env.PAPERCUSP_TSC_SERVICE_MAX_PROJECTS) || 2;
+// A single current operator program can approach MemoryHigh. Never retain another
+// project's program while opening it, including projects coalesced in one queue batch.
 // Past this the tsgo child is restarted between batches (the next request reloads, ~2.5 s).
 const RSS_RESET_BYTES = (Number(process.env.PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB) || 12) * 1024 ** 3;
 const MAX_REQUEST_FILES = 500;
@@ -38,6 +43,7 @@ const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/na
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 
 const log = (line) => console.log(`[tsc-service] ${line}`);
+const startedAt = Date.now();
 
 /** @type {{ api: any, snapshot: any, snapshotAt: number, open: string[] }} */
 const state = { api: null, snapshot: null, snapshotAt: 0, open: [] };
@@ -47,6 +53,55 @@ const dependencyCache = new Map();
 /** @type {{ request: any, reply: (response: object) => void, arrivedAt: number, cancelled: boolean, trace: (phase: string) => void }[]} */
 const queue = [];
 let draining = false;
+
+/**
+ * The native API runs tsgo in a child process. A client timeout closes its socket, but an
+ * in-flight compiler RPC does not observe that cancellation and can otherwise hold the
+ * single-flight queue long after every caller has fallen back to the CLI. Stop that orphaned
+ * operation when no request still needs it. Independently bound the batch by the existing service
+ * timeout: a connected or suspended caller cannot leave this queue awaiting an RPC indefinitely.
+ * Queued requests are not in this batch and get a fresh API after the failed operation is reset.
+ */
+function abortRefreshIfUnobserved(batch) {
+  let abortRequested = false;
+  const abort = () => {
+    if (abortRequested || batch.some((item) => !item.cancelled && !item.completed)) return;
+    const child = state.api?.client?.process;
+    if (!child || child.exitCode !== null || child.signalCode !== null || child.killed) return;
+    abortRequested = true;
+    for (const item of batch) item.trace('refresh-abort-no-clients');
+    log(`terminating tsgo work with no pending observers in its ${batch.length}-request batch`);
+    try {
+      // Reject the pending JSON-RPC request immediately so drain() can reset the dead API and
+      // continue with queued work instead of waiting for a response from the terminated child.
+      state.api?.client?.connection?.dispose();
+    } catch (error) {
+      log(`could not dispose unobserved tsgo connection: ${error?.message ?? error}`);
+    }
+    try {
+      child.kill('SIGTERM');
+    } catch (error) {
+      log(`could not terminate unobserved tsgo refresh: ${error?.message ?? error}`);
+    }
+  };
+  const deadline = setTimeout(() => {
+    const pending = batch.filter((item) => !item.cancelled && !item.completed);
+    if (pending.length === 0) return;
+    for (const item of pending) {
+      item.trace('request-deadline-exceeded');
+      item.reply({ ok: false, reason: 'request-deadline-exceeded',
+        detail: `compiler batch exceeded ${TSC_SERVICE_TIMEOUT_MS} ms` });
+    }
+    // Replying releases observers even if their own foreground timers are suspended.
+    // Reuse the same owned-child disposal/reset path as caller cancellation.
+    abort();
+  }, TSC_SERVICE_TIMEOUT_MS);
+  for (const item of batch) item.abortRefreshIfUnobserved = abort;
+  return () => {
+    clearTimeout(deadline);
+    for (const item of batch) delete item.abortRefreshIfUnobserved;
+  };
+}
 
 // mtime-keyed text cache: the checked-set scan reads every in-repo program file per request, and
 // almost none of them change between requests.
@@ -90,38 +145,51 @@ function tsgoRssBytes() {
 async function resetApi(why) {
   log(`resetting tsgo (${why})`);
   const { api } = state;
+  // Never clear the owning handle and admit another compiler while its
+  // predecessor is still alive, even if snapshot disposal would reject.
+  await closeTscServiceCompiler(api);
   state.api = null;
   state.snapshot = null;
   state.open = [];
   dependencyCache.clear();
-  try {
-    await api?.close();
-  } catch {
-    // Already dead is the usual reason we are here.
-  }
 }
 
 /** Take a fresh snapshot covering `projects`, opening and evicting projects as needed. */
-async function refresh(projects) {
+async function refresh(projects, trace) {
+  assertTscCompilerIdentityCurrent();
+  if (state.open.some(project => !projects.includes(project)))
+    await resetApi('switching compiler project');
   if (!state.api) state.api = new API({ cwd: ROOT });
   const toOpen = projects.filter((p) => !state.open.includes(p));
-  state.open = [...state.open.filter((p) => !projects.includes(p)), ...projects];
-  const toClose = state.open.length > MAX_OPEN_PROJECTS
-    ? state.open.slice(0, state.open.length - MAX_OPEN_PROJECTS).filter((p) => !projects.includes(p))
-    : [];
-  state.open = state.open.filter((p) => !toClose.includes(p));
+  state.open = projects;
+
+  // updateSnapshot also initializes/spawns the compiler. Trace that boundary
+  // separately so a stalled startup is not reported as native snapshot work.
+  trace('compiler-initialize');
+  await state.api.ensureInitialized();
+  trace('compiler-initialized');
 
   const previous = state.snapshot;
+  // release is asynchronous native RPC. Waiting before updateSnapshot prevents
+  // two complete snapshots (and queued releases) from accumulating during refresh.
+  if (previous) {
+    trace('snapshot-release');
+    await previous.dispose();
+    state.snapshot = null;
+  }
+  trace('snapshot-update');
   let snapshot = await state.api.updateSnapshot({
     ...(toOpen.length > 0 ? { openProjects: toOpen } : {}),
-    ...(toClose.length > 0 ? { closeProjects: toClose } : {}),
     ...(previous ? { fileChanges: { invalidateAll: true } } : {}),
   });
+  assertTscCompilerIdentityCurrent();
+  trace('snapshot-updated');
   // invalidateAll does not re-evaluate a tsconfig's include globs. Re-parse each config and tell
   // the API about both added and removed roots; otherwise deleted roots remain in the loaded program
   // and tsc reports TS6053 for a path that no longer exists.
+  trace('project-roots-refresh');
   snapshot = await refreshProjectRootFiles({ api: state.api, snapshot, projects });
-  previous?.dispose();
+  trace('project-roots-refreshed');
   state.snapshot = snapshot;
   state.snapshotAt = Date.now();
   dependencyCache.clear();
@@ -208,6 +276,7 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
   for (const d of errors) if (d.fileName) judged.add(relative(ROOT, d.fileName));
   const now = Date.now();
   if (isCancelled()) return null;
+  assertTscCompilerIdentityCurrent();
   return {
     ok: true,
     output,
@@ -222,7 +291,8 @@ async function serve({ request, arrivedAt, trace, isCancelled }) {
 }
 
 function validate(request) {
-  if (!request || request.v !== 1) return 'unsupported protocol version';
+  if (!request || request.v !== 2) return 'unsupported protocol version';
+  if (request.operation !== undefined && request.operation !== 'identity') return 'unsupported operation';
   if (typeof request.root !== 'string' || resolve(request.root) !== ROOT) return `this service serves ${ROOT}`;
   if (typeof request.project !== 'string' || !isAbsolute(request.project) || !request.project.endsWith('.json')) {
     return 'project must be an absolute tsconfig path';
@@ -245,16 +315,26 @@ async function drain() {
     while (queue.length > 0) {
       // Everything queued now arrived before the refresh below starts, so one snapshot is fresh
       // for the whole batch.
-      const batch = queue.splice(0).filter((item) => !item.cancelled);
+      const batch = takeTscServiceProjectBatch(queue);
       if (batch.length === 0) continue;
       const projects = [...new Set(batch.map((item) => item.request.project))];
+      const detachRefreshAbort = abortRefreshIfUnobserved(batch);
+      try {
+      let refreshFailed = false;
+      let refreshError;
       try {
         for (const item of batch) item.trace('refresh');
-        await refresh(projects);
+        await refresh(projects, (phase) => {
+          for (const item of batch) item.trace(phase);
+        });
         for (const item of batch) item.trace('refreshed');
       } catch (error) {
-        for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(error?.message ?? error) });
-        await resetApi(`refresh failed: ${error?.message ?? error}`);
+        refreshFailed = true;
+        refreshError = error;
+      }
+      if (refreshFailed) {
+        for (const item of batch) item.reply({ ok: false, reason: 'refresh-failed', detail: String(refreshError?.message ?? refreshError) });
+        await resetApi(`refresh failed: ${refreshError?.message ?? refreshError}`);
         continue;
       }
       for (let i = 0; i < batch.length; i += 1) {
@@ -286,6 +366,9 @@ async function drain() {
       }
       const rss = tsgoRssBytes();
       if (rss > RSS_RESET_BYTES) await resetApi(`tsgo RSS ${(rss / 1024 ** 3).toFixed(1)} GiB`);
+      } finally {
+        detachRefreshAbort();
+      }
     }
   } finally {
     draining = false;
@@ -312,12 +395,16 @@ async function shutdown(why) {
 const server = createServer((socket) => {
   let buffer = '';
   let item = null;
+  let replied = false;
   socket.setEncoding('utf8');
   socket.on('error', () => {});
   socket.on('close', () => {
-    if (item && !socket.writableEnded) {
+    // A peer FIN also sets writableEnded under net.Server's default allowHalfOpen=false.
+    // Only our reply establishes completion; a disconnected caller no longer needs a check.
+    if (item && !replied) {
       item.cancelled = true;
       item.trace('client-disconnected');
+      item.abortRefreshIfUnobserved?.();
     }
   });
   socket.on('data', (chunk) => {
@@ -328,22 +415,53 @@ const server = createServer((socket) => {
       if (buffer.length > 1024 * 1024) socket.destroy();
       return;
     }
-    const reply = (response) => {
-      if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
-    };
+    let requestId = tscServiceRequestId();
     let request;
+    const reply = (response) => {
+      if (!socket.destroyed && !replied) {
+        replied = true;
+        if (item) item.completed = true;
+        const identity = tscServiceIdentity(request ?? {});
+        if (response.ok && JSON.stringify(identity) !== JSON.stringify(request.identity)) {
+          response = { ok: false, reason: 'identity-mismatch', detail: 'source or config changed during the request' };
+        }
+        socket.end(`${JSON.stringify({ ...response, kind: 'result', requestId, identity,
+          runtime: { pid: process.pid, startedAt } })}\n`);
+      }
+    };
     try {
       request = JSON.parse(buffer.slice(0, newline));
     } catch {
       reply({ ok: false, reason: 'bad-request', detail: 'not JSON' });
       return;
     }
+    requestId = tscServiceRequestId(request?.requestId);
     const invalid = validate(request);
     if (invalid) {
-      reply({ ok: false, reason: 'bad-request', detail: invalid });
+      const reason = Array.isArray(request?.files) && request.files.length > MAX_REQUEST_FILES ? 'scope-too-wide'
+        : invalid.startsWith('scope must') ? 'unsupported-scope' : 'bad-request';
+      reply({ ok: false, reason, detail: invalid });
       return;
     }
-    const requestId = tscServiceRequestId(request.requestId);
+    const identity = tscServiceIdentity(request);
+    if (JSON.stringify(request.identity) !== JSON.stringify(identity)) {
+      reply({ ok: false, reason: 'identity-mismatch', detail: 'request source/compiler/config identity differs from this service' });
+      return;
+    }
+    if (identity.projectConfigSha256 === null || identity.namedSources.some(source => source.sha256 === null)) {
+      reply({ ok: false, reason: 'source-unavailable', detail: 'requested config or source cannot be read' });
+      return;
+    }
+    // Runtime witnesses must remain observable while a compiler request is
+    // queued or stalled. This path never loads or refreshes a compiler program.
+    if (request.operation === 'identity') {
+      try { assertTscCompilerIdentityCurrent(); }
+      catch (error) { reply({ ok: false, reason: error.code, detail: error.message }); return; }
+      reply({ ok: true, identityOnly: true, output: '', errorCount: 0, checked: [],
+        namedNotInProgram: [], counts: {} });
+      return;
+    }
+    socket.write(`${JSON.stringify({ kind: 'progress', requestId, identity, phase: draining ? 'queued' : 'accepted' })}\n`);
     const arrivedAt = Date.now();
     const trace = (phase) => log(
       `requestId=${requestId} project=${relative(ROOT, request.project)} named=${request.files.length} ` +

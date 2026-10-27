@@ -335,6 +335,20 @@ export function npmChildEnv({ env, offlineSafe, }?: {
 }): {
     ONNXRUNTIME_NODE_INSTALL?: string | undefined;
 };
+/** A development checkout must not lose its tools because NODE_ENV, npm config,
+ * or .npmrc implicitly omits dev dependencies. An explicit production selection
+ * on this invocation remains authoritative. Apply before resolve AND reify so
+ * repairs inherit the same selection. Reader/cache commands never reach here.
+ * @param {string} repoRoot @param {string[]} npmArgs
+ */
+export function developmentInstallArgs(repoRoot: string, npmArgs: string[]): string[];
+/** The dev-dependency selection flags of an npm command, verbatim and in order
+ * (`--include=dev`, `--omit dev`, `--production`, ...), so a follow-up reify can
+ * apply exactly the selection the original install used.
+ * @param {string[]} npmArgs
+ * @returns {string[]}
+ */
+export function dependencySelectionArgs(npmArgs: string[]): string[];
 /**
  * Publish the verified install as an immutable dependency generation under a
  * shared reader marker for the repo-keyed install mutex. The generation builder
@@ -439,7 +453,7 @@ export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
 export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
 /** Printed for `--help` / `-h`; never takes the install mutex. */
-export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\n";
+export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\nInstalls in roots declaring devDependencies include dev tools by default, even under\nNODE_ENV=production or inherited omit config. Use --omit=dev for an explicit production install.\n";
 export const RESOLUTION_STALE_ATTEMPTS_DEFAULT: 3;
 import { spawnSync } from "node:child_process";
 import { withFsMutex } from "./lib/fs-mutex.mjs";

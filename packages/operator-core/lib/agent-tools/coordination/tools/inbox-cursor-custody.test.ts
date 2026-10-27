@@ -37,7 +37,7 @@ import { BUDGET, promptWeight } from "../../tool-guidance-budget";
 
 describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
   it("teaches direct callers to use limit, while reserving inboxLimit for coord:orient", () => {
-    const keys = Object.keys(tool.args.shape);
+    const keys = Object.keys(tool.args.out.shape);
     expect(keys).toContain("limit");
     expect(keys).not.toContain("inboxLimit");
     expect(tool.description).toMatch(/direct bound is `limit`/i);
@@ -49,20 +49,23 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
   });
 
   it("enumerates the supported direct filters and rejects the stale includeRead key", () => {
-    const keys = Object.keys(tool.args.shape);
+    const keys = Object.keys(tool.args.out.shape);
     for (const accepted of [
       "kinds",
       "from",
       "limit",
       "include_ambient",
-      "includeAmbient",
       "include_intents",
       "max_body_chars",
       "unanswered_only",
-      "unansweredOnly",
     ]) {
       expect(keys).toContain(accepted);
     }
+    // WI-6554700010029664: the camelCase spellings are folded before parse, not declared.
+    expect(tool.args.safeParse({ includeAmbient: true, unansweredOnly: true }).data).toMatchObject({
+      include_ambient: true,
+      unanswered_only: true,
+    });
     expect(keys).not.toContain("includeRead");
     expect(tool.args.safeParse({ includeRead: false }).success).toBe(false);
     // The compact guidance intentionally omits the stale key; the strict args
@@ -116,7 +119,7 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     // identical redirect at zero prompt weight, paid only on the failure path. So the pin
     // moves with it. Asking for the description sentence back would re-break the weight
     // gate, which is why this guard must never do that again.
-    expect(Object.keys(tool.args.shape)).not.toContain("q");
+    expect(Object.keys(tool.args.out.shape)).not.toContain("q");
 
     const redirects = (
       tool.guidance as
@@ -138,13 +141,13 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
 
 describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
   it("does not declare a `since_ts` argument", () => {
-    expect(Object.keys(tool.args.shape)).not.toContain("since_ts");
+    expect(Object.keys(tool.args.out.shape)).not.toContain("since_ts");
   });
 
   it("keeps the filters that are genuinely the caller's to choose", () => {
     // The deletion is scoped to the cursor. Narrowing filters are not cursors and
     // must survive it — removing them too would be a silent capability loss.
-    const keys = Object.keys(tool.args.shape);
+    const keys = Object.keys(tool.args.out.shape);
     for (const kept of ["kinds", "from", "limit", "unanswered_only"]) {
       expect(keys).toContain(kept);
     }
@@ -182,7 +185,7 @@ describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
       );
     }
     // Whatever else guidance says, the argument itself stays deleted.
-    expect(Object.keys(tool.args.shape)).not.toContain("since_ts");
+    expect(Object.keys(tool.args.out.shape)).not.toContain("since_ts");
   });
 });
 

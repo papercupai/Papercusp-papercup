@@ -88,11 +88,12 @@ function toolLookup(...tools: ProviderToolContract[]): (name: string) => Provide
 }
 
 const providerTool = (
-  provider: { pkg: string; tool: string },
+  provider: { pkg: string; tool: string; version: string },
   inputSchema: Schema = sendSchema(),
 ): ProviderToolContract => ({
   name: provider.tool,
   pluginName: provider.pkg,
+  providerVersion: provider.version,
   inputSchema,
   outputSchema: null,
 });
@@ -504,7 +505,7 @@ describe('capability class registry (real PG)', () => {
       capabilityClass: (await getCapabilityClass(db.sql, workspaceId, 'crm.email', '1.0.0'))!,
       provider: { pkg: BLUEWAVE.pkg, version: '3.2.0' },
       verbBindings: { send: BLUEWAVE.tool },
-      lookup: toolLookup(providerTool(BLUEWAVE)),
+      lookup: toolLookup(providerTool({ ...BLUEWAVE, version: '3.2.0' })),
     });
     expect(bumped.binding).not.toBeNull();
     expect((await resolve())?.providerVersion).toBe(BLUEWAVE.version);

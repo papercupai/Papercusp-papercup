@@ -48,6 +48,17 @@ it('qualifies packaged tool imports before any singleton or Postgres boot', () =
   expect(main.indexOf('if (!acquireColdStartLock())')).toBeGreaterThan(probe);
 });
 const repoRoot = join(__dirname, "../../..");
+it('reports prompt dispositions through the early verification seam before runtime effects', () => {
+  const main = serveSrc.slice(serveSrc.indexOf('async function main():'));
+  const probe = main.indexOf('argv[0] === "--verify-role-prompts"');
+  expect(probe).toBeGreaterThan(-1);
+  const branch = main.slice(probe, main.indexOf('\n  }', probe));
+  expect(branch).toContain('JSON.stringify(verifyRolePromptAssets())');
+  expect(branch).toContain('PAPERCUSP_ROLE_PROMPT_ASSETS ');
+  expect(branch).toContain('process.exit(0)');
+  expect(main.indexOf('pg = await ensurePostgres()')).toBeGreaterThan(probe);
+  expect(main.indexOf('if (!acquireColdStartLock())')).toBeGreaterThan(probe);
+});
 const tsx = join(repoRoot, "node_modules/.bin/tsx");
 
 beforeAll(async () => {
@@ -78,7 +89,7 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 
   it("verifies the immutable manifest before --ensure reuse and the effective port after sticky resolution", () => {
-    const policy = serveSrc.indexOf("assertVmReleaseRuntimePolicy({");
+    const policy = serveSrc.indexOf("await assertVmReleaseApplicationRuntime({");
     const ensureReuse = serveSrc.indexOf("if (ensure) {", policy);
     const sticky = serveSrc.indexOf("await resolveStickyPort", ensureReuse);
     const effectivePort = serveSrc.indexOf("assertVmReleaseRuntimePort(port", sticky);

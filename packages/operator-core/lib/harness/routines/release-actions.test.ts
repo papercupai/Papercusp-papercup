@@ -18,6 +18,7 @@ import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
 import { pipelineName } from '../../release/pipeline-name';
+import { currentRepairLimbExecutor } from '../../release/repair-limb-executor';
 import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
 import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { captureGateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
@@ -57,6 +58,7 @@ const recordStoredQualificationVerdict = vi.hoisted(() =>
     status: 'missing',
   })),
 );
+const recordStoredQualificationComposedVerdict = vi.hoisted(() => vi.fn());
 const recordStoredQualificationScheduledTerminalRecovery = vi.hoisted(() =>
   vi.fn(async (..._a: unknown[]): Promise<{ status: string; transaction?: Record<string, unknown> }> => ({
     status: 'missing',
@@ -76,6 +78,7 @@ const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
+  recordStoredQualificationComposedVerdict: (...a: unknown[]) => recordStoredQualificationComposedVerdict(...a),
   recordStoredQualificationScheduledTerminalRecovery: (...a: unknown[]) => recordStoredQualificationScheduledTerminalRecovery(...a),
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
   beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
@@ -931,7 +934,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     expect(query).toMatch(new RegExp(`SET metadata = ${'jsonb_set\\(\\s*'.repeat(layers)}COALESCE\\(metadata`));
   }
 
-  it('WI-10000844: the repair-tick (tick-legs) snapshot write is balanced five-layer nested jsonb_set SQL', async () => {
+  it('WI-10000844: the repair-tick (tick-legs) snapshot write is balanced six-layer nested jsonb_set SQL', async () => {
     fakeSql.unsafe.mockClear();
     const candidate = 'a'.repeat(40);
     await trackGateStall(
@@ -959,7 +962,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     );
     expect(update).toBeDefined();
     const query = String(update![0]);
-    expectBalancedNestedJsonbSet(query, 5);
+    expectBalancedNestedJsonbSet(query, 6);
     expect(query).toMatch(
       /'\{gate_health,candidateSnapshot\}'\s*,\s*\$6::jsonb\s*,\s*true\s*\)\s*,\s*updated_at\s*=\s*now\(\)/,
     );
@@ -1330,6 +1333,7 @@ beforeEach(() => {
   emitAwaitedEvent.mockClear();
   fakeSql.unsafe.mockClear();
   recordStoredQualificationVerdict.mockClear();
+  recordStoredQualificationComposedVerdict.mockReset();
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
   recordStoredQualificationScheduledTerminalRecovery.mockReset();
   recordStoredQualificationScheduledTerminalRecovery.mockResolvedValue({ status: 'missing' });
@@ -1747,7 +1751,7 @@ describe('shouldDispatchReleaseFixer — proven-stale reds do not spend a fixer 
   // The reported case: the verdict carried its OWN re-triage proving these exact files pass at
   // tip (the reader-side `verdictStaleReasonCode: 'retriage-proven'`), and a fixer was dispatched
   // anyway — one full agent spent re-deriving a conclusion the verdict already held.
-  it.each(['deadline', 'absolute-ceiling', 'cap-disabled'] as const)(
+  it.each(['deadline', 'absolute-ceiling', 'cap-disabled', 'unlocked-preparation'] as const)(
     'does NOT dispatch when the run re-ran the named files at tip and they PASSED (refireBlockedBy=%s)',
     (refireBlockedBy) => {
       expect(
@@ -1804,7 +1808,7 @@ describe('shouldDispatchReleaseFixer — proven-stale reds do not spend a fixer 
   // ONE definition of "proven stale" governs both the streak decision and the spend decision.
   // Pinned so the two cannot drift into disagreeing about the same evidence.
   it('agrees with isProvenStaleCandidate, the same predicate the streak classifier uses', () => {
-    for (const refireBlockedBy of ['deadline', 'absolute-ceiling', 'cap-disabled', 'charged-budget'] as const) {
+    for (const refireBlockedBy of ['deadline', 'absolute-ceiling', 'cap-disabled', 'unlocked-preparation', 'charged-budget'] as const) {
       const retriage = { classification: 'stale-candidate' as const, autoRefire: false, refireBlockedBy };
       expect(shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, retriage)).toBe(
         !isProvenStaleCandidate(retriage),
@@ -2785,14 +2789,16 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         repairHead: 'incumbent-repair', runId: 'incumbent-run',
         currentPhysicalRunner: { id: 'incumbent-runner', leaseExpiresAtMs: 1234, heartbeatAtMs: 1200 },
       },
-      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'fixer-not-proven-dead' },
     });
     await getSystemAction('green-checkpoint')!(ctx);
     const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
       .find((e) => e.status === 'skipped-qualification-conflict');
     expect(event?.detail).toMatchObject({
       reason: 'conflict', stage: 'begin',
-      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+      // WI-6554700010015312: the fence that refused the queue survives into the event, so a
+      // refusal is diagnosable from the ledger instead of being re-derived from source.
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted', fence: 'fixer-not-proven-dead' },
       requestedAttemptId: beginStoredQualification.mock.calls[0][1].attemptId,
       observedAttemptId: 'incumbent-attempt', observedRunnerId: 'incumbent-runner',
       candidate: 'incumbent-candidate', repairHead: 'incumbent-repair', runId: 'incumbent-run',
@@ -3020,6 +3026,28 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(appendPipelineEvent).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'green_checkpoint', status: 'up-to-date' }),
     );
+  });
+
+  it.each(['scope', 'direct', 'fallback'])('transports the original caller cutoff through the scheduled %s launch', async route => {
+    const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+    const saved = process.env[key];
+    const cutoff = Date.now() + 120_000;
+    process.env[key] = String(cutoff);
+    try {
+      if (route === 'direct') process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
+      else delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+      if (route === 'fallback') spawnMock.mockImplementationOnce(() =>
+        fakeSpawnFail('Failed to connect to bus: No such file or directory', 1));
+      spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+      await getSystemAction('green-checkpoint')!(ctx);
+      expect(spawnMock).toHaveBeenCalledTimes(route === 'fallback' ? 2 : 1);
+      for (const call of spawnMock.mock.calls) {
+        const options = call[2] as { env?: Record<string, string> };
+        expect(options.env?.[key]).toBe(String(cutoff));
+      }
+    } finally {
+      if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+    }
   });
 
   it('a PAYLOAD failure inside a healthy scope does NOT retry (one suite run per tick)', async () => {
@@ -3289,6 +3317,26 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   beforeEach(() => {
     appendPipelineEvent.mockClear();
     fakeSql.unsafe.mockClear();
+  });
+
+  it.each(['terminal', 'unreadable'])('routes a full continuation through the atomic composer: %s', async status => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    const input = { attemptId: 'composed-attempt', candidate: 'abc123', repairHead: null,
+      runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42', root: '/source', taskKey: 'full',
+      manifest: { schemaVersion: 1 as const, units: [{ id: 'guard', kind: 'guard' as const, path: 'package.json' }] },
+      retryStates: [], runContext: 'ci', runnerIdentity: 'native', updates: [] };
+    const options = { currentCommandDefinition: vi.fn() };
+    recordStoredQualificationComposedVerdict.mockResolvedValue({ status });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await recordCheckpointVerdict(target, { reason: 'advanced', green: true, candidate: 'abc123', runId: 'run' },
+      { qualificationWork: { input, options }, signedShardDeadlineMs: 0 })).toBe(status === 'terminal');
+    expect(recordStoredQualificationComposedVerdict).toHaveBeenCalledWith(target, input,
+      expect.objectContaining({ green: true, candidate: 'abc123', runId: 'run', terminalEvent: expect.any(Object) }), options);
+    expect(recordStoredQualificationVerdict).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(status === 'unreadable' ? 1 : 0);
+    warn.mockRestore();
   });
 
   it('⭐ a lock collision records NOTHING — the run holding the lock has the real verdict', () => {
@@ -3568,6 +3616,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       failingTests: Array.from({ length: 30 }, (_, i) => `t${i}.test.ts`),
     });
     expect(d.candidate).toBe('a'.repeat(12));
+    expect(d.fullCandidate).toBe('a'.repeat(40));
     expect(d.from).toBe('b'.repeat(12));
     expect(d.advancedTo).toBe('c'.repeat(12));
     expect((d.failingTests as string[]).length).toBe(20);
@@ -4817,6 +4866,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       dispatchReservation: {
         claimedAtMs: 100,
         expiresAtMs: 300_100,
+        // gate-repair-plane-on-current-build-2026-10-15 R-2: the lease names this process.
+        executor: currentRepairLimbExecutor(),
       },
     });
     const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
@@ -4942,6 +4993,40 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       String(reservedQueue.updatedAtMs),
       'owner-token',
     ]);
+    // A failed launch writes no receipt: nothing was launched, so there is no launcher to name.
+    expect('fixerDispatchReceipt' in serialized).toBe(false);
+  });
+
+  it('finalize after a successful launch writes a receipt naming the launching host and build (R-1)', async () => {
+    const reservedQueue: FrozenCandidateRepairQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer',
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: { token: 'owner-token', claimedAtMs: 100, expiresAtMs: 300_100 },
+    };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const finalized = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return sqlRows([{ repair_queue: finalized }]);
+    });
+    const launcher = {
+      hostId: 'port-3271',
+      processId: 'boot-a:4242',
+      executingBuild: { sha: 'a1b2c3d4e5f6', source: 'baked' as const },
+    };
+
+    const finalized = await finalizeFrozenCandidateRepairFixer(
+      target, reservedQueue, { spawnId: 'spawn-9', runId: 'run-9' }, 250_000, launcher,
+    );
+
+    expect(finalized).toMatchObject({ fixerSpawnId: 'spawn-9', attempts: 1 });
+    expect(finalized?.fixerDispatchReceipt).toEqual({
+      ...launcher, spawnId: 'spawn-9', runId: 'run-9', dispatchedAtMs: 250_000,
+    });
+    const serialized = JSON.parse((fakeSql.unsafe.mock.calls.at(-1)![1] as unknown[])[2] as string);
+    expect(serialized.fixerDispatchReceipt).toEqual(finalized?.fixerDispatchReceipt);
   });
 });
 

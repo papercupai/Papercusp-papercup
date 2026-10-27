@@ -34,6 +34,7 @@ import {
 import { TERMINAL_STATUSES } from './frontier-readiness';
 import { isCompletionSettled, type CompletionAuthorityFrom } from '../work-item-completion-authority';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
 export interface WorkItemDepEndpoint {
   kind: string;
@@ -174,7 +175,7 @@ interface WorkItemNodeRow {
   readonly authority: CompletionAuthorityFrom;
 }
 
-const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_ITEM_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 const ISSUE_TERMINAL_STATUSES = new Set(['resolved', 'closed', 'done', 'dropped']);
 const ACTIVE_DEPENDANT_STATUSES = new Set(['wip', 'in_progress', 'validating']);
 
@@ -1118,7 +1119,7 @@ async function resolveActualDepEndpoint(sql: Sql, endpoint: WorkItemDepEndpoint)
     SELECT workspace_id
       FROM harness_shared.work_items
      WHERE feature_id = ${bareId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
      ORDER BY workspace_id
      LIMIT 1`;
   if (issueRows.length > 0) {
@@ -1135,7 +1136,7 @@ async function resolveActualDepEndpoint(sql: Sql, endpoint: WorkItemDepEndpoint)
     SELECT workspace_id, harness_slug
       FROM harness_shared.work_items
      WHERE feature_id = ${bareId}
-       AND item_kind NOT IN ('bug', 'change', 'task')
+       AND item_kind NOT IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
      ORDER BY (harness_slug = ${requestedHarness}) DESC, workspace_id, harness_slug
      LIMIT 1`;
   if (featureRows.length > 0) {

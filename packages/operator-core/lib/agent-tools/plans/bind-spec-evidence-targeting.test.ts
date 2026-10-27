@@ -25,7 +25,8 @@ import { mutationTargetingRefusal, type bindingSchema } from './bind-spec-eviden
 type Binding = z.infer<typeof bindingSchema>;
 
 const SCENARIO = 'reconnect-failure';
-const MUTATION_CASE = 'reconnect is not replayed';
+// The measured failure must identify the scenario whose falsifiability it proves.
+const MUTATION_CASE = `${SCENARIO}: reconnect is not replayed`;
 const TARGETING_TEST_FILE = 'packages/operator-core/lib/agent-tools/plans/bind-spec-evidence-targeting.test.ts';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {

@@ -30,6 +30,8 @@ describe('su target mode binding', () => {
     expect(prompt).toContain('(1) `reports:publish`; (2) `reports:get { id: report_id }`');
     expect(prompt).toContain('verify that readback contains the complete Markdown and intended');
     expect(prompt).toContain('saved or delivered only after the readback succeeds');
+    expect(prompt).toContain("visibility:'workspace'");
+    expect(prompt).not.toContain("the default `visibility:'owner'`");
     const publish = SU_CATALOG.find(tool => tool.name === 'reports:publish');
     expect(publish?.description).toContain('reports:get { id: report_id }');
     expect(publish?.description).toContain('verify the complete body and visibility before citing the path or claiming delivery');

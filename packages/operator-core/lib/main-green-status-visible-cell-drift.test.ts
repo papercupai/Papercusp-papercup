@@ -20,6 +20,7 @@ import { measurednessViolations, hoistedPaths } from './cell-measuredness';
 import { pathExists } from './state-plane-stamp';
 import { projectFreezeDispositionCell, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
 import { projectRetriageCell } from './release/in-flight-retriage';
+import { projectRunStatusCell } from './release/run-status-cell';
 import { parseFrozenRepairConvergence, projectFrozenRepairConvergenceCell } from './release/frozen-candidate-repair-queue';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 import { readGateCandidateFailures } from './gate-candidate-failures';
@@ -184,6 +185,49 @@ describe('gate.greenCheckpoint.retriage (P-009) — spec resolves on projectRetr
 
   it('FALSIFIER: dropping the headline from the projection fails here', () => {
     expect(() => assertNoDrift(S(), without(payload(inFlight), S().headline))).toThrow(/retriage/);
+  });
+});
+
+// ── WI-6554700010029556 (owner #2439): gate.greenCheckpoint.run ─────────────────────────
+describe('gate.greenCheckpoint.run (WI-6554700010029556) — spec resolves on projectRunStatusCell()', () => {
+  const S = () => spec('gate.greenCheckpoint.run');
+  const live = {
+    active: true,
+    activeSource: 'run-lock' as const,
+    pid: 4242,
+    candidate: 'cccccccccccc',
+    startedAtMs: NOW - 3_600_000,
+    elapsedSec: 3_600,
+    progressAtMs: NOW - 30_000,
+    verdictWrittenAtMs: null,
+    currentPhase: 'frozen-repair',
+    currentActivity: 'repair-tick-legs',
+    currentLeg: { label: 'lint:tsc', index: 3, total: 9 },
+    asOfAgeMs: 5_000,
+  };
+  const payload = (run: Parameters<typeof projectRunStatusCell>[0]) => ({ gate: { run: projectRunStatusCell(run, NOW) } });
+
+  it('a live advancing run resolves every hoisted path with a documented code', () => {
+    assertNoDrift(S(), payload(live));
+    expect(pathExists(payload(live), S().assessment!.path).value).toBe('running');
+    expect(pathExists(payload(live), 'gate.run.pidVerified').value).toBe(true);
+  });
+
+  it('no run reading is UNMEASURED with every key present', () => {
+    assertNoDrift(S(), payload(null));
+    expect(pathExists(payload(null), S().assessment!.path).value).toBe('no-run-reading');
+    expect(pathExists(payload(null), 'gate.run.unmeasured').value).toBe(true);
+  });
+
+  it('an idle gate resolves every hoisted path, pid null and unverified', () => {
+    const idle = payload({ active: false, activeSource: 'run-lock' });
+    assertNoDrift(S(), idle);
+    expect(pathExists(idle, S().assessment!.path).value).toBe('no-run');
+    expect(pathExists(idle, 'gate.run.pidVerified').value).toBe(false);
+  });
+
+  it('FALSIFIER: dropping the headline from the projection fails here', () => {
+    expect(() => assertNoDrift(S(), without(payload(live), S().headline))).toThrow(/run/);
   });
 });
 

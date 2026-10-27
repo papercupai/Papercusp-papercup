@@ -917,7 +917,7 @@ export function makeEnv(overrides: Partial<Env> = {}): { env: Env; store: FakeSt
   const env = {
     DB: db,
     COUNTERS: new FakeKV() as unknown as KVNamespace,
-    ARTIFACTS: r2 as unknown as R2Bucket,
+    ARTIFACTS: r2 as unknown as Env['ARTIFACTS'],
     GITHUB_CLIENT_ID: 'test',
     GITHUB_CLIENT_SECRET: 'test',
     IP_HASH_PEPPER: 'test-pepper',

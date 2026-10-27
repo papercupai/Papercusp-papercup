@@ -30,6 +30,7 @@ import {
   type ExternalBlockerRecord,
 } from '../../external-blockers';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 export const AGENT_REVIEW_STATUSES = ['pending', 'revision-requested', 'approved'] as const;
 export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
 
@@ -1651,7 +1652,7 @@ export function agentReviewEligibility(
   const payload = record(candidate.payload);
   // D-004: enrollment is a lifecycle layered onto the existing work-item. It must
   // preserve historical kinds rather than coercing review work to `change`.
-  if (!['bug', 'change', 'task', 'feature'].includes(candidate.kind)) {
+  if (!([...ISSUE_FAMILY_ROUTE_KINDS, 'feature'] as readonly string[]).includes(candidate.kind)) {
     return { eligible: false, reason: 'not-review-kind' };
   }
   if (candidate.origin === 'remote') return { eligible: false, reason: 'remote-owned' };

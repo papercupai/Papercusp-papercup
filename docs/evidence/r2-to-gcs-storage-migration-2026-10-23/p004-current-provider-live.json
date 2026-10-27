@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "r2gcs-p004-current-provider-v1",
+  "workItem": "WI-6554700010025563",
+  "operationId": "7270e23a-251d-4f32-b883-c9b230103d0d",
+  "prefix": "migration-verification/7270e23a-251d-4f32-b883-c9b230103d0d/",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "startedAt": "2026-10-24T16:21:02.642Z",
+  "instrument": {
+    "path": "libs/generic/artifact-registry/src/gcs-object-store.ts",
+    "testPath": "libs/generic/artifact-registry/src/gcs-object-store.test.ts"
+  },
+  "sourceHashesBefore": {
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa",
+    "libs/generic/artifact-registry/src/object-store.ts": "620a588c0acd589252b48c7ccc56e9fd74a171c0c8cd5cf052aebd8667655443"
+  },
+  "checks": [
+    {
+      "name": "occupied-address-retains-original-generation-and-bytes",
+      "ok": true,
+      "generation": "1792858863296826",
+      "sha256": "965488c2099fce8b95243f64a2c3446f91fe0f5f7c675b06a9fa8e333347f0d6"
+    },
+    {
+      "name": "anonymous-private-object-denied",
+      "ok": true,
+      "status": 403
+    },
+    {
+      "name": "lost-session-response-resumes-original-operation",
+      "ok": true,
+      "uploadId": "beb45d0f-5570-4b07-9c64-77bdcc1f4700"
+    },
+    {
+      "name": "lost-completion-replay-retains-same-generation-and-exact-bytes",
+      "ok": true,
+      "generation": "1792858865610178",
+      "uploadId": "beb45d0f-5570-4b07-9c64-77bdcc1f4700",
+      "composeCount": 1
+    },
+    {
+      "name": "wrong-destination-resume-rejected",
+      "ok": true
+    }
+  ],
+  "scope": "Current maintained GCS adapter and credential exchange against real private provider; no deployed Worker, historical population migration or independent shipment claim.",
+  "result": "pass",
+  "cleanup": "own unique namespace and own upload session only",
+  "sourceHashesAfter": {
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa",
+    "libs/generic/artifact-registry/src/object-store.ts": "620a588c0acd589252b48c7ccc56e9fd74a171c0c8cd5cf052aebd8667655443"
+  },
+  "sourceStable": true,
+  "observedAt": "2026-10-24T16:21:08.745Z"
+}

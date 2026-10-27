@@ -46,6 +46,7 @@ const {
   buildGrantedSourcesContextBlockMock,
   getMemoryBlockBoundedResultMock,
   withOptionalMemoryAdmissionMock,
+  readAppliedIdentityRecallMock,
   buildTurnStartOrientationBlockMock,
   readSuLaunchSpecByOwnerMock,
   readAdvSessionLaunchRecordByOwnerMock,
@@ -66,6 +67,7 @@ const {
   buildGrantedSourcesContextBlockMock: vi.fn(),
   getMemoryBlockBoundedResultMock: vi.fn(),
   withOptionalMemoryAdmissionMock: vi.fn(),
+  readAppliedIdentityRecallMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
   readSuLaunchSpecByOwnerMock: vi.fn(),
   readAdvSessionLaunchRecordByOwnerMock: vi.fn(),
@@ -118,8 +120,20 @@ vi.mock('../../../data-sources/granted-sources-injection', () => ({
 vi.mock('../../../memory/injection-block-cache', () => ({
   getMemoryBlockBoundedResult: getMemoryBlockBoundedResultMock,
 }));
-vi.mock('../../../memory/mid-turn-admission', () => ({
-  withOptionalMemoryAdmission: withOptionalMemoryAdmissionMock,
+vi.mock('../../../memory/mid-turn-admission', async (orig) => {
+  const actual = await orig<typeof import('../../../memory/mid-turn-admission')>();
+  return {
+    ...actual,
+    withOptionalMemoryAdmission: withOptionalMemoryAdmissionMock,
+    // Keep the real identity-read failure guard and route admission through the
+    // controllable host-capacity seam used by this endpoint's existing tests.
+    withIdentityBoundedMemoryAdmission: (...args: Parameters<typeof actual.withIdentityBoundedMemoryAdmission>) =>
+      actual.withIdentityBoundedMemoryAdmission(args[0], args[1], withOptionalMemoryAdmissionMock),
+  };
+});
+vi.mock('../../../agent-identities/identity-recall', async (orig) => ({
+  ...(await orig<typeof import('../../../agent-identities/identity-recall')>()),
+  readAppliedIdentityRecall: readAppliedIdentityRecallMock,
 }));
 vi.mock('../../../turn-start-orientation', () => ({
   buildTurnStartOrientationBlock: buildTurnStartOrientationBlockMock,
@@ -174,6 +188,7 @@ beforeEach(() => {
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
   buildGrantedSourcesContextBlockMock.mockReset().mockResolvedValue(null);
+  readAppliedIdentityRecallMock.mockReset().mockResolvedValue(null);
   withOptionalMemoryAdmissionMock.mockReset().mockImplementation(async (run: () => Promise<unknown>) => ({
     admitted: true,
     value: await run(),

@@ -39,6 +39,65 @@ function fixture() {
 }
 
 describe('FrontierSWE production assignment binding', () => {
+  function claudeFixture() {
+    const f = fixture(), arm = f.protocol.arms[1];
+    arm.agent = 'claude'; arm.account = 'pinned-claude-account';
+    arm.runtime.clientVersion = 'claude/2.1.293';
+    f.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
+    Object.assign(f.host.options, { armId: arm.id, agent: arm.agent, model: arm.model,
+      effort: arm.effort, account: arm.account });
+    f.input.arm = arm.id;
+    delete f.input.handle.inContainerCodex;
+    f.input.handle.inContainerClaude = { binPath: '/opt/papercusp/claude', version: '2.1.293',
+      sha256: 'f'.repeat(64), roots: [{ hostRoot: '/private/claude', perTaskDir: '/private/task-claude' }],
+      hostOwner: { uid: 1000, gid: 1000 } };
+    return f;
+  }
+
+  it('binds the frozen Claude stock reference through the existing native assignment authority', async () => {
+    const f = claudeFixture();
+    const assignment = await startFrontierSweCurrentAssignment(f.input, f.host, f);
+    expect(assignment.options).toMatchObject({ agent: 'claude', armId: 'baseline',
+      account: 'pinned-claude-account', driveTimeoutMs: 750 });
+    expect(assignment.generationBudget).toEqual(f.protocol.arms[1].generationBudget);
+    expect(assignment.stop).toBe(f.stop);
+    expect(assignment.readModelCalls).toBe(f.readModelCalls);
+    expect(f.start).toHaveBeenCalledWith(expect.objectContaining({ protocol: f.protocol,
+      options: expect.objectContaining({ agent: 'claude' }), task: f.input.task, checkout: assignment.checkout }));
+    expect(() => requireCurrentBenchmarkAssignment(f.protocol, { ...assignment.options,
+      taskId: f.input.task.instanceId, budget: assignment.generationBudget! })).not.toThrow();
+  });
+
+  it.each(['missing-cli', 'two-clients', 'client-version', 'binary-digest', 'agent', 'treatment',
+    'account', 'model', 'protocol', 'host-only'] as const)
+    ('refuses Claude %s drift before allocating observer or provider authority', async fault => {
+      const f = claudeFixture();
+      if (fault === 'missing-cli') delete f.input.handle.inContainerClaude;
+      if (fault === 'two-clients') f.input.handle.inContainerCodex = fixture().input.handle.inContainerCodex;
+      if (fault === 'client-version') f.input.handle.inContainerClaude!.version = '1.0.0';
+      if (fault === 'binary-digest') f.input.handle.inContainerClaude!.sha256 = 'unmeasured';
+      if (fault === 'agent') f.host.options.agent = 'codex';
+      if (fault === 'treatment') {
+        f.protocol.arms[1].id = 'other-reference'; f.protocol.arms[0].agent = 'claude';
+        f.protocol.arms[0].runtime.clientVersion = 'claude/2.1.293';
+        Object.assign(f.host.options, { armId: 'papercusp', account: f.protocol.arms[0].account });
+        f.input.arm = 'papercusp';
+      }
+      if (fault === 'account') f.host.options.account = 'foreign-account';
+      if (fault === 'model') f.host.options.model = 'foreign-model';
+      if (fault === 'protocol') f.host.options.preregistration.config = structuredClone(f.protocol);
+      if (fault === 'protocol') f.host.options.preregistration.config.runId = 'foreign-protocol';
+      if (fault === 'host-only') delete f.input.handle.taskNetwork;
+      await expect(startFrontierSweCurrentAssignment(f.input, f.host, f)).rejects.toThrow(/frozen native task/);
+      expect(f.observer).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+    });
+
+  it('cleans Claude observer metadata when native assignment startup fails', async () => {
+    const f = claudeFixture(); f.start.mockRejectedValue(new Error('Claude gateway unavailable'));
+    await expect(startFrontierSweCurrentAssignment(f.input, f.host, f)).rejects.toThrow('Claude gateway unavailable');
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
   function pairedFixture() {
     const f = fixture(), protocol = controlledProtocolFixture();
     protocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';

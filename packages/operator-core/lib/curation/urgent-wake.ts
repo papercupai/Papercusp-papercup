@@ -26,10 +26,10 @@ import { BASE_INTERVAL_SECONDS } from './curation-loop';
 export const URGENT_DEBOUNCE_MS = Number(process.env.PAPERCUSP_CURATION_WAKE_DEBOUNCE_MS ?? 1_500);
 
 /**
- * A leading-edge debounce: fires `runner` immediately, then — if more triggers
- * arrived during the window — fires once more at the trailing edge. Pure over
- * the injected timer so it's unit-testable with fake timers. Returns the
- * trigger fn (+ a cancel for teardown).
+ * A leading-edge debounce with one async runner in flight. Extra triggers
+ * coalesce into one follow-up after both the runner and its debounce window
+ * finish. Every fire starts a fresh window, including a trailing fire, so the
+ * runner's own notifications cannot create a rapid feedback loop.
  */
 export function makeDebouncedRunner(
   runner: () => void | Promise<void>,
@@ -37,36 +37,47 @@ export function makeDebouncedRunner(
 ): { trigger: () => void; cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
+  let running = false;
   const warn = (err: unknown): void => {
      
     console.warn('[curation] urgent wake runner failed:', err instanceof Error ? err.message : err);
   };
   const fire = (): void => {
+    // Arm before invoking user code: synchronous notifications must coalesce too.
+    timer = setTimeout(() => {
+      timer = null;
+      firePending();
+    }, debounceMs);
+    running = true;
     // Call synchronously (leading-edge), but swallow BOTH a sync throw and an
     // async rejection so a bad runner can't crash the coord-inbox handler.
     try {
       const r = runner();
       if (r && typeof (r as Promise<unknown>).then === 'function') {
-        (r as Promise<unknown>).catch(warn);
+        void Promise.resolve(r).catch(warn).finally(() => {
+          running = false;
+          firePending();
+        });
+      } else {
+        running = false;
       }
     } catch (err) {
+      running = false;
       warn(err);
     }
   };
+  const firePending = (): void => {
+    if (!pending || timer || running) return;
+    pending = false;
+    fire();
+  };
   return {
     trigger(): void {
-      if (timer) {
+      if (timer || running) {
         pending = true;
         return;
       }
       fire();
-      timer = setTimeout(() => {
-        timer = null;
-        if (pending) {
-          pending = false;
-          fire();
-        }
-      }, debounceMs);
     },
     cancel(): void {
       if (timer) clearTimeout(timer);

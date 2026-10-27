@@ -97,16 +97,17 @@ export function formatExtTransportUrl(argv: readonly string[]): string {
  * up only as a per-tick stderr line while pot-git replication never converges
  * and self-retries forever — the same shape that let WI-37735 ship unnoticed.
  *
- * `resolveBundledNode` deliberately does NOT fall back to `process.execPath` in
- * a packaged build (there it is the Tauri binary, not node — EI-2114), so the
- * bare-`node` fallback below is the honest last resort: it is what a dev tree
- * with node on PATH has always used, and it is no worse than the old behaviour
- * anywhere else. The resolved binary is plain node, never a loader wrapper, so
- * it boots quietly for the pack stream (see the NODE_OPTIONS strip at the
- * spawn site).
+ * `resolveBundledNode` measures the interpreter at either explicit anchor. If
+ * neither identifies Node, refuse before spawning git: PATH can contain Bun
+ * named node, and a packaged desktop executable is not an interpreter. The
+ * fetch caller converts this refusal to its normal failed TransportResult.
+ * The resolved binary is plain Node, never a loader wrapper, so it boots
+ * quietly for the pack stream (see the NODE_OPTIONS strip at the spawn site).
  */
 export async function extNodeCommand(): Promise<string> {
-  return (await resolveBundledNode()) ?? 'node';
+  const executable = await resolveBundledNode();
+  if (!executable) throw new Error('Git ext bridge requires an explicit retained Node executable');
+  return executable;
 }
 
 /** Protomux protocol id for the per-fetch git streams (the wiring opens one

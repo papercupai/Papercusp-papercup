@@ -124,6 +124,8 @@ function nextDecision(
 
 export interface PgAdmissionLedgerQueueStoreOptions {
   readonly sql?: SqlClient;
+  /** Acquisition attribution for an injected SQL client with a registered pool label. */
+  readonly acquirePool?: string;
   readonly workspaceId?: string;
   readonly abandonAfterMs?: number;
   /** Injectable shared liveness oracle for owner-death lease reclamation. */
@@ -167,7 +169,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   constructor(options: PgAdmissionLedgerQueueStoreOptions = {}) {
     this.endedOwnerScans = new EndedLeaseOwnerScanCoalescer(options.endedLeaseOwnerReuseMs);
     this.sql = options.sql ?? getOrgPg().sql;
-    this.acquirePool = options.sql ? undefined : 'org-admin';
+    this.acquirePool = options.acquirePool ?? (options.sql ? undefined : 'org-admin');
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     this.abandonAfterMs =
       typeof options.abandonAfterMs === 'number' &&

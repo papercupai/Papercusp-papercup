@@ -1,6 +1,8 @@
 import { continuityProbeShapeSchema, type ContinuityProbe } from '../../continuity-probes';
 import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../../agent-tools/limits';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
+import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
+import { measurementProvenanceStatus } from '../../measurement-provenance';
 
 /**
  * observation-types.ts — the canonical structured-observation v2 shape
@@ -124,6 +126,8 @@ export interface ObservationLedgerResult {
   testRunId: number;
   value: number | string | boolean | null;
   unit: string | null;
+  provenance?: RecordedMeasurementProvenance;
+  provenanceStatus?: 'retained' | 'partial' | 'legacy-missing';
 }
 
 /**
@@ -706,6 +710,7 @@ export interface ScorecardSingleProbeCheckRun {
   observed?: string | number | boolean | null;
   /** ISO instant the scorecard recorded this live result. */
   measuredAt: string;
+  provenance?: RecordedMeasurementProvenance;
 }
 
 /**
@@ -1350,7 +1355,9 @@ function asLedgerResult(v: unknown): ObservationLedgerResult | null {
   const value = r.value;
   if (!(value === null || typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')) return null;
   if (!(r.unit === null || typeof r.unit === 'string')) return null;
-  return { testRunId: r.testRunId, value, unit: r.unit };
+  const provenance = parseRecordedMeasurementProvenance(r.provenance);
+  return { testRunId: r.testRunId, value, unit: r.unit,
+    ...(provenance ? { provenance } : {}), provenanceStatus: measurementProvenanceStatus(provenance) };
 }
 
 export function asStructuredObservation(v: unknown): StructuredObservation | undefined {
@@ -2018,6 +2025,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           executed: true,
           ...(observed !== undefined ? { observed } : {}),
           measuredAt: r.measuredAt,
+          ...(parseRecordedMeasurementProvenance(r.provenance) ? { provenance: parseRecordedMeasurementProvenance(r.provenance)! } : {}),
         };
       } else if (
         r.kind === 'tests' &&

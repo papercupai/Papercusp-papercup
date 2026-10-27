@@ -38,6 +38,8 @@ vi.mock('./loop-transition-log', () => ({ recordLoopTransition: vi.fn() }));
 
 const { claimDueRoutine } = await import('./claim');
 const { listDueCronRoutines } = await import('@papercusp/db-org');
+const { classifyClaimSkip, recordUnclaimableRoutine, clearUnclaimableRoutine } =
+  await import('./unclaimable-routine-detector');
 
 let rootSql: postgres.Sql;
 
@@ -69,6 +71,7 @@ beforeAll(async () => {
       active boolean DEFAULT true NOT NULL,
       last_fired_at timestamptz, next_fire_at timestamptz,
       updated_at timestamptz DEFAULT now() NOT NULL,
+      metadata jsonb,
       reschedule_interval_sec integer, target_owner_id text
     )`);
 });
@@ -203,4 +206,76 @@ describe('claimDueRoutine — timestamp precision (WI-40883)', () => {
     await rootSql`UPDATE harness_shared.routines SET active = FALSE WHERE id = 'off'`;
     await expect(claimDueRoutine(rootSql as any, routine as any)).resolves.toBe(false);
   });
+
+  it('does not restore an old unclaimable alarm after another tick claims and clears it', async () => {
+    await seed('late-alarm', rootSql`now() - interval '90 minutes'`);
+    const stale = await readDue('late-alarm');
+    expect(stale).toBeDefined();
+    const verdict = classifyClaimSkip(stale as any, Date.now());
+    expect(verdict.state).toBe('unclaimable');
+    if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
+
+    // The losing tick can finish its fire-and-forget diagnostic AFTER the winner's
+    // claim and clear. Exercise that order against real PG, without timer sleeps.
+    await expect(claimDueRoutine(rootSql as any, stale as any)).resolves.toBe(true);
+    await clearUnclaimableRoutine(rootSql, 'late-alarm');
+    await recordUnclaimableRoutine(rootSql, stale as any, verdict);
+
+    const [row] = await rootSql`
+      SELECT metadata, next_fire_at, last_fired_at
+        FROM harness_shared.routines WHERE id = 'late-alarm'`;
+    expect(new Date(row.next_fire_at).getTime()).toBeGreaterThan(Date.now());
+    expect(row.last_fired_at).not.toBeNull();
+    expect(row.metadata?.unclaimable).toBeUndefined();
+  });
+
+  it('stamps an unchanged overdue row despite PG microseconds and preserves other metadata', async () => {
+    await seed('current-alarm', rootSql`now() - interval '90 minutes'`);
+    await rootSql`
+      UPDATE harness_shared.routines SET last_fired_at = now() - interval '2 hours',
+        metadata = '{"retained":"other-health"}'::jsonb WHERE id = 'current-alarm'`;
+    expect(Number((await rowOf('current-alarm')).sub_ms)).not.toBe(0);
+    const current = await readDue('current-alarm');
+    const verdict = classifyClaimSkip(current as any, Date.now());
+    if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
+
+    await recordUnclaimableRoutine(rootSql, current as any, verdict);
+    const [row] = await rootSql`SELECT metadata FROM harness_shared.routines WHERE id = 'current-alarm'`;
+    expect(row.metadata.retained).toBe('other-health');
+    expect(row.metadata.unclaimable.reason).toBe(verdict.reason);
+    expect(row.metadata.unclaimable.never_fired).toBe(false);
+  });
+
+  it('stamps and clears a valid never-claimed alarm with a NULL claim timestamp', async () => {
+    await seed('never-claimed-alarm', rootSql`now() - interval '90 minutes'`);
+    const current = await readDue('never-claimed-alarm');
+    const verdict = classifyClaimSkip(current as any, Date.now());
+    if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
+    await recordUnclaimableRoutine(rootSql, current as any, verdict);
+    const [before] = await rootSql`SELECT metadata FROM harness_shared.routines WHERE id = 'never-claimed-alarm'`;
+    expect(before.metadata.unclaimable.never_fired).toBe(true);
+    await clearUnclaimableRoutine(rootSql, 'never-claimed-alarm');
+    const [after] = await rootSql`SELECT metadata FROM harness_shared.routines WHERE id = 'never-claimed-alarm'`;
+    expect(after.metadata.unclaimable).toBeUndefined();
+  });
+
+  it.each(['schedule', 'claim', 'inactive'] as const)(
+    'rejects an old alarm after a concurrent %s change while the row remains overdue',
+    async (change) => {
+      await seed('changed-alarm', rootSql`now() - interval '90 minutes'`);
+      const stale = await readDue('changed-alarm');
+      const verdict = classifyClaimSkip(stale as any, Date.now());
+      if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
+      if (change === 'schedule') {
+        await rootSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '60 minutes' WHERE id = 'changed-alarm'`;
+      } else if (change === 'claim') {
+        await rootSql`UPDATE harness_shared.routines SET last_fired_at = now() - interval '1 minute' WHERE id = 'changed-alarm'`;
+      } else {
+        await rootSql`UPDATE harness_shared.routines SET active = FALSE WHERE id = 'changed-alarm'`;
+      }
+      await recordUnclaimableRoutine(rootSql, stale as any, verdict);
+      const [row] = await rootSql`SELECT metadata FROM harness_shared.routines WHERE id = 'changed-alarm'`;
+      expect(row.metadata?.unclaimable).toBeUndefined();
+    },
+  );
 });

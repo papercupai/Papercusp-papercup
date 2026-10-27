@@ -111,21 +111,44 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
+import { withFsMutex } from './lib/fs-mutex.mjs';
+import { installLockNameForRoot, installMutexIsHeld } from './lib/install-lock-name.mjs';
+
+export function requireDurableTestRunSink(environment = process.env) {
+  if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
+      !environment.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
+    throw new Error('PAPERCUSP_TEST_RUNS_DB_URL is required for durable test:file reporter receipts');
+  }
+}
 
 /** Child environment for commands executing against the isolated committed clone. */
-export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
+export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null, testRunReceiptFile = null,
+  preparedRootReceiptFile = null) {
   const child = {
     ...environment,
     npm_config_workspaces: undefined,
     PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
   };
+  delete child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT;
   // The committed clone intentionally omits ignored operator configuration.
   // Carry the original operator's database route into its reporters; otherwise
   // a frozen resolver may discover a desktop PG and publish proof elsewhere.
   // The shared resolver preserves explicit DSNs and dedicated-PG isolation.
   if (repoRoot) applyEnvLocal({ root: join(repoRoot, 'apps', 'operator'), env: child });
+  if (testRunReceiptFile !== null) {
+    if (typeof testRunReceiptFile !== 'string' || !testRunReceiptFile.trim())
+      throw new Error('test-run receipt file must be an explicit path');
+    requireDurableTestRunSink(environment);
+    child.PAPERCUSP_TEST_RUN_RECEIPT_FILE = testRunReceiptFile;
+  }
+  if (preparedRootReceiptFile !== null) {
+    if (typeof preparedRootReceiptFile !== 'string' || !preparedRootReceiptFile.trim() || !isAbsolute(preparedRootReceiptFile))
+      throw new Error('prepared work-root receipt file must be an absolute path');
+    child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT = preparedRootReceiptFile;
+  }
   // Each immutable clone has a fresh tmp path. Keep resumable verdict storage
   // scoped to its source repository instead, separately from ordinary/gate
   // caches. The affected runner still checks command and dependency contents.
@@ -276,6 +299,29 @@ export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = [
   return { root, sha: expectedSha };
 }
 
+/** Write a short-lived witness that this fresh, prepared clone is at the checked-out commit. */
+export function writePreparedWorkRootReceipt(workRoot, expectedSha, receiptPath) {
+  const verified = verifyCommittedWorkRoot(workRoot, expectedSha);
+  if (typeof receiptPath !== 'string' || !isAbsolute(receiptPath))
+    throw new Error('prepared work-root receipt file must be an absolute path');
+  const receiptParent = realpathSync(dirname(resolve(receiptPath)));
+  const resolvedReceiptPath = join(receiptParent, basename(receiptPath));
+  if (resolvedReceiptPath === verified.root || resolvedReceiptPath.startsWith(verified.root + sep))
+    throw new Error('prepared work-root receipt must be outside the committed source root');
+  const markerBytes = readFileSync(join(verified.root, OWNER_MARKER));
+  const marker = JSON.parse(markerBytes.toString('utf8'));
+  if (marker.sha !== expectedSha)
+    throw new Error('prepared work-root owner marker does not match the committed source');
+  const receipt = {
+    schemaVersion: 'lint-as-committed-prepared-root-v1',
+    root: verified.root,
+    sourceCommit: expectedSha,
+    ownerMarkerSha256: createHash('sha256').update(markerBytes).digest('hex'),
+  };
+  writeFileSync(resolvedReceiptPath, JSON.stringify(receipt) + '\n', { flag: 'wx', mode: 0o600 });
+  return resolvedReceiptPath;
+}
+
 /** A shadow install is a source reader, not a physical dependency donor. */
 export function committedWorkRootDependencyDonor(workRoot) {
   let root = realpathSync(workRoot);
@@ -294,6 +340,10 @@ export function committedWorkRootDependencyDonor(workRoot) {
 }
 
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
+function committedSourceRetentionMutexName(root) {
+  return 'committed-source-retention-' + createHash('sha256').update(root).digest('hex').slice(0, 24);
+}
+
 export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
   const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
   const artifact = realpathSync(artifactPath); // Missing artifacts must never create a hold.
@@ -301,19 +351,49 @@ export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
     throw new Error('lint-as-committed: dependent artifact must be outside its source root');
   }
   const markerPath = join(root, OWNER_MARKER);
-  const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-  const retainedFor = Array.isArray(marker.retainedFor) ? marker.retainedFor : [];
-  if (!retainedFor.some((entry) => entry.path === artifact && entry.sha === expectedSha)) {
-    retainedFor.push({ path: artifact, sha: expectedSha });
-  }
-  writeFileSync(markerPath, JSON.stringify({ ...marker, keep: true, retainedFor }));
-  return { root, sha: expectedSha, artifact };
+  return withFsMutex(committedSourceRetentionMutexName(root), async () => {
+    // Re-read AFTER acquiring: another process may have added its own hold.
+    verifyCommittedWorkRoot(root, expectedSha);
+    const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    const retainedFor = Array.isArray(marker.retainedFor) ? marker.retainedFor : [];
+    if (!retainedFor.some((entry) => entry.path === artifact && entry.sha === expectedSha)) {
+      retainedFor.push({ path: artifact, sha: expectedSha });
+    }
+    const temporary = markerPath + '.' + randomUUID() + '.tmp';
+    try {
+      writeFileSync(temporary, JSON.stringify({ ...marker, keep: true, retainedFor }), { flag: 'wx', mode: 0o600 });
+      // Readers see old or new complete JSON, never a truncation.
+      renameSync(temporary, markerPath);
+    } finally { rmSync(temporary, { force: true }); }
+    return { root, sha: expectedSha, artifact };
+  });
 }
 
 function hasDependentArtifact(workRoot, marker) {
   return Array.isArray(marker?.retainedFor) && marker.retainedFor.some((entry) =>
     entry?.sha === marker.sha && typeof entry.path === 'string' && isAbsolute(entry.path)
       && entry.path !== workRoot && !entry.path.startsWith(workRoot + sep) && existsSync(entry.path));
+}
+
+/** Dispose a command's own extracted tree unless a consumer retained it. */
+export async function cleanupCommittedWorkRoot(workRoot, keep = false) {
+  if (keep) return false;
+  let root;
+  try { root = realpathSync(workRoot); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+  return withFsMutex(committedSourceRetentionMutexName(root), async () => {
+    // A consumer can register a hold while this command is finishing. Share
+    // its lock through the last marker read and unlink, just like the sweeper.
+    let marker = null;
+    try { marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8')); }
+    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
+    if (hasDependentArtifact(root, marker)) return false;
+    rmSync(root, { recursive: true, force: true });
+    return true;
+  });
 }
 
 /**
@@ -399,21 +479,33 @@ export function liveProcessCwds({ readDir = readdirSync, readLink = readlinkSync
  * it cannot prove a tree is idle, so it only removes trees whose marker names a dead
  * non-keep owner — the one verdict that needs no cwd scan.
  */
-export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
+export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
   const kept = [];
   const idleKept = [];
-  const tryRemove = (name, path, reason) => {
+  const tryRemove = async (name, path, reason) => {
     try {
-      // Scheduled callers require a complete fd/cwd census and unchanged identity.
-      // Keep the same TTL/artifact/cap policy for both scheduled and CLI sweeps.
-      const refusal = beforeRemove(path);
-      if (refusal) {
-        kept.push({ name, reason: refusal });
-        return;
-      }
-      remove(path);
-      removed.push({ name, reason });
+      await withFsMutex(committedSourceRetentionMutexName(path), async () => {
+        // Share the marker writer's lock through the final unlink. A hold can
+        // be registered after enumeration, including while this sweep waits.
+        const refusal = beforeRemove(path);
+        if (refusal) {
+          kept.push({ name, reason: refusal });
+          return;
+        }
+        let currentMarker = null;
+        try {
+          currentMarker = JSON.parse(readFileSync(join(path, OWNER_MARKER), 'utf8'));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+        if (hasDependentArtifact(path, currentMarker)) {
+          kept.push({ name, reason: 'dependent-artifact' });
+          return;
+        }
+        remove(path);
+        removed.push({ name, reason });
+      });
     } catch {
       kept.push({ name, reason: 'remove-failed' });
     }
@@ -449,7 +541,7 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     const ownerDead = marker !== null && !marker.keep && ownerAlive === false;
     const provable = inUse !== null || ownerDead;
     if (verdict.remove && provable) {
-      tryRemove(name, path, verdict.reason);
+      await tryRemove(name, path, verdict.reason);
     } else if (verdict.reason === 'keep-young' && inUse === false) {
       // Idle only when the cwd scan ran and found nobody inside (inUse === false, not null).
       idleKept.push({ name, path, createdAtMs });
@@ -458,10 +550,10 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
     }
   }
   idleKept.sort((a, b) => b.createdAtMs - a.createdAtMs);
-  idleKept.forEach(({ name, path }, i) => {
+  for (const [i, { name, path }] of idleKept.entries()) {
     if (i < maxIdleKept) kept.push({ name, reason: 'keep-young' });
-    else tryRemove(name, path, 'keep-over-cap');
-  });
+    else await tryRemove(name, path, 'keep-over-cap');
+  }
   return { removed, kept };
 }
 
@@ -851,8 +943,12 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
     try {
       mkdirSync(target, { recursive: true });
       for (const ent of readdirSync(source, { withFileTypes: true })) {
-        // npm's mutable install cache describes the physical source topology, not this shadow.
-        if (ent.name === '.package-lock.json') continue;
+        // npm's mutable install cache describes the source topology, not this shadow.
+        // Preserve its identity for bundle freshness under a name npm will not consume.
+        if (ent.name === '.package-lock.json') {
+          symlinkSync(join(source, ent.name), join(target, '.papercusp-installed-package-lock.json'));
+          continue;
+        }
         const sharedPath = join(source, ent.name);
         const clonePath = join(target, ent.name);
         if (ent.name.startsWith('@') && statSync(sharedPath).isDirectory()) {
@@ -1036,7 +1132,7 @@ export function showAtRef(repoRoot, ref, path) {
   return showAtRef(subRoot, pin, path.slice(owner.length + 1));
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
@@ -1110,12 +1206,34 @@ function main() {
     process.exit(2);
   }
 
+  if (args.scripts.includes('test:file')) {
+    try {
+      requireDurableTestRunSink(process.env);
+    } catch (error) {
+      console.error('lint-as-committed: ' +
+        (error instanceof Error ? error.message : String(error)));
+      process.exit(2);
+    }
+  }
+
   let repoRoot;
   try {
     repoRoot = git(['rev-parse', '--show-toplevel'], process.cwd());
   } catch {
     console.error('lint-as-committed: not inside a git repository.');
     process.exit(2);
+  }
+
+  // Prepared clones borrow installed bytes from this physical donor. Protect
+  // shadow creation, workspace builds and the forwarded command with the same
+  // reader boundary as install:safe; a clone's own mutex cannot protect it.
+  if (!installMutexIsHeld(installLockNameForRoot(repoRoot))) {
+    const { runCommandUnderInstallMutex } = await import('./npm-install-safe.mjs');
+    process.exitCode = await runCommandUnderInstallMutex({
+      repoRoot,
+      commandArgs: [process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)],
+    });
+    return;
   }
 
   let sha;
@@ -1157,7 +1275,7 @@ function main() {
     console.error(`lint-as-committed: no temporary directory has critical disk headroom (${tmpdir()}); refusing to materialise the committed tree.`);
     process.exit(2);
   }
-  const swept = sweepStaleWorkRoots();
+  const swept = await sweepStaleWorkRoots();
   if (swept.removed.length > 0) {
     console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
   }
@@ -1167,19 +1285,13 @@ function main() {
   // Exit and sweep share the dependent-artifact rule: retention may be added by
   // a consumer while the command is running, after args.keep was established.
   // SIGKILL is left to the next run's sweep.
-  const cleanupWorkRoot = () => {
-    if (args.keep) return;
-    let marker = null;
-    try { marker = JSON.parse(readFileSync(join(workRoot, OWNER_MARKER), 'utf8')); }
-    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
-    if (!hasDependentArtifact(workRoot, marker)) rmSync(workRoot, { recursive: true, force: true });
-  };
-  const bail = (code) => {
-    cleanupWorkRoot();
+  const cleanupWorkRoot = () => cleanupCommittedWorkRoot(workRoot, args.keep);
+  const bail = async (code) => {
+    await cleanupWorkRoot();
     process.exit(code);
   };
   for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
-    process.once(signal, () => bail(128 + number));
+    process.once(signal, () => { void bail(128 + number); });
   }
 
   try {
@@ -1193,7 +1305,7 @@ function main() {
     });
     if (clone.status !== 0) {
       console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
-      bail(2);
+      await bail(2);
     }
     const checkout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', sha], {
       cwd: workRoot,
@@ -1201,7 +1313,7 @@ function main() {
     });
     if (checkout.status !== 0) {
       console.error(`lint-as-committed: failed to check out ${short}:\n${checkout.stderr || checkout.stdout}`);
-      bail(2);
+      await bail(2);
     }
     try {
       writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: repoRoot }));
@@ -1256,7 +1368,7 @@ function main() {
             `\n  (This tool never fetches submodules over the network — that would either fail with no\n` +
             `   credentials or hang. Check out the submodule(s) locally first.)`,
         );
-        bail(2);
+        await bail(2);
       }
 
       for (const sub of submodules) {
@@ -1271,7 +1383,7 @@ function main() {
           pin = git(['rev-parse', `${sha}:${sub.path}`], repoRoot);
         } catch (err) {
           console.error(`lint-as-committed: cannot resolve the pinned commit for submodule ${sub.path} at ${short}: ${err.message}`);
-          bail(2);
+          await bail(2);
         }
 
         const subLocal = join(repoRoot, sub.path);
@@ -1281,7 +1393,7 @@ function main() {
         });
         if (subClone.status !== 0) {
           console.error(`lint-as-committed: failed to clone submodule ${sub.path} from its local checkout:\n${subClone.stderr || subClone.stdout}`);
-          bail(2);
+          await bail(2);
         }
         const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', pin], {
           cwd: subWork,
@@ -1291,7 +1403,7 @@ function main() {
           console.error(
             `lint-as-committed: failed to check out submodule ${sub.path} at its pinned commit ${pin.slice(0, 10)}:\n${subCheckout.stderr || subCheckout.stdout}`,
           );
-          bail(2);
+          await bail(2);
         }
         // A standalone clone has the bytes but does not enroll the submodule in its
         // parent's recursive Git enumeration. Whole-tree guards would silently omit
@@ -1390,7 +1502,7 @@ function main() {
 
     if (args.materializeOnly) {
       verifyCommittedWorkRoot(workRoot, sha);
-      if (args.retainFor) retainCommittedWorkRoot(workRoot, sha, args.retainFor);
+      if (args.retainFor) await retainCommittedWorkRoot(workRoot, sha, args.retainFor);
       console.log(`\nCommitted source prepared at ${workRoot}; no lint or test was run.`);
       return;
     }
@@ -1401,7 +1513,7 @@ function main() {
       refScripts = JSON.parse(readFileSync(join(workRoot, workspaceManifestPath(args.workspace)), 'utf8')).scripts ?? {};
     } catch (err) {
       console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
-      bail(2);
+      await bail(2);
     }
 
     const childEnvironment = lintAsCommittedChildEnv(process.env, repoRoot);
@@ -1452,16 +1564,46 @@ function main() {
         continue;
       }
 
-      const run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
-        ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
-        cwd: workRoot,
-        encoding: 'utf8',
-        stdio: 'inherit',
-        // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
-        // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
-        // workspace TypeScript imports under node_modules before lints can execute.
-        env: childEnvironment,
-      });
+      let testReceiptDir = null;
+      let scriptEnvironment = childEnvironment;
+      if (script === 'test:file') {
+        try {
+          testReceiptDir = mkdtempSync(join(tmpdir(), 'papercusp-lint-as-committed-receipts-'));
+          const receiptFile = join(testReceiptDir, 'receipts.jsonl');
+          writeFileSync(receiptFile, '', { flag: 'wx', mode: 0o600 });
+          const preparedRootReceiptFile = join(testReceiptDir, 'prepared-root.json');
+          let preparedRootReceipt = null;
+          try {
+            preparedRootReceipt = writePreparedWorkRootReceipt(workRoot, sha, preparedRootReceiptFile);
+          } catch (err) {
+            console.warn('lint-as-committed: prepared-root receipt unavailable; reporter will use Git status: ' +
+              (err instanceof Error ? err.message : String(err)));
+          }
+          scriptEnvironment = lintAsCommittedChildEnv(childEnvironment, null, receiptFile, preparedRootReceipt);
+        } catch (err) {
+          if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
+          const note = err instanceof Error ? err.message : String(err);
+          console.error('lint-as-committed: cannot prepare durable test receipt: ' + note);
+          results.push({ script, status: 'error', note });
+          continue;
+        }
+      }
+
+      let run;
+      try {
+        run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
+          ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
+          cwd: workRoot,
+          encoding: 'utf8',
+          stdio: 'inherit',
+          // Astro reads clone-specific Vite resolution from this marker. Keep Node's own
+          // symlink resolution unchanged: --preserve-symlinks makes Node 25 reject remapped
+          // workspace TypeScript imports under node_modules before lints can execute.
+          env: scriptEnvironment,
+        });
+      } finally {
+        if (testReceiptDir) rmSync(testReceiptDir, { recursive: true, force: true });
+      }
 
       if (run.error) {
         results.push({ script, status: 'error', note: run.error.message });
@@ -1476,7 +1618,7 @@ function main() {
     }
   } finally {
     if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
-    else cleanupWorkRoot();
+    else await cleanupWorkRoot();
   }
 
   const { exitCode, failedCount, lines } = summarize(results);

@@ -135,7 +135,34 @@ const renamePlanToSlug = (raw: unknown): unknown => {
   return r.slug === undefined ? { ...rest, slug: plan } : rest;
 };
 
-const argsSchema = z.preprocess(renamePlanToSlug, z.object({
+/**
+ * Compatibility spellings of the ONE exact-item selector (`itemIds`), in fixed precedence
+ * after `itemIds` itself. Each was filed as invalid_args by a real caller and aliased rather
+ * than rejected (EI-21588504660347963 `item`, EI-21913867956922477 `ids`,
+ * tool-contract-repair-2026-09-05 P-006 `itemId`/`items`/`item_ids`, EI-21670809954424164
+ * `item_id`). They are folded BEFORE parse — like `plan` above — instead of being declared
+ * as sibling schema fields: declared, they shipped ~0.4 KB of compact schema on every seeded
+ * turn (WI-6554700010029562) while only ever meaning `itemIds`. Still accepted, never advertised.
+ */
+const ITEM_ID_ALIASES = ["item", "ids", "itemId", "items", "item_ids", "item_id"] as const;
+
+const normalizePlansItemsArgs = (raw: unknown): unknown => {
+  const renamed = renamePlanToSlug(raw);
+  if (!renamed || typeof renamed !== "object" || Array.isArray(renamed)) return renamed;
+  const r = renamed as Record<string, unknown>;
+  if (!ITEM_ID_ALIASES.some((key) => r[key] !== undefined)) return renamed;
+  const rest: Record<string, unknown> = { ...r };
+  let itemIds = rest.itemIds;
+  for (const key of ITEM_ID_ALIASES) {
+    const value = rest[key];
+    delete rest[key];
+    // An explicit `itemIds` always wins, so a stray alias can never override the canonical field.
+    if (itemIds === undefined && value !== undefined) itemIds = typeof value === "string" ? [value] : value;
+  }
+  return itemIds === undefined ? rest : { ...rest, itemIds };
+};
+
+const argsSchema = z.preprocess(normalizePlansItemsArgs, z.object({
   slug: z
     .string()
     .min(1)
@@ -146,61 +173,10 @@ const argsSchema = z.preprocess(renamePlanToSlug, z.object({
     .min(1)
     .max(200)
     .optional()
-    .describe("Restrict the result to these items from the exact `slug` plan (homogeneous)."),
-  // EI-21588504660347963: two independent callers reached for the singular
-  // `item` (a P-NNN id) instead of the array-shaped `itemIds` and hit
-  // invalid_args — the same single/plural mismatch other tools in this catalog
-  // resolve with a compatibility alias (e.g. work_items:get's `id`/`ids`).
-  // Accept it as a one-item shorthand; `itemIds` wins when both are supplied.
-  item: z
-    .string()
-    .regex(/^P-\d{3,}$/, "P-NNN form required")
-    .optional()
-    .describe("Compatibility alias for itemIds (a single P-NNN id); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
-  // EI-21913867956922477: a caller reached for the plural `ids` (the
-  // work_items:get id/ids naming convention) instead of this tool's
-  // `itemIds` and hit invalid_args before any read ran. Accept it as a
-  // second compatibility alias alongside the singular `item`; `itemIds`
-  // wins when more than one of itemIds/item/ids is supplied.
-  ids: z
-    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
-    .min(1)
-    .max(200)
-    .optional()
-    .describe("Compatibility alias for itemIds (plural naming); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
-  // tool-contract-repair-2026-09-05 P-006: three further spellings of the SAME
-  // exact-item selector were each filed as invalid_args after the `item`/`ids`
-  // aliases already landed — `itemId` (3 filings, e.g. EI-21669556283807249),
-  // `items` (2, e.g. EI-21382868747036184 / EI-21921093498350970) and
-  // `item_ids` (1, EI-21856673460402354). Each is an unambiguous synonym for
-  // this tool's one exact-item filter — there is no second meaning `itemId`
-  // could carry here — so they alias rather than reject (plan D: ALIAS when the
-  // caller's name is a genuine synonym; BETTER-ERROR only when accepting it
-  // would fuse two meanings). Precedence is fixed and documented:
-  // itemIds > item > ids > itemId > items > item_ids.
-  itemId: z
-    .string()
-    .regex(/^P-\d{3,}$/, "P-NNN form required")
-    .optional()
-    .describe("Compatibility alias for itemIds (a single P-NNN id, camelCase singular); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
-  items: z
-    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
-    .min(1)
-    .max(200)
-    .optional()
-    .describe("Compatibility alias for itemIds (this tool's result key reused as the filter name); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
-  item_ids: z
-    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
-    .min(1)
-    .max(200)
-    .optional()
-    .describe("Compatibility alias for itemIds (snake_case); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
-  // EI-21670809954424164 — the snake_case SINGULAR, filed alongside the others.
-  item_id: z
-    .string()
-    .regex(/^P-\d{3,}$/, "P-NNN form required")
-    .optional()
-    .describe("Compatibility alias for itemIds (a single P-NNN id, snake_case); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+    .describe(
+      "Restrict the result to these items from the exact `slug` plan (homogeneous). Also accepted, folded into itemIds before parse " +
+        "(itemIds wins): item, ids, itemId, items, item_ids, item_id.",
+    ),
   status: z
     .enum([...ITEM_STATUSES] as [string, ...string[]])
     .optional()
@@ -231,16 +207,7 @@ const argsSchema = z.preprocess(renamePlanToSlug, z.object({
   harness: harnessArg,
 })).refine(
   (args) =>
-    !(
-      args.itemIds ||
-      args.item ||
-      args.ids ||
-      args.itemId ||
-      args.items ||
-      args.item_ids ||
-      args.item_id
-    ) ||
-    Boolean(args.slug),
+    !args.itemIds || Boolean(args.slug),
   "itemIds requires an exact plan slug; cross-plan item selection is not supported",
 );
 
@@ -429,19 +396,10 @@ export default defineTool({
       }
     }
     const includeArchived = args.includeArchived === true;
-    // Resolve every exact-item alias spelling into the canonical `itemIds`
-    // array. Precedence is fixed and documented on each argument:
-    // itemIds > item > ids > itemId > items > item_ids. An explicit `itemIds`
-    // always wins, so a caller who names the canonical field can never have it
-    // silently overridden by a stray alias.
-    const itemIds =
-      args.itemIds ??
-      (args.item ? [args.item] : undefined) ??
-      args.ids ??
-      (args.itemId ? [args.itemId] : undefined) ??
-      args.items ??
-      args.item_ids ??
-      (args.item_id ? [args.item_id] : undefined);
+    // Every exact-item alias spelling was already folded into itemIds by
+    // normalizePlansItemsArgs (precedence: itemIds > item > ids > itemId > items
+    // > item_ids > item_id), so an explicit itemIds is never overridden.
+    const itemIds = args.itemIds;
 
     // okf-frontmatter-adoption H(b). Read OUTSIDE the cached closure so the flag
     // is part of the cache KEY — flipping the kill-switch must change the answer

@@ -8,7 +8,9 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 const fixture = vi.hoisted(() => ({ host: '', consent: true, since: 0, db: null as OrgTestDb | null }));
 vi.mock('../operator-state-pg', async original => ({
   ...(await original<object>()),
-  readOperatorState: async () => ({ telemetry_enabled: fixture.consent, telemetry_consent_since: fixture.since }),
+  readOperatorState: async (key: string) => key === 'harness_registry'
+    ? { projects: [{ slug: 'papercusp', path: process.cwd() }] }
+    : { telemetry_enabled: fixture.consent, telemetry_consent_since: fixture.since },
   updateOperatorState: async (_key: string, _fallback: unknown, mutate: (state: Record<string, unknown>) => Record<string, unknown>) => {
     const next = mutate({ step_status: {}, telemetry_enabled: fixture.consent, telemetry_consent_since: fixture.since });
     fixture.consent = Boolean(next.telemetry_enabled);
@@ -34,9 +36,14 @@ vi.mock('@papercusp/db-org', async original => ({
 
 import { PROJECTED_DEPS, flushPendingTelemetry } from '../projected-tool-deps';
 import { beginGatewayTrace, finishGatewayTrace, flushRuntimeObservability,
-  beginToolTrace, finishToolTrace, initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability } from './runtime';
+  beginToolTrace, finishToolTrace, initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability,
+  expectSuccessfulToolModelTrace } from './runtime';
 import { mergeSetupWizardState } from '../endpoint-route/routes/desktop/setup-wizard-state';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
+import graphQuery from '../agent-tools/gitnexus/query';
+import { readEngineeringExecution } from './engineering-execution';
+import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
+import { serializeToolResponse } from '@papercusp/tooldef';
 
 describe('production observability composition', () => {
   let server: http.Server;
@@ -150,12 +157,157 @@ describe('production observability composition', () => {
       WHERE workspace_id = 'synthetic-workspace' AND tool_name = 'synthetic:observe'
       ORDER BY id DESC LIMIT 1`;
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.metadata_json).toMatchObject({ otel: { traceId: tool!.properties.$ai_trace_id } });
+    expect(rows[0]!.metadata_json).toMatchObject({ otel: { callId: 'synthetic-success', traceId: tool!.properties.$ai_trace_id } });
     expect(JSON.stringify(captured)).not.toContain('SECRET');
     const before = captured.length;
     await flushRuntimeObservability();
     expect(captured).toHaveLength(before); // capture requests do not recursively export
   });
+  it('persists both trusted model expectations through the production invocation writer even when the tool fails', async () => {
+    const callId = 'two-models-then-error';
+    const ids = [1, 2].map(n => '11111111-1111-4111-8111-111111111111:' + n);
+    PROJECTED_DEPS.onDispatchStart!({ ctx, toolName: 'synthetic:observe', callId } as never);
+    await PROJECTED_DEPS.aroundInvoke!({ tool: { pluginName: 'synthetic' }, toolName: 'synthetic:observe',
+      input: {}, ctx, callId, invoke: async () => {
+        for (const id of ids) { await Promise.resolve(); expectSuccessfulToolModelTrace(id); }
+      } } as never);
+    await PROJECTED_DEPS.recordInvocation!({ ctx, callId, toolName: 'synthetic:observe', pluginName: 'synthetic',
+      windowKey: 'synthetic-window', status: 'error', durationMs: 1,
+      metadataJson: { otel: { expectedModelRequestIds: ['caller-forged'] } } } as never);
+    await flushPendingTelemetry();
+    const rows = await fixture.db!.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id = 'synthetic-workspace' AND metadata_json->'otel'->>'callId' = ${callId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata_json).toMatchObject({ otel: { callId, expectedModel: true,
+      expectedModelRequestIds: ids, modelExpectationsIncomplete: false } });
+  });
+  async function evidenceInvocation(callId: string, traceparent = ctx.requestOrigin.headers.traceparent,
+    invokeHandler = true) {
+    const requestContext = { ...ctx, principal: { slug: 'engineering-fixture', workspaceId: ctx.workspaceId,
+      capabilities: new Set(['intel:read']) }, requestOrigin: { headers: { traceparent } } };
+    PROJECTED_DEPS.onDispatchStart!({ ctx: requestContext, toolName: 'graph:query', pluginName: 'papercusp', callId } as never);
+    const result = await PROJECTED_DEPS.aroundInvoke!({ tool: { pluginName: 'papercusp' }, toolName: 'graph:query',
+      input: {}, ctx: requestContext, callId, invoke: () => invokeHandler
+        ? graphQuery.handler(graphQuery.args.parse({ op: 'evidence', harnesses: ['papercusp'],
+          plan: 'ee-runtime-fixture', item: 'P-001' }), requestContext as never)
+        : Promise.resolve({ data: 'parent only' }) } as never) as unknown as { data: { status: string };
+          boundaryObservation?: ExecutionBoundaryReceipt; boundaryObservationGap?: string };
+    await PROJECTED_DEPS.recordInvocation!({ ctx: requestContext, callId, toolName: 'graph:query', pluginName: 'papercusp',
+      windowKey: callId, status: 'ok', durationMs: 1,
+      metadataJson: { otel: { callId: 'guessed', traceId: 'f'.repeat(32), boundaryObservations: ['forged'] } } } as never);
+    await flushPendingTelemetry();
+    return result;
+  }
+  async function correlatedRun(receipt: ExecutionBoundaryReceipt, caseKey: string,
+    change: Partial<ExecutionBoundaryReceipt> = {}) {
+    const sql = fixture.db!.adminSql;
+    const hints = [{ caseKey, occurrence: 1, receipt: { ...receipt, ...change } }];
+    const [run] = await sql`INSERT INTO harness_shared.test_runs
+      (workspace_id,harness_slug,file_path,framework,status,commit_sha,started_at,finished_at,execution_details)
+      VALUES (${ctx.workspaceId},'papercusp','observability/runtime.integration.test.ts','vitest','pass',
+        ${receipt.buildSha},${new Date(receipt.startedAt - 1)},${new Date(Math.max(Date.now(), receipt.endedAt + 1))},
+        ${sql.json({ boundaryObservations: hints })}) RETURNING id`;
+    await sql`INSERT INTO harness_shared.test_case_runs (test_run_id,case_index,case_key,occurrence,status)
+      VALUES (${run!.id},0,${caseKey},1,'pass')`;
+    return Number(run!.id);
+  }
+  const readExecution = (runId: number) => readEngineeringExecution({ workspaceId: ctx.workspaceId,
+    harness: 'papercusp' }, runId, fixture.db!.adminSql);
+
+  it('ee.observed-boundary: joins the actual graph handler child span to exact migrated run and case records', async ({ task }) => {
+    const response = await evidenceInvocation('ee-observed');
+    expect(response.data.status).toBe('measured');
+    const receipt = response.boundaryObservation!;
+    expect(receipt).toMatchObject({ boundary: 'graph:query:evidence', callId: 'ee-observed', outcome: 'ok' });
+    const wire = serializeToolResponse(response, { defaultCompact: false, includeStructured: true });
+    expect(wire.structuredContent).toMatchObject({ status: 'measured', boundaryObservation: receipt });
+    expect(JSON.parse((wire.content[0] as { text: string }).text)).toMatchObject({ boundaryObservation: receipt });
+    expect(receipt.spanId).not.toBe(receipt.parentSpanId);
+    const { loadedHandlerFingerprint } = await import('./runtime');
+    const { engineeringEvidenceQuery } = await import('../code-intelligence/engineering-evidence');
+    expect(receipt.sourceFingerprint).toBe(loadedHandlerFingerprint(engineeringEvidenceQuery));
+    const runId = await correlatedRun(receipt, 'ee.observed-boundary');
+    const joined = await readExecution(runId);
+    expect(joined.status).toBe('observed');
+    expect(joined.gaps).toEqual([]);
+    expect(joined.observations).toEqual([{ runId, caseKey: 'ee.observed-boundary', occurrence: 1,
+      invocationId: expect.any(String), receipt }]);
+    task.meta.papercuspExecutionObservations = [receipt];
+  });
+  it('ee.execution-window: excludes older invocations that reused a recorded call identity', async () => {
+    const response = await evidenceInvocation('ee-reused-call');
+    const receipt = response.boundaryObservation!;
+    const sql = fixture.db!.adminSql;
+    // A reused call label outside this framework run must not create an
+    // ambiguous match or make the lookup scan unrelated historical calls.
+    await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,
+        status,serving_build_sha,invoked_at,metadata_json)
+      SELECT workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,serving_build_sha,
+        ${new Date(receipt.startedAt - 60_000)},metadata_json
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id=${ctx.workspaceId} AND harness_slug='papercusp'
+         AND metadata_json->'otel'->>'callId'='ee-reused-call' LIMIT 1`;
+    const runId = await correlatedRun(receipt, 'ee.execution-window');
+    const joined = await readExecution(runId);
+    expect(joined.status).toBe('observed');
+    expect(joined.gaps).toEqual([]);
+    expect(joined.observations).toHaveLength(1);
+    expect(joined.observations[0]?.receipt).toEqual(receipt);
+  });
+  it('ee.parent-only: a real parent dispatch span never observes an uninstrumented child', async () => {
+    const response = await evidenceInvocation('ee-parent-only', undefined, false);
+    expect(response.boundaryObservation).toBeUndefined();
+    const [row] = await fixture.db!.adminSql`SELECT metadata_json->'otel' AS otel FROM harness_shared.tool_invocations
+      WHERE workspace_id=${ctx.workspaceId} AND window_key='ee-parent-only'`;
+    expect(row!.otel.callId).toBe('ee-parent-only');
+    expect(row!.otel.boundaryObservations).toBeUndefined();
+  });
+  it('ee.missing-trace: a direct handler outside the dispatch trace produces no observation', async () => {
+    const response = await graphQuery.handler(graphQuery.args.parse({ op: 'evidence', harnesses: ['papercusp'],
+      plan: 'ee-runtime-fixture', item: 'P-001' }), ctx as never) as { boundaryObservation?: unknown; boundaryObservationGap?: string };
+    expect(response.boundaryObservation).toBeUndefined();
+    expect(response.boundaryObservationGap).toBe('trace-unavailable');
+    await PROJECTED_DEPS.recordInvocation!({ ctx, callId: 'ee-never-started', toolName: 'graph:query', pluginName: 'papercusp',
+      windowKey: 'ee-missing-trace', status: 'ok', durationMs: 1,
+      metadataJson: { otel: { callId: 'guessed', traceId: 'f'.repeat(32), boundaryObservations: ['forged'] } } } as never);
+    await flushPendingTelemetry();
+    const [row] = await fixture.db!.adminSql`SELECT metadata_json->'otel' AS otel FROM harness_shared.tool_invocations
+      WHERE workspace_id=${ctx.workspaceId} AND window_key='ee-missing-trace'`;
+    expect(row!.otel).toBeNull();
+  });
+  it('ee.sampled-out: an unsampled real dispatch stays unobserved', async () => {
+    const response = await evidenceInvocation('ee-sampled-out', '00-12345678901234567890123456789012-1234567890123456-00');
+    expect(response.boundaryObservation).toBeUndefined();
+    expect(response.boundaryObservationGap).toBe('trace-sampled-out');
+    const [row] = await fixture.db!.adminSql`SELECT metadata_json->'otel' AS otel FROM harness_shared.tool_invocations
+      WHERE workspace_id=${ctx.workspaceId} AND window_key='ee-sampled-out'`;
+    expect(row!.otel.traceFlags & 1).toBe(0);
+    expect(row!.otel.boundaryObservations).toBeUndefined();
+  });
+  it('ee.guessed-trace: a caller hint cannot replace independently recorded span identity', async () => {
+    const response = await evidenceInvocation('ee-guessed-trace');
+    const runId = await correlatedRun(response.boundaryObservation!, 'ee.guessed-trace', { traceId: 'f'.repeat(32) });
+    expect(await readExecution(runId)).toMatchObject({ status: 'unobserved', observations: [], gaps: ['execution-boundary-mismatch'] });
+  });
+  it.each(['artifactFingerprint', 'sourceFingerprint', 'environmentFingerprint'] as const)(
+    'ee.artifact-mismatch: refuses a mismatched %s in the correlation tuple', async key => {
+      const response = await evidenceInvocation(`ee-mismatch-${key}`);
+      const runId = await correlatedRun(response.boundaryObservation!, 'ee.artifact-mismatch', { [key]: 'f'.repeat(64) });
+      expect(await readExecution(runId)).toMatchObject({ status: 'unobserved', observations: [], gaps: ['execution-boundary-mismatch'] });
+    });
+  it('ee.foreign-correlation: refuses foreign scope and exact-case substitution', async () => {
+    const response = await evidenceInvocation('ee-foreign-correlation');
+    const runId = await correlatedRun(response.boundaryObservation!, 'ee.foreign-correlation', { workspaceId: 'foreign' });
+    expect(await readExecution(runId)).toMatchObject({ status: 'unobserved', observations: [], gaps: ['execution-scope-mismatch'] });
+    expect(await readEngineeringExecution({ workspaceId: 'foreign', harness: 'papercusp' }, runId, fixture.db!.adminSql))
+      .toMatchObject({ status: 'unobserved', observations: [], gaps: ['execution-run-unavailable'] });
+    await fixture.db!.adminSql`UPDATE harness_shared.test_runs SET execution_details=${fixture.db!.adminSql.json({
+      boundaryObservations: [{ caseKey: 'other-case', occurrence: 1, receipt: { ...response.boundaryObservation! } }],
+    })} WHERE id=${runId}`;
+    expect(await readExecution(runId)).toMatchObject({ status: 'unobserved', observations: [], gaps: ['execution-case-mismatch'] });
+  });
+
   it('keeps two barrier-interleaved production tool, HTTP, model and PostgreSQL journeys isolated', async () => {
     const journeys = [
       { callId: 'concurrent-left', traceId: '11111111111111111111111111111111', parentId: '1111111111111111' },
@@ -209,7 +361,7 @@ describe('production observability composition', () => {
           e.properties['papercusp.call_id'] !== journey.callId)).toBe(false);
         const row = rows.filter(row => row.window_key === journey.callId);
         expect(row).toHaveLength(1);
-        expect(row[0]!.metadata_json).toMatchObject({ otel: { traceId: journey.traceId, spanId: toolSpanId } });
+        expect(row[0]!.metadata_json).toMatchObject({ otel: { callId: journey.callId, traceId: journey.traceId, spanId: toolSpanId } });
       }
       expect(new Set(toolSpanIds).size).toBe(2);
       expect(events.filter(e => e.event === '$ai_generation')).toHaveLength(2);

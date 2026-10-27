@@ -1,0 +1,371 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-comparison-evidence",
+  "plan": "sidecar-forkserver-2026-10-21",
+  "item": "P-004",
+  "incident": "WI-6554700010019379",
+  "unit": "papercusp-bg-host.service",
+  "metricDefinition": {
+    "comparison": "Milliseconds from process:exec dispatch to the first admission-ready stage, sampled once for every emitted matching stage log line. Repeated progress logs weight long requests multiple times. This is time-to-ready, not isolated admission duration.",
+    "selection": "Only executions crossing the server slow timer (default 5000ms) emit these logs. Before capture was capped/truncated; neither sample estimates all admissions.",
+    "percentileMethod": "Sorted observations at index min(n-1,floor(f*n)), matching the original reducer."
+  },
+  "before": {
+    "sourceSession": "claude:7986a278-5448-47ed-a7f6-a34e4644ac75",
+    "toolUseId": "toolu_01XAfMvGyRsisjTSpZNkz5YY",
+    "sourceRecipe": {
+      "title": "Sidecar admission latency distribution (last 40 min)",
+      "timeoutSec": 45,
+      "script": "const r = await tools.logs.read({ unit: 'papercusp-bg-host.service', since: '2026-10-21 16:50:00 UTC', grep: \"'admission-ready': [0-9]|'child-close': [0-9]|'spawn-start': [0-9]\", limit: 1000, payloadTier: 'full' });\nconst es = r.entries||[];\nconst vals = { adm: [], close: [] };\nfor (const e of es) { const m = e.message||''; let x;\n  if ((x = m.match(/'admission-ready': (\\d+)/))) vals.adm.push(+x[1]);\n  if ((x = m.match(/'child-close': (\\d+)/))) vals.close.push(+x[1]); }\nconst q = (a)=>{ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y); const p=(f)=>s[Math.min(s.length-1,Math.floor(f*s.length))]; return { n:s.length, p10:p(.1), p50:p(.5), p90:p(.9), max:s[s.length-1] }; };\nreturn { lines: es.length, truncated: r.truncated, admissionReady: q(vals.adm), childClose: q(vals.close), firstTs: es.map(e=>e.ts).sort()[0], lastTs: es.map(e=>e.ts).sort().pop() };"
+    },
+    "receipt": {
+      "lines": 997,
+      "truncated": true,
+      "admissionReady": {
+        "n": 351,
+        "p10": 3396,
+        "p50": 4807,
+        "p90": 6090,
+        "max": 12816
+      },
+      "childClose": {
+        "n": 306,
+        "p10": 950,
+        "p50": 4952,
+        "p90": 6198,
+        "max": 9308
+      },
+      "firstTs": "2026-10-21T17:27:05.730Z",
+      "lastTs": "2026-10-21T17:28:23.252Z"
+    },
+    "processAgeWitness": {
+      "sourceToolUseId": "toolu_01QRtC3N8Q1cW416ZVpAmVzD",
+      "observedAt": "2026-10-21T17:21:07.541Z",
+      "runnerPid": 1066114,
+      "runnerElapsed": "01:25:12",
+      "sidecarPidFromHeaderReceipt": 1070381,
+      "headerToolUseId": "toolu_01SACZSeeYTepvLkLxRXYyaL",
+      "approximateAgeDuringSampleMinutes": [
+        91,
+        93
+      ],
+      "limitation": "The retained ps witness measures the sidecar runner, not the exact child start tick; the before distribution did not filter PID. Exact per-request and per-process reconstruction is unavailable."
+    }
+  },
+  "after": {
+    "since": "2026-10-23 09:20:00 UTC",
+    "until": "2026-10-23 09:21:18 UTC",
+    "journalSha256": "b9bf3a72ec1674c68fb8d376abf0ae63f79d6ebba207bf22ea83afa45c401122",
+    "events": {
+      "slow": 35,
+      "progress": 284,
+      "request-settled": 35
+    },
+    "admissionReadyLogEntryMs": {
+      "n": 318,
+      "p10": 5472,
+      "p50": 12974,
+      "p90": 50887,
+      "p95": 51561,
+      "p99": 51634,
+      "max": 51634
+    },
+    "requestAdmissionDurationMs": {
+      "n": 33,
+      "p10": 5461,
+      "p50": 12931,
+      "p90": 50887,
+      "p95": 51561,
+      "p99": 51634,
+      "max": 51634
+    },
+    "distinctRequests": 33,
+    "duplicateRequestRecordsRejected": 0,
+    "sidecarPids": [
+      154874
+    ],
+    "records": [
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49842,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 4376,
+        "admissionDurationMs": 4376
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "cf008998-8921-4e57-986d-d67fd0c366bd",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 23,
+        "admissionDurationMs": 23
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "59eded7d-086d-4af1-a5fd-17b23f458c72",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5842,
+        "admissionDurationMs": 5842
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "fd749a78-c9fe-4d55-871c-23c0598dfa26",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5819,
+        "admissionDurationMs": 5819
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "f010487d-2dca-4c2c-9b1c-b5cc5fb6f402",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5834,
+        "admissionDurationMs": 5834
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "dc2a6b24-e8e6-4a58-a8ac-b53c418ab84c",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5461,
+        "admissionDurationMs": 5461
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "eb99310c-c6cc-44dc-bd35-dfda6692252f",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5852,
+        "admissionDurationMs": 5852
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "4feb4292-b9c8-416d-9b06-58bae14d402d",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 5472,
+        "admissionDurationMs": 5472
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "5fa18e9e-f0eb-460e-8e2a-03962c0330c1",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 51516,
+        "admissionDurationMs": 51516
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "081f7177-59c8-4610-a660-7df0b228074b",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 51561,
+        "admissionDurationMs": 51561
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "81f67be3-f7f4-4c6d-bc66-cf8d04d78210",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 51634,
+        "admissionDurationMs": 51634
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49921,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50475,
+        "admissionDurationMs": 50475
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49920,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50479,
+        "admissionDurationMs": 50479
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49922,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50549,
+        "admissionDurationMs": 50549
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49925,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50860,
+        "admissionDurationMs": 50860
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49926,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50887,
+        "admissionDurationMs": 50887
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "3e81c9df-3d22-4432-844a-9f6b1e8313f3",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 48866,
+        "admissionDurationMs": 48866
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "70df2c18-6255-4404-81d5-7e19cb392ec0",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 48799,
+        "admissionDurationMs": 48799
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "a5bba6e2-54ba-43fb-98a6-30b0cd6e2493",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 48848,
+        "admissionDurationMs": 48848
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "fb510191-a015-4c5d-a2cd-9e681977065d",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 4592,
+        "admissionDurationMs": 4592
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "fdb237b0-1ebe-4702-b72b-66b1de0e5144",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 48839,
+        "admissionDurationMs": 48839
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 49928,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 50780,
+        "admissionDurationMs": 50780
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 50181,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 13269,
+        "admissionDurationMs": 13269
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "9637852e-b256-4927-81d0-313f5cc3c2dc",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12974,
+        "admissionDurationMs": 12974
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "568f9b11-5e74-4634-80d9-32d8014ab3d7",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12456,
+        "admissionDurationMs": 12456
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "e97d51eb-97b4-467e-ac5f-5c2d0c219e94",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12463,
+        "admissionDurationMs": 12463
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "5847494f-860e-4f2e-a0e1-0e1ff8572c24",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12454,
+        "admissionDurationMs": 12454
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "2b525465-0b89-416a-bce2-8c7a5f743f4b",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12457,
+        "admissionDurationMs": 12457
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "a3fb9503-e065-47c6-b1c9-5412b4b5ea00",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12449,
+        "admissionDurationMs": 12449
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "4fc0cdbc-a178-4c1a-aa18-3b67046db8b7",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 13207,
+        "admissionDurationMs": 13207
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "15c5a047-28ec-4c91-9484-db801017627e",
+        "requestId": 50201,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12931,
+        "admissionDurationMs": 12931
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "d5a48ad2-0f2b-4e3d-ba65-65e600d07285",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12486,
+        "admissionDurationMs": 12486
+      },
+      {
+        "sidecarPid": 154874,
+        "connectionId": "e2d3c77b-3b47-4de7-848b-4273e6e16912",
+        "requestId": 2,
+        "admissionStartMs": 0,
+        "admissionReadyMs": 12462,
+        "admissionDurationMs": 12462
+      }
+    ],
+    "processAgeWitness": {
+      "sidecarPid": 154874,
+      "kernelStartUtc": "2026-10-23T07:53:14.025917Z",
+      "approximateAgeDuringSampleMinutes": [
+        86.77,
+        88.07
+      ]
+    },
+    "taskId": "0mvksfijdx54txj13s2",
+    "settledRecordsWithoutAdmissionPair": 2
+  },
+  "interpretation": {
+    "forkBudget": "Separate native operational run 21810631 passed all six live assertions with zero sidecar forks and 3.5313466015652115% fork-plus-all-read blocking in a 3.000895s window.",
+    "admissionResult": "The recorded after sample retains multi-second admission latency; this comparison does not establish an admission-speed improvement.",
+    "comparability": "Both captures are well beyond the early eight-minute process-age regime and their approximate ages differ by about five minutes. Window sizes are about 78s. Workload mix, before truncation/repeated weighting, PID mixing and runner-vs-child age remain uncontrolled; no causal speedup or slowdown is inferred.",
+    "residualOwner": "su-c0f4f0de-73ad-464d-a13a-e5d96297bcb6",
+    "residualWorkItem": "EI-26687833013975147"
+  }
+}

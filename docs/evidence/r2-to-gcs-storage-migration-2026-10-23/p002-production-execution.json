@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P002 production GCS delivery of retained P544 signed artifact",
+  "framework": "node",
+  "command": [
+    "node",
+    "--input-type=module",
+    "-"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-26T19:33:28.262Z",
+  "finishedAt": "2026-10-26T19:34:34.277Z",
+  "summary": "Registers the completed production anonymous HTTP verification without executing it again. Four retained P544 files match admitted hashes and sizes; raw GCS anonymous access returns 403. Production evidence only; independent acceptance and full migration remain open.",
+  "assertions": [
+    {
+      "id": "server.tgz",
+      "passed": true,
+      "evidence": "Anonymous production GET through maintained verifyGcsPublicBytes matched admitted SHA-256 7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948 and 2118168717 bytes; HEAD returned 200."
+    },
+    {
+      "id": "server.tgz.minisig",
+      "passed": true,
+      "evidence": "Anonymous production GET through maintained verifyGcsPublicBytes matched admitted SHA-256 b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54 and 295 bytes; HEAD returned 200."
+    },
+    {
+      "id": "manifest.json",
+      "passed": true,
+      "evidence": "Anonymous production GET through maintained verifyGcsPublicBytes matched admitted SHA-256 5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8 and 12555 bytes; HEAD returned 200."
+    },
+    {
+      "id": "sbom.cdx.json",
+      "passed": true,
+      "evidence": "Anonymous production GET through maintained verifyGcsPublicBytes matched admitted SHA-256 4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d and 800554 bytes; HEAD returned 200."
+    },
+    {
+      "id": "raw-bucket-anonymous-denied",
+      "passed": true,
+      "evidence": "anonymous HEAD returned 403"
+    }
+  ],
+  "sourceEvidence": {
+    "file": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-production-live.json",
+    "sha256": "babf98bab0dd27077ba7d8a00fdcf20ef978fb9e199a8b88c01eef24d6c4de64",
+    "originalOutput": "/tmp/f9dd6-p002-production-bytes.json",
+    "nativeSession": "01a1799f-32bc-7bd3-9d16-ed77d6ab69c7",
+    "executionEvent": "exec-9c9e33e7-9fb8-49ab-ad1c-eecb677eb1cd"
+  },
+  "observations": {
+    "evidencePlane": "live",
+    "workerVersion": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+    "baseUrl": "https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/",
+    "bucket": "pc-p317-host-bundle-20260917",
+    "originalJournal": {
+      "schemaVersion": 1,
+      "taskId": "0mvkl22i0febmllzn1h",
+      "operationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+      "sourceSha": "eeed52c58803fdf2bac550c046c17843061e52f6",
+      "version": "0.0.21-p544q20261023r2"
+    },
+    "expectedIdentities": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-worker-live.json",
+    "independentAcceptance": false,
+    "sourceRetained": true,
+    "inaccessibleSourceException": "WI-6554700010025592",
+    "runtimeImportClosure": "unmeasured"
+  },
+  "instrument": {
+    "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+    "testPath": "scripts/publish-workspace-host-artifacts.test.ts"
+  },
+  "executedShellCommand": [
+    "/bin/bash",
+    "-lc",
+    "node --input-type=module - <<'JS' > /tmp/f9dd6-p002-production-bytes.json\nimport {readFile} from 'node:fs/promises';\nimport {verifyGcsPublicBytes} from './scripts/lib/workspace-host-gcs-publication.mjs';\nconst old=JSON.parse(await readFile('docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-worker-live.json','utf8'));\nconst base='https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/';\nconst checks=[];\nfor(const expected of old.checks.filter(c=>c.name!=='raw-bucket-anonymous-denied')) {\n const url=base+expected.name;\n const head=await fetch(url,{method:'HEAD',signal:AbortSignal.timeout(30000)});\n if(!head.ok)throw new Error('production HEAD failed: '+expected.name+' '+head.status);\n const observed=await verifyGcsPublicBytes(url,expected);\n checks.push({name:expected.name,status:200,...observed,head:{status:head.status,contentLength:head.headers.get('content-length'),cacheControl:head.headers.get('cache-control')},ok:true});\n}\nconst raw=await fetch('https://storage.googleapis.com/pc-p317-host-bundle-20260917/artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/server.tgz',{method:'HEAD',signal:AbortSignal.timeout(30000)});\nif(raw.status!==403)throw new Error('raw bucket did not deny anonymous bytes: '+raw.status);\nchecks.push({name:'raw-bucket-anonymous-denied',status:raw.status,ok:true});\nconsole.log(JSON.stringify({schemaVersion:'r2gcs-p002-production-http-v1',observedAt:new Date().toISOString(),workItem:old.workItem,runtime:'deployed Cloudflare Worker backed by private GCS',workerVersion:'968092d7-beeb-4bdb-a1b3-3953d4b9fefc',baseUrl:base,checks,result:'pass',productionDeployed:true,independentAcceptance:false,originalJournal:old.originalJournal,sourceRetained:true,inaccessibleSourceException:'WI-6554700010025592'},null,2));\nJS"
+  ],
+  "commandInput": "The Node stdin program is preserved verbatim in executedShellCommand[2], recovered from the native execution event."
+}

@@ -83,8 +83,18 @@ export interface GreenMainSloPassResult {
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-const conditionKey = (deps: GreenMainSloPassDeps, metric: string, episode: string, subject: string | null = null): string =>
-  `alarm:green-main-slo:${encodeURIComponent(JSON.stringify([deps.workspaceId, deps.installSlug, metric, episode, subject]))}`;
+/**
+ * The alarm item's condition key. Exported so the LIVE_GATE_OPS reservation
+ * (work-items-admission.ts liveGateOpsReservedPatterns) is tested against the real encoding.
+ */
+export const greenMainSloConditionKey = (
+  scope: Pick<GreenMainSloPassDeps, 'workspaceId' | 'installSlug'>,
+  metric: string,
+  episode: string,
+  subject: string | null = null,
+): string =>
+  `alarm:green-main-slo:${encodeURIComponent(JSON.stringify([scope.workspaceId, scope.installSlug, metric, episode, subject]))}`;
+const conditionKey = greenMainSloConditionKey;
 
 const epoch = (value: unknown, nowMs: number): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= nowMs;
@@ -129,6 +139,20 @@ function repairedAdmissionAt(queue: GreenMainSloQueue | null, head: string, nowM
   if (!before || !after || after.failingCount <= before.failingCount) return null;
   return rounds.find((r) => r.atMs > after.atMs && epoch(r.atMs, nowMs) &&
     Number.isInteger(r.failingCount) && r.failingCount >= 0 && r.failingCount <= before.failingCount)?.atMs ?? null;
+}
+
+/** A later valid queue is the explicit supersession boundary for metrics tied to the prior frozen candidate. */
+function explicitlySupersededByNewQueue(
+  metric: string,
+  exactSubject: string | null,
+  openedAtMs: number,
+  nowMs: number,
+  queue: GreenMainSloQueue | null,
+): boolean {
+  const queueMetrics = ['red-adding-admission', 'round-cycle-time', 'queue-idle'];
+  if (!queueMetrics.includes(metric) || !exactSubject || !queue || !measuredQueue(queue, nowMs) ||
+      queue.candidate === exactSubject || !epoch(openedAtMs, nowMs)) return false;
+  return queue.openedAtMs > openedAtMs;
 }
 
 /** Positive exact-subject observations only; a missing row or a skipped input never clears an episode. */
@@ -295,8 +319,15 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
         scope[0] !== deps.workspaceId || scope[1] !== deps.installSlug ||
         conditionKey(deps, scope[2], scope[3], scope[4]) !== condition.condition_key) continue;
       const openedAtMs = Date.parse(condition.open_since ?? condition.last_seen);
-      if (measuredRecovery(scope[2], scope[3], scope[4], openedAtMs, deps, slo, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies, nonVerdictReasons)) {
-        const resolved = await resolveAlarm(condition.condition_key, 'green-main-slo', deps.rail);
+      const superseded = explicitlySupersededByNewQueue(scope[2], scope[4], openedAtMs, deps.nowMs, queue);
+      const recovered = !superseded &&
+        measuredRecovery(scope[2], scope[3], scope[4], openedAtMs, deps, slo, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies, nonVerdictReasons);
+      if (superseded || recovered) {
+        const resolutionSummary = superseded
+          ? 'green-main-slo ' + scope[2] + ' episode for candidate ' + String(scope[4]).slice(0, 12) +
+            ' superseded by later repair queue candidate ' + String(queue?.candidate).slice(0, 12)
+          : undefined;
+        const resolved = await resolveAlarm(condition.condition_key, 'green-main-slo', deps.rail, resolutionSummary);
         if (!resolved) conditionErrors.push(`resolve ${condition.condition_key}: delivery returned false`);
       }
     } catch (e) { conditionErrors.push(`reconcile ${condition.condition_key}: ${message(e)}`); }

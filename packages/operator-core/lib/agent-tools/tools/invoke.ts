@@ -300,7 +300,7 @@ export default defineTool({
       'the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a ' +
       'direct call whenever the tool is reachable.',
     chaining:
-    'tools:find("<intent>") → take the top hit\'s name + argSchema + servingGeneration → tools:invoke({ name, args: {…}, servingGeneration }). The dispatcher refuses a different/unknown generation before target execution.',
+    'tools:find("<intent>") → call the top hit through tools:invoke({ name, args }). The MCP transport fences dispatch using the `papercusp/servingGeneration` metadata from tools/list; do not require the optional `servingGeneration` argument, which legacy callable schemas may reject.',
     seeAlso: [
       'tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)',
     ],
@@ -345,7 +345,7 @@ export default defineTool({
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */
     name: z.string().min(1).max(120),
-    /** Exact generation returned by tools:find; binds the schema to this dispatcher. */
+    /** Optional extra generation pin; MCP transport independently fences calls from tools/list metadata. */
     servingGeneration: z.string().trim().min(1).max(160).optional(),
     /** staging-build-tool-routing-2026-10-21 P-002: the build that must serve this call. */
     build: z

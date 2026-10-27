@@ -187,3 +187,83 @@ describe('WI-10002078 — production carry re-arms cannot outlive their child ep
     expect(h.controller.pendingCount()).toBe(0);
   });
 });
+
+describe('native rearm preserves loop-instance delivery provenance', () => {
+  type Wake = { mode: string; data: string; deliveryId: string; routineId?: string; fireNumber?: number };
+  async function wakeHarness() {
+    const mutex = makeInjectMutex();
+    const release = await mutex.acquire();
+    const delivered: Wake[] = [];
+    const settled: { ids: string[]; delivered: boolean }[] = [];
+    const controller = makeCarryRearmController({
+      acquireInject: () => mutex.acquire(),
+      waitAtPrompt: async () => ({ deferred: false }),
+      recycle: async () => {},
+      performDelivery: async (message: Wake) => {
+        delivered.push(message);
+        return { delivered: true };
+      },
+      onSettlement: (messages: Wake[], outcome: { delivered: boolean }) => {
+        settled.push({ ids: messages.map(message => message.deliveryId), delivered: outcome.delivered });
+      },
+      emitEvent: () => {},
+      maxProductionAttempts: 1,
+    });
+    return { controller, release, delivered, settled };
+  }
+  const loop: Wake = {
+    mode: 'turn', routineId: 'storage-loop', fireNumber: 26, deliveryId: 'loop-26',
+    data: 'loop-origin storage continuation',
+  };
+  const inbox: Wake = { mode: 'turn', deliveryId: 'review', data: 'inbox-origin source review' };
+
+  it.each([true, false])('delivers both loop and inbox text without folding their proof IDs (loop first=%s)', async loopFirst => {
+    const h = await wakeHarness();
+    h.controller.schedule(loopFirst ? loop : inbox);
+    h.controller.schedule(loopFirst ? inbox : loop);
+    h.release();
+    await drain();
+
+    expect(h.delivered.map(message => message.data)).toEqual(loopFirst ? [loop.data, inbox.data] : [inbox.data, loop.data]);
+    expect(h.settled).toEqual((loopFirst ? [loop, inbox] : [inbox, loop])
+      .map(message => ({ ids: [message.deliveryId], delivered: true })));
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('keeps distinct loop instances independent even when both fires use turn mode', async () => {
+    const h = await wakeHarness();
+    const other = { ...loop, routineId: 'another-loop', deliveryId: 'other-1', fireNumber: 1, data: 'other loop text' };
+    h.controller.schedule(loop);
+    h.controller.schedule(other);
+    h.release();
+    await drain();
+
+    expect(h.delivered).toEqual([loop, other]);
+    expect(h.settled.map(row => row.ids)).toEqual([[loop.deliveryId], [other.deliveryId]]);
+  });
+
+  it('still folds successive fires of the same loop into one latest payload and settlement', async () => {
+    const h = await wakeHarness();
+    const newer = { ...loop, deliveryId: 'loop-27', fireNumber: 27, data: 'newest loop text' };
+    expect(h.controller.schedule(loop)).toBe('queued');
+    expect(h.controller.schedule(newer)).toBe('superseded');
+    h.release();
+    await drain();
+
+    expect(h.delivered).toEqual([newer]);
+    expect(h.settled).toEqual([{ ids: [loop.deliveryId, newer.deliveryId], delivered: true }]);
+  });
+
+  it('refreshes the pending loop checkpoint without replacing a separately pending inbox wake', async () => {
+    const h = await wakeHarness();
+    h.controller.schedule(loop);
+    h.controller.schedule(inbox);
+    const refreshed = h.controller.refreshPendingMessage({ ...loop, data: 'fresh checkpoint' });
+    h.release();
+    await drain();
+
+    expect(refreshed).toBe(true);
+    expect(h.delivered.map(message => message.data)).toEqual(['fresh checkpoint', inbox.data]);
+    expect(h.settled.map(row => row.ids)).toEqual([[loop.deliveryId], [inbox.deliveryId]]);
+  });
+});

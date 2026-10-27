@@ -363,14 +363,19 @@ function heapBreakdown(): Record<string, number> {
 
 /**
  * Resolve a forced full-GC hook for the proactive-GC freeze fix, WITHOUT requiring
- * `--expose-gc` in NODE_OPTIONS. Order: an already-exposed `global.gc`, else
- * runtime-enable it via `v8.setFlagsFromString('--expose-gc')` and grab the `gc`
- * binding through a fresh VM context. Returns null if neither works (never throws).
+ * `--expose-gc` in NODE_OPTIONS. Prefer an already-exposed `global.gc`, then
+ * Bun's full-collection API on Bun. On Node, runtime-enable V8 GC and grab its
+ * binding through a fresh VM context. Returns null when unavailable (never throws).
  * Cached null/fn is fine — the binding is stable for the process lifetime.
  */
 export function resolveForceGc(): (() => void) | null {
   const exposed = (globalThis as { gc?: () => void }).gc;
   if (typeof exposed === 'function') return exposed;
+  if (process.versions.bun) {
+    const bun = (globalThis as { Bun?: { gc?: (full: boolean) => unknown } }).Bun;
+    const collect = bun?.gc;
+    return typeof collect === 'function' ? () => { collect.call(bun, true); } : null;
+  }
   try {
     setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc');
@@ -398,7 +403,7 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
   const suppressBornOverBudgetRecycle = opts.suppressBornOverBudgetRecycle ?? true;
   // Resolve a forced-GC hook, fresh-box-correct (no dependency on `--expose-gc`
   // being in NODE_OPTIONS): prefer an injected seam, else `global.gc` if exposed,
-  // else RUNTIME-enable it via `v8.setFlagsFromString('--expose-gc')` +
+  // then Bun.gc(true) on Bun, else enable Node GC via `v8.setFlagsFromString('--expose-gc')` +
   // `vm.runInNewContext('gc')`. The runtime path makes the freeze fix durable on
   // any box (the production box happens to carry `--expose-gc` in a box-wide
   // ~/.profile, but a fresh deploy must not silently lose proactive GC).

@@ -22,6 +22,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
+    "lint:new-clones": "tsx ../../scripts/check-new-clones.mts",
     "test": "node ../../scripts/workspace-test.mjs --passWithNoTests",
     "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs",
     "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
@@ -51,6 +52,7 @@
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "lint:condition-rail": "tsx ../../scripts/condition-rail-inventory.mjs --lint",
+    "lint:fire-and-forget-classification": "bash ../../scripts/pc-heavy.sh node ../../scripts/check-fire-and-forget-classification.mjs",
     "gen:gitnexus-bridge:check": "node ../../scripts/gen-gitnexus-bridge-runtime.mjs --check",
     "gen:contract:check": "tsx ../../scripts/gen-testing-domains-contract.ts --check",
     "gen:tool-delivery:check": "tsx ../../scripts/gen-tool-delivery.ts --check",
@@ -262,6 +264,7 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299",
     "pg": "^8.20.0",
+    "pgsql-ast-parser": "12.0.2",
     "phonemizer": "^1.2.1",
     "protomux": "^3.11.0",
     "proxy-chain": "3.0.1",

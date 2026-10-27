@@ -88,6 +88,29 @@ function registerHandleListener(host: SubstrateSidecarHost): void {
   });
 }
 
+/** Construct the existing control transport without starting process-wide services. */
+export function createSubstrateSidecarControlServer(host: SubstrateSidecarHost): net.Server {
+  return net.createServer((socket: net.Socket) => {
+    // Decode requests across socket-chunk boundaries, preserving split UTF-8.
+    const requestDecoder = new StringDecoder('utf8');
+    let buffer = '';
+    socket.on('data', (chunk: Buffer) => {
+      buffer += requestDecoder.write(chunk);
+      let newlineIndex: number;
+      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          void handleRequest(host, line, (response) => {
+            socket.write(response + '\n');
+          });
+        }
+      }
+    });
+    socket.on('error', (err) => console.error('[socket-error]', err.message));
+  });
+}
+
 /**
  * bg-host-freeze-eventloop-stall-2026-06-30 P-005 — start the substrate sidecar's
  * OWN event-loop-lag + leak instrumentation, and return its handle.
@@ -224,33 +247,7 @@ export function runSubstrateSidecarServer(): void {
 
   registerHandleListener(host);
 
-  const server = net.createServer((socket: net.Socket) => {
-    // Decode across socket-chunk boundaries. `chunk.toString()` on a chunk
-    // ending mid-UTF-8-sequence yields replacement chars, which here corrupts
-    // the substrate JSON-RPC REQUEST itself — and when the damage lands inside
-    // a string value the request still parses, so a corrupted key or corrupted
-    // replicated content is applied with no error raised anywhere. One decoder
-    // per socket, so a partial sequence is held until its remaining bytes land.
-    const requestDecoder = new StringDecoder('utf8');
-    let buffer = '';
-    socket.on('data', (chunk: Buffer) => {
-      buffer += requestDecoder.write(chunk);
-      let newlineIndex: number;
-      while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line) {
-          void handleRequest(host, line, (response) => {
-            socket.write(response + '\n');
-          });
-        }
-      }
-    });
-    socket.on('error', (err) => console.error('[socket-error]', err.message));
-    socket.on('end', () => {
-      // Control socket closed.
-    });
-  });
+  const server = createSubstrateSidecarControlServer(host);
 
   server.listen(socketPath, () => {
     console.log(`[substrate-sidecar] listening on ${socketPath}`);

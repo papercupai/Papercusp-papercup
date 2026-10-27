@@ -6,6 +6,7 @@
  * B-HOT-1) — instead of the two gateway restarts an account swap used to need.
  */
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
@@ -13,7 +14,8 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { getLatestActiveAdvSessionByOwner } from '../../adv-sessions';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 import { trackDetached } from '../../detached-imports';
-import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
+import { autoWakeAccountRoute, wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
+import { findLiveHostAsync, hostSupports, injectIntoHostWithConfirmation } from '../../events/await/psu-pty-discovery';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
  *  mock server via PAPERCUSP_GATEWAY_PORT, and so an env override is honored without a re-import. */
@@ -178,10 +180,10 @@ export const gatewayStatusTool = defineTool({
 export const accountsPinTool = defineTool({
   name: 'accounts:pin',
   description:
-    "Route an agent LIVE (no respawn) through the inference gateway — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id. `account` = a pool account id, or reserved `auto` to suppress the session's launch-time static pin and restore gateway selection/failover. `hard:true` is valid only for a named account and NEVER fails over off it; named pins are soft by default. Effective on the NEXT model call and durable across gateway restarts. Reaches sessions whose launch path forwards `x-papercusp-owner` (fresh and resumed `auto`/pool-account sessions). A `--account=default` session deliberately bypasses the gateway and CANNOT be dynamically re-pinned — respawn it instead. Returns {ok, ownerId, pin}.",
+    "Route an agent through the inference gateway. `agent` is the target owner id; `account` is a pool account or `auto` for selection/failover. Named pins are soft unless hard:true. Ordinary pins apply on the next model call without respawn and refuse gateway-free default sessions. Explicit account:auto + recoverQuota:true can recover a measured default-route Codex quota wall through its managed host, retaining owner and native conversation without replaying a prompt. Requires a current quota-recovery-reroute host; accepted is not verified pickup. Pins are durable across gateway restarts.",
   guidance: {
     when: 'Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.',
-    notWhen: 'Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.',
+    notWhen: 'Steering NEW spawns fleet-wide — accounts:set-session-override. A default route needs explicit account:auto + recoverQuota:true and a measured Codex quota wall; ordinary pinning still refuses it.',
     chaining: 'gateway:status (pick an account with headroom) → accounts:pin { agent, account } → gateway:owner_report { agent } (confirm it took) → accounts:unpin to revert.',
     seeAlso: [
       'accounts:unpin (revert the pin)',
@@ -197,9 +199,10 @@ export const accountsPinTool = defineTool({
     agent: z.string().min(1).describe("target agent's owner/spawn id (pass your own id to pin yourself)"),
     account: z.string().min(1).describe("pool account id, or reserved 'auto' to remove the launch-time pin while staying gateway-routed"),
     hard: z.boolean().optional().describe("true ⇒ never fail over off a named account; incompatible with account:'auto'"),
+    recoverQuota: z.boolean().optional().describe('Explicit default-to-auto quota recovery. Requires account:auto and a current managed Codex quota wall. Resumes the SAME native conversation without replaying a prompt; accepted is not proof of pickup. Ordinary live resume remains unchanged.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
-  async handler({ agent, account, hard, workspace }, ctx) {
+  async handler({ agent, account, hard, workspace, recoverQuota }, ctx) {
     const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     const requestedAccount = account.trim();
     const autoRoute = requestedAccount.toLowerCase() === AUTO_ACCOUNT_ROUTE;
@@ -207,8 +210,32 @@ export const accountsPinTool = defineTool({
     if (autoRoute && hard) return fail({ error: "hard:true is incompatible with account:'auto'" });
     try {
       const activeSession = await getLatestActiveAdvSessionByOwner(agent, ws);
-      const activeRoute = activeSession ? wakeAccountRouteFromArgv(activeSession.launchArgv, agent) : null;
-      if (activeRoute?.mode === 'default') {
+      let activeRoute = activeSession ? wakeAccountRouteFromArgv(activeSession.launchArgv, agent) : null;
+      const managedHost = activeRoute?.mode === 'default' ? await findLiveHostAsync(agent) : null;
+      // A managed quota recovery replaces the child without rewriting launch argv.
+      // Read its loaded route so later ordinary pins do not inherit a stale refusal.
+      if (managedHost?.ownerId === agent && hostSupports(managedHost, 'quota-recovery-reroute') &&
+          managedHost.accountRoutingMode === 'auto') activeRoute = autoWakeAccountRoute(agent);
+      if (recoverQuota && (!autoRoute || activeRoute?.mode !== 'default' || activeSession?.agent !== 'codex')) {
+        return fail({ error: 'recoverQuota requires account:auto and an active default-routed Codex session' });
+      }
+      const recoveryHost = recoverQuota ? managedHost : null;
+      const now = Date.now();
+      if (recoverQuota && (!recoveryHost || recoveryHost.ownerId !== agent ||
+          !hostSupports(recoveryHost, 'quota-recovery-reroute') ||
+          recoveryHost.quotaBlocked !== true || !Number.isFinite(recoveryHost.quotaBlockedSinceMs) ||
+          Number(recoveryHost.quotaBlockedSinceMs) <= 0 || Number(recoveryHost.quotaBlockedSinceMs) > now ||
+          !Number.isFinite(recoveryHost.startedAt) || recoveryHost.startedAt <= 0 ||
+          !recoveryHost.nativeSessionId || !Number.isInteger(recoveryHost.childGeneration) ||
+          !recoveryHost.execution || !Number.isFinite(recoveryHost.execution.observedAt) ||
+          now - recoveryHost.execution.observedAt > 15_000 ||
+          recoveryHost.execution.observedAt > now ||
+          !['settled', 'failed'].includes(recoveryHost.execution.phase) ||
+          recoveryHost.execution.pendingTools !== 0 || recoveryHost.execution.ownerInputPending ||
+          recoveryHost.execution.ownerStopRequested)) {
+        return fail({ error: 'quota recovery requires a fresh, settled managed host with exact native identity and no owner input or native work; no recovery requested' });
+      }
+      if (activeRoute?.mode === 'default' && !recoverQuota) {
         return fail({
           error: `agent '${agent}' has an active launch route that bypasses the inference gateway; respawn it with gateway routing before changing accounts`,
         });
@@ -237,6 +264,21 @@ export const accountsPinTool = defineTool({
         body: JSON.stringify({ ownerId: agent, account: routedAccount, hard: !!hard }),
         signal: AbortSignal.timeout(10000),
       }).catch((e) => ({ ok: false, status: 0, _e: errMsg(e) }) as unknown as Response);
+      if (recoveryHost) {
+        // Apply auto to the live gateway BEFORE the child can make its first call.
+        if (!r.ok) return fail({ error: 'auto pin saved, but gateway apply failed; no quota recovery requested', pin });
+        const operationId = `quota-reroute-${randomUUID()}`;
+        const receipt = await injectIntoHostWithConfirmation(recoveryHost.sock, {
+          mode: 'recycle', data: '', ownerId: agent, deliveryId: operationId,
+          quotaRecovery: { operationId, ownerId: agent, startedAtMs: now, cause: 'quota',
+            defaultToAuto: { hostStartedAt: recoveryHost.startedAt,
+              childGeneration: recoveryHost.childGeneration!, nativeSessionId: recoveryHost.nativeSessionId!,
+              quotaBlockedSinceMs: recoveryHost.quotaBlockedSinceMs!, expiresAtMs: now + 30_000 } },
+        });
+        return (receipt.ok ? ok : fail)({ ownerId: agent, pin, operationId,
+          recovery: receipt, pickupVerified: false,
+          note: 'Request acceptance only; verify same-conversation quota-recovery-resumed and a subsequent productive turn before claiming recovery.' });
+      }
       void trackDetached(import('../../sync-sse')).then(({ notifySyncInvalidate }) => notifySyncInvalidate('accounts.pool', {})).catch(() => {});
       return ok({
         ownerId: agent,

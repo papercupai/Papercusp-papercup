@@ -44,6 +44,8 @@ import {
   retractStandingFact,
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
+import { coordEscalationToAttention, conversationToAttention } from '../../../../../packages/operator-core/lib/attention/adapters';
+import { dropDuplicateQuestionConversations } from '../../../../../packages/operator-core/lib/attention/sources';
 
 /** The resume-on-resolve nudge is now a floor-debounced Queen wake through the
  *  palette bridge (the legacy /harness/:slug/launch run-loop kick is retired). */
@@ -454,6 +456,32 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
 });
 
 describe('answerAttentionItem (P-021 Answer flow parity)', () => {
+  it('the deduplicated ask-owner card exposes Answer and resolves its exact linked conversation', async () => {
+    const escalation = coordEscalationToAttention({
+      msgId: 'ask-escalation', severity: 'question', summary: 'Which approach?',
+      from: 'su-asker', conversationId: 'conv-linked',
+    });
+    const twin = conversationToAttention({ conversationId: 'conv-linked', title: 'Which approach?', askerId: 'su-asker' });
+    const kept = dropDuplicateQuestionConversations([escalation, twin]);
+    expect(kept).toHaveLength(1);
+    const card = kept[0] as AttentionItem;
+    const spec = attentionItemToCardSpec(card);
+    expect(spec.options.find((option) => option.id === 'answer')).toMatchObject({ label: 'Answer', terminal: false });
+    expect(spec.options.some((option) => option.id === 'resolve')).toBe(false);
+    expect(await replyToAttentionItem(card, 'Use approach B')).toMatchObject({ resolved: true });
+    expect(resolveConversationAnswer).toHaveBeenCalledWith({ conversation_id: 'conv-linked', accepted_answer: 'Use approach B' });
+    expect(deliverInboxReply).toHaveBeenCalledWith(expect.objectContaining({ askerId: 'su-asker', text: 'Use approach B' }));
+    expect(resolveEscalation).not.toHaveBeenCalled();
+  });
+
+  it('keeps named options on a linked escalation as terminal choices', () => {
+    const card = coordEscalationToAttention({
+      msgId: 'choice-escalation', severity: 'question', summary: 'Which approach?',
+      from: 'su-asker', conversationId: 'conv-linked', options: [{ id: 'b', label: 'Use B' }],
+    }) as AttentionItem;
+    expect(attentionItemToCardSpec(card).options.map((option) => option.id)).toEqual(['b', 'discuss']);
+  });
+
   it('records a decision, marks done, and nudges the Queen awake', async () => {
     const r = await answerAttentionItem(needsHuman, 'do the thing');
     expect(addPlanDecision).toHaveBeenCalledWith({ slug: 'p', title: 'Answer to P-7', body: 'do the thing', refs: ['P-7'] });

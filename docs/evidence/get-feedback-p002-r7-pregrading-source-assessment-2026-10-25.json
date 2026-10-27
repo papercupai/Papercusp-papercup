@@ -1,0 +1,655 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-r7-pregrading-source-assessment",
+  "editionDate": "2026-10-25",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "One read-only R7 review-route preflight and bounded GF-P002-source assessment. This artifact does not bind deployed proof or complete P002, independent acceptance, or shipment.",
+  "r7": {
+    "rubric": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "rubricRevision": 9,
+    "specId": "AUTO-BAR-R-7-P-007",
+    "specRevision": 6,
+    "specFingerprint": "bc5ce926e05471769c85621dee5a1603664901a79cea70f48d34fee75abe9281",
+    "evidencePlane": "deployed",
+    "evidenceRuntime": "release-operator",
+    "requiredTestLayers": [
+      "manual-provenance"
+    ],
+    "check": {
+      "kind": "instrument",
+      "instrumentKey": "none"
+    },
+    "ordinaryRead": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "harness": "papercusp",
+        "mode": "meta",
+        "shipReadiness": true
+      },
+      "result": {
+        "code": "acceptance_bar_contract_not_ready",
+        "blockingPhase": "pre-grading",
+        "nextRepair": {
+          "barKey": "R-7",
+          "code": "bar_snapshot_proof_missing"
+        },
+        "pregradingCodes": [
+          "bar_snapshot_proof_stale",
+          "bar_snapshot_proof_inadequate",
+          "bar_snapshot_evidence_plane_unmet",
+          "bar_snapshot_proof_missing",
+          "bar_snapshot_proof_uncertain",
+          "bar_snapshot_evidence_runtime_unmet"
+        ]
+      }
+    },
+    "reviewPreflight": {
+      "tool": "plans:set-plan-status",
+      "args": {
+        "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "harness": "papercusp",
+        "status": "shipped",
+        "expectedCurrent": "ready",
+        "dryRun": true,
+        "pendingDeliveryBarKeys": [
+          "R-7"
+        ]
+      },
+      "result": {
+        "satisfied": false,
+        "code": "acceptance_bar_contract_not_ready",
+        "acceptanceBarLifecycle": {
+          "phase": "ship",
+          "applicable": true,
+          "satisfied": false,
+          "codes": [
+            "bar_snapshot_proof_stale",
+            "bar_snapshot_proof_inadequate",
+            "bar_snapshot_grading_missing",
+            "bar_snapshot_evidence_plane_unmet",
+            "bar_snapshot_proof_missing",
+            "bar_snapshot_proof_uncertain",
+            "bar_snapshot_evidence_runtime_unmet",
+            "bar_snapshot_author_verdict_missing"
+          ],
+          "blockingBars": [
+            {
+              "barKey": "R-1",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-10",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-2",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-3",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-4",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-5",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-6",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_uncertain",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-7",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_missing",
+                "bar_snapshot_evidence_plane_unmet",
+                "bar_snapshot_evidence_runtime_unmet",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-8",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-9",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale",
+                "bar_snapshot_grading_missing"
+              ],
+              "contract": "automated"
+            }
+          ],
+          "contractCodes": [
+            "bar_snapshot_author_verdict_missing"
+          ],
+          "codeAttribution": [
+            {
+              "code": "bar_snapshot_proof_stale",
+              "barKeys": [
+                "R-1",
+                "R-10",
+                "R-3",
+                "R-5",
+                "R-8",
+                "R-9"
+              ]
+            },
+            {
+              "code": "bar_snapshot_proof_inadequate",
+              "barKeys": [
+                "R-1",
+                "R-10",
+                "R-2",
+                "R-3",
+                "R-4",
+                "R-5",
+                "R-6",
+                "R-7",
+                "R-8",
+                "R-9"
+              ]
+            },
+            {
+              "code": "bar_snapshot_grading_missing",
+              "barKeys": [
+                "R-1",
+                "R-10",
+                "R-2",
+                "R-3",
+                "R-4",
+                "R-5",
+                "R-6",
+                "R-7",
+                "R-8",
+                "R-9"
+              ]
+            },
+            {
+              "code": "bar_snapshot_evidence_plane_unmet",
+              "barKeys": [
+                "R-7"
+              ]
+            },
+            {
+              "code": "bar_snapshot_proof_missing",
+              "barKeys": [
+                "R-7"
+              ]
+            },
+            {
+              "code": "bar_snapshot_proof_uncertain",
+              "barKeys": [
+                "R-6"
+              ]
+            },
+            {
+              "code": "bar_snapshot_evidence_runtime_unmet",
+              "barKeys": [
+                "R-7"
+              ]
+            },
+            {
+              "code": "bar_snapshot_author_verdict_missing",
+              "barKeys": []
+            }
+          ],
+          "nextRepair": {
+            "code": "bar_snapshot_proof_missing",
+            "barKey": "R-7",
+            "action": "Bind evidence at the current spec revision on the declared evidence plane."
+          },
+          "staleGradingScorecardId": null,
+          "message": "acceptance BAR contract is not ready for ship — 10 of 10 BAR(s) blocking, 0 clean: R-1: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-10: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-2: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-3: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-4: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-5: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-6: bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain, bar_snapshot_grading_missing; R-7: bar_snapshot_proof_inadequate, bar_snapshot_proof_missing, bar_snapshot_evidence_plane_unmet, bar_snapshot_evidence_runtime_unmet, bar_snapshot_grading_missing; R-8: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-9: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; contract-level: bar_snapshot_author_verdict_missing\nNEXT REPAIR (R-7, bar_snapshot_proof_missing): Bind evidence at the current spec revision on the declared evidence plane.\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / self_graded_only. These repairs are the plan author's alone — do not recruit or wake a peer for them.",
+          "nonCodeItemProofs": []
+        },
+        "blockingPhase": "pre-grading",
+        "message": "BLOCKED AT PRE-GRADING (3 code(s): bar_snapshot_proof_stale, bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain). NEXT REPAIR (R-1): Re-prove the current spec revision; superseded proof does not cover it.. Grading and author-verdict codes in the ship list cannot be worked until this phase passes.\nacceptance BAR contract is not ready for ship — 10 of 10 BAR(s) blocking, 0 clean: R-1: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-10: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-2: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-3: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-4: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-5: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-6: bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain, bar_snapshot_grading_missing; R-7: bar_snapshot_proof_inadequate, bar_snapshot_proof_missing, bar_snapshot_evidence_plane_unmet, bar_snapshot_evidence_runtime_unmet, bar_snapshot_grading_missing; R-8: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-9: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; contract-level: bar_snapshot_author_verdict_missing\nNEXT REPAIR (R-7, bar_snapshot_proof_missing): Bind evidence at the current spec revision on the declared evidence plane.\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / self_graded_only. These repairs are the plan author's alone — do not recruit or wake a peer for them.\n\nALSO FAILING: 4 more independent check(s) — plan_items_unfinished, acceptance_unaudited, spec_clause_unproven, acceptance_ungraded. Each is listed with its own message and repairAction in blockers[]; repair them together before retrying.",
+        "blockingPhaseLifecycle": {
+          "phase": "pre-grading",
+          "applicable": true,
+          "satisfied": false,
+          "codes": [
+            "bar_snapshot_proof_stale",
+            "bar_snapshot_proof_inadequate",
+            "bar_snapshot_proof_uncertain"
+          ],
+          "blockingBars": [
+            {
+              "barKey": "R-1",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-10",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-2",
+              "codes": [
+                "bar_snapshot_proof_inadequate"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-3",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-4",
+              "codes": [
+                "bar_snapshot_proof_inadequate"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-5",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-6",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_uncertain"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-8",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            },
+            {
+              "barKey": "R-9",
+              "codes": [
+                "bar_snapshot_proof_inadequate",
+                "bar_snapshot_proof_stale"
+              ],
+              "contract": "automated"
+            }
+          ],
+          "contractCodes": [],
+          "codeAttribution": [
+            {
+              "code": "bar_snapshot_proof_stale",
+              "barKeys": [
+                "R-1",
+                "R-10",
+                "R-3",
+                "R-5",
+                "R-8",
+                "R-9"
+              ]
+            },
+            {
+              "code": "bar_snapshot_proof_inadequate",
+              "barKeys": [
+                "R-1",
+                "R-10",
+                "R-2",
+                "R-3",
+                "R-4",
+                "R-5",
+                "R-6",
+                "R-7",
+                "R-8",
+                "R-9"
+              ]
+            },
+            {
+              "code": "bar_snapshot_proof_uncertain",
+              "barKeys": [
+                "R-6"
+              ]
+            }
+          ],
+          "nextRepair": {
+            "code": "bar_snapshot_proof_stale",
+            "barKey": "R-1",
+            "action": "Re-prove the current spec revision; superseded proof does not cover it."
+          },
+          "staleGradingScorecardId": null,
+          "message": "acceptance BAR contract is not ready for grading — 9 of 10 BAR(s) blocking, 1 clean: R-1: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale; R-10: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale; R-2: bar_snapshot_proof_inadequate; R-3: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale; R-4: bar_snapshot_proof_inadequate; R-5: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale; R-6: bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain; R-8: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale; R-9: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale\nNEXT REPAIR (R-1, bar_snapshot_proof_stale): Re-prove the current spec revision; superseded proof does not cover it.\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / self_graded_only. These repairs are the plan author's alone — do not recruit or wake a peer for them.",
+          "pendingDeliveryBarKeys": [
+            "R-7"
+          ]
+        },
+        "blockers": [
+          {
+            "code": "acceptance_bar_contract_not_ready",
+            "message": "BLOCKED AT PRE-GRADING (3 code(s): bar_snapshot_proof_stale, bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain). NEXT REPAIR (R-1): Re-prove the current spec revision; superseded proof does not cover it.. Grading and author-verdict codes in the ship list cannot be worked until this phase passes.\nacceptance BAR contract is not ready for ship — 10 of 10 BAR(s) blocking, 0 clean: R-1: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-10: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-2: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-3: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-4: bar_snapshot_proof_inadequate, bar_snapshot_grading_missing; R-5: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-6: bar_snapshot_proof_inadequate, bar_snapshot_proof_uncertain, bar_snapshot_grading_missing; R-7: bar_snapshot_proof_inadequate, bar_snapshot_proof_missing, bar_snapshot_evidence_plane_unmet, bar_snapshot_evidence_runtime_unmet, bar_snapshot_grading_missing; R-8: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; R-9: bar_snapshot_proof_inadequate, bar_snapshot_proof_stale, bar_snapshot_grading_missing; contract-level: bar_snapshot_author_verdict_missing\nNEXT REPAIR (R-7, bar_snapshot_proof_missing): Bind evidence at the current spec revision on the declared evidence plane.\nThis refusal does NOT recruit a grader: grader recruitment fires only on acceptance_ungraded / self_graded_only. These repairs are the plan author's alone — do not recruit or wake a peer for them.",
+            "repairAction": {
+              "kind": "diagnostic",
+              "nextVerb": {
+                "name": "plans:get",
+                "args": {
+                  "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+                  "harness": "papercusp",
+                  "mode": "meta",
+                  "shipReadiness": true
+                }
+              },
+              "instruction": "Bind evidence at the current spec revision on the declared evidence plane."
+            }
+          },
+          {
+            "code": "plan_items_unfinished",
+            "message": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: 6 item(s) are still unfinished — P-002 (todo), P-006 (todo), P-007 (todo), P-009 (todo), P-010 (todo), P-011 (todo). Finish them, or — if the work went elsewhere and that was deliberate — DROP each one with a reason: plans:set-status { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', item:'<P-NNN>', status:'dropped', note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.",
+            "repairAction": {
+              "kind": "diagnostic",
+              "nextVerb": {
+                "name": "plans:get",
+                "args": {
+                  "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+                  "harness": "papercusp",
+                  "mode": "meta",
+                  "shipReadiness": true
+                }
+              },
+              "instruction": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: 6 item(s) are still unfinished — P-002 (todo), P-006 (todo), P-007 (todo), P-009 (todo), P-010 (todo), P-011 (todo). Finish them, or — if the work went elsewhere and that was deliberate — DROP each one with a reason: plans:set-status { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', item:'<P-NNN>', status:'dropped', note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan."
+            }
+          },
+          {
+            "code": "acceptance_unaudited",
+            "message": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: it has no code-truth audit. Compare every item to the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — then file what you found: plans:audit { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', items:[{ itemId, verdict, citations }] }. Citations are resolved against the real tree, so a path that does not exist is refused. Gaps inside the plan's scope get fixed or dropped with a reason; bugs outside it go in `findings` with a filed work-item ref. To ship without one, pass force:{ reason } — it is recorded on the plan.",
+            "repairAction": {
+              "kind": "evidence-repair",
+              "nextVerb": {
+                "name": "plans:get",
+                "args": {
+                  "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+                  "harness": "papercusp",
+                  "mode": "meta",
+                  "shipReadiness": true
+                }
+              },
+              "repairVerb": "plans:audit",
+              "instruction": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: it has no code-truth audit. Compare every item to the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — then file what you found: plans:audit { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', items:[{ itemId, verdict, citations }] }. Citations are resolved against the real tree, so a path that does not exist is refused. Gaps inside the plan's scope get fixed or dropped with a reason; bugs outside it go in `findings` with a filed work-item ref. To ship without one, pass force:{ reason } — it is recorded on the plan."
+            }
+          },
+          {
+            "code": "spec_clause_unproven",
+            "message": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: 3 enforceable spec clause(s) have NO evidence bound at any revision — AUTO-BAR-R-7-P-007, GF-P006-trials, GF-P007-shipment. A clause with no evidence is an unproven promise, not a passing one. Run the covering test for each, then bind it with plans:bind-spec-evidence { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', specId:'<spec>', specRevision:<current>, ... }. If a clause is genuinely not automatable, declare that on the clause (behaviorClass 'non-automated') rather than shipping it unproven. To ship anyway, pass force:{ reason } — it is recorded on the plan.",
+            "repairAction": {
+              "kind": "diagnostic",
+              "nextVerb": {
+                "name": "plans:get",
+                "args": {
+                  "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+                  "harness": "papercusp",
+                  "mode": "meta",
+                  "shipReadiness": true
+                }
+              },
+              "instruction": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: 3 enforceable spec clause(s) have NO evidence bound at any revision — AUTO-BAR-R-7-P-007, GF-P006-trials, GF-P007-shipment. A clause with no evidence is an unproven promise, not a passing one. Run the covering test for each, then bind it with plans:bind-spec-evidence { slug:'get-feedback-reliability-usefulness-adoption-2026-10-03', specId:'<spec>', specRevision:<current>, ... }. If a clause is genuinely not automatable, declare that on the clause (behaviorClass 'non-automated') rather than shipping it unproven. To ship anyway, pass force:{ reason } — it is recorded on the plan."
+            }
+          },
+          {
+            "code": "acceptance_ungraded",
+            "message": "plan 'get-feedback-reliability-usefulness-adoption-2026-10-03' cannot be marked shipped: its acceptance rubric 'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' has no complete grading. A NON-implementer (someone other than 'su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4') grades it — scorecards:emit { rubricRef:'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03', ratings:{ <every criterion key> } } with concrete evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005). Grading needs NO work-item claim and NO fleet-scope admission — scorecards:emit requires neither — so a fleet mission or claim spec that cannot represent the request is not a reason to decline it. Say so when you ask: a peer declining on claim-scope grounds is declining on a constraint that does not exist (EI-20249725405239230).",
+            "repairAction": {
+              "kind": "independent-grading",
+              "nextVerb": {
+                "name": "plans:set-plan-status",
+                "args": {
+                  "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+                  "harness": "papercusp",
+                  "status": "shipped"
+                }
+              },
+              "instruction": "Retry plans:set-plan-status: each call re-runs the idempotent grader recruiter. Read its acceptanceGrader result for the dispatch state; acceptanceGrader.recovery is present when stalled gradings are NOT recovered automatically and names the manual route. Do not self-grade or launch a parallel reviewer."
+            }
+          }
+        ],
+        "repairAction": {
+          "kind": "diagnostic",
+          "nextVerb": {
+            "name": "plans:get",
+            "args": {
+              "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+              "harness": "papercusp",
+              "mode": "meta",
+              "shipReadiness": true
+            }
+          },
+          "instruction": "Bind evidence at the current spec revision on the declared evidence plane."
+        },
+        "buildProvenance": {
+          "sha": "a64207c275",
+          "version": "0.0.0"
+        },
+        "ok": false,
+        "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "dryRun": true,
+        "error": "acceptance_bar_contract_not_ready"
+      }
+    },
+    "conclusion": "The canonical pending-delivery review selection accepts R7 at pre-grading without manufacturing delivery proof. Pre-grading still refuses on stale, inadequate and uncertain author proof in other BARs; no grader was recruited. The final ship lifecycle retains R7's deployed plane/runtime, exact independent acceptance, ordinary ship receipt, promoted artifact identity, and changed-behavior trace requirements.",
+    "sourceContract": [
+      "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts",
+      "packages/operator-core/lib/agent-tools/plans/set-plan-status.test.ts",
+      "packages/operator-core/lib/plan-acceptance-gate.ts",
+      "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
+    ]
+  },
+  "sourceAssessment": {
+    "tool": "plans:evaluate-spec-test-adequacy",
+    "args": {
+      "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "harness": "papercusp",
+      "specIds": [
+        "GF-P002-source"
+      ],
+      "detail": "full",
+      "includeDraft": false
+    },
+    "evaluatorBuild": {
+      "sha": "1724c5966d",
+      "version": "0.0.0"
+    },
+    "specRevision": 1,
+    "governing": true,
+    "verdict": "fail",
+    "ratings": {
+      "traceability": "unknown",
+      "fixture-calibration": "unknown",
+      "falsifiability": "pass",
+      "correct-layer": "pass",
+      "oracle-independence": "pass",
+      "execution-integrity": "unknown",
+      "freshness": "fail",
+      "plan-class-risk-floor": "pass",
+      "disclosed-gap": "fail"
+    },
+    "draggingBindingIds": {
+      "traceability": [
+        28326,
+        28545
+      ],
+      "fixture-calibration": [
+        45201,
+        68733,
+        69319,
+        69322,
+        69329,
+        69340,
+        69704,
+        69782,
+        69875,
+        69919
+      ],
+      "execution-integrity": [
+        28326,
+        28545,
+        45201
+      ],
+      "freshness": [
+        28326,
+        28545,
+        45201,
+        68733,
+        69305,
+        69319,
+        69322,
+        69327,
+        69329,
+        69331,
+        69332,
+        69338,
+        69614
+      ],
+      "disclosed-gap": [
+        45261,
+        68339,
+        69704,
+        69782,
+        69919
+      ]
+    }
+  },
+  "boundedBindingReads": {
+    "45201": {
+      "evidenceRef": "test-run-group:122cf4ed-bbf7-40c0-af99-b430ec17bf69:0",
+      "testRunId": null,
+      "fixtureFingerprint": null,
+      "adequacy": {
+        "outcome": "unknown",
+        "executed": false,
+        "collected": false,
+        "testLayer": "integration"
+      },
+      "recordedReplacementGroup": "3f48f225-aee7-4ab6-a0c2-c6508bbb4add",
+      "canonicalReplacementRun": {
+        "id": 21247296,
+        "status": "pass",
+        "commitSha": "384986738a92369328064f5eb0dc9c4a3de08c40",
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": true
+      },
+      "originGroupRead": {
+        "count": 0,
+        "total": 0,
+        "notRecorded": true,
+        "reason": "no_runs_recorded"
+      },
+      "limitation": "This read resolves the pointed-to replacement ledger row only. Dirty provenance and changed source prohibit promoting it to current clean proof; the immutable historical pending binding was preserved."
+    },
+    "69919": {
+      "testRunId": 21997198,
+      "fixtureFingerprint": null,
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "collected": true,
+        "testLayer": "integration",
+        "fixtureFree": false,
+        "disclosedGap": "Native answering launch/inspection is controlled fixture behavior; actual native carrier receipt remains pending containing runtime.",
+        "pathReachable": true
+      },
+      "limitation": "The completed 33-case source refresh omitted fixture measurement on its first binding. Its immutable run measurement cannot acquire extra fixture inputs after first binding. No calibration or native acceptance credit is added here."
+    }
+  },
+  "preserved": {
+    "attribution": [
+      70014,
+      70015,
+      70016
+    ],
+    "dispatcherDecision": "D-035",
+    "dispatcherBinding": 69965,
+    "originalOperational": [
+      28326,
+      28545
+    ],
+    "supplementalNative": [
+      69704,
+      69782
+    ],
+    "backendMutation": 68733,
+    "reporter": {
+      "workItem": "EI-26900834772734276",
+      "originalRun": 21936773,
+      "rootCause": "unknown",
+      "state": "open"
+    },
+    "loop": "Existing owning loop configuration unchanged. This continuation and preflight do not establish a genuine loop-origin turn."
+  },
+  "verification": {
+    "newTestsRun": [],
+    "completedProofReplayed": false,
+    "sourceCodeChanged": false,
+    "gradersRecruited": false,
+    "evidenceWithdrawn": [],
+    "deployedProofBound": false,
+    "planShipped": false
+  },
+  "next": "Preserve the measured R7 review-only selection for the eventual normal review request after author proof is ready. Within P002, address explicit fixture/source/execution evidence gaps under existing authority; first-bound measurement recipes need a newly justified calibrated proof unit rather than edits to historical runs. Do not re-run backend68733 while original21936773 root cause remains unknown."
+}

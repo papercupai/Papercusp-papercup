@@ -172,6 +172,92 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
   });
 });
 
+describe('reconcileLoopRoutines — provider deadline provenance and strict success rebase', () => {
+  const T0 = 1_782_000_000_000;
+  const deadlineMs = T0 + 4 * 24 * 60 * 60_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  const providerHeldRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'rt-provider-held',
+    target_owner_id: 'su-provider-held',
+    interval_sec: 60,
+    parked: false,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-provider-held',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    next_fire_at: pgString(deadlineMs),
+    provider_retry_next_fire_at: pgString(deadlineMs),
+    last_wake_status: 'delivered',
+    last_wake_at: pgString(T0 + 4_000),
+    last_wake_created_at: pgString(T0 + 3_000),
+    last_wake_channel: 'resume-headless',
+    last_loop_turn_at: pgString(T0 + 10_000),
+    loop_turn_started_at: pgString(T0 + 5_000),
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    carry: 'warm',
+    armed_at: null,
+    note_updated_ts: null,
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: 'Completed the task successfully.',
+    payload_template: { mode: 'work' },
+    ...overrides,
+  });
+
+  const run = async (row: Record<string, unknown>) => {
+    const statements: { text: string; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(' ? ');
+      if (/^\s*UPDATE/i.test(text)) {
+        statements.push({ text, values });
+        return Promise.resolve([{ id: 'rt-provider-held' }]);
+      }
+      return Promise.resolve([row]);
+    }) as unknown as Sql;
+    const res = await reconcile({
+      sql,
+      nowMs: T0 + 15_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      recoverExpectedExecution: vi.fn(async () => ({ handled: false as const })),
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    return { res, statements };
+  };
+
+  it('rebases the exact provider deadline after a strict loop-origin successful turn', async () => {
+    const { res, statements } = await run(providerHeldRow());
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ via: 'loop-turn', nextFireAt: T0 + 70_000 });
+    expect(statements).toHaveLength(1);
+    expect(statements[0].text).toContain("metadata->'providerRetrySchedule'->>'nextFireAt'");
+    expect(statements[0].text).toContain("metadata = COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule'");
+    expect(statements[0].values).toContain(new Date(deadlineMs).toISOString());
+  });
+
+  it('does not rebase a provider deadline from owner-wide lifecycle evidence alone', async () => {
+    const { res, statements } = await run(providerHeldRow({
+      last_wake_status: null,
+      last_wake_at: null,
+      last_loop_turn_at: null,
+      lifecycle_completed_at: pgString(T0 + 10_000),
+    }));
+    expect(res.rearmed).toBe(0);
+    expect(statements).toHaveLength(0);
+  });
+
+  it('does not rebase when the marker no longer matches the installed next_fire_at', async () => {
+    const { res, statements } = await run(providerHeldRow({
+      next_fire_at: pgString(deadlineMs + 1_000),
+    }));
+    expect(res.rearmed).toBe(0);
+    expect(statements).toHaveLength(0);
+  });
+});
+
 describe('reconcileLoopRoutines — stale pure-loop parked snapshot cannot overwrite a re-arm (EI-21122026530854360)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
@@ -752,6 +838,19 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     expect(res.loops).toEqual([]);
     expect(updates).toHaveLength(0);
     expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  describe('indexed loop completion reconciliation', () => {
+    it.each([['current10', T0 + 5_000, true], ['stale9', null, false], ['generic pickup', T0 + 500, false]] as const)(
+      'settles only recognized current-fire completion: %s', async (_label, at, recognized) => {
+        const result = await reconcile({
+          sql: fakeSql([deliveredWarmRow({ last_loop_turn_at: at === null ? null : pgString(at) })], []),
+          nowMs: T0 + 30_000,
+        });
+        expect(result.rearmed).toBe(recognized ? 1 : 0);
+        if (recognized) expect(result.loops[0]).toMatchObject({ via: 'loop-turn', completedAt: at });
+      },
+    );
   });
 
   it('re-arms from the delivered wake after grace when the loop-origin clock is absent or stale', async () => {
@@ -3061,11 +3160,12 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
   /** Like `fakeSql`, but records the STATEMENT TEXT. That is the only way to tell the two re-arm
    *  branches apart: they differ in SQL SHAPE (GREATEST + a `next_fire_at <` guard vs LEAST + a
    *  `next_fire_at >` one), not in their bind values, so the shared `updates` capture cannot see it. */
-  function fakeSqlCapturingText(rows: Record<string, unknown>[], statements: string[]): Sql {
-    return ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  function fakeSqlCapturingText(rows: Record<string, unknown>[], statements: string[], bindings: unknown[][]): Sql {
+    return ((strings: TemplateStringsArray, ...vals: unknown[]) => {
       const q = strings.join(' ? ');
       if (/^\s*UPDATE/i.test(q)) {
         statements.push(q);
+        bindings.push(vals);
         return Promise.resolve([{ id: 'rt-1' }]);
       }
       return Promise.resolve(rows);
@@ -3089,7 +3189,8 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
   const run = async (text: string, intervalSec: number) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
     const statements: string[] = [];
-    const sql = fakeSqlCapturingText([walledRow(text, intervalSec)], statements);
+    const bindings: unknown[][] = [];
+    const sql = fakeSqlCapturingText([walledRow(text, intervalSec)], statements, bindings);
     const res = await reconcileLoopRoutines({
       sql,
       nowMs: T0 + 10_000,
@@ -3099,20 +3200,23 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
       escalateLifecycleDeath: vi.fn(async () => {}),
     });
     const armStmt = statements.find((s) => /UPDATE\s+harness_shared\.routines/i.test(s));
-    return { res, armStmt };
+    return { res, armStmt, bindings };
   };
 
   it('uses the never-EARLIER (GREATEST) statement for a reset-aware usage_limit death', async () => {
-    const { res, armStmt } = await run("You've hit your session limit · resets in 3 hours", 180);
+    const { res, armStmt, bindings } = await run("You've hit your session limit · resets in 3 hours", 180);
     expect(res.rearmed).toBe(1);
     expect(armStmt).toBeDefined();
     // The whole defect: the ordinary statement is never-later BY CONSTRUCTION, so a blind re-arm
     // that had already set next_fire_at = now+interval made this wall-aware re-arm a silent no-op.
     expect(armStmt).toContain('GREATEST');
     expect(armStmt).toContain('next_fire_at < ');
+    expect(armStmt).toContain('providerRetrySchedule');
     expect(armStmt).not.toContain('LEAST');
     // ...and the deferral must preserve the reset instant parsed from nowMs, not completedAt.
     expect(res.loops[0].nextFireAt).toBe(T0 + 10_000 + 3 * 3_600_000);
+    const exactDeadline = new Date(res.loops[0].nextFireAt).toISOString();
+    expect(bindings[0].filter((value) => value === exactDeadline).length).toBeGreaterThanOrEqual(2);
   });
 
   it('keeps the ordinary never-LATER (LEAST) statement for a NON-usage_limit death', async () => {

@@ -1,6 +1,6 @@
 /** OTel SpanExporter using the existing PostHog capture endpoint, not a new service. */
 import { createHash } from 'node:crypto';
-import { context, SpanStatusCode } from '@opentelemetry/api';
+import { context, SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { suppressTracing, ExportResultCode, type ExportResult } from '@opentelemetry/core';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
 import { safeTraceAttributes } from './tracing';
@@ -21,11 +21,16 @@ export function spanCaptureEvents(span: ReadableSpan, distinctId: string): Trace
   const sc = span.spanContext();
   const parent = span.parentSpanContext?.spanId;
   const generation = attributes['gen_ai.operation.name'] === 'chat';
+  const httpClient = span.kind === SpanKind.CLIENT &&
+    ['@opentelemetry/instrumentation-http', '@opentelemetry/instrumentation-undici'].includes(span.instrumentationScope.name);
+  const tool = !generation && !httpClient && span.name === 'papercusp.tool' && typeof attributes['papercusp.tool'] === 'string';
   const properties: Record<string, unknown> = {
     ...attributes, distinct_id: distinctId,
     $ai_trace_id: sc.traceId, $ai_span_id: sc.spanId,
     ...(parent ? { $ai_parent_id: parent } : {}),
-    $ai_span_name: generation ? 'papercusp.model' : 'papercusp.tool',
+    $ai_span_name: generation ? 'papercusp.model' : tool ? 'papercusp.tool' : httpClient ? 'papercusp.http' : 'papercusp.span',
+    // Identify the maintained HTTP instrumentation, without exporting URLs or headers.
+    'papercusp.http_client': httpClient,
     $ai_latency: Math.max(0, millis(span.duration) / 1000),
     $ai_is_error: span.status.code === SpanStatusCode.ERROR,
     $process_person_profile: false,

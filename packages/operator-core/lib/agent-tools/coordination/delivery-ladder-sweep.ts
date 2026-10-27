@@ -202,6 +202,10 @@ export function renderLadderBody(
     `${e.candidateCount} directed coord message(s) landed after your last inbox read ` +
       `(oldest ~${oldestMin}m ago). They are listed below — you should not need to open your ` +
       `inbox to triage them.`,
+    `To clear the unread-mail reminder, call coord:inbox (coord:orient also counts). ` +
+      `FYI messages and replies can remain unread even when they need no response; the ` +
+      `reminder can recur until an inbox read is recorded. Reading this preview, sending ` +
+      `a reply, closing a related work-item, or saving a memory note does not record that read.`,
     '',
   ];
 
@@ -229,9 +233,10 @@ export function renderLadderBody(
     `WHAT THIS ALARM DOES AND DOES NOT MEAN. It means: mail arrived that you have not read, ` +
       `and your session is live enough to read it. It does NOT mean a peer is necessarily ` +
       `blocked on you — a stand-down ack and an urgent question look identical to the sweep. ` +
-      `Read the list, answer anything awaiting you (coord:send), and carry on; if nothing in it ` +
-      `needs you, nothing is required of you and this alarm is DISCHARGED — you do not have to ` +
-      `justify it or hunt for a fault.`,
+      `Record an inbox read, then answer anything awaiting you (coord:send). For FYI ` +
+      `messages (expects:none), no reply is required; once the read is recorded, this ` +
+      `reminder is DISCHARGED. A read does not answer a request for an ack, answer, or action. ` +
+      `These steps are supplied here each time; no personal memory note is needed.`,
   );
 
   if (e.neverRead) {
@@ -623,13 +628,14 @@ export async function runDeliveryLadderSweepOnce(
       await send(LADDER_IDENTITY, {
         to: [e.recipient],
         summary:
-          `📬 delivery-ladder: ${e.candidateCount} directed message(s) you have not read ` +
+          `📬 delivery-ladder: read via coord:inbox or coord:orient; FYIs need no reply. ` +
+          `${e.candidateCount} directed message(s) you have not read ` +
           `(oldest ~${oldestMin}m${e.newestFrom ? `, newest from ${e.newestFrom}` : ''})`,
         body: renderLadderBody(e, { ttlMin, stormMin: Math.round(storm / 60_000) }),
       });
       try {
         await wake([e.recipient], {
-          summary: `delivery-ladder: directed mail unread past ${ttlMin}m (oldest ~${oldestMin}m)`,
+          summary: `delivery-ladder: read via coord:inbox or coord:orient; FYIs need no reply. Directed mail unread past ${ttlMin}m (oldest ~${oldestMin}m)`,
           source: DELIVERY_LADDER_OWNER,
           workspaceId: e.workspaceId,
         });

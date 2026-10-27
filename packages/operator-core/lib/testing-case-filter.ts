@@ -27,7 +27,7 @@ export function hasSameCaseTitleIdentity(declaredCaseTitle: string, measuredCase
   return normalizedCaseTitle(declaredCaseTitle) === normalizedCaseTitle(measuredCaseTitle);
 }
 
-function normalizedCaseTitle(title: string): string {
+export function normalizedCaseTitle(title: string): string {
   return title
     .split(' > ')
     .map((segment) => segment.replace(/^'([^'\s]+)'(?=\s)/, '$1'))

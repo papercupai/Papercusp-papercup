@@ -192,6 +192,7 @@ import {
   carryForeignGateHealthKeys,
   measureCandidateStaleness,
   gateRedStreakBroadcast,
+  buildCheckpointDetail,
   resolveIntegrationRoot,
   FIXER_SUCCESSION_STALL_MS,
   type GitCheckRunner,
@@ -563,7 +564,7 @@ describe('WI-6554700010008583: existing gate incident headline stays current', (
     await trackGateStall(ctx, 'error', undefined, undefined, 'runner exited without a verdict');
 
     expect(updateWorkItem).toHaveBeenCalledWith('WI-existing-gate', {
-      title: 'green-checkpoint held on test-slug — ~216h since last green; 2 consecutive red verdict(s), 287 consecutive no-verdict run(s); last red: 7 failing check(s); main frozen.',
+      title: 'green-checkpoint held on test-slug — ~216h since last green; 2 consecutive red verdict(s), 287 consecutive no-verdict run(s); last red: sample of 7 failure entries (total unknown); main frozen.',
     }, 'system:green-checkpoint', { harness: 'test-slug' });
     expect(findConditionKeyHolder).toHaveBeenCalledWith('gate-red-streak:test-slug', {
       harnessSlug: 'test-slug', workspaceId: 'test-ws',
@@ -603,6 +604,53 @@ describe('WI-6554700010008583: existing gate incident headline stays current', (
 
     expect(updateWorkItem).not.toHaveBeenCalled();
     expect(broadcastSevereEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-26705451804341457: failure entry counts survive sampling', () => {
+  const failures = Array.from({ length: 30 }, (_, i) => `workspace-${i}`);
+
+  it('preserves the reported population in the event and headline while bounding the stored sample', () => {
+    const detail = buildCheckpointDetail({ reason: 'not-green', failingTests: failures });
+    expect(detail.failingTests).toEqual(failures.slice(0, 20));
+    expect(detail.failingTestsSummary).toEqual({
+      unit: 'reported-failure-entry', reportedEntries: 30, retainedEntries: 20, truncated: true,
+    });
+    const { summary, body } = gateRedStreakBroadcast({
+      installSlug: 'test-slug', consecutiveReds: 1, heldHrs: 2,
+      ...detail,
+    });
+    expect(summary).toContain('30 reported failure entries');
+    expect(summary).not.toContain('failing check(s)');
+    expect(body).toContain('Failure sample (20 retained)');
+    expect(body).not.toContain('workspace-29');
+  });
+
+  it('does not invent a total for legacy or inconsistent count metadata', () => {
+    for (const failingTestsSummary of [undefined, {
+      unit: 'reported-failure-entry' as const, reportedEntries: 2, retainedEntries: 20, truncated: false,
+    }]) {
+      const { summary } = gateRedStreakBroadcast({
+        installSlug: 'test-slug', consecutiveReds: 1, heldHrs: 2,
+        failingTests: failures.slice(0, 20), failingTestsSummary,
+      });
+      expect(summary).toContain('sample of 20 failure entries (total unknown)');
+    }
+  });
+
+  it('stores the full reported count with gate health and carries its metadata with inherited names', async () => {
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now() };
+    await trackGateStall(ctx, 'not-green', 'candidate-real', failures);
+    const health = lastGateHealthWrite()!;
+    expect(health.failingTests).toHaveLength(20);
+    expect(health.failingTestsSummary).toMatchObject({ reportedEntries: 30, retainedEntries: 20 });
+    const carried = mergeGateHealthMonotonic(health, {
+      lastVerdict: 'not-green', lastFromFresh: false, observedCandidate: health.observedCandidate,
+      failingTests: [], failingTestsSummary: null,
+    });
+    expect(carried.failingTestsSummary).toEqual(health.failingTestsSummary);
+    const green = buildCheckpointDetail({ reason: 'advanced', green: true, failingTests: [] });
+    expect(green.failingTestsSummary).toMatchObject({ reportedEntries: 0, retainedEntries: 0, truncated: false });
   });
 });
 

@@ -1,0 +1,2598 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "84850b947595b3ee416848ced84f0a714b87e38edd5641fb8cf82137d0e26e9f.supporting-original",
+      "sha256": "84850b947595b3ee416848ced84f0a714b87e38edd5641fb8cf82137d0e26e9f",
+      "byteLength": 118515
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "kind": "P002-exact-legacy-mutation-qualification",
+  "observedAt": "2026-10-24T08:42:56.768Z",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "testedCommit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+  "reason": "Actual source/test movement since oldf6b756; original mutations differ from backend68733 and attribution68307. Same original expressions and failed populations requalified, no HEAD-only replay.",
+  "scope": "Source/fixture proof only; native matrix, source lease isolation/ABA/system/filesystem/wake, usefulness/cohorts, independent acceptance and shipment remain open.",
+  "state": {
+    "status": "probes-completed",
+    "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+    "repo": "$HOME/papercupai-workspace/papercusp",
+    "log": "/dev/shm/gf-p002-legacy-mutants-20261024-0824.log",
+    "retainer": "/tmp/gf-p002-legacy-mutants-20261024-0824.retain",
+    "pid": 3518192,
+    "startedAt": "2026-10-24T08:23:17.336Z",
+    "probes": [
+      {
+        "name": "owner-isolation",
+        "expression": "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+        "exit": 0,
+        "signal": null,
+        "finishedAt": "2026-10-24T08:28:27.817Z"
+      },
+      {
+        "name": "historical-incarnation",
+        "expression": "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+        "exit": 0,
+        "signal": null,
+        "finishedAt": "2026-10-24T08:32:45.704Z"
+      }
+    ],
+    "childPid": 3924637,
+    "root": "/tmp/pcv/papercusp-lint-as-committed-75d8997b4b-22uLgR",
+    "finishedAt": "2026-10-24T08:32:45.719Z",
+    "sourceCleanup": {
+      "root": "/tmp/pcv/papercusp-lint-as-committed-75d8997b4b-22uLgR",
+      "rootRemoved": true,
+      "retainerRemoved": true,
+      "privatePg": "Both maintained with-test-pg wrappers exited0 and recorded database shutdown; all original exec handles drained.",
+      "observedAt": "2026-10-24T08:43:49.546Z"
+    }
+  },
+  "probeReplays": [
+    {
+      "environment": {
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "$HOME/papercupai-workspace/papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp"
+      },
+      "runnerPath": "scripts/mutation-probe.sh",
+      "argv": [
+        "--file",
+        "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "--mutate",
+        "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+        "--test",
+        "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "--relocation",
+        "overlay"
+      ],
+      "runnerSha256": "4044c24efe76946277426299fdc2c0d7f8ac39de045eae3713b76ce530a241d6",
+      "cwd": ".",
+      "runnerCommit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "result": {
+        "expected": "caught",
+        "mutantLedger": "test_runs:21878103",
+        "copyBaselineLedger": "test_runs:21878102",
+        "mutantParse": "ok",
+        "target": "copy-out",
+        "assertionEvidence": "test-file-assertion-failure",
+        "guardExit": 1,
+        "relocation": "overlay",
+        "baselineLedger": "test_runs:21878094",
+        "verdict": "caught",
+        "baselineExit": 0
+      },
+      "schemaVersion": 1
+    },
+    {
+      "runnerSha256": "4044c24efe76946277426299fdc2c0d7f8ac39de045eae3713b76ce530a241d6",
+      "argv": [
+        "--file",
+        "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "--mutate",
+        "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+        "--test",
+        "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "--relocation",
+        "overlay"
+      ],
+      "runnerPath": "scripts/mutation-probe.sh",
+      "environment": {
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "$HOME/papercupai-workspace/papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health"
+      },
+      "schemaVersion": 1,
+      "cwd": ".",
+      "runnerCommit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "result": {
+        "verdict": "caught",
+        "guardExit": 1,
+        "mutantParse": "ok",
+        "baselineLedger": "test_runs:21878105",
+        "expected": "caught",
+        "baselineExit": 0,
+        "mutantLedger": "test_runs:21878121",
+        "target": "copy-out",
+        "assertionEvidence": "test-file-assertion-failure",
+        "copyBaselineLedger": "test_runs:21878109",
+        "relocation": "overlay"
+      }
+    }
+  ],
+  "originalProbeReplays": [
+    {
+      "path": "/tmp/get-feedback-fire142-owner-mutation.log",
+      "record": {
+        "cwd": ".",
+        "runnerSha256": "408fd44771e580cc0a7d2124e4451a266f54a28b13fcd390b831d5b74cd7e12a",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "result": {
+          "mutantLedger": "test_runs:20882516",
+          "guardExit": 1,
+          "verdict": "caught",
+          "mutantParse": "unchecked",
+          "target": "copy-out",
+          "baselineExit": 0,
+          "expected": "caught",
+          "relocation": "overlay",
+          "assertionEvidence": "test-file-assertion-failure"
+        },
+        "runnerCommit": "f6b756c6738715c86e2bfea211de3591fb2e0c77",
+        "schemaVersion": 1,
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "--mutate",
+          "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+          "--test",
+          "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "--relocation",
+          "overlay"
+        ]
+      }
+    },
+    {
+      "path": "/tmp/get-feedback-fire142-historical-mutation.log",
+      "record": {
+        "runnerPath": "scripts/mutation-probe.sh",
+        "schemaVersion": 1,
+        "result": {
+          "mutantParse": "unchecked",
+          "guardExit": 1,
+          "baselineExit": 0,
+          "mutantLedger": "test_runs:20882540",
+          "assertionEvidence": "test-file-assertion-failure",
+          "target": "copy-out",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "expected": "caught"
+        },
+        "runnerSha256": "408fd44771e580cc0a7d2124e4451a266f54a28b13fcd390b831d5b74cd7e12a",
+        "runnerCommit": "f6b756c6738715c86e2bfea211de3591fb2e0c77",
+        "cwd": ".",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "--mutate",
+          "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+          "--test",
+          "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "--relocation",
+          "overlay"
+        ]
+      }
+    }
+  ],
+  "comparisons": [
+    {
+      "oldRun": 20882516,
+      "newRun": 21878103,
+      "missingOriginalFailures": [],
+      "addedFailures": [
+        "dispatchConsultResponder — the walk > preserves a responder that answers and closes the consult during kickoff proof",
+        "dispatchConsultResponder — the walk > dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable",
+        "cited-turn brief launch for unforkable sources (P-002, D-008) > launches a fresh briefed session for an untracked native source instead of refusing"
+      ]
+    },
+    {
+      "oldRun": 20882540,
+      "newRun": 21878121,
+      "missingOriginalFailures": [],
+      "addedFailures": []
+    }
+  ],
+  "canonicalRuns": [
+    {
+      "id": 20882516,
+      "status": "fail",
+      "source": "mutation-probe",
+      "commit": "f6b756c6738715c86e2bfea211de3591fb2e0c77",
+      "dirty": false,
+      "passed": 94,
+      "failed": 16,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "mutant",
+      "mutation": null,
+      "failedCaseTitles": [
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended claude sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended codex sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended omp sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > forks a dead claude source under a freshly PRE-PINNED identity",
+        "dispatchConsultResponder — the fork leg > stamps the fork identity before spawnHeadless can process a first reply",
+        "dispatchConsultResponder — the fork leg > publishes the fork responder before startup verification can admit a first reply",
+        "dispatchConsultResponder — the fork leg > FORKS a LIVE source rather than refusing it — the retired reviver refused here",
+        "dispatchConsultResponder — the walk > skips a WALLED backend and dispatches the next rank (R-6)",
+        "dispatchConsultResponder — the walk > STOPS the session a failed rank spawned — by its task id — and only that one",
+        "dispatchConsultResponder — the walk > tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)",
+        "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a recorder that THROWS never costs the dispatch its verdict",
+        "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a rank whose process EXITS before registering carries the launcher’s reason",
+        "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > reports a dispatched launch in the delivery-count shape every consult call site already reads"
+      ],
+      "recordedPassedCaseCount": 64
+    },
+    {
+      "id": 20882540,
+      "status": "fail",
+      "source": "mutation-probe",
+      "commit": "f6b756c6738715c86e2bfea211de3591fb2e0c77",
+      "dirty": false,
+      "passed": 107,
+      "failed": 3,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "mutant",
+      "mutation": null,
+      "failedCaseTitles": [
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript"
+      ],
+      "recordedPassedCaseCount": 64
+    },
+    {
+      "id": 21247286,
+      "status": "pass",
+      "source": "admin-ui",
+      "commit": "384986738a92369328064f5eb0dc9c4a3de08c40",
+      "dirty": true,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": null,
+      "mutation": null,
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 8
+    },
+    {
+      "id": 21247296,
+      "status": "pass",
+      "source": "admin-ui",
+      "commit": "384986738a92369328064f5eb0dc9c4a3de08c40",
+      "dirty": true,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": null,
+      "mutation": null,
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 8
+    },
+    {
+      "id": 21806519,
+      "status": "pass",
+      "source": "local",
+      "commit": "eeed52c58803fdf2bac550c046c17843061e52f6",
+      "dirty": false,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": null,
+      "mutation": null,
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 8
+    },
+    {
+      "id": 21878094,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "baseline",
+      "mutation": {
+        "leg": "baseline",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1761,7 +1761,7 @@\n \n   // Both the tracked fork and the prepared port bind a new answering identity\n   // before the child can reply; the expert retains its own identity and work.\n-  const answeringOwnerId = d.mintOwnerId();\n+  const answeringOwnerId = opts.sourceOwnerId;\n   if (!answeringOwnerId) {\n     return failed(\n       'launch-failed',\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+        "probeInvocationId": "96c3e942-4940-4200-b26f-5d94d13ecc99",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "a6aa1b782ec54d8722ed04134411f0e2e7857dfcfe23766b7d26a95dfd8fd1b7",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 148
+    },
+    {
+      "id": 21878102,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "copy-baseline",
+      "mutation": {
+        "leg": "copy-baseline",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1761,7 +1761,7 @@\n \n   // Both the tracked fork and the prepared port bind a new answering identity\n   // before the child can reply; the expert retains its own identity and work.\n-  const answeringOwnerId = d.mintOwnerId();\n+  const answeringOwnerId = opts.sourceOwnerId;\n   if (!answeringOwnerId) {\n     return failed(\n       'launch-failed',\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+        "probeInvocationId": "96c3e942-4940-4200-b26f-5d94d13ecc99",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "a6aa1b782ec54d8722ed04134411f0e2e7857dfcfe23766b7d26a95dfd8fd1b7",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 148
+    },
+    {
+      "id": 21878103,
+      "status": "fail",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 129,
+      "failed": 19,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "mutant",
+      "mutation": {
+        "leg": "mutant",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1761,7 +1761,7 @@\n \n   // Both the tracked fork and the prepared port bind a new answering identity\n   // before the child can reply; the expert retains its own identity and work.\n-  const answeringOwnerId = d.mintOwnerId();\n+  const answeringOwnerId = opts.sourceOwnerId;\n   if (!answeringOwnerId) {\n     return failed(\n       'launch-failed',\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const answeringOwnerId = d\\.mintOwnerId\\(\\);/const answeringOwnerId = opts.sourceOwnerId;/",
+        "probeInvocationId": "96c3e942-4940-4200-b26f-5d94d13ecc99",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "a6aa1b782ec54d8722ed04134411f0e2e7857dfcfe23766b7d26a95dfd8fd1b7",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended claude sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended codex sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended omp sources under separate answer identities",
+        "dispatchConsultResponder — the fork leg > forks a dead claude source under a freshly PRE-PINNED identity",
+        "dispatchConsultResponder — the fork leg > stamps the fork identity before spawnHeadless can process a first reply",
+        "dispatchConsultResponder — the fork leg > publishes the fork responder before startup verification can admit a first reply",
+        "dispatchConsultResponder — the fork leg > FORKS a LIVE source rather than refusing it — the retired reviver refused here",
+        "dispatchConsultResponder — the walk > skips a WALLED backend and dispatches the next rank (R-6)",
+        "dispatchConsultResponder — the walk > preserves a responder that answers and closes the consult during kickoff proof",
+        "dispatchConsultResponder — the walk > STOPS the session a failed rank spawned — by its task id — and only that one",
+        "dispatchConsultResponder — the walk > tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)",
+        "dispatchConsultResponder — the walk > dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable",
+        "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a recorder that THROWS never costs the dispatch its verdict",
+        "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a rank whose process EXITS before registering carries the launcher’s reason",
+        "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > reports a dispatched launch in the delivery-count shape every consult call site already reads",
+        "cited-turn brief launch for unforkable sources (P-002, D-008) > launches a fresh briefed session for an untracked native source instead of refusing"
+      ],
+      "recordedPassedCaseCount": 129
+    },
+    {
+      "id": 21878105,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "baseline",
+      "mutation": {
+        "leg": "baseline",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1338,7 +1338,7 @@\n     // tracked row. Use that seam instead of treating a rotated id as raw native\n     // or silently forking the row's newer transcript. Both checks run again at\n     // inspection, so an ownership change between resolution and spawn refuses.\n-    const historical = !exactTracked && evidenceSource !== null &&\n+    const historical = false && !exactTracked && evidenceSource !== null &&\n       target.binding?.coordOwnerId === target.ownerId && Boolean(boundNativeId) &&\n       target.sessionId === evidenceSource.sessionId &&\n       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(evidenceSource.sessionId) &&\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+        "probeInvocationId": "6e34e47b-1f45-45c2-81a4-8a9580c02dd5",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "0349c081cb75de5cbaeb11d16cfae7241d76826808abf3114cd9b6980e06a285",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 148
+    },
+    {
+      "id": 21878109,
+      "status": "pass",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 148,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "copy-baseline",
+      "mutation": {
+        "leg": "copy-baseline",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1338,7 +1338,7 @@\n     // tracked row. Use that seam instead of treating a rotated id as raw native\n     // or silently forking the row's newer transcript. Both checks run again at\n     // inspection, so an ownership change between resolution and spawn refuses.\n-    const historical = !exactTracked && evidenceSource !== null &&\n+    const historical = false && !exactTracked && evidenceSource !== null &&\n       target.binding?.coordOwnerId === target.ownerId && Boolean(boundNativeId) &&\n       target.sessionId === evidenceSource.sessionId &&\n       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(evidenceSource.sessionId) &&\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+        "probeInvocationId": "6e34e47b-1f45-45c2-81a4-8a9580c02dd5",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "0349c081cb75de5cbaeb11d16cfae7241d76826808abf3114cd9b6980e06a285",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [],
+      "recordedPassedCaseCount": 148
+    },
+    {
+      "id": 21878121,
+      "status": "fail",
+      "source": "mutation-probe",
+      "commit": "75d8997b4b53fd93daaa90cbd81be2845f56bd96",
+      "dirty": false,
+      "passed": 145,
+      "failed": 3,
+      "skipped": 0,
+      "collectionFailed": false,
+      "mutationPhase": "mutant",
+      "mutation": {
+        "leg": "mutant",
+        "mode": "copy-out",
+        "mutantDiff": "--- a/packages/operator-core/lib/consult/consult-dispatch.ts\n+++ b/packages/operator-core/lib/consult/consult-dispatch.ts\n@@ -1338,7 +1338,7 @@\n     // tracked row. Use that seam instead of treating a rotated id as raw native\n     // or silently forking the row's newer transcript. Both checks run again at\n     // inspection, so an ownership change between resolution and spawn refuses.\n-    const historical = !exactTracked && evidenceSource !== null &&\n+    const historical = false && !exactTracked && evidenceSource !== null &&\n       target.binding?.coordOwnerId === target.ownerId && Boolean(boundNativeId) &&\n       target.sessionId === evidenceSource.sessionId &&\n       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(evidenceSource.sessionId) &&\n",
+        "subjectPath": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "testCommand": "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts",
+        "againstCommit": null,
+        "schemaVersion": 1,
+        "testFileSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+        "mutateExpression": "s/const historical = !exactTracked && evidenceSource !== null &&/const historical = false \\&\\& !exactTracked \\&\\& evidenceSource !== null \\&\\&/",
+        "probeInvocationId": "6e34e47b-1f45-45c2-81a4-8a9580c02dd5",
+        "testCommandSha256": "e364fd2adb11919d933f2ce9c1f0e94472831430771584c638302ce471c3bc55",
+        "subjectAfterSha256": "0349c081cb75de5cbaeb11d16cfae7241d76826808abf3114cd9b6980e06a285",
+        "mutantDiffTruncated": false,
+        "subjectBeforeSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb"
+      },
+      "failedCaseTitles": [
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+        "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript"
+      ],
+      "recordedPassedCaseCount": 145
+    }
+  ],
+  "bindings": [
+    {
+      "id": 28205,
+      "run": 20882516,
+      "kind": "mutation",
+      "ref": "test-run 20882516 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @f6b756c67387",
+      "adequacy": {
+        "outcome": "caught",
+        "skipped": false,
+        "executed": true,
+        "targeted": "gf-p002-source",
+        "collected": true,
+        "testLayer": "unit",
+        "pathReachable": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": "2026-10-24T08:32:08.225Z",
+      "retractionReason": "Exact owner-isolation replacement68775 and same-invocation controls68773/68774 independently server-measured CURRENT before withdrawal. Clean75d8997b4b probes21878094/21878102 each148PASS; mutant21878103 parsevalid129PASS/19expectedFAIL, retaining all16 original failed titles plus3 newer cases. Identical mutation expression; all8 old named source paths retained plus native-consult.ts and inline fixture pin. Dated original remains historical; no native/cohort/ship proof retired.",
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "80564596e1bf64651898a9031e913eb37846a44c5dbfb7e2dbd4896cb86694fa",
+            "headBlob": "fb41362b6625ab9413ce8ede99dfdc6cdf96f5f3",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "4947ec7d4ac820437eee7bb826b64b1e48731c0b547c673d02975f1d70d64a3d",
+            "headBlob": "5b4dd1495c8bc26007823400baed2c0f5a4d5ab4",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8775731b769747e5baf412e0ece5cbc389c42055310bb3b222e9767cb3aae1e7",
+            "headBlob": "4881d6b5c95ce79a2f6c06fbb2483085ab7aa9d8",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8f7d564e4e1f35c565f5f2726f42e74e7620d38eb6c9b392fb7a39ae4b0e14e4",
+            "headBlob": "f1a97f7f35e17fd2e77b9d1fc8fe5d81e7ac03e7",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "13e5ef96a24ddd7bf26624ef1b439b66892a4f5344a1aa3d825dcabdf070f85e",
+            "headBlob": "707dca16cfe36f56476804ae6962c7456cdac894",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f2c144d34a48f3b8b699e74f25a89026176037004530f7620b688dd88391243b",
+            "headBlob": "cba349ee696a6aac8e17eca1556eccfdb5332b06",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "809cb35e26f078e37f5d97f4e4e9af02c4ce3477c4498d0cab0366ce98513918",
+            "headBlob": "6eaa8f03e0cf2e6aa111a1f9737b582492c98f4d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bc3ed97621444bc9340045ae1df6a79410619ee6679ed009f75203784da14c47",
+            "headBlob": "32b660c2136464e5e149c00b8762c56a6e78248b",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 28206,
+      "run": 20882540,
+      "kind": "mutation",
+      "ref": "test-run 20882540 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @f6b756c67387",
+      "adequacy": {
+        "outcome": "caught",
+        "skipped": false,
+        "executed": true,
+        "targeted": "gf-p002-source",
+        "collected": true,
+        "testLayer": "unit",
+        "pathReachable": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": "2026-10-24T08:34:34.283Z",
+      "retractionReason": "Exact historical-incarnation-off replacement68779 and same-invocation controls68777/68778 independently server-measured CURRENT before withdrawal. Clean75d8997b4b controls21878105/21878109 each148PASS; parsevalid mutant21878121=145PASS/3FAIL/0skip. Exact same3 original failed titles and same mutation expression; all8 original source paths retained plus native-consult.ts and inline fixtures. Original dated evidence stays historical; no native/cohort/ship proof retired.",
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "80564596e1bf64651898a9031e913eb37846a44c5dbfb7e2dbd4896cb86694fa",
+            "headBlob": "fb41362b6625ab9413ce8ede99dfdc6cdf96f5f3",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "4947ec7d4ac820437eee7bb826b64b1e48731c0b547c673d02975f1d70d64a3d",
+            "headBlob": "5b4dd1495c8bc26007823400baed2c0f5a4d5ab4",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8775731b769747e5baf412e0ece5cbc389c42055310bb3b222e9767cb3aae1e7",
+            "headBlob": "4881d6b5c95ce79a2f6c06fbb2483085ab7aa9d8",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8f7d564e4e1f35c565f5f2726f42e74e7620d38eb6c9b392fb7a39ae4b0e14e4",
+            "headBlob": "f1a97f7f35e17fd2e77b9d1fc8fe5d81e7ac03e7",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "13e5ef96a24ddd7bf26624ef1b439b66892a4f5344a1aa3d825dcabdf070f85e",
+            "headBlob": "707dca16cfe36f56476804ae6962c7456cdac894",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f2c144d34a48f3b8b699e74f25a89026176037004530f7620b688dd88391243b",
+            "headBlob": "cba349ee696a6aac8e17eca1556eccfdb5332b06",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "809cb35e26f078e37f5d97f4e4e9af02c4ce3477c4498d0cab0366ce98513918",
+            "headBlob": "6eaa8f03e0cf2e6aa111a1f9737b582492c98f4d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bc3ed97621444bc9340045ae1df6a79410619ee6679ed009f75203784da14c47",
+            "headBlob": "32b660c2136464e5e149c00b8762c56a6e78248b",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 28243,
+      "run": 20882292,
+      "kind": "fixture",
+      "ref": "test-run:20882292 PG evidence-span fixture calibration f6b756",
+      "adequacy": {
+        "fixtureFree": false,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+          "packages/operator-core/test/_pg-helpers.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+          "packages/operator-core/test/_pg-helpers.ts"
+        ],
+        "schemaVersion": 1,
+        "rootHarnessSlug": "papercusp"
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "77baec9e383bb5e554f5b6000ba3aca179bfc7fb8b4712b247d7f0367282b822",
+            "headBlob": "75fddf3dc6175764c95c0a24c8da3f1b87c47c31",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/test/_pg-helpers.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d14d60a445e17811e601944a09c6e8a2e3f852fad10d2b59b13a222b29ff36e3",
+            "headBlob": "fbfb778b35db0de9f3df31654fd120b05f3c7702",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "77baec9e383bb5e554f5b6000ba3aca179bfc7fb8b4712b247d7f0367282b822",
+            "headBlob": "75fddf3dc6175764c95c0a24c8da3f1b87c47c31",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "77baec9e383bb5e554f5b6000ba3aca179bfc7fb8b4712b247d7f0367282b822",
+            "headBlob": "75fddf3dc6175764c95c0a24c8da3f1b87c47c31",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/operator-core/test/_pg-helpers.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d14d60a445e17811e601944a09c6e8a2e3f852fad10d2b59b13a222b29ff36e3",
+            "headBlob": "fbfb778b35db0de9f3df31654fd120b05f3c7702",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 28262,
+      "run": 20883478,
+      "kind": "test",
+      "ref": "apps/operator/lib/psu-pty-host.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "collected": true,
+        "testLayer": "unit"
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "apps/operator/lib/psu-pty-host.test.ts"
+        ],
+        "sourcePaths": [
+          "apps/operator/scripts/psu-pty-host.mjs"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "apps/operator/scripts/psu-pty-host.mjs",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6dcfa3540d8f1c411de4c1ba30d0af265b0a40b7ea2b82a894089822ddf7103f",
+            "headBlob": "d4c98e83bd125959da63361afcf4583ff7e429ea",
+            "dimension": "source"
+          },
+          {
+            "path": "apps/operator/lib/psu-pty-host.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5a47d13ae63ae10af7de890e72be41fbed73b5e02c3eb724aefa7e38af657876",
+            "headBlob": "d8467ac3750b7688cb195eecaf868675b68bbc91",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 28820,
+      "run": 20891312,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "collected": true,
+        "testLayer": "integration",
+        "fixtureFree": false,
+        "disclosedGap": "Native answering launch/inspection is controlled fixture behavior; actual native carrier receipt remains pending containing runtime.",
+        "pathReachable": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "80564596e1bf64651898a9031e913eb37846a44c5dbfb7e2dbd4896cb86694fa",
+            "headBlob": "fb41362b6625ab9413ce8ede99dfdc6cdf96f5f3",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "7d0449723167111ea0f2b751e1ea8271e4953d4396d86db85eb47328095dbb50",
+            "headBlob": "f060d8e57858136b9349e981c25878bcac479c3f",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8775731b769747e5baf412e0ece5cbc389c42055310bb3b222e9767cb3aae1e7",
+            "headBlob": "4881d6b5c95ce79a2f6c06fbb2483085ab7aa9d8",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "8f7d564e4e1f35c565f5f2726f42e74e7620d38eb6c9b392fb7a39ae4b0e14e4",
+            "headBlob": "f1a97f7f35e17fd2e77b9d1fc8fe5d81e7ac03e7",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6fc7e0bf2f469276f66bd89721005eb8d8d96bdc35c8383bc99fe07f1dc40146",
+            "headBlob": "3f0814cab886ad2ad64f5fd687466e6b89dba2be",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f2c144d34a48f3b8b699e74f25a89026176037004530f7620b688dd88391243b",
+            "headBlob": "cba349ee696a6aac8e17eca1556eccfdb5332b06",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "809cb35e26f078e37f5d97f4e4e9af02c4ce3477c4498d0cab0366ce98513918",
+            "headBlob": "6eaa8f03e0cf2e6aa111a1f9737b582492c98f4d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "77baec9e383bb5e554f5b6000ba3aca179bfc7fb8b4712b247d7f0367282b822",
+            "headBlob": "75fddf3dc6175764c95c0a24c8da3f1b87c47c31",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 45213,
+      "run": 21247286,
+      "kind": "test",
+      "ref": "test-run-group:3ce81757-1f16-4c77-b08e-569728bb6ffb:1",
+      "adequacy": {
+        "outcome": "unknown",
+        "executed": false,
+        "collected": false,
+        "testLayer": "integration"
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/consult/get-feedback-prod.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76494b93ff0e91c7353223179b2f1829937b0c34f957c0d3ba0cfddd914be2f5",
+            "headBlob": "17ab78409000da60c06341088581902521ad68d7",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bb68fe5b70f601fa87ec4f4f8b27346d8fb9119453fdedf20bcb1294bf27565c",
+            "headBlob": "739b1b1fe7a74275f32f5bd7b32bb413fba90881",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "735bab4485f6148694a7779b85b00fc295826cd6524cf051ce23b0bbf3e62265",
+            "headBlob": "e76331ff9bbf4597bea26b9d48ef7cb430d80dbb",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 45214,
+      "run": 21247296,
+      "kind": "test",
+      "ref": "test-run-group:122cf4ed-bbf7-40c0-af99-b430ec17bf69:0",
+      "adequacy": {
+        "outcome": "unknown",
+        "executed": false,
+        "collected": false,
+        "testLayer": "integration"
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/consult/get-feedback-prod.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76494b93ff0e91c7353223179b2f1829937b0c34f957c0d3ba0cfddd914be2f5",
+            "headBlob": "17ab78409000da60c06341088581902521ad68d7",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bb68fe5b70f601fa87ec4f4f8b27346d8fb9119453fdedf20bcb1294bf27565c",
+            "headBlob": "739b1b1fe7a74275f32f5bd7b32bb413fba90881",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "735bab4485f6148694a7779b85b00fc295826cd6524cf051ce23b0bbf3e62265",
+            "headBlob": "e76331ff9bbf4597bea26b9d48ef7cb430d80dbb",
+            "dimension": "test"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68339,
+      "run": 21806519,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "source preflight and persisted dispatch attempts > validates the eligible source before crossing the launch seam and persists its verdict",
+          "source preflight and persisted dispatch attempts > validates the cyclic source before crossing the launch seam and persists its verdict",
+          "source preflight and persisted dispatch attempts > validates the non-plain source before crossing the launch seam and persists its verdict",
+          "source preflight and persisted dispatch attempts > validates the missing source before crossing the launch seam and persists its verdict"
+        ],
+        "testLayer": "integration",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "disclosedGap": [
+          "Native launch and startup verification are controlled fakes; this tree integration does not establish physical native delivery or live source immutability.",
+          "Complete worker-Vite graph remains UNKNOWN for three collection-late modules; named-file freshness is separately measured."
+        ],
+        "coverageRungs": {
+          "l1": true,
+          "l2": true,
+          "l3": false,
+          "l4": false
+        },
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/get-feedback-core.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/store.ts"
+        ],
+        "fixturePaths": [
+          "libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql",
+          "libs/papercusp/libs/db/sql/834-consult-threads.sql",
+          "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+          "packages/operator-core/test/_pg-helpers.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "25038a2661c1fb2c7f52793b878c698c4c3fc659004d52699abb4928358d0c6b",
+            "headBlob": "067439cf72e1c95beb25033a21c6a2e1e9d2cf9e",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/store.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "cee78ff793afaae0f0d0dbb6df28d770acb389768b3dc0c8f31eddcc91a79455",
+            "headBlob": "1d5f17815ef77c39502fb935a5576f51e0795ba8",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b650d762c5d0ca2cf01ce81d7358e721fd6d95cdd0e07e6216dbbefbb0288088",
+            "headBlob": "8e93d51878c182d5989f940b161b317d6e3a3c2f",
+            "dimension": "test"
+          },
+          {
+            "path": "libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql",
+            "repo": "libs/papercusp",
+            "clean": true,
+            "sha256": "a9965d4ad377aac4827ea6c6f15948a205b1bc4191962427f84e2cfbedb4afd0",
+            "headBlob": "279f4b3620ef3b9b86335afc6973228d73963de8",
+            "dimension": "fixture"
+          },
+          {
+            "path": "libs/papercusp/libs/db/sql/834-consult-threads.sql",
+            "repo": "libs/papercusp",
+            "clean": true,
+            "sha256": "75f8d7004126da1f020b056aaa61289d74b9ba5d15bd5c4bd09294e42a18c8d5",
+            "headBlob": "dd603bf3b61c5b4a76c22702e956b875eceb0ee4",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b650d762c5d0ca2cf01ce81d7358e721fd6d95cdd0e07e6216dbbefbb0288088",
+            "headBlob": "8e93d51878c182d5989f940b161b317d6e3a3c2f",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/operator-core/test/_pg-helpers.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "67083d27aec0fe13c70e52488229f4baae470cbdad666ab092e0e82dc34a9700",
+            "headBlob": "eff96fea50c11e960a6eae1bdaa485ea32c94f3f",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68374,
+      "run": 21863891,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "mcp-handler SDK resolution (WI-10005116) > forwards per-call thread native-child to the protocol handler despite an inherited header",
+          "mcp-handler SDK resolution (WI-10005116) > forwards per-call thread native-nested to the protocol handler despite an inherited header",
+          "mcp-handler SDK resolution (WI-10005116) > the transport mcp-handler loads passes the request URL to onmessage"
+        ],
+        "testLayer": "unit",
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts"
+        ],
+        "sourcePaths": [
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+          "packages/tooldef-mcp/src/index.ts",
+          "patches/mcp-handler+1.1.0.patch"
+        ],
+        "fixturePaths": [
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts",
+          "packages/tooldef-mcp/src/index.ts",
+          "patches/mcp-handler+1.1.0.patch"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "package-lock.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "e16502a07b06cfed7ec160d6484922c45d0ffbb94085fa8c5292d46253525b68",
+            "headBlob": "a1e97768eea119d6fc678321dbcfef0b7eb19d2c",
+            "dimension": "source"
+          },
+          {
+            "path": "package.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5f62eda1ac60a3c8bdf3136dedeae23553febe1e7402489489678b55ec07afa2",
+            "headBlob": "fad47d9a5f0ea90f5e387250f21de2b6e75902a6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ba0a82957e3246f48aec3df7fbb44de327b041c894e70c83ad20388dd030f038",
+            "headBlob": "325cc7a1e4d7a18e5de5fd54a7ccafe523ec2170",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/tooldef-mcp/src/index.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+            "headBlob": "574aef7ea99efa3db696faf0d14f3957e15f5137",
+            "dimension": "source"
+          },
+          {
+            "path": "patches/mcp-handler+1.1.0.patch",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1551334f35b4a83dae2d4c9dee1405f0eb86d04429a197faceb512e603a31e11",
+            "headBlob": "11b068439e75c5b65ea8fb31bd6fbd70e6585c6d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "cea71222affde1da36f6b871495ed06f161bbd100e218c9306d121f6df6311c5",
+            "headBlob": "6e914e3a05e0e90f80f9faff35378fa520395b02",
+            "dimension": "test"
+          },
+          {
+            "path": "package-lock.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "e16502a07b06cfed7ec160d6484922c45d0ffbb94085fa8c5292d46253525b68",
+            "headBlob": "a1e97768eea119d6fc678321dbcfef0b7eb19d2c",
+            "dimension": "fixture"
+          },
+          {
+            "path": "package.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5f62eda1ac60a3c8bdf3136dedeae23553febe1e7402489489678b55ec07afa2",
+            "headBlob": "fad47d9a5f0ea90f5e387250f21de2b6e75902a6",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "cea71222affde1da36f6b871495ed06f161bbd100e218c9306d121f6df6311c5",
+            "headBlob": "6e914e3a05e0e90f80f9faff35378fa520395b02",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/tooldef-mcp/src/index.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+            "headBlob": "574aef7ea99efa3db696faf0d14f3957e15f5137",
+            "dimension": "fixture"
+          },
+          {
+            "path": "patches/mcp-handler+1.1.0.patch",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1551334f35b4a83dae2d4c9dee1405f0eb86d04429a197faceb512e603a31e11",
+            "headBlob": "11b068439e75c5b65ea8fb31bd6fbd70e6585c6d",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68375,
+      "run": 21863892,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > binds Codex per-call thread metadata instead of an inherited process header",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > rejects a foreign per-call thread even when its inherited header matches the owner",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > fails closed on malformed per-call thread metadata null",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > fails closed on malformed per-call thread metadata 42",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > fails closed on malformed per-call thread metadata ''",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > fails closed on malformed per-call thread metadata '   '",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > fails closed on malformed per-call thread metadata [ 'native-owner' ]",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > allows the owner incarnation when Claude supplies its native session in the URL",
+          "su identity precedence (EI-7066: explicit SID before Mcp-Session-Id) > allows the owner incarnation when Codex supplies its native session in the header"
+        ],
+        "testLayer": "unit",
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts"
+        ],
+        "sourcePaths": [
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts",
+          "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+          "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-uds.ts",
+          "packages/tooldef-mcp/src/index.ts",
+          "patches/mcp-handler+1.1.0.patch"
+        ],
+        "fixturePaths": [
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+          "packages/tooldef-mcp/src/index.ts",
+          "patches/mcp-handler+1.1.0.patch"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "package-lock.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "e16502a07b06cfed7ec160d6484922c45d0ffbb94085fa8c5292d46253525b68",
+            "headBlob": "a1e97768eea119d6fc678321dbcfef0b7eb19d2c",
+            "dimension": "source"
+          },
+          {
+            "path": "package.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5f62eda1ac60a3c8bdf3136dedeae23553febe1e7402489489678b55ec07afa2",
+            "headBlob": "fad47d9a5f0ea90f5e387250f21de2b6e75902a6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1169b17225c0b6892598c5cfb84a18c688122ecf4dac937d602257d4a6df4db9",
+            "headBlob": "b58d3f073aa3bccdbe0abaa5dc0479aa92533a23",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ba0a82957e3246f48aec3df7fbb44de327b041c894e70c83ad20388dd030f038",
+            "headBlob": "325cc7a1e4d7a18e5de5fd54a7ccafe523ec2170",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-uds.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1f71d69d7d10858e623c0b355e709b55d3b905bab0231c2ec6c0ab82e095e805",
+            "headBlob": "bba624d6cc4bd5093b4ac09c7bc994e62e24d440",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/tooldef-mcp/src/index.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+            "headBlob": "574aef7ea99efa3db696faf0d14f3957e15f5137",
+            "dimension": "source"
+          },
+          {
+            "path": "patches/mcp-handler+1.1.0.patch",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1551334f35b4a83dae2d4c9dee1405f0eb86d04429a197faceb512e603a31e11",
+            "headBlob": "11b068439e75c5b65ea8fb31bd6fbd70e6585c6d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "82b85108fbb9da09c171cf822f0f94f7006bfd78cef750521700de5de87cd300",
+            "headBlob": "5ffe5a64788e2039911b5e715d359276bb21b04d",
+            "dimension": "test"
+          },
+          {
+            "path": "package-lock.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "e16502a07b06cfed7ec160d6484922c45d0ffbb94085fa8c5292d46253525b68",
+            "headBlob": "a1e97768eea119d6fc678321dbcfef0b7eb19d2c",
+            "dimension": "fixture"
+          },
+          {
+            "path": "package.json",
+            "repo": ".",
+            "clean": true,
+            "sha256": "5f62eda1ac60a3c8bdf3136dedeae23553febe1e7402489489678b55ec07afa2",
+            "headBlob": "fad47d9a5f0ea90f5e387250f21de2b6e75902a6",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "82b85108fbb9da09c171cf822f0f94f7006bfd78cef750521700de5de87cd300",
+            "headBlob": "5ffe5a64788e2039911b5e715d359276bb21b04d",
+            "dimension": "fixture"
+          },
+          {
+            "path": "packages/tooldef-mcp/src/index.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+            "headBlob": "574aef7ea99efa3db696faf0d14f3957e15f5137",
+            "dimension": "fixture"
+          },
+          {
+            "path": "patches/mcp-handler+1.1.0.patch",
+            "repo": ".",
+            "clean": true,
+            "sha256": "1551334f35b4a83dae2d4c9dee1405f0eb86d04429a197faceb512e603a31e11",
+            "headBlob": "11b068439e75c5b65ea8fb31bd6fbd70e6585c6d",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68773,
+      "run": 21878094,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended claude sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended codex sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended omp sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > forks a dead claude source under a freshly PRE-PINNED identity",
+          "dispatchConsultResponder — the fork leg > stamps the fork identity before spawnHeadless can process a first reply",
+          "dispatchConsultResponder — the fork leg > publishes the fork responder before startup verification can admit a first reply",
+          "dispatchConsultResponder — the fork leg > FORKS a LIVE source rather than refusing it — the retired reviver refused here",
+          "dispatchConsultResponder — the walk > skips a WALLED backend and dispatches the next rank (R-6)",
+          "dispatchConsultResponder — the walk > preserves a responder that answers and closes the consult during kickoff proof",
+          "dispatchConsultResponder — the walk > STOPS the session a failed rank spawned — by its task id — and only that one",
+          "dispatchConsultResponder — the walk > tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)",
+          "dispatchConsultResponder — the walk > dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a recorder that THROWS never costs the dispatch its verdict",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a rank whose process EXITS before registering carries the launcher’s reason",
+          "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > reports a dispatched launch in the delivery-count shape every consult call site already reads",
+          "cited-turn brief launch for unforkable sources (P-002, D-008) > launches a fresh briefed session for an untracked native source instead of refusing"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68774,
+      "run": 21878102,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended claude sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended codex sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended omp sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > forks a dead claude source under a freshly PRE-PINNED identity",
+          "dispatchConsultResponder — the fork leg > stamps the fork identity before spawnHeadless can process a first reply",
+          "dispatchConsultResponder — the fork leg > publishes the fork responder before startup verification can admit a first reply",
+          "dispatchConsultResponder — the fork leg > FORKS a LIVE source rather than refusing it — the retired reviver refused here",
+          "dispatchConsultResponder — the walk > skips a WALLED backend and dispatches the next rank (R-6)",
+          "dispatchConsultResponder — the walk > preserves a responder that answers and closes the consult during kickoff proof",
+          "dispatchConsultResponder — the walk > STOPS the session a failed rank spawned — by its task id — and only that one",
+          "dispatchConsultResponder — the walk > tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)",
+          "dispatchConsultResponder — the walk > dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a recorder that THROWS never costs the dispatch its verdict",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a rank whose process EXITS before registering carries the launcher’s reason",
+          "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > reports a dispatched launch in the delivery-count shape every consult call site already reads",
+          "cited-turn brief launch for unforkable sources (P-002, D-008) > launches a fresh briefed session for an untracked native source instead of refusing"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68775,
+      "run": 21878103,
+      "kind": "mutation",
+      "ref": "test-run 21878103 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @75d8997b4b53",
+      "adequacy": {
+        "outcome": "caught",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended claude sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended codex sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > reaches all three targets from fresh and ended omp sources under separate answer identities",
+          "dispatchConsultResponder — the fork leg > forks a dead claude source under a freshly PRE-PINNED identity",
+          "dispatchConsultResponder — the fork leg > stamps the fork identity before spawnHeadless can process a first reply",
+          "dispatchConsultResponder — the fork leg > publishes the fork responder before startup verification can admit a first reply",
+          "dispatchConsultResponder — the fork leg > FORKS a LIVE source rather than refusing it — the retired reviver refused here",
+          "dispatchConsultResponder — the walk > skips a WALLED backend and dispatches the next rank (R-6)",
+          "dispatchConsultResponder — the walk > preserves a responder that answers and closes the consult during kickoff proof",
+          "dispatchConsultResponder — the walk > STOPS the session a failed rank spawned — by its task id — and only that one",
+          "dispatchConsultResponder — the walk > tags the answering ledger row with the consult it serves (for the reaper’s consult-settled class)",
+          "dispatchConsultResponder — the walk > dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a recorder that THROWS never costs the dispatch its verdict",
+          "dispatchConsultResponder — every walk is persisted on its consult (WI-10003197) > a rank whose process EXITS before registering carries the launcher’s reason",
+          "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > reports a dispatched launch in the delivery-count shape every consult call site already reads",
+          "cited-turn brief launch for unforkable sources (P-002, D-008) > launches a fresh briefed session for an untracked native source instead of refusing"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68777,
+      "run": 21878105,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68778,
+      "run": 21878109,
+      "kind": "test",
+      "ref": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "adequacy": {
+        "outcome": "passed",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    },
+    {
+      "id": 68779,
+      "run": 21878121,
+      "kind": "mutation",
+      "ref": "test-run 21878121 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @75d8997b4b53",
+      "adequacy": {
+        "outcome": "caught",
+        "skipped": false,
+        "executed": true,
+        "targeted": "GF-P002-source",
+        "collected": true,
+        "testCases": [
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier claude evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier codex evidence through the tracked row without substituting its current transcript",
+          "dispatchConsultResponder — the fork leg > ports authenticated earlier omp evidence through the tracked row without substituting its current transcript"
+        ],
+        "testLayer": "unit",
+        "falsifiable": true,
+        "fixtureFree": false,
+        "pathReachable": true,
+        "fixtureCalibrated": true,
+        "oracleIndependent": true
+      },
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      },
+      "retractedAt": null,
+      "retractionReason": null,
+      "pin": {
+        "schemaVersion": 1,
+        "files": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "0c30d5e74e244804d4785f3942b57fb0508220fa7d6415041cb3b3080e5ba498",
+            "headBlob": "f0db5f7ae965f03a9fe7d69572a2cad726a7f5e6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/agent-launch-core.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+            "headBlob": "45a414dc2bbcfd4a045193fb4eb46afb88c1375b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+            "headBlob": "46efca1690154311e10e830b0447f6ddcf29869d",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/native-consult.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+            "headBlob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "ff193a1b9f43548758f3de885c9d7efad5e2292e69bec2f08de201d4a807ac1c",
+            "headBlob": "3fb5e9170147ea54870a02241b14f64645428b67",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/service.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+            "headBlob": "699cf8468732ef87f105e4c20b588d668d76b888",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/source.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+            "headBlob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/session-port/types.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+            "headBlob": "66a6941cc451dd56b58ecf0ea3cb425b9282328c",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/workspace-registry.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+            "headBlob": "3570cdf77e15125d3da87a399d36b55d8c099be6",
+            "dimension": "source"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "test"
+          },
+          {
+            "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "repo": ".",
+            "clean": true,
+            "sha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+            "headBlob": "d4bfd7c2c91aa1dd503223137feebe3c27fc8de3",
+            "dimension": "fixture"
+          }
+        ]
+      }
+    }
+  ],
+  "independentCurrentness": {
+    "source": "Separate containing3170 get-spec-evidence reads before each retirement; eight-row audit after both retirements",
+    "replacementIds": [
+      68773,
+      68774,
+      68775,
+      68777,
+      68778,
+      68779
+    ],
+    "overall": "current",
+    "provenance": "server-measured",
+    "allApplicableDimensions": "current",
+    "staleReasons": [],
+    "unknownReasons": []
+  },
+  "contractComparisons": [
+    {
+      "oldBinding": 45213,
+      "oldRun": 21247286,
+      "candidateBinding": 68339,
+      "candidateRun": 21806519,
+      "oldDirty": true,
+      "missingOldPassedTitles": [],
+      "missingNamedPaths": [
+        "packages/operator-core/lib/consult/get-feedback-prod.ts"
+      ],
+      "disposition": "Retain old bindings: production-source get-feedback-prod.ts pin is absent in68339 despite same eight passed cases."
+    },
+    {
+      "oldBinding": 45214,
+      "oldRun": 21247296,
+      "candidateBinding": 68339,
+      "candidateRun": 21806519,
+      "oldDirty": true,
+      "missingOldPassedTitles": [],
+      "missingNamedPaths": [
+        "packages/operator-core/lib/consult/get-feedback-prod.ts"
+      ],
+      "disposition": "Retain old bindings: production-source get-feedback-prod.ts pin is absent in68339 despite same eight passed cases."
+    }
+  ],
+  "fixtureResidue": [
+    {
+      "id": 28243,
+      "next": "Requalify exact inline PG fixture inputs plus _pg-helpers.ts"
+    },
+    {
+      "id": 28820,
+      "next": "Current evidence-span route proof preserving original15 cases and controlled-native disclosure"
+    },
+    {
+      "id": 28262,
+      "next": "Current host UNIT proof; host integration68551 is a distinct file/population"
+    },
+    {
+      "ids": [
+        45213,
+        45214
+      ],
+      "next": "Retain production-source pin and all8 cases before any qualified replacement"
+    },
+    {
+      "ids": [
+        68374,
+        68375
+      ],
+      "next": "Compare named committed bytes before refresh"
+    }
+  ],
+  "governingEvaluation": {
+    "build": {
+      "sha": "379f97145f",
+      "version": "0.0.0"
+    },
+    "governing": true,
+    "rows": [
+      {
+        "spec": "AUTO-BAR-R-2-P-002",
+        "mode": "mechanical",
+        "verdict": "fail",
+        "wouldBlock": [
+          "mechanical-test-adequacy"
+        ],
+        "gaps": [
+          "apps/operator/lib/psu-launcher.test.ts: the passing run is no longer current — binding 68598 stale (source-stale)"
+        ]
+      },
+      {
+        "spec": "GF-P002-source",
+        "mode": "judgment",
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "pass",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "pass",
+          "disclosed-gap": "fail"
+        },
+        "dragging": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28243,
+            28262,
+            28820,
+            45213,
+            45214,
+            68339,
+            68551,
+            68733,
+            68775,
+            68778,
+            68779
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28243,
+            28262,
+            28326,
+            28545,
+            28820,
+            45213,
+            45214,
+            68374,
+            68375,
+            68551,
+            68599
+          ],
+          "disclosed-gap": [
+            28820,
+            68339
+          ]
+        }
+      }
+    ]
+  },
+  "preserved": {
+    "nativeBindings": [
+      28326,
+      28545
+    ],
+    "originalCohort": "e99 original4/8",
+    "distinctSupplementalCohort": "f01c3/8",
+    "open": [
+      "P002",
+      "P006 native",
+      "R5 cold concurrent900ms",
+      "quality/requester decisions",
+      "independent acceptance",
+      "owner-gated shipment"
+    ],
+    "hostIncidentOpen": "EI-26837794414133856",
+    "recorderTerminal": "EI-26830659784013914"
+  },
+  "next": "Compare actual changed named launcher source before68598/68599 refresh; qualify remaining fixtures without narrowing old source pins. No HEAD-only tests, native/terminal-recorder replay or peer/gate monitoring.",
+  "sourceIntegrity": {
+    "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+    "sha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+    "restored": true
+  },
+  "cleanup": {
+    "root": "/tmp/pcv/papercusp-lint-as-committed-75d8997b4b-22uLgR",
+    "rootRemoved": true,
+    "retainerRemoved": true,
+    "privatePg": "Both maintained with-test-pg wrappers exited0 and recorded database shutdown; all original exec handles drained.",
+    "observedAt": "2026-10-24T08:43:49.546Z"
+  }
+}

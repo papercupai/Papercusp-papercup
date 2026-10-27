@@ -22,6 +22,7 @@ import {
   makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
   parseCodexRateLimitHeaders,
+  codexPlanRank,
   parseCodexRateReset,
   preflightCodexModel,
   jwtExpMs,
@@ -825,6 +826,18 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
     );
     expect(r.resetAt).toBe(NOW + 43_200_000);
     expect(r.transient).toBe(false);
+  });
+
+  it('parseCodexRateLimitHeaders reads x-codex-plan-type and codexPlanRank orders the tiers (WI-6554700010029499)', () => {
+    expect(parseCodexRateLimitHeaders({
+      'X-Codex-Plan-Type': ' Plus ', 'x-codex-primary-used-percent': '40', 'x-codex-primary-window-minutes': '300',
+    }, NOW)).toEqual(expect.objectContaining({ planType: 'plus', utilization: 0.4 }));
+    expect(parseCodexRateLimitHeaders({ 'x-codex-primary-used-percent': '40' }, NOW).planType).toBeUndefined();
+    expect(codexPlanRank('pro')!).toBeGreaterThan(codexPlanRank('plus')!);
+    expect(codexPlanRank('plus')!).toBeGreaterThan(codexPlanRank('free')!);
+    expect(codexPlanRank('PRO')).toBe(codexPlanRank('pro'));
+    expect(codexPlanRank('mystery-tier')).toBeNull();
+    expect(codexPlanRank(undefined)).toBeNull();
   });
 
   it('parseCodexRateLimitHeaders stamps the METER: premium for x-codex-*, base_model_inference for the reserve family, nothing for {} (EI-22103680502746318)', () => {

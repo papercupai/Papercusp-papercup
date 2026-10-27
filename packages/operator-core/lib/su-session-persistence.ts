@@ -8,7 +8,7 @@
  * without a process or a database.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import type { SuSessionBackend, SuSessionDescriptor, SuSessionLifecycleState } from '@papercusp/chat-protocol';
+import { isSuSessionExecutionKind, type SuSessionBackend, type SuSessionDescriptor, type SuSessionLifecycleState } from '@papercusp/chat-protocol';
 import { activeWorkspaceId } from './workspace-registry';
 
 export const SU_SESSION_LIFECYCLE_STATES: readonly SuSessionLifecycleState[] = [
@@ -29,6 +29,8 @@ export interface DurableSuSessionRecord {
   pid: number | null;
   endedAt: string | Date | null;
   descriptor: SuSessionDescriptor | null;
+  /** Actual launcher recorded by adv_sessions; evidence for legacy descriptors. */
+  terminalBin?: string | null;
   /**
    * The directory the session was launched in (`adv_sessions.cwd`) — for a PUI
    * launch, the directory `pui` was started in. PUI scopes `/resume` and its
@@ -83,6 +85,7 @@ export function isPersistedSuSessionDescriptor(value: unknown): value is SuSessi
       typeof identity.ownerId === 'string' && identity.ownerId.length > 0 &&
       typeof identity.workspaceId === 'string' && identity.workspaceId.length > 0 &&
       descriptor.role === 'su' && isLifecycle(descriptor.lifecycle) &&
+      (descriptor.executionKind === undefined || isSuSessionExecutionKind(descriptor.executionKind)) &&
       typeof descriptor.runtimeGeneration === 'number' &&
       Number.isSafeInteger(descriptor.runtimeGeneration) && descriptor.runtimeGeneration >= 0 &&
       descriptor.backendExtension && typeof descriptor.backendExtension === 'object',
@@ -107,6 +110,7 @@ function mapRow(row: Record<string, unknown>): DurableSuSessionRecord {
     pid: typeof row.pid === 'number' ? row.pid : row.pid == null ? null : Number(row.pid),
     endedAt: (row.ended_at as string | Date | null | undefined) ?? null,
     descriptor,
+    terminalBin: typeof row.terminal_bin === 'string' ? row.terminal_bin : null,
     cwd: typeof row.cwd === 'string' && row.cwd.trim() ? row.cwd : null,
   };
 }
@@ -115,7 +119,7 @@ const RECORD_COLUMNS = `
   id, workspace_id, agent, session_id, coord_owner_id,
   to_jsonb(a)->>'harness_slug' AS harness_slug,
   pid, ended_at, su_agent_chat_id, su_session_descriptor,
-  su_session_state, su_runtime_generation, cwd`;
+  su_session_state, su_runtime_generation, cwd, terminal_bin`;
 
 /** Read one binding by its stable adv-session id or agent-chat id. */
 export async function readDurableSuSession(input: {

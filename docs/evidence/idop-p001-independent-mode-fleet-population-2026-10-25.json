@@ -1,0 +1,8878 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-independent-mode-fleet-population",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "driverWorkItem": "WI-6554700010020777",
+  "capturedAt": "2026-10-25T19:32:48.569Z",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "observationDefault": "UNOBSERVED",
+  "purpose": "Enumerate the original registry axis product and preserve both implication debt and source-backed execution-fleet refusals. This is population preparation, never a launched-session catalog or grant.",
+  "source": {
+    "superprojectCommit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+    "submoduleCommit": "ae1c7af87b62f2e08eaa599f689c52035b25c379",
+    "modes": [
+      {
+        "id": "audit",
+        "axis": "overlay",
+        "slot": "audit",
+        "identity": "su.mode-audit",
+        "implies": [],
+        "requiresSubject": false
+      },
+      {
+        "id": "auto",
+        "axis": "autonomy",
+        "slot": "autonomy",
+        "identity": "su.mode-auto",
+        "implies": [],
+        "requiresSubject": false
+      },
+      {
+        "id": "cold-auto",
+        "axis": "autonomy",
+        "slot": "autonomy",
+        "identity": "su.mode-auto",
+        "implies": [],
+        "requiresSubject": false
+      },
+      {
+        "id": "drain",
+        "axis": "overlay",
+        "slot": "objective",
+        "identity": "su.mode-drain",
+        "implies": [
+          "auto"
+        ],
+        "requiresSubject": false
+      },
+      {
+        "id": "goal",
+        "axis": "overlay",
+        "slot": "goal",
+        "identity": "su.mode-goal",
+        "implies": [
+          "auto",
+          "ideate"
+        ],
+        "requiresSubject": true
+      },
+      {
+        "id": "grade",
+        "axis": "overlay",
+        "slot": "grade",
+        "identity": "su.mode-grade",
+        "implies": [
+          "auto"
+        ],
+        "requiresSubject": false
+      },
+      {
+        "id": "ideate",
+        "axis": "overlay",
+        "slot": "ideation",
+        "identity": "su.mode-ideate",
+        "implies": [],
+        "requiresSubject": false
+      },
+      {
+        "id": "test",
+        "axis": "overlay",
+        "slot": "test",
+        "identity": "su.mode-test",
+        "implies": [],
+        "requiresSubject": false
+      }
+    ],
+    "sources": [
+      {
+        "path": "packages/operator-core/lib/modes/registry.ts",
+        "commit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+        "sha256": "332023e7e6872588562ffc74d398a973d8ef645da8348647952643393ad1403c",
+        "currentSha256": "332023e7e6872588562ffc74d398a973d8ef645da8348647952643393ad1403c"
+      },
+      {
+        "path": "packages/operator-core/lib/modes/store.ts",
+        "commit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+        "sha256": "724e2c860b764d4b63a2977a88635c8d7ccecfbf7cf758b5e7c5dbd5e9e47e78",
+        "currentSha256": "724e2c860b764d4b63a2977a88635c8d7ccecfbf7cf758b5e7c5dbd5e9e47e78"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/join.ts",
+        "commit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+        "sha256": "44d70c05232ad2335bbc1dd678ae3580651cc1746194c5c889993982c11c0139",
+        "currentSha256": "44d70c05232ad2335bbc1dd678ae3580651cc1746194c5c889993982c11c0139"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/take-leadership-core.ts",
+        "commit": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+        "sha256": "3fd219395125002032ba05fe7a320359eadb6b72232d830eb1b39a8c7ca42ed0",
+        "currentSha256": "3fd219395125002032ba05fe7a320359eadb6b72232d830eb1b39a8c7ca42ed0"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/mode-catalog.generated.ts",
+        "commit": "ae1c7af87b62f2e08eaa599f689c52035b25c379",
+        "sha256": "67c6e567ccadd4b8d6a17556bdd1dfea6d0e77dac8294f80bbbce1e503e59364",
+        "currentSha256": "54df7d4673da25f59c2c08d8a2c9b18dc7d741d4d220169adf60b87f8da907fa"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts",
+        "commit": "ae1c7af87b62f2e08eaa599f689c52035b25c379",
+        "sha256": "ccbcf752c835d777f72cf535b22b076515fca31428f7a7c618572b0f1ce5f383",
+        "currentSha256": "ccbcf752c835d777f72cf535b22b076515fca31428f7a7c618572b0f1ce5f383"
+      }
+    ],
+    "currentReadAtCommit": "aeaedcb1e9eeb7f7c2589826a3f6c1258563449a",
+    "currentMetadataEqual": true
+  },
+  "exclusions": [
+    {
+      "mode": "goal",
+      "postures": [
+        "leader",
+        "member"
+      ],
+      "source": "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+    }
+  ],
+  "controls": {
+    "modeCount": 8,
+    "autonomyChoicesIncludingManual": 3,
+    "overlayChoices": 64,
+    "modeStateCount": 192,
+    "fleetPostures": [
+      "none",
+      "leader",
+      "member"
+    ],
+    "axisCandidateCount": 576,
+    "uniqueKeys": 576,
+    "implicationSatisfied": 312,
+    "requiresImplicationReconciliation": 264,
+    "sourceRefusedExecutionFleetCandidates": 192,
+    "implicationSatisfiedAndNotSourceRefused": 248,
+    "authenticatedLaunchObservations": 0,
+    "fullRowsSha256": "a9e0fc801221d3bdd75a7ffd4abeed4b1d4df1e27e479272a13d95d8ac997610"
+  },
+  "modeStates": [
+    {
+      "key": "su|manual",
+      "modes": [],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit",
+      "modes": [
+        "audit"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain",
+      "modes": [
+        "drain"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain",
+      "modes": [
+        "audit",
+        "drain"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal",
+      "modes": [
+        "goal"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal",
+      "modes": [
+        "audit",
+        "goal"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal",
+      "modes": [
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal",
+      "modes": [
+        "audit",
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|grade",
+      "modes": [
+        "grade"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+grade",
+      "modes": [
+        "audit",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+grade",
+      "modes": [
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+grade",
+      "modes": [
+        "audit",
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+grade",
+      "modes": [
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+grade",
+      "modes": [
+        "audit",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+grade",
+      "modes": [
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+grade",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|ideate",
+      "modes": [
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+ideate",
+      "modes": [
+        "audit",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+ideate",
+      "modes": [
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+ideate",
+      "modes": [
+        "audit",
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+ideate",
+      "modes": [
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+ideate",
+      "modes": [
+        "audit",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+ideate",
+      "modes": [
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+ideate",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|grade+ideate",
+      "modes": [
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+grade+ideate",
+      "modes": [
+        "audit",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+grade+ideate",
+      "modes": [
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+grade+ideate",
+      "modes": [
+        "audit",
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+grade+ideate",
+      "modes": [
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+grade+ideate",
+      "modes": [
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|test",
+      "modes": [
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+test",
+      "modes": [
+        "audit",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+test",
+      "modes": [
+        "drain",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+test",
+      "modes": [
+        "audit",
+        "drain",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+test",
+      "modes": [
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+test",
+      "modes": [
+        "audit",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+test",
+      "modes": [
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+test",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|grade+test",
+      "modes": [
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+grade+test",
+      "modes": [
+        "audit",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+grade+test",
+      "modes": [
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+grade+test",
+      "modes": [
+        "audit",
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+grade+test",
+      "modes": [
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+grade+test",
+      "modes": [
+        "audit",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+grade+test",
+      "modes": [
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+grade+test",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "auto",
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|ideate+test",
+      "modes": [
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+ideate+test",
+      "modes": [
+        "audit",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+ideate+test",
+      "modes": [
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+ideate+test",
+      "modes": [
+        "audit",
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+ideate+test",
+      "modes": [
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+ideate+test",
+      "modes": [
+        "audit",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+ideate+test",
+      "modes": [
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+ideate+test",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|grade+ideate+test",
+      "modes": [
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+grade+ideate+test",
+      "modes": [
+        "audit",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|drain+grade+ideate+test",
+      "modes": [
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+grade+ideate+test",
+      "modes": [
+        "audit",
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|goal+grade+ideate+test",
+      "modes": [
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|drain+goal+grade+ideate+test",
+      "modes": [
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+drain+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [
+        "auto"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto",
+      "modes": [
+        "auto"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto",
+      "modes": [
+        "audit",
+        "auto"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain",
+      "modes": [
+        "auto",
+        "drain"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain",
+      "modes": [
+        "audit",
+        "auto",
+        "drain"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal",
+      "modes": [
+        "auto",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal",
+      "modes": [
+        "audit",
+        "auto",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal",
+      "modes": [
+        "auto",
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+grade",
+      "modes": [
+        "auto",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+grade",
+      "modes": [
+        "audit",
+        "auto",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+grade",
+      "modes": [
+        "auto",
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+grade",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+grade",
+      "modes": [
+        "auto",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+grade",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+grade",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+grade",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+ideate",
+      "modes": [
+        "auto",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+ideate",
+      "modes": [
+        "auto",
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+ideate",
+      "modes": [
+        "auto",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+ideate",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+grade+ideate",
+      "modes": [
+        "auto",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+grade+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+grade+ideate",
+      "modes": [
+        "auto",
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+grade+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+grade+ideate",
+      "modes": [
+        "auto",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+grade+ideate",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+test",
+      "modes": [
+        "auto",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+test",
+      "modes": [
+        "audit",
+        "auto",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+test",
+      "modes": [
+        "auto",
+        "drain",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+test",
+      "modes": [
+        "auto",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+test",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+test",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+grade+test",
+      "modes": [
+        "auto",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+grade+test",
+      "modes": [
+        "audit",
+        "auto",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+grade+test",
+      "modes": [
+        "auto",
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+grade+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+grade+test",
+      "modes": [
+        "auto",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+grade+test",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+grade+test",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+grade+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+ideate+test",
+      "modes": [
+        "auto",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+ideate+test",
+      "modes": [
+        "auto",
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+ideate+test",
+      "modes": [
+        "auto",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+ideate+test",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+grade+ideate+test",
+      "modes": [
+        "auto",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+grade+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+grade+ideate+test",
+      "modes": [
+        "auto",
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+grade+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|auto+goal+grade+ideate+test",
+      "modes": [
+        "auto",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|auto+drain+goal+grade+ideate+test",
+      "modes": [
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+auto+drain+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto",
+      "modes": [
+        "cold-auto"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto",
+      "modes": [
+        "audit",
+        "cold-auto"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain",
+      "modes": [
+        "cold-auto",
+        "drain"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal",
+      "modes": [
+        "cold-auto",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+grade",
+      "modes": [
+        "cold-auto",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+grade",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+grade",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+grade",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "grade"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+grade",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+grade",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+grade",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+grade",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+ideate",
+      "modes": [
+        "cold-auto",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+ideate",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+ideate",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+ideate",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+grade+ideate",
+      "modes": [
+        "cold-auto",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+grade+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+grade+ideate",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+grade+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+grade+ideate",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+grade+ideate",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+grade+ideate",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+test",
+      "modes": [
+        "cold-auto",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+test",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+grade+test",
+      "modes": [
+        "cold-auto",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+grade+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+grade+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+grade+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+grade+test",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+grade+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+grade+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+grade+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "test"
+      ],
+      "missingImplications": [
+        "ideate"
+      ],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+ideate+test",
+      "modes": [
+        "cold-auto",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+ideate+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+ideate+test",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+ideate+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+grade+ideate+test",
+      "modes": [
+        "cold-auto",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+grade+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+grade+ideate+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+grade+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": []
+        },
+        {
+          "posture": "member",
+          "refusedBy": []
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+goal+grade+ideate+test",
+      "modes": [
+        "cold-auto",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|cold-auto+drain+goal+grade+ideate+test",
+      "modes": [
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "su|audit+cold-auto+drain+goal+grade+ideate+test",
+      "modes": [
+        "audit",
+        "cold-auto",
+        "drain",
+        "goal",
+        "grade",
+        "ideate",
+        "test"
+      ],
+      "missingImplications": [],
+      "requiredSubjects": [
+        "goal"
+      ],
+      "layers": [
+        {
+          "slot": "audit",
+          "id": "su.mode-audit"
+        },
+        {
+          "slot": "autonomy",
+          "id": "su.mode-auto"
+        },
+        {
+          "slot": "goal",
+          "id": "su.mode-goal"
+        },
+        {
+          "slot": "grade",
+          "id": "su.mode-grade"
+        },
+        {
+          "slot": "ideation",
+          "id": "su.mode-ideate"
+        },
+        {
+          "slot": "objective",
+          "id": "su.mode-drain"
+        },
+        {
+          "slot": "test",
+          "id": "su.mode-test"
+        }
+      ],
+      "postures": [
+        {
+          "posture": "none",
+          "refusedBy": []
+        },
+        {
+          "posture": "leader",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        },
+        {
+          "posture": "member",
+          "refusedBy": [
+            "packages/operator-core/lib/agent-tools/fleet_registry/join.ts#goalHolderSubject"
+          ]
+        }
+      ]
+    }
+  ],
+  "qualification": [
+    "The modeStates by fleetPostures product names every axis candidate without dropping refused or unresolved combinations.",
+    "Implication satisfaction is not a claim that an actual session is admitted, active, applied or tool-authorized. GOAL requires a concrete subject and existing admission/mission checks.",
+    "AUTO and COLD AUTO have the same authored identity but retain distinct registry/carry states. An occupied autonomy axis satisfies an implied AUTO per modes/store.ts.",
+    "The execution-fleet exclusion is tied to original join.ts and the shared take-leadership core; this artifact neither creates a fleet nor sets a mode.",
+    "The original generated catalog differs from current bytes; metadata comparison is separate and does not substitute current definitions for historical ones.",
+    "The original 89 role/identity/six-variation matrix remains unchanged. The six variations are a prior minimum, not the full cross-product.",
+    "No authenticated native catalog, schema/annotation partition, effective argument scope or historical vault observation is supplied by enumerating candidates."
+  ],
+  "remaining": [
+    "Actual applicable legal-stack admission and real native observation receipts remain OPEN.",
+    "Complete 54-role/29-identity catalogs, schema/annotation equality and effective handler argument scopes remain OPEN.",
+    "Four historical vault settings, genuine source confirmation, activation audit, canonical independent acceptance, P024 dependency, three milestones and verified shipment remain OPEN."
+  ]
+}

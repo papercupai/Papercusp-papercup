@@ -49,7 +49,7 @@ import { catalogEntry, buildKey, keyMatchesCatalog } from './events/await/catalo
 import { getSystemActionEntry } from './harness/routines/system-actions';
 import { planScheduleRoutineName } from './harness/routines/materialize-plan-schedule';
 import { checkPlanStartable } from './agent-tools/plans/plan-start-gate';
-import { probeCheckId } from './check-results-ledger';
+import { probeCheckId, runInstrumentChecks } from './check-results-ledger';
 import { parseRequirementBars } from './acceptance-bar-seed';
 import type { CheckedCriterion } from './rubrics-criterion-checks';
 import type { LatestRubricCheckResult, RubricCheckResult } from './check-results-ledger';
@@ -200,6 +200,28 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
       rubricRef: RUBRIC, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: 2,
     } }));
   });
+  it.each([
+    { pinned: undefined, supplied: 'scheduled-harness', expected: 'scheduled-harness' },
+    { pinned: 'rubric-harness', supplied: 'scheduled-harness', expected: 'rubric-harness' },
+    { pinned: undefined, supplied: null, expected: undefined },
+  ])('resolves scheduled instrument scope with pinned=$pinned and supplied=$supplied', async ({ pinned, supplied, expected }) => {
+    const criterion: CheckedCriterion = { key: 'reuse', check: { kind: 'instrument', instrumentKey: 'code-intel:reuse-search-before-write' } };
+    const { deps, record } = depsFor([criterion], [], []);
+    deps.getRubric = async () => ({ rubricId: RUBRIC, workspaceId: 'ws-test', subjectHarnessSlug: pinned, criteria: [criterion] });
+    const resolvePlatform = vi.fn(async () => ({ verdict: 'pass' as const, value: 100, detail: 'scoped raw population' }));
+    deps.runInstruments = input => runInstrumentChecks({ ...input, resolvePlatform });
+    await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: supplied }, deps);
+    const [results, scope] = record.mock.calls[0] as unknown as [RubricCheckResult[], { workspaceId: string; harnessSlug: string | null }];
+    if (expected) {
+      expect(resolvePlatform).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: expected }));
+      expect(results[0]).toMatchObject({ verdict: 'pass', check: { value: 100, unit: '%' } });
+    } else {
+      expect(resolvePlatform).not.toHaveBeenCalled();
+      expect(results[0]).toMatchObject({ verdict: 'error', check: { value: null } });
+    }
+    expect(scope).toEqual({ workspaceId: 'ws-test', harnessSlug: expected ?? null });
+  });
+
   it('the alert key is the catalogued family the standing watch subscribes to', () => {
     expect(rubricCriterionRegressedKey(RUBRIC)).toBe(WATCH_PATTERN);
     const entry = catalogEntry('rubric-criterion-regressed');

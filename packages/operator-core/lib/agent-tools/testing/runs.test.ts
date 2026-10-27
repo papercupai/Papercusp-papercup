@@ -1064,3 +1064,45 @@ describe('testing:runs foreground verdict on an empty exact runGroup', () => {
     expect(foregroundVerdictMock).not.toHaveBeenCalled();
   });
 });
+
+describe('testing:runs query diagnostics', () => {
+  it('publishes pending and completed SQL stages on invocation metadata', async () => {
+    let resolveFirstQuery!: (rows: unknown[]) => void;
+    const firstQuery = new Promise<unknown[]>((resolve) => {
+      resolveFirstQuery = resolve;
+    });
+    let queryCount = 0;
+    sqlMock.mockImplementation(() => {
+      queryCount++;
+      return queryCount === 1 ? firstQuery : Promise.resolve([]);
+    });
+    const metadataSnapshots: Array<Record<string, unknown>> = [];
+
+    const pendingHandler = runsTool.handler({} as never, {
+      metadata: (metadata: Record<string, unknown>) => metadataSnapshots.push(metadata),
+    } as never) as Promise<unknown>;
+
+    const diagnostics = () => metadataSnapshots
+      .map((metadata) => metadata.testingRunsDiagnostics as {
+        requestId: string;
+        stages: Array<{ stage: string; outcome: string }>;
+      } | undefined)
+      .filter((value): value is { requestId: string; stages: Array<{ stage: string; outcome: string }> } => Boolean(value));
+
+    expect(diagnostics().at(-1)).toMatchObject({
+      requestId: expect.any(String),
+      stages: [{ stage: 'testing-runs-latest-rows', outcome: 'pending' }],
+    });
+
+    resolveFirstQuery([]);
+    await pendingHandler;
+
+    expect(diagnostics().at(-1)).toMatchObject({
+      requestId: expect.any(String),
+      stages: [
+        { stage: 'testing-runs-latest-rows', outcome: 'fulfilled' },
+        { stage: 'testing-runs-source-omissions', outcome: 'fulfilled' },
+      ],
+    });
+  });
+});

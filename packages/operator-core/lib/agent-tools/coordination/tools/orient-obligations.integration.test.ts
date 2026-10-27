@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
+import * as dbOrg from '@papercusp/db-org';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { assertFact } from '../../../agent-facts/store';
 import { runWithWorkspace } from '../../../workspace-als';
@@ -91,7 +94,11 @@ afterAll(async () => {
   await fx.dispose();
 });
 
-async function readOrientation(overrides: Record<string, unknown> = {}, ownerId = OWNER) {
+async function readOrientation(
+  overrides: Record<string, unknown> = {},
+  ownerId = OWNER,
+  phases?: ReturnType<typeof createPhaseTracker>,
+) {
   const result = await runWithWorkspace(WS, () => orientTool.handler(
     {
       mode: 'monitor',
@@ -113,6 +120,7 @@ async function readOrientation(overrides: Record<string, unknown> = {}, ownerId 
       metadata: vi.fn(),
       log: vi.fn(),
       progress: vi.fn(),
+      phases,
     } as never,
   ));
   return (result as { data: {
@@ -392,7 +400,17 @@ describe('complete agenda recovery through coord:orient', () => {
     type Arm = 'shared-portfolio' | 'independent-portfolio';
     let arm: Arm = 'shared-portfolio';
     const guardOnly = process.env.PAPERCUSP_R5_ORIENT_GUARD_ONLY === '1';
-    const windowCount = guardOnly ? 0 : 10;
+    const coldDiagnostic = process.env.PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC === '1' && !guardOnly;
+    const warmDiagnostic = process.env.PAPERCUSP_R5_ORIENT_WARM_DIAGNOSTIC === '1' && !guardOnly;
+    if (coldDiagnostic && warmDiagnostic) throw new Error('Select only one R-5 diagnostic phase');
+    const diagnosticMode = coldDiagnostic ? 'cold-concurrent' : warmDiagnostic ? 'warm-concurrent' : null;
+    const windowCount = guardOnly ? 0 : diagnosticMode ? 1 : 10;
+    if (coldDiagnostic && !process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
+      throw new Error('PAPERCUSP_R5_ORIENT_COLD_DIAGNOSTIC requires PAPERCUSP_R5_ORIENT_PHASE_REPORT');
+    }
+    if (warmDiagnostic && !process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
+      throw new Error('PAPERCUSP_R5_ORIENT_WARM_DIAGNOSTIC requires PAPERCUSP_R5_ORIENT_PHASE_REPORT');
+    }
     // Only the supported observation clock is fixed. Every provider and store
     // remains real PostgreSQL; expected values below come from the seed contract.
     vi.spyOn(obligationReader, 'readAgentObligationAgenda')
@@ -420,13 +438,17 @@ describe('complete agenda recovery through coord:orient', () => {
       'packages/operator-core/lib/plan-acceptance-gate.ts',
       'packages/operator-core/lib/cache/cached-read.ts',
       'packages/operator-core/lib/cache/l2-tier.ts',
+      'packages/operator-core/lib/goals/holder.ts',
+      'packages/operator-core/lib/goals/holder-authority.ts',
+      'packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts',
+      'packages/operator-core/lib/_baseline-coord-fixture.ts',
     ];
     const hashes = () => sources.map(path => ({ path,
       sha256: createHash('sha256').update(readFileSync(resolve(__dirname, '../../../../../..', path))).digest('hex'),
     }));
     const snapshots: unknown[] = [];
     const windows: Array<{ window: number; arm: Arm; samples: Array<{ phase: string; ms: number }>; complete: boolean }> = [];
-    const report: Record<string, unknown> = { schemaVersion: 3, incomplete: true,
+    const report: Record<string, unknown> = { schemaVersion: 4, incomplete: true,
       sourceStart: hashes(), snapshots,
       startedAt: new Date().toISOString(), phaseProgress: [],
       buildIdentity: { pid: process.pid, parentPid: process.ppid, nodeVersion: process.version,
@@ -437,14 +459,154 @@ describe('complete agenda recovery through coord:orient', () => {
         ledgerHarness: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
         qualification: 'Named source hashes below identify the read files; repository HEAD alone does not identify dirty bytes or the full loaded import graph.',
       },
-      windows, mode: guardOnly ? 'guard-only' : 'guard-and-performance',
+      windows, mode: guardOnly ? 'guard-only' : diagnosticMode ? diagnosticMode + '-diagnostic' : 'guard-and-performance',
       workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
-        windows: windowCount, warmReads: 20, concurrency: 8 },
+        windows: windowCount, warmReads: coldDiagnostic ? 0 : 20, concurrency: 8 },
+      ...(diagnosticMode ? { diagnosticSelection: {
+        phase: diagnosticMode, arms: ['shared-portfolio'], windows: 1,
+        warmReads: warmDiagnostic ? 20 : 0, concurrency: 8, proofSettlementWaitMs: 15_000,
+      } } : {}),
       scope: 'Production orient handler with real GOAL providers, plan/queue sources and fact store. Orientation only; no whole R-5 or shipment claim.',
       baselineDefinition: 'Current production reader performs its own portfolio read instead of sharing orient\'s promise. This is a source-read counterfactual, not a historical checkout.',
       coldDefinition: 'Reset the operator L1 and clear this fixture workspace from durable L2. PostgreSQL buffers, connections, imports and independent source caches remain warm.',
-      limitations: ['Named hashes are not the complete imported graph.', 'The initial process read is recorded separately, not erased by warmup.', 'No HTTP transport, deployed-runtime or historical-source claim.'],
+      limitations: ['Named hashes are not the complete imported graph.', 'The initial process read is recorded separately, not erased by warmup.', 'No HTTP transport, deployed-runtime or historical-source claim.',
+        ...(diagnosticMode ? ['Selected ' + diagnosticMode + ' diagnostic window only; not full R-5 proof.'] : [])],
     };
+    // Observe the existing SQL argument seam using the SAME production pool.
+    // No query parameters, alternate clients, deadlines or provider values change.
+    // Timing includes pool wait and driver/result work; it is not server EXPLAIN.
+    const portfolioReads: Array<Record<string, unknown>> = [];
+    const modeProofReads: Array<Record<string, unknown>> = [];
+    const diagnosticWarnings: Array<Record<string, unknown>> = [];
+    const diagnosticOrigin = performance.now();
+    if (diagnosticMode) {
+      report.modeProofReads = modeProofReads;
+      report.diagnosticWarnings = diagnosticWarnings;
+      const realGetOrgPg = getOrgPg;
+      vi.spyOn(dbOrg, 'getOrgPg').mockImplementation(() => {
+        const handle = realGetOrgPg();
+        const originalSql = handle.sql as unknown as (...args: unknown[]) => unknown;
+        const tracedSql = new Proxy(originalSql, {
+          apply(target, thisArg, args: unknown[]) {
+            const query = Reflect.apply(target, thisArg, args);
+            const source = Array.isArray(args[0]) ? args[0].join(' ') : '';
+            if (!source.includes('session_identity_activation_events') || !query ||
+              (typeof query !== 'object' && typeof query !== 'function')) return query;
+            const observation: Record<string, unknown> = {
+              kind: 'mode-context-proof',
+              phase: report.currentPhase ?? 'setup',
+              createdAfterMs: performance.now() - diagnosticOrigin,
+              startedAfterMs: null,
+              settledAfterMs: null,
+              elapsedMs: null,
+              outcome: null,
+            };
+            modeProofReads.push(observation);
+            return new Proxy(query as object, {
+              get(pending, property) {
+                const value = Reflect.get(pending, property, pending);
+                if (property !== 'then' || typeof value !== 'function') {
+                  return typeof value === 'function' ? value.bind(pending) : value;
+                }
+                return (fulfilled?: (result: unknown) => unknown, rejected?: (error: unknown) => unknown) => {
+                  if (observation.startedAfterMs === null) {
+                    observation.startedAfterMs = performance.now() - diagnosticOrigin;
+                  }
+                  return value.call(pending,
+                    (result: unknown) => {
+                      observation.settledAfterMs = performance.now() - diagnosticOrigin;
+                      observation.elapsedMs = Number(observation.settledAfterMs) - Number(observation.startedAfterMs);
+                      observation.outcome = 'resolved';
+                      return fulfilled ? fulfilled(result) : result;
+                    },
+                    (error: unknown) => {
+                      observation.settledAfterMs = performance.now() - diagnosticOrigin;
+                      observation.elapsedMs = Number(observation.settledAfterMs) - Number(observation.startedAfterMs);
+                      observation.outcome = 'rejected';
+                      observation.error = error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200);
+                      if (rejected) return rejected(error);
+                      throw error;
+                    });
+                };
+              },
+            });
+          },
+        });
+        return { ...handle, sql: tracedSql } as ReturnType<typeof getOrgPg>;
+      });
+      vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        diagnosticWarnings.push({
+          phase: report.currentPhase ?? 'setup',
+          afterMs: performance.now() - diagnosticOrigin,
+          text: args.map(String).join(' ').slice(0, 500),
+        });
+      });
+    }
+    if (process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
+      report.portfolioReads = portfolioReads;
+      const origin = performance.now();
+      type PortfolioArgs = Parameters<typeof goalSettings.readGoalPortfolioBrief>[0];
+      const tracedArgs = (args: PortfolioArgs, kind: string) => {
+        const started = performance.now();
+        const queries: Array<Record<string, unknown>> = [];
+        const observation = { kind, arm, phase: report.currentPhase, startMs: started - origin,
+          queries, elapsedMs: null as number | null, error: null as string | null };
+        portfolioReads.push(observation);
+        const sql = new Proxy(args.sql ?? getOrgPg().sql, {
+          apply(target, thisArg, values) {
+            const query = Reflect.apply(target, thisArg, values);
+            if (!query || typeof query.then !== 'function') return query;
+            // Query objects are lazy and may be nested fragments. Start observing
+            // only when consumed; returning the original object to other methods
+            // preserves postgres's fragment and query-builder behavior.
+            return new Proxy(query, {
+              get(pending, property) {
+                if (property !== 'then') {
+                  const value = Reflect.get(pending, property, pending);
+                  return typeof value === 'function' ? value.bind(pending) : value;
+                }
+                return (fulfilled?: (value: unknown) => unknown, rejected?: (error: unknown) => unknown) => {
+                  const begin = performance.now();
+                  const timing = { statement: Array.isArray(values[0])
+                    ? values[0].join('?').replace(/\s+/g, ' ').trim().slice(0, 240) : 'non-template query',
+                  startMs: begin - started, elapsedMs: null as number | null, error: null as string | null };
+                  queries.push(timing);
+                  return pending.then((value: unknown) => {
+                    timing.elapsedMs = performance.now() - begin;
+                    return fulfilled ? fulfilled(value) : value;
+                  }, (error: unknown) => {
+                    timing.elapsedMs = performance.now() - begin;
+                    timing.error = String(error);
+                    if (rejected) return rejected(error);
+                    throw error;
+                  });
+                };
+              },
+            });
+          },
+        });
+        const finish = (error?: unknown) => {
+          observation.elapsedMs = performance.now() - started;
+          if (error) observation.error = String(error);
+        };
+        return { args: { ...args, sql }, finish };
+      };
+      const realStaged = goalSettings.readGoalPortfolioBriefStaged;
+      vi.spyOn(goalSettings, 'readGoalPortfolioBriefStaged').mockImplementation(args => {
+        const traced = tracedArgs(args, 'staged-snapshot');
+        const result = realStaged(traced.args);
+        return { ...result, snapshot: result.snapshot.then(value => {
+          traced.finish(); return value;
+        }, error => { traced.finish(error); throw error; }) };
+      });
+      const realBrief = goalSettings.readGoalPortfolioBrief;
+      vi.spyOn(goalSettings, 'readGoalPortfolioBrief').mockImplementation(async args => {
+        const traced = tracedArgs(args, 'independent-snapshot');
+        try { return await realBrief(traced.args); }
+        catch (error) { traced.finish(error); throw error; }
+        finally { traced.finish(); }
+      });
+    }
     const publish = () => {
       if (process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
         writeFileSync(process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT, JSON.stringify(report, null, 2) + '\n');
@@ -510,7 +672,8 @@ describe('complete agenda recovery through coord:orient', () => {
     const read = async (phase: string, changed = false, paused = false, record = true) => {
       if (record) progress(`read-start:${phase}`);
       const start = performance.now();
-      const data = await readOrientation({ mode: 'full' });
+      const phases = diagnosticMode ? createPhaseTracker({ historyCap: 128 }) : undefined;
+      const data = await readOrientation({ mode: 'full' }, OWNER, phases);
       const ms = performance.now() - start;
       // Harness-scoped facts are shared by every run of this file: a run killed before its
       // `finally` leaves a 1h-TTL harness fact behind. Compare only this run's marker; the
@@ -520,10 +683,11 @@ describe('complete agenda recovery through coord:orient', () => {
         .sort((a, b) => a.body.localeCompare(b.body));
       const states = data.obligations?.evaluations.map(row => ({ ruleId: row.ruleId, status: row.status }))
         .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
-      if (record) {
+      if (record || diagnosticMode) {
         snapshots.push({ phase, arm, ms, facts, states, obligations: data.obligations,
+          ...(phases ? { handlerPhases: phases.toMetadata() } : {}),
           worklist: data.goalPortfolio?.worklist, queue: data.goalPortfolio?.queue });
-        publish();
+        if (record) publish();
       }
       expect(data.factsNarrowed).toBeUndefined();
       expect(facts).toEqual(expectedFacts(changed));
@@ -633,29 +797,76 @@ describe('complete agenda recovery through coord:orient', () => {
         await getL2Store().clearWorkspace(WS);
       };
       for (let window = 0; window < windowCount; window++) {
-        const arms: Arm[] = window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
+        const arms: Arm[] = diagnosticMode ? ['shared-portfolio'] :
+          window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
         for (const nextArm of arms) {
           arm = nextArm;
           progress(`matrix-window:${window}:${arm}`);
           const row = { window, arm, samples: [] as Array<{ phase: string; ms: number }>, complete: false };
           windows.push(row); publish();
-          await cold();
-          row.samples.push({ phase: 'cold', ms: await read('cold', true, false, false) });
-          for (let i = 0; i < 20; i++) row.samples.push({ phase: 'warm', ms: await read('warm', true, false, false) });
-          row.samples.push(...await Promise.all(Array.from({ length: 8 }, async () => ({ phase: 'warm-concurrent', ms: await read('warm-concurrent', true, false, false) }))));
-          await cold();
-          row.samples.push(...await Promise.all(Array.from({ length: 8 }, async () => ({ phase: 'cold-concurrent', ms: await read('cold-concurrent', true, false, false) }))));
+          if (!coldDiagnostic) {
+            await cold();
+            row.samples.push({ phase: 'cold', ms: await read('cold', true, false, false) });
+            for (let i = 0; i < 20; i++) row.samples.push({ phase: 'warm', ms: await read('warm', true, false, false) });
+            progress('warm-concurrent:' + window + ':' + arm);
+            const warmConcurrent = await Promise.allSettled(Array.from({ length: 8 }, async () => ({
+              phase: 'warm-concurrent', ms: await read('warm-concurrent', true, false, false),
+            })));
+            for (const result of warmConcurrent) {
+              if (result.status === 'fulfilled') row.samples.push(result.value);
+            }
+            const warmFailure = warmConcurrent.find(result => result.status === 'rejected');
+            if (warmFailure?.status === 'rejected') throw warmFailure.reason;
+          }
+          if (!warmDiagnostic) {
+            await cold();
+            progress('cold-concurrent:' + window + ':' + arm);
+            // Drain every diagnostic request before reporting a failure so its
+            // sibling SQL timings survive too. Each read retains the exact oracle.
+            const concurrent = await Promise.allSettled(Array.from({ length: 8 }, async () => ({
+              phase: 'cold-concurrent', ms: await read('cold-concurrent', true, false, false),
+            })));
+            for (const result of concurrent) {
+              if (result.status === 'fulfilled') row.samples.push(result.value);
+            }
+            const failure = concurrent.find(result => result.status === 'rejected');
+            if (failure?.status === 'rejected') throw failure.reason;
+          }
           row.complete = true; publish();
         }
       }
-      const summary = guardOnly ? [] : (['shared-portfolio', 'independent-portfolio'] as Arm[]).map(value => ({ arm: value,
-        phases: Object.fromEntries(['cold', 'warm', 'warm-concurrent', 'cold-concurrent'].map(phase => {
+      if (diagnosticMode) {
+        const selectedPhase = diagnosticMode + ':0:shared-portfolio';
+        const sampleProofReads = modeProofReads.filter(row => row.phase === selectedPhase);
+        const waitStarted = performance.now();
+        const waitCapMs = 15_000;
+        while (sampleProofReads.length < 8 ||
+          sampleProofReads.some(row => typeof row.settledAfterMs !== 'number')) {
+          if (performance.now() - waitStarted >= waitCapMs) break;
+          await new Promise(resolveWait => setTimeout(resolveWait, 50));
+        }
+        report.modeProofReads = sampleProofReads;
+        report.modeProofSettlement = {
+          expected: 8,
+          captured: sampleProofReads.length,
+          settled: sampleProofReads.filter(row => typeof row.settledAfterMs === 'number').length,
+          waitMs: performance.now() - waitStarted,
+          waitCapMs,
+        };
+        publish();
+        expect(sampleProofReads).toHaveLength(8);
+      }
+      const summaryArms: Arm[] = diagnosticMode ? ['shared-portfolio'] : ['shared-portfolio', 'independent-portfolio'];
+      const summary = guardOnly ? [] : summaryArms.map(value => ({ arm: value,
+        phases: Object.fromEntries((diagnosticMode ? [diagnosticMode] : ['cold', 'warm', 'warm-concurrent', 'cold-concurrent']).map(phase => {
           const times = windows.filter(row => row.arm === value).flatMap(row => row.samples).filter(s => s.phase === phase).map(s => s.ms).sort((a, b) => a - b);
           return [phase, { reads: times.length, p95Ms: times[Math.ceil(times.length * .95) - 1], maxMs: times.at(-1) }];
         })),
       }));
       report.summary = summary;
-      if (!guardOnly) for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      if (!guardOnly && !diagnosticMode) {
+        for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      }
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
       arm = 'shared-portfolio';
       await read('final-fact-write-guard');

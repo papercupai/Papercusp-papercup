@@ -13,7 +13,10 @@ import {
   describeUnrealized,
   describeExemptMapping,
   describeDroppedTarget,
+  partitionPendingDeliveryUnrealized,
+  pendingDeliveryOwnedItemIds,
   type RequirementRealizationInput,
+  type UnrealizedRequirement,
 } from './plan-requirement-realization';
 import type {
   ActivationAuditMapping,
@@ -518,5 +521,67 @@ describe('judgeRequirementRealization', () => {
       expect(line).toContain('dropped');
       expect(line).toContain('still vouched by a pre-drop verifying citation');
     });
+  });
+});
+
+// WI-6554700010030192: review-only pending-delivery must reach grading when the final
+// delivery item owns only the selected deployed/live bar, without ever letting a
+// pending bar vouch for proof that could exist now.
+describe('pending-delivery review deferral (WI-6554700010030192)', () => {
+  type Snapshot = Parameters<typeof pendingDeliveryOwnedItemIds>[0]['snapshot'];
+  const bar = (barKey: string, items: Array<[string, string?]>, role = 'outcome') => ({
+    barKey, role,
+    mappings: items.map(([planItemId, lifecycleStatus]) => ({ planItemId, ...(lifecycleStatus ? { lifecycleStatus } : {}) })),
+  });
+  const snapshot = (...bars: ReturnType<typeof bar>[]) => ({ bars }) as unknown as Snapshot;
+  const entry = (planTarget: string, reason: UnrealizedRequirement['reason'] = 'no-verifying-citation'): UnrealizedRequirement => ({
+    mappingId: `M-${planTarget}`, requirement: 'r', disposition: 'covered', planTarget, reason, targetDropped: false,
+  });
+
+  it('names a done not-code item whose only outcome bar is a selected pending-delivery bar', () => {
+    const ids = pendingDeliveryOwnedItemIds({
+      snapshot: snapshot(bar('R-6', [['P-006']]), bar('R-7', [['P-007']])),
+      pendingBarKeys: ['R-7'], doneNonCodeItemIds: new Set(['P-006', 'P-007']),
+    });
+    expect([...ids]).toEqual(['P-007']);
+  });
+
+  it('excludes an item that also owns a non-pending outcome bar — a pending sibling cannot vouch for it', () => {
+    const ids = pendingDeliveryOwnedItemIds({
+      snapshot: snapshot(bar('R-6', [['P-007']]), bar('R-7', [['P-007']])),
+      pendingBarKeys: ['R-7'], doneNonCodeItemIds: new Set(['P-007']),
+    });
+    expect(ids.size).toBe(0);
+  });
+
+  it('excludes an item that is not a done not-code item', () => {
+    const ids = pendingDeliveryOwnedItemIds({
+      snapshot: snapshot(bar('R-7', [['P-007']])), pendingBarKeys: ['R-7'], doneNonCodeItemIds: new Set(),
+    });
+    expect(ids.size).toBe(0);
+  });
+
+  it('ignores non-outcome bars and non-enforceable mappings when deciding ownership', () => {
+    const ids = pendingDeliveryOwnedItemIds({
+      snapshot: snapshot(bar('R-7', [['P-007']]), bar('R-1', [['P-007']], 'process'), bar('R-6', [['P-007', 'superseded']])),
+      pendingBarKeys: ['R-7'], doneNonCodeItemIds: new Set(['P-007']),
+    });
+    expect([...ids]).toEqual(['P-007']);
+  });
+
+  it('defers only no-verifying-citation entries on pending-owned targets; everything else still refuses', () => {
+    const split = partitionPendingDeliveryUnrealized(
+      [entry('P-007'), entry('P-007', 'no-item-audit'), entry('P-006'), entry('P-009', 'target-not-in-plan')],
+      new Set(['P-007']),
+    );
+    expect(split.pendingDelivery.map((e) => `${e.planTarget}:${e.reason}`)).toEqual(['P-007:no-verifying-citation']);
+    expect(split.blocking.map((e) => `${e.planTarget}:${e.reason}`))
+      .toEqual(['P-007:no-item-audit', 'P-006:no-verifying-citation', 'P-009:target-not-in-plan']);
+  });
+
+  it('with no pending-owned items, every unrealized entry stays blocking', () => {
+    const split = partitionPendingDeliveryUnrealized([entry('P-007')], new Set());
+    expect(split.blocking).toHaveLength(1);
+    expect(split.pendingDelivery).toHaveLength(0);
   });
 });

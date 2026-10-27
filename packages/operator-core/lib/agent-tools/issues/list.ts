@@ -60,6 +60,7 @@ import {
   type PopulationMeta,
 } from '../../population-census';
 
+import { ISSUE_FAMILY_ROUTE_KINDS, type IssueFamilyRouteKind } from '../../work-nature/agent-work-predicate';
 const DEFAULT_LIMIT = 30;
 
 /**
@@ -183,7 +184,7 @@ export default defineTool({
       .optional()
       .describe('Issue scope — a bare harness slug ("papercusp") is normalised to "harness:papercusp"; "operator" is also valid.'),
     kinds: z
-      .array(z.enum(['bug', 'change', 'task']))
+      .array(z.enum(ISSUE_FAMILY_ROUTE_KINDS))
       .min(1)
       .optional()
       .describe('Kinds to include. Default bug+change; pass explicitly to include `task`.'),
@@ -218,7 +219,7 @@ export default defineTool({
   async handler(args: {
     state?: string;
     scope?: string;
-    kinds?: Array<'bug' | 'change' | 'task'>;
+    kinds?: Array<IssueFamilyRouteKind>;
     severity?: string;
     assignee?: string;
     lane?: string;

@@ -32,16 +32,22 @@ edit tools), a `hookSpecificOutput` decision on stdout. All are **fail-open**
 | `posttooluse-locks-release.sh`        | PostToolUse  | Release the lock for that `tool_use_id`. |
 | `posttooluse-activity-report.sh`      | PostToolUse  | **Activity bridge** — mirror every native tool call into `harness_shared.agent_activity` → the pui fleet view + curator (papercusp-worker-integration-2026-06-04). ALSO folds in NEW `coord:inbox` messages mid-turn on the same round trip, delta-aware via a `hook_bundle` cursor (EI-11405 — the separate `posttooluse-coord-inbox.sh` this used to pair with is retired). Synchronous by default (`PAPERCUSP_COORD_FOLD=1`); `PAPERCUSP_COORD_FOLD=0` (Codex ROLE sessions only, no coordSid) reverts to the original detached, zero-added-latency, no-fold report path. |
 | `pretooluse-bash-resource-gate.sh`    | PreToolUse   | Refuse a destructive Bash command that collides with an EXCLUSIVE hold on a registered named resource. Also the native-scheduler lockout, the shared-tree git guard, heavy-command admission, and (Claude `Bash` only) the **long-foreground-exec soft advisory** — foreground `timeout > 120s` gets `additionalContext` nudging `run_in_background` (coord-delivery P-003; never a deny, never for codex shells). |
-| `userpromptsubmit-provenance.sh`      | UserPromptSubmit | **Turn provenance** (turn-provenance-owner-vs-agent-2026-07-11): classify every submitted prompt against the injectors' `⟦turn-origin:… nonce:…⟧` envelope + short-TTL JSONL ledger (`~/.papercusp/turn-provenance/`) → `additionalContext` stamp: VERIFIED agent-origin / UNVERIFIED origin claim / affirmative OWNER (interactive). The LEDGER decides, never the text (D-002). Local-file-only hot path, fail-open, never blocks a prompt. **Claude-only** — codex has no prompt-submit event (Layer-1 envelope only there); lockstep mirror of `packages/operator-core/lib/turn-provenance/turn-provenance.ts`. |
+| `userpromptsubmit-provenance.sh`      | UserPromptSubmit | **Turn provenance** (turn-provenance-owner-vs-agent-2026-07-11): classify every submitted prompt against the injectors' `⟦turn-origin:… nonce:…⟧` envelope + short-TTL JSONL ledger (`~/.papercusp/turn-provenance/`) → `additionalContext` stamp: VERIFIED agent-origin / UNVERIFIED origin claim / affirmative OWNER (interactive). The LEDGER decides, never the text (D-002). Local-file-only hot path, fail-open, never blocks a prompt. **Claude-only** — Codex also supports `UserPromptSubmit`, but the active Codex hook routes through the shared injector (`index.mjs --client=codex --event=UserPromptSubmit`); Codex turn provenance still relies on the Layer-1 envelope. Lockstep mirror of `packages/operator-core/lib/turn-provenance/turn-provenance.ts`. |
 
-**Codex env caveat (D-006):** Codex hands hooks a **minimal env**, so the Codex
-`hooks.json` **bakes** `PAPERCUSP_LOCK_SID`/`PAPERCUSP_SID` (+
-`PAPERCUSP_AGENT=codex`) into the
-command; Claude reads them from the inherited session env, so its
-`settings.json` entry is just the script path. Current Codex supports
-PreToolUse/PostToolUse matchers for `Bash`, `apply_patch` (plus `Edit`/`Write`
-aliases), and MCP tools; missing hook scripts still degrade fail-open, so
-diagnostics tell agents when explicit `locks:*` calls are required.
+**Codex hook environment (D-006):** In Codex CLI 0.163.0, command hooks receive
+the session environment snapshot plus per-hook overrides, with a restricted
+set of variables filtered out; the runtime does not generally supply a minimal
+environment. The active `UserPromptSubmit` command explicitly sets
+`PAPERCUSP_SID` and `PAPERCUSP_AGENT=codex`; lock hooks also set
+`PAPERCUSP_LOCK_SID`. The shared injector reads `PAPERCUSP_OPERATOR_URL` from
+that session environment and resolves its loopback proxy fallback from
+`PAPERCUSP_MCP_PROXY_PORT` (default `9071`), so the URL need not appear in
+`hooks.json`. Claude reads its identity from the inherited session environment,
+so its `settings.json` entry is just the script path. Current Codex supports
+`UserPromptSubmit` as well as PreToolUse/PostToolUse matchers for `Bash`,
+`apply_patch` (plus `Edit`/`Write` aliases), and MCP tools; missing hook scripts
+still degrade fail-open, so diagnostics tell agents when explicit `locks:*`
+calls are required.
 
 The edit hook coordinates canonical-tree files and managed suite-app checkouts
 (`~/.papercusp-workspaces/<workspace>/.papercusp/apps/<app>`) by repo-relative

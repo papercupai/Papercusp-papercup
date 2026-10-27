@@ -32,6 +32,11 @@ import {
 } from '../../acceptance-author-identity';
 
 const readRunningGenerationM = vi.hoisted(() => vi.fn());
+const deferredSpendM = vi.hoisted(() => vi.fn());
+vi.mock('../../workspace-host/deferred-spend-acceptance-instruments', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../workspace-host/deferred-spend-acceptance-instruments')>(),
+  measureDeferredSpendAcceptance: (...args: unknown[]) => deferredSpendM(...args),
+}));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -1781,6 +1786,71 @@ describe('evaluateScorecard', () => {
       unknownReason: 'not-assessed' as const, nextEvidenceAction: 'After approval and publication, download into a fresh HOME and run the installed journey.' },
   };
 
+  it('returns the evaluated rubric identity and refuses an emit after that definition changes', async () => {
+    const reviewedRubric = {
+      ...RUBRIC,
+      revision: 7,
+      criteriaHash: 'a'.repeat(64),
+      barContract: { meaningRevision: 3 },
+    } as Rubric;
+    getRubricM.mockResolvedValue(reviewedRubric);
+
+    const skeleton = await evaluateScorecard({ rubricRef: 'test-rubric' });
+    expect(skeleton).toMatchObject({
+      ok: true,
+      rubricRevision: 7,
+      criteriaHash: 'a'.repeat(64),
+      rubricMeaningRevision: 3,
+    });
+
+    const evaluated = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
+    expect(evaluated).toMatchObject({
+      ok: true,
+      rubricRevision: 7,
+      criteriaHash: 'a'.repeat(64),
+      rubricMeaningRevision: 3,
+    });
+    if (!evaluated.ok) throw new Error('test rubric should evaluate successfully');
+
+    getRubricM.mockResolvedValue({
+      ...reviewedRubric,
+      revision: 8,
+      criteriaHash: 'b'.repeat(64),
+      barContract: { meaningRevision: 4 },
+    } as Rubric);
+    getRubricPlanRevisionM.mockResolvedValue(8);
+    getRubricCriteriaHashM.mockResolvedValue('b'.repeat(64));
+
+    const emitted = await emitScorecard(scorecardEmitArgs.parse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rubricRevision: evaluated.rubricRevision,
+      criteriaHash: evaluated.criteriaHash,
+      rubricMeaningRevision: evaluated.rubricMeaningRevision,
+    }), { createdBy: 'su-grader' });
+
+    expect(emitted).toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    expect(captureM).not.toHaveBeenCalled();
+
+    getRubricM.mockResolvedValue(reviewedRubric);
+    getRubricPlanRevisionM.mockResolvedValue(7);
+    getRubricCriteriaHashM.mockResolvedValue('a'.repeat(64));
+    getRubricM.mockResolvedValueOnce(reviewedRubric);
+    getRubricM.mockResolvedValueOnce({
+      ...reviewedRubric,
+      barContract: { meaningRevision: 4 },
+    } as Rubric);
+    const changedDuringEmit = await emitScorecard(scorecardEmitArgs.parse({
+      rubricRef: 'test-rubric',
+      ratings: RATINGS,
+      rubricRevision: evaluated.rubricRevision,
+      criteriaHash: evaluated.criteriaHash,
+      rubricMeaningRevision: evaluated.rubricMeaningRevision,
+    }), { createdBy: 'su-grader' });
+    expect(changedDuringEmit).toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('preflights and files an independent unknown review for an explicitly pending manual delivery BAR', async () => {
     getRubricM.mockResolvedValue(deliveryRubric());
     listM.mockResolvedValue([vettingCard(['su-critic'])]);
@@ -2146,6 +2216,148 @@ describe('evaluateScorecard', () => {
   });
 });
 
+describe('eligibility-only acceptance preflight (EI-27075741789891557)', () => {
+  const args = { rubricRef: 'acceptance-rubric', eligibilityOnly: true };
+
+  beforeEach(() => {
+    getRubricM.mockResolvedValue({
+      ...BAR_ACCEPTANCE_RUBRIC,
+      revision: 8,
+      criteriaHash: 'criteria:identity-only',
+      barContract: { ...BAR_ACCEPTANCE_RUBRIC.barContract!, meaningRevision: 3 },
+    });
+    readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 8 });
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({
+      satisfied: false,
+      message: 'acceptance BAR snapshot is stale and product proof is missing',
+    });
+  });
+
+  it('answers eligible identity before an unready BAR without returning grading data', async () => {
+    expect(scorecardEvaluateArgs.safeParse(args).success).toBe(true);
+    const result = await evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' });
+
+    expect(result).toMatchObject({
+      ok: true,
+      eligibilityOnly: true,
+      rubricRef: 'acceptance-rubric',
+      rubricRevision: 8,
+      criteriaHash: 'criteria:identity-only',
+      rubricMeaningRevision: 3,
+      graderEligibility: {
+        role: 'independent-grader', canEmitGrading: true, blocksEmit: false,
+        advice: expect.stringContaining('must still validate BAR readiness, ratings and evidence'),
+      },
+    });
+    for (const key of ['skeleton', 'latest', 'canonicalRatings', 'instrumentContract', 'releaseGateBinding']) {
+      expect(result).not.toHaveProperty(key);
+    }
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+    expect(listM).not.toHaveBeenCalledWith(expect.objectContaining({ rubricRef: 'acceptance-rubric' }));
+    expect(deferredSpendM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('projects eligibility-only through the real tool dispatch using the caller identity', async () => {
+    planImplementersM.mockResolvedValue(['su-principal']);
+    const projected = lookupByMcpName('scorecards:evaluate');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(projected!, 'scorecards:evaluate', args, {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'ws', runId: 'eligibility-only-preflight-test', isSuperuser: true,
+      uiClientId: 'su-principal', role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', tx: {},
+    }, {});
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(readJsonResult(dispatched.result!)).toMatchObject({
+      ok: true, eligibilityOnly: true, rubricRevision: 8, criteriaHash: 'criteria:identity-only',
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false, principalImplementers: ['su-principal'],
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('keeps an implementer-lineage caller disqualified despite an unready BAR', async () => {
+    lineageRelatedM.mockImplementation(async (author, candidate) =>
+      author === candidate || (author === 'su-implementer' && candidate === 'su-relative'));
+
+    await expect(evaluateScorecard(args, { id: 'su-relative', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false, blocksEmit: true,
+        advice: expect.not.stringContaining('skeleton below'),
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('does not grant the acceptance author independent-grader clearance', async () => {
+    await expect(evaluateScorecard(args, { id: 'su-implementer', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: { role: 'acceptance-author', canEmitGrading: false },
+    });
+  });
+
+  it('reports unresolved identity as unknown without granting clearance', async () => {
+    readRubricPlanRevisionM.mockRejectedValue(new Error('identity revision unavailable'));
+
+    await expect(evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: { role: 'unknown', canEmitGrading: false, advice: expect.stringContaining('NOT a clearance') },
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('keeps a retired rubric disqualified', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, status: 'retired' });
+
+    await expect(evaluateScorecard(args, { id: 'su-independent', workspaceId: 'ws' })).resolves.toMatchObject({
+      ok: true,
+      graderEligibility: {
+        role: 'disqualified', canEmitGrading: false,
+        refusal: { code: 'retired_acceptance_rubric' },
+      },
+    });
+  });
+
+  it('does not guess eligibility when the caller identity is absent', async () => {
+    await expect(evaluateScorecard(args)).resolves.toMatchObject({ ok: true, graderEligibility: null });
+  });
+
+  it.each([
+    { name: 'skeleton', ratings: undefined },
+    { name: 'empty ratings', ratings: {} },
+    { name: 'ratings', ratings: RATINGS },
+  ])('retains the BAR readiness refusal for ordinary $name requests', async ({ ratings }) => {
+    await expect(evaluateScorecard(
+      { rubricRef: args.rubricRef, ratings }, { id: 'su-independent', workspaceId: 'ws' },
+    )).resolves.toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready' });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalled();
+  });
+
+  it.each([
+    { sourceHive: 'grader-hive' },
+    { ratings: {} },
+    { subject: { ref: 'subject' } },
+    { instrumentSnapshots: {} },
+    { testedSha: 'a'.repeat(40) },
+    { current: [] },
+    { pendingDeliveryBarKeys: ['R-1'] },
+  ])('refuses grading or history inputs rather than silently ignoring them: %j', async (gradingInput) => {
+    await expect(evaluateScorecard({ ...args, ...gradingInput }, { id: 'su-independent' })).resolves.toMatchObject({
+      ok: false, code: 'eligibility_only_input_invalid',
+    });
+    expect(getRubricM).not.toHaveBeenCalled();
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+});
+
 describe('acceptance-grader eligibility is answerable BEFORE the grading work (EI-21974075442192005)', () => {
   // The rails are pure identity facts, so the only thing that made them expensive
   // was WHERE they were reachable: a launched reviewer completed a full independent
@@ -2491,6 +2703,60 @@ describe('scorecards:evaluate input ownership is explicit', () => {
     expect(emitSourceHive).toContain("put the subject plan's hive in targetHive");
     expect(emitTargetHive).toContain('Subject plan/repository hive');
     expect(emitTargetHive).toContain('Independent of sourceHive');
+  });
+});
+
+describe('DS-P010-DISTINCT-OBSERVATIONS public scorecards handlers', () => {
+  const plan = 'workspace-host-deferred-spend-reconciliation-2026-09-07';
+  const keys = ['workspace-host.deferred-spend.r007', 'workspace-host.deferred-spend.r008'];
+  const subject = { kind: 'plan' as const, ref: plan,
+    windowStart: '2026-10-25T19:00:00Z', windowEnd: '2026-10-25T20:00:00Z' };
+  beforeEach(() => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, revision: 7, criteriaHash: 'c'.repeat(64),
+      subjectPlan: plan, subjectHarnessSlug: 'papercusp',
+      criteria: RUBRIC.criteria.map((criterion, index) => ({ ...criterion,
+        check: { kind: 'instrument', instrumentKey: keys[index] } })) });
+  });
+  // The instrument boundary is doubled here; the adjacent composer suite runs the
+  // real P007/P008/P009 collectors. No fixture establishes live product evidence.
+  function measurement(verdict: 'unknown' | 'fail') {
+    return { scope: 'deferred-spend-acceptance',
+      identity: { observation: { observedAt: '2026-10-25T20:00:02Z' } },
+      manifestRef: 'artifact:papercusp:evidence/deferred-spend/handler-control.json', manifestHash: 'a'.repeat(64),
+      criteria: { r007: { verdict: 'pass', reasons: [] }, r008: { verdict, reasons: ['distinct measured outcome'] } } };
+  }
+  const supplied = Object.fromEntries(keys.map(key => [key, { verdict: 'pass' as const,
+    measuredAt: '2026-10-25T20:00:02Z', provenance: 'platform-computed' as const }]));
+  it.each(['unknown', 'fail'] as const)('baseline: evaluate and emit each execute one shared measurement and retain R008 %s independently', async verdict => {
+    deferredSpendM.mockResolvedValue(measurement(verdict));
+    const args = { rubricRef: 'test-rubric', subject, ratings: RATINGS, instrumentSnapshots: supplied };
+    const evaluated = await evaluateScorecard(scorecardEvaluateArgs.parse(args));
+    expect(deferredSpendM).toHaveBeenCalledTimes(1);
+    expect(evaluated).toMatchObject({ ok: true, instrumentContract: {
+      verdictMismatches: [keys[1]], positiveClaimContradictions: verdict === 'fail' ? [keys[1]] : [],
+    } });
+    expect(await emitScorecard(scorecardEmitArgs.parse(args), { createdBy: 'su-1' })).toMatchObject({ ok: true, created: true });
+    expect(deferredSpendM).toHaveBeenCalledTimes(2);
+    expect(deferredSpendM).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: 'ws', harness: 'papercusp', planSlug: plan,
+      rubricRef: 'test-rubric', rubricRevision: 7, criteriaHash: 'c'.repeat(64), subjectRef: plan,
+      windowStart: subject.windowStart, windowEnd: subject.windowEnd }));
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { instrumentSnapshots: {
+      [keys[0]]: { verdict: 'pass' }, [keys[1]]: { verdict },
+    } } } });
+  });
+  it.each(['resolver-error', 'missing-identity'] as const)('counterexample: both handlers replace forged passes on %s', async defect => {
+    if (defect === 'resolver-error') deferredSpendM.mockRejectedValue(new Error('unavailable'));
+    else deferredSpendM.mockResolvedValue({ ...measurement('unknown'), identity: undefined });
+    const args = { rubricRef: 'test-rubric', subject, ratings: RATINGS, instrumentSnapshots: supplied };
+    expect(await evaluateScorecard(scorecardEvaluateArgs.parse(args))).toMatchObject({ ok: true, instrumentContract: {
+      verdictMismatches: keys, positiveClaimContradictions: [],
+    } });
+    expect(await emitScorecard(scorecardEmitArgs.parse(args), { createdBy: 'su-1' })).toMatchObject({ ok: true, created: true });
+    expect(deferredSpendM).toHaveBeenCalledTimes(2);
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { instrumentSnapshots: {
+      [keys[0]]: { verdict: 'unknown', provenance: 'platform-computed' },
+      [keys[1]]: { verdict: 'unknown', provenance: 'platform-computed' },
+    } } } });
   });
 });
 

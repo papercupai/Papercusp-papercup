@@ -18,6 +18,8 @@ import {
   deletionClassFor,
   mapCensusConsumers,
   validatePolicy,
+  retentionAcceptancePopulation,
+  validateRetentionAcceptance,
   isDeletableRule,
   type RetentionClass,
 } from './retention-policy';
@@ -29,6 +31,91 @@ const del = (p: string) => deletionClassFor(p, policy)?.id ?? null;
 describe('retention policy (disk-headroom P-003 / R-2)', () => {
   it('the shipped policy passes every structural check', () => {
     expect(validatePolicy(RETENTION_POLICY, HOME)).toEqual([]);
+  });
+
+  it('partitions the exact shipped class/root/store population without attribution or keep-rule exclusions', () => {
+    const shipped = retentionPolicyForWorkspaceRoot('/workspace');
+    const expected = {
+      disposable: ['tmp-scratch', 'container-storage', 'papercusp-scratch', 'session-dirs', 'fleet-logs',
+        'package-caches', 'sidecar-failed-stages', 'vh-release-runs', 'vh-isolated-runs', 'release-cut-worktrees',
+        'cargo-target-slots', 'repo-scratch', 'agent-evidence', 'papercusp-home-run-dirs', 'workspace-db-dumps', 'offload-work-copies'],
+      protected: ['owner-data-mnt', 'cold-tier', 'owner-home', 'swap', 'os', 'snap-download-cache',
+        'postgres-cluster', 'live-databases', 'hyperbee-store', 'owner-macos-vm', 'db-dumps'],
+      unresolved: ['toolchains-and-tool-state', 'user-caches', 'source-checkouts', 'workspace-state',
+        'papercusp-home-state', 'gitnexus-index', 'papercusp-home-release-dirs', 'workspace-restores', 'unregistered-workspaces',
+        'offload-other', 'mnt-build-infra', 'papercusp-backups', 'staging-generations', 'vh-other-state',
+        'agent-clones-and-backups', 'backup-offload-other', 'backup-agent-trees'],
+    };
+    expect(shipped).toHaveLength(44);
+    for (const kind of ['disposable', 'protected', 'unresolved'] as const) {
+      expect(shipped.filter(cls => cls.acceptance?.kind === kind).map(cls => cls.id)).toEqual(expected[kind]);
+    }
+    const scopes = retentionAcceptancePopulation(shipped);
+    expect(scopes).toHaveLength(164);
+    expect(new Set(scopes.map(row => `${row.scopeKind}:${row.scope}`)).size).toBe(scopes.length);
+    expect(scopes.every(row => row.acceptance?.provenance.length)).toBe(true);
+    // A new/removed root or store requires an explicit population review even
+    // when it was added to an already-partitioned class. Use a fixed host root.
+    const exactPopulation = scopes.map(({ classId, scopeKind, scope }) => ({ classId, scopeKind, scope }));
+    expect(createHash('sha256').update(JSON.stringify(exactPopulation)).digest('hex'))
+      .toBe('4cac8e9927678bb673b8721ccdd98891b34a8993121632c6e0b7f411eb968579');
+    const failures = validateRetentionAcceptance(shipped);
+    expect(failures.map(failure => failure.split(':')[0])).toEqual(expected.unresolved);
+    expect(failures.every(failure => failure.includes(': unresolved R5 scope:'))).toBe(true);
+  });
+
+  it('never infers missing or unresolved acceptance membership from origin or keep/review', () => {
+    for (const origin of ['agent', 'owner', 'system'] as const) {
+      for (const kind of ['keep', 'review'] as const) {
+        const cls: RetentionClass = { id: 'mixed', title: 'mixed', origin, roots: ['/mixed'],
+          keep: { kind, reason: 'existing retention decision' }, enforcers: [{ kind: 'none' }] };
+        expect(validateRetentionAcceptance([cls])).toContain('mixed: missing R5 acceptance partition');
+        const explicit = { ...cls, acceptance: { kind: 'unresolved' as const, reason: 'writer not qualified',
+          provenance: ['plan:disk-durable-headroom-2026-10-15#D-018'] } };
+        expect(retentionAcceptancePopulation([explicit])).toEqual([
+          expect.objectContaining({ classId: 'mixed', scope: '/mixed', acceptance: explicit.acceptance }),
+        ]);
+        expect(validateRetentionAcceptance([explicit])).toContain('mixed: unresolved R5 scope: writer not qualified');
+      }
+    }
+  });
+
+  it('refuses a disposable partition without its enrolled owner, cap or writer provenance', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'tmp-scratch')!;
+    const acceptance = cls.acceptance!;
+    expect(validateRetentionAcceptance([cls])).toEqual([]);
+    expect(validateRetentionAcceptance([{ ...cls, maxBytes: undefined }])).toContain(
+      'tmp-scratch: R5 disposable root requires a finite allocated-byte cap');
+    expect(validateRetentionAcceptance([{ ...cls, acceptance: { ...acceptance, kind: 'disposable', owner: 'a different collector' } }])).toContain(
+      'tmp-scratch: R5 disposable owner must name an enrolled enforcer');
+    expect(validateRetentionAcceptance([{ ...cls, acceptance: { ...acceptance, provenance: [] } }])).toContain(
+      'tmp-scratch: R5 partition requires source/authority provenance');
+  });
+
+  it('refuses protected/unresolved labels that would still authorize deleting a parent', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'tmp-scratch')!;
+    for (const kind of ['protected', 'unresolved'] as const) {
+      expect(validateRetentionAcceptance([{ ...cls, acceptance: { kind, reason: 'mixed parent', provenance: ['writer.ts'] } }]))
+        .toContain(`tmp-scratch: R5 ${kind} parent cannot authorize deletion`);
+    }
+    const protectedClass = RETENTION_POLICY.find(cls => cls.id === 'owner-macos-vm')!;
+    expect(validateRetentionAcceptance([{ ...protectedClass, acceptance: { kind: 'protected', reason: '', provenance: [] } }]))
+      .toEqual(expect.arrayContaining(['owner-macos-vm: R5 partition requires a reason',
+        'owner-macos-vm: R5 partition requires source/authority provenance']));
+  });
+
+  it('retains unregistered mixed workspaces while collecting only explicitly classified disposable children', () => {
+    const workspace = `${HOME}/.papercusp-workspaces/unregistered`;
+    expect(classifyPath(`${workspace}/db/data`, policy)).toMatchObject({ classId: 'unregistered-workspaces' });
+    for (const child of ['db/data', 'credentials/token', 'source/file.ts', '.papercusp/papercusp/hyperbee/data']) {
+      expect(del(`${workspace}/${child}`), child).toBeNull();
+    }
+    expect(del(`${workspace}/db-dumps/expired.dump`)).toBe('workspace-db-dumps');
+    expect(del(`${workspace}/.restored/expired/file`)).toBeNull();
+    expect(del(`${workspace}/.papercusp/apps-snap-old/source`)).toBeNull();
+    const materialized = compilePolicy(retentionPolicyForWorkspaceRoot('/workspace'), HOME);
+    expect(deletionClassFor('/workspace/repo/.papercusp/scratch/expired', materialized)?.id).toBe('repo-scratch');
+    expect(deletionClassFor('/workspace/repo/.papercusp/state/live', materialized)).toBeNull();
   });
 
   it('materializes checkout retention roots from PAPERCUSP_WORKSPACE_ROOT', () => {
@@ -60,6 +147,18 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     const cls = RETENTION_POLICY.find(cls => cls.id === 'release-cut-worktrees')!;
     expect(cls.keep.kind).toBe('lease');
     expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+  });
+
+  it('declares the finite per-physical-store cap of the existing native container owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'container-storage')!;
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const owner = readFileSync(join(root, 'bin/reclaim-docker-disk.sh'), 'utf8');
+    const defaultBytes = /CONTAINER_STORE_MAX_BYTES:-([0-9]+)/.exec(owner);
+    expect(cls.keep.kind).toBe('native');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+    expect(Number(defaultBytes?.[1])).toBe(cls.maxBytes);
+    expect(del('/var/lib/docker/overlay2/manager-owned')).toBeNull();
+    expect(del('/var/lib/containers/storage/overlay')).toBeNull();
   });
 
   it('keeps historical and data-side release evidence under the same native retention owner', () => {

@@ -96,6 +96,8 @@ import {
   gatewayPinEnv,
   gatewayAutoEnv,
   codexAutoPoolVerdict,
+  codexModelIdFromSpec,
+  codexServiceableForModel,
   preflightCodexAutoPool,
   ALLOW_WALLED_LAUNCH_ENV,
   accountRoutingMode,
@@ -216,6 +218,7 @@ import {
   roleLaunchArgs,
   suLaunchArgs,
   resolveOmpInjectHookPath,
+  resolveOmpCoordExtPath,
   kickoffPositionalArgs,
   routeFreshKickoff,
   finalizeFreshSuArgs,
@@ -842,7 +845,37 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(rows.map((row) => row.origin)).toEqual(["loop-fire", "fleet-kickoff"]);
   });
 
-  it("pins the launcher mirror to the canonical turn-provenance contract", async () => {
+  it("preserves typed loop identity for one private successor kickoff", () => {
+    const loopFire = { routineId: "loop-su-kick-typed", wakeCount: 7 };
+    const env = {
+      ...envFor(), PAPERCUSP_SID: "su-loop-kick-typed",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: JSON.stringify({ origin: "loop-fire", loopFire }),
+    };
+    const first = routeFreshKickoff("codex", { kickoffPrompt: "Continue the loop." }, { picker: false }, env);
+    expect(first.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:/);
+    expect(env).not.toHaveProperty("PAPERCUSP_INTERNAL_KICKOFF_ORIGIN");
+    routeFreshKickoff("codex", { kickoffPrompt: "Ordinary work." }, { picker: false }, env);
+    const rows = readFileSync(join(provDir, "su-loop-kick-typed.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows[0]).toMatchObject({ origin: "loop-fire", loopFire });
+    expect(rows[1]).toMatchObject({ origin: "fleet-kickoff" });
+    expect(rows[1]).not.toHaveProperty("loopFire");
+  });
+
+  it.each([
+    null, { routineId: "", wakeCount: 1 }, { routineId: "loop", wakeCount: 0 },
+    { routineId: "loop", wakeCount: 1.5 }, { routineId: "loop", wakeCount: "7" },
+  ])("does not qualify malformed private loop identity %j", (loopFire) => {
+    const env = {
+      ...envFor(), PAPERCUSP_SID: "su-loop-kick-invalid",
+      PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: JSON.stringify({ origin: "loop-fire", loopFire }),
+    };
+    const result = routeFreshKickoff("codex", { kickoffPrompt: "Continue." }, { picker: false }, env);
+    expect(result.managedKickoff).toMatch(/^⟦turn-origin:loop-fire nonce:/);
+    const row = JSON.parse(readFileSync(join(provDir, "su-loop-kick-invalid.jsonl"), "utf8").trim());
+    expect(row).not.toHaveProperty("loopFire");
+  });
+
+  it.each(["fleet-kickoff", "loop-fire"])("pins the launcher mirror to the canonical %s contract", async (origin) => {
     const sid = "su/kickoff .. id";
     const text = " Begin: advance this plan.\r\n";
     const nowMs = 1_760_000_000_000;
@@ -851,16 +884,19 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     try {
       const canonical = await tagTurnForInjection({
         sid,
-        origin: "fleet-kickoff",
+        origin,
         text,
         dir: canonicalDir,
         nowMs,
+        ...(origin === "loop-fire" ? { loopFire: { routineId: "loop-mirror", wakeCount: 9 } } : {}),
       });
       const mirror = tagKickoffProvenance(
         text,
         sid,
         { ...envFor(), PAPERCUSP_TURN_PROVENANCE_DIR: mirrorDir },
         nowMs,
+        origin,
+        origin === "loop-fire" ? { routineId: "loop-mirror", wakeCount: 9 } : null,
       );
       const canonicalPath = ledgerPathForSid(sid, canonicalDir);
       const mirrorPath = join(mirrorDir, basename(canonicalPath));
@@ -4758,7 +4794,7 @@ describe("psu-launcher arg parsing", () => {
         expect.objectContaining({ fork: true, headless: true }),
       );
 
-      const codexSource = { ...claudeSource, agent: "codex" };
+      const codexSource = { ...claudeSource, agent: "codex", id: null };
       await expect(
         launchTrackedFork(codexSource, { ownerId: "su-consult-fork" }, account, null, {
           api: postBootstrap,
@@ -6196,6 +6232,40 @@ describe("psu-launcher arg parsing", () => {
       },
     ])
       expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
+  });
+
+  // WI-6554700010029748: the provider-wide count is model-blind. A measured ZERO for the
+  // requested model (every serviceable account refuses it) refuses the launch; a missing or
+  // positive reading, another model, or a non-auto route all stay fail-open.
+  it("codexAutoPoolVerdict: REFUSES a model every serviceable Codex account refuses, even when the provider reads healthy", () => {
+    const now = Date.UTC(2026, 9, 26, 23, 50, 0);
+    const stats = {
+      codexHealthyAccounts: 2,
+      codexTotalAccounts: 8,
+      codexEarliestRecoveryAt: 0,
+      codexServiceableByModel: { "gpt-5.5": 0, "gpt-6.1-sol": 1 },
+    };
+    for (const model of ["gpt-5.5", "GPT-5.5:high", "gpt-5.5[1m]"]) {
+      const verdict = codexAutoPoolVerdict({ agent: "codex", model, account: "auto", stats, now });
+      expect(verdict.kind).toBe("refuse");
+      expect(verdict.recoveryAt).toBeNull();
+      expect(verdict.message).toContain("REFUSING TO LAUNCH");
+      expect(verdict.message).toContain("'gpt-5.5'");
+      expect(verdict.message).toContain("--agent claude");
+      expect(verdict.message).toContain(ALLOW_WALLED_LAUNCH_ENV);
+    }
+    for (const input of [
+      { agent: "codex", model: "gpt-6.1-sol", account: "auto", stats },
+      { agent: "codex", model: "gpt-6-luna", account: "auto", stats },
+      { agent: "codex", model: "gpt-5.5", account: "auto", stats: { ...stats, codexServiceableByModel: undefined } },
+      { agent: "codex", model: "gpt-5.5", account: "default", stats },
+      { agent: "codex", model: "gpt-5.5", account: "auto", stats: { ...stats, codexServiceableByModel: { "gpt-5.5": "0" } } },
+    ])
+      expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
+    expect(codexModelIdFromSpec(" gpt-6.1-sol:xhigh ")).toBe("gpt-6.1-sol");
+    expect(codexModelIdFromSpec("")).toBeNull();
+    expect(codexServiceableForModel({ "GPT-5.5": 3 }, "gpt-5.5")).toBe(3);
+    expect(codexServiceableForModel(null, "gpt-5.5")).toBeNull();
   });
 
   it("codexAutoPoolVerdict: distinguishes a live upstream outage from an account usage wall", () => {
@@ -8793,6 +8863,15 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         fullPayloadEstimatedTokens: 2000,
         tokenEstimator: "utf8-byte-upper-bound-v1",
         requiresSummary: true,
+        fit: {
+          feasible: false,
+          fidelity: "summary-tail",
+          fullEstimatedTokens: 2000,
+          minimumRequiredTokens: 1200,
+          latestAtomicGroupEstimatedTokens: 1050,
+          summaryChunks: null,
+          reason: "session port cannot fit the latest required atomic conversation/tool group plus bounded summary output",
+        },
         stats: {
           redactions: 2,
           omittedThinkingBlocks: 1,
@@ -8812,6 +8891,8 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       },
     });
     expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
+    expect(lines.join("\n")).toMatch(/fit blocked before egress.*minimum 1200 tokens \/ 1000 available/s);
+    expect(lines.join("\n")).toMatch(/Compact the source session or choose a target with a larger context/);
     expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
     expect(lines.join("\n")).toMatch(/one malformed record/);
   });
@@ -8904,8 +8985,10 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
   });
 
+  // A `pending` status read is no longer a single-shot outcome: it proves the
+  // disposition did not commit and triggers the bounded re-POST covered by the
+  // WI-6554700010029583 tests below.
   it.each([
-    ["pending", { status: "pending", targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
     ["missing status", { targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
     ["missing target", { status: "delivered" }, "session_port_ack_outcome_unknown"],
     ["wrong target", { status: "delivered", targetAdvSessionId: 100 }, "session_port_ack_refused"],
@@ -8932,6 +9015,130 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       expect(appendEventImpl.mock.calls[i][2]).toMatchObject({ portId: "22222222-2222-4222-8222-222222222222", expectedTargetAdvSessionId: 99, stage: i === 0 ? "delivery" : "status" });
     }
     expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("SECRET");
+  });
+
+  describe("WI-6554700010029583: bounded re-POST while the status read proves the disposition uncommitted", () => {
+    const port = { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, workspace: "test" };
+    const proof = { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/rollout.jsonl" };
+    const timeout = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+    it("re-POSTs the identical disposition after a timed-out POST and a pending status read, then accepts the delivered ack", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const appendEventImpl = vi.fn();
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: true, status: "delivered", artifactDeleted: true }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, coordOwnerId: "su-test", appendEventImpl,
+      });
+      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST"]);
+      expect(fetchImpl.mock.calls[2][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+      expect(sleepImpl).toHaveBeenCalledTimes(1);
+      expect(sleepImpl).toHaveBeenCalledWith(2_000);
+      expect(appendEventImpl.mock.calls.map((call) => call[2].stage)).toEqual(["delivery", "status", "delivery"]);
+      expect(appendEventImpl.mock.calls[0][2]).toMatchObject({ errorName: "TimeoutError", httpStatus: null });
+    });
+
+    it("stops after maxDeliveryAttempts when every status read stays pending, keeping every receipt", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const pending = () => json({ ok: true, port: { status: "pending", targetAdvSessionId: 99 } });
+      const reset = () => json({ ok: false, error: "upstream reset" }, 502);
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending())
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending())
+        .mockResolvedValueOnce(reset()).mockResolvedValueOnce(pending());
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, maxDeliveryAttempts: 3, retryDelayMs: 500,
+      }).catch((error) => error);
+      expect(failure.code).toBe("session_port_ack_outcome_unknown");
+      expect(failure.acknowledgement.outcome).toBe("outcome_unknown");
+      expect(failure.acknowledgement.receipts.map((r: { stage: string }) => r.stage))
+        .toEqual(["delivery", "status", "delivery", "status", "delivery", "status"]);
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+      expect(sleepImpl.mock.calls).toEqual([[500], [1_000]]);
+    });
+
+    it.each([
+      ["a refused POST", json({ ok: false, error: "native persistence proof/hash required" }, 409), "session_port_ack_refused"],
+      ["a pending row for a different target", null, "session_port_ack_refused"],
+    ])("never re-POSTs after %s", async (_label, postResponse, code) => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const statusPort = postResponse
+        ? { status: "pending", targetAdvSessionId: 99 }
+        : { status: "pending", targetAdvSessionId: 100 };
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(postResponse ?? json({ ok: false, error: "upstream reset" }, 502))
+        .mockResolvedValueOnce(json({ ok: true, port: statusPort }));
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      }).catch((error) => error);
+      expect(failure.code).toBe(code);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleepImpl).not.toHaveBeenCalled();
+    });
+
+    it("accepts a slow first POST that committed late: the re-POST is refused but the status read proves delivered", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: false, error: "session port is not pending" }, 409))
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "delivered", targetAdvSessionId: 99 } }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result.port.status).toBe("delivered");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST", "GET"]);
+    });
+
+    // WI-6554700010029882: observed live — the POST and the single status GET both
+    // timed out, the ack ended outcome_unknown, and an answered port stayed pending.
+    it("re-reads status after a timed-out POST AND a timed-out status read, then re-POSTs once a read proves pending", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockRejectedValueOnce(timeout())
+        .mockRejectedValueOnce(timeout())
+        .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
+        .mockResolvedValueOnce(json({ ok: true, status: "delivered" }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "POST"]);
+      expect(fetchImpl.mock.calls[3][1].body).toBe(fetchImpl.mock.calls[0][1].body);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [2_000]]);
+    });
+
+    it("re-reads status after a 5xx/429 read and accepts a later read that proves delivered", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(json({ ok: false, error: "upstream reset" }, 502))
+        .mockResolvedValueOnce(json({ ok: false, error: "unavailable" }, 503))
+        .mockResolvedValueOnce(json({ ok: false, error: "slow down" }, 429))
+        .mockResolvedValueOnce(json({ ok: true, port: { status: "delivered", targetAdvSessionId: 99 } }));
+      const result = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
+      });
+      expect(result.port.status).toBe("delivered");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "GET"]);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [4_000]]);
+    });
+
+    it("stops after maxStatusReads unanswered reads as outcome_unknown and never re-POSTs without proof", async () => {
+      const sleepImpl = vi.fn(async () => undefined);
+      const fetchImpl = vi.fn().mockRejectedValue(timeout());
+      const failure = await reportSessionPortDelivery(port, proof, {
+        fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, maxStatusReads: 4,
+      }).catch((error) => error);
+      expect(failure.code).toBe("session_port_ack_outcome_unknown");
+      expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "GET", "GET"]);
+      expect(failure.acknowledgement.receipts.map((r: { stage: string }) => r.stage))
+        .toEqual(["delivery", "status", "status", "status", "status"]);
+      expect(sleepImpl.mock.calls).toEqual([[2_000], [4_000], [8_000]]);
+    });
   });
 
   it("EI-259750: records an invalid JSON status body as unknown rather than swallowing the receipt", async () => {
@@ -9064,6 +9271,34 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       { picker: false }, { sessionPortApiImpl, launchFreshSuImpl }))
       .rejects.toThrow(/did not preserve the selected native session.*upgrade/);
     expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
+  });
+
+  it("refuses an infeasible atomic-tail preview before confirmation, preparation, or launch", async () => {
+    const sessionPortApiImpl = vi.fn(async () => ({
+      inspection: {
+        source: { nativeSessionId: source.sessionId, sha256: "a".repeat(64) },
+        target: { availableInputTokens: 1000 },
+        requiresSummary: true,
+        fit: {
+          feasible: false,
+          fidelity: "summary-tail",
+          minimumRequiredTokens: 1200,
+          reason: "session port cannot fit the latest required atomic conversation/tool group plus bounded summary output",
+        },
+      },
+    }));
+    const launchFreshSuImpl = vi.fn();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(launchSessionPort(source, resolveResumeTarget(source, { agent: "codex" }), {},
+        { picker: true }, { sessionPortApiImpl, launchFreshSuImpl }))
+        .rejects.toThrow(/preview is not preparable.*at least 1200 available input tokens/s);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    expect(sessionPortApiImpl).toHaveBeenCalledWith("/api/adv/sessions/port/inspect", expect.anything());
     expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
@@ -9504,9 +9739,10 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const apiImpl = vi.fn(async () => ({
-        agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
+        status: 'ok', agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
         promptFile: '/unused/prompt.md', compactionLimit: current,
-        envelopeEnv: { CODEX_HOME: '/unused/codex-home' },
+        envelopeEnv: { CODEX_HOME: '/unused/codex-home', PAPERCUSP_SID: 'su-budget-test',
+          PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' },
       }));
       const runWrapperImpl = vi.fn<(options: { args: string[]; envelopeEnv: Record<string, string> }) => void>();
       await launchFreshSu({ agent: 'codex', workspace: 'budget-test' }, {
@@ -10940,7 +11176,9 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
       expect(detectRespawnModelSpec([], options)).toBeNull();
     });
 
-    it("Codex carry uses the repaired isolated-home model when the old launch model was still active", () => {
+    it.each(["configured-default", "inherited"])(
+      "Codex carry uses the repaired isolated-home model over a stale %s launch",
+      (modelSource) => {
       const home = mkdtempSync(join(tmpdir(), "codex-model-carry-"));
       const codexHome = join(home, "isolated");
       mkdirSync(codexHome, { recursive: true });
@@ -10952,7 +11190,7 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
           agent: "codex",
           codexHome,
           advSessionId: 30870,
-          modelSource: "configured-default",
+          modelSource,
           readLatestCodexRollout: () => ({ id: UUID }),
           readLastActiveModel: () => "gpt-5.6-sol",
         });
@@ -10965,7 +11203,8 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
-    });
+      },
+    );
 
     it("Codex carry preserves an intentional in-session model switch over the home default", () => {
       const selected = detectRespawnModelSpec(["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"'], {
@@ -15619,8 +15858,10 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   });
 
   it("finalizes the acquired key only through runWrapper's concrete spawn callback", () => {
-    const finalizeHelper = body.indexOf(
-      "const finalizeResumeClaim = async () => {",
+    // The spawn acknowledgement can carry concrete PTY identity; the wiring
+    // guard depends on the callback and ordering, not its parameter list.
+    const finalizeHelper = body.search(
+      /const finalizeResumeClaim = async \([^)]*\) => \{/,
     );
     const finalizeReport = body.indexOf(
       "await reportSessionResumeFinalized(",
@@ -19800,6 +20041,24 @@ describe("omp context-injection hook wiring (omp-context-injection-parity-2026-0
     // A box that never ran the installer has no hook file. Passing --hook at a
     // missing path would make every omp launch fail; absent is the safe state.
     expect(resolveOmpInjectHookPath("omp", home)).toBeUndefined();
+  });
+
+  it("resolves the coordination extension from host home when PAPERCUSP_HOME is scoped", () => {
+    const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+    const scopedHome = mkdtempSync(join(tmpdir(), "psu-omp-coord-scoped-"));
+    try {
+      process.env.PAPERCUSP_HOME = scopedHome;
+      mkdirSync(join(home, ".papercusp"), { recursive: true });
+      const installed = join(home, ".papercusp", "papercusp-coord.ts");
+      writeFileSync(installed, "export default () => {};");
+
+      expect(resolveOmpCoordExtPath("omp", home)).toBe(installed);
+      expect(resolveOmpCoordExtPath("claude", home)).toBeUndefined();
+    } finally {
+      if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      rmSync(scopedHome, { recursive: true, force: true });
+    }
   });
 
   it("is omp-only: claude and codex never get --hook", () => {

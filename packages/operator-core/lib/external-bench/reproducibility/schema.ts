@@ -57,9 +57,20 @@ const capabilityToggles = z.object(Object.fromEntries(
   BENCHMARK_CAPABILITIES.map(capability => [capability, capabilityToggle]),
 ) as Record<BenchmarkCapability, typeof capabilityToggle>).strict();
 
-/** stock-native-reference = the unmodified agent CLI; the others hold the solver fixed and vary coordination. */
+/** stock-native-reference = the unmodified reference harness; the others hold the solver fixed and vary coordination. */
 export const ARM_TOPOLOGIES = ['stock-native-reference', 'solo', 'independent', 'coordinated', 'ensemble', 'repeated-session'] as const;
 export type ArmTopology = typeof ARM_TOPOLOGIES[number];
+
+/** Official research reference, independent of the frozen Codex study pins. D-059/D-060. */
+export const PROXIMUS_SOURCE_REVISION = 'a989f7b35c95c0fd30603290da3c923b7898cba8';
+export const PROXIMUS_CLIENT_VERSION = 'harbor-proximus@0.1.0a1';
+const proximusRuntime = z.object({
+  harborVersion: z.literal('0.23.0'),
+  provider: z.enum(['openai', 'anthropic']),
+  // Actual context capacity, not a guessed fallback or per-request token estimate.
+  maxInputTokens: z.number().int().safe().positive(),
+  supportsVision: z.boolean(),
+}).strict();
 
 const armControl = z.object({
   topology: z.enum(ARM_TOPOLOGIES),
@@ -95,7 +106,8 @@ export type ArmControl = z.infer<typeof armControl>;
 type ProtocolArm = {
   id: string; agent: string; model: string; effort: string; account: string;
   generationBudget: unknown;
-  runtime: { sourceRevision: string; runtimeRevision: string; clientVersion: string; promptHashMode?: string };
+  runtime: { sourceRevision: string; runtimeRevision: string; clientVersion: string; promptHashMode?: string;
+    proximus?: z.infer<typeof proximusRuntime> };
   control?: ArmControl;
 };
 
@@ -110,6 +122,7 @@ function frozenSolverSettings(arm: ProtocolArm) {
     generationBudget: arm.generationBudget,
     sourceRevision: arm.runtime.sourceRevision, runtimeRevision: arm.runtime.runtimeRevision,
     clientVersion: arm.runtime.clientVersion, promptHashMode: arm.runtime.promptHashMode ?? 'exact-request-v1',
+    ...(arm.runtime.proximus ? { proximus: arm.runtime.proximus } : {}),
     solverToolsHash: arm.control?.solverToolsHash,
   });
 }
@@ -229,7 +242,7 @@ export const currentBenchmarkProtocolSchema = z.object({
   seeds,
   arms: z.array(z.object({
     id: pin,
-    agent: z.enum(['codex', 'claude']),
+    agent: z.enum(['codex', 'claude', 'proximus']),
     model: pin,
     effort: pin,
     account: pin,
@@ -238,6 +251,7 @@ export const currentBenchmarkProtocolSchema = z.object({
       // Omission preserves historical exact-request pins. Native templates
       // retain a separate full request hash and verified resource-path binding.
       promptHashMode: z.enum(['exact-request-v1', 'codex-native-template-v1']).optional(),
+      proximus: proximusRuntime.optional(),
     }).strict(),
     // Omission preserves uncontrolled protocols; when present on any arm it is required on all.
     control: armControl.optional(),
@@ -315,6 +329,31 @@ export const currentBenchmarkProtocolSchema = z.object({
     issue(['arms'], 'Matched arms require one payer basis.');
   }
   protocol.arms.forEach((arm, index) => {
+    const reference = arm.runtime.proximus;
+    if ((arm.agent === 'proximus') !== (reference !== undefined)) {
+      issue(['arms', index, 'runtime'], 'A Proximus runtime is required exactly for agent proximus.');
+    }
+    if (arm.agent === 'proximus') {
+      if (arm.control?.topology !== 'stock-native-reference') {
+        issue(['arms', index, 'control'], 'Proximus requires an explicit stock-native-reference topology.');
+      }
+      if (!protocol.arms.some(candidate => !isNativeCliReferenceArm(candidate) && candidate.model === arm.model)) {
+        issue(['arms', index, 'model'], 'A Proximus reference requires a Papercusp treatment on the same model.');
+      }
+      if (arm.runtime.sourceRevision !== PROXIMUS_SOURCE_REVISION || arm.runtime.clientVersion !== PROXIMUS_CLIENT_VERSION ||
+          !digest.safeParse(arm.runtime.runtimeRevision).success || arm.runtime.promptHashMode === 'codex-native-template-v1') {
+        issue(['arms', index, 'runtime'], 'Proximus requires the official source/package pins and an exact dependency runtime digest.');
+      }
+      const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model);
+      if (!rate || rate.inputTokenCeiling === undefined || rate.outputTokenCeiling === undefined ||
+          reference && rate.inputTokenCeiling > reference.maxInputTokens ||
+          reference?.provider === 'anthropic' && rate.cacheWriteUsdPerMillion === undefined) {
+        issue(['arms', index, 'runtime'], 'Proximus requires frozen provider input/output ceilings within its context limit and cache-write prices for Anthropic.');
+      }
+      if (!protocol.grader.images || protocol.taskIds.some(taskId => !protocol.grader.images![taskId])) {
+        issue(['grader', 'images'], 'Proximus requires the shared immutable task image manifest.');
+      }
+    }
     if (arm.payer !== 'subscription') return;
     const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model);
     if (arm.agent !== 'codex') issue(['arms', index, 'payer'], 'Only Codex arms support the subscription payer.');
@@ -333,6 +372,17 @@ export const currentBenchmarkProtocolSchema = z.object({
   }
 });
 export type CurrentBenchmarkProtocol = z.infer<typeof currentBenchmarkProtocolSchema>;
+
+/** Credential/client family is separate from the reference harness identity. */
+export function currentBenchProviderAgent(arm: Pick<CurrentBenchmarkProtocol['arms'][number], 'agent'> & {
+  runtime?: Pick<CurrentBenchmarkProtocol['arms'][number]['runtime'], 'proximus'>;
+}): 'codex' | 'claude' {
+  if (arm.agent !== 'proximus') return arm.agent;
+  const provider = arm.runtime?.proximus?.provider;
+  if (provider === 'openai') return 'codex';
+  if (provider === 'anthropic') return 'claude';
+  throw new Error('Proximus provider authority requires its explicit frozen provider.');
+}
 
 /** Recompute a withheld design from frozen controls; this authorizes no runs. */
 export function planCurrentBenchmarkConfirmation(config: unknown) {

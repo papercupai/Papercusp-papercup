@@ -611,6 +611,10 @@ export interface GitPipelineSnapshot {
     progressAtMs?: number | null;
     /** Current phase published by the active checkpoint run, when its phase marker is readable. */
     currentPhase?: string | null;
+    /** WI-6554700010029556: what the run is doing inside `currentPhase`, when it published it. */
+    currentActivity?: string;
+    /** WI-6554700010029556: the leg in flight (1-based `index` of `total`), when published. */
+    currentLeg?: { label: string; index: number; total: number };
     elapsedSec: number | null;
   } | null;
 }
@@ -1253,6 +1257,8 @@ export interface GitPipelineSnapshotOpts {
     started_at?: string | null;
     progress_at?: string | null;
     current_phase?: string | null;
+    current_activity?: string;
+    current_leg?: { label: string; index: number; total: number };
     elapsed_sec?: number | null;
   };
   /** P-009 test seam for pre-lock process authority. When probeActiveRun is injected
@@ -1289,6 +1295,8 @@ export function mapActiveRun(r: {
   started_at?: string | null;
   progress_at?: string | null;
   current_phase?: string | null;
+  current_activity?: string;
+  current_leg?: { label: string; index: number; total: number };
   elapsed_sec?: number | null;
 }): NonNullable<GitPipelineSnapshot['activeRun']> {
   const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;
@@ -1341,6 +1349,8 @@ export function mapActiveRun(r: {
           ? startedAtMs
           : null,
     ...(r.current_phase === undefined ? {} : { currentPhase: r.current_phase ?? null }),
+    ...(r.current_activity ? { currentActivity: r.current_activity } : {}),
+    ...(r.current_leg ? { currentLeg: { ...r.current_leg } } : {}),
     elapsedSec: r.elapsed_sec ?? null,
   };
 }

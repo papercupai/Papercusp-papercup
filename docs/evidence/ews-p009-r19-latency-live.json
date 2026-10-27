@@ -8,8 +8,8 @@
     "docs/evidence/ews-p009-r19-latency-live/run.mjs"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-21T09:07:07.303Z",
-  "finishedAt": "2026-10-21T09:07:18.333Z",
+  "startedAt": "2026-10-27T07:19:17.386Z",
+  "finishedAt": "2026-10-27T07:19:32.523Z",
   "plan": "event-wait-settlement-2026-10-20",
   "planItem": "P-009",
   "workItemId": "WI-6554700010018160",
@@ -17,7 +17,7 @@
     "AUTO-BAR-R-19-P-009@3"
   ],
   "evidencePlane": "live",
-  "summary": "The R-19 probe (docs/evidence/ews-p009-r19-latency-live/time.mts) timed the dependency-graph resolvers 5 times on the papercusp harness against papercusp@5432. Before the wait leg (depEdges alone) the slowest run took 466.2 ms; with it (depEdges and depWaits concurrently, as the pane loads them) 691.7 ms; depWaits alone 582.6 ms. The deadline is 10000 ms (RESOLVER_READ_TIMEOUT_MS). The committed oracle judged it PASS. 6 of 6 negative controls failed on exactly their targeted assertion.",
+  "summary": "The R-19 probe (docs/evidence/ews-p009-r19-latency-live/time.mts) timed the dependency-graph resolvers 5 times on the papercusp harness against papercusp@5432. Before the wait leg (depEdges alone) the slowest run took 590.7 ms; with it (depEdges and depWaits concurrently, as the pane loads them) 464.8 ms; depWaits alone 329.2 ms. The deadline is 10000 ms (RESOLVER_READ_TIMEOUT_MS). The committed oracle judged it PASS. 6 of 6 negative controls failed on exactly their targeted assertion.",
   "assertions": [
     {
       "id": "live:min-runs",
@@ -32,22 +32,22 @@
     {
       "id": "live:graph-non-empty",
       "passed": true,
-      "evidence": "depEdges rows per run: 2654,2654,2654,2654,2654"
+      "evidence": "depEdges rows per run: 2925,2925,2925,2925,2925"
     },
     {
       "id": "live:wait-leg-ran",
       "passed": true,
-      "evidence": "depWaits rows per run: 1450,1450,1450,1450,1450; depWaits alone ms per run: 348.4,308.4,374.1,582.6,357"
+      "evidence": "depWaits rows per run: 1269,1269,1269,1269,1269; depWaits alone ms per run: 294.1,329.2,255.5,292.3,287"
     },
     {
       "id": "live:before-recorded",
       "passed": true,
-      "evidence": "depEdges alone ms per run (the pane's load before the wait leg): 466.2,182.6,150.4,252.3,181.7"
+      "evidence": "depEdges alone ms per run (the pane's load before the wait leg): 590.7,308.2,298.4,240.3,264.1"
     },
     {
       "id": "live:within-deadline",
       "passed": true,
-      "evidence": "max depEdges alone 466.2 ms, max depEdges+depWaits 691.7 ms, max depWaits alone 582.6 ms; deadline 10000 ms (RESOLVER_READ_TIMEOUT_MS)"
+      "evidence": "max depEdges alone 590.7 ms, max depEdges+depWaits 464.8 ms, max depWaits alone 329.2 ms; deadline 10000 ms (RESOLVER_READ_TIMEOUT_MS)"
     },
     {
       "id": "control:C1-run-at-deadline",
@@ -85,121 +85,111 @@
     "workspace": "papercusp-workspace",
     "harness": "papercusp",
     "reader": "docs/evidence/ews-p009-r19-latency-live/time.mts through npx tsx, in-process resolver calls",
-    "commit": "1c407cf5ae9af24f4feff4b3f78278b3b3342ee7",
-    "measuredAt": "2026-10-21T09:07:18.141Z"
+    "commit": "a6f0177ac80e92c6123d0b8dd39f4a6e6df5e8aa",
+    "measuredAt": "2026-10-27T07:19:31.508Z"
   },
   "measurement": {
     "deadlineMs": 10000,
     "deadlineSource": "RESOLVER_READ_TIMEOUT_MS in packages/operator-core/lib/sync-resolver/read-deadline.ts, read by the probe",
     "beforeAfter": {
-      "beforeMaxMs": 466.2,
+      "beforeMaxMs": 590.7,
       "beforeMeans": "workItems.depEdges alone: what the Work-tab dependency graph pane loaded before the wait leg",
-      "afterMaxMs": 691.7,
+      "afterMaxMs": 464.8,
       "afterMeans": "workItems.depEdges and workItems.depWaits concurrently: what the pane loads now",
-      "waitsAloneMaxMs": 582.6
+      "waitsAloneMaxMs": 329.2
     },
     "runs": [
       {
         "run": 1,
-        "edgesMs": 466.2,
-        "edgesPlusWaitsMs": 364.6,
-        "waitsAloneMs": 348.4,
-        "edges": 2654,
-        "edgesConcurrent": 2654,
-        "waits": 1450,
+        "edgesMs": 590.7,
+        "edgesPlusWaitsMs": 464.8,
+        "waitsAloneMs": 294.1,
+        "edges": 2925,
+        "edgesConcurrent": 2925,
+        "waits": 1269,
         "legs": {
-          "bound": 112,
-          "holder": 600,
-          "blocker": 738,
-          "truncated": [
-            "session-await"
-          ]
+          "bound": 44,
+          "holder": 370,
+          "blocker": 855,
+          "truncated": []
         },
-        "payloadBytes": 982765
+        "payloadBytes": 847799
       },
       {
         "run": 2,
-        "edgesMs": 182.6,
-        "edgesPlusWaitsMs": 285.9,
-        "waitsAloneMs": 308.4,
-        "edges": 2654,
-        "edgesConcurrent": 2654,
-        "waits": 1450,
+        "edgesMs": 308.2,
+        "edgesPlusWaitsMs": 317.9,
+        "waitsAloneMs": 329.2,
+        "edges": 2925,
+        "edgesConcurrent": 2925,
+        "waits": 1269,
         "legs": {
-          "bound": 112,
-          "holder": 600,
-          "blocker": 738,
-          "truncated": [
-            "session-await"
-          ]
+          "bound": 44,
+          "holder": 370,
+          "blocker": 855,
+          "truncated": []
         },
-        "payloadBytes": 982765
+        "payloadBytes": 847799
       },
       {
         "run": 3,
-        "edgesMs": 150.4,
-        "edgesPlusWaitsMs": 288.4,
-        "waitsAloneMs": 374.1,
-        "edges": 2654,
-        "edgesConcurrent": 2654,
-        "waits": 1450,
+        "edgesMs": 298.4,
+        "edgesPlusWaitsMs": 322.1,
+        "waitsAloneMs": 255.5,
+        "edges": 2925,
+        "edgesConcurrent": 2925,
+        "waits": 1269,
         "legs": {
-          "bound": 112,
-          "holder": 600,
-          "blocker": 738,
-          "truncated": [
-            "session-await"
-          ]
+          "bound": 44,
+          "holder": 370,
+          "blocker": 855,
+          "truncated": []
         },
-        "payloadBytes": 982765
+        "payloadBytes": 847799
       },
       {
         "run": 4,
-        "edgesMs": 252.3,
-        "edgesPlusWaitsMs": 691.7,
-        "waitsAloneMs": 582.6,
-        "edges": 2654,
-        "edgesConcurrent": 2654,
-        "waits": 1450,
+        "edgesMs": 240.3,
+        "edgesPlusWaitsMs": 310.3,
+        "waitsAloneMs": 292.3,
+        "edges": 2925,
+        "edgesConcurrent": 2925,
+        "waits": 1269,
         "legs": {
-          "bound": 112,
-          "holder": 600,
-          "blocker": 738,
-          "truncated": [
-            "session-await"
-          ]
+          "bound": 44,
+          "holder": 370,
+          "blocker": 855,
+          "truncated": []
         },
-        "payloadBytes": 982765
+        "payloadBytes": 847799
       },
       {
         "run": 5,
-        "edgesMs": 181.7,
-        "edgesPlusWaitsMs": 372.1,
-        "waitsAloneMs": 357,
-        "edges": 2654,
-        "edgesConcurrent": 2654,
-        "waits": 1450,
+        "edgesMs": 264.1,
+        "edgesPlusWaitsMs": 374.6,
+        "waitsAloneMs": 287,
+        "edges": 2925,
+        "edgesConcurrent": 2925,
+        "waits": 1269,
         "legs": {
-          "bound": 112,
-          "holder": 600,
-          "blocker": 738,
-          "truncated": [
-            "session-await"
-          ]
+          "bound": 44,
+          "holder": 370,
+          "blocker": 855,
+          "truncated": []
         },
-        "payloadBytes": 982765
+        "payloadBytes": 847799
       }
     ],
     "verdict": {
       "ok": true,
       "failedIds": [],
-      "maxEdgesMs": 466.2,
-      "maxEdgesPlusWaitsMs": 691.7,
-      "maxWaitsAloneMs": 582.6
+      "maxEdgesMs": 590.7,
+      "maxEdgesPlusWaitsMs": 464.8,
+      "maxWaitsAloneMs": 329.2
     }
   },
   "sourceBlobs": {
-    "packages/operator-core/lib/sync-resolver/dependency-graph-edges.ts": "bc01ec59278322b9564528c63105b35e0f9a6ec0",
+    "packages/operator-core/lib/sync-resolver/dependency-graph-edges.ts": "f71e2276d06e5727e77321f3e4e7080f3805716b",
     "packages/operator-core/lib/sync-resolver/read-deadline.ts": "06493c925719c40e4bbea6602ed5b20a2b79a49b",
     "scripts/lib/dependency-graph-wait-latency-live-oracle.mjs": "257d0fa7d1c3dbe0898e12e7948e6dcf92789aa4"
   },

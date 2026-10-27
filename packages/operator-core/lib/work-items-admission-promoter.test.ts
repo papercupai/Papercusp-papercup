@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   admissionEndpointBlock,
   admissionPairKey,
+  applyClaimedReReviewHolds,
   prescreenPromoterWindow,
   type AdmissionMergeSnapshot,
   ADMISSION_REVIEW_ALERT_KEY,
@@ -597,6 +598,121 @@ describe('admission endpoint protection — terminal twins', () => {
     });
   });
 
+  describe('authenticated audited agent park comparison', () => {
+    const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
+    const pending = item('EI-original');
+    const twin = item('EI-parked', { admission: 'admitted' });
+    const comparison = pair(pending, twin, [pending.id]);
+    const parkPayload = { _claimHold: true, _ei: { source: 'su', created_by: actor },
+      claim_hold_by: actor, claim_hold_reason: 'future independent source work',
+      claim_hold_at: new Date(1000).toISOString() };
+    const parked = snapshot(twin.id, { payload: parkPayload, agentParkAudit: {
+      id: 'audit-park', atMs: 1008, actor, action: 'work_items:claim_hold:set',
+      details: { mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason },
+    } });
+    const select = (overrides: Partial<AdmissionMergeSnapshot> = {}, authenticated = true,
+      original: Partial<AdmissionMergeSnapshot> = {}) => prescreenPromoterWindow({
+      window: [pending, twin], pairs: [comparison], snapshots: new Map([
+        [pending.id, snapshot(pending.id, { admission: 'pending', ...original })],
+        [twin.id, { ...parked, ...overrides }],
+      ]), batchSize: 2, nowMs: 2000,
+      ...(authenticated ? { componentScreeningItemIds: [pending.id] } : {}),
+    });
+
+    it('judges only the eligible authenticated original and keeps the held neighbour self-blocked', () => {
+      expect(select().batch).toEqual([pending]);
+      expect(select().pairs).toEqual([comparison]);
+      expect(select({}, false).batch).toEqual([]);
+      expect(select({}, true, { assignee: actor }).batch).toEqual([]);
+      expect(select({}, true, { payload: { _claimHold: true } }).batch).toEqual([]);
+      expect(admissionEndpointBlock(parked)).toMatchObject({ reason: 'claim-held' });
+    });
+
+    it.each([
+      { agentParkAudit: undefined },
+      { agentParkAudit: { ...parked.agentParkAudit!, actor: 'owner' } },
+      { agentParkAudit: { ...parked.agentParkAudit!, action: 'work_items:claim_hold:clear' } },
+      { agentParkAudit: { ...parked.agentParkAudit!, atMs: 70_000 } },
+      { agentParkAudit: { ...parked.agentParkAudit!, details: { mode: 'held_open', by: actor, reason: parkPayload.claim_hold_reason } } },
+      { payload: { ...parkPayload, claim_hold_reason: 'different hold' } },
+      { payload: { ...parkPayload, claim_hold_by: 'system:resource-governor' } },
+      { payload: { ...parkPayload, _ei: { source: 'su', created_by: 'owner' } } },
+      { payload: { ...parkPayload, held_open_by: actor } },
+      { payload: { ...parkPayload, claim_hold_reason: 'policy-tier independent approval' } },
+      { payload: { ...parkPayload, claim_hold_release: { condition: 'changed' } } },
+      { assignee: actor }, { state: 'blocked' }, { state: 'needs-human' }, { state: 'done' },
+      { origin: 'remote', ownNode: true }, { workspaceId: 'other' }, { harnessSlug: 'other' },
+      { payload: { ...parkPayload, needsOwnerAction: true } },
+      { payload: { ...parkPayload, agentReview: pendingReview } },
+      { payload: { ...parkPayload, externalBlockers: [executionBlocker] } },
+      { dependencies: [{ id: 'dep', blockedKind: 'issue', blockedRef: twin.id, blockerKind: 'issue',
+        blockerRef: 'EI-dependency', depType: 'blocks', satisfaction: 'success', createdBy: actor, active: true }] },
+    ] satisfies Partial<AdmissionMergeSnapshot>[])('refuses forged provenance and every coexisting protection %j', protection => {
+      expect(select(protection).pairs).toEqual([]);
+    });
+  });
+
+  describe('authenticated claimed comparison', () => {
+    const pending = item('EI-original');
+    const twin = item('EI-claimed', { admission: 'admitted' });
+    const comparison = pair(pending, twin, [pending.id]);
+    const snapshots = new Map([
+      [pending.id, snapshot(pending.id, { admission: 'pending' })],
+      [twin.id, snapshot(twin.id, { assignee: 'su-holder' })],
+    ]);
+    const select = (authenticated: boolean, current = snapshots) => prescreenPromoterWindow({
+      window: [pending], pairs: [comparison], snapshots: current, batchSize: 1, nowMs: 1,
+      ...(authenticated ? { componentScreeningItemIds: [pending.id] } : {}),
+    });
+
+    it('judges the claimed comparison only for an authenticated eligible original', () => {
+      expect(select(false).batch).toEqual([]);
+      expect(select(true).batch).toEqual([pending]);
+      expect(select(true).pairs).toEqual([comparison]);
+      expect(select(true).forcedHolds.size).toBe(0);
+      const claimedOriginal = new Map(snapshots);
+      claimedOriginal.set(pending.id, snapshot(pending.id, { admission: 'pending', assignee: 'su-other' }));
+      expect(select(true, claimedOriginal).batch).toEqual([]);
+    });
+
+    it.each([
+      { state: 'blocked' }, { state: 'needs-human' }, { payload: { _claimHold: true } },
+      { payload: { agentReview: pendingReview } },
+      { payload: { externalBlockers: [executionBlocker] } },
+      { payload: { externalBlockers: [{ ...executionBlocker, kind: 'human', capability: 'credential' }] } },
+      { dependencies: [{ id: 'dep-1', blockedKind: 'issue', blockedRef: 'EI-claimed', blockerKind: 'issue',
+        blockerRef: 'EI-dependency', depType: 'blocks', satisfaction: 'success', createdBy: 'su-test', active: true }] },
+    ] satisfies Partial<AdmissionMergeSnapshot>[])('keeps the comparison protection %j', (protection) => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', ...protection }));
+      expect(select(true, current).batch).toEqual([]);
+    });
+
+    it('keeps remote comparisons outside the model and preserves their permanent classification', () => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', origin: 'remote' }));
+      expect(select(true, current).pairs).toEqual([]);
+      expect(select(true, current).prescreen).toMatchObject({ unresolvablePairs: 1 });
+      expect(admissionEndpointBlock(current.get(twin.id))).toMatchObject({ reason: 'remote-owned', permanent: true });
+    });
+
+    it.each([true, false])('holds a duplicate in either canonical direction (claimed canonical=%s)', (claimedCanonical) => {
+      const current = new Map(snapshots);
+      current.set(twin.id, snapshot(twin.id, { assignee: 'su-holder', admission: claimedCanonical ? 'admitted' : 'pending', createdAtMs: 2 }));
+      const candidate = { ...twin, admission: claimedCanonical ? 'admitted' : 'pending', createdAtMs: 2 };
+      const candidatePair = pair(pending, candidate, [pending.id]);
+      const plan = planPromoterDispositions([pending], [candidatePair], [{
+        pairKey: candidatePair.pairKey, verdict: 'r-finding-merge', reason: 'same finding',
+      }]);
+      const protectedPlan = applyClaimedReReviewHolds(plan, current, new Set([pending.id]), 1, [pending.id]);
+      expect(protectedPlan.dispositions).toEqual([
+        { itemId: pending.id, action: 'hold', reason: expect.stringContaining(twin.id) },
+      ]);
+      expect(protectedPlan.adjudications).toEqual([]);
+      expect(current.get(twin.id)?.assignee).toBe('su-holder');
+    });
+  });
+
   it('classifies a dropped twin with a stale pending review as permanently unresolvable, not review-gated', () => {
     const dropped = snapshot('EI-2', { state: 'dropped', payload: { agentReview: pendingReview } });
     expect(admissionEndpointBlock(dropped)).toMatchObject({
@@ -632,6 +748,63 @@ describe('admission endpoint protection — terminal twins', () => {
     });
     expect(admissionEndpointBlock(snapshot('EI-dropped-blocker', { state: 'dropped', payload }))).toMatchObject({
       reason: 'terminal-canonical-without-completion', permanent: true,
+    });
+  });
+
+  describe('overdue review with its own runtime debt (EI-26720509885145560)', () => {
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    const ownDebt = {
+      ...executionBlocker, ref: ADMISSION_REVIEW_ALERT_KEY,
+      summary: 'This item is waiting for its own admission review',
+    };
+    const reviewSnapshot = (ref = ADMISSION_REVIEW_ALERT_KEY) => ({
+      ...snapshot('EI-self-review', { state: 'blocked', admission: 'unreviewed', assignee: 'su-reviewer' }),
+      payload: {
+        admissionReview: { state: 'pending', reviewDueAt: '2026-10-21T11:00:00Z' },
+        externalBlockers: [{ ...ownDebt, ref }],
+      },
+    });
+
+    it.each([ADMISSION_REVIEW_ALERT_KEY, `${ADMISSION_REVIEW_ALERT_KEY}:EI-self-review`])(
+      'allows ordinary overdue review past its own debt %s without removing the blocker', ref => {
+        const current = reviewSnapshot(ref);
+        expect(admissionEndpointBlock(current, now)).toBeNull();
+        expect(current).toMatchObject({ state: 'blocked', assignee: 'su-reviewer',
+          payload: { externalBlockers: [{ ref, status: 'active' }] } });
+      },
+    );
+
+    it.each([
+      { name: 'another runtime dependency', ref: 'runtime:other', kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'another item review debt', ref: `${ADMISSION_REVIEW_ALERT_KEY}:EI-other`, kind: 'runtime', capability: 'live-dependency', reason: 'external-blocked' },
+      { name: 'a human product decision', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'human', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'an owner credential', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'human', capability: 'credential', reason: 'owner-blocked' },
+      { name: 'a runtime product decision', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'runtime', capability: 'product-decision', reason: 'external-blocked' },
+      { name: 'a malformed runtime capability', ref: ADMISSION_REVIEW_ALERT_KEY, kind: 'runtime', capability: 'unsupported', reason: 'external-blocked' },
+    ])('preserves $name even while reviewing its own overdue debt', ({ ref, kind, capability, reason }) => {
+      const current = reviewSnapshot();
+      current.payload = { ...current.payload, externalBlockers: [ownDebt, { ...ownDebt, ref, kind, capability }] };
+      expect(admissionEndpointBlock(current, now)).toMatchObject({ reason });
+    });
+
+    it('keeps the exception confined to an overdue claimed pending review', () => {
+      const current = reviewSnapshot();
+      expect(admissionEndpointBlock(current)).toMatchObject({ reason: 'claimed' });
+      expect(admissionEndpointBlock({ ...current, assignee: null }, now)).toMatchObject({ reason: 'blocked-state' });
+      for (const admissionReview of [
+        { state: 'reviewed', reviewDueAt: '2026-10-21T11:00:00Z' },
+        { state: 'pending', reviewDueAt: '2026-10-21T13:00:00Z' },
+        { state: 'pending', reviewDueAt: 'invalid' },
+      ]) {
+        expect(admissionEndpointBlock({ ...current, payload: { ...current.payload, admissionReview } }, now))
+          .toMatchObject({ reason: 'claimed' });
+      }
+      expect(admissionEndpointBlock({ ...current, origin: 'remote' }, now)).toMatchObject({ reason: 'remote-owned' });
+      expect(admissionEndpointBlock({ ...current, payload: { ...current.payload, _claimHold: true } }, now))
+        .toMatchObject({ reason: 'claim-held' });
+      expect(admissionEndpointBlock({ ...current, payload: { ...current.payload,
+        externalBlockers: [{ ...ownDebt, capabilitySource: 'legacy-inferred' }] } }, now))
+        .toMatchObject({ reason: 'external-blocked' });
     });
   });
 

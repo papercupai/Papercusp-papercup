@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "retained-cloudflare-worker-version-observation",
+  "workItem": "WI-6554700010025561",
+  "scriptName": "papercusp-cupboard",
+  "baseUrl": "https://papercusp-cupboard.aviynw.workers.dev",
+  "versionId": "968092d7-beeb-4bdb-a1b3-3953d4b9fefc",
+  "versionNumber": 35,
+  "versionCreatedAt": "2026-10-26T19:27:28.906788Z",
+  "versionSource": "wrangler",
+  "script": {
+    "etag": "f0f5bb5e132a6b85843da0ee066fb62794f96e4f9307257e4568176048a6de20",
+    "handlers": ["fetch", "scheduled"],
+    "last_deployed_from": "wrangler"
+  },
+  "scriptRuntime": {
+    "compatibility_date": "2026-04-01",
+    "compatibility_flags": ["nodejs_compat"],
+    "usage_model": "standard"
+  },
+  "bindingDeclarations": [
+    {"name": "COUNTERS", "type": "kv_namespace"},
+    {"name": "CUPBOARD_HOST", "type": "plain_text"},
+    {"name": "CUPBOARD_OPERATOR_GITHUB_IDS", "type": "plain_text"},
+    {"name": "DB", "type": "d1"},
+    {"name": "ENVIRONMENT", "type": "plain_text"},
+    {"name": "GCS_BUCKET", "type": "plain_text"},
+    {"name": "GCS_SERVICE_ACCOUNT_JSON", "type": "secret_text"},
+    {"name": "INDEXER_BATCH_SIZE", "type": "plain_text"},
+    {"name": "IP_HASH_PEPPER", "type": "secret_text"},
+    {"name": "RATE_PER_IP_LIST_PER_MINUTE", "type": "plain_text"},
+    {"name": "RATE_PER_USER_PUBLISH_HOURLY", "type": "plain_text"},
+    {"name": "RATE_PER_USER_REPORT_HOURLY", "type": "plain_text"},
+    {"name": "RELEASE_PATH_PREFIX", "type": "secret_text"},
+    {"name": "STRIPE_SECRET_KEY", "type": "secret_text"},
+    {"name": "STRIPE_WEBHOOK_SECRET", "type": "secret_text"}
+  ],
+  "provenance": {
+    "sourceFile": "/tmp/f9dd6-p002-production-worker-version.json",
+    "sourceFileSha256": "cc1d9a6860c47668e54359bb444f1b3a60d6dfb212b93fd92bf88d102a39d8a6",
+    "preservedFrom": "Original production deployment version readback already referenced by p002-production-live.json. No Cloudflare request was repeated.",
+    "observedAt": "unknown: original GET readback time was not recorded; versionCreatedAt is the version creation time, not a measurement timestamp.",
+    "projection": "Preserves deployment/version metadata and binding names/types. Omits credentials, binding values and author contact details."
+  },
+  "freshness": {
+    "serverMeasuredEnvironmentFingerprint": null,
+    "currentDeployment": "unknown",
+    "independentAcceptance": false,
+    "providerGap": "EI-27073086529997529",
+    "limitation": "Historical observation only. Does not establish the current active deployment, current Worker version, a remote runtimeUnits identity or live acceptance."
+  }
+}

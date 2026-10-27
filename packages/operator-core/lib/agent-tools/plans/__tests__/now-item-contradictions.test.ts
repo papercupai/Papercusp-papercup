@@ -290,6 +290,35 @@ describe('detectNowItemContradictions', () => {
       expect(detectNowItemContradictions(proposed)).toEqual([]);
     });
 
+    it('accepts canonical close-contract evidence for versioned plan clauses', () => {
+      const proposed = parsePlan(
+        EXACT_REPRO_CURRENT.replace(
+          '**State:** P-001 is done.',
+          '**State:** P-001 is done. Five current P-002 clauses passed the canonical close contract.',
+        ),
+      );
+
+      expect(detectNowItemContradictions(proposed)).toEqual([]);
+    });
+
+    it.each([
+      'Five current P-002 clauses have not passed the canonical close contract yet.',
+      'Five current P-002 clauses will pass the canonical close contract.',
+      'Pass the current P-002 clauses before continuing.',
+      'P-002 clauses passed to the worker.',
+    ])('still flags clause wording without completed close-contract evidence: %s', (state) => {
+      const proposed = parsePlan(
+        EXACT_REPRO_CURRENT.replace(
+          '**State:** P-001 is done.',
+          `**State:** P-001 is done. ${state}`,
+        ),
+      );
+
+      expect(detectNowItemContradictions(proposed)).toEqual([
+        expect.objectContaining({ id: 'P-002', status: 'done' }),
+      ]);
+    });
+
     it.each([
       'P-001 has not passed 113/113 focused tests yet.',
       'P-001 will have passed 113/113 focused tests.',

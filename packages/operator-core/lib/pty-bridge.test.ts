@@ -7,13 +7,15 @@
 import { describe, it, expect, afterEach, afterAll, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 
 const governorMocks = vi.hoisted(() => ({
   finish: vi.fn(async () => true),
   cancel: vi.fn(async () => true),
   begin: vi.fn(),
 }));
-vi.mock('./resource-governor/execution', () => ({
+vi.mock('./resource-governor/execution', async (importOriginal) => ({
+  settleGovernedExecutionInBackground: (await importOriginal<typeof import('./resource-governor/execution')>()).settleGovernedExecutionInBackground,
   governedExecutionRuntime: () => ({ governor: {}, driver: {} }),
   beginGovernedExecution: (...args: unknown[]) => governorMocks.begin(...args),
 }));
@@ -106,6 +108,34 @@ async function waitForOutput(id: string, predicate: (s: string) => boolean, time
 }
 
 describe('xterm ESM export shape (EI-13212)', () => {
+  it('spawns and serializes a PTY under the production Node/tsx loader', () => {
+    // Vitest resolves xterm's module build and masks Node's CJS namespace
+    // shape. Exercise the source loader in a separate native process too.
+    const source = `
+      import { spawnPty, getHistory, getScreenSerialization, killPty } from ${JSON.stringify(new URL('./pty-bridge.ts', import.meta.url).href)};
+      const scope = { tenantId: 'native-test', workspaceId: 'native-test', harnessSlug: 'native-test', hostId: 'native-test', principalId: 'native-test' };
+      let handle;
+      try {
+        handle = spawnPty({ accessScope: scope, command: process.execPath,
+          args: ['-e', "process.stdout.write('NATIVE_XTERM_READY\\\\n'); setTimeout(() => {}, 100)"],
+          cwd: process.cwd(), inheritEnv: false, env: { PATH: process.env.PATH }, cols: 80, rows: 24 });
+        const until = Date.now() + 5000;
+        while (!getHistory(handle.id, scope)?.includes('NATIVE_XTERM_READY') && Date.now() < until)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        const screen = await getScreenSerialization(handle.id, scope);
+        if (!screen?.includes('NATIVE_XTERM_READY')) throw new Error('native PTY screen missing output');
+        console.log('NATIVE_PTY_SERIALIZATION_PASS');
+      } finally {
+        if (handle) killPty(handle.id, scope);
+      }
+      process.exit(0);
+    `;
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], {
+      cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 20_000,
+    });
+    expect(output).toContain('NATIVE_PTY_SERIALIZATION_PASS');
+  }, 25_000);
+
   // Regression for the Rolldown IMPORT_IS_UNDEFINED production-build warning:
   // getHeadlessTerminal/getSerializeAddon used to fall back to
   // `(ns as any).default?.X`. Node's own CJS-interop (via "main") always
@@ -131,6 +161,29 @@ describe('xterm ESM export shape (EI-13212)', () => {
 });
 
 describe('pty-bridge', () => {
+  it('observes and retries a rejected governed PTY exit settlement', async () => {
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const handle = await spawnGovernedPty({
+      accessScope: TEST_SCOPE, command: 'bash', args: ['-c', 'sleep 30'],
+      cwd: process.cwd(), cols: 80, rows: 24,
+    }, { workspaceId: TEST_SCOPE.workspaceId, idempotencyKey: 'retry-pty', owner: TEST_SCOPE.principalId });
+    liveIds.push(handle.id);
+    vi.useFakeTimers();
+    try {
+      governorMocks.finish.mockRejectedValueOnce(new Error('release unavailable'));
+      for (const onExit of handle.onExit) onExit(0, 0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(governorMocks.finish).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('lease retained'), expect.anything());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(governorMocks.finish).toHaveBeenCalledTimes(2);
+      expect(governorMocks.cancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      warning.mockRestore();
+    }
+  });
+
   it('holds a durable admission lease until the governed PTY exits', async () => {
     const handle = await spawnGovernedPty({
       accessScope: TEST_SCOPE,

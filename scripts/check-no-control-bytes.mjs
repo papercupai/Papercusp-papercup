@@ -83,6 +83,14 @@ export const ALLOW_PREFIXES = [
 // and either producer layout receives the same policy as the sibling source guards.
 const GENERATED_NATIVE_FIXTURE_RE = /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/;
 
+// The executed-inputs recorder retains the exact transformed/evaluator bytes at
+// <capture>.json.modules/<sha256>.js, and the capture manifest pins their digest
+// and length. Transforms can contain raw string sentinels even when authored
+// source uses escapes. Rewriting these bytes would invalidate that evidence.
+// Exempt only hash-named snapshots in the evidence tree; manifests, authored
+// files and similarly named directories elsewhere remain covered.
+const GENERATED_EVALUATOR_EVIDENCE_RE = /^docs\/evidence\/(?:[^/]+\/)*[^/]+\.json\.modules\/[a-f0-9]{64}\.js$/;
+
 /**
  * Vendored dependency trees are never hand-authored source.
  *
@@ -136,6 +144,7 @@ export function isScannedPath(file) {
   return (
     SOURCE_EXTENSIONS.has(extensionOf(file)) &&
     !GENERATED_NATIVE_FIXTURE_RE.test(file) &&
+    !GENERATED_EVALUATOR_EVIDENCE_RE.test(file) &&
     !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix))
   );
 }

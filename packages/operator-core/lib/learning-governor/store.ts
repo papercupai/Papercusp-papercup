@@ -42,6 +42,7 @@ import {
 } from './spend';
 import type { LearningSpend } from '../experiment/types';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
+import { isModelRequestId } from '../observability/tracing';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
@@ -803,6 +804,9 @@ export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearni
   const identity = { attemptId: value.attemptId, manifestSha256: value.manifestSha256, armId: value.armId,
     transport: value.transport, accountId: value.accountId, credentialHeader: value.credentialHeader,
     credentialSha256: value.credentialSha256, target: value.target, bodySha256: value.bodySha256, clockId: value.clockId,
+    ...(value.anthropicVersion === undefined ? {} : { anthropicVersion: value.anthropicVersion }),
+    ...(value.anthropicBeta === undefined ? {} : { anthropicBeta: value.anthropicBeta }),
+    ...(value.gatewayRequestId === undefined ? {} : { gatewayRequestId: value.gatewayRequestId }),
     ...(value.nativeSessionId === undefined && value.nativeTurnId === undefined ? {} :
       { nativeSessionId: value.nativeSessionId, nativeTurnId: value.nativeTurnId }) };
   if (!text(q.workspaceId) || !text(q.reservationId) || value.reservationRef !== q.reservationId ||
@@ -810,6 +814,12 @@ export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearni
       ![identity.manifestSha256, identity.credentialSha256, identity.bodySha256].every(sha) ||
       !['oauth-http', 'bearer-http', 'anthropic-http'].includes(identity.transport) ||
       !['authorization', 'x-api-key'].includes(identity.credentialHeader)) return { ok: false, reason: 'invalid-result' };
+  if ((identity.anthropicVersion !== undefined || identity.anthropicBeta !== undefined) &&
+      (identity.transport !== 'anthropic-http' ||
+        ![identity.anthropicVersion, identity.anthropicBeta].every(header => header === null || text(header) && !/[\r\n]/.test(header))))
+    return { ok: false, reason: 'invalid-result' };
+  if (identity.gatewayRequestId !== undefined && !isModelRequestId(identity.gatewayRequestId))
+    return { ok: false, reason: 'invalid-result' };
   if ((identity.nativeSessionId !== undefined || identity.nativeTurnId !== undefined) &&
       ![identity.nativeSessionId, identity.nativeTurnId].every(id => typeof id === 'string' &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) return { ok: false, reason: 'invalid-result' };
@@ -851,7 +861,9 @@ export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearni
     let note: Record<string, unknown>;
     try { note = JSON.parse(String(rows[0].note)); } catch { return { ok: false, reason: 'identity-mismatch' as const }; }
     const attempt = note?.nativeGatewayAttempt as Record<string, unknown> | undefined;
-    if (!attempt || Object.entries(identity).some(([key, expected]) => attempt[key] !== expected)) return { ok: false, reason: 'identity-mismatch' as const };
+    if (!attempt || attempt.gatewayRequestId !== identity.gatewayRequestId ||
+        attempt.anthropicVersion !== identity.anthropicVersion || attempt.anthropicBeta !== identity.anthropicBeta ||
+        Object.entries(identity).some(([key, expected]) => attempt[key] !== expected)) return { ok: false, reason: 'identity-mismatch' as const };
     const prior = note.nativeGatewayAttemptResult as Record<string, unknown> | undefined;
     if (prior && JSON.stringify(prior) === JSON.stringify(snapshot)) return { ok: true };
     if (prior && (prior.outcome !== 'response-headers' ||

@@ -972,7 +972,12 @@ describe('background jobs', () => {
     const final = getJob(job.id)!;
     expect(final.status).toBe('failed');
     expect(final.exitCode).toBe(127);
-    expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
+    // The service writes its raw completed/0 marker before the host normalizes
+    // this missing command to failed/127. The host appends through an async
+    // WriteStream, so terminal in-memory status alone is not a flush barrier.
+    await vi.waitFor(() => {
+      expect(readFileSync(final.logPath, 'utf8')).toContain('status=failed');
+    }, { timeout: 10_000, interval: 25 });
   });
 
   it('persists the normalized missing-command exit code for processes:list', async () => {
@@ -1889,6 +1894,58 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('FOO=1 pnpm exec playwright test')).toBe(true);
     expect(isBackgroundTestCommand('rg -n vitest packages/operator-core')).toBe(false);
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
+  });
+
+  it('applies the finite test budget to an explicitly RTK-wrapped test command', () => {
+    const originalCommand = 'rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts';
+    expect(isBackgroundTestCommand(originalCommand)).toBe(true);
+    expect(isBackgroundTestCommand('env REF=committed rtk test -- npm run test:e2e:isolated -- e2e/content-reading.spec.ts')).toBe(true);
+    expect(isBackgroundTestCommand('rtk test -- printf "npm run test:e2e:isolated"')).toBe(false);
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({
+        command: 'printf explicit-rtk-budget',
+        originalCommand,
+        cwd: STATE,
+        stateDir: STATE,
+      }, 10_000);
+      try {
+        expect(begin).toHaveBeenLastCalledWith({
+          class: 'bash-job',
+          runtimeMaxSec: 10,
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+          tasksMax: BASH_TEST_TASKS_MAX,
+        });
+        expect(complete.mock.lastCall?.[1]).toMatchObject({
+          memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES,
+          tasksMax: BASH_TEST_TASKS_MAX,
+          detail: { workloadClass: 'test-run', budgetPolicy: 'capability-bash-test-v1' },
+        });
+      } finally {
+        killJob(job);
+      }
+    } finally {
+      begin.mockRestore();
+      complete.mockRestore();
+    }
+  });
+
+  it.each([
+    ['env-wrapped isolated e2e', 'env REF=committed npm run test:e2e:isolated -- e2e/chat-streaming.spec.ts', true],
+    ['env-wrapped direct runner', 'env READY=1 npx vitest run', true],
+    ['env with quoted assignments', 'env READY="two words" pnpm exec playwright test', true],
+    ['assignments before env', 'OUTER=1 env -- INNER=1 npm run test:file -- example.test.ts', true],
+    ['maintained env verifier', 'env READY=1 bash scripts/verify-tauri-headless.sh', true],
+    ['diagnostic with runner argument', 'env READY=1 printf "npm run test:file"', false],
+    ['runner text in assignment only', 'env MESSAGE="npx vitest run" printf ready', false],
+    ['long env assignment near miss', 'env REF=' + 'a'.repeat(160) + ' printf ready', false],
+    ['long env assignment before runner', 'env REF=' + 'a'.repeat(160) + ' npm run test:e2e:isolated', true],
+  ])('budgets env command semantics for %s', (_label, command, expected) => {
+    expect(runInNewContext('classify(command)', {
+      classify: isBackgroundTestCommand,
+      command,
+    }, { timeout: 1_000 })).toBe(expected);
   });
 
   it.each([

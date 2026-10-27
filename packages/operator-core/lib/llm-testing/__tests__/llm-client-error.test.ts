@@ -14,6 +14,8 @@ import type { StatelessRequestAttempt } from '../../agent-chat-stream';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
 const events: unknown[] = [];
+const modelExpectations = vi.hoisted(() => ({ mark: vi.fn() }));
+vi.mock('../../observability/runtime', () => ({ expectSuccessfulToolModelTrace: modelExpectations.mark }));
 const diagnostics: Array<Record<string, unknown>> = [];
 let streamFailure: Error | undefined;
 // EI-315: captures the opts of the LAST runAgentChat call so a test can assert on the
@@ -302,7 +304,32 @@ describe('llmCall backend selection', () => {
     expect(modelForLlmCall('chatgpt:5.5', 'anthropic-direct')).toBe('chatgpt:5.5');
   });
 
+  it('retains each successful response identity and never records a failed model request', async () => {
+    modelExpectations.mark.mockClear();
+    const ids = [1, 2].map(n => `11111111-1111-4111-8111-111111111111:${n}`);
+    const fetchMock = vi.fn();
+    for (const id of ids) fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ output_text: 'ok',
+      usage: { input_tokens: 1, output_tokens: 1 } }),
+      { status: 200, headers: { 'x-papercusp-model-request-id': id } }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'failed' } }), { status: 500 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ output_text: 'legacy',
+      usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      const opts = { model: 'chatgpt:5.5', messages: [{ role: 'user' as const, content: 'fixture' }] };
+      await llmCall(opts); await llmCall(opts);
+      await expect(llmCall(opts)).rejects.toBeDefined();
+      expect(modelExpectations.mark.mock.calls).toEqual(ids.map(id => [id]));
+      await llmCall(opts);
+      // Missing identity remains observable so the trusted writer marks the
+      // expectation incomplete instead of silently assuming no model ran.
+      expect(modelExpectations.mark.mock.calls).toEqual([...ids.map(id => [id]), [null]]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('uses the local Codex gateway for OpenAI-family stateless calls', async () => {
+    modelExpectations.mark.mockClear();
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe('gpt-5.5');
@@ -314,7 +341,8 @@ describe('llmCall backend selection', () => {
           output_text: '{"ok":true}',
           usage: { input_tokens: 10, output_tokens: 4 },
         }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
+        { status: 200, headers: { 'content-type': 'application/json',
+          'x-papercusp-model-request-id': '11111111-1111-4111-8111-111111111111:1' } },
       );
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -328,6 +356,8 @@ describe('llmCall backend selection', () => {
       responseFormat: 'json',
       ownerId: 'system:work-item-admission-bulk-dedup:run-1',
     });
+    expect(modelExpectations.mark).toHaveBeenCalledOnce();
+    expect(modelExpectations.mark).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111:1');
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:8788/v1/responses',

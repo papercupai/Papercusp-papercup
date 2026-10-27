@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -6,7 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
-import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { contextTrimmingEnv, prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { humanToolName } from './su-session-approval-display';
 import {
@@ -18,6 +19,14 @@ import {
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 
 const nativeFunding = vi.hoisted(() => vi.fn<typeof import('./cupboard/identity-activation-gate-io').admitNativeIdentityInference>());
+const forkPreparation = vi.hoisted(() => ({ prepare: vi.fn(), register: vi.fn(), cleanup: vi.fn() }));
+vi.mock('./su-session-tracked-claude-fork', () => ({ prepareTrackedClaudeFork: forkPreparation.prepare }));
+beforeEach(() => {
+  forkPreparation.prepare.mockReset(); forkPreparation.register.mockReset(); forkPreparation.cleanup.mockReset();
+  const transcriptPath = join(dir, 'fork-parent.jsonl');
+  writeFileSync(transcriptPath, JSON.stringify({ type: 'user', uuid: 'parent-prompt', message: { role: 'user', content: 'Parent visible input' } }) + '\n');
+  forkPreparation.prepare.mockResolvedValue({ transcriptPath, register: forkPreparation.register, cleanup: forkPreparation.cleanup });
+});
 vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: nativeFunding }));
 beforeEach(() => { nativeFunding.mockReset(); nativeFunding.mockResolvedValue({ ok: true }); });
 
@@ -133,17 +142,206 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  const forkSource = { advSessionId: 60, nativeSession: { ...runtime.nativeSession,
+    ownerId: 'parent-owner', sessionId: '22222222-2222-4222-8222-222222222222', configDir: join(dir, 'parent') } };
+
+  it('forks through the SDK and waits for tracked lineage registration before readiness', async () => {
+    let release!: () => void;
+    forkPreparation.register.mockImplementation(async () => new Promise<void>(done => { release = done; }));
+    const p = peer(), engine = open(p, { forkFrom: forkSource, startupTimeoutMs: 2_000 });
+    await vi.waitFor(() => expect(forkPreparation.register).toHaveBeenCalledOnce());
+    expect(p.options()).toMatchObject({ resume: forkSource.nativeSession.sessionId, forkSession: true, sessionId: nativeId });
+    expect(engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(p.prompts).toHaveLength(0);
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && 'content' in event && event.content === 'Parent visible input')).toBe(true);
+    release(); await engine.ready;
+    expect(engine.adapter.host.snapshot().streamReady).toBe(true);
+    expect(forkPreparation.cleanup).not.toHaveBeenCalled();
+  });
+
+  it('closes the native fork and cleans its artifacts when lineage registration refuses', async () => {
+    forkPreparation.register.mockRejectedValue(new Error('lineage changed'));
+    const p = peer(), engine = open(p, { forkFrom: forkSource });
+    await expect(engine.ready).rejects.toThrow('lineage changed');
+    expect(engine.adapter.host.snapshot().streamReady).toBe(false);
+    expect(p.close).toHaveBeenCalled();
+    expect(p.prompts).toHaveLength(0);
+    expect(forkPreparation.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks a file revoked while native admission was pending', async () => {
+    const p = peer(), engine = open(p), path = join(dir, 'admission-notes.txt'), bytes = Buffer.from('private notes');
+    writeFileSync(path, bytes);
+    await engine.ready;
+    let release!: () => void;
+    nativeFunding.mockImplementationOnce(async () => { await new Promise<void>(done => { release = done; }); return { ok: true }; });
+    const turn = engine.adapter.host.startCommand({ ...command(engine), input: [{ type: 'file',
+      uri: 'project:admission-notes.txt', mediaType: 'text/plain', workspaceId: 'workspace',
+      sha256: createHash('sha256').update(bytes).digest('hex') }] });
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    chmodSync(path, 0); release();
+    await expect(turn.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_unreadable' } });
+    expect(p.prompts).toHaveLength(0);
+    expect(p.close).not.toHaveBeenCalled();
+  });
+
+  it('SU-EXEC R-6 acceptance contract: delivers typed image content and advertises only attached rich input', async () => {
+    const p = peer(), engine = open(p);
+    await engine.ready;
+    expect(engine.adapter.host.descriptor().capabilities.input?.parts).toEqual(['text', 'image', 'file']);
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9YkAAAAASUVORK5CYII=';
+    await expect(engine.adapter.host.startCommand({ ...command(engine), input: [{ type: 'image', mediaType: 'image/png', data }] }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts[0].message.content).toEqual([{ type: 'text', text: '  hi 雪\n\n' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }]);
+  });
+
+  it.each(['revoked', 'moved', 'expired', 'foreign-workspace', 'changed', 'unsupported-media'] as const)(
+    'SU-EXEC R-6 acceptance contract: refuses %s references at the SDK delivery boundary', async scenario => {
+      const root = mkdtempSync(join(dir, 'reference-'));
+      const path = join(root, 'notes.txt'), bytes = Buffer.from('Selected file answer: 雪');
+      writeFileSync(path, bytes);
+      const p = peer(), engine = open(p);
+      // The engine's authenticated project root selects authority.
+      const relativePath = path.slice(dir.length + 1);
+      const input = [{ type: 'file' as const, uri: `project:${relativePath}`, workspaceId: 'workspace',
+        sha256: createHash('sha256').update(bytes).digest('hex'), mediaType: 'text/plain' }];
+      await engine.ready;
+      await expect(engine.adapter.host.startCommand({ ...command(engine), input }).terminal)
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(p.prompts[0].message.content).toEqual([{ type: 'text', text: '  hi 雪\n\n' },
+        { type: 'text', text: `File project:${relativePath}\n${bytes.toString()}` }]);
+      if (scenario === 'revoked') chmodSync(path, 0);
+      if (scenario === 'moved') renameSync(path, join(root, 'moved.txt'));
+      if (scenario === 'changed') writeFileSync(path, 'Replacement content');
+      const replay = JSON.parse(JSON.stringify(input));
+      if (scenario === 'expired') replay[0].expiresAt = '2000-01-01T00:00:00Z';
+      if (scenario === 'foreign-workspace') replay[0].workspaceId = 'other-workspace';
+      if (scenario === 'unsupported-media') replay[0].mediaType = 'application/zip';
+      const expected = scenario === 'expired' ? 'input_expired'
+        : scenario === 'foreign-workspace' ? 'input_workspace_mismatch'
+          : scenario === 'changed' ? 'input_identity_changed'
+            : scenario === 'unsupported-media' ? 'unsupported_input_media_type' : 'input_unreadable';
+      await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: `replay-${scenario}`,
+        turnId: `replay-${scenario}`, input: replay }).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: expected } });
+      expect(p.prompts).toHaveLength(1);
+      expect(p.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves typed input refusal without closing the Claude connection', async () => {
+    const p = peer(), engine = open(p);
+    await engine.ready;
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'invalid-image',
+      input: [{ type: 'image', mediaType: 'image/jpeg', data: 'YWJj' }] }).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: { code: 'input_media_mismatch' } });
+    expect(p.prompts).toHaveLength(0);
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'after-refusal' }).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+    expect(p.close).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'prompt'] as const)('consumes complete canonical preparation at the SDK boundary (approval=%s)', async toolApproval => {
+    const p = peer();
+    const selected = { ...boot, model: 'claude-sonnet-4-6:high', envelopeEnv: {
+      ...boot.envelopeEnv, ...contextTrimmingEnv('claude'), PAPERCUSP_PLAN_SLUG: 'chosen-plan',
+      PAPERCUSP_AUTO_MODE: '1', PAPERCUSP_LAUNCH_CONTEXT_FILE: promptFile,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin', PAPERCUSP_ACCOUNT_ID: 'chosen-claude',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', PAPERCUSP_TTY: '/dev/pts/parent',
+    } };
+    const prepared = prepareSuLaunch(selected, { executionKind: 'programmatic', accountRoute: 'chosen-claude' });
+    const engine = startClaudeSuEngine(selected, binding, runtime, {
+      agentChatId: 'chat', model: 'stale-caller:low', accountRoute: 'chosen-claude',
+      query: p.factory, register: false, startupTimeoutMs: 300, toolApproval,
+    });
+    engines.push(engine); await engine.ready;
+    const actual = p.options()!;
+    // Adapter-specific additions are allowed; every prepared input survives.
+    for (const [key, value] of Object.entries(prepared.env)) expect(actual.env?.[key], key).toBe(value);
+    expect(actual).toMatchObject({ cwd: prepared.cwd, model: 'claude-sonnet-4-6', effort: 'high',
+      systemPrompt: { type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true },
+      settingSources: ['user', 'project', 'local'],
+      permissionMode: toolApproval === 'prompt' ? 'default' : 'bypassPermissions' });
+    expect(actual.env).not.toHaveProperty('PAPERCUSP_TTY');
+    expect(actual.disallowedTools).toEqual(prepared.args.filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('--disallowedTools='))
+      .flatMap(arg => arg.slice('--disallowedTools='.length).split(',')));
+    expect(actual.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent']));
+    expect(typeof actual.settings === 'object' ? actual.settings.disableAllHooks : undefined).not.toBe(true);
+    expect(actual.strictMcpConfig).not.toBe(true);
+    expect(actual.env?.CLAUDE_CONFIG_DIR).toBe(dir);
+    expect(actual.env?.PAPERCUSP_LAUNCH_CONTEXT_FILE).toBe(promptFile);
+  });
+
+  it('consumes the resolved bootstrap model and effort instead of a stale caller selection', async () => {
+    const p = peer();
+    const engine = startClaudeSuEngine({ ...boot, model: 'claude-sonnet-4-6:high' }, binding, runtime, {
+      agentChatId: 'chat', model: 'claude-opus-4-1:low', accountRoute: 'default',
+      query: p.factory, register: false, startupTimeoutMs: 300,
+    });
+    engines.push(engine);
+    await engine.ready;
+    expect(p.options()).toMatchObject({ model: 'claude-sonnet-4-6', effort: 'high', cwd: dir,
+      env: { PAPERCUSP_SID: 'su-test', CLAUDE_CONFIG_DIR: dir } });
+    expect(p.options()?.env).not.toHaveProperty('PAPERCUSP_TTY');
+  });
+
   it('awaits the exact native funding guard before writing querying input', async () => {
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     nativeFunding.mockImplementationOnce(async () => { await barrier; return { ok: true }; });
     const p = peer(), engine = open(p); await engine.ready;
+    expect(engine.adapter.host.descriptor()).toMatchObject({ identity: { backend: 'claude' }, executionKind: 'programmatic' });
     const dispatch = engine.adapter.host.startCommand(command(engine) as never);
     await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
     expect(nativeFunding).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-test', backend: 'claude' });
     expect(p.prompts).toHaveLength(0);
     release();
     await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+  });
+
+  it('cancels the admitting turn without dropping later queued inputs', async () => {
+    let release!: () => void;
+    nativeFunding.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return { ok: true };
+    });
+    const p = peer(), engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    const first = host.startCommand(command(engine));
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    const queued = { ...command(engine), type: 'queue' as const, commandId: 'after-admission', turnId: 'after-admission', content: 'keep this follow-up' };
+    const follow = host.startCommand(queued);
+    await expect(host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.interrupt).not.toHaveBeenCalled();
+    release();
+    await expect(first.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'turn_interrupted' } });
+    await expect(follow.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.message.content)).toEqual(['keep this follow-up']);
+    expect(p.prompts[0].session_id).toBe(nativeId);
+    expect(host.startCommand(queued).replayed).toBe(true);
+    expect(host.recent.filter(({ event }) => event.type === 'command_result'
+      && event.commandId === 'cmd-owner_turn' && event.status !== 'accepted')).toHaveLength(1);
+  });
+
+  it.each(['model', 'approvals'] as const)('cancels input interrupted during the %s switch', async control => {
+    let release!: () => void;
+    const switchControl = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); });
+    const p = peer();
+    const factory: NonNullable<ClaudeEngineOptions['query']> = args => Object.assign(p.factory(args),
+      control === 'model' ? { setModel: switchControl } : { setPermissionMode: switchControl });
+    const engine = open({ ...p, factory }, { model: 'claude-opus-4-1' }); await engine.ready;
+    const first = engine.adapter.host.startCommand({ ...command(engine),
+      ...(control === 'model' ? { model: 'claude-sonnet-4-6' } : { approvals: 'read-only' as const }) });
+    await vi.waitFor(() => expect(switchControl).toHaveBeenCalledOnce());
+    await expect(engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'completed' });
+    release();
+    await expect(first.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'turn_interrupted' } });
+    expect(p.prompts).toHaveLength(0);
+    expect(p.interrupt).not.toHaveBeenCalled();
+    await expect(engine.adapter.host.startCommand({ ...command(engine), commandId: 'next', turnId: 'next' }).terminal).resolves.toMatchObject({ status: 'completed' });
     expect(p.prompts).toHaveLength(1);
   });
 
@@ -602,6 +800,63 @@ describe('structured Claude SU engine', () => {
     });
   });
 
+  it('queues an explicit follow-up on the same native session with one terminal receipt', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    expect(host.descriptor().capabilities.commands.queue?.state).toBe('supported');
+    expect(host.descriptor().capabilities.commands.steer?.state).toBe('unsupported');
+    await host.startCommand(command(engine)).terminal;
+    const queued = { ...command(engine), type: 'queue' as const, commandId: 'queued-command', turnId: 'queued-turn', content: 'follow-up' };
+    const dispatched = host.startCommand(queued);
+    expect(host.startCommand(queued).replayed).toBe(true);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(p.prompts).toHaveLength(1);
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'first reply' }] } });
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await expect(dispatched.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.session_id)).toEqual([nativeId, nativeId]);
+    expect(p.prompts[0].uuid).not.toBe(p.prompts[1].uuid);
+    expect(p.prompts[1].message.content).toBe('follow-up');
+    expect(host.recent.map(({ event }) => event).filter(event => event.type === 'command_result'
+      && event.commandId === queued.commandId && event.status !== 'accepted')).toHaveLength(1);
+  });
+
+  it('holds an interrupt follow-up until both the native result and control acknowledgement settle', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    await host.startCommand(command(engine)).terminal;
+    let acknowledge!: () => void;
+    p.interrupt.mockImplementation(async () => {
+      p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true, errors: ['interrupted tool'] });
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+    });
+    const stop = host.startCommand(command(engine, 'interrupt'));
+    await vi.waitFor(() => expect(p.interrupt).toHaveBeenCalledOnce());
+    const queued = host.startCommand({ ...command(engine), type: 'queue' as const, commandId: 'after-interrupt', turnId: 'follow-up', content: 'continue' });
+    await vi.waitFor(() => expect(host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    // Drain the in-process delivery continuations before asserting absence.
+    // The lifecycle event can precede a wrongly unblocked follow-up's input.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(p.prompts).toHaveLength(1);
+    acknowledge();
+    await expect(stop.terminal).resolves.toMatchObject({ status: 'completed' });
+    await expect(queued.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts.map(prompt => prompt.session_id)).toEqual([nativeId, nativeId]);
+    expect(host.recent.some(({ event }) => event.type === 'error' && event.code === 'claude_turn_failed')).toBe(false);
+  });
+
+  it('refuses queued delivery after an uncertain interrupt acknowledgement', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    const host = engine.adapter.host;
+    await host.startCommand(command(engine)).terminal;
+    p.interrupt.mockRejectedValue(new Error('control pipe closed'));
+    await expect(host.startCommand(command(engine, 'interrupt')).terminal).resolves.toMatchObject({ status: 'refused' });
+    const follow = host.startCommand({ ...command(engine), type: 'queue' as const, commandId: 'uncertain-follow', turnId: 'follow', content: 'continue' });
+    p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true, errors: ['interrupted'] });
+    await expect(follow.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false } });
+    expect(p.prompts).toHaveLength(1);
+  });
+
   it('keeps overlapping accepted turns queued until the current reply completes', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;
@@ -760,6 +1015,28 @@ describe('structured Claude SU engine', () => {
     expect(openCards(engine)).toHaveLength(0);
     expect(engine.adapter.host.recent.filter(({ event }) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
     expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+  });
+
+  it('connects native MCP form callbacks to validated private cards and cancels them on runtime close', async () => {
+    const p = peer({ holdResult: true }), engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const signal = new AbortController().signal;
+    const invoke = (requestId: string) => p.options()!.onElicitation!({ mode: 'form', serverName: 'example',
+      message: 'Credentials', requestedSchema: { type: 'object', properties: {
+        password: { type: 'string', minLength: 8, writeOnly: true },
+      }, required: ['password'] } }, { signal, requestId });
+    const first = invoke('first');
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    const card = openCards(engine)[0];
+    expect(card.presentation).toMatchObject({ kind: 'text', sensitive: true });
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { value: 'bad' }, expectedWorkspaceId: 'workspace' }).ok).toBe(false);
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { value: 'private-answer' }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(first).resolves.toEqual({ action: 'accept', content: { password: 'private-answer' } });
+    expect(JSON.stringify(engine.adapter.host.recent)).not.toContain('private-answer');
+    const cancelled = invoke('second');
+    await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+    await engine.close();
+    await expect(cancelled).resolves.toEqual({ action: 'cancel' });
   });
 
   it('turns a deferred tools_invoke AskUserQuestion into a PUI choice card', async () => {

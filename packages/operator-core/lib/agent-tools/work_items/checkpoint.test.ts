@@ -5556,7 +5556,7 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
       flagged: true,
       note: expect.stringContaining('checks:[{ claim, recheck }]'),
       signals: {
-        inFlight: expect.arrayContaining(['not yet diagnosed']),
+        inFlight: expect.arrayContaining(['still running']),
         // The trailing sentence period must not ride along into the echoed path.
         runRefs: ['/tmp/affected-9182.log'],
       },
@@ -5633,6 +5633,51 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(result.unreadRunLint).toMatchObject({
       flagged: true,
       signals: { inFlight: ['in-flight'], runRefs: ['/tmp/typecheck.log'] },
+    });
+  });
+
+  it('does not pair a negated second-worker launch with a peer-owned diff', async () => {
+    const body = [
+      'The checkpoint preserves peer-owned source evidence from su-56361318.',
+      'No second worker was launched.',
+      'Preserved artifact: /tmp/su56361-launcher-source-loss-preserved.diff.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-PEER-DIFF', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-PEER-DIFF', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('does not pair historical launch prose with already-read JSON captures', async () => {
+    const body = [
+      'Historical note: an independent auditor was launched during the earlier recovery.',
+      'Read captures: /tmp/su45-rubric3-exact.json and /tmp/su45-meta5-exact.json.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-HISTORICAL-CAPTURES', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-HISTORICAL-CAPTURES', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('keeps an affirmative launched test with its output log as a positive control', async () => {
+    const body = 'The verification test suite was launched; output: /tmp/verification-suite.log.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-LAUNCHED-POSITIVE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-LAUNCHED-POSITIVE', checkpoint: body });
+
+    expect(result.unreadRunLint).toMatchObject({
+      flagged: true,
+      signals: { inFlight: ['launched'], runRefs: ['/tmp/verification-suite.log'] },
     });
   });
 

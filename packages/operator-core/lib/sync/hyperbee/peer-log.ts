@@ -38,6 +38,7 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { CancellableRead, PrefetchRange } from './read-merge';
 import { attachBorrowedCore, resolveRemoteCoreHost } from './remote-core-host';
 import { trackDetached } from '../../detached-imports';
+import { stampOpHlc } from './hlc-stamp';
 
 /**
  * A single-writer op envelope. This is the `OpEnvelope` shape MINUS the
@@ -60,11 +61,10 @@ export interface PeerLogOp {
   author_pubkey: string;
   /**
    * Hybrid Logical Clock stamp (D-003), `encodeHlc`-encoded (sortable string).
-   * Stamped at the append seam (`boot.ts` `handle.append`, P-010) for every
-   * LWW-federated write, so `lwwPick` orders cross-peer conflicts by causal HLC
-   * instead of bare wall-clock `ts` (skew-robust + happens-before across
-   * machines). Optional + additive: ops written without it (e.g. the
-   * append-only, never-LWW claim path, or pre-P-010 history) fall back to `ts`.
+   * Stamped and validated at decoded own-log append boundaries, including
+   * append-only claims. Remote projection refuses missing or malformed clocks.
+   * Optional in this historical wire type so pre-HLC data can still be decoded
+   * and inspected by compatibility utilities.
    * Round-trips through `valueEncoding:'json'` like every other field.
    */
   hlc?: string;
@@ -322,12 +322,12 @@ export async function openNamedLog(
 
   return {
     async append(op: PeerLogOp): Promise<void> {
-      await appendUnlessHeld(() => core.append(op));
+      await appendUnlessHeld(() => core.append(stampOpHlc(op)));
     },
     async appendBatch(ops: PeerLogOp[]): Promise<void> {
       if (ops.length === 0) return;
       // Hypercore's append accepts an array of blocks — one batch, one flush.
-      await appendUnlessHeld(() => core.append(ops));
+      await appendUnlessHeld(() => core.append(ops.map(op => stampOpHlc(op))));
     },
     async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
       while (appendHold) await appendHold;
@@ -339,7 +339,7 @@ export async function openNamedLog(
         await Promise.allSettled([...inFlightAppends]);
         return await fn({
           async appendBatch(ops: PeerLogOp[]): Promise<void> {
-            if (ops.length > 0) await core.append(ops);
+            if (ops.length > 0) await core.append(ops.map(op => stampOpHlc(op)));
           },
           appendRawBatch: appendRawNow,
         });

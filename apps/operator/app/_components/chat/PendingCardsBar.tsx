@@ -89,7 +89,8 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   // two surfaces never disagree on which card is "front of queue".
   // Local-dismiss filter is applied before selection: a card the user
   // dismissed here is hidden from both surfaces' focus.
-  const visibleCards = cards.filter((c) => !dismissed.has(c.correlationId));
+  const visibleCards = cards.filter((c) => (!c.workspaceId || c.workspaceId === workspaceId)
+    && !dismissed.has(c.correlationId));
   const head = selectFocusedCard(visibleCards);
   if (head === null) return null;
   const remaining = visibleCards.length - 1;
@@ -104,7 +105,7 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
     setError(null);
     const correlationId = head.correlationId;
     try {
-      const r = await postCardResponse(conversationId, {
+      const r = await postCardResponse(head.conversationId ?? conversationId, {
         correlationId,
         workspaceId,
         ...body,
@@ -168,7 +169,7 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
       .filter((c) => c.runId === runId)
       .map((c) => c.correlationId);
     try {
-      const r = await postRunCancel(conversationId, { runId, workspaceId });
+      const r = await postRunCancel(head.conversationId ?? conversationId, { runId, workspaceId });
       if (!r.ok) {
         setError(r.error ?? `run-cancel failed (${r.status})`);
       } else {

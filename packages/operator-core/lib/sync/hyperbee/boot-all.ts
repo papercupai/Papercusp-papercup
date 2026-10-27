@@ -34,6 +34,7 @@
 
 import { existsSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
+import { dogfoodHiveDisabled } from '../../harness/dogfood-hive-kill-switch';
 import type { ProjectEntry } from '../../harness-registry';
 import { join } from 'node:path';
 import {
@@ -641,8 +642,10 @@ export interface BootSingleResult {
   harnessSlug: string;
   state: 'booted' | 'already-booted' | 'failed' | 'deferred';
   error?: string;
-  /** Present on `state:'deferred'` — why the activation policy left it dark. */
-  deferReason?: 'inactive';
+  /** Present on `state:'deferred'` — why it was left dark: the activation policy
+   *  (`inactive`), or the dogfood-hive kill switch (`dogfood-hive-disabled`,
+   *  WI-6554700010029282). */
+  deferReason?: 'inactive' | 'dogfood-hive-disabled';
 }
 
 export interface BootAllOpts {
@@ -839,6 +842,28 @@ export async function defaultResolveSwarmBinding(
 }
 
 /** Boot a single (workspace, harness). Idempotent; safe to race. */
+/**
+ * WI-6554700010029282: is this the dogfood hive on a box that disabled it?
+ *
+ * `PAPERCUSP_DISABLE_DOGFOOD_HIVE=1` must keep a box OFF the production hive even
+ * when its harness registry already carries the dogfood harness from an earlier
+ * boot: the bootstrap gate only stops a NEW join, while this path boots whatever the
+ * registry lists. The constants load only when the switch is set, so the normal
+ * boot path pays nothing for them. Rationale: harness/dogfood-hive-kill-switch.ts.
+ */
+export async function isDisabledDogfoodHive(
+  workspaceId: string,
+  harnessSlug: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  if (!dogfoodHiveDisabled(env)) return false;
+  const [{ PAPERCUSP_WORKSPACE_ID }, { PAPERCUSP_HIVE_SLUG }] = await Promise.all([
+    import('../../harness/papercusp-workspace'),
+    import('../../harness/ensure-papercusp-hive'),
+  ]);
+  return workspaceId === PAPERCUSP_WORKSPACE_ID && harnessSlug === PAPERCUSP_HIVE_SLUG;
+}
+
 export async function bootSingleHarness(
   workspaceId: string,
   harnessSlug: string,
@@ -870,6 +895,18 @@ export async function bootSingleHarness(
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
+  // WI-6554700010029282: the dogfood-hive kill switch also governs the SUBSTRATE.
+  // Checked first and for every caller (startup sweep, rekey, reboot-on-access,
+  // injected factories): opening this store IS the wiring the switch forbids, and on
+  // a dev box it is the dev fleet's own Corestore. 'deferred', not 'failed', so the
+  // partial-failure retry never re-attempts it.
+  if (await isDisabledDogfoodHive(workspaceId, harnessSlug)) {
+    console.warn(
+      `[boot-all] ${k}: not booting the dogfood hive substrate — PAPERCUSP_DISABLE_DOGFOOD_HIVE=1 ` +
+        '(its registry entry predates the switch; this box stays off the production hive).',
+    );
+    return { workspaceId, harnessSlug, state: 'deferred', deferReason: 'dogfood-hive-disabled' };
+  }
   // A failed migration gate is an explicit routing decision, not an invitation
   // to wait out SUBSTRATE_ROUTING_WAIT_MS. The host has withheld the
   // schema-dependent background plane; starting a local engine here could

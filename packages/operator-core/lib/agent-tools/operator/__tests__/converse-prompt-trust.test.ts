@@ -41,8 +41,7 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../memory/injection-block-cache', () => ({
   getMemoryBlockBounded: vi.fn(async (_ws: string, _k: string, build: () => Promise<string | null>) => build()),
 }));
-vi.mock('../../../harness-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../harness-registry')>()),
+vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'demo' }] })),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-test') }));

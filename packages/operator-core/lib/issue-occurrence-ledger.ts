@@ -11,6 +11,7 @@ import type { AdmissionIdentity } from './harness/improvements/digest';
 import { recordTelemetryReport } from './record-telemetry';
 import { TELEMETRY_KINDS } from './telemetry-kinds';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
 const SLOW_CAPTURE_OCCURRENCE_TELEMETRY_MS = 500;
@@ -262,7 +263,7 @@ export async function readIssueAdmissionPressure(
              (SELECT count(*)
                 FROM harness_shared.work_items wi
                 JOIN scope s ON s.workspace_id = wi.workspace_id AND s.harness_slug = wi.harness_slug
-               WHERE wi.item_kind IN ('bug', 'change', 'task')
+               WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
                  AND NOT harness_shared.work_item_status_is_terminal(wi.status)) AS canonical_stock,
              coalesce((SELECT array_agg(count ORDER BY count DESC) FROM cluster_counts), ARRAY[]::bigint[])
                AS canonical_cluster_counts,

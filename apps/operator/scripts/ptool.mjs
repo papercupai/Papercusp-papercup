@@ -86,6 +86,7 @@ import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } f
 export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
 export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
 const DEFAULT_MCP_STAGING_PROXY_PORT = '9171';
+const DEFAULT_MCP_STAGING_OPERATOR_PORT = '3170';
 
 /**
  * @typedef {{
@@ -241,6 +242,22 @@ function resolveLauncherManagedStagingProxyCandidate(operatorUrl, env) {
 }
 
 /**
+ * Resolve the direct staging operator as a catalog-only recovery candidate.
+ * It is available only alongside the existing launcher-managed legacy-proxy
+ * recovery and never replaces an explicit --url pin. Callers must validate the
+ * exact requested tool and its serving generation before dispatch.
+ * @param {string} operatorUrl
+ * @param {EnvironmentMap} env
+ * @param {string | null} [explicitUrl]
+ * @returns {string | null}
+ */
+export function resolveLauncherManagedStagingDirectCandidate(operatorUrl, env, explicitUrl = null) {
+  if (typeof explicitUrl === 'string' && explicitUrl.trim()) return null;
+  if (!resolveLauncherManagedStagingProxyCandidate(operatorUrl, env)) return null;
+  return `http://127.0.0.1:${DEFAULT_MCP_STAGING_OPERATOR_PORT}`;
+}
+
+/**
  * Resolve the implicit operator candidates for ptool. An operator-host shell
  * can retain a dead PAPERCUSP_HONO_PORT after its per-session host exits; the
  * canonical green operator is still a safe recovery target in that case.
@@ -345,6 +362,19 @@ export function resolvePtoolRecoveryTool(toolName, callArgs, tools = []) {
 }
 
 /**
+ * Whether a catalog proves a current generation for the exact requested tool.
+ * For tools:invoke, validate its nested target rather than the wrapper.
+ * @param {string | null | undefined} toolName
+ * @param {unknown} callArgs
+ * @param {ToolCatalogEntry[]} tools
+ */
+export function hasCurrentPtoolServingGeneration(toolName, callArgs, tools = []) {
+  const tool = resolvePtoolRecoveryTool(toolName, callArgs, tools);
+  const generation = tool?._meta?.['papercusp/servingGeneration'];
+  return typeof generation === 'string' && generation.trim().length > 0;
+}
+
+/**
  * Return whether the catalog proves that the requested named call is
  * read-only. For a `tools:invoke` wrapper this deliberately follows the
  * nested target; the generic wrapper's annotation describes the transport,
@@ -358,17 +388,15 @@ export function isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools = []) {
 }
 
 /**
- * Decide whether a launcher-managed same-host read recovery should be tried
- * when the initial catalog is legacy. The legacy catalog's annotations are
- * not authoritative: it can mark a read-only tool as writable while omitting
- * the serving-generation marker. The recovery candidate must still prove the
- * read-only annotation and current generation before dispatch (the caller
- * performs that check after listing the candidate).
+ * Decide whether a launcher-managed catalog recovery should be tried when the
+ * initial catalog is legacy. The legacy catalog's annotations are not
+ * authoritative; the caller must validate the candidate's exact target and
+ * serving generation before deciding whether to dispatch.
  * @param {{toolName?: string, tool?: ToolCatalogEntry | null,
  *   initialGeneration?: unknown, recoveryIndex?: number,
  *   operatorUrl?: string, operatorCandidates?: string[]}} options
  */
-export function shouldAttemptManagedReadRecovery({
+export function shouldAttemptManagedCatalogRecovery({
   toolName,
   tool,
   initialGeneration,
@@ -382,13 +410,26 @@ export function shouldAttemptManagedReadRecovery({
   return operatorCandidates?.[recoveryIndex] !== operatorUrl;
 }
 
+// Kept as a named export for existing read-recovery callers. The predicate is
+// catalog-scoped; the caller decides whether the candidate may dispatch.
+export function shouldAttemptManagedReadRecovery(options = {}) {
+  return shouldAttemptManagedCatalogRecovery(options);
+}
+
 /**
  * Apply the fallback safety gate to a direct call or to a nested
  * `tools:invoke` call. The outer wrapper is intentionally generic, so its
  * annotation alone must not reject a nested target already proven read-only.
  */
-export function canDispatchPtoolOnFallback(toolName, callArgs, tool, tools, fallbackUsed) {
-  return !fallbackUsed || canDispatchOnFallbackOperator(tool, true) ||
+export function canDispatchPtoolOnFallback(
+  toolName,
+  callArgs,
+  tool,
+  tools,
+  fallbackUsed,
+  managedCatalogValidated = false,
+) {
+  return !fallbackUsed || managedCatalogValidated || canDispatchOnFallbackOperator(tool, true) ||
     isReadOnlyPtoolRecoveryRequest(toolName, callArgs, tools);
 }
 
@@ -529,11 +570,17 @@ export async function withPtoolConnectionPhaseTrace(trace, phase, route, operati
   try {
     const result = await operation();
     if (pending) {
-      emitPtoolConnectionTrace(trace, 'phase-complete', {
+      // Catalog recovery returns { client, tools, error } so the caller can
+      // retain the active transport for its scripted fallback. Resolving that
+      // wrapper does not mean discovery succeeded; keep its returned error
+      // visible without changing the recovery result or throwing it here.
+      const catalogError = phase === 'tools-list' ? result?.error : null;
+      emitPtoolConnectionTrace(trace, catalogError ? 'phase-attempt-failed' : 'phase-complete', {
         stage: phase,
         route,
         phaseStartedAt,
         elapsedMs: Date.now() - startedAtMs,
+        ...(catalogError ? { failureKind: classifyConnectFailure(catalogError) } : {}),
       });
     }
     return result;
@@ -551,6 +598,26 @@ export async function withPtoolConnectionPhaseTrace(trace, phase, route, operati
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Correlate each direct HTTP request with the operator's existing MCP trace.
+ * @returns {typeof fetch}
+ */
+export function createPtoolHttpTraceFetch(trace, { fetchImpl = globalThis.fetch } = {}) {
+  return (input, init) => {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    const requestTraceId = randomUUID();
+    headers.set('x-papercusp-mcp-trace-id', requestTraceId);
+    // A connection can initialize, discover repeatedly and dispatch several
+    // calls. Reusing its trace ID as the request ID would conflate settlements.
+    const requestTrace = { traceId: trace.traceId,
+      operatorConnectSequence: trace.operatorConnectSequence, requestTraceId };
+    const route = describePtoolOperatorRoute(input instanceof Request ? input.url : String(input));
+    emitPtoolConnectionTrace(requestTrace, 'http-request-start', { stage: 'http-response-headers', route });
+    return withPtoolConnectionPhaseTrace(requestTrace, 'http-response-headers', route,
+      () => fetchImpl(input, { ...init, headers }));
+  };
 }
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
@@ -1423,6 +1490,51 @@ async function readSpilledPayload(path) {
   return JSON.parse(lines[lines.length - 1]);
 }
 
+/** Recover exact bytes through the authenticated read door when a reference
+ * has no local file. Previews never supply a tool verdict. */
+async function readReferencePayload(part, envelope, readReference) {
+  const uri = part.uri;
+  if (typeof uri !== 'string' || !/^papercusp:\/\/scratch(?:-memory|-spool)?\//.test(uri)) return null;
+  const first = envelope?._projection?.cursor?.args;
+  let cursor = first?.uri === uri ? first : { uri, byte_offset: 0, byte_limit: 3072 };
+  if (cursor.byte_offset !== 0) return null;
+  const chunks = [];
+  let offset = 0, total, bodyOffset = 0;
+  for (let pageNumber = 0; pageNumber < 8192; pageNumber++) {
+    const response = await readReference(cursor);
+    if (response?.isError) return null;
+    const page = response?.structuredContent ?? tryParseJsonObject(resultToText(response, { raw: true })) ?? response;
+    if (page?.ok !== true || page.encoding !== 'base64' || typeof page.data !== 'string'
+      || page.byte_offset !== offset || !Number.isSafeInteger(page.total_bytes)
+      || page.total_bytes < 0 || page.total_bytes > 24 * 1024 * 1024
+      || (total !== undefined && total !== page.total_bytes)) return null;
+    total = page.total_bytes;
+    const bytes = Buffer.from(page.data, 'base64');
+    if (bytes.toString('base64') !== page.data || bytes.length !== page.byte_length
+      || bytes.length === 0 || offset + bytes.length > total) return null;
+    if (pageNumber === 0 && page.reference?.bodyOffsetInPayload !== undefined) {
+      bodyOffset = page.reference.bodyOffsetInPayload;
+      if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0 || bodyOffset >= total) return null;
+    }
+    chunks.push(bytes);
+    offset += bytes.length;
+    if (page.eof === true) {
+      if (offset !== total || page.next_cursor != null) return null;
+      const payload = Buffer.concat(chunks);
+      if (part.sha256 && createHash('sha256').update(payload).digest('hex') !== part.sha256) return null;
+      const text = payload.subarray(bodyOffset).toString('utf8');
+      const parsed = tryParseJsonObject(text);
+      if (parsed) return parsed;
+      const lastLine = text.trim().split('\n').at(-1);
+      return tryParseJsonObject(lastLine);
+    }
+    const next = page.next_cursor;
+    if (next?.tool !== 'capability:read' || next.args?.uri !== uri || next.args.byte_offset !== offset) return null;
+    cursor = next.args;
+  }
+  return null;
+}
+
 /**
  * Unwrap a parsed `ptool --json` reply down to the tool's own result, when it
  * is actually an OUTPUT ENVELOPE (`schemaVersion: papercusp.output-envelope/v1`)
@@ -1448,8 +1560,10 @@ async function readSpilledPayload(path) {
  * "nothing changed" via `!==`). Returns the envelope UNCHANGED when nothing
  * inside it parses: an unreadable reply must stay unreadable, never become a
  * fabricated success. `readSpill`/`fileExists` are injectable for tests.
+ * @param {any} parsed
+ * @param {{ readSpill?: typeof readSpilledPayload, fileExists?: typeof existsSync, env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  */
-export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env } = {}) {
+export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env, readReference } = {}) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
   if (parsed.schemaVersion !== OUTPUT_ENVELOPE_SCHEMA_VERSION) return parsed;
   if (!Array.isArray(parsed.content)) return parsed;
@@ -1474,16 +1588,19 @@ export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayl
         paths.push(scratchUriToPath(part.uri, { ...env, PAPERCUSP_HOME: papercuspHome({}) }));
       }
       const path = [...new Set(paths)].find(candidate => candidate && fileExists(candidate));
-      if (!path) continue;
       // The spilled payload is itself an envelope: one of its content parts
       // is the tool's JSON and the rest is advisory prose ("See also: ..."),
       // which is why this scans for a parseable object instead of trusting
       // position (the payload is not always content[0]).
       let spilled;
       try {
-        spilled = await readSpill(path);
+        try { spilled = path ? await readSpill(path) : null; } catch { spilled = null; }
+        if (!spilled && readReference) spilled = await readReferencePayload(part, parsed, readReference);
       } catch {
         continue;
+      }
+      if (spilled && Object.prototype.hasOwnProperty.call(spilled, 'ok')) {
+        return mergeUnwrappedMetadata(spilled, parsed._meta);
       }
       for (const spilledPart of spilled?.content ?? []) {
         const candidate = tryParseJsonObject(spilledPart?.text);
@@ -2071,6 +2188,10 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 export const PTOOL_LOCKS_LIST_TIMEOUT_MS = 90_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  // EI-26744165425362332: pruning allows 90s for deletion/VACUUM and
+  // completion receipts, plus 5s MCP settlement. A 30s client cutoff hid a
+  // successful prune. The same budget applies through tools:invoke below.
+  ['storage:prune', 100_000],
   // EI-25679147891530264: graph:query permits a 60s compiler worker plus
   // a bounded runtime-source join inside its declared 90s handler budget.
   // Let the 95s MCP deadline return either an answer or the typed worker error;
@@ -2458,6 +2579,12 @@ export function timeoutForTool(toolName, callArgs) {
   const effectiveArgs = toolName === 'tools:invoke' && callArgs?.args && typeof callArgs.args === 'object'
     ? callArgs.args
     : callArgs;
+  // A conformance run is non-idempotent and returns its persisted run receipt
+  // within the MCP response window. Do not abandon that receipt at the flat
+  // 30s client deadline while the server can still return a settled outcome.
+  if (effectiveToolName === 'plans:conformance' && effectiveArgs?.op === 'run') {
+    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+  }
   // This bounded audit inspects fresh upstream Git/PR evidence. Its server read
   // budget can exceed the ordinary list cutoff; preserve the foreground budget
   // for this operation on both direct and deferred routes.
@@ -3868,6 +3995,7 @@ export async function importSdkModuleWithInstallAwareness(
   specifier,
   {
     doImport = importPtoolSdkModule,
+    recoverOnInstallWait = false,
     loadInstallMutex = async () => {
       const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
       // Installed bundles have no mutable source dependency tree. Importing the
@@ -3911,6 +4039,15 @@ export async function importSdkModuleWithInstallAwareness(
           's so far); holder: ' +
           owner.trim(),
       );
+      // Scripted calls with the existing Node-only transport do not need to
+      // wait for mutable SDK files. The mutex has removed any ungranted reader
+      // marker before onWaiting; leave the installer and its lease untouched.
+      if (recoverOnInstallWait) {
+        throw Object.assign(new Error(
+          'waiting for install:safe to finish before importing ' + specifier +
+          '; return to the available Node-only scripted transport',
+        ), { code: 'PTOOL_SDK_INSTALL_WAIT' });
+      }
     },
   });
 }
@@ -3948,11 +4085,12 @@ async function ptoolEnospcFilesystemDiagnostic(error, statfsImpl) {
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string) => Promise<object>, statfsImpl?: typeof statfs}} [options]
+ * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
  */
 export async function preparePtoolConnectionModules(
   { transport: requestedTransport } = {},
-  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs } = {},
+  { importSdkModule = importSdkModuleWithInstallAwareness, statfsImpl = statfs,
+    recoverOnInstallWait = false } = {},
 ) {
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) {
@@ -3962,8 +4100,8 @@ export async function preparePtoolConnectionModules(
 
   try {
     const [clientModule, transportModule] = await Promise.all([
-      importSdkModule('@modelcontextprotocol/sdk/client/index.js'),
-      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+      importSdkModule('@modelcontextprotocol/sdk/client/index.js', { recoverOnInstallWait }),
+      importSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js', { recoverOnInstallWait }),
     ]);
     return {
       mode,
@@ -3999,6 +4137,7 @@ async function connect(
   { workspace, harness, tokenFile, transport: requestedTransport, nativeSessionOverride } = {},
   { timeoutMs } = {},
   preparedConnection,
+  trace = {},
 ) {
   const tokenPaths = resolveTokenPaths({ tokenFile });
   const tokenCandidates = tokenPaths
@@ -4050,6 +4189,7 @@ async function connect(
     const { Client, StreamableHTTPClientTransport } = preparedConnection;
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      fetch: createPtoolHttpTraceFetch(trace),
     });
     const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
     try {
@@ -4285,16 +4425,16 @@ export function toolNotOkReason(text) {
  * envelope is unwrapped (possibly reading a spill file off disk) before it is
  * ever handed to a `.ok`-checking caller — see {@link unwrapOutputEnvelope}.
  * @param {unknown} result
- * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv }} [options]
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv, readReference?: (args: Record<string, unknown>) => Promise<any> }} [options]
  * @returns {Promise<number>}
  */
-export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env } = {}) {
+export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env, readReference } = {}) {
   let text = resultToText(result, { raw });
   const rawProjectionWarning = raw ? leadingProjectionWarning(result) : '';
-  if (raw) {
+  {
     const parsed = tryParseJsonObject(text);
     if (parsed) {
-      const unwrapped = await unwrapOutputEnvelope(parsed, { env });
+      const unwrapped = await unwrapOutputEnvelope(parsed, { env, readReference });
       if (unwrapped !== parsed) text = JSON.stringify(unwrapped);
     }
   }
@@ -4327,6 +4467,11 @@ export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryE
       `ptool: the tool answered ok:false (${notOk}). The result above is complete; exiting ${PTOOL_TOOL_NOT_OK_EXIT} so a \`|| fail\` guard sees the refusal. (EI-24654733539966460)`,
     );
     return PTOOL_TOOL_NOT_OK_EXIT;
+  }
+  const parsed = tryParseJsonObject(safeText);
+  if (parsed?.schemaVersion === OUTPUT_ENVELOPE_SCHEMA_VERSION && !Object.prototype.hasOwnProperty.call(parsed, 'ok')) {
+    console.error('ptool: result reference could not be recovered; outcome unknown. The tool may have executed. Read authoritative state before retrying a write.');
+    return 1;
   }
   return 0;
 }
@@ -4481,9 +4626,15 @@ async function main() {
     resolvePtoolOperatorBase(process.env),
     process.env,
   );
+  const managedStagingDirectCandidate = resolveLauncherManagedStagingDirectCandidate(
+    resolvePtoolOperatorBase(process.env),
+    process.env,
+    args.url,
+  );
   const initiallySelectedOperatorUrl = operatorCandidates[0];
   let operatorFallbackUsed = false;
   let operatorFallbackUrl = null;
+  let managedDirectCatalogRecoveryUsed = false;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace, allWorkspaces: args.allWorkspaces });
   const harness = resolveHarnessScope({
     harness: args.harness,
@@ -4516,8 +4667,26 @@ async function main() {
     'tools-call', () => callToolWithReplayRecovery(callClient, params, options),
   );
   const tracedPrintResult = (result, options) => withInvocationPhase(
-    'result-output', () => printResult(result, options),
+    'result-output', () => printResult(result, {
+      ...options,
+      readReference: (args) => client.callTool({ name: 'capability:read', arguments: args }, undefined,
+        { timeout: PTOOL_CALL_TOOL_TIMEOUT_MS }),
+    }),
   );
+  const sdkRecoveryKey = args.idempotencyKey || randomUUID();
+  const buildSdkRecoveryInvocation = () => buildMcpCallRecoveryInvocation({
+    helperPath: resolveMcpCallRecoveryPath(),
+    toolName: args.tool,
+    callArgs: inputArgs ?? {},
+    inputKind,
+    operatorUrl,
+    workspace,
+    harness,
+    clientId: process.env.PAPERCUSP_SID,
+    idempotencyKey: sdkRecoveryKey,
+    raw: args.raw,
+    projection: args.projection,
+  });
   const connectOperator = async ({
     preferredIndex = 0, onlyCandidate = false, tokenFile = activeTokenFile, nativeSessionOverride,
   } = {}) => {
@@ -4568,7 +4737,9 @@ async function main() {
         trace,
         'sdk-bootstrap',
         null,
-        () => preparePtoolConnectionModules(prepareScope),
+        () => preparePtoolConnectionModules(prepareScope, {
+          recoverOnInstallWait: buildSdkRecoveryInvocation() !== null,
+        }),
       );
     };
     const tracedConnect = (url, connectScope, options, preparedConnection) => {
@@ -4585,7 +4756,7 @@ async function main() {
         trace,
         'mcp-initialize',
         { ...activeRoute, attempt },
-        () => connect(url, connectScope, options, preparedConnection),
+        () => connect(url, connectScope, options, preparedConnection, trace),
       );
     };
     let connected;
@@ -4647,21 +4818,8 @@ async function main() {
     // can still make progress through the immutable Node-only recovery helper
     // while install:safe drains. This branch is pre-dispatch: no MCP request
     // has been sent and the same idempotency key is safe to carry forward.
-    const recoveryKey = args.idempotencyKey || randomUUID();
     const recoveryInvocation = isSdkBootstrapInstallWait(error)
-      ? buildMcpCallRecoveryInvocation({
-          helperPath: resolveMcpCallRecoveryPath(),
-          toolName: args.tool,
-          callArgs: inputArgs ?? {},
-          inputKind,
-          operatorUrl,
-          workspace,
-          harness,
-          clientId: process.env.PAPERCUSP_SID,
-          idempotencyKey: recoveryKey,
-          raw: args.raw,
-          projection: args.projection,
-        })
+      ? buildSdkRecoveryInvocation()
       : null;
     if (recoveryInvocation) {
       console.error(
@@ -4734,6 +4892,7 @@ async function main() {
           operatorUrl,
           operatorCandidates,
         })) {
+          let managedCatalogRecoverySelected = false;
           const savedState = {
             operatorUrl,
             operatorCandidates: [...operatorCandidates],
@@ -4759,6 +4918,7 @@ async function main() {
               client = fallbackClient;
               fallbackClient = null;
               tools = fallbackTools;
+              managedCatalogRecoverySelected = true;
             } else {
               throw new Error('launcher-managed read recovery candidate did not provide a current read-only catalog entry');
             }
@@ -4769,6 +4929,60 @@ async function main() {
             operatorFallbackUsed = savedState.operatorFallbackUsed;
             operatorFallbackUrl = savedState.operatorFallbackUrl;
             activeTokenFile = savedState.activeTokenFile;
+          }
+
+          // The staging MCP proxy can itself be an older generation. Before
+          // dispatching anything, inspect the same local staging Hono port
+          // directly and accept it only when the exact target tool has a
+          // serving generation. This is a catalog selection, never a retry of
+          // an already-dispatched mutation.
+          if (
+            !managedCatalogRecoverySelected &&
+            managedStagingDirectCandidate &&
+            shouldAttemptManagedCatalogRecovery({
+              toolName: args.tool,
+              tool: initialTool,
+              initialGeneration,
+              recoveryIndex: 1,
+              operatorUrl,
+              operatorCandidates: [operatorUrl, managedStagingDirectCandidate],
+            })
+          ) {
+            const directSavedState = {
+              operatorUrl,
+              operatorCandidates: [...operatorCandidates],
+              operatorFallbackUsed,
+              operatorFallbackUrl,
+              activeTokenFile,
+            };
+            if (!operatorCandidates.includes(managedStagingDirectCandidate)) {
+              operatorCandidates.push(managedStagingDirectCandidate);
+            }
+            const directRecoveryIndex = operatorCandidates.indexOf(managedStagingDirectCandidate);
+            let directClient = null;
+            try {
+              directClient = await connectOperator({ preferredIndex: directRecoveryIndex, onlyCandidate: true });
+              const directTools = await withInvocationPhase('tools-list', () => listAllTools(directClient, {
+                retryLocalErrors: isLocalOperatorUrl(operatorUrl),
+              }));
+              if (hasCurrentPtoolServingGeneration(args.tool, inputArgs, directTools)) {
+                await closeClientQuietly(client);
+                client = directClient;
+                directClient = null;
+                tools = directTools;
+                managedCatalogRecoverySelected = true;
+                managedDirectCatalogRecoveryUsed = true;
+              } else {
+                throw new Error('launcher-managed direct staging catalog did not provide the requested tool with a current serving generation');
+              }
+            } catch {
+              if (directClient) await closeClientQuietly(directClient);
+              operatorUrl = directSavedState.operatorUrl;
+              operatorCandidates = directSavedState.operatorCandidates;
+              operatorFallbackUsed = directSavedState.operatorFallbackUsed;
+              operatorFallbackUrl = directSavedState.operatorFallbackUrl;
+              activeTokenFile = directSavedState.activeTokenFile;
+            }
           }
         }
       }
@@ -4876,7 +5090,14 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    if (!canDispatchPtoolOnFallback(toolName, inputArgs, tool, tools, operatorFallbackUsed)) {
+    if (!canDispatchPtoolOnFallback(
+      toolName,
+      inputArgs,
+      tool,
+      tools,
+      operatorFallbackUsed,
+      managedDirectCatalogRecoveryUsed,
+    )) {
       console.error(
         `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
           `because the call began at ${initiallySelectedOperatorUrl} and this tool is not marked read-only. ` +

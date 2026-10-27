@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "relatedGap": "EI-26837514199552122",
+  "clause": {
+    "id": "SPEC-P-001-PROMPT",
+    "revision": 1,
+    "fingerprint": "1a1f7b2ec4b5af42450664659c14673a0987d0dafc12f06a8f2a7491cb35c621"
+  },
+  "kind": "selected prompt archive fixture discriminability proof",
+  "acceptance": "OPEN",
+  "historicalSelection": {
+    "scorecard": "EI-26835975689458669",
+    "testRunIds": [
+      21867099,
+      21868449
+    ],
+    "status": "UNKNOWN",
+    "qualification": "The independent auditor could not establish which fixture these historical runs selected. Fresh runs do not retroactively authenticate them."
+  },
+  "repair": {
+    "path": "packages/operator-core/lib/agent-identities/idop-p001-prompt-observation.integration.test.ts",
+    "sha256": "c21c987c50e5eba46f0ea0ffe32e07c85af83dcc9619261c3e93723581e57320",
+    "behavior": "Read selected manifest bytes once and use that parsed object for archive loading. Persist its exact digest and native session in the six archive case identities; keep the independent portable case separately named.",
+    "receiptWriter": "libs/test-config/src/admin-test-runs-reporter.ts#collectTestCases",
+    "writerMeaning": "Vitest fullName is persisted as test_case_runs.case_key; the same fullName supplies passedCaseTitles."
+  },
+  "localEvidence": {
+    "capturedAt": "2026-10-24T05:59:08.339492+00:00",
+    "head": "b0b5d23760f8065b133651c0325ec0b49620eeab",
+    "testPath": "packages/operator-core/lib/agent-identities/idop-p001-prompt-observation.integration.test.ts",
+    "testSha256": "c21c987c50e5eba46f0ea0ffe32e07c85af83dcc9619261c3e93723581e57320",
+    "manifestPath": "docs/evidence/idop-p001-rendered-prompt-2026-10-24.json",
+    "manifestSha256": "ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456",
+    "runs": [
+      {
+        "fixture": "real",
+        "nativeJob": 71356,
+        "exitCode": 0,
+        "log": "/tmp/idop-p001-prompt-selected-real-20261024.log",
+        "logSha256": "fa0f1a2cf2198ed846d35dc48fa796b9391d2cfdf035c4820480d464a5a6da40",
+        "cases": [
+          {
+            "name": "P-001 portable prompt archive fixture > also exercises the portable public fixture used by the ordinary suite",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > replays the source artifact and matches the original native message exactly",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > rejects altered prompt bytes even when their manifest digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > rejects source input substitution even when the archive digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > rejects a native session substitution even when its file digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > rejects an archive/native-record substitution independently of its declared hashes",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [retained manifest sha256=ecec36e90ac92ca00aab598dfe328833cf502118f770489d17d3f4675e9cf456 nativeSession=01a16763-00b7-7042-bcb3-26dd3bbfc6bf] > rejects duplicate files and unrecorded render exclusions",
+            "state": "passed"
+          }
+        ],
+        "durableLedgerReceipt": false
+      },
+      {
+        "fixture": "portable",
+        "nativeJob": 14644,
+        "exitCode": 0,
+        "log": "/tmp/idop-p001-prompt-selected-portable-20261024.log",
+        "logSha256": "50e0b92d32d47df52fd37239a39bceaca063556893f9f0e76d9f303d3014a274",
+        "cases": [
+          {
+            "name": "P-001 portable prompt archive fixture > also exercises the portable public fixture used by the ordinary suite",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > replays the source artifact and matches the original native message exactly",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > rejects altered prompt bytes even when their manifest digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > rejects source input substitution even when the archive digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > rejects a native session substitution even when its file digest is recomputed",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > rejects an archive/native-record substitution independently of its declared hashes",
+            "state": "passed"
+          },
+          {
+            "name": "P-001 launch input replay and native delivery integration [portable synthetic fixture; no retained launch selected] > rejects duplicate files and unrecorded render exclusions",
+            "state": "passed"
+          }
+        ],
+        "durableLedgerReceipt": false
+      }
+    ]
+  },
+  "limits": [
+    "Both native jobs completed successfully, with seven passing cases each. These are working-tree runs with no surviving shared-ledger receipt; the private test database was destroyed.",
+    "Selected retained-manifest cases cite only digest/session metadata. Native prompt and archive payload bytes remain outside the repository.",
+    "Fresh committed-source evidence, canonical binding/regrading and independent acceptance remain required.",
+    "Full P001 population and argument census, historical vault acceptance, source-authentication question349651, P024 dependency, activation and shipment remain open."
+  ],
+  "next": "Use an explicit reporter-only sink for a fresh clean committed-source run. Verify persisted selected-manifest case identities before binding new evidence. Preserve the historical unknown and existing source question."
+}

@@ -27,9 +27,34 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
  * @param {string} root
  * @param {NodeJS.ProcessEnv} env
  * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @param {{ workspaceRoot: string, scriptText: string, preScript?: string, postScript?: string }} [task]
+ *   Required for npm tasks; without it this measures only a direct PATH-node launch.
+ * @param {"runtime-fingerprint" | "node-version" | null} [scheme] the identity the JUDGED tree's recorder
+ *   writes (judgedTreeRunnerIdentityScheme). `node-version` measures what a pre-fingerprint lineage
+ *   records and its skip consumer accepts (WI-6554700010029685); anything else keeps the fingerprint.
  * @returns {string | null}
  */
-export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string): string | null;
+export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string, task?: {
+    workspaceRoot: string;
+    scriptText: string;
+    preScript?: string;
+    postScript?: string;
+}, scheme?: "runtime-fingerprint" | "node-version" | null): string | null;
+/**
+ * WI-6554700010029685: the pre-fingerprint runner identity — `process.version process.platform
+ * process.arch` of the PATH node under the task env, prefixed with the proof format. This is exactly
+ * what a lineage older than d314d294ad measured in its own selector, what its recorder writes
+ * (`executedSourceRunnerIdentity`) and what its skip-list consumer compares against, so a gate judging
+ * such a lineage must measure it too. Matching it is never a widening: the judged consumer re-checks
+ * the skip list against its own worker's identity and refuses a mismatch (every file then runs).
+ *
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat]
+ * @param {(file: string, args: string[], options: object) => string} [exec]
+ * @returns {string | null} null when the node probe fails (reuse then switches off)
+ */
+export function nodeVersionRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string, exec?: (file: string, args: string[], options: object) => string): string | null;
 /**
  * Restore an explicitly identified, isolated checkpoint checkout before reuse.
  * The caller must supply the configured checkpoint and integration roots; this function

@@ -522,6 +522,14 @@ export default defineTool({
     // any of the caveats above, because it means the text genuinely occurs,
     // just not in a plain text turn.
     let toolPartCaveat: string | undefined;
+    let toolPartMatch: {
+      indexedLocator: {
+        table: string; workspace_id: string; source_kind: string; session_id: string;
+        part_idx: number; part_kind: string; tool_name: string | null;
+      };
+      indexedContent: { completeness: string; storedChars: number };
+      nativeTranscript: { path: string | null; status: string };
+    } | undefined;
     if (mode === 'verbatim' && pageHits.length === 0) {
       const pf = filters ?? {};
       const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
@@ -563,14 +571,18 @@ export default defineTool({
               '⚠ TOOL-CONTENT NOT CHECKED: the owner indexes for tool_use/tool_result are not ready, so the ' +
               'supplementary probe was skipped instead of scanning the full parts table. Zero plain-text hits do not rule out a match inside a tool call or result.';
           } else {
-            // This is an existence caveat, not a count: EXISTS lets PostgreSQL
-            // stop after the first matching payload instead of reading every
-            // owner-scoped tool part just to report an exact occurrence total.
+            // Return one exact recovery coordinate, not a count or the bounded
+            // indexed payload. LIMIT keeps the existing stop-at-first-match
+            // behavior without sending callers to the text-only reader.
             // Keep the partial-index predicates explicit as an OR so the
             // planner can BitmapOr the tool_use and tool_result owner indexes.
-            const probe = async (probeTx: typeof tx) => probeTx<Array<{ found: boolean }>>`
-              SELECT EXISTS (
-                SELECT 1
+            const toolPartPattern = `%${escapeLikeLiteral(args.query)}%`;
+            const probe = async (probeTx: typeof tx) => probeTx<Array<{
+              found: boolean; workspace_id: string; source_kind: string; session_id: string;
+              part_idx: number; part_kind: string; tool_name: string | null; stored_chars: number;
+            }>>`
+                SELECT TRUE AS found, p.workspace_id, p.source_kind, p.session_id,
+                       p.part_idx, p.part_kind, p.tool_name, char_length(p.text) AS stored_chars
                   FROM harness_shared.session_turn_parts p
                  WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
                    AND NOT ${restrictedTurnSql(probeTx, 'p', selfOwnerIds)}
@@ -580,11 +592,11 @@ export default defineTool({
                    AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
                    AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
                    AND (
-                     (p.part_kind = 'tool_result' AND p.text ILIKE '%' || ${args.query} || '%')
+                     (p.part_kind = 'tool_result' AND p.text ILIKE ${toolPartPattern})
                      OR
-                     (p.part_kind = 'tool_use' AND p.text ILIKE '%' || ${args.query} || '%')
+                     (p.part_kind = 'tool_use' AND p.text ILIKE ${toolPartPattern})
                    )
-              ) AS found
+                 LIMIT 1
             `;
             const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', async () => {
               // `sessions:search` is cross-workspace and normally receives a bare
@@ -602,13 +614,32 @@ export default defineTool({
             }, requestCorrelationId);
 
             if (toolParts?.found) {
+              const matchingPath = resolvedSelfSession?.sourceKind === toolParts.source_kind &&
+                resolvedSelfSession.sessionId === toolParts.session_id
+                ? resolvedSelfSession.filePath : null;
+              // A recovery path must be complete; never clip it into a different
+              // filename or let an unusually long path exceed the response door.
+              const nativePath = matchingPath && matchingPath.length <= 800 ? matchingPath : null;
+              toolPartMatch = {
+                indexedLocator: {
+                  table: 'harness_shared.session_turn_parts',
+                  workspace_id: toolParts.workspace_id, source_kind: toolParts.source_kind,
+                  session_id: toolParts.session_id, part_idx: toolParts.part_idx,
+                  part_kind: toolParts.part_kind, tool_name: toolParts.tool_name,
+                },
+                indexedContent: { completeness: 'may-be-truncated-at-ingest', storedChars: toolParts.stored_chars },
+                nativeTranscript: {
+                  path: nativePath, status: nativePath ? 'path-resolved-content-unverified'
+                    : matchingPath ? 'path-exceeds-response-budget' : 'unresolved',
+                },
+              };
               toolPartCaveat =
                 `⚠ FOUND, JUST NOT IN A TEXT TURN: 0 hits among plain conversational turns, but the exact string ` +
-                `appears inside a tool call or tool result in this scope (session_turn_parts, the ` +
-                `faithful-render store, kept 14 days). session_turns deliberately excludes tool_use/tool_result content ` +
-                `so recall is not flooded with tool noise — this 0 is NOT evidence the text was never written, only that ` +
-                `it is not sitting in a plain user/assistant text turn. Read the raw transcript or the specific turn ` +
-                `(sessions:read) to see the tool call/result directly before concluding anything from this 0.`;
+                `appears inside a tool call or tool result. toolPartMatch identifies one exact indexed part; ` +
+                `its stored text may be truncated at ingest. Recover complete arguments/results from that session's ` +
+                `native transcript (the returned path is unverified, or unresolved when unavailable). ` +
+                `sessions:read reads session_turns and excludes tool calls/results; it cannot recover this payload. ` +
+                `This 0 is NOT evidence the text was never written.`;
             }
           }
         } catch {
@@ -819,6 +850,7 @@ export default defineTool({
       ...(zeroHitCaveat || staleIndexCaveat || toolPartCaveat
         ? { zeroHitCaveat: [staleIndexCaveat, toolPartCaveat, zeroHitCaveat].filter(Boolean).join(' ') }
         : {}),
+      ...(toolPartMatch ? { toolPartMatch } : {}),
       // WI-10005676 / EI-19478862482607876: the engine's per-leg verdict, so a
       // search that ran lexical-only (semantic leg 0 candidates / blocked / failed)
       // says so on the result. Hybrid only — verbatim mode has no engine legs.

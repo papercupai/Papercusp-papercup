@@ -34,7 +34,7 @@
  *
  * ── Why this is NOT part of reconcileReadiness ──────────────────────────────────────────
  * Deliberate, and load-bearing. `reconcileReadiness` (readiness-reconcile.ts) is:
- *   • FEATURE-ONLY — its oracle CTE filters `item_kind <> ALL ('bug','change','task')`,
+ *   • FEATURE-ONLY — its oracle CTE filters `item_kind <> ALL (...ISSUE_FAMILY_ROUTE_KINDS)`,
  *     i.e. it structurally cannot see the ISSUE-family rows this defect lives in; and
  *   • a different INVARIANT — sidecar (`work_item_blocked`) vs oracle (`work_item_is_blocked`)
  *     drift, over a different table.
@@ -71,6 +71,7 @@ import {
   type DependencyGraphPerformanceTelemetry,
 } from './dependency-performance-budget';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 /**
  * Which relation the endpoint lives in. `work_item_deps` is now canonical for blocking;
  * coord_links is still scanned because it carries non-block relations and because any
@@ -389,7 +390,7 @@ export async function reconcileWorkItemDepEndpoints(sql: Sql = getOrgPg().sql): 
              ) AS is_issue,
              EXISTS (
                SELECT 1 FROM harness_shared.work_items f
-                WHERE f.item_kind <> ALL (ARRAY['bug','change','task'])
+                WHERE f.item_kind <> ALL (ARRAY[${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
                   AND f.feature_id = s.bare_id
                   AND (s.ref_harness IS NULL OR f.harness_slug = s.ref_harness)
              ) AS is_feature

@@ -51,6 +51,23 @@ describe('lintOwnerQuestionSlots', () => {
     expect(lintOwnerQuestionSlots("needs the owner's approval before the force-push").flagged).toBe(true);
   });
 
+  it.each([
+    'Read any new owner answer before acting on an existing R2 wall.',
+    'On the next wake, read the existing owner answer before proceeding.',
+    'Review the recorded owner answer before taking action.',
+  ])('does not treat reading an existing answer as a new question: %s', (text) => {
+    expect(lintOwnerQuestionSlots(text)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it.each([
+    'Read any new owner answer before acting. Then wait for the owner answer.',
+    'Read any new owner answer before acting; separately, ask the owner whether to migrate.',
+    'Read any new owner answer before acting; owner answer is still needed.',
+    'Read the log before acting; need owner answer to proceed.',
+  ])('still detects a real owner question around a read instruction: %s', (text) => {
+    expect(lintOwnerQuestionSlots(text).flagged).toBe(true);
+  });
+
   it('an [ask:<conversation_id>] ref on the line CLEARS it — the question is a typed record', () => {
     expect(
       lintOwnerQuestionSlots('waiting on the owner to pick the pricing model [ask:conv_8f31ab2c]').flagged,

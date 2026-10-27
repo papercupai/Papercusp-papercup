@@ -15,7 +15,9 @@ const liveRuntime = process.env.PAPERCUSP_WOE_SERVED_AUDIT === '1'
 const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.meta.url) : null;
 const posthogRuntimeUnit = process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true'
   ? process.env.PAPERCUSP_TEST_POSTHOG_RUNTIME_UNIT : null;
-const remoteRuntime = posthogRuntimeUnit ? await tsImport('./lib/remote-runtime-identity.ts', import.meta.url) : null;
+const focusedRuntimeUnit = process.env.PAPERCUSP_TEST_FOCUSED_SERVICE_LIVE === '1' ? 'focused-tsc:installed' : null;
+const externalRuntimeUnit = focusedRuntimeUnit || posthogRuntimeUnit;
+const remoteRuntime = externalRuntimeUnit ? await tsImport('./lib/remote-runtime-identity.ts', import.meta.url) : null;
 // PostHog's producer performs two parallel authenticated reads, each bounded at
 // 10s. The generic reporter deadline is intentionally 1s for local readers, so
 // declare the producer's actual boundary here instead of manufacturing a witness
@@ -35,8 +37,8 @@ export default defineVitestConfig({
   ...(profileRuntimeReader || liveRuntime || remoteRuntime ? {
     readRuntimeEnvironment: async () => {
       if (profileRuntimeReader) return profileRuntimeReader();
-      if (remoteRuntime && posthogRuntimeUnit) {
-        const units = [posthogRuntimeUnit];
+      if (remoteRuntime && externalRuntimeUnit) {
+        const units = [externalRuntimeUnit];
         const fingerprint = await remoteRuntime.measureRuntimeEnvironment([], units);
         return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
       }
@@ -51,7 +53,10 @@ export default defineVitestConfig({
         await sql.end({ timeout: 1 });
       }
     },
-    ...(remoteRuntime && posthogRuntimeUnit && !profileRuntimeReader
+    // The focused reader bounds systemd and socket reads at two seconds each.
+    ...(focusedRuntimeUnit && !profileRuntimeReader
+      ? { runtimeEnvironmentCaptureTimeoutMs: 5_000 } : {}),
+    ...(remoteRuntime && posthogRuntimeUnit && !focusedRuntimeUnit && !profileRuntimeReader
       ? { runtimeEnvironmentCaptureTimeoutMs: POSTHOG_RUNTIME_CAPTURE_TIMEOUT_MS } : {}),
   } : {}),
   globalSetup: [resolve(__dirname, 'test/_integration-substrate.globalSetup.ts')],

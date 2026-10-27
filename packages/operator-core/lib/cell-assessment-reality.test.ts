@@ -69,13 +69,14 @@ import {
   type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
 import { assessRetriage, type RetriageRunReading } from './release/in-flight-retriage';
+import { assessRunStatus, type RunStatusReading } from './release/run-status-cell';
 // ⚠ The REAL assessor, imported past the module mock below (which spreads the actual
 // module for exactly this reason): it is the SUBJECT of the goal control rows, and a
 // stubbed one would make every row assert against the mock instead of the code.
 import { assessAgentGoal } from './agent-tools/coordination/agent-goal-sources';
 import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
 import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
-import { deriveCapacityVerdict, type AdmissionTerms } from './fleet/capacity-verdict';
+import { deriveCapacityVerdict, type AdmissionTerms, type GatewayOutcomeTerms } from './fleet/capacity-verdict';
 import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
@@ -463,14 +464,24 @@ const CAPACITY_POOL = (over: Partial<ProviderPoolVerdict> = {}): ProviderPoolVer
   reason: 'assessment reality control',
   ...over,
 });
+/** A measured gateway outcome window with no refusals (the clear control). */
+const CAPACITY_OUTCOMES: GatewayOutcomeTerms = {
+  windowMinutes: 15,
+  refused: 0,
+  served: 100,
+  refusedOwners: 0,
+  topRefusedOwner: null,
+};
 const CAPACITY = (
   pool: Partial<ProviderPoolVerdict> = {},
   admission: AdmissionTerms = CAPACITY_ADMISSION,
+  outcomes: GatewayOutcomeTerms = CAPACITY_OUTCOMES,
 ) =>
   deriveCapacityVerdict({
     provider: 'claude',
     pool: CAPACITY_POOL(pool),
     admission,
+    outcomes,
   }).binding;
 
 const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
@@ -559,6 +570,30 @@ const RETRIAGE = (over: Partial<RetriageRunReading> | null) =>
         },
   );
 
+/**
+ * WI-6554700010029556 control builder. `null` is the UNMEASURED reading, distinct from a
+ * measured idle gate; the default is a live-authority run whose heartbeat is 40s old.
+ */
+const RUN_NOW = 1_793_041_000_000;
+const RUN_STARTED = RUN_NOW - 2 * 3_600_000;
+const RUN = (over: Partial<RunStatusReading> | null) =>
+  assessRunStatus(
+    over === null
+      ? null
+      : {
+          active: true,
+          activeSource: 'run-lock',
+          pid: 4242,
+          startedAtMs: RUN_STARTED,
+          elapsedSec: 7_200,
+          progressAtMs: RUN_NOW - 40_000,
+          verdictWrittenAtMs: null,
+          asOfAgeMs: 1_000,
+          ...over,
+        },
+    RUN_NOW,
+  );
+
 const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.convergence': [
     { label: 'no readable convergence record', expect: CONV(null) },
@@ -622,6 +657,18 @@ const CONTROLS: Record<string, readonly Control[]> = {
       // reading the charged counter alone reports budget remaining when there is none.
       label: 'a refire is in flight and the absolute ceiling is spent',
       expect: RETRIAGE({ totalRefires: 6, absoluteCeiling: 6 }),
+    },
+  ],
+  'gate.greenCheckpoint.run': [
+    { label: 'neither liveness read answered', expect: RUN(null) },
+    { label: 'no gate run is in flight', expect: RUN({ active: false }) },
+    { label: 'a live run whose heartbeat is advancing', expect: RUN({}) },
+    { label: 'a run that already published its verdict', expect: RUN({ verdictWrittenAtMs: RUN_NOW - 60_000 }) },
+    { label: 'a live authority sees a heartbeat 15 minutes old', expect: RUN({ progressAtMs: RUN_NOW - 15 * 60_000 }) },
+    {
+      // The D-003 collision: heartbeat == start is "never measured" as often as "just started".
+      label: 'the heartbeat equals the run start (fallback collision)',
+      expect: RUN({ progressAtMs: RUN_STARTED }),
     },
   ],
   'git.pipelinePosition': [
@@ -1151,6 +1198,10 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'burn governor is pacing an otherwise serviceable pool',
       expect: CAPACITY({ serviceable: 0, pacing: 7, atCapacity: true, binding: 'pacing-policy' }),
     },
+    {
+      label: 'gateway refused requests while both point-in-time legs read clear',
+      expect: CAPACITY({}, CAPACITY_ADMISSION, { ...CAPACITY_OUTCOMES, refused: 164, served: 714, refusedOwners: 1 }),
+    },
     { label: 'both measured legs are clear', expect: CAPACITY() },
   ],
   'agent.roleLaunch': [
@@ -1266,6 +1317,16 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'no-refire',
     'in-flight',
     'in-flight-at-cap',
+  ],
+  // WI-6554700010029556 truth table. `stalled` needs a LIVE authority, and the fallback
+  // collision stays `progress-unknown` — both inherited from certifyCheckpointProgress.
+  'gate.greenCheckpoint.run': [
+    'no-run-reading',
+    'no-run',
+    'running',
+    'decided-salvaging',
+    'stalled',
+    'progress-unknown',
   ],
   'git.pipelinePosition': [
     'live',
@@ -1390,7 +1451,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'lsp.admission': ['idle', 'active', 'pressure', 'settlement-failed', 'unknown', 'unknown'],
   'lsp.warmServers': ['healthy', 'degraded', 'unhealthy', 'unknown', 'unknown', 'unknown'],
   'lsp.readiness': ['reported', 'unproven', 'unproven', 'unproven', 'unknown', 'unknown', 'unknown', 'unknown'],
-  'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
+  'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'gateway-shed', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
   'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
   'owner.directive.status': [
@@ -1417,7 +1478,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(32);
+    expect(BUILTIN_CELLS).toHaveLength(33);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1434,7 +1495,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         VERIFICATION_HEALTH_CELLS.length +
         WORK_BUG_INFLOW_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
-    expect(PIPELINE_CELLS).toHaveLength(11);
+    expect(PIPELINE_CELLS).toHaveLength(12);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
@@ -1844,6 +1905,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       RETRIAGE({}) ?? '',
       RETRIAGE({ inRetriageWindow: undefined }) ?? '',
       'a live auto-refire must not read as a run with no rescue to discard',
+    ],
+    [
+      'gate.greenCheckpoint.run',
+      'gate.run.progressAgeSec',
+      RUN({}) ?? '',
+      RUN({ progressAtMs: RUN_NOW - 15 * 60_000 }) ?? '',
+      'a wedged run must not read as an advancing one',
     ],
     [
       'gate.greenCheckpoint.ownership',

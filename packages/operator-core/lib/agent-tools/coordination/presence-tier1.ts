@@ -398,6 +398,7 @@ export async function fetchPresenceTier1(
       SELECT DISTINCT ON (subscriber_id) subscriber_id, event_key, note
         FROM harness_shared.event_awaits
        WHERE subscriber_id = ANY(${ownerIds}::text[])
+         AND policy <> 'announce'
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())
        ORDER BY subscriber_id, created_at DESC`,

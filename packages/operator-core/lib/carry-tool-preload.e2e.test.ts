@@ -33,6 +33,9 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
     const token = readFileSync(tokenPath, 'utf8').trim();
     const owner = `su-tool-preload-e2e-${randomUUID()}`;
     const clients: Client[] = [];
+    const wire: Array<Record<string, unknown>> = [];
+    const wireReads: Promise<void>[] = [];
+    console.info('session-tool-restoration-start', JSON.stringify({ baseUrl, buildSha, owner, workspace, harness }));
     const seed = 'tools:find,tools:invoke,facts:list,mode:get';
     const compact = `${seed},orders:list,coord:whoami`;
     const observations = new Map<Client, {
@@ -59,6 +62,27 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
       });
       await client.connect(new StreamableHTTPClientTransport(url, {
         requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        fetch: async (input, init) => {
+          const response = await fetch(input, init);
+          const contentType = response.headers.get('content-type') ?? '';
+          if (contentType.includes('text/event-stream') || contentType.includes('application/json')) {
+            const read = response.clone().text().then(text => {
+              const frames = contentType.includes('text/event-stream')
+                ? text.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim())
+                : [text];
+              for (const frame of frames) {
+                try {
+                  const message = JSON.parse(frame) as { method?: string; id?: string | number; error?: { code?: number } };
+                  // Record protocol envelopes only; tool outputs, prompts and credentials stay private.
+                  wire.push({ identity, status: response.status, contentType, method: message.method ?? null,
+                    id: message.id ?? null, errorCode: message.error?.code ?? null });
+                } catch { wire.push({ identity, status: response.status, contentType, unparsable: true }); }
+              }
+            }).catch(() => { wire.push({ identity, status: response.status, contentType, readFailed: true }); });
+            wireReads.push(read);
+          }
+          return response;
+        },
       }), { timeout: 20_000 });
       return client;
     }
@@ -138,6 +162,14 @@ describe.runIf(Boolean(baseUrl))('session tool restoration over real HTTP MCP', 
       }));
     } finally {
       await Promise.allSettled(clients.map(client => client.close()));
+      await Promise.allSettled(wireReads);
+      const finalBuild = await servingSha().catch(() => null);
+      console.info('session-tool-restoration-diagnostics', JSON.stringify({
+        buildSha, finalBuild, owner, wire,
+        clients: clients.map(client => ({ ...observations.get(client), snapshots: observations.get(client)?.snapshots.length,
+          refresh: undefined, error: observations.get(client)?.error instanceof Error
+            ? (observations.get(client)!.error as Error).message : undefined })),
+      }));
     }
   }, 150_000);
 });

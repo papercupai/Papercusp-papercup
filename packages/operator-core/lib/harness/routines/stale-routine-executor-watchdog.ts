@@ -47,6 +47,7 @@ import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { hostIdentity } from '../../serving-host-identity';
 import {
+  GIT_SYNC_RESTART_BARRIER_RESOURCE,
   IMMINENT_FIRE_LOOKAHEAD_SEC,
   probeGateCollision,
   type GateCollisionProbe,
@@ -283,15 +284,96 @@ export function staleExecutorRetryBackoffMs(consecutiveDrainRefusals: number): n
   );
 }
 
+/**
+ * EI-27074588252473034 (gate-repair-plane-on-current-build-2026-10-15#P-037): wait on the
+ * PASS, not the clock, after a drain refused behind a git-sync pass that would not yield.
+ *
+ * Anti-starvation (`gitSyncYieldCapped`, WI-6554700010009238) correctly makes the fire
+ * after an unanswered yield run to its end. But that one pass can take tens of minutes
+ * (2026-10-26: ~28 min of index.lock contention and a failed catalog regeneration), and a
+ * timed retry keeps landing inside it: seven refusals 18:49-20:10Z, two naming the same
+ * holder, and the gate host ran code 3.5h+ stale. Every attempt in that window also
+ * queued a draining exclusive that refused other harnesses' git-sync for 120s, for
+ * nothing. So the next attempt is armed on that holder's completion: the first sweep
+ * after its lease is gone retries at once (the following pass is yield-eligible, so the
+ * drain then clears), and no attempt is made while it still holds.
+ *
+ * This is the backstop for a holder read that keeps failing or a lease that never
+ * clears; it is the drain-refusal ceiling, which already exceeds the longest pass measured.
+ */
+export const STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS = STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS;
+
+/** One holder as dev:restart's refusal body reports it (`holders[]`). */
+export interface RestartRefusalHolder {
+  owner: string;
+  owner_label: string | null;
+  mode: string;
+  status: string;
+}
+
+/**
+ * The git-sync fire owner format (`newGitSyncLockOwner`, read back by
+ * `parseGitSyncOwnerPid` in git-sync-action.ts): unique per fire, so its absence from
+ * the barrier's holders means THAT pass ended, whether it committed or errored.
+ */
+const GIT_SYNC_PASS_OWNER = /^system:git-sync:\d+:/;
+
+function restartRefusalHolders(body: Record<string, unknown> | null): RestartRefusalHolder[] | undefined {
+  if (!Array.isArray(body?.holders)) return undefined;
+  const holders: RestartRefusalHolder[] = [];
+  for (const raw of body.holders) {
+    const h = asJsonObject(raw);
+    if (!h || typeof h.owner !== 'string') continue;
+    holders.push({
+      owner: h.owner,
+      owner_label: typeof h.owner_label === 'string' ? h.owner_label : null,
+      mode: typeof h.mode === 'string' ? h.mode : '',
+      status: typeof h.status === 'string' ? h.status : '',
+    });
+  }
+  return holders;
+}
+
+/**
+ * The git-sync passes a refused drain is left waiting on. A shared git-sync holder still
+ * present after the FULL drain budget did not yield to the queued exclusive: it is an
+ * anti-starvation pass that may not yield, or one past its last yield boundary. Either
+ * way a timed retry lands inside it again, so the retry waits for that pass to end.
+ * Anything else (another restart's exclusive, a non-git-sync owner) keeps the timed backoff.
+ */
+export function noYieldGitSyncPassOwners(holders: ReadonlyArray<RestartRefusalHolder> | undefined): string[] {
+  return [
+    ...new Set(
+      (holders ?? []).filter((h) => h.mode === 'shared' && GIT_SYNC_PASS_OWNER.test(h.owner)).map((h) => h.owner),
+    ),
+  ];
+}
+
+/** Live owners on the workspace-scoped `git-sync` barrier, the resource the refusal named. */
+async function readLiveGitSyncHolderOwners(): Promise<string[]> {
+  const [{ getTxPool, readResourceQueue }, { resourceLockDomain }] = await Promise.all([
+    import('../../agent-tools/locks/su-lock-store'),
+    import('../../agent-tools/locks/coordination-domain'),
+  ]);
+  const { holders } = await readResourceQueue(getTxPool(), {
+    coordinationDomain: resourceLockDomain(GIT_SYNC_RESTART_BARRIER_RESOURCE),
+    resource: GIT_SYNC_RESTART_BARRIER_RESOURCE,
+  });
+  return holders.map((h) => h.owner);
+}
+
 let staleExecutorRestartInFlight = false;
 let staleExecutorRestartCooldownUntilMs = 0;
 let staleExecutorConsecutiveDrainRefusals = 0;
+/** Owners of the no-yield git-sync passes the next attempt waits on (P-037), or null. */
+let staleExecutorAwaitedPassOwners: string[] | null = null;
 
 /** Test seam: the in-flight latch and cooldown are module state shared across cases. */
 export function resetStaleExecutorRestartStateForTests(): void {
   staleExecutorRestartInFlight = false;
   staleExecutorRestartCooldownUntilMs = 0;
   staleExecutorConsecutiveDrainRefusals = 0;
+  staleExecutorAwaitedPassOwners = null;
 }
 
 /**
@@ -310,7 +392,7 @@ export function defaultPtoolScriptPath(moduleUrl: string = import.meta.url): str
   return path.join(resolveOperatorAppRootFromModuleDir(moduleDir), 'scripts', 'ptool.mjs');
 }
 
-type RestartCommandResult = { stdout: string; error?: string };
+type RestartCommandResult = { stdout: string; stderr?: string; error?: string };
 type RestartCommand = (
   command: string,
   args: string[],
@@ -323,29 +405,57 @@ function runRestartCommand(command: string, args: string[], options: { stdin: st
       command,
       args,
       { timeout: options.timeout, maxBuffer: 4 * 1024 * 1024 },
-      (error, stdout) => resolve({ stdout: String(stdout ?? ''), error: error?.message }),
+      (error, stdout, stderr) =>
+        resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), error: error?.message }),
     );
     child.stdin?.end(options.stdin);
   });
 }
 
-function parsePtoolJson(stdout: string): Record<string, unknown> | null {
-  const raw = String(stdout ?? '').trim();
+function asJsonObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function parsePtoolJson(
+  text: string,
+  accept: (body: Record<string, unknown>) => boolean = () => true,
+): Record<string, unknown> | null {
+  const raw = String(text ?? '').trim();
   if (!raw) return null;
   try {
-    const value: unknown = JSON.parse(raw);
-    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+    const whole = asJsonObject(JSON.parse(raw));
+    if (whole && accept(whole)) return whole;
   } catch {
-    for (const line of raw.split('\n').reverse()) {
-      try {
-        const value: unknown = JSON.parse(line);
-        return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
-      } catch {
-        // ptool may be wrapped by a launcher that writes a non-JSON prelude.
-      }
-    }
-    return null;
+    // Not one JSON document; fall through to the per-line scan.
   }
+  // ptool may be wrapped by a launcher that writes a non-JSON prelude, and its
+  // stderr interleaves `ptool: connection trace {…}` lines with the body.
+  for (const line of raw.split('\n').reverse()) {
+    try {
+      const body = asJsonObject(JSON.parse(line));
+      if (body && accept(body)) return body;
+    } catch {
+      // A non-JSON line; keep scanning toward the top.
+    }
+  }
+  return null;
+}
+
+/**
+ * The dev:restart answer, from whichever stream ptool put it on.
+ *
+ * EI-27074588252473034: ptool prints a result whose MCP envelope is `isError` to
+ * STDERR (`✗ tool returned an error:` + the JSON body) and leaves stdout EMPTY, and a
+ * refused dev:restart is exactly that result. Reading stdout alone turned every refusal
+ * into `ptool_failed`: the bg-host journal for 2026-10-27 04:54-06:26Z logged
+ * `ptool_failed — Command failed` at the same second as each of six refusals the
+ * tool_invocations ledger recorded as `git_sync_barrier_drain_timeout` /
+ * `git_sync_barrier_held_exclusive`, so the drain-refusal handling never saw one.
+ * stdout is read first; stderr is accepted only for an object carrying a boolean `ok`,
+ * so a trace line can never pose as the answer.
+ */
+export function parsePtoolResultBody(stdout: string, stderr = ''): Record<string, unknown> | null {
+  return parsePtoolJson(stdout) ?? parsePtoolJson(stderr, (body) => typeof body.ok === 'boolean');
 }
 
 async function readBgHostMainPid(run: RestartCommand = runRestartCommand): Promise<number | null> {
@@ -411,6 +521,10 @@ export interface StaleExecutorRestartResult {
   verified: boolean;
   code: string;
   error?: string;
+  /** The refusal body's `holders[]`, when dev:restart named them. */
+  holders?: RestartRefusalHolder[];
+  /** P-037: the no-yield git-sync passes the next attempt now waits on. */
+  awaitingPassCompletion?: string[];
 }
 
 /**
@@ -429,14 +543,25 @@ export async function restartStaleBgHostExecutor(
   // instead of re-running every tick; success/coalesce arm the longer cooldown inside.
   // Consecutive drain refusals double the wait (WI-6554700010009238).
   if (result.attempted && !result.restarted && !result.coalesced) {
-    staleExecutorConsecutiveDrainRefusals =
-      result.code === 'git_sync_barrier_drain_timeout' ? staleExecutorConsecutiveDrainRefusals + 1 : 0;
+    const drainRefused = result.code === 'git_sync_barrier_drain_timeout';
+    staleExecutorConsecutiveDrainRefusals = drainRefused ? staleExecutorConsecutiveDrainRefusals + 1 : 0;
+    // P-037: behind a pass that would not yield, wait for that pass, not the clock.
+    const passOwners = drainRefused ? noYieldGitSyncPassOwners(result.holders) : [];
+    if (passOwners.length > 0) {
+      staleExecutorAwaitedPassOwners = passOwners;
+      staleExecutorRestartCooldownUntilMs = Math.max(
+        staleExecutorRestartCooldownUntilMs,
+        nowMs + STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS,
+      );
+      return { ...result, awaitingPassCompletion: passOwners };
+    }
     staleExecutorRestartCooldownUntilMs = Math.max(
       staleExecutorRestartCooldownUntilMs,
       nowMs + staleExecutorRetryBackoffMs(staleExecutorConsecutiveDrainRefusals),
     );
   } else if (result.restarted || result.coalesced) {
     staleExecutorConsecutiveDrainRefusals = 0;
+    staleExecutorAwaitedPassOwners = null;
   }
   return result;
 }
@@ -449,6 +574,8 @@ async function attemptStaleBgHostExecutorRestart(
     run?: RestartCommand;
     verifyGeneration?: (beforePid: unknown) => Promise<StaleExecutorGenerationVerification>;
     ptoolScript?: string;
+    /** P-037: live owners on the `git-sync` barrier; null when the read failed. */
+    liveGitSyncHolderOwners?: () => Promise<string[] | null>;
   } = {},
 ): Promise<StaleExecutorRestartResult> {
   const now = deps.now ?? Date.now;
@@ -463,10 +590,27 @@ async function attemptStaleBgHostExecutorRestart(
   if (identity !== 'port-3271') return skipped('identity_not_bg_host');
   if (!verdict.stale) return skipped('not_stale');
   if (staleExecutorRestartInFlight) return skipped('restart_in_flight');
-  if (nowMs < staleExecutorRestartCooldownUntilMs) return skipped('restart_cooldown');
 
+  // Latched before the first await, so two sweeps cannot both pass the gate below.
   staleExecutorRestartInFlight = true;
   try {
+    // P-037: a refusal behind a no-yield pass waits for THAT pass. The first sweep
+    // after its lease is gone retries at once; until then nothing is attempted. A
+    // failed holder read falls back to the backstop rather than guessing either way.
+    if (staleExecutorAwaitedPassOwners) {
+      const awaited = staleExecutorAwaitedPassOwners;
+      const live = await (deps.liveGitSyncHolderOwners ?? readLiveGitSyncHolderOwners)().catch(() => null);
+      if (live !== null && !awaited.some((owner) => live.includes(owner))) {
+        staleExecutorAwaitedPassOwners = null;
+        staleExecutorRestartCooldownUntilMs = 0;
+      } else if (nowMs < staleExecutorRestartCooldownUntilMs) {
+        return skipped('awaiting_git_sync_pass');
+      } else {
+        staleExecutorAwaitedPassOwners = null;
+      }
+    }
+    if (nowMs < staleExecutorRestartCooldownUntilMs) return skipped('restart_cooldown');
+
     const run = deps.run ?? runRestartCommand;
     // `||`, not `??`: an exported-but-empty PAPERCUSP_PTOOL_SCRIPT is not a path.
     const ptoolScript = deps.ptoolScript ?? (process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() || defaultPtoolScriptPath());
@@ -493,11 +637,17 @@ async function attemptStaleBgHostExecutorRestart(
     });
     // ptool exits non-zero on an ok:false answer (EI-24654733539966460), so a
     // refused restart arrives WITH result.error. Its body still names the
-    // refusal — judge it before collapsing the error to 'ptool_failed'.
-    const body = parsePtoolJson(result.stdout);
+    // refusal — judge it before collapsing the error to 'ptool_failed'. The body
+    // of an isError result is on stderr (EI-27074588252473034).
+    const body = parsePtoolResultBody(result.stdout, result.stderr);
     if (result.error && body?.ok !== false) return { ...skipped('ptool_failed'), attempted: true, error: result.error };
     if (!body || body.ok !== true) {
-      return { ...skipped(typeof body?.reason === 'string' ? body.reason : 'ptool_result_unknown'), attempted: true };
+      const holders = restartRefusalHolders(body);
+      return {
+        ...skipped(typeof body?.reason === 'string' ? body.reason : 'ptool_result_unknown'),
+        attempted: true,
+        ...(holders ? { holders } : {}),
+      };
     }
     const coalesced = body.coalesced === true;
     if (coalesced) {
@@ -1217,7 +1367,10 @@ export async function staleRoutineExecutorSweep(opts: {
         console.warn(
           `[stale-routine-executor] auto-restart (${identity}${forVerdict.trigger === 'gate-code' ? ', gate-code' : ''}): ` +
             `${result.code}` +
-            (result.error ? ` — ${result.error}` : ''),
+            (result.error ? ` — ${result.error}` : '') +
+            (result.awaitingPassCompletion?.length
+              ? ` — retry armed on completion of no-yield git-sync pass ${result.awaitingPassCompletion.join(', ')}`
+              : ''),
         );
       }
       return result;

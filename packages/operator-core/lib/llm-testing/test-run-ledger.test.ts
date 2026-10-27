@@ -57,6 +57,14 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     const values = ledger.sql.mock.calls[0]!.slice(1);
     return { harness: values[10], workspace: values[11] };
   }
+  it('retains the exact rich run IDs independently of a caller-selected group label', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'caller-group');
+    const r = report([run('passed', '2026-10-08T00:00:00Z', '2026-10-08T00:00:01Z', { runId: 'rich-a' }),
+      run('passed', '2026-10-08T00:00:01Z', '2026-10-08T00:00:02Z', { runId: 'rich-b' })]);
+    expect(await recordLlmScenarioTestRun(r, file, null)).toBe(123);
+    expect(parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]))
+      .toMatchObject({ runGroupId: 'caller-group', llmRunIds: ['rich-a', 'rich-b'], passed: 2 });
+  });
   it('records the interactive CLI workspace and harness on the actual insert', async () => {
     vi.stubEnv('PAPERCUSP_WORKSPACE', 'papercusp-workspace');
     vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'papercusp');
@@ -243,6 +251,31 @@ describe('resolveScenarioSourceFile', () => {
       expect(resolveScenarioSourceFile('su-S40-case', 'su', dir)).toBeUndefined();
       expect(resolveScenarioSourceFile('su-S41-case', 'su', dir)).toBeUndefined();
       expect(resolveScenarioSourceFile('su-S99-none', 'nope', dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps generated scenario source custody instead of selecting a role fixture', () => {
+    for (const arrival of ['preexisting', 'during-registration', 'empty']) {
+      expect(resolveScenarioSourceFile('su-S42-drain-watch-' + arrival, 'su', SCENARIOS_ROOT)).toBe(
+        join(SCENARIOS_ROOT, 'su', 'S42-drain-watch-recheck.ts'),
+      );
+    }
+    const dir = mkdtempSync(join(tmpdir(), 'scen-resolve-'));
+    try {
+      mkdirSync(join(dir, 'su'));
+      writeFileSync(join(dir, 'su', '_helpers.ts'), 'export const id = (n: string) => `su-${n}`;\n');
+      writeFileSync(join(dir, 'su', 'S50-family.ts'), "export const id = (c: string) => 'su-S50-' + c;\n");
+      writeFileSync(join(dir, 'su', 'S51-family.ts'), 'export const id = (c: string) => "su-S51-" + c;\n');
+      for (const family of ['S50', 'S51']) {
+        expect(resolveScenarioSourceFile('su-' + family + '-case', 'su', dir)).toBe(
+          join(dir, 'su', family + '-family.ts'),
+        );
+      }
+      // Equal family matches stay ambiguous rather than attributing a native run by guess.
+      writeFileSync(join(dir, 'su', 'S50-duplicate.ts'), "export const id = (c: string) => 'su-S50-' + c;\n");
+      expect(resolveScenarioSourceFile('su-S50-case', 'su', dir)).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

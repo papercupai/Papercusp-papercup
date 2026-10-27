@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-a",
+  "status": "partial-contributing-evidence",
+  "scope": "Isolated in-process real dispatch, documents:search organization handler, native stored reader and structured result projection",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57",
+    "frozenSourcePinsMatched": 10,
+    "capturedSourcePins": 13,
+    "sourcePinsStableAcrossRun": true
+  },
+  "test": {
+    "path": "packages/operator-core/lib/agent-tools/documents/search-freshness.integration.test.ts",
+    "sha256": "dd7aeb7c89d222e5b1d4fe4bbe5b1013de7d7491e152d140140c0a6486755d9c",
+    "taskId": "0mvnwwmlurt15hx10fh",
+    "exitCode": 0,
+    "testRunId": "22019898",
+    "ledgerOutcome": "inserted",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "databaseCleanup": "dropped",
+    "provenance": "Local shared-tree run; tested file untracked at execution and native reporter worktreeDirty=true. No clean or committed-run claim.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/documents/search-freshness.integration.test.ts",
+      "taskId": "0mvnwwo1s1gkybmk1yy",
+      "exitCode": 0,
+      "scope": "Named file and resolved importers; whole-project and full runtime closure remain unmeasured"
+    }
+  },
+  "population": {
+    "observedFieldIds": [
+      "papercusp/documents:search/organization/title",
+      "papercusp/documents:search/organization/snippet",
+      "papercusp/documents:search/organization/occurredAt",
+      "papercusp/documents:search/organization/privacy"
+    ],
+    "declaredCases": ["projected-fields", "content-update", "privacy-and-acl", "dispatch-refusals"],
+    "executedCases": ["projected-fields", "content-update", "privacy-and-acl", "dispatch-refusals"],
+    "unexecutedCases": [],
+    "nativeDispatchCaptures": 6,
+    "nonemptyFieldObservations": 20,
+    "unknownFieldOracleResults": 20,
+    "qualifiedFieldClaims": 0
+  },
+  "findings": [
+    "The real registry, input schema, dispatch, organization handler, native reader and structured result projection returned values matching separate canonical SQL reads.",
+    "An in-place canonical content update appeared on the next actual dispatched request with the same entity id and changed stored tuple revision.",
+    "Replaying the old projected title into the field oracle was detected as stale; this is an oracle-input mutation only.",
+    "Changing a privacy rule changed the projected privacy and restricted result count while the stored content revision stayed unchanged.",
+    "Revoking the source ACL removed the projected row and restricted result count while the stored content revision stayed unchanged.",
+    "Malformed input and a disallowed dispatch role were refused by the real dispatcher."
+  ],
+  "limits": [
+    "Missing candidate source/index revision keeps each field oracle unknown/degrade; qualified field claims remain zero.",
+    "Canonical xmin identifies a stored tuple, not a provider revision or provider currentness.",
+    "The authority snapshot observes this fixture's grants, ACL members and privacy rules; it does not establish a complete production authority closure.",
+    "The fixture injects an admin SQL client into the in-process dispatcher. Transport host authentication, RLS, native lexical engine tracing and full runtime closure remain unmeasured.",
+    "Personal, pot, live and sealed legs, alternative paths and the complete 77-field population remain open.",
+    "The replay does not establish production enforcement bypass/fix-revert.",
+    "Qualification labels, retrieval cost and budget populations, spec discharge, independent acceptance and shipment remain open."
+  ],
+  "artifacts": [
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-dispatch-20261025-a/witness.json",
+      "sha256": "bad049aa7b87c3da25802edaa6a600241f82f46ee9c72bb4933706ea5da86be5",
+      "bytes": 66620,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-dispatch-20261025-a/native-ledger-receipt.json",
+      "sha256": "219d8a3c2a9ffc771d1ad919a1f33652e02ecf34631f6f52df5fa35e1d3280d8",
+      "bytes": 3466,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-dispatch-20261025-a/native-test.log",
+      "sha256": "d61376b849d960a0eda362fbbb799ef72bff2423e6c955976862d60c65104d6b",
+      "bytes": 13447,
+      "completeReadbackEqual": true
+    }
+  ],
+  "qualifiedBaseline": false,
+  "rankingTreatmentAllowed": false,
+  "shipped": false
+}

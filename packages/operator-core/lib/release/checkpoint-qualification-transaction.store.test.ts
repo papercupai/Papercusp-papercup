@@ -15,10 +15,22 @@ import {
   cancelStoredQualification,
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
+  recordStoredQualificationWorkProgress,
+  recordStoredQualificationChildScope,
+  recordQualificationChildScope,
+  configureRunnerLivenessProber,
+  recordStoredQualificationWorkYield,
+  recordQualificationWorkProgress,
+  recordStoredQualificationVerdict,
+  type QualificationWorkProgressInput,
   retargetPreSuiteAttemptToOwningRepairHead,
   recoverStoredQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
   waitQualificationTransaction,
+  waitStoredQualification,
+  commitPreparedCheckpointSelection,
+  preparedSelectionNamesAttemptCandidate,
+  type PreparedCheckpointSelectionRecord,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
 import {
@@ -26,11 +38,97 @@ import {
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
   markFrozenRepairFixerDispatched,
+  parseFrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+
+describe('stored qualification child scope custody', () => {
+  it.each(['live', 'unknown', 'dead'] as const)('probes %s payload under the row lock and ignores caller death claims', async state => {
+    const fence = { attemptId: 'attempt-1', runnerId: 'runner', runId: 'run', pidIdentity: 'boot:42' };
+    const begun = beginQualificationTransaction(null, { attemptId: fence.attemptId, nowMs: 100 }).transaction;
+    const runner = reserveQualificationRunner(begun, { ...fence, pid: 42, started: true,
+      leaseDurationMs: 1000, nowMs: 200 }).transaction;
+    const current = recordQualificationChildScope(runner, { ...fence, operation: 'enroll',
+      unit: 'pc-child123.scope', nowMs: 300 }).transaction;
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    configureRunnerLivenessProber(candidate => {
+      expect(statements[0]!.text).toContain('FOR UPDATE');
+      expect(candidate).toMatchObject({ unit: 'pc-child123.scope', pid: null, pidIdentity: null });
+      return state;
+    });
+    try {
+      const result = await recordStoredQualificationChildScope(target, { ...fence, operation: 'release',
+        unit: 'pc-child123.scope', scopeLiveness: 'dead' });
+      expect(result.status).toBe(state === 'dead' ? 'updated' : 'conflict');
+      expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(state === 'dead');
+    } finally { configureRunnerLivenessProber(null); }
+  });
+});
 
 type QueryResult = Record<string, unknown>[];
 
 const target = { workspaceId: 'workspace-1', installSlug: 'papercusp' };
+
+describe('stored continuation uses the existing qualification row authority', () => {
+  const fixture = () => {
+    const current = reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    }).transaction, { attemptId: 'attempt-1', candidate: 'candidate-1', runnerId: 'runner-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction;
+    const input: QualificationWorkProgressInput = { attemptId: 'attempt-1', candidate: 'candidate-1',
+      repairHead: null, runnerId: 'runner-1', runId: 'run-1', pidIdentity: 'boot:42', root: '/repo',
+      taskKey: 'qualification', manifest: { schemaVersion: 1, units: [{ id: 'a', kind: 'test', path: 'a.test.ts' }] },
+      retryStates: [], runContext: 'ci', runnerIdentity: 'proof-v3 node', updates: [], nowMs: 300 };
+    return { current, input };
+  };
+  it('locks and updates the same qualification record before acknowledging progress', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect(await recordStoredQualificationWorkProgress(target, input)).toMatchObject({ status: 'updated' });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    const update = statements.find(value => value.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.values).toContainEqual(expect.stringContaining('"continuation"'));
+    expect(update.values).toContain('qualificationTransaction');
+  });
+  it('performs no write for an old physical fence', async () => {
+    const { current, input } = fixture();
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    expect(await recordStoredQualificationWorkProgress(target, { ...input, runnerId: 'old-runner' }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
+  it.each(['expired', 'cancelled'] as const)('refuses a %s yield after acquiring the row lock', async mode => {
+    const { current, input } = fixture();
+    const saved = recordQualificationWorkProgress(current, input).transaction;
+    const { statements } = transactionHarness({ qualificationTransaction: saved });
+    const now = Date.now(), controller = new AbortController();
+    if (mode === 'cancelled') controller.abort();
+    const result = await recordStoredQualificationWorkYield(target, { ...input, nowMs: now }, {
+      runnerId: input.runnerId, runId: input.runId, savedAtMs: now,
+      executionCutoffEpochMs: now - 1, yieldDeadlineEpochMs: mode === 'expired' ? now - 1 : now + 10000,
+      cleanupDeadlineEpochMs: now + 20000, orphanDeadlineEpochMs: now + 30000,
+      callerDeadlineEpochMs: now + 20000, completed: [], pendingUnitIds: ['a'],
+    }, controller.signal);
+    expect(result).toMatchObject({ status: 'conflict', refusalReason: 'yield-deadline-exceeded' });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+  it.each([{ reason: 'advanced', green: true }, { reason: 'up-to-date', green: null }])(
+    'refuses $reason without composing the frozen continuation, and emits no terminal event', async verdict => {
+      const { current, input } = fixture();
+      const continuation = { schemaVersion: 1 as const, attemptId: input.attemptId, candidate: input.candidate,
+        repairHead: null, root: input.root, taskKey: input.taskKey, manifest: input.manifest,
+        retryStates: [], receipts: [], supersededReceipts: [] };
+      const { statements } = transactionHarness({ qualificationTransaction: { ...current, continuation } });
+      expect(await recordStoredQualificationVerdict(target, { ...verdict, attemptId: input.attemptId,
+        candidate: input.candidate, runId: input.runId, nowMs: 400,
+        terminalEvent: { status: 'advanced', detail: {} } }))
+        .toMatchObject({ status: 'conflict', refusalReason: 'continuation-composition-required' });
+      expect(statements.some(value => value.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+      expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+    },
+  );
+});
 
 function terminalQualification() {
   const begun = beginQualificationTransaction(null, {
@@ -336,6 +434,108 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(update.text).not.toContain("- 'repair_queue'");
     expect(update.text).toContain("metadata->'repair_queue' =");
     expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+  });
+
+  // WI-6554700010030197: every queue writer CASes on repair_queue.updatedAtMs and writes its
+  // whole snapshot back. A re-stamp that left the version unchanged let a writer holding a
+  // pre-begin snapshot pass its CAS and restore the predecessor id (measured 2026-10-27).
+  it('advances the queue CAS version when it re-stamps the origin, so a stale snapshot cannot restore it', async () => {
+    const current = terminalQualification();
+    const queue = {
+      ...markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 }),
+      updatedAtMs: 5_000,
+    };
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+
+    const result = await beginStoredQualification(target, successor, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    expect(result).toMatchObject({ status: 'updated', repairQueueReconciliation: { status: 'preserved' } });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("'{repair_queue,updatedAtMs}'");
+    // Strictly past the version every pre-begin reader holds (5000), even with an earlier clock.
+    expect(update.values).toContain('5001');
+    expect(update.values).toContain(JSON.stringify(queue));
+  });
+
+  // WI-6554700010030197 — same-attempt stale queue origin.
+  /** attempt-2 began as attempt-1's successor and is parked waiting on a repair it cannot run. */
+  function waitingSuccessor() {
+    const begun = beginQualificationTransaction(terminalQualification(), {
+      attemptId: 'attempt-2',
+      candidate: 'candidate-1',
+      nowMs: 250,
+    }).transaction;
+    return waitQualificationTransaction(begun, {
+      attemptId: 'attempt-2',
+      reason: 'repair-in-progress',
+      nowMs: 260,
+    }).transaction;
+  }
+  function awaitingFixerQueue(origin: string) {
+    return {
+      ...markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 }),
+      qualificationAttemptId: origin,
+    };
+  }
+  const resume = { attemptId: 'attempt-2', nowMs: 300 };
+
+  it('re-stamps a queue whose origin is still the resumed attempt\'s immediate predecessor', async () => {
+    const current = waitingSuccessor();
+    expect(current).toMatchObject({ phase: 'waiting', previousAttemptId: 'attempt-1' });
+    const queue = awaitingFixerQueue('attempt-1');
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+
+    const result = await beginStoredQualification(target, resume, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    // The resume itself is unchanged; only the queue's owner is handed to the live attempt.
+    expect(result).toMatchObject({
+      status: 'idempotent',
+      transaction: { attemptId: 'attempt-2', phase: 'waiting' },
+      repairQueueReconciliation: { status: 'preserved', reason: 'awaiting-unassigned-fixer' },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("'{repair_queue,qualificationAttemptId}'");
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.values).toContain(JSON.stringify('attempt-2'));
+    expect(update.values).toContain(JSON.stringify(queue));
+  });
+
+  it('never touches a queue owned by an unrelated attempt', async () => {
+    const { statements } = transactionHarness({
+      qualificationTransaction: waitingSuccessor(),
+      repair_queue: awaitingFixerQueue('different-attempt'),
+    });
+
+    const result = await beginStoredQualification(target, resume, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    expect(result).toMatchObject({ status: 'idempotent', transaction: { attemptId: 'attempt-2' } });
+    expect(result).not.toHaveProperty('repairQueueReconciliation');
+    expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
+  it('leaves the resume as it was when the queue is fenced by a live dispatch reservation', async () => {
+    const { statements } = transactionHarness({
+      qualificationTransaction: waitingSuccessor(),
+      repair_queue: {
+        ...awaitingFixerQueue('attempt-1'),
+        dispatchReservation: { token: 'precheck-op', claimedAtMs: 290, expiresAtMs: 10_000 },
+      },
+    });
+
+    const result = await beginStoredQualification(target, resume, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    // Not a refusal: a resume that reconciled nothing before this fix must not start conflicting.
+    expect(result).toMatchObject({ status: 'idempotent', transaction: { attemptId: 'attempt-2' } });
+    expect(result).not.toHaveProperty('repairQueueReconciliation');
+    expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
   });
 
   it('installs the successor without deleting a matching untested repair head', async () => {
@@ -978,5 +1178,143 @@ describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', ()
     expect(retargetPreSuiteAttemptToOwningRepairHead(current, { ...attach, started: false }, queue)).toBe(current);
     const aligned = wedgedAttempt({ candidate: 'repair-1' });
     expect(retargetPreSuiteAttemptToOwningRepairHead(aligned, attach, queue)).toBe(aligned);
+  });
+});
+
+describe('a stored settlement that moves the attempt candidate voids the old prepared selection (WI-6554700010010801)', () => {
+  const selectionFor = (candidate: string): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate, tip: 'tip-1', base: 'base-1', candidateSource: 'frozen-repair-queue', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate, identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+  // The measured papercusp state before the 23:25Z crash: a physical run committed the repair
+  // head's selection, then ended pre-suite with the queue's frozen candidate as its result.
+  const running = () => ({
+    ...reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'repair-head-1', nowMs: 100,
+    }).transaction, { attemptId: 'attempt-1', candidate: 'repair-head-1', runnerId: 'runner-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction,
+    preparedSelection: selectionFor('repair-head-1'),
+  });
+  const writtenTransaction = (statements: Array<{ text: string; values: unknown[] }>) => {
+    const update = statements.find(value => value.text.includes('UPDATE harness_shared.routines'))!;
+    const json = update.values.find((value): value is string => typeof value === 'string' && value.includes('"attemptId"'))!;
+    return JSON.parse(json) as Record<string, unknown> & { candidate: string; evidenceRefs: string[] };
+  };
+
+  it('drops the selection when the pre-suite result names a different candidate', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: running() });
+    expect(await waitStoredQualification(target, { attemptId: 'attempt-1', reason: 'repair-in-progress',
+      candidate: 'frozen-candidate-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
+      .toMatchObject({ status: 'updated' });
+    const written = writtenTransaction(statements);
+    expect(written.candidate).toBe('frozen-candidate-1');
+    // A later joined fire attaches on 'frozen-candidate-1'; recovering the old selection would hand
+    // the writer 'repair-head-1' and the post-preflight refresh would refuse the attached runner.
+    expect(written).not.toHaveProperty('preparedSelection');
+    expect(written.evidenceRefs).toContain('prepared-selection-voided:repair-head-1');
+  });
+
+  it('keeps the selection when the candidate is unchanged, so a restarted writer still recovers it', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: running() });
+    expect(await waitStoredQualification(target, { attemptId: 'attempt-1', reason: 'repair-in-progress',
+      candidate: 'repair-head-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
+      .toMatchObject({ status: 'updated' });
+    expect(writtenTransaction(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+});
+
+describe('committing a prepared selection honours the attempt candidate (WI-6554700010029754)', () => {
+  const selectionFor = (candidate: string): PreparedCheckpointSelectionRecord => ({
+    schemaVersion: 1, attemptId: 'attempt-1', integrationRoot: '/integration', checkpointRoot: '/checkpoint',
+    candidate, tip: 'tip-1', base: 'base-1', candidateSource: 'frozen-repair-queue', quietCutApplied: false,
+    freezeCut: null, carry: null, queue: null,
+    generation: { candidate, identity: 'generation-1', token: 'v3:token',
+      inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
+  });
+  // The CLI attaches its runner on the attempt's candidate before the preflight selects.
+  const attachedOn = (candidate: string) => reserveQualificationRunner(beginQualificationTransaction(null, {
+    attemptId: 'attempt-1', candidate, nowMs: 100,
+  }).transaction, { attemptId: 'attempt-1', candidate, runnerId: 'runner-1', runId: 'run-1', pid: 42,
+    pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction;
+  const expected = { queue: null, pendingCarry: null };
+  const updates = <T extends { text: string }>(statements: T[]) =>
+    statements.filter(value => value.text.includes('UPDATE harness_shared.routines'));
+  const written = (statements: Array<{ text: string; values: unknown[] }>) => {
+    const json = updates(statements)[0]!.values
+      .find((value): value is string => typeof value === 'string' && value.includes('"attemptId"'))!;
+    return (JSON.parse(json) as { qualificationTransaction: Record<string, unknown> & { evidenceRefs: string[] } })
+      .qualificationTransaction;
+  };
+
+  it('refuses, without publishing, a selection the attached runner would refuse at its refresh', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1') });
+    await expect(commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected))
+      .rejects.toThrow(/candidate-mismatch: selected repair-head-1 but attempt attempt-1 is pinned to frozen-candidate-1/);
+    expect(updates(statements)).toHaveLength(0);
+  });
+
+  it('publishes a selection that names the attempt candidate', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1') });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
+    expect(written(statements).preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+  });
+
+  it('replaces a stored selection for another candidate instead of refusing every later commit', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: {
+      ...attachedOn('frozen-candidate-1'), preparedSelection: selectionFor('repair-head-1'),
+    } });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
+    const transaction = written(statements);
+    expect(transaction.preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+    expect(transaction.evidenceRefs).toContain('prepared-selection-voided:repair-head-1');
+  });
+
+  it('still compares a stored selection that names the attempt candidate (write-once)', async () => {
+    const stored = { ...selectionFor('frozen-candidate-1'), tip: 'tip-0' };
+    const { statements } = transactionHarness({ qualificationTransaction: {
+      ...attachedOn('frozen-candidate-1'), preparedSelection: stored,
+    } });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(false);
+    expect(updates(statements)).toHaveLength(0);
+  });
+
+  it('lets an attempt with no attached runner commit, because the refresh re-pins it', async () => {
+    const { statements } = transactionHarness({ qualificationTransaction: beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'frozen-candidate-1', nowMs: 100,
+    }).transaction });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected)).toBe(true);
+    expect(written(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+  });
+
+  // WI-6554700010030147: a running admission pre-check rewrites the queue row every few seconds.
+  // The commit CAS must judge the selection authority, or every preparation replans to exhaustion.
+  it('commits across queue bookkeeping drift but refuses a queue that would select another candidate', async () => {
+    const roundTrip = (q: unknown) => parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(q)))!;
+    const red = roundTrip(markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'frozen-candidate-1', qualificationAttemptId: 'attempt-1', base: 'base-1', nowMs: 50,
+      affectedTestProofGroup: 'group-1' }), { failingTests: ['lib/a.test.ts'], nowMs: 60 }));
+    const captured = { queue: red, pendingCarry: null };
+    const drifted = roundTrip({ ...markFrozenRepairFixerDispatched(red, { spawnId: 'durable-spawn:fixer-1', nowMs: 70 }),
+      updatedAtMs: 999 });
+    expect(drifted).not.toEqual(red);
+    const live = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1'), repair_queue: drifted });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), captured)).toBe(true);
+    expect(updates(live.statements)).toHaveLength(1);
+
+    const admitted = roundTrip(markFrozenRepairAdmitted(red, { atMs: 80, actor: 'su-test',
+      source: { ref: 'head-2', sha: 'head-2' }, fromRepairHead: red.repairHead, toRepairHead: 'head-2',
+      paths: ['lib/a.test.ts'], unchanged: [], blobs: { 'lib/a.test.ts': 'blob-2' } }));
+    const moved = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1'), repair_queue: admitted });
+    expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), captured)).toBe(false);
+    expect(updates(moved.statements)).toHaveLength(0);
+  });
+
+  it('treats an unpinned attempt as accepting any selection', () => {
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: null }, { candidate: 'x' })).toBe(true);
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: ' x ' }, { candidate: 'x' })).toBe(true);
+    expect(preparedSelectionNamesAttemptCandidate({ candidate: 'y' }, { candidate: 'x' })).toBe(false);
   });
 });

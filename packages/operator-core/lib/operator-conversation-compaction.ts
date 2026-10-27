@@ -24,14 +24,18 @@
  */
 
 import { estimateTokens } from './operator-converse-history';
+import { createHash, randomUUID } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
+import { ConversationContext, type ContextPolicy, type ContextRecord,
+  type ContextSummary } from '@papercusp/chat-protocol/context';
+import { OperatorConversationContext, type OperatorConversationContextOptions } from './operator-conversation-context';
 import {
   listTurnsBetween,
   maxTurnSeq,
   readConversationSummary,
-  writeConversationSummary,
   type TurnRow,
 } from './operator-conversations';
-import { runHaikuTurn, type HaikuTurnResult } from './haiku';
+import { runHaikuAttempt, type HaikuAttempt, type HaikuTurnResult } from './haiku';
 import { checkBudget, recordSpend } from './operator-budget';
 import { loadCompactionPriorities } from './prompt-assembly';
 
@@ -69,9 +73,11 @@ export type CompactionOutcome =
   | 'llm_unavailable'
   | 'cas_lost'
   | 'not_found';
+// Refusals remain explicit; they never authorize another summary on recovery.
+type ContextRefusal = 'unauthorized' | 'needs_reconciliation' | 'cancelled';
 
 export interface CompactionResult {
-  outcome: CompactionOutcome;
+  outcome: CompactionOutcome | ContextRefusal;
   /** Set when outcome === 'compacted'. */
   summaryThroughSeq?: number;
   turnsFolded?: number;
@@ -79,7 +85,15 @@ export interface CompactionResult {
 }
 
 /** Signature of the summarize step — injectable for tests (D-003). */
-export type SummarizeFn = (prompt: string) => Promise<HaikuTurnResult | null>;
+export type SummarizeFn = (prompt: string, signal?: AbortSignal) => Promise<HaikuTurnResult | HaikuAttempt | null>;
+
+export interface ConversationCompactionOptions {
+  summarize?: SummarizeFn;
+  force?: boolean;
+  signal?: AbortSignal;
+  /** Captured by the authenticated host, never from a conversation/card payload. */
+  context?: Pick<OperatorConversationContextOptions, 'workspaceId' | 'authorize'> & { ownerId: string };
+}
 
 /**
  * The default preserve/drop priorities. The canonical source is
@@ -103,7 +117,7 @@ export const DEFAULT_COMPACTION_PRIORITIES =
  */
 export function buildCompactionPrompt(
   existingSummary: string | null,
-  turns: ReadonlyArray<Pick<TurnRow, 'role' | 'text'>>,
+  turns: ReadonlyArray<Pick<ContextRecord, 'role' | 'text'>>,
   priorities: string = DEFAULT_COMPACTION_PRIORITIES,
 ): string {
   const formatted = turns
@@ -149,8 +163,9 @@ export function backlogWorthCompacting(
   return tokens >= MIN_NEW_TOKENS;
 }
 
-const defaultSummarize: SummarizeFn = (prompt) =>
-  runHaikuTurn(prompt, { maxTokens: SUMMARIZER_MAX_TOKENS, timeoutMs: SUMMARIZER_TIMEOUT_MS });
+const defaultSummarize: SummarizeFn = (prompt, signal) =>
+  runHaikuAttempt(prompt, { maxTokens: SUMMARIZER_MAX_TOKENS, timeoutMs: SUMMARIZER_TIMEOUT_MS, signal,
+    attribution: { role: 'operator-compaction' } });
 
 /**
  * One compaction pass over a conversation. Returns the outcome rather than
@@ -161,8 +176,47 @@ const defaultSummarize: SummarizeFn = (prompt) =>
  */
 export async function compactConversation(
   conversationId: string,
-  opts: { summarize?: SummarizeFn; force?: boolean } = {},
+  opts: ConversationCompactionOptions = {},
 ): Promise<CompactionResult> {
+  if (!opts.context) return { outcome: 'unauthorized' };
+  const scope = { conversationId, ownerId: opts.context.ownerId };
+  let model = 'unknown';
+  let costUsd: number | undefined;
+  let projectionConflict = false;
+  let throughSeq = -1;
+  let expectedThroughSeq: number | null = null;
+  let turnsFolded = 0;
+  const host = new OperatorConversationContext({ sql: getOrgPg().sql, ...opts.context, scope,
+    summarize: async input => {
+      const result = await (opts.summarize ?? defaultSummarize)(
+        buildCompactionPrompt(input.priorSummary?.text ?? null, input.records,
+          loadCompactionPriorities() ?? undefined), input.signal);
+      const status = result && 'status' in result ? result.status : result ? 'completed' : 'failed';
+      const usage = result ? {
+        ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
+        ...(result.tokensIn !== undefined ? { inputTokens: result.tokensIn } : {}),
+        ...(result.tokensOut !== undefined ? { outputTokens: result.tokensOut } : {}),
+      } : undefined;
+      model = result?.model ?? 'unknown'; costUsd = result?.costUsd;
+      const text = result?.text ? sanitizeSummary(result.text) : '';
+      return { status: status === 'completed' && !text ? 'failed' : status,
+        ...(text && status === 'completed' ? { text, coveredIds: input.records.map(r => r.id) } : {}),
+        ...(usage && Object.keys(usage).length ? { usage } : {}) };
+    },
+    project: async (tx, next) => {
+      if (next.operation?.phase !== 'completed' || next.operation.failure
+        || next.summary?.operationId !== next.operation.id) return;
+      const rows = await tx.unsafe(`UPDATE harness_shared.operator_conversations
+        SET summary_text=$3, summary_through_seq=$4, summary_updated_at=$5,
+          summary_model=$6, summary_turns_covered=COALESCE(summary_turns_covered,0)+$7
+        WHERE id=$1 AND workspace_id=$2 AND summary_through_seq IS NOT DISTINCT FROM $8 RETURNING id`,
+      [conversationId, opts.context!.workspaceId, next.summary.text, throughSeq,
+        Date.now(), model, turnsFolded, expectedThroughSeq]);
+      if (rows.length !== 1) { projectionConflict = true; throw new Error('conflict'); }
+    },
+  });
+  if (!await host.authorize(scope)) return { outcome: 'unauthorized' };
+  if (opts.signal?.aborted) return { outcome: 'cancelled' };
   const summary = await readConversationSummary(conversationId);
   if (!summary) return { outcome: 'not_found' };
 
@@ -187,32 +241,58 @@ export async function compactConversation(
 
   // Bound one pass; a long backlog digests across successive passes.
   const batch = aged.slice(0, MAX_TURNS_PER_PASS);
-  const throughSeq = batch[batch.length - 1].seq;
-
-  const summarize = opts.summarize ?? defaultSummarize;
-  const result = await summarize(
-    buildCompactionPrompt(summary.summaryText, batch, loadCompactionPriorities() ?? undefined),
-  );
-  if (!result) return { outcome: 'llm_unavailable' };
-  const text = sanitizeSummary(result.text);
-  if (!text) return { outcome: 'llm_unavailable' };
-
-  if (result.costUsd > 0) void recordSpend(result.costUsd);
-
-  const ok = await writeConversationSummary({
-    conversationId,
-    expectedThroughSeq: summary.summaryThroughSeq,
-    summaryText: text,
-    summaryThroughSeq: throughSeq,
-    summaryModel: result.model,
-    turnsAdded: batch.length,
-  });
-  if (!ok) return { outcome: 'cas_lost' };
+  throughSeq = batch[batch.length - 1].seq;
+  expectedThroughSeq = summary.summaryThroughSeq;
+  turnsFolded = batch.length;
+  const previous = await host.read(scope);
+  if (previous?.operation?.phase === 'pending') return { outcome: 'needs_reconciliation' };
+  const oldIds = new Set(previous?.summary?.coveredIds ?? []);
+  const tail = await listTurnsBetween(conversationId, cutoff, newest);
+  const history: ContextRecord[] = [
+    ...(previous?.history.filter(r => oldIds.has(r.id)) ?? []),
+    ...[...batch, ...tail].map(t => ({ id: t.id, scope: { ...scope }, role: t.role,
+      text: t.text, provenance: { source: 'operator-turn', ref: t.id },
+      ...(t.seq > cutoff ? { mandatory: true } : {}) })),
+  ];
+  const legacy: ContextSummary | null = summary.summaryText?.trim() ? {
+    scope, text: summary.summaryText, coveredIds: [], operationId: `legacy:${summary.summaryThroughSeq}`,
+  } : null;
+  const sourceVersion = createHash('sha256').update(JSON.stringify([summary.summaryThroughSeq, history])).digest('hex');
+  try { await host.initialize(history, sourceVersion, legacy); }
+  catch (error) {
+    if (String(error).includes('needs-reconciliation')) return { outcome: 'needs_reconciliation' };
+    throw error;
+  }
+  // Reserve the maximum summary AND coverage metadata while selecting the
+  // exact existing recent tail. This is a conservative serialized-token
+  // estimator: a short old summary cannot accidentally admit an aged turn.
+  const allIds = history.map(r => r.id);
+  const estimate = (serialized: string) => {
+    const view = JSON.parse(serialized);
+    view.summary = { scope, text: ' '.repeat(MAX_SUMMARY_CHARS), coveredIds: allIds,
+      operationId: 'x'.repeat(512) };
+    view.omittedIds = allIds; view.summaryCoveredIds = allIds;
+    return estimateTokens(JSON.stringify(view));
+  };
+  const mandatory = history.filter(r => r.mandatory).map(r => ({ ...r,
+    text: r.text.slice(0, PROMPT_TURN_CHARS),
+    payload: { originalChars: r.text.length, retainedChars: Math.min(r.text.length, PROMPT_TURN_CHARS) } }));
+  const policy: ContextPolicy = { maxMessageChars: PROMPT_TURN_CHARS, estimate,
+    budgetTokens: estimate(JSON.stringify({ messages: mandatory })) };
+  const result = await new ConversationContext(host).compact(scope, randomUUID(), policy, opts.signal);
+  // The durable liability receipt precedes this compatibility budget rollup.
+  // A budget write failure cannot erase usage from an otherwise failed call.
+  if (costUsd !== undefined && costUsd > 0) await recordSpend(costUsd);
+  if (!result.ok) return { outcome: projectionConflict || result.code === 'conflict' ? 'cas_lost'
+    : result.code === 'unauthorized' ? 'unauthorized' : result.code === 'cancelled' ? 'cancelled'
+    : 'needs_reconciliation', ...(costUsd !== undefined ? { costUsd } : {}) };
+  if (result.value.outcome !== 'compacted') return { outcome: 'llm_unavailable',
+    ...(costUsd !== undefined ? { costUsd } : {}) };
   return {
     outcome: 'compacted',
     summaryThroughSeq: throughSeq,
     turnsFolded: batch.length,
-    costUsd: result.costUsd,
+    costUsd,
   };
 }
 
@@ -223,11 +303,11 @@ const inFlight = new Set<string>();
  * Post-turn entry point — fire-and-forget. Never throws; logs the outcome
  * at debug level only when it actually compacted (or hit a real failure).
  */
-export async function maybeCompactConversation(conversationId: string): Promise<void> {
+export async function maybeCompactConversation(conversationId: string, opts: ConversationCompactionOptions = {}): Promise<void> {
   if (!conversationId || inFlight.has(conversationId)) return;
   inFlight.add(conversationId);
   try {
-    const r = await compactConversation(conversationId);
+    const r = await compactConversation(conversationId, opts);
     if (r.outcome === 'compacted') {
       console.log(
         `[conversation-compaction] ${conversationId}: folded ${r.turnsFolded} turns ` +

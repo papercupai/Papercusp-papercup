@@ -74,7 +74,7 @@ describe('R-7: a fresh code note is pushed on first touch of its file', () => {
     const digest = await tokenOf('target-r7.ts');
     const fold = vi.fn(async () => [note('code-note:retry-loop', [{ path: 'target-r7.ts', digest }], 'The retry loop is deliberate: the upstream drops 1 in 50 requests.')]);
     const { deps, committed } = channel({ fold, staleness: readNoteAnchorStaleness });
-    const text = await codeIntelPushText(input('target-r7.ts'), 0, deps);
+    const text = await codeIntelPushText(input('target-r7.ts'), deps);
 
     expect(fold).toHaveBeenCalledWith(expect.objectContaining({ owner: 'su-notes' }), ['target-r7.ts']);
     expect(committed).toHaveLength(1);
@@ -103,7 +103,7 @@ describe('R-8: a code note whose code changed is withheld, not pushed as current
     writeFileSync(join(root, 'target-r8.ts'), 'export const retries = 0; // the loop was removed\n');
     const fold = vi.fn(async () => [note('code-note:stale-retry', [{ path: 'target-r8.ts', digest }], 'STALE BODY must not be delivered')]);
     const { deps, committed } = channel({ fold, staleness: readNoteAnchorStaleness });
-    const text = await codeIntelPushText(input('target-r8.ts'), 0, deps);
+    const text = await codeIntelPushText(input('target-r8.ts'), deps);
 
     expect(text).not.toContain('STALE BODY');
     expect(committed).toHaveLength(1);
@@ -147,7 +147,7 @@ describe('notes leg wiring', () => {
   it('a timed-out or failing notes read delivers nothing rather than an unverified note', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { deps, committed } = channel({ fold: async () => { throw new Error('pg down'); }, staleness: readNoteAnchorStaleness });
-    expect(await codeIntelPushText(input(), 0, deps)).toBe('');
+    expect(await codeIntelPushText(input(), deps)).toBe('');
     expect(committed).toEqual([]);
     expect(warn.mock.calls.flat().join(' ')).toContain('code-intel-notes-context');
     warn.mockRestore();
@@ -155,11 +155,11 @@ describe('notes leg wiring', () => {
 
   it('skips the read entirely when the flag is off or nothing was first-touched', async () => {
     const off = channel({ fold: vi.fn(async () => []), staleness: readNoteAnchorStaleness }, async () => false);
-    await codeIntelPushText(input(), 0, off.deps);
+    await codeIntelPushText(input(), off.deps);
     expect(off.notesContext).not.toHaveBeenCalled();
 
     const on = channel({ fold: vi.fn(async () => []), staleness: readNoteAnchorStaleness });
-    await codeIntelPushText({ ...input(), calls: [{ tool: 'Bash', toolInput: { command: 'ls' } }] }, 0, on.deps);
+    await codeIntelPushText({ ...input(), calls: [{ tool: 'Bash', toolInput: { command: 'ls' } }] }, on.deps);
     expect(on.notesContext).not.toHaveBeenCalled();
   });
 

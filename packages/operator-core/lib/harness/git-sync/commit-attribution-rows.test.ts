@@ -173,4 +173,20 @@ describe('buildCommitAttributionRows', () => {
     expect(asked[0]).toContain(sha);
     expect(rows).toEqual([]);
   });
+
+  it('stamps no single agent on the files of a multi-author commit (WI-6554700010029864)', async () => {
+    // The commit says who co-authored it, not which agent edited which file.
+    const message = 'linked edit\n\nPapercusp-Agent: su-a\nPapercusp-Agent: su-b\nPapercusp-Work-Item: WI-7';
+    const sha = commitFile(top, 'shared-change.ts', message, '2026-10-20T00:00:00Z');
+    const rows = await buildCommitAttributionRows({
+      workspaceId: 'ws',
+      harnessSlug: 'top',
+      repoRoot: top,
+      runGit: runGitLocal,
+      recordedShas: async () => new Set(),
+    });
+    const mine = rows.filter((r) => r.commitSha === sha);
+    expect(mine).toEqual([expect.objectContaining({ file: 'shared-change.ts', workItemId: 'WI-7' })]);
+    expect(mine[0]?.agentId).toBeUndefined();
+  });
 });

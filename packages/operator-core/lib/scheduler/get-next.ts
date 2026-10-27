@@ -98,6 +98,7 @@ import {
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
 import {
   admittedWhereSqlWi,
+  admissionHoldExclusionSql,
   isIssueLocallyClaimableWhereSql,
   liveGateOpsSelfSelectExclusionSql,
   stopTheLineExclusionSql,
@@ -112,6 +113,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../flag-distinct-id';
 import { trackDetached } from '../detached-imports';
 import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
+import { CLEANUP_ITEM_KIND } from '../code-cleanup/cleanup-item-kind';
 import {
   intakeStageClaimFloorSql,
   LEGACY_AGENT_REVIEW_SUBMITTER,
@@ -763,6 +765,24 @@ function kindLeafWidensToFeatureFamily(leaf: FilterLeaf): boolean {
 const ISSUE_KIND_SET = new Set<string>(ISSUE_FAMILY_KINDS);
 type IssueFallbackKind = (typeof ISSUE_FAMILY_KINDS)[number];
 
+/**
+ * True only when the filter proves that no FEATURE-family row can match its `kind` terms.
+ * A positive issue-only kind leaf anywhere in an `all` is sufficient; an `any` excludes
+ * features only when every branch does. Keep `not` and fuzzy/negative kind terms on the
+ * regular path unless we can prove their full boolean meaning without guessing.
+ */
+function featureFamilyExcludedByKind(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  if (isLeaf(filter)) {
+    if (filter.field !== 'kind' || (filter.op !== '=' && filter.op !== 'in')) return false;
+    const values = (Array.isArray(filter.value) ? filter.value : [filter.value]).map(String);
+    return values.length > 0 && values.every((value) => ISSUE_KIND_SET.has(value));
+  }
+  if ('all' in filter) return filter.all.some(featureFamilyExcludedByKind);
+  if ('any' in filter) return filter.any.length > 0 && filter.any.every(featureFamilyExcludedByKind);
+  return false;
+}
+
 function intersectIssueKinds(
   current: Set<IssueFallbackKind> | undefined,
   next: Iterable<IssueFallbackKind>,
@@ -1032,6 +1052,10 @@ export const ISSUE_CLAIM_FLOORS = [
   { ok: 'ok_claim_hold', bucket: 'claim_hold', field: 'claimHold' },
   // Queued/held admission recovery reserves the original item for its requested target.
   { ok: 'ok_admission_recovery', bucket: 'admission_recovery', field: 'admissionRecovery' },
+  // EI-26988974367709614: the live promoter HELD this fail-open row (protected twin, claimed
+  // canonical, recurrence guard). Resume forbids acting on it, so self-select must not serve
+  // it; the promoter lifts the hold on promote/merge. Claim-by-id stays open.
+  { ok: 'ok_admission_hold', bucket: 'admission_hold', field: 'admissionHold' },
   // Strict owner capability: credential, physical device, or external-service action.
   { ok: 'ok_needs_owner_action', bucket: 'needs_owner_action', field: 'needsOwnerAction' },
   { ok: 'ok_agent_review', bucket: 'agent_review', field: 'agentReview' },
@@ -1469,6 +1493,7 @@ export function issueClaimCandidateSubquery(
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${admissionRecoveryExclusionSql(sql)})                           AS ok_admission_recovery,
+      (${admissionHoldExclusionSql(sql)})                               AS ok_admission_hold,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
       (${intakeStageClaimFloorSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
@@ -3063,6 +3088,12 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
     ) THEN 1 ELSE 0 END`;
     return sql`${conflict} ASC, ${base}`;
   };
+  // code-cleanup-campaigns-2026-10-26 P-003 (R-3): a 'cleanup' item is claimed only when
+  // no feature, bug or change item is claimable. A HARD precedence ahead of the authored
+  // rank and the soft lock-placement bit, so no claim spec can reorder cleanup above real
+  // work; with nothing else claimable the cleanup item still sorts first and is returned.
+  const cleanupLast = (base: SqlFragment): SqlFragment =>
+    sql`(CASE WHEN COALESCE(item_kind, kind) = ${CLEANUP_ITEM_KIND} THEN 1 ELSE 0 END) ASC, ${withLockPlacement(base)}`;
 
   if (spec.rank.mode === 'weighted') {
     // Σ wᵢ·termᵢ — only terms that compile to a numeric value contribute, which this
@@ -3084,17 +3115,17 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
         return sql`(${w} * ${dirSign})`;
       })
       .filter((c): c is SqlFragment => c != null);
-    if (contribs.length === 0) return withLockPlacement(sql`created_ts ASC`);
+    if (contribs.length === 0) return cleanupLast(sql`created_ts ASC`);
     const sum = contribs.reduce((acc, c) => sql`${acc} + ${c}`);
-    return withLockPlacement(sql`(${sum}) DESC, created_ts ASC`);
+    return cleanupLast(sql`(${sum}) DESC, created_ts ASC`);
   }
 
   // lexicographic: each term ASC/DESC in order, then the total-order tiebreaker.
   const orderings = terms.map((t) => compileTermOrdering(sql, t, bee)).filter((o): o is SqlFragment => o != null);
-  if (orderings.length === 0) return withLockPlacement(sql`created_ts ASC`);
+  if (orderings.length === 0) return cleanupLast(sql`created_ts ASC`);
   const joined = orderings.reduce((acc, o) => sql`${acc}, ${o}`);
   // created_ts ASC as the final tiebreaker (skip if already the last bare term).
-  return withLockPlacement(sql`${joined}, created_ts ASC`);
+  return cleanupLast(sql`${joined}, created_ts ASC`);
 }
 
 /** One lexicographic term → `<col> ASC|DESC NULLS LAST`, honoring inversion. */
@@ -3244,6 +3275,7 @@ export async function getNextWorkItem(
   // both issue doors (priority preclaim and tier 3), avoiding that doomed bounce.
   // Solo callers retain WI-1407's adjacent-family fallback.
   const widened = opts.fleetSlug ? spec.view.filter : widenPastKind(spec.view.filter);
+  const featureFamilyOutOfScope = featureFamilyExcludedByKind(spec.view.filter);
   const issueKinds = issueKindsForFallback(spec.view.filter);
   const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
   const excludeIds = negativeIdExclusions(spec.view.filter);
@@ -3477,8 +3509,15 @@ export async function getNextWorkItem(
     }
   }
 
+  // Issue-only kind lanes cannot match a feature-family row. Skip the feature query entirely;
+  // this keeps an expensive feature-side evaluation from timing out before the issue tier that
+  // actually serves the lane. The detector is conservative for `any` and `not` filters.
+  if (!claimed && featureFamilyOutOfScope) {
+    resolutionStep('candidate-feature-family-skip-issue-only');
+  }
+
   // Tier 1: the spec's view exactly as authored.
-  if (!claimed) {
+  if (!claimed && !featureFamilyOutOfScope) {
     resolutionStep('candidate-feature-tier-1');
     claimed = await attempt(spec.view.filter, opts.captureCandidateWait === true);
   }
@@ -3489,7 +3528,7 @@ export async function getNextWorkItem(
   // plan/tags/risk_tier/etc — intact) before reporting a miss. `widenPastKind` only rewrites
   // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
   // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
-  if (!claimed && widened !== spec.view.filter) {
+  if (!claimed && !featureFamilyOutOfScope && widened !== spec.view.filter) {
     resolutionStep('candidate-feature-tier-2');
     claimed = await attempt(widened);
   }

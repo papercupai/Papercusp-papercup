@@ -21,6 +21,8 @@
  *   bytes and lists the same blobs the publisher pinned.
  * - The type-pack planner and applier, the plan-template install path, the registry, the ship gate,
  *   the plan tools, the scorecard writer and the blind-review handler are the production ones.
+ * - Automatic report indexing keeps its real PostgreSQL chunk writer, with the maintained
+ *   deterministic embedding fixture so this workflow does not depend on an embedding sidecar.
  * - The activation audit is seeded as a row, as the sibling ship tests do: the real one needs the
  *   source conversation's session turns. The acceptance bars it would seed come from the real
  *   seeder (`seedAcceptanceBarsInTransaction`), so the rubric is derived from the item type's
@@ -34,7 +36,7 @@
  * deliverable it names) and the unknown-type fail-safe (an item type pot B never installed resolves
  * to the strictest module set and is named, with its install hint, by the activation refusal).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, promises as fs, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,6 +51,21 @@ vi.mock('../../../plan-audits', async (importOriginal) => {
     ...actual,
     repoCitationContextForHarness: (_harnessSlug: unknown, citations?: Parameters<typeof actual.repoCitationContextForHarness>[1]) =>
       actual.repoCitationContextForHarness(null, citations),
+  };
+});
+vi.mock('../../../search/embed-backfill', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../search/embed-backfill')>();
+  const [{ deterministicEmbedding }, { EMBEDDER_DIM_SPECS }] = await Promise.all([
+    import('../../../../test/_deterministic-embedder'),
+    import('@papercusp/memory'),
+  ]);
+  const profile = EMBEDDER_DIM_SPECS.gemma;
+  return {
+    ...actual,
+    resolveBackfillEmbedder: async () => ({
+      mode: 'gemma', profile,
+      embed: async (text: string) => deterministicEmbedding(text, profile.targetDims),
+    }),
   };
 });
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
@@ -89,6 +106,7 @@ import { seedAcceptanceBarsInTransaction } from '../../../acceptance-bar-seed';
 import { commentWorkItem, createWorkItem } from '../../../work-items';
 import { consultCloseCore, consultReplyCore } from '../../../consult/consult-verbs-core';
 import { BAR_CRITIQUE_POLICY } from '../plan-start-critique-gate';
+import { bm25ScanScoreFallbacks } from '../../../search/lexical/rank';
 import type { SpecClauseSql } from '../spec-clauses-store';
 import * as fx from '../../../../test/type-pack-fixture';
 
@@ -528,6 +546,22 @@ describe('R-21/R-22: a plan ships in pot B with an item type installed from pot 
   });
 
   it('pot B runs the seeded plan to shipped through the real ship gate, without force', async () => {
+    // A private table may use a sequential scan. Assert the documented recovery when it
+    // occurs; its real search result still feeds this journey, and other warnings still fail.
+    const fallbackCountBefore = bm25ScanScoreFallbacks();
+    const realWarn = console.warn.bind(console);
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      if (args.length === 1 && typeof args[0] === 'string'
+        && args[0].startsWith('[lexical/rank] bm25_get_current_score() disagreed with the standalone distance ')) {
+        expect(args[0]).toContain('no BM25 index scan drove the list; re-ran with the select-list distance');
+        expect(args[0]).toMatch(/\(\d+ since boot\)\. BM25_SCAN_SCORE_NOTE\.$/);
+        expect(bm25ScanScoreFallbacks()).toBeGreaterThan(fallbackCountBefore);
+        return;
+      }
+      realWarn(...args);
+    });
+    onTestFinished(() => warn.mockRestore());
+
     const slug = reviewSlug;
     const [plan] = await admin<{ content: string; version: number; title: string; status: string }[]>`
       SELECT content, version, title, status FROM harness_shared.harness_plans
@@ -781,7 +815,7 @@ describe('R-21/R-22: a plan ships in pot B with an item type installed from pot 
       coordOwnerId: BLIND_REVIEWER,
     } as never;
     const blind = (await runWithWorkspace(WS_B, () => blindReviewTool.handler(
-      { harness: HARNESS, slug, op: 'post', gaps: [] } as never, reviewerCtx,
+      { harness: HARNESS, slug, op: 'post', outcome: 'conclusive', gaps: [] } as never, reviewerCtx,
     ))) as { content?: Array<{ text: string }> };
     expect(JSON.parse(blind.content?.[0]?.text ?? '{}'), brief(blind)).toMatchObject({ ok: true, counts: true });
 

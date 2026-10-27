@@ -11,6 +11,7 @@ import {
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 import { afterEach, describe, expect, it } from 'vitest';
+import { gcsTestProvider } from '../../../../libs/generic/artifact-registry/src/gcs-test-provider.ts';
 
 import { makeEnv, stubGithub, type FakeR2 } from '../__tests__/fake-d1.ts';
 import type { Env } from '../env.ts';
@@ -353,6 +354,70 @@ async function finalize(env: Env, bundleSha256: string): Promise<Response> {
 }
 
 describe('workspace-host artifact publication', () => {
+  it('finalizes GCS multipart bytes after lost provider responses without changing the operation or generation', async () => {
+    stubGithub({ user: { id: 7, login: 'operator' } });
+    const provider = gcsTestProvider();
+    const { env } = makeEnv({ ARTIFACTS: provider.store, CUPBOARD_OPERATOR_GITHUB_IDS: '7' });
+    const value = await fixture();
+    const operation = crypto.randomUUID();
+    const plan = [{ partNumber: 1, sha256: value.bundleSha256, sizeBytes: value.bundle.length }];
+    const publicPath = `/artifacts/workspace-host/sha256/${value.bundleSha256}/server.tgz`;
+    provider.loseNextCommitResponse();
+    expect((await initiateMultipart(env, value.bundleSha256, value.bundle.length, plan, operation)).status).toBe(201);
+    const resumed = await initiateMultipart(env, value.bundleSha256, value.bundle.length, plan, operation);
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({ uploadId: operation, resumed: true });
+    expect([...provider.objects.keys()].filter(key => key.endsWith('/session'))).toHaveLength(1);
+
+    const part = await uploadMultipartPart(env, value.bundleSha256, operation, 1, value.bundle, value.bundleSha256);
+    expect(part.status).toBe(200);
+    const partBody = await part.json() as UploadedMultipartPart;
+    const receipt = { partNumber: partBody.partNumber, etag: partBody.etag };
+    provider.loseNextCommitResponse();
+    expect((await completeMultipart(env, value.bundleSha256, operation, [receipt])).status).toBe(502);
+    const bundleKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/server.tgz`;
+    const generation = provider.objects.get(bundleKey)!.generation;
+    const retry = await completeMultipart(env, value.bundleSha256, operation, [receipt]);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ deduped: true });
+    expect(provider.objects.get(bundleKey)!.generation).toBe(generation);
+    expect(provider.requests.filter(request => request.url.pathname.endsWith('/compose'))).toHaveLength(1);
+    expect((await api.request(publicPath, {}, env)).status).toBe(404);
+
+    expect((await upload(env, value.bundleSha256, 'server.tgz.minisig', value.signature, value.signatureSha256)).status).toBe(201);
+    expect((await upload(env, value.bundleSha256, 'manifest.json', value.manifestBytes, value.manifestSha256)).status).toBe(201);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(201);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(200);
+    const response = await api.request(publicPath, {}, env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-artifact-sha256')).toBe(value.bundleSha256);
+    expect(response.headers.get('cache-control')).toBe(WORKSPACE_HOST_PUBLIC_CACHE_CONTROL);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(value.bundle);
+    const head = await api.request(publicPath, { method: 'HEAD' }, env);
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(value.bundle.length));
+    expect(provider.objects.get(bundleKey)!.generation).toBe(generation);
+
+    // The host must still enforce the finalized descriptor with a GCS backend.
+    const object = provider.objects.get(bundleKey)!;
+    (object.metadata.metadata as Record<string, string>).fileSha256 = '0'.repeat(64);
+    expect((await api.request(publicPath, {}, env)).status).toBe(404);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(409);
+  });
+
+  it('refuses an untrusted GCS-backed release without creating a public finalization marker', async () => {
+    stubGithub({ user: { id: 7, login: 'operator' } });
+    const provider = gcsTestProvider();
+    const { env } = makeEnv({ ARTIFACTS: provider.store, CUPBOARD_OPERATOR_GITHUB_IDS: '7' });
+    const value = await fixture(manifest => {
+      (manifest.trustReport as { trusted: boolean }).trusted = false;
+    });
+    expect((await uploadFixture(env, value)).map(response => response.status)).toEqual([201, 201, 201]);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(400);
+    expect(await provider.store.head(`${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/.finalized.json`)).toBeNull();
+    expect((await api.request(`/artifacts/workspace-host/sha256/${value.bundleSha256}/server.tgz`, {}, env)).status).toBe(404);
+  });
+
   it('attaches only the SBOM bound by a finalized manifest without rewriting the release', async () => {
     const sbom = new TextEncoder().encode(JSON.stringify({ bomFormat: 'CycloneDX', components: [] }));
     const sbomSha = await sha256Hex(sbom);

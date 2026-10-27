@@ -34,6 +34,7 @@ import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission
 import type { AdmissionRequest, AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import { FAILURE_STREAK, SUSTAIN_MS, _resetDbHealth, recordDbOutcome } from './db-health';
 import {
   configureScheduledRegistry,
   listManaged,
@@ -175,7 +176,10 @@ let port = 0;
 let invalidated = 0;
 
 // Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
-beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+beforeEach(() => {
+  configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore());
+  _resetDbHealth();
+});
 
 afterEach(async () => {
   await gw?.close();
@@ -183,6 +187,7 @@ afterEach(async () => {
   invalidated = 0;
   resetScheduledRegistry();
   resetGatewayRequestOutcomeStore();
+  _resetDbHealth();
 });
 
 async function boot(
@@ -1020,6 +1025,95 @@ test('healthz + stats endpoints report account + counters', async () => {
   await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
   const stats = (await (await ask('/stats')).json()) as { totalRequests: number };
   assert.ok(stats.totalRequests >= 1);
+});
+
+test('GET /healthz stays ready when Claude is paused but Codex has a serviceable route', async () => {
+  const claude = { accountId: 'claude-paused', token: async () => 'claude-token' };
+  const codex = { accountId: 'codex-ready', token: async () => 'codex-token' };
+  const claudePool = createFailoverPool([claude]);
+  const codexPool = createFailoverPool([codex]);
+  const claudeGovernor = new RateLimitGovernor({ maxConcurrent: 20 });
+  claudeGovernor.penalize({ retryAfterMs: 60_000 });
+
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    { pool: claudePool, codexPool, governorFor: () => claudeGovernor, selfHeal: { enabled: false } },
+  );
+
+  const health = await ask('/healthz');
+  const body = (await health.json()) as {
+    ok: boolean;
+    healthyAccounts: number;
+    codexHealthyAccounts: number;
+    pausedActuallyEnforced: boolean;
+    providerReadiness: { claude: boolean; codex: boolean };
+  };
+  assert.equal(health.status, 200);
+  assert.equal(body.pausedActuallyEnforced, true, 'the active Claude account remains observably paused');
+  assert.equal(body.healthyAccounts, 0);
+  assert.equal(body.codexHealthyAccounts, 1);
+  assert.deepEqual(body.providerReadiness, { claude: false, codex: true });
+  assert.equal(body.ok, true);
+});
+
+test('GET /healthz returns 503 when neither Claude nor Codex has a serviceable route', async () => {
+  const claude = { accountId: 'claude-paused', token: async () => 'claude-token' };
+  const codex = { accountId: 'codex-parked', token: async () => 'codex-token' };
+  const claudePool = createFailoverPool([claude]);
+  const codexPool = createFailoverPool([codex]);
+  const claudeGovernor = new RateLimitGovernor({ maxConcurrent: 20 });
+  claudeGovernor.penalize({ retryAfterMs: 60_000 });
+  codexPool.onExhausted(codex.accountId, Date.now() + 60_000);
+
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    { pool: claudePool, codexPool, governorFor: () => claudeGovernor, selfHeal: { enabled: false } },
+  );
+
+  const health = await ask('/healthz');
+  const body = (await health.json()) as {
+    ok: boolean;
+    healthyAccounts: number;
+    codexHealthyAccounts: number;
+    providerReadiness: { claude: boolean; codex: boolean };
+  };
+  assert.equal(health.status, 503);
+  assert.equal(body.healthyAccounts, 0);
+  assert.equal(body.codexHealthyAccounts, 0);
+  assert.deepEqual(body.providerReadiness, { claude: false, codex: false });
+  assert.equal(body.ok, false);
+});
+
+test('GET /healthz keeps a sustained database failure as a 503 despite a serviceable provider', async () => {
+  const now = Date.now();
+  for (let i = 0; i < FAILURE_STREAK; i++) {
+    recordDbOutcome('pool-reload', false, new Error('ECONNREFUSED test database'), now - SUSTAIN_MS - 5_000 + i * 1_000);
+  }
+
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    { selfHeal: { enabled: false } },
+  );
+
+  const health = await ask('/healthz');
+  const body = (await health.json()) as {
+    ok: boolean;
+    db?: { ok: boolean };
+    providerReadiness: { claude: boolean; codex: boolean };
+  };
+  assert.equal(health.status, 503);
+  assert.equal(body.db?.ok, false);
+  assert.equal(body.providerReadiness.claude, true);
+  assert.equal(body.ok, false);
 });
 
 test('non-/v1 paths 404', async () => {

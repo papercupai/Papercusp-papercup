@@ -1,6 +1,6 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withFsMutex } from "./fs-mutex.mjs";
@@ -13,7 +13,7 @@ import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 import { scriptCommandWords } from "./executed-source-map.mjs";
 import { readTaskCgroupLimit, readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
 export { readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
-import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './task-deadline.mjs';
+import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal, admitTaskDeadline } from './task-deadline.mjs';
 export { TASK_DEADLINE_EPOCH_MS_ENV, TASK_DEADLINE_REFUSAL_MARKER,
   readTaskDeadlineEpochMs, formatTaskDeadlineRefusal, isTaskDeadlineRefusal } from './task-deadline.mjs';
 
@@ -32,9 +32,88 @@ function freezeComparison(value) {
   return value;
 }
 
+// A pathname size check does not bound a later read. Keep the descriptor open,
+// cap even the growth probe by the caller's remaining IO budget, and reject
+// replacement of either the leaf or its directory during capture.
+export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead = () => {}) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
+      !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
+    throw new Error('native artifact byte limit');
+  const directory = dirname(file), root = lstatSync(directory);
+  if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))
+    throw new Error('redirected native artifact directory');
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== byteLength)
+      throw new Error('native artifact length or file type mismatch');
+    const buffer = Buffer.alloc(Math.min(byteLength + 1, byteLimit));
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, Math.min(64 * 1024, buffer.length - length), null);
+      if (!count) break;
+      length += count;
+      recordRead(count); // Rejected captures consume the same IO budget.
+    }
+    const after = fstatSync(fd), current = lstatSync(file), rootAfter = lstatSync(directory);
+    if (length !== byteLength || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+        after.ctimeMs !== stat.ctimeMs || !current.isFile() || current.isSymbolicLink() ||
+        current.dev !== stat.dev || current.ino !== stat.ino ||
+        !rootAfter.isDirectory() || rootAfter.isSymbolicLink() ||
+        rootAfter.dev !== root.dev || rootAfter.ino !== root.ino ||
+        realpathSync(directory) !== resolve(directory))
+      throw new Error('native artifact changed during capture');
+    return buffer.subarray(0, length);
+  } finally { closeSync(fd); }
+}
+
+/** Read the existing native OUT event protocol with the receipt writer's bounds.
+ * A truncated census is useful diagnostically but cannot establish custody.
+ */
+export function readNativeProcessTraceArtifacts(out, startedAtMs = 0, finishedAtMs = Number.MAX_SAFE_INTEGER) {
+  const path = `${out}.native-processes`;
+  if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink() || realpathSync(path) !== resolve(path))
+    throw new Error("redirected native process trace");
+  const sourceRoot = realpathSync(path), rows = [];
+  const population = { artifactLimit: 16384, artifactsVisited: 0,
+    eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0, complete: false, truncatedBy: null };
+  const directory = opendirSync(sourceRoot);
+  try {
+    for (let entry; (entry = directory.readSync()) !== null;) {
+      if (population.artifactsVisited === population.artifactLimit) {
+        population.truncatedBy = "artifact-count";
+        break;
+      }
+      population.artifactsVisited++;
+      const name = entry.name;
+      if (!/^[a-f0-9]{64}\.(json|stream|source)$/.test(name)) throw new Error("unexpected native process artifact");
+      if (!name.endsWith(".json")) continue;
+      const file = join(sourceRoot, name), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
+        throw new Error("redirected or oversized native process artifact");
+      if (population.eventBytesRead + stat.size > population.eventByteLimit) {
+        population.truncatedBy = "event-bytes";
+        break;
+      }
+      const bytes = readNativeArtifactBytes(file, stat.size, population.eventByteLimit - population.eventBytesRead,
+        count => { population.eventBytesRead += count; });
+      if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
+        throw new Error("native process artifact hash mismatch");
+      const row = JSON.parse(bytes.toString("utf8"));
+      if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
+          !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
+          !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
+        throw new Error("malformed native process event");
+      if (row.atMs >= startedAtMs && row.atMs <= finishedAtMs) rows.push({ row, bytes });
+    }
+    population.complete = population.truncatedBy === null;
+  } finally { directory.closeSync(); }
+  return { sourceRoot, rows, population };
+}
+
 // Retain only bytes referenced by the process-bound reporter protocol. This is
 // an archive of stated observations, never an enumeration of runtime inputs.
-function retainReporterEvaluatorArtifacts(payload, out, persist) {
+export function retainReporterEvaluatorArtifacts(payload, out, persist) {
   const result = { scope: "referenced-evaluator-code", status: "unobserved",
     referenceLimit: 4096, artifactByteLimit: 16 * 1024 * 1024,
     totalByteLimit: 64 * 1024 * 1024, referencesVisited: 0,
@@ -133,6 +212,320 @@ function retainReporterEvaluatorArtifacts(payload, out, persist) {
  * the real parent invocation and raw streams; it cannot certify unobserved npm
  * lifecycle/shell steps, executable resolution or runtime dependency closure.
  * Call before the finished pulse so a killed aggregate cannot lose this receipt. */
+export function syncBudgetedTaskNativeExecutionReceipt(saved) {
+  const sync = file => {
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  };
+  const retained = (value, depth = 0) => {
+    if (depth > 24) throw new Error('native-artifact-nesting-invalid');
+    if (!value || typeof value !== 'object') return;
+    for (const [key, pin] of Object.entries(value)) {
+      if (key === 'artifact' && pin !== null) {
+        if (!pin || basename(pin.ref ?? '') !== pin.ref || !comparisonDigest(pin.sha256))
+          throw new Error('native-artifact-reference-invalid');
+        const bytes = readNativeArtifactBytes(join(saved.root, pin.ref), pin.byteLength, 64 * 1024 * 1024);
+        if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error('native-artifact-digest-mismatch');
+        sync(join(saved.root, pin.ref));
+      } else retained(pin, depth + 1);
+    }
+  };
+  retained(saved.observation);
+  for (const pin of [saved.receipt, saved.logs.stdout, saved.logs.stderr]) sync(join(saved.root, pin.ref));
+  sync(saved.root);
+  sync(dirname(saved.root));
+  sync(dirname(dirname(saved.root)));
+}
+
+/** Exact-byte custody shared with historical proof retention. Archiving an
+ * observation does not mint an execution receipt or qualify its verdict. */
+export function createNativeArtifactPersister(evidenceRoot) {
+  mkdirSync(evidenceRoot, { recursive: true });
+  if (!lstatSync(evidenceRoot).isDirectory() || lstatSync(evidenceRoot).isSymbolicLink()) {
+    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL redirected artifact root");
+  }
+  const root = realpathSync(evidenceRoot);
+  const persist = (bytes, suffix) => {
+    if (!Buffer.isBuffer(bytes) || !/^[a-z][a-z0-9.-]*$/.test(suffix))
+      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL invalid artifact bytes or suffix");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const ref = `${sha256}.${suffix}`, path = join(root, ref);
+    try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    try {
+      if (!readNativeArtifactBytes(path, bytes.length, bytes.length + 1).equals(bytes))
+        throw new Error('different bytes');
+    } catch {
+      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
+    }
+    return { ref, sha256, byteLength: bytes.length };
+  };
+  return { root, persist };
+}
+
+// P002: custody is a byte archive, not a prospective execution receipt. The
+// expected groups are supplied by the router before launch; observations may
+// never silently replace that population with the subset which finished.
+const custodyHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const custodyLimits = Object.freeze({ objects: 16384, bytes: 64 * 1024 * 1024, objectBytes: 16 * 1024 * 1024 });
+function custodyDirectory(path, privateMode = false) {
+  const full = resolve(path);
+  for (let part = full;; part = dirname(part)) {
+    const stat = lstatSync(part);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('custody redirected ancestor');
+    if (part === dirname(part)) break;
+  }
+  const stat = lstatSync(full);
+  if (realpathSync(full) !== full || privateMode && (stat.mode & 0o777) !== 0o700)
+    throw new Error('custody nonprivate or redirected root');
+  return full;
+}
+function custodyRead(path, budget) {
+  custodyDirectory(dirname(path));
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || (budget.private && (stat.mode & 0o777) !== 0o600))
+    throw new Error('custody nonregular or nonprivate artifact');
+  if (++budget.objects > custodyLimits.objects || stat.size > custodyLimits.objectBytes ||
+      budget.bytes + stat.size + 1 > custodyLimits.bytes) throw new Error('custody limit');
+  return readNativeArtifactBytes(path, stat.size, custodyLimits.bytes - budget.bytes,
+    count => { budget.bytes += count; });
+}
+function custodyInventory(directory) {
+  custodyDirectory(directory);
+  const stat = lstatSync(directory), names = [];
+  const handle = opendirSync(directory);
+  try {
+    for (let entry; (entry = handle.readSync()) !== null;) {
+      if (names.length === custodyLimits.objects) throw new Error('custody inventory limit');
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('custody inventory nonregular entry');
+      names.push(entry.name);
+    }
+  } finally { handle.closeSync(); }
+  const after = lstatSync(directory);
+  if (stat.dev !== after.dev || stat.ino !== after.ino || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs)
+    throw new Error('custody inventory changed');
+  return names.sort();
+}
+function custodyReferences(payload) {
+  const refs = [];
+  const scan = (rows, prefix, observation) => {
+    if (rows === undefined) return;
+    if (!Array.isArray(rows) || rows.length > 4096) throw new Error('custody observation population');
+    rows.forEach((row, index) => {
+      const value = observation(row);
+      if (value === undefined) return;
+      if (value?.schemaVersion !== 'vitest-evaluator-inputs-v1' ||
+          value.scope !== 'vitest-inlined-evaluator-inputs' || value.basis !== 'before-evaluator-call')
+        throw new Error('custody evaluator protocol');
+      for (const role of ['entries', 'vmInputs']) {
+        const pins = value[role] ?? (role === 'vmInputs' ? [] : null);
+        if (!Array.isArray(pins)) throw new Error('custody evaluator population');
+        pins.forEach((pin, i) => {
+          if (refs.length === 4096 || !comparisonDigest(pin?.sha256) ||
+              !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0 || typeof pin.codeRef !== 'string')
+            throw new Error('custody evaluator reference');
+          refs.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
+        });
+      }
+    });
+  };
+  scan(payload.rows, '/rows', row => row?.moduleEvaluations);
+  scan(payload.diagnostics, '/diagnostics', row => row?.moduleEvaluations);
+  scan(payload.nativeRun?.files, '/nativeRun/files', row => row?.proof?.inputs?.moduleEvaluations);
+  return refs;
+}
+function custodyIdentity(identity) {
+  if (!identity || !['workspace', 'harness', 'runId'].every(key => typeof identity[key] === 'string' && identity[key]))
+    throw new Error('custody identity missing');
+}
+function custodyPopulation(expected) {
+  if (!Array.isArray(expected) || !expected.length || expected.length > 4096 ||
+      expected.some(group => !group || typeof group.id !== 'string' || !group.id ||
+        !['primary', 'detail'].includes(group.attempt) || !Array.isArray(group.selected) ||
+        !group.selected.length || !Array.isArray(group.auxiliary) ||
+        !['vitest', 'node', 'unsupported'].includes(group.runner) || typeof group.armed !== 'boolean') ||
+      new Set(expected.map(group => group.id)).size !== expected.length) throw new Error('custody expected population missing');
+}
+
+/** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
+ * `expected` is the independent routing contract, including conditional objects.
+ * Every auxiliary object needs a role and a producer-backed applicability state. */
+export function retainNativeProofPacket(directory, input) {
+  custodyIdentity(input.identity); custodyPopulation(input.expected);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const root = custodyDirectory(directory, true);
+  const objectRoot = join(root, 'objects');
+  mkdirSync(objectRoot, { mode: 0o700, recursive: true });
+  custodyDirectory(objectRoot, true);
+  const store = createNativeArtifactPersister(objectRoot), budget = { objects: 0, bytes: 0 }, gaps = [];
+  const capture = (path, suffix = 'bytes') => store.persist(custodyRead(path, budget), suffix);
+  const observations = input.observations ?? [];
+  if (observations.length !== input.expected.length || new Set(observations.map(row => row.id)).size !== observations.length)
+    gaps.push('group-population-mismatch');
+  const groups = input.expected.map(expected => {
+    const observed = observations.find(row => row.id === expected.id);
+    const group = { id: expected.id, attempt: expected.attempt, families: [], references: [], auxiliary: [],
+      captureComplete: observed?.captureComplete ?? null };
+    if (!observed || observed.out !== expected.out) gaps.push(`${expected.id}:group-binding-missing`);
+    if (observed?.captureComplete === false) gaps.push(`${expected.id}:child-stream-capture-incomplete`);
+    for (const [family, suffix] of [['A', ''], ['B', '.modules'], ['C', '.native-processes'], ['D', '.processes']]) {
+      const entry = { family, state: 'unavailable', producer: expected.id, entries: [] };
+      group.families.push(entry);
+      if (!expected.armed || expected.runner !== 'vitest') {
+        entry.state = expected.runner === 'vitest' ? 'not-requested' : 'not-applicable';
+        entry.reason = expected.runner === 'vitest' ? 'reporter-not-armed' : `runner:${expected.runner}`;
+        continue;
+      }
+      try {
+        if (!observed || !expected.out || !isAbsolute(expected.out)) throw new Error('producer-unavailable');
+        const path = expected.out + suffix;
+        if (family === 'A') {
+          const artifact = capture(path, 'out.json');
+          const payload = JSON.parse(readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
+            custodyLimits.objectBytes).toString('utf8'));
+          entry.entries.push({ original: path, artifact });
+          group.references = custodyReferences(payload);
+          for (const ref of group.references)
+            if (ref.codeRef !== join(resolve(`${expected.out}.modules`), `${ref.sha256}.js`))
+              throw new Error('foreign-evaluator-reference');
+          // These are observations only. Even a terminal reporter is not a
+          // runtime closure or an acceptance decision.
+          group.protocol = { checkpoint: payload.completionCheckpoint ?? null,
+            nativeRun: { state: payload.nativeRun?.state ?? null, reason: payload.nativeRun?.reason ?? null,
+              modulePopulationMatched: payload.nativeRun?.modulePopulationMatched ?? null }, status: 'unqualified' };
+        } else {
+          const names = custodyInventory(path);
+          for (const name of names) {
+            const original = join(path, name), artifact = capture(original);
+            if (family === 'C' && /^[a-f0-9]{64}\.(json|source|stream)$/.test(name) &&
+                artifact.sha256 !== name.slice(0, 64)) throw new Error('native-artifact-digest');
+            if (family === 'D' && name.endsWith('.pending')) gaps.push(`${expected.id}:process-writer-pending`);
+            entry.entries.push({ original, artifact });
+          }
+          if (JSON.stringify(custodyInventory(path)) !== JSON.stringify(names)) throw new Error('inventory-changed');
+          if (family === 'B') for (const ref of group.references) {
+            const retained = entry.entries.find(row => row.original === ref.codeRef)?.artifact;
+            if (!retained || retained.sha256 !== ref.sha256 || retained.byteLength !== ref.byteLength)
+              throw new Error('referenced-evaluator-unavailable');
+          }
+        }
+        entry.state = 'produced';
+      } catch (error) { entry.reason = String(error?.code ?? error?.message ?? error); gaps.push(`${expected.id}:${family}:${entry.reason}`); }
+    }
+    for (const spec of expected.auxiliary) {
+      const entry = { ...spec };
+      group.auxiliary.push(entry);
+      try {
+        if (!spec.role || !['produced', 'not-requested', 'not-produced', 'not-applicable', 'unavailable'].includes(spec.state))
+          throw new Error('auxiliary-declaration-missing');
+        if (spec.state === 'produced') entry.artifact = capture(spec.path);
+        else if (!spec.reason || spec.state === 'unavailable' || spec.state === 'not-produced')
+          throw new Error('auxiliary-unavailable-or-unsupported-absence');
+      } catch (error) { gaps.push(`${expected.id}:${spec.role}:${error?.code ?? error?.message ?? error}`); }
+    }
+    return group;
+  });
+  const manifest = { schemaVersion: 'native-proof-custody-v1', identity: input.identity,
+    expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
+    bytesRead: budget.bytes, gaps, predecessor: input.predecessor ?? null,
+    verdicts: { custody: gaps.length ? 'partial' : 'complete', execution: input.execution ?? 'unknown',
+      protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
+      nativeProof: 'unqualified', acceptance: 'unmeasured' } };
+  const manifestPin = store.persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+  for (const name of custodyInventory(objectRoot)) {
+    const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
+  for (const path of [objectRoot, root, dirname(root)]) {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
+  // Keep the producer's observed inventory and partial states in the original
+  // locator. A newly sealed manifest cannot redefine which objects were captured.
+  const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
+    inventoryHash: custodyHash({ groups, gaps }) };
+  const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
+  return { directory: root, locator, ...verified };
+}
+
+/** Consumer reads only retained objects. Callers MUST provide independently
+ * expected identity/population; the manifest cannot declare its own success. */
+export function verifyNativeProofPacket(directory, locator, contract) {
+  custodyIdentity(contract?.identity); custodyPopulation(contract?.expected);
+  const root = custodyDirectory(directory, true), objects = custodyDirectory(join(root, 'objects'), true);
+  const budget = { objects: 0, bytes: 0, private: true };
+  const read = (pin, readBudget = budget) => {
+    if (!pin || !comparisonDigest(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
+        pin.byteLength < 0 || basename(pin.ref ?? '') !== pin.ref || !pin.ref.startsWith(`${pin.sha256}.`))
+      throw new Error('custody invalid retained pin');
+    const bytes = custodyRead(join(objects, pin.ref), readBudget);
+    if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
+      throw new Error('custody retained bytes differ');
+    return bytes;
+  };
+  // The producer's content budget excludes the manifest it writes afterward.
+  // Apply the same accounting when consuming a partial packet at that limit;
+  // the manifest still has its own ordinary single-object bound.
+  const manifest = JSON.parse(read(locator.manifest, { objects: 0, bytes: 0, private: true }).toString('utf8'));
+  if (manifest.schemaVersion !== 'native-proof-custody-v1' ||
+      JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
+      JSON.stringify(locator.identity) !== JSON.stringify(contract.identity) ||
+      locator.expectedHash !== custodyHash(contract.expected) || manifest.expectedHash !== locator.expectedHash ||
+      JSON.stringify(manifest.expected) !== JSON.stringify(contract.expected) ||
+      !Array.isArray(manifest.groups) || manifest.groups.length !== contract.expected.length)
+    throw new Error('custody identity or expected population mismatch');
+  if (!comparisonDigest(locator.inventoryHash) ||
+      custodyHash({ groups: manifest.groups, gaps: manifest.gaps }) !== locator.inventoryHash)
+    throw new Error('custody captured inventory mismatch');
+  for (const expected of contract.expected) {
+    const group = manifest.groups.find(row => row.id === expected.id);
+    if (!group || group.attempt !== expected.attempt || group.families.length !== 4 ||
+        new Set(group.families.map(row => row.family)).size !== 4 ||
+        !['A', 'B', 'C', 'D'].every(family => group.families.some(row => row.family === family)) ||
+        group.auxiliary.length !== expected.auxiliary.length) throw new Error('custody missing group or family');
+    if (group.captureComplete === false && !manifest.gaps.length) throw new Error('custody incomplete child capture');
+    let reporter;
+    for (const family of group.families) {
+      if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
+      if (family.family === 'A' && family.state === 'produced' &&
+          (family.entries.length !== 1 || typeof expected.out !== 'string' || !isAbsolute(expected.out) ||
+           family.entries[0]?.original !== expected.out))
+        throw new Error('custody produced OUT inventory mismatch');
+      for (const [index, entry] of family.entries.entries()) {
+        const bytes = read(entry.artifact);
+        if (family.family === 'A' && index === 0) reporter = bytes;
+      }
+      if (family.state !== 'produced' && expected.armed && expected.runner === 'vitest' && !manifest.gaps.length)
+        throw new Error('custody unsupported family absence');
+    }
+    const out = group.families.find(row => row.family === 'A').entries[0];
+    if (out && group.families.find(row => row.family === 'A').state === 'produced') {
+      // Validate the exact bytes already read above; charging another read can
+      // reject a correctly retained packet near the bounded capture limit.
+      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')));
+      if (JSON.stringify(refs) !== JSON.stringify(group.references)) throw new Error('custody reference occurrences missing');
+      for (const ref of refs) {
+        const pin = group.families.find(row => row.family === 'B').entries.find(row => row.original === ref.codeRef)?.artifact;
+        if (!pin || pin.sha256 !== ref.sha256 || pin.byteLength !== ref.byteLength) {
+          if (!manifest.gaps.length) throw new Error('custody evaluator mapping missing');
+        }
+      }
+    }
+    expected.auxiliary.forEach((spec, index) => {
+      const entry = group.auxiliary[index];
+      if (JSON.stringify(spec) !== JSON.stringify(Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'artifact'))))
+        throw new Error('custody auxiliary declaration mismatch');
+      if (entry.artifact) read(entry.artifact);
+      else if (spec.state === 'produced' && !manifest.gaps.length) throw new Error('custody auxiliary bytes missing');
+    });
+  }
+  if (manifest.verdicts.nativeProof !== 'unqualified' || manifest.verdicts.acceptance !== 'unmeasured' ||
+      manifest.verdicts.protocol !== 'unqualified' || manifest.verdicts.custody !== (manifest.gaps.length ? 'partial' : 'complete'))
+    throw new Error('custody verdict conflation');
+  return { status: manifest.verdicts.custody, verified: true, manifest };
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (!input || typeof input.task !== "string" || !input.task ||
       typeof input.attempt !== "string" || !input.attempt ||
@@ -140,6 +533,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       !Array.isArray(input.command) || !input.command.length || !input.command[0] ||
       !input.command.every(word => typeof word === "string") ||
       !(input.originalCommand == null || typeof input.originalCommand === "string") ||
+      !(input.invocation === undefined || input.invocation &&
+        Array.isArray(input.invocation.command) && input.invocation.command.length > 0 &&
+        input.invocation.command.every(word => typeof word === "string") &&
+        /^[a-f0-9]{64}$/.test(input.invocation.environmentSha256)) ||
       !Number.isSafeInteger(input.startedAtMs) || !Number.isSafeInteger(input.finishedAtMs) ||
       input.finishedAtMs < input.startedAtMs ||
       !(input.exitCode === null || Number.isSafeInteger(input.exitCode)) ||
@@ -149,23 +546,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       !Buffer.isBuffer(input.stdout) || !Buffer.isBuffer(input.stderr)) {
     throw new Error("NATIVE_TASK_RECEIPT_REFUSAL malformed native child observation");
   }
-  mkdirSync(evidenceRoot, { recursive: true });
-  if (!lstatSync(evidenceRoot).isDirectory() || lstatSync(evidenceRoot).isSymbolicLink()) {
-    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL redirected artifact root");
-  }
-  const root = realpathSync(evidenceRoot);
-  const persist = (bytes, suffix) => {
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const ref = `${sha256}.${suffix}`, path = join(root, ref);
-    try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-    }
-    if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
-        !readFileSync(path).equals(bytes)) {
-      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
-    }
-    return { ref, sha256, byteLength: bytes.length };
-  };
+  const { root, persist } = createNativeArtifactPersister(evidenceRoot);
   const validInputs = rows => Array.isArray(rows) && rows.length > 0 &&
     rows.every(row => row && comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
     new Set(rows.map(row => row.path)).size === rows.length;
@@ -186,51 +567,14 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (input.processTrace && Number.isSafeInteger(input.processTrace.rootPid) &&
       input.processTrace.rootPid > 0 && typeof input.processTrace.out === "string") {
     try {
-      const path = `${input.processTrace.out}.native-processes`;
-      if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())
-        throw new Error("redirected native process trace");
-      const sourceRoot = realpathSync(path), rows = [];
       // A shared OUT directory can contain many processes' diagnostics. Keep
       // the original artifact ceiling without allocating the whole directory
       // or erasing a useful authenticated subset when the population is larger.
       // Directory order is not chronology: truncated observations certify only
       // the retained events, never the unseen suffix or an ordered chain.
-      const population = processTrace.population = { artifactLimit: 16384,
-        artifactsVisited: 0, eventByteLimit: 64 * 1024 * 1024, eventBytesRead: 0,
-        complete: false, truncatedBy: null };
-      const directory = opendirSync(sourceRoot);
-      try {
-        for (let entry; (entry = directory.readSync()) !== null;) {
-          if (population.artifactsVisited === population.artifactLimit) {
-            population.truncatedBy = "artifact-count";
-            break;
-          }
-          population.artifactsVisited++;
-          const name = entry.name;
-          if (!/^[a-f0-9]{64}\.(json|stream)$/.test(name))
-            throw new Error("unexpected native process artifact");
-          if (!name.endsWith(".json")) continue;
-          const file = join(sourceRoot, name), stat = lstatSync(file);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
-            throw new Error("redirected or oversized native process artifact");
-          if (population.eventBytesRead + stat.size > population.eventByteLimit) {
-            population.truncatedBy = "event-bytes";
-            break;
-          }
-          const bytes = readFileSync(file);
-          population.eventBytesRead += bytes.length;
-          if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
-            throw new Error("native process artifact hash mismatch");
-          const row = JSON.parse(bytes.toString("utf8"));
-          if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
-              !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
-              !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
-            throw new Error("malformed native process event");
-          if (row.atMs >= input.startedAtMs && row.atMs <= input.finishedAtMs)
-            rows.push({ row, bytes });
-        }
-        population.complete = population.truncatedBy === null;
-      } finally { directory.closeSync(); }
+      const { sourceRoot, rows, population } = readNativeProcessTraceArtifacts(input.processTrace.out,
+        input.startedAtMs, input.finishedAtMs);
+      processTrace.population = population;
       if (!population.complete)
         processTrace.gaps.push(`native-process-population-truncated:${population.truncatedBy}`);
       const pids = new Set([input.processTrace.rootPid]);
@@ -250,7 +594,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       }
       processTrace.events = selected.map(({ row, bytes }) => ({ ...row,
         artifact: persist(bytes, "process-event.json") }));
-      let retainedStreamBytes = 0;
+      let streamBytesRead = 0;
       for (const { row } of selected.filter(({ row }) => row.event === "node-exit")) {
         if (row.exitListenersComplete !== true)
           processTrace.gaps.push(`native-exit-listeners-unverified:${row.processIdentity}`);
@@ -267,12 +611,12 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
               typeof pin.captureComplete !== "boolean" ||
               pin.captureComplete && pin.observedByteLength !== pin.byteLength)
             throw new Error("malformed native stream artifact pin");
-          const file = join(sourceRoot, pin.ref), stat = lstatSync(file);
-          retainedStreamBytes += pin.byteLength;
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== pin.byteLength ||
-              retainedStreamBytes > 64 * 1024 * 1024)
+          const file = join(sourceRoot, pin.ref);
+          const remaining = 64 * 1024 * 1024 - streamBytesRead;
+          if (pin.byteLength > remaining)
             throw new Error("redirected, oversized or incomplete native stream artifact");
-          const bytes = readFileSync(file);
+          const bytes = readNativeArtifactBytes(file, pin.byteLength, remaining,
+            count => { streamBytesRead += count; });
           if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
             throw new Error("native stream artifact hash mismatch");
           processTrace.streams.push({ processIdentity: row.processIdentity, pid: row.pid, role,
@@ -296,6 +640,68 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
     }
   } else processTrace.gaps.push("native-process-trace-unobserved");
+  // Retain only references on already selected process/load observations. A
+  // rejected sidecar leaves that authenticated diagnostic trace available.
+  const loaderSources = processTrace.loaderSources = { scope: 'referenced-loader-source',
+    status: 'unobserved', referenceLimit: 4096, artifactByteLimit: 16 * 1024 * 1024,
+    totalByteLimit: 64 * 1024 * 1024, referencesVisited: 0, bytesRead: 0,
+    bytesRetained: 0, entries: [], gaps: [] };
+  const loads = processTrace.events.filter(row => row.event === 'module-load-return');
+  const sourceGaps = new Set(), retainedSources = new Map();
+  if (!loads.length) sourceGaps.add('native-loader-source-observations-unobserved');
+  if (loads.length > loaderSources.referenceLimit) sourceGaps.add('native-loader-source-reference-limit');
+  for (const row of loads.slice(0, loaderSources.referenceLimit)) {
+    loaderSources.referencesVisited++;
+    try {
+      const pin = row.source;
+      if (!pin || pin.status !== 'hashed' || pin.artifactUnavailable || !pin.ref)
+        throw new Error('source-unobserved-or-unavailable');
+      if (pin.scope !== 'node-loader-returned-source' || !comparisonDigest(pin.sha256) ||
+          pin.ref !== `${pin.sha256}.source` || !Number.isSafeInteger(pin.byteLength) ||
+          pin.byteLength < 0 || pin.byteLength > loaderSources.artifactByteLimit ||
+          !Number.isSafeInteger(row.loadId) || row.loadId < 1 ||
+          typeof row.url !== 'string' || !row.url.startsWith('file:'))
+        throw new Error('malformed-or-oversized-reference');
+      let artifact = retainedSources.get(pin.sha256);
+      if (artifact && artifact.byteLength !== pin.byteLength) throw new Error('length-mismatch');
+      if (!artifact) {
+        const remaining = loaderSources.totalByteLimit - loaderSources.bytesRead;
+        if (pin.byteLength > remaining) throw new Error('total-byte-limit');
+        const path = `${input.processTrace.out}.native-processes`, directory = lstatSync(path);
+        if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error('redirected-directory');
+        const sourceRoot = realpathSync(path), file = join(sourceRoot, pin.ref);
+        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let bytes;
+        try {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || stat.size !== pin.byteLength) throw new Error('length-or-file-type-mismatch');
+          const buffer = Buffer.alloc(Math.min(pin.byteLength + 1, remaining));
+          let length = 0, count;
+          while (length < buffer.length && (count = readSync(fd, buffer, length, buffer.length - length, null)) > 0) {
+            length += count;
+            loaderSources.bytesRead += count; // Rejected bytes consume the same IO budget.
+          }
+          const after = fstatSync(fd), current = lstatSync(file), rootAfter = lstatSync(path);
+          if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+              after.ctimeMs !== stat.ctimeMs || current.isSymbolicLink() ||
+              current.dev !== stat.dev || current.ino !== stat.ino ||
+              rootAfter.isSymbolicLink() || rootAfter.dev !== directory.dev || rootAfter.ino !== directory.ino ||
+              realpathSync(path) !== sourceRoot)
+            throw new Error('changed-during-capture');
+          bytes = buffer.subarray(0, length);
+        } finally { closeSync(fd); }
+        if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error('digest-mismatch');
+        artifact = persist(bytes, 'loader-source');
+        retainedSources.set(pin.sha256, artifact);
+        loaderSources.bytesRetained += bytes.length;
+      }
+      loaderSources.entries.push({ processIdentity: row.processIdentity, pid: row.pid,
+        loadId: row.loadId, url: row.url, artifact });
+    } catch (error) { sourceGaps.add(`native-loader-source-rejected:${error?.code ?? error?.message ?? 'unknown'}`); }
+  }
+  loaderSources.gaps = [...sourceGaps];
+  loaderSources.status = loads.length ? (sourceGaps.size ? 'partial' : 'retained') : 'unobserved';
+  if (sourceGaps.size) processTrace.gaps.push('native-loader-sources-incomplete');
   // Derive only the root npm process's direct exported spawn/close spans. A
   // descendant inherits npm's lifecycle labels too; those labels alone cannot
   // identify a lifecycle shell or turn its inherited output into step logs.
@@ -453,7 +859,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   }
   const receipt = { schemaVersion: 1, kind: "affected-task-native-execution", task: input.task,
     attempt: input.attempt, originalCommand: input.originalCommand ?? null,
+    ...(input.currentExecution ? { currentExecution: structuredClone(input.currentExecution) } : {}),
     execution: { command: input.command.slice(), cwd: input.cwd,
+      ...(input.invocation ? { invocation: { command: input.invocation.command.slice(),
+        environmentSha256: input.invocation.environmentSha256 } } : {}),
       startedAtMs: input.startedAtMs, finishedAtMs: input.finishedAtMs,
       childWallMs: input.finishedAtMs - input.startedAtMs,
       exitCode: input.exitCode, signal: input.signal, error: input.error,
@@ -680,6 +1089,34 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
     repeatRatios, operationalAcceptance: false, fileSetSha256: pinned ? prepared.fileSetSha256 : null };
 }
 
+// Bound actual IO and allocation, including rejected inputs. Read only the size
+// observed on one regular descriptor, then reject mutation or path replacement.
+async function readBoundedComparisonFile(path) {
+  const byteLimit = 64 * 1024 * 1024;
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("Comparison input must be a regular file");
+    if (before.size > BigInt(byteLimit)) throw new Error("Original artifact exceeded read budget");
+    const bytes = Buffer.alloc(Number(before.size));
+    let length = 0;
+    while (length < bytes.length) {
+      const result = await handle.read(bytes, length, Math.min(64 * 1024, bytes.length - length), null);
+      if (!result.bytesRead) break;
+      length += result.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    const current = await lstat(path, { bigint: true });
+    if (length !== bytes.length || after.size !== before.size ||
+        after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs ||
+        !current.isFile() || current.dev !== before.dev || current.ino !== before.ino ||
+        current.size !== before.size || current.mtimeNs !== before.mtimeNs ||
+        current.ctimeNs !== before.ctimeNs || await realpath(path) !== path)
+      throw new Error("Comparison input changed during read");
+    return bytes;
+  } finally { await handle.close(); }
+}
+
 /** Resolve pinned ORIGINAL files before evaluation; never accepts caller-loaded receipts. */
 export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
   const root = await realpath(evidenceRoot);
@@ -689,8 +1126,7 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
     const within = relative(root, path);
     if (!within || isAbsolute(within) || within === ".." || within.startsWith("../"))
       throw new Error("Original artifact escaped evidence root");
-    const bytes = await readFile(path);
-    if (bytes.length > 64 * 1024 * 1024) throw new Error("Original artifact exceeded read budget");
+    const bytes = await readBoundedComparisonFile(path);
     if (createHash("sha256").update(bytes).digest("hex") !== sha256)
       throw new Error(`Original artifact hash mismatch: ${ref}`);
     return json ? JSON.parse(bytes.toString("utf8")) : bytes;
@@ -778,17 +1214,18 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     pins.commands.length <= 64,
     "bounded original command pins required");
   const sourceRoot = await realpath(pins.repositoryRoot);
-  const matchCurrentInputs = async inputs => {
-    for (const input of inputs) {
-      const path = await realpath(join(sourceRoot, input.path));
-      const within = relative(sourceRoot, path);
-      require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
-        "command source escaped repository root");
-      const bytes = await readFile(path);
-      require(bytes.length <= 64 * 1024 * 1024 &&
-        createHash("sha256").update(bytes).digest("hex") === input.sha256,
+  const readCurrentInput = async input => {
+    const path = await realpath(join(sourceRoot, input.path));
+    const within = relative(sourceRoot, path);
+    require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
+      "command source escaped repository root");
+    const bytes = await readBoundedComparisonFile(path);
+    require(createHash("sha256").update(bytes).digest("hex") === input.sha256,
       `current command input differs: ${input.path}`);
-    }
+    return bytes;
+  };
+  const matchCurrentInputs = async inputs => {
+    for (const input of inputs) await readCurrentInput(input);
   };
   const qualified = [];
   const identities = new Set();
@@ -965,7 +1402,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     if (astro) {
       const packagePath = `${task.dir}/package.json`;
       require(inputs.some(input => input.path === packagePath), "pinned original Astro wrapper script required");
-      const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+      const pkg = JSON.parse((await readCurrentInput(inputs.find(input => input.path === packagePath))).toString("utf8"));
       require(pkg.scripts?.check === obligation.command, "original npm check wrapper mapping differs");
       const stdout = logs.stdout.toString("utf8");
       const summaries = [...stdout.matchAll(/^Result \((\d+) files\):[ \t]*\r?$/gm)];
@@ -1126,7 +1563,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       new Set(parentInputs.map(row => row.path)).size === parentInputs.length,
     "original parent wrapper inputs required");
     await matchCurrentInputs(parentInputs);
-    const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+    const pkg = JSON.parse((await readCurrentInput(parentInputs.find(input => input.path === packagePath))).toString("utf8"));
     require(pkg.scripts?.[task.script] === task.command &&
       lifecycle.every(row => pkg.scripts?.[row.script] === row.command) &&
       ["pre", "post"].every(phase => !pkg.scripts?.[`${phase}${task.script}`] ||
@@ -1372,6 +1809,13 @@ export function isSharedAdmissionTimeout(error) {
     /Timed out after \d+ms waiting for fs-mutex/.test(message) &&
     message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX)
   );
+}
+
+/** A release-gate waiter deferred before spending its queue budget behind an aged holder. */
+export function isSharedAdmissionDeferral(error) {
+  const message = String(error?.message ?? error ?? "");
+  return error?.code === "EADMISSIONDEFERRED" &&
+    message.includes(SHARED_TEST_PROCESS_ADMISSION_MUTEX);
 }
 
 // WI-1639265: the caller's WALL CLOCK, published by the launcher as absolute epoch ms.
@@ -1894,6 +2338,8 @@ export function resolveMemoryBudgetMb({
 export function resolveTaskBudget({
   workerBudget,
   memoryBudgetMb,
+  memoryBudgetScope,
+  sharedMemoryBudgetMb,
   workerMemoryMb,
   maxConcurrentTasks = 2,
   reserveWorkers = 1,
@@ -1906,6 +2352,11 @@ export function resolveTaskBudget({
     memoryBudgetMb,
     "memoryBudgetMb",
   );
+  if (memoryBudgetScope !== undefined || sharedMemoryBudgetMb !== undefined) {
+    if (typeof memoryBudgetScope !== 'string' || !memoryBudgetScope.trim() || memoryBudgetScope.length > 500 ||
+        !Number.isSafeInteger(sharedMemoryBudgetMb) || sharedMemoryBudgetMb < 1)
+      throw new Error('Scoped admission requires a shared memory budget and non-empty scope');
+  }
   const configuredWorkerMemoryMb = positiveInteger(
     workerMemoryMb,
     "workerMemoryMb",
@@ -2013,6 +2464,7 @@ export function resolveTaskBudget({
   return {
     workerBudget: configuredWorkerBudget,
     memoryBudgetMb: configuredMemoryBudgetMb,
+    ...(memoryBudgetScope ? { memoryBudgetScope, sharedMemoryBudgetMb } : {}),
     workerMemoryMb: configuredWorkerMemoryMb,
     memoryWorkerBudget,
     // EI-20801764054303492: WHICH term bound the budget. Without this, a gate log records the
@@ -2401,7 +2853,9 @@ function createBudgetedTaskRun(tasks, options) {
     return admitted;
   };
 
-  const runOne = async (entry, lane, workers) => {
+  const runOne = async (entry, lane, requestedWorkers) => {
+    const execute = async (workers) => {
+    if (firstError) throw firstError;
     const memoryMb = workers * budget.workerMemoryMb;
     admissions += 1;
     activeWorkers += workers;
@@ -2443,6 +2897,12 @@ function createBudgetedTaskRun(tasks, options) {
       activeWorkers -= workers;
       activeTasks -= 1;
     }
+    };
+    try {
+      return options.admitTask
+        ? await options.admitTask(entry.task, requestedWorkers, execute, entry.index)
+        : await execute(requestedWorkers);
+    } catch (error) { firstError ??= error; throw error; }
   };
 
   const runLane = async (lane, workers, take, turn) => {
@@ -2545,6 +3005,12 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
 
   const bits = [];
   if (parsed.pid != null) bits.push(`pid=${parsed.pid}`);
+  if (parsed.ownerId) bits.push(`owner=${parsed.ownerId}`);
+  if (parsed.taskId) bits.push(`task=${parsed.taskId}`);
+  if (parsed.admission) {
+    for (const key of ['resource', 'workers', 'workerMemoryMb', 'workerBudget', 'memoryBudgetMb', 'memoryBudgetScope', 'sharedMemoryBudgetMb', 'maxConcurrentTasks'])
+      if (parsed.admission[key] != null) bits.push(`${key}=${parsed.admission[key]}`);
+  }
   const acquiredAtMs = parsed.acquiredAt ? Date.parse(parsed.acquiredAt) : NaN;
   if (Number.isFinite(acquiredAtMs)) {
     const heldMs = now - acquiredAtMs;
@@ -2558,6 +3024,15 @@ export function formatAdmissionHolder(ownerText, now = Date.now()) {
     for (const [key, value] of Object.entries(intent)) bits.push(`${key}=${value}`);
   } else {
     bits.push("intent=undeclared");
+  }
+  const wait = parsed.admissionWait;
+  if (wait && typeof wait === 'object') {
+    bits.push(`constraints=${(Array.isArray(wait.constraints) ? wait.constraints : []).join(',') || 'none'}`);
+    for (const key of ['availableWorkers', 'availableMemoryMb', 'activeTasks', 'taskCap'])
+      if (wait[key] != null) bits.push(`${key}=${wait[key]}`);
+    if (Array.isArray(wait.readers)) bits.push(`readers=${wait.readerCount}[${wait.readers.filter(reader => reader && typeof reader === 'object').map(reader =>
+      `pid=${reader.pid ?? 'unknown'} owner=${reader.ownerId ?? 'unknown'} task=${reader.taskId ?? 'unknown'} resource=${reader.admission?.resource ?? 'unknown'}`).join('; ')}]`);
+    if (wait.predecessor) bits.push(`predecessorPid=${wait.predecessor.pid ?? 'unknown'} predecessorResource=${wait.predecessor.admission?.resource ?? 'unknown'}`);
   }
   return bits.length > 0 ? bits.join(" ") : raw;
 }
@@ -2682,6 +3157,67 @@ export async function runBudgetedTasks(tasks, options) {
     Number(options?.admissionTimeoutMs) > 0
       ? Number(options.admissionTimeoutMs)
       : SHARED_TEST_PROCESS_ADMISSION_TIMEOUT_MS;
+  if (typeof options.taskAdmissionKey === 'function') {
+    // Native artifact readers also import this module without running tasks.
+    // Resolve the new admission API only at its execution boundary.
+    const { withFsMutexBudget } = await import('./fs-mutex.mjs');
+    const budget = resolveTaskBudget(options);
+    // Charge the union of idle queue intervals, never concurrent waits or
+    // time when this invocation is already executing/persisting a task.
+    const waiting = new Set();
+    let queuedMs = 0, waitingSince = null, reportedMs = 0, resident = 0;
+    const spend = () => queuedMs + (waitingSince === null ? 0 : Date.now() - waitingSince);
+    const updateClock = () => {
+      const shouldRun = waiting.size > 0 && resident === 0;
+      if (shouldRun && waitingSince === null) waitingSince = Date.now();
+      if (!shouldRun && waitingSince !== null) {
+        queuedMs += Date.now() - waitingSince; waitingSince = null;
+      }
+    };
+    const leave = token => {
+      waiting.delete(token);
+      updateClock();
+    };
+    const run = createBudgetedTaskRun(tasks, { ...options,
+      admitTask: async (task, workers, execute, index) => {
+        const token = {};
+        waiting.add(token);
+        updateClock();
+        try {
+          return await withFsMutexBudget(admissionMutexName(), async granted => {
+            leave(token);
+            const deadline = options.deadlineEpochMs === undefined ? readTaskDeadlineEpochMs() : options.deadlineEpochMs;
+            if (deadline != null) {
+              const estimate = options.estimateMs?.(task, index);
+              const known = Number.isFinite(estimate) && estimate >= 0;
+              admitTaskDeadline({ env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) },
+                knownEstimateMs: known ? Math.ceil(estimate) : 0, knownTasks: known ? 1 : 0, unknownTasks: known ? 0 : 1 });
+            }
+            resident++; updateClock();
+            try { return await execute(granted); }
+            finally { resident--; updateClock(); }
+          }, { workers, workerMemoryMb: budget.workerMemoryMb,
+            workerBudget: budget.effectiveWorkerBudget, memoryBudgetMb: budget.memoryBudgetMb,
+            memoryBudgetScope: budget.memoryBudgetScope, sharedMemoryBudgetMb: budget.sharedMemoryBudgetMb,
+            maxConcurrentTasks: budget.maxConcurrentTasks,
+            resource: options.taskAdmissionKey(task) || '*',
+            intent: { ...options.admissionIntent, taskIndex: index },
+            timeoutMs, remainingMs: () => timeoutMs - spend(),
+            onWaiting: ({ owner, elapsedMs }) => notify(
+              `AFFECTED_TESTS_ADMISSION_QUEUED task-sized lease waiting ${elapsedMs}ms; holder: ${formatAdmissionHolder(owner)}`,
+              { kind: 'queued', elapsedMs, budgetMs: Math.max(0, timeoutMs - spend()) }),
+            onAcquired: ({ waitedMs }) => {
+              const total = spend(), queueChargeMs = total - reportedMs;
+              reportedMs = total;
+              options.onAdmissionAcquired?.({ waitedMs, queueChargeMs, budgetMs: timeoutMs });
+            },
+          });
+        } finally { leave(token); }
+      },
+    });
+    const result = await run();
+    return { results: result.results, stats: result.stats };
+  }
   const runTurn = createBudgetedTaskRun(tasks, options);
   let queuedMs = 0;
   let run;
@@ -2719,6 +3255,7 @@ export async function runBudgetedTasks(tasks, options) {
       timeoutMs: remainingQueueMs,
       staleMs: SHARED_TEST_PROCESS_ADMISSION_STALE_MS,
       retryMs: SHARED_TEST_PROCESS_ADMISSION_RETRY_MS,
+      deferAfterHolderAgeMs: options?.deferWhenHolderOlderThanBudget ? remainingQueueMs : undefined,
       waitingNoticeIntervalMs: SHARED_TEST_PROCESS_ADMISSION_NOTICE_INTERVAL_MS,
       // EI-21917992245424964: what this run IS, carried in the owner record so a blocked
       // peer can judge it without waking anyone. The caller owns scope/purpose;
@@ -2852,9 +3389,9 @@ export async function runBudgetedTaskShards(plan, options) {
     const run = await runBudgetedTasks(shard.tasks, {
       ...options,
       admissionTimeoutMs: Math.max(1, runBudgetMs - queuedSoFarMs),
-      onAdmissionAcquired: ({ waitedMs, budgetMs }) => {
-        queuedSoFarMs += waitedMs;
-        if (options?.onAdmissionAcquired) options.onAdmissionAcquired({ waitedMs, budgetMs });
+      onAdmissionAcquired: ({ waitedMs, budgetMs, queueChargeMs }) => {
+        queuedSoFarMs += queueChargeMs ?? waitedMs;
+        if (options?.onAdmissionAcquired) options.onAdmissionAcquired({ waitedMs, budgetMs, queueChargeMs });
       },
     });
     shardStats.push({

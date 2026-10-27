@@ -49,12 +49,45 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
 
+# The task reconciler recovers a lost managed-task watcher from this terminal
+# marker. Register it before vh_bracket_trap so the harness finalizer runs first
+# and the durable task outcome is the last line emitted on every shell exit.
+write_task_terminal_marker() {
+  local rc=$?
+  local status=completed
+  if [ "$rc" -ne 0 ]; then status=failed; fi
+  printf '[capability:bash] JOB END: status=%s exit=%s at %s\n' \
+    "$status" "$rc" "$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ')"
+}
+trap 'write_task_terminal_marker' EXIT
+
 # The native Inbox acknowledgement acceptance drives a post-onboarding route,
 # and writes a full JSON receipt separately from the reporter's JSONL ledger
 # receipts. Refuse a misconfigured or stale receipt before harness initialization
 # or the desktop boot.
+native_preflight_args=("$@")
+# The default suite includes this native acceptance too. An empty filter must
+# not bypass prerequisites that an explicitly selected spec enforces.
+has_explicit_spec=0
 for arg in "$@"; do
   case "$arg" in
+    *.spec.*|*.test.*) has_explicit_spec=1 ;;
+  esac
+done
+if [ "$has_explicit_spec" -eq 0 ]; then
+  native_preflight_args=(e2e/inbox-ack-persistence.native.spec.mts e2e/support-workflow-native.spec.mts)
+fi
+for arg in "${native_preflight_args[@]}"; do
+  case "$arg" in
+    *support-workflow-native.spec.mts*)
+      # A receipt is admission, not a prepared worker result. Placement runs
+      # in the routines tick; a request-only desktop can never complete this
+      # journey. Reuse the launcher's isolated-only worker opt-in.
+      if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ] || [ "${PAPERCUSP_DEV_BACKGROUND_WORKERS:-}" != "1" ]; then
+        echo "run-operator-e2e-isolated: support-workflow-native.spec.mts requires VERIFY_TAURI_ISOLATED_SEED=ready and PAPERCUSP_DEV_BACKGROUND_WORKERS=1 (isolated worker placement)" >&2
+        exit 2
+      fi
+      ;;
     *inbox-ack-persistence.native.spec.mts*)
       if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ]; then
         echo "run-operator-e2e-isolated: inbox-ack-persistence.native.spec.mts requires VERIFY_TAURI_ISOLATED_SEED=ready" >&2
@@ -141,17 +174,23 @@ export PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP="${PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIG
 unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
-# The standing isolated runner verifies an immutable commit by default. The verifier's
-# working-tree mode intentionally refuses any active source lock because it copies the
-# whole repository; callers can explicitly set VERIFY_TAURI_SOURCE_REF empty to request
-# that mode when they need uncommitted source.
+# The standing isolated runner verifies an immutable commit by default. Resolve every
+# non-empty selector to its commit id here: downstream source receipts bind to that id,
+# not a symbolic ref such as HEAD or a branch name. The verifier's working-tree mode
+# intentionally refuses any active source lock because it copies the whole repository;
+# callers can explicitly set VERIFY_TAURI_SOURCE_REF empty to request that mode when they
+# need uncommitted source.
 if [ "${VERIFY_TAURI_SOURCE_REF+x}" != "x" ]; then
-  VERIFY_TAURI_SOURCE_REF="$(git -C "$ROOT" rev-parse --verify HEAD)" || {
-    echo "run-operator-e2e-isolated: could not resolve committed HEAD for the source snapshot" >&2
+  VERIFY_TAURI_SOURCE_REF=HEAD
+fi
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+  source_ref="$VERIFY_TAURI_SOURCE_REF"
+  VERIFY_TAURI_SOURCE_REF="$(git -C "$ROOT" rev-parse --verify --end-of-options "${source_ref}^{commit}")" || {
+    echo "run-operator-e2e-isolated: could not resolve committed source ref: $source_ref" >&2
     exit 2
   }
   [ -n "$VERIFY_TAURI_SOURCE_REF" ] || {
-    echo "run-operator-e2e-isolated: committed source ref resolved empty" >&2
+    echo "run-operator-e2e-isolated: committed source ref resolved empty: $source_ref" >&2
     exit 2
   }
   export VERIFY_TAURI_SOURCE_REF
@@ -168,7 +207,7 @@ if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -z "${VERIFY_TAURI_SOURCE_INPUTS:-
   VERIFY_TAURI_SOURCE_INPUTS_FILE="$VH_RUN_DIR/operator-e2e-source-inputs.json"
   export VERIFY_TAURI_SOURCE_INPUTS_FILE
   node --input-type=module - "$ROOT" "$@" > "$VERIFY_TAURI_SOURCE_INPUTS_FILE" <<'NODE'
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const repoRoot = resolve(process.argv[2]);
@@ -203,6 +242,13 @@ function addFile(raw, label) {
 }
 
 const args = process.argv.slice(3);
+// An unfiltered run executes native journeys too. Their original source
+// receipts must name the specs and fixtures, rather than just the configs.
+if (!args.some(arg => !arg.startsWith('-') && specPath.test(arg.replace(/(?::\d+)+$/, '')))) {
+  for (const name of readdirSync(resolve(operatorRoot, 'e2e'), { recursive: true })) {
+    if (/\.[cm]?[jt]sx?$/i.test(name)) addFile('e2e/' + name, 'default-suite input');
+  }
+}
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === '--config' || arg === '-c') {
@@ -221,6 +267,15 @@ for (let i = 0; i < args.length; i++) {
   addFile(arg, 'Playwright spec');
 }
 
+if (inputs.has('apps/operator/e2e/inbox-ack-persistence.native.spec.mts')) {
+  addFile('app/_components/inbox/use-inbox-pending.ts', 'native Inbox input');
+  addFile('app/admin/plans/plans-api.ts', 'native Inbox input');
+}
+if (inputs.has('apps/operator/e2e/ticket-integrations.native.spec.mts')) {
+  addFile('apps/operator/e2e/_ongoing-work-native-fixture.ts', 'native custody helper');
+  addFile(resolve(repoRoot, 'scripts/tauri-surface-verify-ticket-integrations.sh'), 'native ticket assertion');
+}
+
 process.stdout.write(JSON.stringify([...inputs].sort()) + '\n');
 NODE
   source_inputs_status=$?
@@ -228,6 +283,13 @@ NODE
     rm -f -- "$VERIFY_TAURI_SOURCE_INPUTS_FILE"
     exit "$source_inputs_status"
   fi
+fi
+
+# Native acceptance consumers also inspect the inline custody list. Derive it
+# from the same file used by admission so both representations name the same inputs.
+if [ -z "${VERIFY_TAURI_SOURCE_INPUTS:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+  VERIFY_TAURI_SOURCE_INPUTS="$(node -e 'const fs = require("node:fs"); const paths = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Array.isArray(paths) || paths.some(p => typeof p !== "string" || /[\s,]/.test(p))) process.exit(2); process.stdout.write(paths.join(","));' "$VERIFY_TAURI_SOURCE_INPUTS_FILE")" || exit $?
+  export VERIFY_TAURI_SOURCE_INPUTS
 fi
 
 # Refuse stale acceptance inputs before the rig allocates native build slots or
@@ -242,6 +304,57 @@ if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-
     input_check_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
   node "$ROOT/scripts/source-preview.mjs" verifier-inputs-check "${input_check_args[@]}" || exit $?
+fi
+
+# Collect with the SAME selection arguments before allocating native build/DB
+# resources. Playwright --grep sees project + filename + title, so an apparently
+# valid anchored title can select nothing. Collection never runs fixtures and
+# uses its own JSON reporter; execution keeps the config's ledger reporters.
+selection_report="$VH_PHASE_DIR/selection.json"
+selection_errors="$VH_PHASE_DIR/selection.stderr.log"
+(
+  cd "$ROOT/apps/operator" || exit 2
+  timeout --signal=TERM --kill-after=5s 60s bash -c \
+    'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
+) >"$selection_report" 2>"$selection_errors"
+selection_status=$?
+if [ "$selection_status" -ne 0 ]; then
+  vh_fail selection-collection-failed
+  tail -n 20 "$selection_errors" >&2
+  echo "run-operator-e2e-isolated: selection collection failed (rc=$selection_status); refusing native rig; evidence=$selection_report" >&2
+  exit 2
+fi
+node --input-type=module - "$selection_report" <<'JS'
+import fs from 'node:fs';
+const file = process.argv[2];
+const report = JSON.parse(fs.readFileSync(file, 'utf8'));
+const selected = [];
+function visit(suites, parents = []) {
+  for (const suite of suites ?? []) {
+    const titles = [...parents, suite.title].filter(Boolean);
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) selected.push({
+        project: test.projectName, title: [...titles, spec.title].join(' › '),
+      });
+    }
+    visit(suite.suites, titles);
+  }
+}
+visit(report.suites);
+if (report.errors?.length || !selected.length) {
+  console.error('run-operator-e2e-isolated: empty or invalid selection; refusing native rig');
+  process.exit(2);
+}
+fs.writeFileSync(file.replace(/\.json$/, '-proof.json'), JSON.stringify({
+  sourceRef: process.env.VERIFY_TAURI_SOURCE_REF ?? null, count: selected.length, selected,
+}, null, 2) + '\n');
+console.log(`OPERATOR_E2E_SELECTION count=${selected.length} report=${file}`);
+JS
+selection_status=$?
+if [ "$selection_status" -ne 0 ]; then
+  vh_fail selection-invalid
+  echo "run-operator-e2e-isolated: invalid selection report; refusing native rig; evidence=$selection_report" >&2
+  exit 2
 fi
 
 echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_TEST_RUNS_DB_URL##*@} workspace=${PAPERCUSP_TEST_RUN_WORKSPACE:-<rig>} harness=$PAPERCUSP_TEST_RUN_HARNESS rig=$RIG"

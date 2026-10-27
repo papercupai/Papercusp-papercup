@@ -140,7 +140,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     //     `systemd-run` spawn through the SAME mock, eating a `mockReturnValueOnce`
     //     and shifting every `spawnMock.mock.calls[N]` this file reads (WI-7377).
     // (b) Subject: pinned unsupported, `managedSpawn` still runs its full path but
-    //     launches the payload directly — so `cmd`/`args` stay the bare `npx tsx …`
+    //     launches the payload directly — so `cmd`/`args` stay the explicit Node/tsx argv
     //     spawn PLAN these tests are about, unchanged by the confinement work.
     //
     // The CONFINED branch is pinned by the sibling file
@@ -169,7 +169,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     vi.restoreAllMocks();
   });
 
-  it('spawns via npx tsx in dev, resolves on the PAPERCUSP_SPAWNER_READY handshake', async () => {
+  it('spawns via explicit Node and tsx in dev, resolves on the PAPERCUSP_SPAWNER_READY handshake', async () => {
     const child = makeChild();
     spawnMock.mockReturnValueOnce(child);
 
@@ -179,9 +179,10 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
-    expect(cmd).toBe('npx');
-    expect(args[0]).toBe('tsx');
-    expect(args[1]).toContain('apps/operator/bin/spawner-sidecar.ts');
+    expect(cmd).toBe(process.execPath);
+    expect(args[0]).toBe('--import');
+    expect(args[1]).toContain('tsx');
+    expect(args[2]).toContain('apps/operator/bin/spawner-sidecar.ts');
     expect(opts.env?.PAPERCUSP_SPAWNER_IPC_SOCKET).toBe('/tmp/spawner-sidecar.sock');
     expect(opts.env?.PAPERCUSP_SPAWNER_SCOPE_UNIT).toMatch(/^pc-[0-9a-z]{4,64}\.scope$/);
     expect(isSpawnerSidecarRunning()).toBe(true);

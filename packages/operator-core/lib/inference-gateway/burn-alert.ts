@@ -21,6 +21,65 @@
  */
 import type { AccountPool, BurnTransition, AccountCreditBalance } from '../deployment/account-pool';
 import type { BurnVerdict } from './burn-governor';
+import { codexPlanRank } from './codex-oauth-proxy';
+
+/** WI-6554700010029499: a plan-tier change between the stored reading of ONE account and the new one. */
+export interface PlanTransition {
+  accountId: string;
+  from: string;
+  to: string;
+  direction: 'downgrade' | 'upgrade';
+}
+
+/** PURE: the tier change `recordAccountWindow` just wrote, or `null` (first reading, same tier, or an
+ *  unrecognised tier on either side — an unknown label never alarms). */
+export function accountPlanTransition(prev: AccountPool, next: AccountPool, accountId: string): PlanTransition | null {
+  const from = prev.accounts.find((a) => a.id === accountId)?.rate?.planType;
+  const to = next.accounts.find((a) => a.id === accountId)?.rate?.planType;
+  if (!from || !to || from === to) return null;
+  const fromRank = codexPlanRank(from);
+  const toRank = codexPlanRank(to);
+  if (fromRank === null || toRank === null || fromRank === toRank) return null;
+  return { accountId, from, to, direction: toRank < fromRank ? 'downgrade' : 'upgrade' };
+}
+
+/**
+ * WI-6554700010029499: the never-silent half of a DOWNGRADE. Five Codex accounts dropped Pro -> Plus
+ * and nothing noticed for ~2 days: their windows walled after ~1-2k requests, the pool shed, and turns
+ * slowed. Same rail as the credential-health alarm (launch.ts makeCredentialHealthAlert): one blocker
+ * escalation per account, latched while it is open, plus one broadcast when it opens. The write seam
+ * calls this only on the downgrade EDGE, and an upgrade re-stores the higher tier, which re-arms it.
+ */
+async function statePlanDowngrade(t: PlanTransition, ws?: string): Promise<void> {
+  const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
+  const summary = `Codex account '${t.accountId}' was DOWNGRADED from ${t.from} to ${t.to}: its usage windows now wall much sooner. Renew the ${t.from} subscription to restore its capacity`;
+  const body =
+    `The provider now reports plan '${t.to}' (x-codex-plan-type) for account '${t.accountId}', which previously reported '${t.from}'. ` +
+    `A lower tier caps its 5h and weekly windows far lower, so once the remaining accounts wall, the gateway answers Codex requests with 429 and turns slow down. ` +
+    `Fix: renew or re-upgrade the ${t.from} subscription for this account. A later reading at the higher tier re-arms this alert.`;
+  const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
+  const open = await listEscalations({ status: 'open' });
+  const already = open.some(
+    (e) =>
+      (e as Record<string, unknown>).source === 'account-plan-health' &&
+      (e as Record<string, unknown>).planAccountId === t.accountId,
+  );
+  if (already) return;
+  await openEscalation(identity, {
+    severity: 'blocker',
+    summary,
+    body,
+    meta: {
+      source: 'account-plan-health',
+      planAccountId: t.accountId,
+      fromPlan: t.from,
+      toPlan: t.to,
+      subjectSignature: `inference-gateway:account-plan-health:${t.accountId}`,
+    },
+  });
+  const { sendMessage } = await import('../agent-tools/coordination/messages');
+  await sendMessage(identity, { to: ['*'], summary, body, category: 'service-health' });
+}
 
 const FACT_TTL_SEC = 6 * 3600;
 const FACT_CREATED_BY = 'system:burn-governor';
@@ -102,17 +161,19 @@ export function renderBurnAggregateBody(agg: BurnAggregate): string {
  */
 export async function recordAccountWindowWithBurnAlert(
   accountId: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
   now: number,
   ws?: string,
-): Promise<{ pool: AccountPool; transition: BurnTransition | null }> {
+): Promise<{ pool: AccountPool; transition: BurnTransition | null; planTransition: PlanTransition | null }> {
   const [{ updateAccountPool }, { recordAccountWindow, accountBurnTransition, accountBurnVerdict }] =
     await Promise.all([import('../deployment/account-pool-store'), import('../deployment/account-pool')]);
   let transition: BurnTransition | null = null;
+  let planTransition: PlanTransition | null = null;
   let action: 'none' | 'throttle' | 'shed' | undefined;
   let verdict: BurnVerdict | null = null;
   const pool = await updateAccountPool((p) => {
     const next = recordAccountWindow(p, accountId, w, now);
+    planTransition = accountPlanTransition(p, next, accountId);
     // Captured inside the mutator so the diff sees the exact pre-write row the transaction
     // read (a snapshot loaded before the txn could race a peer's write). On a txn retry the
     // capture re-runs and the final attempt wins.
@@ -140,7 +201,13 @@ export async function recordAccountWindowWithBurnAlert(
     else aggregate.measured.push(row.id);
   }
   await stateBurnWall(accountId, action, verdict, transition, ws, aggregate).catch(() => {});
-  return { pool, transition };
+  const planEdge = planTransition as PlanTransition | null; // assigned inside the mutator
+  if (planEdge?.direction === 'downgrade') {
+    await statePlanDowngrade(planEdge, ws).catch((e) => {
+      console.warn(`[burn-alert] plan-downgrade alarm failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+  return { pool, transition, planTransition: planEdge };
 }
 
 /**

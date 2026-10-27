@@ -614,6 +614,35 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
   });
 
+  // WI-6554700010029504: a bare extension is a file TYPE used to scope a population,
+  // not a file name, so it must not read as "names an implementation file".
+  it.each([
+    { behavior: 'A 7-day window holds at least 500 .ts edit-ledger rows from at least 3 lineages.' },
+    { falsifier: { observation: 'Fewer than 500 .ts edit-ledger rows from 3 lineages appear over 7 days.' } },
+    { behavior: 'Edits to .rs files are reported with their line counts.' },
+  ])('does not read a bare file extension as an implementation file: %j', (over) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause(over)], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
+    { behavior: 'Saving a draft no longer touches session.ts.' },
+    { behavior: 'The nightly job (cleanup.sh) leaves no orphaned rows.' },
+    { falsifier: { observation: 'A row still appears after `prune.sql` runs.' } },
+  ])('still flags a named code file as an implementation file: %j', (over) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause(over)], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+      expect.objectContaining({ specId: 'SPEC-001-01', rating: 'fail', reason: expect.stringContaining('names an implementation file') }),
+    );
+  });
+
   it.each([
     'A supported OpenRouter agent job completes through the existing runtime with correct provider-reported cost and the declared key/retention policy.',
     'The existing cloud organization subscription flow implements the owner-approved public self-service offer under cloud-portal-public-release-2026-10-13 with verified live billing and bounded disclosed consumption.',
@@ -1404,6 +1433,25 @@ describe('implementation-independence covers falsifier observations and reposito
     expect(result.ratings['implementation-independence'].rating).toBe('pass');
     expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.observation');
     expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.probeMethod is excluded');
+  });
+
+  it.each(['behavior', 'observation'] as const)('passes a parallel list of slash-separated concepts in %s', (field) => {
+    const text = 'Readers see correlation between test/run/case, invocation/workflow, trace/span and code anchors.';
+    const value = field === 'behavior'
+      ? { behavior: text }
+      : { behavior: 'Readers see execution evidence.', falsifier: { observation: text } };
+    expect(evaluateOne(value).ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
+    'Readers see correlation between `test/run/case`, invocation/workflow, trace/span and code anchors.',
+    'Readers see correlation between ./test/run/case, invocation/workflow, trace/span and code anchors.',
+    'Readers see correlation between test/run/case.json, invocation/workflow, trace/span and code anchors.',
+    'Readers see correlation between test/run/case/, invocation/workflow, trace/span and code anchors.',
+    'Readers see correlation between repository path test/run/case, invocation/workflow and trace/span.',
+    'Readers see correlation between tests/unit/case, tests/integration/case and code anchors.',
+  ])('retains qualified repository paths in slash-separated lists: %s', (behavior) => {
+    expect(evaluateOne({ behavior }).ratings['implementation-independence'].rating).toBe('fail');
   });
 
   it.each([

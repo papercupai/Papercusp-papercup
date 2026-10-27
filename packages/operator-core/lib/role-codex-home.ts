@@ -1,4 +1,3 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * role-codex-home.ts — materialize a per-session CODEX_HOME for an
  * INTERACTIVE codex role session (psu --role=<role> --agent=codex).
@@ -63,11 +62,13 @@ import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
+import { CODEX_CAPABILITY_CONTROLS } from '@papercusp/orchestrator/managed-capability-policy';
 import {
   codexHomeForSessionKey,
   codexSqliteHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import {
+  CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
   CODEX_MANAGED_MODEL_CATALOG_FILE,
   codexGatewayConfigToml,
   codexManagedFeaturesToml,
@@ -99,6 +100,13 @@ import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './ro
 let materializerHomeOverride: string | undefined;
 function homedir(): string {
   return materializerHomeOverride ?? osHomedir();
+}
+
+// Match desktop-install's installed destination, independently of the workspace
+// data root in PAPERCUSP_HOME. Reuse this path for enrollment AND repair checks
+// so a missing workspace copy cannot hide an installed journal or guard.
+function installedHookPath(...parts: string[]): string {
+  return join(homedir(), '.papercusp', 'hooks', ...parts);
 }
 
 import { dirname as __esmDirname } from 'node:path';
@@ -194,12 +202,15 @@ function materializeHomeModelCatalog(
   return gatewayRouted ? null : materializeStrippedCodexModelCatalog({ codexHome });
 }
 
-function codexIsolationPreamble(headless = false): string {
+function codexIsolationPreamble(
+  headless = false,
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'],
+): string {
   return [
     '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
     'project_doc_max_bytes = 0',
     '',
-    ...codexManagedFeaturesToml({ headless }),
+    ...codexManagedFeaturesToml({ headless, capabilityPolicy }),
   ].join('\n');
 }
 
@@ -283,12 +294,15 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
 
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false): string {
   if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
   const configPath = join(codexHome, 'config.toml');
-  if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  if (!existsSync(configPath)) {
+    if (requireExistingBinding) throw new Error('Cannot rebuild Codex home: same-owner sqlite_home binding is missing');
+    return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  }
   let text: string;
   try {
     text = readFileSync(configPath, 'utf8');
@@ -300,7 +314,10 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
     if (allowUnreadableConfig && recordedHome && (code === 'EACCES' || code === 'EPERM')) return recordedHome;
     throw error;
   }
-  if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) {
+    if (requireExistingBinding) throw new Error('Cannot rebuild Codex home: same-owner sqlite_home binding is missing');
+    return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  }
   let config: ReturnType<typeof parseToml>;
   try {
     config = parseToml(text);
@@ -655,7 +672,10 @@ function inheritedCodexTrustToml(trustDir?: string | null, inheritAmbientContext
   }
   const inherited = out.length > 0 ? ['# Inherited trust state from ~/.codex/config.toml.', ...out, ''] : [];
   if (trustDir) {
-    const header = `[projects."${tomlEscape(trustDir)}"]`;
+    // Codex looks up the normalized cwd exactly. A harness projectDir may end
+    // in '/', which otherwise creates an unused trust entry and blocks workers
+    // at the interactive folder-trust prompt.
+    const header = `[projects."${tomlEscape(resolve(trustDir))}"]`;
     const alreadyInherited = inherited.some((l) => l.trim() === header);
     if (!alreadyInherited) {
       inherited.push(
@@ -782,6 +802,8 @@ export function writeCodexLockHooks(
     activitySid?: string;
     /** Durable adv_sessions row id for exact lifecycle re-anchors. */
     advSessionId?: string | number;
+    /** Exact initial headless task id, scoped to lifecycle hook commands only. */
+    agentTaskId?: string | null;
     objectiveSid?: string;
     /** codex-context-injection-parity-2026-08-09 P-004: session id baked into
      *  the context-injection dispatcher invocation. Absent ⇒ no injection hooks
@@ -797,7 +819,7 @@ export function writeCodexLockHooks(
     mcpUsesSuperuserToken?: boolean;
   } = {},
 ): boolean {
-  const dir = papercuspPath('hooks', 'cc');
+  const dir = installedHookPath('cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
@@ -880,12 +902,19 @@ export function writeCodexLockHooks(
   const sessionEnd: CodexHook[] = [];
   const lifecycleStop: CodexHook[] = [];
   if (opts.activitySid && existsSync(lifecycle)) {
-    const lifecycleIdentity =
+    let lifecycleIdentity =
       `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` +
       `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}` +
       (numericAdvSessionId(opts.advSessionId)
         ? ` PAPERCUSP_ADV_SESSION_ID=${shellSingleQuote(numericAdvSessionId(opts.advSessionId)!)}`
         : '');
+    const lifecycleTaskId =
+      typeof opts.agentTaskId === 'string' && /^[0-9a-z]{19}$/.test(opts.agentTaskId)
+        ? opts.agentTaskId
+        : null;
+    if (lifecycleTaskId) {
+      lifecycleIdentity += ' PAPERCUSP_AGENT_TASK_ID=' + shellSingleQuote(lifecycleTaskId);
+    }
     sessionStart.push({
       matcher: '.*',
       hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
@@ -927,7 +956,7 @@ export function writeCodexLockHooks(
   // codex adapter's portForEvent. UserPromptSubmit -> turn-start,
   // PostToolUse -> mid-turn (PER CALL on codex — it has no batch event; D-002
   // §5 explains why the frozen array interface absorbs that).
-  const injectDispatcher = papercuspPath('hooks', 'inject', 'index.mjs');
+  const injectDispatcher = installedHookPath('inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
   const provenance = join(dir, 'userpromptsubmit-provenance.sh');
   if (opts.injectSid && existsSync(provenance)) {
@@ -1380,7 +1409,7 @@ function repairSuCodexHomeIdentityImpl(
         ['UserPromptSubmit', 'userpromptsubmit-provenance.sh', null],
       ];
       return turnHooks.every(([event, script, marker]) =>
-        !existsSync(papercuspPath('hooks', 'cc', script)) ||
+        !existsSync(installedHookPath('cc', script)) ||
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
@@ -1399,7 +1428,7 @@ function repairSuCodexHomeIdentityImpl(
   // otherwise read as current, so a RESUMED su codex session would keep running
   // its shell without RTK. Gated on the script being installed, like the writer.
   const rtkRewriteHookMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+    if (!hooksExpected || !existsSync(installedHookPath('cc', CODEX_RTK_REWRITE_HOOK))) {
       return true;
     }
     try {
@@ -1423,7 +1452,7 @@ function repairSuCodexHomeIdentityImpl(
   // the gate WITHOUT the agent marker (D-003). Gated on the script being
   // installed, like the writer, so a host without it never repair-loops.
   const bashGateHookMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_BASH_GATE_HOOK))) {
+    if (!hooksExpected || !existsSync(installedHookPath('cc', CODEX_BASH_GATE_HOOK))) {
       return true;
     }
     try {
@@ -1439,7 +1468,7 @@ function repairSuCodexHomeIdentityImpl(
     }
   })();
   const ownerQuestionGuardMatches = (() => {
-    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', 'ask-gate-mirror.sh'))) return true;
+    if (!hooksExpected || !existsSync(installedHookPath('cc', 'ask-gate-mirror.sh'))) return true;
     try {
       const parsed = JSON.parse(hooksText) as { hooks?: { PreToolUse?: Array<{ hooks?: Array<{ command?: string }> }> } };
       const guards = parsed.hooks?.PreToolUse?.flatMap((g) => g.hooks ?? [])
@@ -1514,7 +1543,10 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
  * or url.
  */
 export type WriteRoleCodexHomeOptions = {
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   sessionKey: string | number;
+  /** Exact initial headless task id, scoped to lifecycle hook commands only. */
+  agentTaskId?: string | null;
   /** Repair managed files in place without removing the native resume history. */
   preserveExisting?: boolean;
   /** Persisted native-state binding, used when archive/GC removed config.toml. */
@@ -1597,7 +1629,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    codexIsolationPreamble(opts.headless),
+    codexIsolationPreamble(opts.headless, opts.capabilityPolicy),
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1607,6 +1639,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     // tools:invoke allows 1080s and the MCP host adds a 5s buffer; keep
     // Codex's per-server timeout 5s above that 1085s wrapper deadline.
     'tool_timeout_sec = 1090',
+    ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     '',
   ].join('\n');
   publishCodexConfig(configPath, toml);
@@ -1701,6 +1734,7 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 /** Inputs the su `config.toml` is rendered from — the subset of
  *  `writeSuCodexHome`'s options that end up IN the file. */
 export interface SuCodexConfigInput {
+  capabilityPolicy?: NonNullable<Parameters<typeof codexManagedFeaturesToml>[0]>['capabilityPolicy'];
   /** Host confinement policy: only the declared native role and assignment
    * may populate this home's readable context and connectors. */
   denyAmbientContext?: true;
@@ -1811,7 +1845,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    codexIsolationPreamble(opts.headless),
+    codexIsolationPreamble(opts.headless, opts.capabilityPolicy),
     ...inheritedCodexTrustToml(opts.trustDir, opts.denyAmbientContext !== true),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1821,6 +1855,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     // Papercusp tools can declare a 600s deadline plus a 5s MCP buffer.
     // Keep Codex's per-server client timeout just above that contract.
     'tool_timeout_sec = 610',
+    ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
     ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
@@ -1942,6 +1977,14 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   try {
     const current = readFileSync(configPath, 'utf8');
     const parsedCurrent = parseToml(current) as { features?: Record<string, unknown> };
+    const expectedFeatures = (parseToml(codexIsolationPreamble(opts.headless, opts.capabilityPolicy)) as {
+      features?: Record<string, unknown>;
+    }).features;
+    // Resume repair must both restore an admitted control and remove stale
+    // controls after rollback or version drift. Checking only present expected
+    // keys would leave yesterday's shell_tool=false silently active.
+    const capabilityPolicyReady = Object.values(CODEX_CAPABILITY_CONTROLS).every(control =>
+      Object.keys(control.features).every(key => parsedCurrent.features?.[key] === expectedFeatures?.[key]));
     const subagentPolicyReady =
       parsedCurrent.features?.multi_agent === false &&
       parsedCurrent.features?.goals === false &&
@@ -1970,6 +2013,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
       headlessPolicyReady &&
+      capabilityPolicyReady &&
       subagentPolicyReady &&
       (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   } catch {
@@ -2049,6 +2093,7 @@ export async function ensureSuCodexHomeConfigAsync(
 }
 
 type WriteSuCodexHomeOptions = {
+  capabilityPolicy?: SuCodexConfigInput['capabilityPolicy'];
   /** Same host-owned context ceiling consulted by bootstrap and MCP. */
   denyAmbientContext?: true;
   sessionKey: string | number;
@@ -2117,8 +2162,16 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
         `not collide with a live session's home.`,
     );
   }
+  // Resolve the verified same-owner binding BEFORE freshCodexHome removes the
+  // generated config. Re-preparation retains native transcripts, so it must
+  // retain their SQLite database and WAL too, even if the serving root changed.
+  // A missing/invalid binding refuses before either home is mutated.
+  const retainedSqliteHome = priorSid === opts.sid
+    ? preservedCodexSqliteHome(targetHome, opts.sessionKey, undefined, false, true)
+    : null;
   const codexHome = freshCodexHome(targetHome, opts.denyAmbientContext !== true);
-  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
+  const sqliteHome = retainedSqliteHome ?? freshCodexSqliteHome(opts.sessionKey);
+  if (retainedSqliteHome) mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const inheritedPromptsCopied = !opts.denyAmbientContext && copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
@@ -2145,6 +2198,7 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
     coordSid: opts.sid,
     activitySid: opts.sid,
     advSessionId: opts.sessionKey,
+    agentTaskId: opts.agentTaskId,
     objectiveSid: opts.sid,
     injectSid: opts.sid,
     mcpUrl: mcpUrlWithClient(opts.mcpUrl, opts.sid),

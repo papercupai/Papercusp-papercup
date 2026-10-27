@@ -347,6 +347,11 @@ export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
 
   const summarySource = asDict(source.summary);
   const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
+  const supervision = compactClaimabilitySupervision(summarySource?.claimability_supervision);
+  if (supervision) summary.claimability_supervision = supervision;
+  if (summarySource?.claimabilitySupervisionDegraded === true) summary.claimabilitySupervisionDegraded = true;
+  if (summarySource?.parked_capacity) summary.parked_capacity = compactParkedCapacity(summarySource.parked_capacity);
+  if (summarySource?.parkedCapacityAlert === true) summary.parkedCapacityAlert = true;
   const headcount = pick(summarySource?.headcount,
     ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'], 120);
   if (headcount) {
@@ -524,6 +529,23 @@ function compactEmergencyLeaderBlockerStall(value: unknown): unknown {
   return out;
 }
 
+function compactClaimabilitySupervision(value: unknown): Dict | null {
+  return pick(value, ['status', 'fleet', 'harness', 'value', 'reason', 'recoverVia'], 180);
+}
+
+function compactParkedCapacity(value: unknown): Dict | null {
+  const source = asDict(value);
+  if (!source) return null;
+  const out: Dict = { population: source.population };
+  for (const key of ['eligible', 'unknown', 'protected', 'atCapacity', 'noWork']) {
+    const rows = Array.isArray(source[key]) ? source[key] as unknown[] : [];
+    out[key + 'Count'] = rows.length;
+    out[key] = rows.slice(0, 3);
+    if (rows.length > 3) out.recovery = '_projection.cursor';
+  }
+  return out;
+}
+
 function compactSummary(value: unknown, ultra = false): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -561,8 +583,13 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'abandoned_unclaimed',
     'fleet_paused',
     'declaredPlanSpecDivergenceAlert',
+    'claimabilitySupervisionDegraded',
   ];
   const out = pick(source, metricKeys, 120) ?? {};
+  const supervision = compactClaimabilitySupervision(source.claimability_supervision);
+  if (supervision) out.claimability_supervision = supervision;
+  if (source.parked_capacity) out.parked_capacity = compactParkedCapacity(source.parked_capacity);
+  if (source.parkedCapacityAlert === true) out.parkedCapacityAlert = true;
 
   // P-005: cumulative counters are historical, not live gauges. Keep the
   // namespace explicit in every monitor tier and project only the bounded
@@ -813,6 +840,9 @@ function compactMember(value: unknown): unknown {
   }
   if (Array.isArray(source.parkedOn) && source.parkedOn.length > 0) {
     out.parkedOn = source.parkedOn.slice(0, 3).map((entry) => clip(entry, 140) ?? entry);
+  }
+  if (source.parkedCapacity) {
+    out.parkedCapacity = pick(source.parkedCapacity, ['status', 'reason', 'claimable', 'activeClaims', 'maxConcurrentClaims', 'heldIds', 'blockerParkedIds', 'specRef', 'recoverVia'], 300);
   }
   if (source.benchSuggestion && typeof source.benchSuggestion === 'object') {
     out.benchSuggestion =

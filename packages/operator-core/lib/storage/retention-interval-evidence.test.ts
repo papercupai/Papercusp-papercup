@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence, measurePostgresRetentionEvidence } from './retention-interval-evidence';
+import { tableRetentionTargets } from './table-retention';
 
 describe('native R-8 Postgres retention binding', () => {
   const measuredAt = '2026-10-17T00:01:00.000Z';
@@ -9,15 +10,10 @@ describe('native R-8 Postgres retention binding', () => {
       workspaceId: 'workspace', host: 'fixture-host', workflowId: 'routine-workflow', routineId: 'routine-id',
       startedAt: '2026-10-16T23:59:00.000Z', finishedAt: '2026-10-17T00:00:00.000Z',
       completedAt: '2026-10-17T00:00:01.000Z', dryRun: false, tableRetentionComplete: true,
-      targets: ['route-invocations', 'tool-invocations', 'harness-run-output', 'agent-activity', 'memory-recall-query-text']
-        .map(category => ({ category, complete: true, retentionDays: category === 'memory-recall-query-text' ? 3 : 30 })) },
-    ages: [
-      { category: 'route-invocations', oldestAgeDays: 29, measured: true },
-      { category: 'tool-invocations', oldestAgeDays: 29, measured: true },
-      { category: 'harness-run-output', oldestAgeDays: 29, measured: true },
-      { category: 'agent-activity', oldestAgeDays: 29, measured: true },
-      { category: 'memory-recall-query-text', oldestAgeDays: 2, measured: true },
-    ],
+      targets: tableRetentionTargets().map(({ category, retention_days }) =>
+        ({ category, complete: true, retentionDays: retention_days })) },
+    ages: tableRetentionTargets().map(({ category, retention_days }) =>
+      ({ category, oldestAgeDays: retention_days - 1, measured: true })),
     coldIntegrity: { verdict: 'pass' as const, detail: 'dual compressed cold archives verified' },
     servingRuntimes: [{ runtime: 'release-operator', applicable: true, containsColdFallback: true }],
   });

@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery76/assume76-native-runtime-verification.json.gz.b64"
+updated_at: 1792987155607
+_body: "content"
+---
+
+H4sIAAAAAAAAA7XTPQrCQBAF4H5PMWwdYX4ym01uYGEjVopF0IUFxcBmg4V4dwtT28jUb+Bj4L2TA3g5AABflsf26gfwjBwIORyQNYoeN20gFPLN9y6Pc07zbqyX7AeoZUlr8JzKLZV9mpd7XRMH8G5+EoLYRmtCyPwLpc6aCBysici9MUFIZE0wizUhytaEqvUuqFPr0lJvvm4mtS4ti7b/Eu7sPvhD3gttBQAA

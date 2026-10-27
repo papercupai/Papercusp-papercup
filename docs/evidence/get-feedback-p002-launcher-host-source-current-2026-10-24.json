@@ -1,0 +1,356 @@
+{
+  "schemaVersion": 1,
+  "kind": "P002-launcher-host-source-current-qualification",
+  "actualLoopOrigin": "4e4901097d9dc37e",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "testedCommit": "695fd9aa05ff8f5e840d4d5654449b53a1e96fc4",
+  "reason": "Independent server currentness found actual movement in psu-launcher.mjs and psu-pty-host.mjs for exact68598/68599/68551; no HEAD-only replay. Both test files remain byte-identical to their prior qualified commits.",
+  "sourceChange": [
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "priorSha256": "8e658ced42d4f4fcb01f0a5916086d73170018567301490dfde50e1182c2dbca",
+      "testedSha256": "cea911b4a1d3e7d64f66157cc2f8c6ba419f38e8e86538e17534f4228b70d0e1"
+    },
+    {
+      "path": "apps/operator/scripts/psu-pty-host.mjs",
+      "priorSha256": "bcf4af056ed7441d519b01f78b13a1da2a134e39b396ba954b0cc0745cc24711",
+      "testedSha256": "2929632b5c7bf199d5669db4794fc9c0aadd192f4d320892788ad46e6b26e38a"
+    }
+  ],
+  "unchangedTests": [
+    {
+      "path": "apps/operator/lib/psu-launcher.test.ts",
+      "priorCommit": "92746d8842fef1f4210f197da7ae8ac0c3a90cba",
+      "sha256": "9477b064d3e69796812451c31873b3cbedd3a66cbc737cd9d17ac3ca55253377"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "priorCommit": "3baa5c7091",
+      "sha256": "89e31419037e3f22e21e4a96efcb5e0e3ef060c08db6006fb3510c96da95ffab"
+    }
+  ],
+  "execution": {
+    "driver": "Maintained scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs --ref=695fd9aa05ff8f5e840d4d5654449b53a1e96fc4 test:file --any -- apps/operator/lib/psu-launcher.test.ts apps/operator/lib/psu-pty-host.integration.test.ts",
+    "status": "completed",
+    "exit": 0,
+    "startedAt": "2026-10-24T09:10:46.856Z",
+    "finishedAt": "2026-10-24T09:18:16.961Z",
+    "log": "/dev/shm/gf-p002-launcher-host-refresh-4e49-20261024.log",
+    "state": "/tmp/gf-p002-launcher-host-refresh-4e49-20261024.state.json",
+    "canonicalRuns": [
+      {
+        "id": 21878866,
+        "path": "apps/operator/lib/psu-launcher.test.ts",
+        "status": "pass",
+        "passed": 1209,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "worktreeDirty": false
+      },
+      {
+        "id": 21878882,
+        "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+        "status": "pass",
+        "passed": 136,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "worktreeDirty": false
+      }
+    ],
+    "testFileResult": {
+      "requested": 2,
+      "executed": 2,
+      "matched": 2,
+      "status": "passed",
+      "uncommittedPaths": "0/2",
+      "provenance": "stamped",
+      "childSubstituted": 0,
+      "skippedTests": 0
+    }
+  },
+  "proofContract": [
+    {
+      "old": 68598,
+      "new": 68834,
+      "spec": "AUTO-BAR-R-2-P-002",
+      "revision": 3,
+      "oldRun": 21871301,
+      "newRun": 21878866,
+      "declaredCases": 0,
+      "adequacyEqual": true,
+      "recipeEqual": true,
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "sourcePaths": [
+          "apps/operator/lib/mcp-proxy/budgets.mjs",
+          "apps/operator/scripts/psu-launcher.mjs",
+          "apps/operator/scripts/psu-pty-host.mjs",
+          "apps/operator/scripts/ptool.mjs",
+          "apps/operator/scripts/tool-delivery.generated.mjs",
+          "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+          "packages/operator-core/lib/model-context-budget.mjs"
+        ],
+        "fixturePaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "schemaVersion": 1
+      }
+    },
+    {
+      "old": 68599,
+      "new": 68833,
+      "spec": "GF-P002-source",
+      "revision": 1,
+      "oldRun": 21871301,
+      "newRun": 21878866,
+      "declaredCases": 538,
+      "missingOldDeclaredCases": [],
+      "adequacyEqual": true,
+      "recipeEqual": true,
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "sourcePaths": [
+          "apps/operator/lib/mcp-proxy/budgets.mjs",
+          "apps/operator/scripts/psu-launcher.mjs",
+          "apps/operator/scripts/psu-pty-host.mjs",
+          "apps/operator/scripts/ptool.mjs",
+          "apps/operator/scripts/tool-delivery.generated.mjs",
+          "packages/operator-core/lib/agent-kickoff/prompt-transport.mjs",
+          "packages/operator-core/lib/model-context-budget.mjs"
+        ],
+        "fixturePaths": [
+          "apps/operator/lib/psu-launcher.test.ts"
+        ],
+        "schemaVersion": 1
+      }
+    },
+    {
+      "old": 68551,
+      "new": 68835,
+      "spec": "GF-P002-source",
+      "revision": 1,
+      "oldRun": 21869371,
+      "newRun": 21878882,
+      "declaredCases": 11,
+      "missingOldDeclaredCases": [],
+      "oldPassedPopulation": 136,
+      "missingOldPassedTitles": [],
+      "adequacyEqual": true,
+      "recipeEqual": true,
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "apps/operator/lib/psu-pty-host.integration.test.ts"
+        ],
+        "sourcePaths": [
+          "apps/operator/package.json",
+          "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
+          "apps/operator/scripts/psu-launcher.mjs",
+          "apps/operator/scripts/psu-pty-host.mjs",
+          "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/lib/child-output.ts",
+          "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+          "packages/operator-core/lib/process-identity.ts",
+          "packages/operator-core/package.json"
+        ],
+        "fixturePaths": [
+          "apps/operator/lib/psu-pty-host.integration.test.ts",
+          "apps/operator/package.json",
+          "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+          "package-lock.json",
+          "package.json",
+          "packages/operator-core/package.json"
+        ],
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "qualificationOrder": "68833/68834 independently server-measured CURRENT before exact68599/68598 withdrawal;68835 independently server-measured CURRENT before exact68551 withdrawal. Exact scoped SQL audit confirmed all3 old rows withdrawn, all3 new rows active, and adequacy/recipe equalitytrue.",
+  "finalCurrentness": {
+    "bindingIds": [
+      68833,
+      68834,
+      68835
+    ],
+    "overall": "current",
+    "dimensions": {
+      "spec": "current",
+      "source": "current",
+      "test": "current",
+      "fixture": "current",
+      "testRun": "current",
+      "rubric": "not-applicable",
+      "environment": "not-applicable",
+      "coverageEvidence": "not-applicable"
+    },
+    "reasons": [],
+    "provenance": "server-measured"
+  },
+  "scope": "Committed source/fixture proof only. Host inline programs exercise realPTY parent publication and acknowledgement; actual native consult, source actor attribution, lease ABA, system/filesystem/wake, cohorts, independent acceptance and shipment remain open.",
+  "hostCalibration": "Literal fixture checksum/token/native-ref and independently observed proof-file contents precede callback acknowledgement. Three backends exercise accepted/unknown/refused outcomes; two negative fixtures require absent native marker or child exit. hermeticEnv strips credentials and pins private discovery/native homes. Inline programs/helper/manifests/native PTY lock are declared. Bounded source census only.",
+  "governingEvaluation": {
+    "build": {
+      "sha": "379f97145f",
+      "version": "0.0.0"
+    },
+    "governing": true,
+    "rows": [
+      {
+        "spec": "AUTO-BAR-R-2-P-002",
+        "mode": "mechanical",
+        "verdict": "fail",
+        "wouldBlock": [
+          "mechanical-test-adequacy"
+        ],
+        "gaps": [
+          "packages/operator-core/lib/session-port/store.integration.test.ts: the passing run is no longer current — binding 68602 stale (source-stale)"
+        ]
+      },
+      {
+        "spec": "GF-P002-source",
+        "mode": "judgment",
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "falsifiability",
+          "execution-integrity",
+          "freshness",
+          "plan-class-risk-floor",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "unknown",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "unknown",
+          "disclosed-gap": "fail"
+        },
+        "dragging": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28243,
+            28262,
+            28820,
+            45213,
+            45214,
+            68339,
+            68733,
+            68775,
+            68778,
+            68779,
+            68835
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28243,
+            28262,
+            28326,
+            28545,
+            28820,
+            45213,
+            45214,
+            68374,
+            68375,
+            68600,
+            68733,
+            68775,
+            68778,
+            68779
+          ],
+          "disclosed-gap": [
+            28815,
+            28820,
+            37837,
+            38628,
+            68339,
+            68601
+          ]
+        }
+      }
+    ]
+  },
+  "newNamedDrift": [
+    {
+      "bindingIds": [
+        68602,
+        68600,
+        68733
+      ],
+      "paths": [
+        "packages/operator-core/lib/adv-sessions.ts"
+      ]
+    },
+    {
+      "bindingIds": [
+        68775,
+        68778,
+        68779
+      ],
+      "paths": [
+        "packages/operator-core/lib/adv-sessions.ts",
+        "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts"
+      ]
+    }
+  ],
+  "preserved": {
+    "nativeBindings": [
+      28326,
+      28545
+    ],
+    "originalCohort": "e99 original4/8",
+    "distinctSupplementalCohort": "f01c3/8",
+    "open": [
+      "P002",
+      "P006 native",
+      "R5 cold concurrent900ms",
+      "quality/requester decisions",
+      "independent acceptance",
+      "owner-gated shipment"
+    ],
+    "hostIncident": "EI-26837794414133856 remains owned/open for original intermittent mechanisms",
+    "terminalRecorder": "EI-26830659784013914 remains done; no replay",
+    "fixtureResidue": [
+      28243,
+      28262,
+      28820,
+      45213,
+      45214
+    ],
+    "protocolResidue": [
+      68374,
+      68375
+    ],
+    "contractPinConstraint": "Keep get-feedback-prod.ts old source pin and all8 old cases when qualifying45213/45214; current68339 omits that path."
+  },
+  "cleanup": {
+    "mintedRoot": "/tmp/pcv/papercusp-lint-as-committed-695fd9aa05-1uu7YI",
+    "rootExists": false,
+    "privatePg": "Maintained wrapper exited0 and log recorded database shutdown",
+    "execHandle": "Drained69293 to final exit0; no live test command"
+  },
+  "next": "Compare exact adv-sessions.ts and routes/adv/sessions.ts changes against store68602/68600 and backend/legacy mutant pins before any refresh. Preserve exact recipes, all old cases and independent-currentness-before-retirement. Then carry remaining fixture/native acceptance. No HEAD-only reruns, old native/cohort recreation, terminal-recorder replay or parallel gate monitoring."
+}

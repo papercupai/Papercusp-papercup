@@ -80,6 +80,57 @@ export function nextZeroAttributionTicks(prev: number, attribution: readonly Att
   return prev;
 }
 
+/**
+ * P-003 (gate-systems-as-designed-2026-10-27): the attributed-file share alarm.
+ *
+ * The zero-attribution alarm above counts groups, so it stayed silent through the failure
+ * P-001 measured: one sweep merged 8 attribution groups into 2 and committed 36 files
+ * anonymously while other agents' commits still published. A healthy sweep commits nearly
+ * every ledger-attributed file under its agent's trailer, so the floor is absolute rather
+ * than learned. A tick with fewer than ATTRIBUTION_SHARE_MIN_FILES attributable files is not
+ * evidence either way. Alarm after 3 consecutive low ticks, then every 18 while it persists.
+ */
+export const ATTRIBUTION_SHARE_FLOOR = 0.75;
+export const ATTRIBUTION_SHARE_MIN_FILES = 4;
+export const ATTRIBUTION_SHARE_ESCALATION_TICKS = 3;
+export const ATTRIBUTION_SHARE_REBROADCAST_TICKS = 18;
+
+/** One tick's attributed-file share summed over every repo that measured one, or null. */
+export function tickAttributedFileShare(
+  attribution: readonly AttributionTally[] | undefined,
+): { attributable: number; attributed: number } | null {
+  let measured = false;
+  let attributable = 0;
+  let attributed = 0;
+  for (const t of attribution ?? []) {
+    if (typeof t.attributableFileCount !== 'number' || typeof t.attributedFileCount !== 'number') continue;
+    measured = true;
+    attributable += t.attributableFileCount;
+    attributed += t.attributedFileCount;
+  }
+  return measured ? { attributable, attributed } : null;
+}
+
+/** Whether this tick measured enough attributable files and fell below the floor; null when it measured too few. */
+export function isLowAttributionShare(attribution: readonly AttributionTally[] | undefined): boolean | null {
+  const share = tickAttributedFileShare(attribution);
+  if (!share || share.attributable < ATTRIBUTION_SHARE_MIN_FILES) return null;
+  return share.attributed / share.attributable < ATTRIBUTION_SHARE_FLOOR;
+}
+
+/**
+ * The persisted `consecutive_attribution_share_drop_ticks` counter's next value. Like the
+ * zero-attribution counter, a tick that measured too few files HOLDS it.
+ */
+export function nextAttributionShareDropTicks(
+  prev: number,
+  attribution: readonly AttributionTally[] | undefined,
+): number {
+  const low = isLowAttributionShare(attribution);
+  if (low === null) return prev;
+  return low ? prev + 1 : 0;
+}
+
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). `disk-headroom` (WI-10004397)
  *  is not a git leg at all: the local disk is full, so no leg can run. */
 export type GitSyncFailingLeg = 'commit' | 'push' | 'serving' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
@@ -197,11 +248,19 @@ export interface EscalationInput {
   /** WI-6554700010018198: `consecutive_zero_attribution_ticks` INCLUDING this tick, from
    *  nextZeroAttributionTicks. OPTIONAL: an omitted value never raises the condition. */
   zeroAttributionTicks?: number;
+  /** P-003: `consecutive_attribution_share_drop_ticks` INCLUDING this tick, from
+   *  nextAttributionShareDropTicks. OPTIONAL: an omitted value never raises the condition. */
+  attributionShareDropTicks?: number;
   /** This tick's per-repo attributed-phase tallies, used to name the failing repos. */
   attribution?: readonly AttributionTally[];
 }
 
-export type EscalationReason = 'push-failure' | 'oversized-blobs' | 'publish-refused' | 'attribution-failed';
+export type EscalationReason =
+  | 'push-failure'
+  | 'oversized-blobs'
+  | 'publish-refused'
+  | 'attribution-failed'
+  | 'attribution-share-dropped';
 
 export interface EscalationDecision {
   /** Write/refresh the `git-sync-error` escalation row this tick. */
@@ -263,6 +322,8 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
   if (publishRefused) reasons.push('publish-refused');
   const zeroAttributionTicks = i.zeroAttributionTicks ?? 0;
   if (zeroAttributionTicks >= ZERO_ATTRIBUTION_ESCALATION_TICKS) reasons.push('attribution-failed');
+  const shareDropTicks = i.attributionShareDropTicks ?? 0;
+  if (shareDropTicks >= ATTRIBUTION_SHARE_ESCALATION_TICKS) reasons.push('attribution-share-dropped');
   const escalate = reasons.length > 0;
 
   const parts: string[] = [];
@@ -346,9 +407,17 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
     );
   }
 
+  // A held counter (a tick that measured nothing) keeps its value, so the cadence check
+  // alone would re-broadcast on every idle tick that sits on a broadcast tick. Broadcast
+  // only on a tick that itself showed the condition.
+  const zeroAttributionFailing = (i.attribution ?? []).filter(isZeroAttribution);
   const sinceZeroAttributionAlarm = zeroAttributionTicks - ZERO_ATTRIBUTION_ESCALATION_TICKS;
-  if (sinceZeroAttributionAlarm >= 0 && sinceZeroAttributionAlarm % ZERO_ATTRIBUTION_REBROADCAST_TICKS === 0) {
-    const failing = (i.attribution ?? []).filter(isZeroAttribution);
+  if (
+    zeroAttributionFailing.length > 0 &&
+    sinceZeroAttributionAlarm >= 0 &&
+    sinceZeroAttributionAlarm % ZERO_ATTRIBUTION_REBROADCAST_TICKS === 0
+  ) {
+    const failing = zeroAttributionFailing;
     const detail = failing
       .map((t) => `${t.scope}: ${t.agentGroupCount} agent group(s), ${t.failedGroups} failed${t.error ? ` (${t.error.split('\n')[0]})` : ''}`)
       .join('; ')
@@ -359,6 +428,29 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
         `commits carry no Papercusp-Agent trailer and work-item completions cannot settle against them. ` +
         `Read routines:list { name:'git-sync' } health.last_attribution for the per-repo failure` +
         `${detail ? `. This tick: ${detail}` : ''}.`,
+    );
+  }
+
+  const sinceShareAlarm = shareDropTicks - ATTRIBUTION_SHARE_ESCALATION_TICKS;
+  if (
+    isLowAttributionShare(i.attribution) === true &&
+    sinceShareAlarm >= 0 &&
+    sinceShareAlarm % ATTRIBUTION_SHARE_REBROADCAST_TICKS === 0
+  ) {
+    const share = tickAttributedFileShare(i.attribution);
+    const pct = share && share.attributable > 0 ? Math.round((share.attributed / share.attributable) * 100) : 0;
+    const detail = (i.attribution ?? [])
+      .filter((t) => (t.attributableFileCount ?? 0) > 0)
+      .map((t) => `${t.scope}: ${t.attributedFileCount ?? 0}/${t.attributableFileCount} attributed`)
+      .join('; ')
+      .slice(0, 400);
+    parts.push(
+      `⚠ git-sync on ${i.installSlug}: only ${pct}% of the ledger-attributed files it committed carried an ` +
+        `agent trailer, below ${Math.round(ATTRIBUTION_SHARE_FLOOR * 100)}% for ${shareDropTicks} CONSECUTIVE ` +
+        `measured ticks. The rest went into anonymous commits, so delta-check failures in them cannot be routed ` +
+        `to their authors. Read routines:list { name:'git-sync' } health.last_attribution ` +
+        `(attributableFileCount / attributedFileCount per repo) and the journal's "merged import-linked ` +
+        `attribution groups" lines${detail ? `. This tick: ${detail}` : ''}.`,
     );
   }
 

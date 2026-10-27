@@ -9,10 +9,38 @@ export const PASSING_TASK_SHARED_ROOT_INPUTS: readonly string[];
 export const PASSING_TASK_SHARED_RUNTIME_INPUTS: readonly string[];
 export const PASSING_TASK_SHARED_MODULE_INPUTS: readonly string[];
 
+export interface PassingTaskRuntimeIdentity {
+  name: 'node' | 'bun';
+  version: string;
+  executable: string;
+  binarySha256: string;
+  platform: string;
+  arch: string;
+  nativeDependencyGeneration: string;
+  lockfileSha256: string;
+  configurationSha256: string;
+}
+export function validPassingTaskRuntimeIdentity(value: unknown): value is PassingTaskRuntimeIdentity;
+export function capturePassingTaskRuntimeIdentity(args: {
+  root: string;
+  cwd?: string;
+  environment?: Record<string, string | undefined>;
+  executable?: string;
+}): PassingTaskRuntimeIdentity | null;
+export function captureNpmTaskRuntimeIdentity(args: {
+  root: string;
+  workspaceRoot: string;
+  scriptText: string;
+  environment: Record<string, string | undefined>;
+  preScript?: string;
+  postScript?: string;
+}): PassingTaskRuntimeIdentity | null;
+
 export interface PassingTaskVerdictIdentity {
   taskKey: string;
   fingerprint: string;
   components: {
+    runtime: string;
     command: string;
     environment: string;
     gateConfig: string;
@@ -86,6 +114,7 @@ export function passingTaskVerdictCacheEntry(
   cache: PassingTaskVerdictCache,
   cacheGroup: string | null,
   taskKey: string,
+  identity?: PassingTaskVerdictIdentity | null,
 ): PassingTaskVerdictCache["groups"][string]["entries"][string] | undefined;
 /**
  * Shared so `passingTaskVerdictDependencyProvenance` cannot drift from the hash it delegates to —
@@ -119,6 +148,7 @@ export type SharedInputProvenance =
 export function passingTaskVerdictSharedInputProvenance(args: {
   root: string;
   trackedScan: { files: string[]; unscannedPresent: string[] };
+  fs?: import('./related-tests.mjs').RelatedFs;
 }): SharedInputProvenance;
 export type TaskVerdictDependencyProvenance =
   | {
@@ -144,6 +174,7 @@ export function passingTaskVerdictDependencyProvenance(args: {
   repoWideTaskKeys: Set<string>;
   sharedInputProvenance?: SharedInputProvenance | null;
   digestCache?: Map<string, unknown>;
+  hashFiles?: typeof hashDependencyFileSet;
 }): TaskVerdictDependencyProvenance;
 export function shouldStorePassingTaskVerdict(args: {
   enabled: boolean;
@@ -160,8 +191,9 @@ export function buildPassingTaskVerdictIdentity(args: {
   environment: unknown;
   gateConfig: unknown;
   dependencyHash: string;
+  runtimeIdentity?: unknown;
   implementationVersion?: string;
-}): PassingTaskVerdictIdentity;
+}): PassingTaskVerdictIdentity | null;
 export function decidePassingTaskVerdict(args: {
   enabled: boolean;
   cacheRead?: { reason: string };

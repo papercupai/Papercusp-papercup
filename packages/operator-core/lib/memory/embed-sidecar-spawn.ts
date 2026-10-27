@@ -531,11 +531,14 @@ export async function spawnEmbedSidecar(): Promise<void> {
   // hono-host.ts divert to runEmbedSidecarServer). In DEV (tsx, real source
   // tree) run the .ts entry via tsx.
   const selfPath = fileURLToPath(import.meta.url);
+  const nodeExecutable = process.versions.bun
+    ? await (await import('../bundled-node')).resolveBundledNode() : process.execPath;
+  if (!nodeExecutable) throw new Error('Retained Node is required for the embedding sidecar');
   const plan = resolveSidecarSpawnPlan({
     selfPath,
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_EMBED_SIDECAR_MODE',
-    execPath: process.execPath,
+    execPath: nodeExecutable,
     spawnerPid: process.pid,
   });
 

@@ -177,11 +177,20 @@ describe('R4 declaration reasons and change-kind mismatch audit', () => {
     const item = await claimedIssue('r4-reasonless-mismatch', AFTER_CUTOVER);
     await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
 
+    const statusBeforePreview = await storedStatus(item.id);
+    const preview = await close(item, { validateOnly: true }, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
+    expect(preview.ok, JSON.stringify(preview)).toBe(true);
+    expect(preview.completionAuthority).toBe('proposed');
+    expect(preview.countsTowardBurnDown).toBe(false);
+    expect(preview.changeKindWarning).toContain('changeKindReason');
+    expect(await storedStatus(item.id)).toBe(statusBeforePreview);
+
     const result = await close(item, {}, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
 
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.completionAuthority).toBe('proposed');
     expect(result.countsTowardBurnDown).toBe(false);
+    expect(preview.changeKindWarning).toBe(result.changeKindWarning);
     expect((await getWorkItem(item.id))?.completionAuthority).toBe('proposed');
   }, 60_000);
 
@@ -192,6 +201,12 @@ describe('R4 declaration reasons and change-kind mismatch audit', () => {
       await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['logic'], step: 'claim', declaredBy: OWNER });
     }
     const reason = 'The TSX change only adjusts an imported type; it does not change rendered behavior.';
+    const statusBeforePreview = await storedStatus(mismatch.id);
+    const preview = await close(mismatch, { validateOnly: true, changeKindReason: reason }, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
+    expect(preview.ok, JSON.stringify(preview)).toBe(true);
+    expect(preview.changeKindMismatchReason).toEqual({ kinds: ['logic'], reason });
+    expect(await storedStatus(mismatch.id)).toBe(statusBeforePreview);
+
     const accepted = await close(mismatch, { changeKindReason: reason }, { ...LOGIC_PROOF, filesChanged: [UI_PATH] });
     expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
     expect(accepted.countsTowardBurnDown, JSON.stringify(accepted)).toBe(true);

@@ -51,6 +51,8 @@ import {
   type ParsedEdges,
 } from '../../../../scripts/lib/related-tests.mjs';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
+import { expandAffectedWorkspaceNames, pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
 import {
   chainAdmissionPreflights,
   lockfileManifestConsistencyPreflight,
@@ -98,9 +100,8 @@ function assertSubmoduleStore(child: string, sha: string): void {
 }
 
 /**
- * P-007 (green-main-cycle-time-2026-10-08#D-036): the most radius test files one ordinary
- * admission's pre-check runs. A wider radius is recorded `skipped` with `over-cap(n/cap)` and
- * the next targeted repair round (P-005) measures it; the pre-check never runs a whole suite.
+ * The radius execution-group bound. Discovery retains the complete population even when
+ * it needs multiple groups; the managed precheck must aggregate them before publication.
  */
 export const ADMISSION_RADIUS_CAP = 40;
 
@@ -174,12 +175,10 @@ function pinnedRepo(cwd: string, commit: string, entries: Entry[]): PinnedRepo {
  * P-007 (green-main-cycle-time-2026-10-08#D-036, #D-037): the related-test radius of an
  * ordinary (non-gitlink) admission, selected at the BUILT commit from pinned trees only.
  *
- * Each admitted non-test source is grouped by its owning workspace (nearest directory with a
- * `package.json` blob, descending into a pinned submodule when the path lives in one). Each
- * group gets its own index over that workspace's sources only, with that workspace's tsconfig
- * aliases — a whole-repo index without aliases marks every `@/` importer unresolved, and the
- * selector always picks unresolved tests, so the radius would always overflow the cap.
- * Cross-workspace dependents are out of scope by design; the next targeted round covers them.
+ * Workspace membership, routes and reverse dependencies come from the pinned trees. Each
+ * affected workspace uses the shared cross-root selector with its own aliases and runner
+ * graph. Unresolvable external reachability widens to that workspace's full test census;
+ * a local source with no reachable test remains explicitly unmeasured.
  *
  * A radius file is `reportOnly` when its workspace's `workspace-task` leg is already red in
  * the signature (it was not green, so it cannot prove an import), else `guarded`. Every
@@ -207,6 +206,9 @@ export function ordinaryAdmissionRadius(input: {
   });
   try {
     const toRel = (abs: string) => relative(root, abs).split(sep).join('/');
+    const treeIdentity = (entries: Entry[]) => entries.map(e => `${e.mode} ${e.type} ${e.sha}\t${e.file}`).sort().join('\n');
+    if (treeIdentity(input.top) !== treeIdentity(treeAt(root, input.commit)))
+      throw new Error('source tree does not match the built commit');
     const superRepo = pinnedRepo(root, input.commit, input.top);
     const children = new Map<string, PinnedRepo>();
     const locate = (abs: string): PinnedRepo => {
@@ -240,10 +242,14 @@ export function ordinaryAdmissionRadius(input: {
       for (const step of walked) ownerMemo.set(step, owner);
       return owner;
     };
+    // Scoped to this immutable inventory: repeated workspace traversals share bytes,
+    // while another commit can never inherit a stale working-tree or blob read.
+    const blobContents = new Map<PinnedRepo, Map<string, string>>();
     const readBlobs = (repo: PinnedRepo, files: readonly string[]): Map<string, string> => {
       const entries = files.map((file) => repo.blobs.get(file)).filter((entry): entry is Entry => !!entry && entry.mode !== '120000');
-      const shas = [...new Set(entries.map((entry) => entry.sha))];
-      const contents = new Map<string, string>();
+      let contents = blobContents.get(repo);
+      if (!contents) { contents = new Map(); blobContents.set(repo, contents); }
+      const shas = [...new Set(entries.map((entry) => entry.sha))].filter(sha => !contents.has(sha));
       for (let start = 0; start < shas.length; start += RADIUS_BLOB_CHUNK) {
         const batch = readAdmissionBlobBatch(repo.cwd, shas.slice(start, start + RADIUS_BLOB_CHUNK));
         if (!batch.ok) throw new Error(`${repo.cwd}@${repo.commit}: ${batch.step}: ${batch.detail.slice(0, 200)}`);
@@ -282,31 +288,124 @@ export function ordinaryAdmissionRadius(input: {
     const sources = admitted.filter((file) => RADIUS_SOURCE_RE.test(file) && !admittedTests.has(file));
     if (sources.length === 0) return result('not-applicable', 'no-source-paths');
 
-    const groups = new Map<string, { repo: PinnedRepo; changed: string[] }>();
-    let unowned = 0;
+    // Enumerate pinned repositories before workspace expansion so root globs can include
+    // workspaces inside gitlinks. No directory listing or manifest read uses working bytes.
+    const inventory = (repo: PinnedRepo, depth = 0): void => {
+      for (const link of repo.gitlinks) {
+        if (depth >= 8) throw new Error(`pinned submodule nesting exceeds inventory bound at ${link.root}`);
+        if (children.has(link.root)) continue;
+        assertSubmoduleStore(link.root, link.sha);
+        const child = pinnedRepo(link.root, link.sha, treeAt(link.root, link.sha));
+        children.set(link.root, child);
+        inventory(child, depth + 1);
+      }
+    };
+    inventory(superRepo);
+    const repos = [superRepo, ...children.values()];
+    // Graph resolution probes the same extension candidates many times. The
+    // complete pinned inventory already tells us their membership and identity;
+    // traversing gitlink prefixes for each probe dominates large graphs.
+    const pinnedBlobs = new Map<string, Entry>();
+    for (const repo of repos) {
+      for (const [file, entry] of repo.blobs) pinnedBlobs.set(file, entry);
+    }
+    type Manifest = { name?: string; workspaces?: string[] | { packages?: string[] }; exports?: unknown; main?: string;
+      dependencies?: Record<string, string>; devDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
+    const manifestRepos = new Map<string, PinnedRepo>();
+    for (const repo of repos) {
+      const files = [...repo.blobs.keys()].filter(file => file.endsWith(`${sep}package.json`) &&
+        !relative(repo.cwd, file).split(sep).some(part => RADIUS_EXCLUDED_DIRS.has(part)));
+      for (const file of files) manifestRepos.set(dirname(file), repo);
+    }
+    const manifests = new Map<string, { repo: PinnedRepo; manifest: Manifest }>();
+    const manifestAt = (dir: string): Manifest | undefined => {
+      const known = manifests.get(dir);
+      if (known) return known.manifest;
+      const repo = manifestRepos.get(dir);
+      if (!repo) return undefined;
+      const text = readBlobs(repo, [resolve(dir, 'package.json')]).get(resolve(dir, 'package.json'));
+      if (text === undefined) throw new Error(`pinned workspace manifest unavailable: ${dir}`);
+      const manifest = JSON.parse(text) as Manifest;
+      manifests.set(dir, { repo, manifest });
+      return manifest;
+    };
+    const roots = new Set<string>();
+    for (const repo of repos) {
+      const manifest = manifestAt(repo.cwd);
+      if (!manifest) continue;
+      const patterns = Array.isArray(manifest.workspaces) ? manifest.workspaces : manifest.workspaces?.packages;
+      if (patterns) {
+        const directories = [...manifestRepos.keys()].filter(dir => dir.startsWith(repo.cwd + sep)).map(dir => relative(repo.cwd, dir).split(sep).join('/'));
+        for (const dir of expandWorkspaces(patterns, repo.cwd, { directories })) roots.add(resolve(repo.cwd, dir));
+      } else roots.add(repo.cwd);
+    }
+    for (const dir of roots) manifestAt(dir);
+    // Each pinned manifest already records its exact repository, including nested
+    // gitlinks. Assign each workspace once instead of traversing all gitlinks for
+    // every (repository, workspace) pair.
+    for (const repo of repos) repo.workspaceRoots = new Set();
+    for (const dir of roots) {
+      const repo = manifestRepos.get(dir);
+      if (!repo) throw new Error(`pinned workspace manifest unavailable: ${dir}`);
+      repo.workspaceRoots.add(dir);
+    }
+    ownerMemo.clear();
+    const workspaces = [...roots].map(dir => ({ dir, ...manifests.get(dir)!, name: legOf(manifests.get(dir)!.repo, dir) }));
+    const byName = new Map(workspaces.map(ws => [ws.name, ws]));
+    // Names route dependency expansion; directory identity retains every same-name
+    // workspace below, and the shared selector follows all of their export targets.
+    const reverseDeps = new Map<string, Set<string>>();
+    for (const ws of workspaces) {
+      for (const name of Object.keys({ ...ws.manifest.dependencies, ...ws.manifest.devDependencies, ...ws.manifest.peerDependencies })) {
+        const dependents = reverseDeps.get(name) ?? new Set<string>();
+        dependents.add(ws.name);
+        reverseDeps.set(name, dependents);
+      }
+    }
+    const seeds = new Set<string>();
+    let routes: ReturnType<typeof pinnedNonWorkspacePathRoutes> | undefined;
     for (const file of sources) {
       const abs = resolve(root, file);
+      if (toRel(abs).startsWith('../') || abs === root) throw new Error(`source path outside pinned root: ${file}`);
       const repo = locate(abs);
+      if (!repo.blobs.has(abs) || repo.blobs.get(abs)!.mode === '120000')
+        throw new Error(`source absent from built commit: ${file}`);
       const ws = owningWorkspace(repo, abs);
-      if (!ws) { unowned += 1; continue; }
-      const group = groups.get(ws) ?? { repo, changed: [] };
-      group.changed.push(abs);
-      groups.set(ws, group);
+      if (ws) { seeds.add(legOf(repo, ws)); continue; }
+      if (!routes) {
+        const script = resolve(root, 'scripts/affected-tests.mjs');
+        routes = pinnedNonWorkspacePathRoutes(readBlobs(superRepo, [script]).get(script) ?? '');
+      }
+      const targets = routes.filter(route => file.startsWith(route.prefix));
+      if (!targets.length || targets.some(route => !byName.has(route.workspace)))
+        throw new Error(`no pinned workspace route for admitted source: ${file}`);
+      for (const route of targets) seeds.add(route.workspace);
     }
-    if (groups.size === 0) return result('skipped', 'radius-unavailable', `no owning workspace for ${unowned} admitted source path(s)`);
+    const affected = expandAffectedWorkspaceNames(seeds, reverseDeps);
+    const packages = workspaces.map(ws => ({ name: ws.name, dir: ws.dir, exports: ws.manifest.exports, main: ws.manifest.main }));
 
     const redLegs = redWorkspaceLegs(input.signature);
     const radius: Array<{ file: string; leg: string }> = [];
     let playwrightExcluded = 0;
     let unroutable = 0;
-    for (const [wsRoot, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-      const { repo } = group;
-      const leg = legOf(repo, wsRoot);
-      const wsSources = [...repo.blobs.keys()].filter((file) =>
-        RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
-        !relative(wsRoot, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
-        owningWorkspace(repo, file) === wsRoot);
-      const configs = [...repo.blobs.keys()].filter((file) => dirname(file) === wsRoot && WORKSPACE_CONFIG_NAMES.has(file.slice(wsRoot.length + 1)));
+    const fullReasons: string[] = [];
+    const sourcesByRepo = new Map<PinnedRepo, Map<string | null, string[]>>();
+    const workspaceSources = (repo: PinnedRepo, wsRoot: string | null): string[] => {
+      let groups = sourcesByRepo.get(repo);
+      if (!groups) { groups = new Map(); sourcesByRepo.set(repo, groups); }
+      let files = groups.get(wsRoot);
+      if (!files) {
+        files = [...repo.blobs.keys()].filter((file) =>
+          RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
+          !relative(wsRoot ?? repo.cwd, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
+          owningWorkspace(repo, file) === wsRoot);
+        groups.set(wsRoot, files);
+      }
+      return files;
+    };
+    for (const { dir: wsRoot, repo, name: leg } of workspaces.filter(ws => affected.has(ws.name)).sort((a, b) => a.dir.localeCompare(b.dir))) {
+      const wsSources = workspaceSources(repo, wsRoot);
+      const configs = [...repo.blobs.keys()].filter((file) => dirname(file) === wsRoot && (WORKSPACE_CONFIG_NAMES.has(file.slice(wsRoot.length + 1)) || /^(?:vitest|vite)(?:\.[\w-]+)*\.config\.[cm]?[jt]s$/.test(file.slice(wsRoot.length + 1))));
       const edgeCache = radiusState.edges;
       if (edgeCache.size > RADIUS_EDGE_CACHE_MAX) edgeCache.clear();
       const blobKey = (file: string): string | null => repo.blobs.get(file)?.sha ?? null;
@@ -316,29 +415,51 @@ export function ordinaryAdmissionRadius(input: {
       });
       const contents = readBlobs(repo, [...unparsed, ...configs]);
       const readFile = (file: string): string => {
-        const text = contents.get(file);
+        let text = contents.get(file);
+        if (text === undefined) {
+          const reachedRepo = locate(file);
+          const source = RADIUS_SOURCE_RE.test(file);
+          const reachedWorkspace = source ? owningWorkspace(reachedRepo, file) : null;
+          // Scripts outside npm workspaces form a separate group in each pinned
+          // repository. They need the same bounded reads as workspace sources;
+          // otherwise every reached script starts two more Git subprocesses.
+          // Only buildIndex's traversal determines graph membership.
+          const batch = readBlobs(reachedRepo, source ? workspaceSources(reachedRepo, reachedWorkspace) : [file]);
+          for (const [path, value] of batch) contents.set(path, value);
+          text = contents.get(file);
+        }
         if (text === undefined) throw new Error(`absent at the pinned commit: ${file}`);
         return text;
       };
       const aliases = tsconfigPathEntriesFor(wsRoot, { readFile });
+      const crossRoot = { packages, aliasesFor: (dir: string) => tsconfigPathEntriesFor(dir, { readFile }) };
       const fs = {
-        list: () => wsSources,
-        read: (file: string) => contents.get(file) ?? null,
-        key: blobKey,
-        // Relative imports may leave the workspace; a path under a pinned gitlink exists by construction.
-        exists: (file: string) => repo.blobs.has(file) || repo.gitlinks.some((link) => file.startsWith(link.root + sep)),
+        list: () => [...new Set([...wsSources, ...configs.filter(file => RADIUS_SOURCE_RE.test(file))])],
+        read: (file: string) => { try { return readFile(file); } catch { return null; } },
+        key: (file: string) => pinnedBlobs.get(file)?.sha ?? null,
+        exists: (file: string) => pinnedBlobs.has(file),
       };
-      const index = buildIndex({ rootDir: wsRoot, aliases, fs, edgeCache });
+      const index = buildIndex({ rootDir: wsRoot, aliases, fs, edgeCache, crossRoot });
+      // Combining a reachable edit with an orphan must not launder the orphan into a
+      // nonempty aggregate selection in the same workspace.
+      for (const source of sources.map(file => resolve(root, file)).filter(file => owningWorkspace(locate(file), file) === wsRoot)) {
+        const individual = selectRelatedTests({ rootDir: wsRoot, changedPaths: [source], aliases, index, fs, crossRoot,
+          judgedSha: input.commit, threshold: Number.POSITIVE_INFINITY });
+        if (individual.mode === 'full' && (individual.reason === 'empty-selection' || individual.reason === 'no-test-files'))
+          return result('skipped', `selection-full:${individual.reason}`, `leg ${leg}: orphan source ${toRel(source)}`);
+      }
       // The widen threshold is the gate's COST rule (an explicit list near the whole suite is pure
       // overhead). Here the cap is the cost rule, and a small workspace whose few tests are all
       // related must stay measured rather than collapse to `full`.
       const selection = selectRelatedTests({
-        rootDir: wsRoot, changedPaths: group.changed, aliases, index, fs, judgedSha: input.commit,
+        rootDir: wsRoot, changedPaths: sources.map(file => resolve(root, file)), aliases, index, fs, crossRoot, judgedSha: input.commit,
         threshold: Number.POSITIVE_INFINITY,
       });
-      if (selection.mode === 'full') return result('skipped', `selection-full:${selection.reason}`, `leg ${leg}: the selector could not narrow (${selection.reason}); the next targeted round measures it`);
+      // Local orphan sources were refused individually above. A reverse dependent
+      // with no test files contributes its explicit empty census, not an orphan.
+      if (selection.mode === 'full') fullReasons.push(`${leg}:${selection.reason}`);
       const ownedByPlaywright = playwrightOwnedTest(wsRoot, { readFile });
-      for (const abs of selection.selected) {
+      for (const abs of selection.mode === 'full' ? index.files.filter(isTestFile).sort() : selection.selected) {
         if (ownedByPlaywright(abs)) { playwrightExcluded += 1; continue; }
         const file = toRel(abs);
         if (signatureTests.has(file) || admittedTests.has(file)) continue;
@@ -347,12 +468,12 @@ export function ordinaryAdmissionRadius(input: {
       }
     }
     const detail = [
-      `${groups.size} workspace(s)`,
+      `${affected.size} workspace(s)`,
       ...(playwrightExcluded ? [`playwright-excluded=${playwrightExcluded}`] : []),
       ...(unroutable ? [`unroutable=${unroutable}`] : []),
-      ...(unowned ? [`unowned-sources=${unowned}`] : []),
+      ...fullReasons.map(reason => `full=${reason}`),
+      `execution-groups=${Math.ceil(radius.length / cap)}`,
     ].join('; ');
-    if (radius.length > cap) return result('skipped', `over-cap(${radius.length}/${cap})`, detail);
     const guarded: string[] = [];
     const reportOnly: string[] = [];
     for (const { file, leg } of radius) {

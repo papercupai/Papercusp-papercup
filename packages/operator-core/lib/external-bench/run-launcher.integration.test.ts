@@ -144,14 +144,16 @@ beforeEach(async () => {
 describe('current provider capture host checkpoint', () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-  async function fixture() {
+  async function fixture(agent: 'codex' | 'claude' = 'codex') {
     const protocol = currentProtocolFixture('private-host-capture');
     for (const arm of protocol.arms) arm.account = 'private-provider-account';
+    const armId = agent === 'claude' ? 'baseline' : 'papercusp';
+    if (agent === 'claude') protocol.arms.find(arm => arm.id === armId)!.agent = 'claude';
     const checkoutRoot = mkdtempSync(join(tmpdir(), 'bench-host-candidate-')); roots.push(checkoutRoot);
     const preregHash = createHash('sha256').update(canonicalJson(protocol)).digest('hex');
     const loopId = `benchmark:${preregHash}`, hostRunId = 'host-capture';
-    const input: CurrentTaskInput = { options: { workspaceId: WS, runId: protocol.runId, armId: 'papercusp', seed: 1,
-      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'private-provider-account',
+    const input: CurrentTaskInput = { options: { workspaceId: WS, runId: protocol.runId, armId, seed: 1,
+      agent, model: 'configured-alias', effort: 'high', account: 'private-provider-account',
       preregistration: { preregHash, config: protocol } }, protocol, task: task('t1'), scope,
       context: { workspaceId: WS, principal: { slug: 'private-host' } } as CurrentTaskInput['context'],
       resources: { requestsPerArm: 2 } as CurrentTaskInput['resources'], loopId, hostRunId,
@@ -165,19 +167,25 @@ describe('current provider capture host checkpoint', () => {
     expect(shape!.kind).toBe('object');
     const request = (): GatewayCarryTrialAttempt => {
       const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
-      const body = JSON.stringify({ model: input.options.model, reasoning: { effort: 'high' }, max_output_tokens: 10,
+      const body = JSON.stringify(agent === 'claude' ? { model: input.options.model, output_config: { effort: 'high' },
+        max_tokens: 10, messages: [{ role: 'user', content: 'private context' }] } :
+        { model: input.options.model, reasoning: { effort: 'high' }, max_output_tokens: 10,
         client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ session_id: nativeSessionId,
           thread_id: nativeSessionId, turn_id: nativeTurnId }) }, input: [{ role: 'user', content: 'private context' }] });
       return { attemptId: randomUUID(), manifestSha256: preregHash,
-        armId: currentBenchAssignmentId(protocol.runId, 'papercusp', 't1', 1), nativeSessionId, nativeTurnId,
-        transport: 'bearer-http', accountId: 'private-provider-account', credentialHeader: 'authorization',
-        credentialSha256: 'c'.repeat(64), target: 'https://api.openai.com/v1/responses', body,
+        armId: currentBenchAssignmentId(protocol.runId, armId, 't1', 1), accountId: 'private-provider-account',
+        ...(agent === 'claude' ? { transport: 'anthropic-http' as const, credentialHeader: 'x-api-key' as const,
+          target: 'https://api.anthropic.com/v1/messages', anthropicVersion: '2023-06-01', anthropicBeta: null } :
+          { nativeSessionId, nativeTurnId, transport: 'bearer-http' as const, credentialHeader: 'authorization' as const,
+            target: 'https://api.openai.com/v1/responses' }),
+        credentialSha256: 'c'.repeat(64), body,
         bodySha256: createHash('sha256').update(body).digest('hex'), clockId: 'private-clock', signal: new AbortController().signal };
     };
     return { input, capture, request };
   }
   async function recordedReservation(f: Awaited<ReturnType<typeof fixture>>, attempt: GatewayCarryTrialAttempt,
-    { settled = true, completed = true } = {}) {
+    { settled = true, completed = true, failure }: { settled?: boolean; completed?: boolean;
+      failure?: 'send-refused' | 'fetch-failed' } = {}) {
     await f.capture.captureProviderInput(attempt);
     const { body: _body, signal: _signal, ...identity } = attempt;
     const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 2, armIds: [attempt.armId],
@@ -188,12 +196,21 @@ describe('current provider capture host checkpoint', () => {
       attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
       exact: { reservationId: attempt.attemptId, binding: attempt.manifestSha256, expectedBudgetUsd: 60,
         resources: { armId: attempt.armId, inputTokens: 100, outputTokens: 10 }, expectedResourceBudget: resources } })).ok).toBe(true);
+    if (failure) {
+      const result: GatewayCarryTrialAttemptResult = failure === 'send-refused'
+        ? { ...identity, reservationRef: attempt.attemptId, outcome: failure, responseStatus: null,
+          costUsd: 0, costUsdMeasurementMissing: false }
+        : { ...identity, reservationRef: attempt.attemptId, outcome: failure, responseStatus: null, costUsdMeasurementMissing: true };
+      expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: attempt.attemptId, result })).toEqual({ ok: true });
+      return;
+    }
     const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: attempt.attemptId,
       outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true };
     expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: attempt.attemptId, result: headers })).toEqual({ ok: true });
     if (completed) {
       const result: GatewayCarryTrialAttemptResult = { ...headers, outcome: 'response-completed', responseStatus: 200,
-        responseSha256: 'd'.repeat(64), responseBytes: 300, providerCompletion: { responseId: 'private-response',
+        responseSha256: 'd'.repeat(64), responseBytes: 300, providerCompletion: {
+          responseId: attempt.transport === 'anthropic-http' ? `msg_${attempt.attemptId.replaceAll('-', '')}` : 'private-response',
           model: f.input.options.model!, providerEffort: 'high', usage: { inputTokenBasis: 'inclusive', inputTokens: 100,
             outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0 } } };
       expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: attempt.attemptId, result })).toEqual({ ok: true });
@@ -209,6 +226,51 @@ describe('current provider capture host checkpoint', () => {
     expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(2);
     const otherArm = { ...f.input, options: { ...f.input.options, armId: 'baseline' } };
     expect(await readCurrentBenchTaskModelCalls(otherArm, f.capture)).toBe(0);
+  });
+  it('retains Claude request counts and measured provider messages without synthesizing native turns', async () => {
+    const f = await fixture('claude'), completed = f.request(), incomplete = f.request();
+    await recordedReservation(f, completed);
+    await recordedReservation(f, incomplete, { settled: false, completed: false });
+    const census = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    expect(census.requests).toHaveLength(2);
+    expect(census.requests.find(row => row.reservationId === completed.attemptId)).toEqual({ agent: 'claude',
+      reservationId: completed.attemptId, bodySha256: completed.bodySha256,
+      nativeMessageId: `msg_${completed.attemptId.replaceAll('-', '')}` });
+    expect(census.requests.find(row => row.reservationId === incomplete.attemptId)).toEqual({ agent: 'claude',
+      reservationId: incomplete.attemptId, bodySha256: incomplete.bodySha256 });
+    expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(2);
+    const frozen = await freezeCurrentBenchTaskProviderReservation(f.input, completed.attemptId);
+    expect(frozen).toMatchObject({ agent: 'claude', anthropicVersion: '2023-06-01', anthropicBeta: null });
+    expect(frozen).not.toHaveProperty('nativeTurnId'); expect(frozen).not.toHaveProperty('nativeSessionId');
+    expect(() => currentBenchSessionRequestDelta({ ...census, requests: [] }, census, randomUUID())).toThrow(/request census/);
+  });
+  it('counts refused and failed Claude sends without claiming a provider completion', async () => {
+    const f = await fixture('claude'), refused = f.request(), failed = f.request();
+    await recordedReservation(f, refused, { failure: 'send-refused' });
+    await recordedReservation(f, failed, { failure: 'fetch-failed' });
+    const census = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    expect(census.requests).toHaveLength(2);
+    for (const row of census.requests) {
+      expect(row.agent).toBe('claude'); expect(row).not.toHaveProperty('nativeMessageId');
+      expect(row).not.toHaveProperty('nativeSessionId'); expect(row).not.toHaveProperty('nativeTurnId');
+    }
+    expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(2);
+  });
+  it.each(['anthropicVersion', 'anthropicBeta', 'nativeSessionId', 'accountId'] as const)(
+    'refuses Claude %s drift between captured input and the reservation', async field => {
+      const f = await fixture('claude'), attempt = f.request(); await recordedReservation(f, attempt);
+      await sql`UPDATE harness_shared.learning_spend_reservations SET note = jsonb_set(note::jsonb,
+        ${['nativeGatewayAttempt', field]}::text[], ${JSON.stringify('foreign')}::text::jsonb)::text
+        WHERE id = ${attempt.attemptId}`;
+      await expect(readCurrentBenchTaskRequestCensus(f.input, f.capture)).rejects.toThrow(/capture|provider identity/);
+    });
+  it('refuses duplicate measured Claude provider messages across distinct reservations', async () => {
+    const f = await fixture('claude'), first = f.request(), second = f.request();
+    await recordedReservation(f, first); await recordedReservation(f, second);
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = jsonb_set(note::jsonb,
+      '{nativeGatewayAttemptResult,providerCompletion,responseId}',
+      ${JSON.stringify(`msg_${first.attemptId.replaceAll('-', '')}`)}::text::jsonb)::text WHERE id = ${second.attemptId}`;
+    await expect(readCurrentBenchTaskRequestCensus(f.input, f.capture)).rejects.toThrow(/reused provider message/);
   });
   it('refuses an admitted request with altered host input evidence rather than inferring count from usage', async () => {
     const f = await fixture(), attempt = f.request(); await recordedReservation(f, attempt);

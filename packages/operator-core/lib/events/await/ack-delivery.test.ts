@@ -83,6 +83,46 @@ beforeEach(() => {
 });
 
 describe('ackDelivery for a pump-claimed row', () => {
+  it('retries an owned parked wake after the pump reparks it between the ACK update and state read', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    let updateCount = 0;
+    sqlState.respond = (text) => {
+      if (text.includes('UPDATE harness_shared.event_wake_deliveries')) {
+        updateCount += 1;
+        return updateCount === 1 ? [] : [{ id: 7 }];
+      }
+      if (text.includes('SELECT status, channel')) return [{ status: 'parked', channel: 'inbox' }];
+      return [];
+    };
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: true,
+      alreadySettled: false,
+    });
+    expect(updateCount).toBe(2);
+    expect(pty.findLiveHostAsync).not.toHaveBeenCalled();
+  });
+
+  it('keeps an owned parked wake active if the bounded ACK reconciliation still misses', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    let updateCount = 0;
+    sqlState.respond = (text) => {
+      if (text.includes('UPDATE harness_shared.event_wake_deliveries')) {
+        updateCount += 1;
+        return [];
+      }
+      if (text.includes('SELECT status, channel')) return [{ status: 'parked', channel: 'inbox' }];
+      return [];
+    };
+
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: false,
+      alreadySettled: false,
+      status: 'parked',
+    });
+    expect(updateCount).toBe(3);
+  });
+
   it('does not send the new control mode to a host without the advertised capability', async () => {
     vi.mocked(pty.hostSupports).mockReturnValue(false);
 

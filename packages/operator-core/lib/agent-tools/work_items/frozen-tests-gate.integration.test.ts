@@ -159,6 +159,19 @@ describe('frozen-test pilot completion (real Postgres)',() => {
     const result=await close();expect(result,JSON.stringify(result)).toMatchObject({ok:true});
     expect((await getWorkItem(itemId,HARNESS))?.state).toBe('done');
   });
+  it('preserves registered red calibration through retention while pruning unreferenced runs',async () => {
+    expect(await register()).toMatchObject({ok:true});
+    const unreferenced=await testRun('fail');
+    const passing=await testRun('pass');await binding('test',BUILDER,passing);
+    await h.sql`SELECT harness_shared.prune_test_runs(1)`;
+    const remaining=await h.sql<Array<{id:number}>>`SELECT id FROM harness_shared.test_runs
+      WHERE id=ANY(${[redId,unreferenced,passing]}::bigint[]) ORDER BY id`;
+    expect(remaining.map(row=>Number(row.id))).toEqual([redId,passing]);
+    const result=await close();expect(result,JSON.stringify(result)).toMatchObject({ok:true});
+    // Completed pilot evidence remains reproducible after subsequent retention.
+    await testRun('pass');await h.sql`SELECT harness_shared.prune_test_runs(1)`;
+    expect(await h.sql`SELECT id FROM harness_shared.test_runs WHERE id=${redId}`).toHaveLength(1);
+  });
   it('refuses an absent manifest before persisting completion',async () => {await expectRefused();});
   it.each(['edit','delete'])('refuses a frozen test %s after a passing run',async action => {
     expect(await register()).toMatchObject({ok:true});await binding('test',BUILDER,await testRun('pass'));

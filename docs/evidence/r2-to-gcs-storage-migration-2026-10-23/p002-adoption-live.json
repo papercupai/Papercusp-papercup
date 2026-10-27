@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "r2gcs-p002-adoption-v1",
+  "workItem": "WI-6554700010025561",
+  "observedAt": "2026-10-24T05:13:59.747211+00:00",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "prefix": "artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/",
+  "sourcePublication": "/mnt/data/tmp/p544-managed-host-20261023-patched/publication",
+  "originalJournal": {
+    "schemaVersion": 1,
+    "taskId": "0mvkl22i0febmllzn1h",
+    "operationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+    "sourceSha": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "version": "0.0.21-p544q20261023r2"
+  },
+  "objects": [
+    {
+      "name": "server.tgz",
+      "size": "2118168717",
+      "generation": "1792799154148744",
+      "metageneration": "2",
+      "cacheControl": "private,no-store",
+      "metadata": {
+        "bundleSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "file": "server.tgz",
+        "fileSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "namespace": "workspace-host-v1",
+        "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "sizeBytes": "2118168717"
+      }
+    },
+    {
+      "name": "server.tgz.minisig",
+      "size": "295",
+      "generation": "1792799162572395",
+      "metageneration": "2",
+      "cacheControl": "private,no-store",
+      "metadata": {
+        "bundleSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "file": "server.tgz.minisig",
+        "fileSha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+        "namespace": "workspace-host-v1",
+        "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+        "sizeBytes": "295"
+      }
+    },
+    {
+      "name": "sbom.cdx.json",
+      "size": "800554",
+      "generation": "1792799168769239",
+      "metageneration": "2",
+      "cacheControl": "private,no-store",
+      "metadata": {
+        "bundleSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "file": "sbom.cdx.json",
+        "fileSha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+        "namespace": "workspace-host-v1",
+        "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+        "sizeBytes": "800554"
+      }
+    }
+  ],
+  "verification": {
+    "cliExitCode": 0,
+    "exactGenerationByteVerification": "Maintained helper hashed each authenticated generation-pinned stream before metadata mutation; digest and size matched the original publication.",
+    "generationPreservation": "Each generation matches its pre-adoption describe; only metageneration changed from 1 to 2.",
+    "metadataOnly": true,
+    "originalSignedBytesRetained": true,
+    "finalized": false,
+    "deployed": false,
+    "liveLog": "/tmp/f9dd6-p002-adoption-live.log"
+  },
+  "tests": {
+    "command": "npm run test:file -- scripts/publish-workspace-host-artifacts.test.ts",
+    "passed": 58,
+    "failed": 0,
+    "skipped": 0,
+    "sourceMap": "/tmp/f9dd6-p002-adoption-executed.json",
+    "receipts": "/tmp/f9dd6-p002-adoption-receipts.jsonl",
+    "log": "/tmp/f9dd6-p002-adoption.log",
+    "scope": "Current Vite worker original source evidence stable. Whole-file CLI child proof is limited by 30 source substitutions/refusals; not final canonical acceptance."
+  },
+  "sourceHashes": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "690419670be2935b05e8f4da2dd79a57616a5d0a6d41a7e900aaef5f8d320582",
+    "scripts/publish-workspace-host-artifacts.mjs": "96c81bf54b27cb817687f5b22a1082d3650e0b353a26ab56afead65e7397f589",
+    "scripts/publish-workspace-host-artifacts.test.ts": "dcce8808ac4cdd77acb61037c349cf5b8f19afba52959fcfd7a2decbe3d121dc"
+  }
+}

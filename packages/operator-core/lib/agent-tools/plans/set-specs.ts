@@ -219,7 +219,7 @@ export default defineTool({
     when: 'Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.',
     notWhen:
       'Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools. Changing the behavior of a sourceBar-pinned AUTO-BAR projection — amend the canonical rubric with rubrics:amend.',
-    chaining: 'plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify.',
+    chaining: 'plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify. Author the requirement verification.check.files with exact maintained tests for automatic ledger reconciliation; specIds/revisions and explicit item/code anchors establish ownership, never symbol-name similarity. Bind the first exact test run with sourcePaths and fixturePaths so later autobind can retain its measured recipe.',
     seeAlso: ['plans:get-specs (current/exact/history read)', 'plans:get-item (owning outcome)'],
   },
   capability: 'plans:write',

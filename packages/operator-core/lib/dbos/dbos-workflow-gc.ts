@@ -16,7 +16,7 @@
  * directive, 2026-06-19): VALIDATED live on 2026-06-19 — this GC drained workflow_status
  * 253MB→3MB and immediately un-froze the routine engine. It MUST run recurring or the
  * table re-bloats; disable only with PAPERCUSP_DBOS_WORKFLOW_GC=0. Retention is env-tunable
- * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 2 — hourly bounded passes keep the
+ * (PAPERCUSP_DBOS_WORKFLOW_GC_DAYS, default 2 — half-hourly bounded passes keep the
  * table far under the ~300k freeze threshold).
  *
  * ROOT CAUSE (corrected 2026-06-19): the freeze WAS the workflow_status bloat — 328k rows
@@ -39,7 +39,10 @@ export const DBOS_TERMINAL_STATUSES = [
   'CANCELLED',
 ] as const;
 
-export const DBOS_WORKFLOW_GC_CRONTAB = '0 30 * * * *';
+// An exactly hourly slot leaves no room for varying dequeue/entry delays:
+// consecutive actual starts can exceed one hour despite no missed slot.
+// Keep 30 minutes of dispatch headroom and avoid the top-of-hour stampede.
+export const DBOS_WORKFLOW_GC_CRONTAB = '0 15,45 * * * *';
 const DEFAULT_RETENTION_DAYS = 2; // Tune via PAPERCUSP_DBOS_WORKFLOW_GC_DAYS.
 const DEFAULT_BATCH_LIMIT = 5000;
 /**

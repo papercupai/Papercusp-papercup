@@ -13,6 +13,7 @@ import {
   pureProofCaptureSliceSize,
   repoRelativeLaneFiles,
   runPureLaneProofCapture,
+  splitTimedOutSlice,
 } from '../../../../scripts/lib/pure-lane-proof-capture.mjs';
 
 /**
@@ -495,9 +496,56 @@ describe('runPureLaneProofCapture', () => {
     expect(await run(h)).toMatchObject({ slices: 1, stoppedBy: `head-moved(${OLD.slice(0, 12)})` });
   });
 
-  it('stops after a slice that timed out', async () => {
+  // WI-6554700010030061: one hung file used to end capture (stoppedBy=slice-timeout) and discard
+  // the whole slice; on the frozen lineage that was 249 passing files and 4001 never attempted.
+  it('splits a timed-out slice, isolates the hung file and keeps capturing the lane', async () => {
+    const h = harness();
+    h.deps.runSlice = async (s: Slice) => {
+      h.slices.push(s);
+      h.clock.now += 30_000;
+      return { code: 1, signal: null, timedOut: s.args.includes('lib/c.test.ts'), spawnError: null };
+    };
+    const r = await run(h);
+    // candidates c, d, b in slices of 2: [c,d] times out -> [c], [d]; [c] times out alone.
+    expect(h.slices.map((s) => s.args.slice(2))).toEqual([
+      ['lib/c.test.ts', 'lib/d.test.ts'], ['lib/c.test.ts'], ['lib/d.test.ts'], ['lib/b.test.ts'],
+    ]);
+    expect(r).toMatchObject({ slices: 4, remaining: 0, timedOutSlices: 2, hung: [rr('lib/c.test.ts')], stoppedBy: 'complete' });
+    expect(h.logs).toContain(`PURE_PROOF_CAPTURE_SLICE_TIMEOUT n=1 files=${rr('lib/c.test.ts')},${rr('lib/d.test.ts')}`);
+    expect(h.logs).toContain(`PURE_PROOF_CAPTURE_HUNG file=${rr('lib/c.test.ts')} sha=${SHA.slice(0, 12)}`);
+  });
+
+  it('isolates a file that hangs on every attempt without looping', async () => {
     const h = harness({ runSlice: async () => ({ code: 1, signal: null, timedOut: true, spawnError: null }) });
-    expect(await run(h)).toMatchObject({ slices: 1, remaining: 1, stoppedBy: 'slice-timeout' });
+    const r = await run(h);
+    expect(r).toMatchObject({ slices: 4, remaining: 0, timedOutSlices: 4, stoppedBy: 'complete' });
+    expect(r.hung).toEqual([rr('lib/c.test.ts'), rr('lib/d.test.ts'), rr('lib/b.test.ts')]);
+  });
+
+  it('keeps the other slices\' proofs when a timed-out slice minted nothing', async () => {
+    const h = namedHarness();
+    const reported = h.deps.readResults;
+    h.deps.runSlice = async (s: Slice) => {
+      h.slices.push(s);
+      h.clock.now += 30_000;
+      return { code: 1, signal: null, timedOut: s.args.includes('lib/c.test.ts'), spawnError: null };
+    };
+    h.deps.readResults = () => (h.slices.at(-1)!.args.includes('lib/c.test.ts')
+      ? { status: 'no-report', results: [], malformed: 0 } : reported());
+    const named = (h.deps as unknown as { loadCapturedProofRows: (a: { files: string[] }) => Promise<unknown[]> })
+      .loadCapturedProofRows;
+    Object.assign(h.deps, { loadCapturedProofRows: async (a: { files: string[] }) =>
+      (a.files.includes(rr('lib/c.test.ts')) ? [] : named(a)) });
+    const r = await run(h);
+    expect(r.hung).toEqual([rr('lib/c.test.ts')]);
+    expect(r.evidence.proofs?.map((p) => p.file)).toEqual([rr('lib/d.test.ts'), rr('lib/b.test.ts')]);
+  });
+
+  it('splits a slice into contiguous sub-slices and leaves a singleton unsplit', () => {
+    expect(splitTimedOutSlice(['a', 'b', 'c', 'd', 'e'], 2)).toEqual([['a', 'b', 'c'], ['d', 'e']]);
+    expect(splitTimedOutSlice(Array.from({ length: 250 }, (_, i) => String(i))).map((s) => s.length))
+      .toEqual([32, 32, 32, 32, 32, 32, 32, 26]);
+    expect(splitTimedOutSlice(['only'])).toEqual([]);
   });
 
   it('reports nothing to capture when every candidate is already proven or failed', async () => {

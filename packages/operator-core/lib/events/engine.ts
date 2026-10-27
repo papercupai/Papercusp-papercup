@@ -56,8 +56,13 @@ export function normalizeEvent(pe: PostInvokeEvent): ToolInvocationEvent {
 }
 
 type LocalActions = Array<MatchedAction<ToolInvocationEvent, string>>;
-let localMatcher: ((event: ToolInvocationEvent) => Promise<LocalActions>) | null = null;
-let localFire: ((event: ToolInvocationEvent, cause: NonNullable<ToolInvocationEvent['cause']>) => Promise<{ ok: boolean; error?: string }>) | null = null;
+// Cyclic importers can emit or install hooks before this module finishes
+// evaluating. Hoist the empty slots and omit runtime initializers: assigning
+// null here would erase a hook installed through the early exported setter.
+// eslint-disable-next-line no-var
+var localMatcher: ((event: ToolInvocationEvent) => Promise<LocalActions>) | null | undefined;
+// eslint-disable-next-line no-var
+var localFire: ((event: ToolInvocationEvent, cause: NonNullable<ToolInvocationEvent['cause']>) => Promise<{ ok: boolean; error?: string }>) | null | undefined;
 /** Operator-host bootstrap installs durable local authorship, never a test/script import. */
 export function setLocalRuleMatcher(matcher: typeof localMatcher, fire: typeof localFire): void {
   localMatcher = matcher; localFire = fire;

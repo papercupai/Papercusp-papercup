@@ -12,16 +12,18 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
     source: "default" | "env";
     invalid?: string;
 };
+export function expandSelectionCommands(scripts: any, script: any, seen?: Set<any>): any[];
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
- * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean, enumerateSpecifications?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro }?: {
+export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro, enumerateSpecifications }?: {
     root?: string;
     filterDir?: string;
     runResolver?: Function;
     syncAstro?: boolean;
+    enumerateSpecifications?: boolean;
 }): {
     schemaVersion: number;
     kind: string;
@@ -34,26 +36,6 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         steps: any;
         files: any[];
         commandObligations: any;
-        lifecycleCommands: {
-            script: string;
-            command: any;
-        }[];
-        resolvedCommand?: any;
-        id: string;
-        workspace: any;
-        dir: any;
-        script: any;
-        command: any;
-    } | {
-        runner: string;
-        files: never[];
-        commandObligations: {
-            kind: string;
-            check: string;
-            command: any;
-            inputs: null;
-            executed: boolean;
-        }[];
         lifecycleCommands: {
             script: string;
             command: any;
@@ -102,6 +84,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
     } | {
         files: never[];
         commandObligations: any[];
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;
@@ -114,6 +97,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         command: any;
     } | {
         files: never[];
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;
@@ -125,11 +109,13 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         script: any;
         command: any;
     } | {
+        selectedSpecifications?: any;
         projects?: any;
         sync?: any;
         commandObligations?: any[] | undefined;
         files: any[];
         config: any;
+        runner: string;
         lifecycleCommands: {
             script: string;
             command: any;

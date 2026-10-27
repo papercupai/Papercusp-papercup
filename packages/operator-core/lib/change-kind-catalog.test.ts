@@ -15,13 +15,15 @@ import {
 } from './change-kind-catalog';
 
 describe('change-kind catalog (P-001)', () => {
-  it('ships the nine kinds the owner-approved plan names, each with a non-empty proof list', () => {
+  // 'refactor' joined in code-cleanup-campaigns-2026-10-26 P-004 (D-003, owner-approved).
+  it('ships the ten kinds the owner-approved plans name, each with a non-empty proof list', () => {
     expect([...CHANGE_KINDS]).toEqual([
       'ui',
       'service',
       'migration',
       'background-job',
       'logic',
+      'refactor',
       'docs',
       'config',
       'test-only',

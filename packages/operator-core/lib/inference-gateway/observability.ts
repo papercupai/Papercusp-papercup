@@ -49,6 +49,11 @@ export interface GatewayHeadroom {
    *  under flag-OFF). `0` = the whole pool is walled/paused, so there is no remote capacity at all.
    *  Undefined when the live gateway predates the field (deploy-skew) — treat as UNKNOWN, not as zero. */
   healthyAccounts?: number;
+  /** Codex only: serviceable accounts that ACCEPT each model with a live refusal (`/stats`
+   *  `codexServiceableByModel`, WI-6554700010029748), keyed by the lowercased bare model id. A
+   *  measured `0` means every serviceable account refuses that model; a model absent from the map
+   *  (or an undefined map from an older gateway) is UNKNOWN, not zero. */
+  serviceableByModel?: Record<string, number>;
   /** Per-TIER admission breakdown (gateway-priority-tiers-2026-06-22) — present only when the gateway's
    *  tier layer is on (GATEWAY_PRIORITY_TIERS). The pool-wide `healthyAccounts` capacity denominator, the
    *  reserved tier-1 floor, and per-tier {cap,inFlight,queued}. Feeds the Queen's `fleet:capacity` /
@@ -71,6 +76,22 @@ export interface GatewayHeadroom {
   /** The bound account's effective per-minute allowance = floor(rpm × learned factor). */
   effRpm?: number | null;
   error?: string;
+}
+
+/**
+ * Normalize `/stats.codexServiceableByModel`: lowercased bare model keys, non-negative integer
+ * counts only. A malformed entry is dropped (unknown), never coerced to zero — a false zero would
+ * read as "every account refuses this model". Mirrors psu-launcher.mjs `codexServiceableForModel`,
+ * which applies the same reading at launch time.
+ */
+function projectServiceableByModel(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const model = key.trim().toLowerCase();
+    if (model && Number.isInteger(value) && (value as number) >= 0) out[model] = value as number;
+  }
+  return out;
 }
 
 /** Project a raw gateway /stats payload into the normalized headroom read-model. */
@@ -98,6 +119,7 @@ export function projectHeadroom(
   const u = provider === 'claude' ? stats.unified : undefined;
   // P-005: surface the bound account's smoothing pace (the /stats `smoothing.byAccount[accountId]` entry).
   const sm = provider === 'claude' ? stats.smoothing?.byAccount?.[stats.accountId] : undefined;
+  const serviceableByModel = provider === 'codex' ? projectServiceableByModel(stats.codexServiceableByModel) : undefined;
   const processStartedAt = Number.isFinite(stats.processStartedAt) ? stats.processStartedAt : undefined;
   const processUptimeMs = Number.isFinite(stats.processUptimeMs)
     ? stats.processUptimeMs
@@ -122,6 +144,7 @@ export function projectHeadroom(
     queueDepth: admission?.queued,
     admissionWindow: admission?.maxConcurrent,
     healthyAccounts: Number.isFinite(healthyAccounts) ? healthyAccounts : undefined,
+    ...(serviceableByModel ? { serviceableByModel } : {}),
     byPriority: admission?.byPriority,
     priorityTiers,
     totalRequests: provider === 'codex' ? stats.codex?.requests : stats.totalRequests,

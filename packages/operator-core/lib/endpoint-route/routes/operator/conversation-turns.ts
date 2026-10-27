@@ -17,14 +17,17 @@ import {
   getConversationById,
   getOrCreateActiveConversation,
   listTurnsRecent,
+  OperatorTurnIdentityConflict,
   type TurnRole,
   type TurnSource,
 } from '../../../operator-conversations';
 import { parseReportBody } from '../../../operator-converse-tags';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
+import { z } from 'zod';
 
 interface Body {
+  turnId?: string;
   role: TurnRole;
   text: string;
   source?: TurnSource;
@@ -76,19 +79,29 @@ const post = defineTool({
     if (!body || typeof body.text !== 'string' || !body.role) {
       return Response.json({ error: 'role and text required' }, { status: 400 });
     }
+    if (body.turnId !== undefined && !z.string().uuid().safeParse(body.turnId).success) {
+      return Response.json({ error: 'turnId must be a UUID' }, { status: 400 });
+    }
     // Re-validate the report server-side (defensive — never store junk):
     // round-trip the client object through parseReportBody.
     const report =
       body.report != null ? parseReportBody(JSON.stringify(body.report)) : null;
-    const turn = await appendTurn({
+    let turn;
+    try { turn = await appendTurn({
       conversationId: id,
+      ...(body.turnId === undefined ? {} : { turnId: body.turnId }),
       role: body.role,
       text: body.text,
       source: body.source,
       elConvId: body.elConvId ?? null,
       tools: Array.isArray(body.tools) && body.tools.length > 0 ? (body.tools as any) : null,
       report,
-    });
+    }); } catch (error) {
+      if (error instanceof OperatorTurnIdentityConflict) {
+        return Response.json({ error: 'turn identity conflict' }, { status: 409 });
+      }
+      throw error;
+    }
     void notifySyncInvalidate('operatorTurns.page', { conversationId: id })
       .catch(() => { /* best-effort */ });
     // conversationId lets an `active` caller adopt the resolved id.

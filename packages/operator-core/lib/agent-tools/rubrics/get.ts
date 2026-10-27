@@ -32,16 +32,7 @@ import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import type { Rubric } from '../../rubrics';
-import { parseRequirementBars } from '../../acceptance-bar-seed';
-import { readLiveAcceptanceCriteria, type LiveAcceptanceViewDeps } from '../../acceptance-live-requirements';
-
-/** The plan parser, narrowed to the live-view contract (only explicit blocks carry verification). */
-const parseRequirementBarsForLiveView: LiveAcceptanceViewDeps['parseRequirementBars'] = (content) => {
-  const parsed = parseRequirementBars(content);
-  return parsed.ok
-    ? { ok: true, bars: parsed.bars.map((bar) => ({ barKey: bar.barKey, ...(bar.criterion ? { criterion: bar.criterion } : {}) })) }
-    : { ok: false, problems: parsed.problems };
-};
+import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 
 /**
  * P-007 (RSR-P-007-A): the default rubric read is an INDEX — identity, the hashes a
@@ -225,18 +216,8 @@ export default defineTool({
               // was computed on the STORED rubric, whose hashes are the recorded identity; an
               // explicit `revision` read stays an immutable snapshot and is never overlaid.
               if (args.revision === undefined) {
-                const live = await readLiveAcceptanceCriteria(rubric, {
-                  readSubjectPlanContent: async ({ planSlug, harnessSlug }) => {
-                    const { getPlanRow } = await import('../plans/source');
-                    const row = await getPlanRow(planSlug, {
-                      ...(harnessSlug ? { harnessSlug } : {}),
-                      ...(identity.workspaceId && identity.workspaceId !== '*' ? { workspaceId: identity.workspaceId } : {}),
-                    });
-                    return row ? { content: row.content, version: row.version } : null;
-                  },
-                  parseRequirementBars: (content) => parseRequirementBarsForLiveView(content),
-                });
-                const liveShaped = full ? { rubric: { ...rubric, criteria: live.criteria } } : shaped;
+                const live = await resolveLiveAcceptanceRubric(rubric, identity.workspaceId);
+                const liveShaped = full ? { rubric: live.rubric } : shaped;
                 return { ok: true as const, rubricRef, ...liveShaped, vetting, liveRequirements: live.status };
               }
               return { ok: true as const, rubricRef, ...shaped, vetting };

@@ -73,6 +73,9 @@ const sha256 = (file: string) => createHash('sha256').update(readFileSync(file))
 const output = (run: SpawnSyncReturns<string>) => `status=${run.status}\n--- stdout\n${run.stdout}\n--- stderr\n${run.stderr}`;
 
 function packageAt(sha: string, out: string, targetDir?: string): PackageResult {
+  // Pinned archives need no build toolchain; validate dependencies only when
+  // actually packaging, against the generation that will be built.
+  assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, sha));
   const run = spawnSync(PACKAGER, ['--target', TARGET, '--sha', sha, '--out', out], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, ...PACKAGING_SECRETS, ...(targetDir ? { PUI_PACKAGE_TARGET_DIR: targetDir } : {}) },
@@ -330,7 +333,6 @@ beforeAll(async () => {
     symlinkSync(execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(TOOLS, tool));
   }
   NO_OPERATOR_PORT = await closedPort();
-  assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, HEAD));
   B = pinned ?? packageAt(HEAD, path.join(WORK, 'dist-b'));
 }, 2 * BUILD_TIMEOUT_MS);
 

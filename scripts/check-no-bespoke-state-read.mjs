@@ -575,8 +575,13 @@ export function judgeToolDef(row) {
  * ⚠ If you are here because the gate just went red on this: the fix is P-020
  * (retire the tools onto cells), or an explicit, recorded decision to move the
  * date. It is NOT to delete the check.
+ *
+ * Moved ONCE, 2026-10-25 -> 2026-11-24, by gate-systems-as-designed-2026-10-27#D-005:
+ * the date passed with 45 tools still grandfathered (P-020 closed without emptying
+ * BASELINE) and the leg held the frozen release candidate red by calendar alone.
+ * Emptying BASELINE before the new date is tracked as its own work item.
  */
-export const BASELINE_REVIEW_BY = '2026-10-25';
+export const BASELINE_REVIEW_BY = '2026-11-24';
 
 export const BASELINE = new Set([
   'accounts:link-status',

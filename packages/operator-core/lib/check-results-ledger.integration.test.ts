@@ -21,6 +21,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
+import * as instruments from './rubric-instrument-registry';
 import { rescoreRubric, type RubricRescoreDeps } from './harness/routines/rubric-rescore-action';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
@@ -57,6 +58,40 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+it('retains subject-specific platform measurements through the real ledger without exposing them as workspace totals', async () => {
+  const key = 'code-intel:native-adoption-good-use';
+  const registered = instruments.getRegisteredInstrument(key);
+  if (registered?.evaluator !== 'platform' || !registered.rescore) throw new Error('fixture instrument unavailable');
+  const lookup = vi.spyOn(instruments, 'getRegisteredInstrument').mockReturnValue({ ...registered,
+    rescore: { ...registered.rescore, scope: 'subject' } });
+  const rubricRef = 'subject-platform-roundtrip';
+  try {
+    const results = [];
+    for (const ref of ['PER-a', 'PER-b']) {
+      results.push(...await runInstrumentChecks({ rubricRef, workspaceId: WS, subject: { kind: 'person', ref },
+        criteria: [{ key: 'usage', check: { kind: 'instrument', instrumentKey: key } }],
+        now: () => Date.parse('2026-10-27T01:00:00.000Z'),
+        resolvePlatform: async window => ({ verdict: 'pass', value: window.subject!.ref === 'PER-a' ? 80 : 20,
+          detail: `retained-fixture-source:${window.subject!.ref}` }),
+      }));
+    }
+    await recordRubricCheckResults(results, SCOPE, sql());
+    for (const [ref, value] of [['PER-a', 80], ['PER-b', 20]] as const) {
+      const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, subject: { kind: 'person', ref } }, sql());
+      const row = latest.get('usage:instrument')!;
+      expect(row.check.value).toBe(value);
+      expect(row.provenanceStatus).toBe('retained');
+      expect(JSON.parse(row.check.provenance!.procedure.snapshot).window.subject.ref).toBe(ref);
+      expect(row.check.provenance!.diagnostics).toContainEqual({ path: '$["value"]', value });
+    }
+    expect(await readLatestRubricCheckResults({ rubricRef, workspaceId: WS }, sql())).toEqual(new Map());
+    expect(await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, subject: { kind: 'person', ref: 'PER-missing' } }, sql()))
+      .toEqual(new Map());
+    expect(await readLatestRubricCheckResults({ rubricRef, workspaceId: OTHER_WS, subject: { kind: 'person', ref: 'PER-a' } }, sql()))
+      .toEqual(new Map());
+  } finally { lookup.mockRestore(); }
 });
 
 function sqlProbe(expectValue: number) {
@@ -121,7 +156,8 @@ describe('R-6 — every executed probe or instrument check writes one row to the
     };
     try {
       const outcome = await rescoreRubric({ rubricRef, workspaceId: OTHER_WS, harnessSlug: 'papercusp' }, deps);
-      expect(measure).toHaveBeenCalledWith({ workspaceId: WS, windowStart: '2026-10-10T04:00:00.000Z', windowEnd: at });
+      expect(measure).toHaveBeenCalledWith({ workspaceId: WS, harnessSlug: 'papercusp',
+        windowStart: '2026-10-10T04:00:00.000Z', windowEnd: at });
       expect(outcome.executed).toBe(1);
       expect(outcome.crossings).toEqual([{ rubricRef, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: outcome.testRunIds[0] }]);
       expect(emit).toHaveBeenCalledTimes(1);
@@ -172,7 +208,14 @@ describe('R-6 — every executed probe or instrument check writes one row to the
       [rubricCheckLedgerPath(RUBRIC, 'r-2:1'), RUBRIC_CHECK_FRAMEWORK, 'fail'],
     ]);
     const checks = rows.map((r) => parseTestRunExecutionDetails(r.execution_details)?.check);
-    expect(checks[0]).toEqual({ id: 'r-1:0', rubricRef: RUBRIC, criterionKey: 'r-1', kind: 'probe', value: 1, unit: null });
+    expect(checks[0]).toEqual({ id: 'r-1:0', rubricRef: RUBRIC, criterionKey: 'r-1', kind: 'probe', value: 1, unit: null,
+      provenance: expect.objectContaining({ schemaVersion: 1, truncated: false, redacted: false,
+        gaps: ['transaction-clock-unavailable'],
+        diagnostics: expect.arrayContaining([{ path: '$["rowCount"]', value: 1 }]),
+      }),
+    });
+    expect(JSON.parse(checks[0]!.provenance!.procedure.snapshot)).toMatchObject({ kind: 'sql', sql: 'SELECT 1 AS n',
+      expect: { path: '$.rowCount', op: 'eq', value: 1 } });
     expect(checks[2]).toMatchObject({ id: 'r-2:1', criterionKey: 'r-2', value: 1 });
     expect(rows[2]!.output_tail).toMatch(/did not match/);
 

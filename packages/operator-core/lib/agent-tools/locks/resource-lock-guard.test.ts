@@ -10,7 +10,8 @@ vi.mock('./su-lock-store', () => ({
   getTxPool: vi.fn(() => ({})),
   listLiveResourceDomains: vi.fn(async () => []),
   readResourceQueue: vi.fn(async () => ({ holders: [] })),
-  tryAcquireResource: vi.fn(),
+  acquireSharedResourceAtomic: vi.fn(),
+  releaseSharedResourceAtomic: vi.fn(),
   tryReleaseResource: vi.fn(),
   assertResourceFenceCurrent: vi.fn(),
 }));
@@ -24,13 +25,14 @@ vi.mock('./identity', () => ({ readIdentity: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 import { inWorkspaceTxn } from './in-workspace-txn';
-import { tryAcquireResource, tryReleaseResource } from './su-lock-store';
+import { acquireSharedResourceAtomic, releaseSharedResourceAtomic, tryReleaseResource } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { guardResource } from './resource-lock-guard';
 
 const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 const txnM = vi.mocked(inWorkspaceTxn);
-const sharedAcquireM = vi.mocked(tryAcquireResource);
+const sharedAcquireM = vi.mocked(acquireSharedResourceAtomic);
+const sharedReleaseM = vi.mocked(releaseSharedResourceAtomic);
 const releaseM = vi.mocked(tryReleaseResource);
 const exclusiveAcquireM = vi.mocked(acquireResourceExclusiveWithWait);
 
@@ -57,6 +59,7 @@ beforeEach(() => {
   );
   sharedAcquireM.mockReset();
   releaseM.mockReset();
+  sharedReleaseM.mockReset();
   exclusiveAcquireM.mockReset();
 });
 
@@ -125,11 +128,7 @@ describe('guardResource host-global exclusion handling', () => {
     sharedAcquireM.mockResolvedValueOnce({
       ok: true,
       lock_id: 'incumbent-lock',
-      mode: 'shared',
-      status: 'held',
       expires_ts: new Date('2026-10-18T19:00:00.000Z'),
-      shared_holders: [],
-      fence_seq: 0,
       reused: true,
     });
     const run = vi.fn(async () => 'completed');
@@ -149,5 +148,27 @@ describe('guardResource host-global exclusion handling', () => {
     expect(result).toEqual({ acquired: true, result: 'completed', lock_id: 'incumbent-lock' });
     expect(run).toHaveBeenCalledOnce();
     expect(releaseM).not.toHaveBeenCalled();
+    expect(sharedReleaseM).not.toHaveBeenCalled();
+  });
+
+  it('releases a newly acquired shared lease when the protected body fails', async () => {
+    sharedAcquireM.mockResolvedValueOnce({
+      ok: true,
+      lock_id: 'new-lock',
+      expires_ts: new Date('2026-10-25T20:00:00.000Z'),
+      reused: false,
+    });
+    sharedReleaseM.mockResolvedValueOnce({ released: 1, expired: false });
+    const failure = new Error('protected operation failed');
+
+    await expect(guardResource({
+      coordinationDomain: 'papercusp-host-global', ownerId: 'su-caller', ownerLabel: 'caller',
+      coordIdentity: { ownerId: 'su-caller' } as never, resource: 'dev-server', mode: 'shared',
+    }, async () => { throw failure; })).rejects.toBe(failure);
+
+    expect(sharedReleaseM).toHaveBeenCalledWith({
+      coordinationDomain: 'papercusp-host-global', resource: 'dev-server', owner: 'su-caller', lockId: 'new-lock',
+    });
+    expect(txnM).not.toHaveBeenCalled();
   });
 });

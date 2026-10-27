@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10005889",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "commitSha": "04d1673643f0b05554e6cf63cb8b4b75bf3efbd5",
+  "reason": "Pinned package.json and package-lock.json changed since a33007fa78315a38df729f32110f6735f67ae465; the named transport implementation, tooldef index and patch bytes did not change.",
+  "driver": "scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=04d1673643f0b05554e6cf63cb8b4b75bf3efbd5 -- <two recorded test paths>",
+  "reporterSink": "Explicit resolveScriptPgUrl().url, outside private test PG; no credential retained.",
+  "state": "/tmp/gf-p002-protocol-refresh-20261025-v2.state.json",
+  "log": "/tmp/gf-p002-protocol-refresh-20261025-v2.log",
+  "exit": 0,
+  "proof": [
+    {"testRunId": 22067771, "path": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts", "passed": 376, "failed": 0, "skipped": 0, "dirty": false, "collectionFailed": false, "oldBinding": 69338, "replacement": 70557, "declaredCases": 9, "missingDeclaredCases": [], "recipeEqual": true, "adequacyEqual": true, "independentCurrentness": "current"},
+    {"testRunId": 22067770, "path": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts", "passed": 3, "failed": 0, "skipped": 0, "dirty": false, "collectionFailed": false, "oldBinding": 69332, "replacement": 70558, "declaredCases": 3, "missingDeclaredCases": [], "recipeEqual": true, "adequacyEqual": true, "independentCurrentness": "current"}
+  ],
+  "ordering": "Canonical clean runs and complete declared-case membership verified; replacements bound; independent currentness and identical recipes/adequacy verified; only then exact stale predecessors retired.",
+  "limits": "Controlled transport source/fixture proof only. Original native28326/28545 and retained69704/69782 preserved. Actor, lease ABA, custody, cohort, independent acceptance and shipment remain open. Reporter EI-26900834772734276 root cause remains unknown. No launcher, host or attribution-mutant replay."
+}

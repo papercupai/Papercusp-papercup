@@ -14,6 +14,7 @@
  * so the invariant `needsHuman === (tier === 'decision')` holds for every item.
  */
 
+import { createHash } from 'node:crypto';
 import { type Importance } from '@papercusp/plan-parser';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
 import {
@@ -945,7 +946,18 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
   const actionability = ownerGateActionability(w.actionability, w.livenessState, w.status);
   const projectedStatus = ownerGateStatus(actionability, w.livenessState, w.status);
   const tier: AttentionTier = actionability === 'actionable' ? 'decision' : 'alert';
-  const idPart = w.ref ?? w.ownerId ?? w.claim;
+  // Loop carry-note walls have no durable row id. Their attention id is also
+  // the persisted triage key, so owner/ref alone lets an old claim's triage
+  // suppress a replacement claim from the same loop. Bind that key to a stable
+  // version of the wall's claim and recheck text; keep established ids for the
+  // work-item and standing-fact sources, which already have durable refs.
+  const idPart =
+    w.source === 'loop-carry-note'
+      ? `claim-v1-${createHash('sha256')
+          .update(JSON.stringify([w.ownerId, w.ref ?? null, w.claim, w.recheck ?? null]))
+          .digest('hex')
+          .slice(0, 24)}`
+      : (w.ref ?? w.ownerId ?? w.claim);
   const hours = w.waitingHours ?? 0;
   const workItemSource = w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
   const standingFactSource = w.source === 'standing-fact' && Boolean(w.factScope) && Boolean(w.factKey?.trim());

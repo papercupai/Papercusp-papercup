@@ -27,6 +27,7 @@ import { ACTIONABLE_CONDITION_PREFIXES, FROZEN_REPAIR_LEG_CONDITION_PREFIX } fro
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { readRoutinePause } from './harness/routines/release-pause-ttl';
+import type { GreenMainSloBreachMetric } from './release/green-main-slo';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -501,6 +502,79 @@ export function admittedWhereSql(sql: OrgSql, qualifier?: 'wi' | 'ei') {
  */
 export function admittedWhereSqlWi(sql: OrgSql) {
   return admittedWhereSql(sql, 'wi');
+}
+
+/**
+ * EI-26988974367709614 — the ONE admission ACTIONABILITY contract, shared by ordinary
+ * self-select ({@link admissionHoldExclusionSql}, a claim floor beside `ok_admission`) and
+ * by the work-item resume packet (`agent-tools/work_items/resume.ts`). Before this the two
+ * disagreed: {@link admittedWhereSql} served every non-pending row, including a fail-open
+ * `unreviewed` row the promoter had since HELD, while resume told whoever claimed it not to
+ * act. Measured on Luna Max 2026-10-26: 380 open held rows; members claimed them, were told
+ * not to act, released, and the next member re-claimed them (WI-6554700010029608).
+ *
+ * The two payload facts, and what each means for an implementation worker:
+ *
+ * - `payload.admissionHold` (any value but null/false): the LIVE promoter judged the row and
+ *   chose not to promote it — a protected twin it cannot judge yet (`deferred: twin …`), a
+ *   claimed canonical (`claimed re-review`), a recurrence-identity guard, or an ambiguous
+ *   duplicate. NOT actionable: working it risks duplicating the twin's work. The promoter
+ *   lifts the hold when it promotes or merges the row, so the row returns to the queue on its
+ *   own. The fail-open rationale above ("a dead promoter must never starve the queue") does
+ *   not cover a hold: a hold is a verdict from a promoter that is alive.
+ * - `payload.admissionReview.state = 'pending'` WITHOUT a hold: the plain fail-open case — a
+ *   post-hoc duplicate review that runs alongside the work. Actionable by design (the
+ *   `'unreviewed'` doc above); the caller is only cautioned that a later merge verdict ends it.
+ *
+ * Claim-by-id stays open, as for every self-select floor: the floor removes held rows from
+ * opportunistic pulls, and the resume packet tells a named claimant why not to act.
+ */
+export function isAdmissionHoldActive(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const hold = (payload as Record<string, unknown>).admissionHold;
+  return hold !== null && hold !== undefined && hold !== false;
+}
+
+export type AdmissionActionability =
+  | { actionable: true; caution: string | null }
+  | { actionable: false; reason: string };
+
+/** JS form of the contract above, for an already-loaded row. */
+export function admissionActionability(payload: unknown): AdmissionActionability {
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {};
+  const review = record.admissionReview && typeof record.admissionReview === 'object'
+    && !Array.isArray(record.admissionReview)
+    ? record.admissionReview as Record<string, unknown> : {};
+  const pendingReview = review.state === 'pending';
+  if (isAdmissionHoldActive(record)) {
+    return {
+      actionable: false,
+      reason: pendingReview
+        ? 'A live admission review is pending and an admission hold remains; do not follow the stored checkpoint action.'
+        : 'A live admission hold remains; do not follow the stored checkpoint action.',
+    };
+  }
+  return pendingReview
+    ? {
+      actionable: true,
+      caution: 'A post-hoc duplicate review is pending on this fail-open row; work may proceed, ' +
+        'but stop if the promoter merges it into a canonical item.',
+    }
+    : { actionable: true, caution: null };
+}
+
+/**
+ * SQL twin of {@link isAdmissionHoldActive}, as a self-select floor: TRUE iff the row carries
+ * NO active admission hold. A NULL payload or a missing/JSON-null/false hold passes, matching
+ * the JS twin value-for-value. `payloadCol` is a closed literal union, never caller input.
+ */
+export function admissionHoldExclusionSql(
+  sql: OrgSql,
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' | 'target.payload' = 'wi.payload',
+) {
+  return sql`COALESCE(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'admissionHold', 'null'::jsonb)
+    IN ('null'::jsonb, 'false'::jsonb)`;
 }
 
 /**
@@ -1036,10 +1110,78 @@ export const GATE_RED_STREAK_CONDITION_PREFIX = 'gate-red-streak:';
  * opportunistic self-select: exactly one registered gate fixer claims it by id.
  *
  * Keep this list intentionally narrower than ACTIONABLE_CONDITION_PREFIXES.
- * Most actionable alarms are normal repair work; only these two prefixes carry
- * the live gate-control-plane exclusivity contract (release/gate-red-ownership).
+ * Most actionable alarms are normal repair work; only these two prefixes (plus the
+ * live-gate green-main-slo metrics below) carry the live gate-control-plane
+ * exclusivity contract (release/gate-red-ownership).
  */
 export const LIVE_GATE_OPS_CONDITION_PREFIXES = [GATE_RED_STREAK_CONDITION_PREFIX, 'green-stall:'] as const;
+
+/**
+ * Key prefix of the green-main-slo watchdog's alarm items. The full key is
+ * `alarm:green-main-slo:` + encodeURIComponent(JSON.stringify([workspace, install,
+ * metric, episode, subject])) — built by greenMainSloConditionKey in
+ * release/green-main-slo-watchdog.ts, whose real output the tests pin against.
+ */
+export const GREEN_MAIN_SLO_CONDITION_PREFIX = 'alarm:green-main-slo:';
+
+/**
+ * Which green-main-slo breach metrics are LIVE_GATE_OPS. EI-27062367026577459: these
+ * alarm rows were bridge-minted as ordinary bugs, so self-select handed them to generic
+ * fleet members who each claimed, found the gate held by its live fixer, and released.
+ * One row took 18 claims from 7 holders in 6h. An exhaustive Record so a new metric is
+ * a compile-time decision, never a silent default.
+ *  - time-since-green / time-since-verdict: the gate has no green or no verdict; greening
+ *    and re-running it is the live fixer's job.
+ *  - red-adding-admission / round-cycle-time / queue-idle: the subject is the frozen
+ *    repair-queue candidate, so the remedy is repair-queue mutation.
+ *  - per-sync-red-rate: the subject is a sync fleet whose commits add reds; that is
+ *    ordinary repair work for the fleet, not the gate's control plane.
+ *  - non-verdict-reason: the watchdog files these as reason items ASSIGNED to the live
+ *    gate owner; the alarm row records why runs fail to conclude (GATE_SYSTEM_DEV).
+ * The watchdog resolves each alarm itself on measured recovery, so a reserved row
+ * never needs a self-selecting claimant to close.
+ */
+const GREEN_MAIN_SLO_METRIC_IS_LIVE_GATE_OPS: Readonly<Record<GreenMainSloBreachMetric, boolean>> = {
+  'time-since-green': true,
+  'time-since-verdict': true,
+  'red-adding-admission': true,
+  'round-cycle-time': true,
+  'queue-idle': true,
+  'per-sync-red-rate': false,
+  'non-verdict-reason': false,
+};
+
+export const LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS: readonly GreenMainSloBreachMetric[] = (
+  Object.keys(GREEN_MAIN_SLO_METRIC_IS_LIVE_GATE_OPS) as GreenMainSloBreachMetric[]
+).filter((metric) => GREEN_MAIN_SLO_METRIC_IS_LIVE_GATE_OPS[metric]);
+
+/** The metric's encoded slot inside a green-main-slo key: `,"<metric>",` (third array element). */
+const greenMainSloMetricNeedle = (metric: string): string => encodeURIComponent(`,"${metric}",`);
+
+/** Escape LIKE metacharacters for Postgres' default backslash escape. */
+const likeLiteral = (text: string): string => text.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+/**
+ * The LIKE patterns the reservation floor excludes from self-select: every
+ * LIVE_GATE_OPS singleton prefix, plus one pattern per live-gate green-main-slo metric.
+ * The encoded key itself contains `%`, so each literal segment is escaped.
+ */
+export function liveGateOpsReservedPatterns(): string[] {
+  return [
+    ...LIVE_GATE_OPS_CONDITION_PREFIXES.map((prefix) => `${likeLiteral(prefix)}%`),
+    ...LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS.map(
+      (metric) => `${likeLiteral(GREEN_MAIN_SLO_CONDITION_PREFIX)}%${likeLiteral(greenMainSloMetricNeedle(metric))}%`,
+    ),
+  ];
+}
+
+/** JS form of {@link liveGateOpsSelfSelectExclusionSql}'s reservation (TRUE = reserved). */
+export function isLiveGateOpsConditionKey(conditionKey: string | null | undefined): boolean {
+  if (!conditionKey) return false;
+  if (LIVE_GATE_OPS_CONDITION_PREFIXES.some((prefix) => conditionKey.startsWith(prefix))) return true;
+  return conditionKey.startsWith(GREEN_MAIN_SLO_CONDITION_PREFIX) &&
+    LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS.some((metric) => conditionKey.includes(greenMainSloMetricNeedle(metric)));
+}
 
 /**
  * TRUE means an issue row may survive the LIVE_GATE_OPS reservation floor.
@@ -1048,17 +1190,17 @@ export const LIVE_GATE_OPS_CONDITION_PREFIXES = [GATE_RED_STREAK_CONDITION_PREFI
  * registered live gate fixer acquires the singleton.
  */
 export function liveGateOpsSelfSelectExclusionSql(sql: OrgSql) {
-  const reservedPatterns = LIVE_GATE_OPS_CONDITION_PREFIXES.map((prefix) => `${prefix}%`);
   return sql`(
     wi.condition_key IS NULL
-    OR NOT (wi.condition_key LIKE ANY(${reservedPatterns as string[]}::text[]))
+    OR NOT (wi.condition_key LIKE ANY(${liveGateOpsReservedPatterns()}::text[]))
   )`;
 }
 
 /** Static per-id refusal text; unlike stop-the-line, no harness-specific value is needed. */
 export function liveGateOpsSelfSelectExplanation(): string {
   return (
-    'LIVE_GATE_OPS condition singleton (gate-red-streak: or green-stall:) — reserved to the ' +
+    'LIVE_GATE_OPS condition (gate-red-streak: or green-stall: singleton, or an ' +
+    `alarm:green-main-slo: ${LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS.join('/')} alarm) — reserved to the ` +
     'one registered live gate fixer and excluded from opportunistic self-select. A leader/owner ' +
     'may still dispatch or claim it BY ID after checking gate.greenCheckpoint.ownership.'
   );

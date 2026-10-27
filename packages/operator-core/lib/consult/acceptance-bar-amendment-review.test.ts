@@ -202,6 +202,25 @@ describe('routeAcceptanceBarAmendmentReview', () => {
     expect(feedback).not.toHaveBeenCalled();
   });
 
+  it('identifies a blocked independence screen without bypassing it', async () => {
+    let rejectScreen!: (error: Error) => void;
+    const screen = new Promise<{ check: AmendmentReviewerScreen }>((_resolve, reject) => { rejectScreen = reject; });
+    const feedback = vi.fn();
+    const onPhase = vi.fn();
+    const pending = routeAcceptanceBarAmendmentReview(
+      { rubricRef: 'acceptance-x', brief: 'b', identity, workspaceId: 'ws-1', onPhase },
+      { resolveScreen: () => screen, feedback: feedback as never },
+    );
+    try {
+      expect(onPhase).toHaveBeenLastCalledWith('review-screen');
+      expect(feedback).not.toHaveBeenCalled();
+    } finally {
+      rejectScreen(new Error('screen-unavailable'));
+      await expect(pending).rejects.toThrow('screen-unavailable');
+    }
+    expect(feedback).not.toHaveBeenCalled();
+  });
+
   it('registers the amendment policy with one reviewer per attempt', () => {
     expect(selectionPolicy(ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY)).toEqual({ min: 1, max: 1 });
   });
@@ -263,6 +282,27 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(routed.brief).toBe(buildAmendmentReviewBrief({ ...baseInput }));
   });
 
+  it('identifies a pending fresh launch after preserving the screened routing result', async () => {
+    let resolveLaunch!: (value: { state: 'not-launched'; reason: string }) => void;
+    const launch = new Promise<{ state: 'not-launched'; reason: string }>((resolve) => { resolveLaunch = resolve; });
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null,
+      reason: 'all screened out', screenedOut: [] });
+    const launchFresh = vi.fn(() => launch);
+    const onPhase = vi.fn();
+    const pending = openAcceptanceBarAmendmentReview({ ...baseInput, onPhase }, {
+      verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost,
+    });
+    try {
+      await vi.waitFor(() => expect(launchFresh).toHaveBeenCalledTimes(1));
+      expect(onPhase).toHaveBeenLastCalledWith('review-launch');
+      expect(route).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveLaunch({ state: 'not-launched', reason: 'test launch settled' });
+      await expect(pending).resolves.toMatchObject({ previewPostRef: baseInput.previewPostRef,
+        freshReviewer: { state: 'not-launched', reason: 'test launch settled' } });
+    }
+  });
+
   it('carries no routed reference when no eligible reviewer exists', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_qualified_responder', screenedOut: [] });
     const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'launcher screened out' });
@@ -288,7 +328,11 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       hasLaterPost,
     });
 
-    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42' });
+    expect(hasLaterPost).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      previewPostRef: 'thread-post:42',
+      excludeAuthorId: 'su-implementer',
+    });
     expect(launchFresh).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       state: 'no-eligible-reviewer',
@@ -296,6 +340,34 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       freshReviewer: { state: 'not-launched', reason: expect.stringContaining('later thread reply') },
     });
     expect(result.next).toContain('reviewEvidencePost');
+  });
+
+  it('does not treat requester-authored persistence as a prior reviewer reply', async () => {
+    const route = vi.fn().mockResolvedValue({
+      state: 'no-eligible-reviewer',
+      conversationId: null,
+      reason: 'no_available_responder',
+      screenedOut: [],
+    });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'fresh launch attempted' });
+    const hasLaterPost = vi.fn(async (args: { excludeAuthorId?: string }) =>
+      args.excludeAuthorId !== 'su-implementer');
+
+    const result = await openAcceptanceBarAmendmentReview(baseInput, {
+      verifyPreviewPost: vi.fn(),
+      route,
+      launchFresh,
+      hasLaterPost,
+    });
+
+    expect(hasLaterPost).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      previewPostRef: 'thread-post:42',
+      excludeAuthorId: 'su-implementer',
+    });
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+    expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: 'fresh launch attempted' });
+    expect(result.next).not.toContain('later thread reply');
   });
 
   // WI-10003299: an empty menu used to end the review ("re-request later"), so a
@@ -678,7 +750,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     });
   });
 
-  it('launches ONE headless, independent judge under the system principal, never as the requester', async () => {
+  it('launches ONE headless, independent judge on the recruiting runtime under the system principal', async () => {
     const d = deps();
     const result = await launchFreshAmendmentReviewer(input, d as never);
     expect(d.resolveScreen).toHaveBeenCalledWith({ rubricId: 'acceptance-demo', applierId: 'su-implementer' });
@@ -687,6 +759,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(args).toMatchObject({
       harness: 'papercusp',
       headless: true,
+      mcpTarget: 'spawn-host',
       independent: true,
       account: 'auto',
       count: 1,

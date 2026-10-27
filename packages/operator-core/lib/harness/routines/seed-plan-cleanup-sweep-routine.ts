@@ -22,8 +22,7 @@
  *   tsx seed-plan-cleanup-sweep-routine.ts             # seed ACTIVE
  *   tsx seed-plan-cleanup-sweep-routine.ts --inactive  # seed off
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { announceRoutineSeeded } from './seed-routine-announce';
 import { PLAN_CLEANUP_SWEEP } from './plan-cleanup-sweep-action';
@@ -35,42 +34,31 @@ const TARGET_ROLE = `system:${NAME}`;
 /** sec min hour dom mon dow — daily at 09:41:17 host-local (not UTC; see the header). */
 const CRON = '17 41 9 * * *';
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const id = `rt_${SLUG}_${NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, max_plans: MAX_RUN_PLANS };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       payload_template, concurrency, catchup, active, tier, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${NAME}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            ${TARGET_ROLE}, '{}'::jsonb, 'skip', 'skip-old', ${active}, 'durable', now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      payload_template = EXCLUDED.payload_template,
-      tier = EXCLUDED.tier,
-      workspace_id = EXCLUDED.workspace_id,
-      -- active intentionally NOT re-applied on conflict: a re-seed must never
-      -- clobber an operator's runtime pause/resume.
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-plan-cleanup-sweep-routine] seeded "${NAME}" for "${SLUG}" ` +
-      `(ws=${ws}, active=${active}, tier=durable, cron=${CRON}, max_plans=${MAX_RUN_PLANS}).`,
-  );
-  announceRoutineSeeded(
-    'seed-plan-cleanup-sweep-routine',
-    'packages/operator-core/lib/harness/routines/plan-cleanup-sweep-action.ts',
-  );
-  await sql.end({ timeout: 5 });
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error('[seed-plan-cleanup-sweep-routine] FAILED:', error instanceof Error ? error.message : error);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-plan-cleanup-sweep-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const triggerConfig = { cron: CRON, max_plans: MAX_RUN_PLANS };
+    return {
+      installSlug: SLUG,
+      name: NAME,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: TARGET_ROLE,
+      tier: 'durable' as const,
+      payloadTemplate: '{}',
+      updatePayload: true,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, triggerConfig }) => {
+    console.log(
+        `[seed-plan-cleanup-sweep-routine] seeded "${NAME}" for "${SLUG}" ` +
+          `(ws=${ws}, active=${active}, tier=durable, cron=${CRON}, max_plans=${MAX_RUN_PLANS}).`,
+      );
+    announceRoutineSeeded(
+        'seed-plan-cleanup-sweep-routine',
+        'packages/operator-core/lib/harness/routines/plan-cleanup-sweep-action.ts',
+      );
+    await sql.end({ timeout: 5 });
+  },
+});

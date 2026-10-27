@@ -2255,6 +2255,27 @@ describe('owner directives in the brief (EI-11484)', () => {
     expect(focus.indexOf('OPEN OWNER DIRECTIVES')).toBeLessThan(focus.indexOf('zombie-pids-wall'));
     expect(focus).not.toContain('ship it now'); // pointers, not copies
   });
+
+  it.each([true, false])('the focus excludes foreign directive pointers after a carry round trip (own=%s)', async (includeOwn) => {
+    const own = { ...directive(4, 'finish my request'), sessionRef: 'older-source-session' };
+    // A transcript reference matching the viewer does not grant directive ownership.
+    const foreign = { ...directive(462, 'peer request'), recordedBy: 'su-peer', sessionRef: 'su-abc' };
+    const brief = await buildCarryBrief('su-abc', fullOpts({
+      listOpenDirectivesFn: async () => ({
+        rows: includeOwn ? [own, foreign] : [foreign],
+        totalOpen: includeOwn ? 2 : 1,
+      }),
+    }));
+    const restored = JSON.parse(JSON.stringify(brief)) as CarryBrief;
+    const focus = renderCarryBriefFocus(restored);
+    expect(focus).not.toContain('#462');
+    expect(focus).not.toContain('peer request');
+    if (includeOwn) {
+      expect(focus).toContain('OPEN OWNER DIRECTIVES #4');
+    } else {
+      expect(focus).not.toContain('OPEN OWNER DIRECTIVES');
+    }
+  });
 });
 
 describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)', () => {

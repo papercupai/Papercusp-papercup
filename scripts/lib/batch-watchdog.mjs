@@ -260,6 +260,139 @@ export function createProgressAwareWatchdog({
   };
 }
 
+/** @typedef {Readonly<{status:'ready', startedAtMs:number, callerDeadlineEpochMs:number|null,
+ * executionCutoffEpochMs:number, yieldDeadlineEpochMs:number, cleanupDeadlineEpochMs:number,
+ * orphanDeadlineEpochMs:number}>} QualificationYieldBudget */
+/** @typedef {Readonly<{identity:string, completedUnitIds:readonly string[], pendingUnitIds:readonly string[],
+ * newCompletionIds:readonly string[], budget:QualificationYieldBudget}>} QualificationYieldProgress */
+
+/** Absolute clocks for one physical qualification quantum. Progress and successors
+ * cannot move the caller deadline. Persistence and cleanup precede the OS fuse.
+ * @param {{startedAtMs:number, quantumMs:number, orphanDeadlineEpochMs:number,
+ * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
+ * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ */
+export function resolveQualificationYieldBudget({ startedAtMs, quantumMs, orphanDeadlineEpochMs,
+  deadlineEpochMs = null, cleanupReserveMs = 120_000, yieldReserveMs = 15_000 }) {
+  const refused = reason => Object.freeze({ status: 'refused', reason });
+  if (![startedAtMs, quantumMs, orphanDeadlineEpochMs, cleanupReserveMs, yieldReserveMs]
+    .every(value => Number.isSafeInteger(value) && value >= 0) ||
+      quantumMs === 0 || cleanupReserveMs === 0 || yieldReserveMs === 0 ||
+      (deadlineEpochMs !== null && (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= 0)) ||
+      !Number.isSafeInteger(startedAtMs + quantumMs)) return refused('invalid-policy');
+  const cleanupDeadlineEpochMs = Math.min(deadlineEpochMs ?? Infinity, orphanDeadlineEpochMs);
+  const yieldDeadlineEpochMs = cleanupDeadlineEpochMs - cleanupReserveMs;
+  const executionCutoffEpochMs = Math.min(startedAtMs + quantumMs, yieldDeadlineEpochMs - yieldReserveMs);
+  if (executionCutoffEpochMs <= startedAtMs) return refused('deadline-reserve-exhausted');
+  return Object.freeze({ status: 'ready', startedAtMs, callerDeadlineEpochMs: deadlineEpochMs,
+    executionCutoffEpochMs, yieldDeadlineEpochMs: executionCutoffEpochMs + yieldReserveMs,
+    cleanupDeadlineEpochMs, orphanDeadlineEpochMs });
+}
+
+/** Read through the existing custody validator, then store the yield before ACK.
+ * Output grants no progress; this policy grants no PASS/reuse authority. The store
+ * adapter must authenticate the frozen identity and terminal receipts. Independent
+ * worker timers prevent a healthy peer from refreshing a stalled worker's bound.
+ * @param {{budget:QualificationYieldBudget, identity:string, unitIds:string[],
+ * baselineReceipts?:Array<{unitId:string, completionId:string}>,
+ * readDurableProgress:(signal:AbortSignal)=>Promise<{status:string, identity?:string,
+ * receipts?:Array<{unitId:string, completionId:string, state:string, observedAtMs:number}>}>,
+ * commitYield:(progress:QualificationYieldProgress, signal:AbortSignal)=>Promise<boolean>,
+ * onYield?:(progress:QualificationYieldProgress)=>void,
+ * onKill:(decision:{reason:string, workerId?:string})=>void,
+ * now?:()=>number, setTimer?:(fn:()=>void, ms:number)=>any, clearTimer?:(handle:any)=>void}} input
+ */
+export function createQualificationYieldBoundary({ budget, identity, unitIds, baselineReceipts = [],
+  readDurableProgress, commitYield, onYield = () => {}, onKill,
+  now = () => Date.now(), setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout }) {
+  if (budget?.status !== 'ready' || !Object.isFrozen(budget) || typeof identity !== 'string' || !identity ||
+      !Array.isArray(unitIds) || !unitIds.length || new Set(unitIds).size !== unitIds.length ||
+      unitIds.some(id => typeof id !== 'string' || !id) ||
+      typeof readDurableProgress !== 'function' || typeof commitYield !== 'function' || typeof onKill !== 'function')
+    throw new TypeError('Invalid qualification yield boundary');
+  const units = [...unitIds];
+  const selected = new Set(units), baseline = new Map(), baselineIds = new Set();
+  for (const receipt of baselineReceipts) {
+    if (!selected.has(receipt?.unitId) || baseline.has(receipt.unitId) ||
+        typeof receipt.completionId !== 'string' || !receipt.completionId || baselineIds.has(receipt.completionId))
+      throw new TypeError('Invalid qualification baseline');
+    baseline.set(receipt.unitId, receipt.completionId); baselineIds.add(receipt.completionId);
+  }
+  const cancellation = new AbortController(), timers = new Set(), workers = new Map();
+  let state = 'running';
+  const arm = (fn, at) => {
+    const timer = setTimer(() => { timers.delete(timer); fn(); }, Math.max(0, at - now()));
+    timers.add(timer); timer?.unref?.(); return timer;
+  };
+  const clear = () => { for (const timer of timers) clearTimer(timer); timers.clear(); workers.clear(); };
+  const active = () => state === 'running' || state === 'persisting';
+  const kill = (reason, workerId = undefined) => {
+    if (!active()) return;
+    state = 'killed'; cancellation.abort(); clear();
+    onKill({ reason, ...(workerId ? { workerId } : {}) });
+  };
+  const boundary = async () => {
+    if (!active()) return;
+    if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+    state = 'persisting';
+    arm(() => kill('yield-deadline'), budget.yieldDeadlineEpochMs);
+    try {
+      const observed = await readDurableProgress(cancellation.signal);
+      if (!active()) return;
+      if (observed?.status !== 'ready' || observed.identity !== identity || !Array.isArray(observed.receipts)) {
+        kill('durable-progress-unmeasured'); return;
+      }
+      const completed = new Map(), completionIds = new Set();
+      for (const receipt of observed.receipts) {
+        if (!selected.has(receipt?.unitId) || completed.has(receipt.unitId) ||
+            typeof receipt.completionId !== 'string' || !receipt.completionId || completionIds.has(receipt.completionId) ||
+            !['pass', 'fail', 'infra'].includes(receipt.state) ||
+            !Number.isSafeInteger(receipt.observedAtMs) || receipt.observedAtMs > now() ||
+            (baseline.get(receipt.unitId) !== receipt.completionId &&
+              (baselineIds.has(receipt.completionId) || receipt.observedAtMs < budget.startedAtMs))) {
+          kill('durable-progress-invalid'); return;
+        }
+        completed.set(receipt.unitId, receipt); completionIds.add(receipt.completionId);
+      }
+      if ([...baseline.keys()].some(id => !completed.has(id))) { kill('durable-progress-regressed'); return; }
+      const fresh = [...completed.values()].filter(receipt => baseline.get(receipt.unitId) !== receipt.completionId);
+      if (!fresh.length) { kill('durable-progress-stalled'); return; }
+      const progress = Object.freeze({ identity,
+        completedUnitIds: Object.freeze([...completed.keys()]),
+        pendingUnitIds: Object.freeze(units.filter(id => !completed.has(id))),
+        newCompletionIds: Object.freeze(fresh.map(receipt => receipt.completionId)), budget });
+      if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+      const committed = await commitYield(progress, cancellation.signal);
+      if (!active()) return;
+      if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+      if (committed !== true) { kill('yield-not-durable'); return; }
+      state = 'yielded'; clear(); onYield(progress);
+    } catch { kill('yield-unreadable'); }
+  };
+  arm(() => { void boundary(); }, budget.executionCutoffEpochMs);
+  return {
+    get state() { return state; },
+    get signal() { return cancellation.signal; },
+    workerStarted(workerId, timeoutMs) {
+      if (!active() || state !== 'running' || now() >= budget.executionCutoffEpochMs) return false;
+      if (typeof workerId !== 'string' || !workerId || workers.has(workerId) ||
+          !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('Invalid qualification worker');
+      const at = now() + timeoutMs;
+      if (!Number.isSafeInteger(at)) throw new TypeError('Invalid qualification worker deadline');
+      // The quantum owns equal deadlines; no worker/output event can extend it.
+      const timer = at < budget.executionCutoffEpochMs ? arm(() => kill('worker-stalled', workerId), at) : null;
+      workers.set(workerId, timer); return true;
+    },
+    workerFinished(workerId) {
+      if (!workers.has(workerId)) return false;
+      const timer = workers.get(workerId);
+      if (timer !== null) { clearTimer(timer); timers.delete(timer); }
+      workers.delete(workerId); return true;
+    },
+    stop() { if (!active()) return; state = 'stopped'; cancellation.abort(); clear(); },
+  };
+}
+
 /**
  * Did THIS `spawnSync` result come from our own batch-level watchdog kill,
  * rather than the child's own normal exit or an unrelated external signal

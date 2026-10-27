@@ -63,6 +63,8 @@ import {
   hostDumpStatusPath,
   probeSystemIdentifier,
   readHostDumpStatus,
+  type HostDumpCoverage,
+  type HostDumpStatus,
 } from './host-dump-coverage';
 
 // Keep the hot-state dump bounded and restorable. A full database dump on the
@@ -158,9 +160,12 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
 const GUARD_LOCK_WAIT_TIMEOUT_SEC = PG_DUMP_TIMEOUT_MS / 1000;
-// Let the guard's own flock timeout report and exit before this backstop fires.
-const GUARD_READINESS_TIMEOUT_MS = PG_DUMP_TIMEOUT_MS + 5_000;
+// The guard can spend one bounded interval waiting for the Kopia flock, then
+// another bounded interval waiting for migration admission after READY.
+const GUARD_READINESS_TIMEOUT_MS = GUARD_LOCK_WAIT_TIMEOUT_SEC * 1000 + PG_DUMP_TIMEOUT_MS + 5_000;
 const GUARD_READY_SIGNAL = 'KOPIA_BACKUP_GUARD_READY\n';
+const GUARD_ACK_PROCEED = 'PROCEED';
+const GUARD_ACK_SKIP = 'SKIP';
 // Keep the database-side cancellation ahead of the Node watchdog. Killing the
 // client alone can leave pg_dump's backend holding its transaction lock until
 // PostgreSQL notices the broken connection (EI-21363741549000811).
@@ -364,6 +369,14 @@ export interface PreSnapshotHookResult {
   skipped?: string;
 }
 
+/** Lock-order callbacks used only by the guarded Linux dump path. */
+export interface PreSnapshotHookHandshake {
+  /** Release any scheduler-probed migration lock immediately before waiting for the shared flock. */
+  beforeGuardWait?: () => Promise<void>;
+  /** Reacquire the migration lock after READY; late completion remains owned by the snapshot lifecycle. */
+  onGuardReady?: (signal: AbortSignal) => Promise<void>;
+}
+
 /**
  * Space the dump needs, plus a margin — sized to the WORK, never to the disk.
  *
@@ -510,13 +523,19 @@ export async function reapDeadDumpTempFiles(outPath: string): Promise<number> {
   return removed;
 }
 
-export function runPreSnapshotHook(ctx: HookContext): Promise<PreSnapshotHookResult> {
-  const run = dumpQueue.then(() => runPreSnapshotHookNow(ctx));
+export function runPreSnapshotHook(
+  ctx: HookContext,
+  handshake: PreSnapshotHookHandshake = {},
+): Promise<PreSnapshotHookResult> {
+  const run = dumpQueue.then(() => runPreSnapshotHookNow(ctx, handshake));
   dumpQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
-async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookResult> {
+async function runPreSnapshotHookNow(
+  ctx: HookContext,
+  handshake: PreSnapshotHookHandshake,
+): Promise<PreSnapshotHookResult> {
   const dumpDir = join(ctx.workspaceRoot, 'db-dumps');
   await mkdir(dumpDir, { recursive: true });
   const logPath = join(dumpDir, 'hook.log');
@@ -561,19 +580,26 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   // The identity probe is deliberately gated behind a receipt being present, so
   // a deployment with no host job (the desktop ship target) never pays for a
   // psql spawn it can never act on.
-  const hostStatus = await readHostDumpStatus(hostDumpStatusPath());
-  const targetSystemIdentifier = hostStatus ? await probeSystemIdentifier(target) : null;
-  // Read progress after the completion receipt and cluster probe. A host run
-  // can begin while those reads are in flight; the fresh marker must win over a
-  // stale STATUS.json and keep this hook from launching a duplicate dump.
-  const hostInProgress = await readHostDumpInProgress();
-  const coverage = evaluateHostDumpCoverage({
-    database: target.database,
-    targetSystemIdentifier,
-    status: hostStatus,
-    inProgress: hostInProgress,
-    nowEpoch: Math.floor(Date.now() / 1000),
-  });
+  const inspectHostCoverage = async (): Promise<{
+    status: HostDumpStatus | null;
+    coverage: HostDumpCoverage;
+  }> => {
+    const status = await readHostDumpStatus(hostDumpStatusPath());
+    const targetSystemIdentifier = status ? await probeSystemIdentifier(target) : null;
+    // Read progress after the completion receipt and cluster probe. A host run
+    // can begin while those reads are in flight; the fresh marker must win over a
+    // stale STATUS.json and keep this hook from launching a duplicate dump.
+    const hostInProgress = await readHostDumpInProgress();
+    const coverage = evaluateHostDumpCoverage({
+      database: target.database,
+      targetSystemIdentifier,
+      status,
+      inProgress: hostInProgress,
+      nowEpoch: Math.floor(Date.now() / 1000),
+    });
+    return { status, coverage };
+  };
+  const { status: hostStatus, coverage } = await inspectHostCoverage();
   if (coverage.covered) {
     await log(`pg SKIP: ${coverage.reason}`);
     await log('hook done (skipped: host-covered)');
@@ -619,9 +645,11 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     outPath,
     log,
     deferToProgressingSweep: ctx.triggerReason === ROUTINE_SNAPSHOT_TRIGGER,
+    handshake,
+    inspectHostCoverage,
   });
 
-  await log(`hook done (${result.ok ? 'ok' : 'degraded'})`);
+  await log(`hook done (${result.skipped ? 'skipped: host-covered' : result.ok ? 'ok' : 'degraded'})`);
   return result;
 }
 
@@ -635,6 +663,8 @@ async function dumpPg(opts: {
   log: (msg: string) => Promise<void>;
   /** See HookContext.triggerReason: true only for a routine interval dump. */
   deferToProgressingSweep: boolean;
+  handshake: PreSnapshotHookHandshake;
+  inspectHostCoverage: () => Promise<{ status: HostDumpStatus | null; coverage: HostDumpCoverage }>;
 }): Promise<PreSnapshotHookResult> {
   const tmp = allocateDumpTempPath(opts.outPath);
   const policy = dumpWatchdogPolicy(opts.deferToProgressingSweep);
@@ -701,11 +731,15 @@ async function dumpPg(opts: {
     : pgDumpArgs;
   if (guard) {
     // Guard logs must not contaminate the SQL dump on stdout. FD 3 reports when
-    // the shared lock is acquired so the 900s dump watchdog starts at that point.
+    // the shared lock is acquired; fd 4 holds pg_dump until migration admission
+    // is reacquired and the host receipt is checked again.
     env.KOPIA_BACKUP_GUARD_LOG_STDERR = '1';
     env.KOPIA_BACKUP_GUARD_READY_FD = '3';
+    env.KOPIA_BACKUP_GUARD_ACK_FD = '4';
+    env.KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC = String(Math.ceil(GUARD_READINESS_TIMEOUT_MS / 1000));
     env.KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC = String(GUARD_LOCK_WAIT_TIMEOUT_SEC);
   }
+  if (guard) await opts.handshake.beforeGuardWait?.();
   return new Promise<PreSnapshotHookResult>((resolve) => {
     const dumpDetached = process.platform !== 'win32';
     // Node only specializes child-process stream types for fds 0–2; fd 3 is
@@ -714,7 +748,7 @@ async function dumpPg(opts: {
     const dump = spawn(dumpCommand, dumpArgs, {
       env,
       stdio: guard
-        ? ['ignore', 'pipe', 'pipe', 'pipe']
+        ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
         : ['ignore', 'pipe', 'pipe'],
       // The watchdog owns this entire guard -> pg_dump tree. Without an
       // isolated group, ChildProcess.kill() reaches only the guard shell.
@@ -736,6 +770,9 @@ async function dumpPg(opts: {
     let dumpWatchdog: NodeJS.Timeout | undefined;
     let stallWatchdog: NodeJS.Timeout | undefined;
     let guardReadinessWatchdog: NodeJS.Timeout | undefined;
+    let guardReadyTask: Promise<void> | undefined;
+    let guardSkipReason: string | undefined;
+    const guardReadyAbort = new AbortController();
     // Progress = bytes pg_dump has written. Measured before gzip, whose
     // buffering would hide steady progress behind long silent stretches.
     let dumpedBytes = 0;
@@ -785,9 +822,19 @@ async function dumpPg(opts: {
       if (dumpWatchdog) clearTimeout(dumpWatchdog);
       if (stallWatchdog) clearTimeout(stallWatchdog);
       if (guardReadinessWatchdog) clearTimeout(guardReadinessWatchdog);
+      guardReadyAbort.abort();
+      // READY can arrive before the dedicated advisory-lock session completes.
+      // If the watchdog closes the guard during that await, retain ownership of
+      // any late lock through WorkspaceBackup's finally path instead of
+      // resolving while the acquisition is still in flight.
+      if (guardReadyTask) await guardReadyTask.catch(() => {});
       if (!out.destroyed) out.end();
       let result: PreSnapshotHookResult;
-      if (ok) {
+      if (ok && guardSkipReason) {
+        await unlink(tmp).catch(() => {});
+        await opts.log(`pg ${opts.host}:${opts.port} SKIP (${guardSkipReason})`);
+        result = { ok: true, skipped: guardSkipReason };
+      } else if (ok) {
         try {
           const s = await stat(tmp);
           if (s.size >= MIN_RESTORABLE_DUMP_BYTES) {
@@ -870,23 +917,54 @@ async function dumpPg(opts: {
       armDumpWatchdog();
     } else {
       const readiness = dump.stdio[3] as NodeJS.ReadableStream | null;
-      if (!readiness) {
-        stderr += 'backup guard readiness channel unavailable\n';
+      const acknowledgement = dump.stdio[4] as NodeJS.WritableStream | null;
+      if (!readiness || !acknowledgement) {
+        stderr += 'backup guard READY/ACK channels unavailable\n';
         killDumpTree();
         try { gz.kill('SIGKILL'); } catch { /* already gone */ }
         void finalize(false);
       } else {
         guardReadinessWatchdog = setTimeout(() => {
+          guardReadyAbort.abort();
           stderr += `backup guard lock readiness timed out after ${GUARD_READINESS_TIMEOUT_MS}ms\n`;
           killDumpTree();
           gz.kill('SIGKILL');
         }, GUARD_READINESS_TIMEOUT_MS);
+        const sendAck = (value: string) => {
+          if (typeof acknowledgement.end !== 'function') {
+            throw new Error('backup guard acknowledgement channel unavailable');
+          }
+          acknowledgement.end(`${value}\n`);
+        };
+        const onReady = () => {
+          if (guardReadyTask || settled) return;
+          guardReadyTask = (async () => {
+            await opts.handshake.onGuardReady?.(guardReadyAbort.signal);
+            if (settled || guardReadyAbort.signal.aborted) return;
+            const refreshed = await opts.inspectHostCoverage();
+            if (settled || guardReadyAbort.signal.aborted) return;
+            if (refreshed.coverage.covered) {
+              guardSkipReason = refreshed.coverage.reason;
+              sendAck(GUARD_ACK_SKIP);
+              return;
+            }
+            sendAck(GUARD_ACK_PROCEED);
+            armDumpWatchdog();
+          })();
+          void guardReadyTask.catch((error) => {
+            stderr += `backup guard READY handshake failed: ${String(error)}\n`;
+            guardReadyAbort.abort();
+            killDumpTree();
+            try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+          });
+        };
         let readinessBuffer = '';
         readiness.on('data', (d) => {
           readinessBuffer = `${readinessBuffer}${d.toString()}`.slice(-GUARD_READY_SIGNAL.length);
-          if (readinessBuffer.includes(GUARD_READY_SIGNAL)) armDumpWatchdog();
+          if (readinessBuffer.includes(GUARD_READY_SIGNAL)) onReady();
         });
         readiness.on('error', (e) => {
+          guardReadyAbort.abort();
           stderr += `backup guard readiness pipe failed: ${e.message}\n`;
           killDumpTree();
           try { gz.kill('SIGKILL'); } catch { /* already gone */ }

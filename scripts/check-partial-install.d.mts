@@ -7,7 +7,7 @@
  * Share the link guard's npm-compatible glob and exclusion semantics. A pattern
  * entry that resolves to no package.json is skipped rather than guessed at.
  */
-export function expandWorkspaceDirs(patterns: any, root: any): any[];
+export function expandWorkspaceDirs(patterns: any, root: any): string[];
 /**
  * Present .bin links are install outputs too. A hoisted package can resolve while
  * an orphaned workspace shim still points at its removed local copy. npm's normal

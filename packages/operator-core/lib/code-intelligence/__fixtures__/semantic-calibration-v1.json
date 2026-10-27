@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "registration": "P012-R7-semantic-v1-20261023",
+  "frozenBeforeInference": true,
+  "retrievalCutoff": 0.70,
+  "judgeConfidenceCutoff": 0.90,
+  "topK": 10,
+  "minimumMacroPrecision": 0.70,
+  "minimumHitRate": 0.70,
+  "labelMethod": "Authored standalone functions, source-reviewed before inference. Each query has exactly the listed relevant source path; all other corpus functions are labelled irrelevant. Empty results score precision zero and miss. This controlled sample is not a full repository census.",
+  "samples": [
+    {"id":"q01","query":"Compute the total of numeric list elements, starting at zero.","relevant":["src/f01.ts"],"source":"export function f01(xs: number[]) { let n = 0; for (const x of xs) n += x; return n; }"},
+    {"id":"q02","query":"Find the largest numeric member of a sequence; empty gives negative infinity.","relevant":["src/f02.ts"],"source":"export function f02(xs: number[]) { let n = -Infinity; for (const x of xs) if (x > n) n = x; return n; }"},
+    {"id":"q03","query":"Reverse the order of characters in a string.","relevant":["src/f03.ts"],"source":"export function f03(s: string) { return [...s].reverse().join(''); }"},
+    {"id":"q04","query":"Remove repeated string entries while preserving first occurrence order.","relevant":["src/f04.ts"],"source":"export function f04(xs: string[]) { return Array.from(new Set(xs)); }"},
+    {"id":"q05","query":"Restrict a number to a lower and upper bound.","relevant":["src/f05.ts"],"source":"export function f05(x: number, lo: number, hi: number) { return Math.min(hi, Math.max(lo, x)); }"},
+    {"id":"q06","query":"Calculate the product of positive integers from one through n.","relevant":["src/f06.ts"],"source":"export function f06(n: number) { let p = 1; for (let i = 2; i <= n; i++) p *= i; return p; }"},
+    {"id":"q07","query":"Extract the host portion after the final at sign in an email address.","relevant":["src/f07.ts"],"source":"export function f07(s: string) { const i = s.lastIndexOf('@'); return i < 0 ? null : s.slice(i + 1); }"},
+    {"id":"q08","query":"Convert integer minor currency units into a two decimal places string.","relevant":["src/f08.ts"],"source":"export function f08(n: number) { return (n / 100).toFixed(2); }"},
+    {"id":"q09","query":"Create a lowercase URL identifier by replacing non alphanumeric spans with hyphens and trimming edge hyphens.","relevant":["src/f09.ts"],"source":"export function f09(s: string) { return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }"},
+    {"id":"q10","query":"Partition a list into consecutive fixed size groups; reject nonpositive sizes.","relevant":["src/f10.ts"],"source":"export function f10<T>(xs: T[], n: number) { if (!Number.isInteger(n) || n < 1) throw new Error('size'); const ys: T[][] = []; for (let i = 0; i < xs.length; i += n) ys.push(xs.slice(i, i+n)); return ys; }"},
+    {"id":"q11","query":"Determine whether an integer is divisible by two.","relevant":["src/f11.ts"],"source":"export function f11(n: number) { return n % 2 === 0; }"},
+    {"id":"q12","query":"Flatten nested arrays by exactly one level.","relevant":["src/f12.ts"],"source":"export function f12<T>(xs: T[][]) { return xs.flat(); }"},
+    {"id":"q13","query":"Compute the arithmetic mean of numeric values, returning null for an empty list.","relevant":["src/f13.ts"],"source":"export function f13(xs: number[]) { if (!xs.length) return null; return xs.reduce((a,b) => a+b, 0) / xs.length; }"},
+    {"id":"q14","query":"Return the first element of a sequence or undefined if empty.","relevant":["src/f14.ts"],"source":"export function f14<T>(xs: T[]) { return xs[0]; }"},
+    {"id":"q15","query":"Return all list entries except the first one without mutating the input.","relevant":["src/f15.ts"],"source":"export function f15<T>(xs: T[]) { return xs.slice(1); }"},
+    {"id":"q16","query":"Count how many values are truthy under JavaScript Boolean coercion.","relevant":["src/f16.ts"],"source":"export function f16(xs: unknown[]) { return xs.filter(Boolean).length; }"},
+    {"id":"q17","query":"Deserialize JSON text, returning a caller supplied fallback on invalid syntax.","relevant":["src/f17.ts"],"source":"export function f17(s: string, fallback: unknown) { try { return JSON.parse(s); } catch { return fallback; } }"},
+    {"id":"q18","query":"Encode a UTF8 string as base64 text.","relevant":["src/f18.ts"],"source":"export function f18(s: string) { return Buffer.from(s, 'utf8').toString('base64'); }"},
+    {"id":"q19","query":"Escape HTML special characters ampersand and angle brackets.","relevant":["src/f19.ts"],"source":"export function f19(s: string) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }"},
+    {"id":"q20","query":"Sort numeric values ascending using a fresh array without modifying the original.","relevant":["src/f20.ts"],"source":"export function f20(xs: number[]) { return [...xs].sort((a,b) => a-b); }"}
+  ],
+  "judgePairs": [
+    {"id":"sum-positive","left":"q01","expected":"duplicate","rightSource":"export function alternative(values: number[]) { return values.reduce((acc, value) => acc + value, 0); }"},
+    {"id":"sum-product-negative","left":"q01","expected":"distinct","rightSource":"export function alternative(values: number[]) { return values.reduce((acc, value) => acc * value, 1); }"},
+    {"id":"unknown-dependency","left":"q01","expected":"abstain","rightSource":"declare function remote(values: number[]): number; export function alternative(values: number[]) { return remote(values); }"}
+  ]
+}

@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defaultBlobBatchReader, type BlobBatchReader } from './committed-tree-reader';
+import { scanRepository } from '../../../../../scripts/check-fire-and-forget-classification.mjs';
 import {
   __resetTreeInstrumentMemoForTest,
   foldTreeInstrumentFingerprint,
@@ -127,5 +128,90 @@ describe('provider-specific-census tree instrument', () => {
     const commit = await put({ 'bin/tool.mjs': 'export {};\n' });
     expect(await measureTreeInstrumentAtCommit('provider-specific-census', root, commit))
       .toEqual({ providerSpecificPaths: [], strictViolations: [] });
+  });
+});
+
+describe('notification-classification-census tree instrument', () => {
+  const key = 'notification-classification-census' as const;
+
+  it('matches the tracked detector inputs at the pin and ignores uncommitted source', async () => {
+    const commit = await put({
+      'src/quoted "通知".ts': 'void notifyOwner();',
+      'src/app.test.ts': 'void notifyHidden();',
+      'dist/generated.ts': 'void notifyHidden();',
+      'package.json': '{"name":"fixture"}',
+    });
+    const expected = scanRepository(root);
+    await writeFile(join(root, 'src/quoted "通知".ts'), 'export const quiet = true;');
+    await writeFile(join(root, 'src/untracked.ts'), 'void notifyNew();');
+    expect(await measureTreeInstrumentAtCommit(key, root, commit)).toMatchObject({
+      files: expected.files.length, sites: expected.sites.length,
+      sourceDigest: expected.sourceDigest, gaps: [], submodules: [],
+    });
+  });
+
+  it('ignores excluded edits but changes for new tracked calls and resolution-only edits', async () => {
+    const base = await put({ 'src/app.ts': 'export const ready = true;', 'tsconfig.json': '{}' });
+    const before = await measureTreeInstrumentAtCommit(key, root, base);
+    const docs = await put({ 'docs/note.md': 'void notifyOwner();' });
+    expect(await measureTreeInstrumentAtCommit(key, root, docs)).toEqual(before);
+    const call = await put({ 'src/app.ts': 'void notifyOwner();' });
+    const withCall = await measureTreeInstrumentAtCommit(key, root, call);
+    expect(withCall).not.toEqual(before);
+    expect(withCall).toMatchObject({ sites: 1 });
+    const resolution = await put({ 'tsconfig.json': '{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}' });
+    expect(await measureTreeInstrumentAtCommit(key, root, resolution)).not.toEqual(withCall);
+  });
+
+  it('descends actual submodules at the parent pin and refuses an unavailable pinned repository', async () => {
+    const bus = await realpath(await mkdtemp(join(tmpdir(), 'notify-tree-submodule-')));
+    const busGit = (...args: string[]) => execFileSync('git', ['-C', bus, '-c', 'user.name=Tree test',
+      '-c', 'user.email=tree-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' }).trim();
+    try {
+      busGit('init', '-q');
+      await mkdir(join(bus, 'src'));
+      await writeFile(join(bus, 'src/index.ts'), 'export const relay = notifyOwner;');
+      await writeFile(join(bus, 'package.json'), '{"name":"@fixture/bus","exports":"./src/index.ts"}');
+      busGit('add', '-A'); busGit('commit', '-qm', 'bus');
+      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', bus, 'libs/bus');
+      const base = await put({ 'src/app.ts': 'import {relay} from "@fixture/bus"; void relay();' });
+      const expected = scanRepository(root);
+      const pinned = await measureTreeInstrumentAtCommit(key, root, base);
+      expect(pinned).toMatchObject({ sites: 1, sourceDigest: expected.sourceDigest, submodules: ['libs/bus'], gaps: [] });
+
+      await writeFile(join(root, 'libs/bus/src/index.ts'), 'export const relay = () => null;');
+      git('-C', join(root, 'libs/bus'), 'add', '-A');
+      git('-C', join(root, 'libs/bus'), 'commit', '-qm', 'new bus head');
+      __resetTreeInstrumentMemoForTest();
+      expect(await measureTreeInstrumentAtCommit(key, root, base)).toEqual(pinned);
+      const movedPin = await put({});
+      expect(await measureTreeInstrumentAtCommit(key, root, movedPin)).toMatchObject({ sites: 0, submodules: ['libs/bus'] });
+
+      await rm(join(root, 'libs/bus'), { recursive: true, force: true });
+      await mkdir(join(root, 'libs/bus'));
+      __resetTreeInstrumentMemoForTest();
+      await expect(measureTreeInstrumentAtCommit(key, root, base)).rejects.toThrow('tree_instrument_submodule_unavailable:libs/bus');
+    } finally {
+      await rm(bus, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a declared submodule without a committed gitlink as a population gap', async () => {
+    const commit = await put({
+      'src/app.ts': 'void notifyOwner();',
+      '.gitmodules': '[submodule "bus"]\npath = libs/bus\nurl = https://example.invalid/bus.git\n',
+    });
+    expect(await measureTreeInstrumentAtCommit(key, root, commit)).toMatchObject({
+      declaredSubmodules: ['libs/bus'], submodules: [],
+      gaps: [{ path: 'libs/bus', kind: 'declared-submodule-without-gitlink' }],
+    });
+  });
+
+  it('refuses a reachable symlink or an empty committed population', async () => {
+    const empty = await put({ 'docs/note.md': 'No product source.' });
+    await expect(measureTreeInstrumentAtCommit(key, root, empty)).rejects.toThrow('tree_instrument_empty_notification_population');
+    await symlink('../docs/note.md', join(root, 'linked.ts'));
+    const linked = await put({});
+    await expect(measureTreeInstrumentAtCommit(key, root, linked)).rejects.toThrow('tree_instrument_symlink_unsupported:linked.ts');
   });
 });

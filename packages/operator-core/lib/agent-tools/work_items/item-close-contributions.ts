@@ -4,6 +4,7 @@ import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '.
 import { parseBarMappings, parseRequirementBars } from '../../acceptance-bar-seed';
 import { acceptanceBarProjectedBehavior } from '../../acceptance-bar-projection';
 import { getRubric } from '../../rubrics';
+import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { conformanceClosureAssessment, type RequirementClosureDeclaration } from '../../spec-conformance/closure-guard';
 import { readPlanBySlug } from '../plans/source';
 import { planStampOf, type WorkItemForContract } from '../plans/behavior-contract-resolver';
@@ -159,7 +160,7 @@ export async function resolveItemCloseContributions(input: {
       const covering = covers[0]!;
       if (covering.sourceBar || !currentClause(covering) || covering.planSlug !== projection.planSlug ||
           covering.planItemId !== itemId || input.codeDeliverable(covering) === false ||
-          covering.exemption || covering.behaviorClass === 'non-automated' || !covering.falsifier ||
+          covering.exemption || isNonAutomatedBehaviorClass(covering.behaviorClass) || !covering.falsifier ||
           !covering.requiredTestLayers.length || relation.itemClose.behavior !== covering.behavior ||
           relation.itemClose.falsifier !== covering.falsifier.observation ||
           relation.itemClose.mutationRequired !== covering.mutationRequired ||

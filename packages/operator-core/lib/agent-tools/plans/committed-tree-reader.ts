@@ -408,9 +408,11 @@ async function lsTree(git: GitRunner, dir: string, commit: string, paths: readon
 }
 
 /**
- * Resolve the commit each repository is at under superproject commit `commit`: the root
- * is `commit` itself; a submodule is the gitlink its parent records at the parent's
- * commit. A repository with no gitlink at that commit maps to null (its paths are absent).
+ * Resolve the repository and commit that own each current checkout boundary under the
+ * historical superproject commit. A boundary is a submodule only when that commit records
+ * a gitlink there. If it records an ordinary tree (for example, after a submodule was
+ * removed), keep resolving paths through the parent repository; stale `.git` metadata in
+ * the working tree must not override ownership at the measured commit.
  */
 async function resolveRepoCommits(
   root: string,
@@ -418,8 +420,8 @@ async function resolveRepoCommits(
   repos: ReadonlySet<string>,
   git: GitRunner,
   exists: (repo: string) => Promise<boolean>,
-): Promise<Map<string, string | null>> {
-  const commits = new Map<string, string | null>([['.', commit]]);
+): Promise<Map<string, { repo: string; commit: string }>> {
+  const commits = new Map<string, { repo: string; commit: string }>([['.', { repo: '.', commit }]]);
   const parentOf = new Map<string, string>();
   const pending = new Set<string>();
   const enqueue = async (repo: string): Promise<void> => {
@@ -440,13 +442,19 @@ async function resolveRepoCommits(
     }
     if (ready.size === 0) throw new Error('committed_tree_repo_cycle');
     for (const [parent, children] of ready) {
-      const parentCommit = commits.get(parent) ?? null;
-      const entries = parentCommit
-        ? await lsTree(git, repoDir(root, parent), parentCommit, children.map((child) => relativeTo(parent, child)))
-        : new Map<string, { mode: string; type: string; object: string }>();
+      const parentResolution = commits.get(parent)!;
+      const entries = await lsTree(
+        git,
+        repoDir(root, parentResolution.repo),
+        parentResolution.commit,
+        children.map((child) => relativeTo(parentResolution.repo, child)),
+      );
       for (const child of children) {
-        const entry = entries.get(relativeTo(parent, child));
-        commits.set(child, entry?.mode === '160000' ? entry.object : null);
+        const entry = entries.get(relativeTo(parentResolution.repo, child));
+        commits.set(
+          child,
+          entry?.mode === '160000' ? { repo: child, commit: entry.object } : parentResolution,
+        );
         pending.delete(child);
       }
     }
@@ -492,17 +500,22 @@ export async function locateCommittedBlobs(
   includeSizes = false,
 ): Promise<Map<string, CommittedBlobLocation | null>> {
   const git = deps.git ?? defaultGitRunner;
-  const ownerOf = new Map<string, string>();
+  const exists = deps.exists ?? ((repo: string) => hasRepo(root, repo));
+  const candidateOf = new Map<string, string>();
   for (const normalized of new Set(paths.map(normalizedRepoPath))) {
-    ownerOf.set(normalized, await owningRepo(root, normalized, deps.exists));
+    candidateOf.set(normalized, await owningRepo(root, normalized, exists));
   }
-  const repoCommits = await resolveRepoCommits(root, commit, new Set(ownerOf.values()), git, deps.exists ?? ((repo) => hasRepo(root, repo)));
+  const repoCommits = await resolveRepoCommits(root, commit, new Set(candidateOf.values()), git, exists);
+  const ownerOf = new Map<string, string>();
+  const committedRepos = new Map<string, string>();
+  for (const resolution of repoCommits.values()) committedRepos.set(resolution.repo, resolution.commit);
+  for (const [path, candidate] of candidateOf) ownerOf.set(path, repoCommits.get(candidate)!.repo);
 
   const byRepo = new Map<string, string[]>();
   for (const [normalized, repo] of ownerOf) byRepo.set(repo, [...(byRepo.get(repo) ?? []), normalized]);
   const located = new Map<string, CommittedBlobLocation | null>();
   for (const [repo, repoPaths] of byRepo) {
-    const repoCommit = repoCommits.get(repo) ?? null;
+    const repoCommit = committedRepos.get(repo) ?? null;
     if (!repoCommit) {
       for (const path of repoPaths) located.set(path, null);
       continue;
@@ -714,12 +727,16 @@ export async function listCommittedGlobMatches(
   const bases = [...new Set(globs.map(globBase))];
   // A base inside a submodule is listed INSIDE that submodule: a superproject pathspec
   // below a gitlink matches nothing, so resolve each base's owning repository first.
+  const candidateOf = new Map<string, string>();
+  for (const base of bases) candidateOf.set(base, base === '' ? '.' : await owningRepo(root, `${base}/_`, exists));
+  const repoCommits = await resolveRepoCommits(root, commit, new Set(candidateOf.values()), git, exists);
   const ownerOf = new Map<string, string>();
-  for (const base of bases) ownerOf.set(base, base === '' ? '.' : await owningRepo(root, `${base}/_`, exists));
-  const repoCommits = await resolveRepoCommits(root, commit, new Set(ownerOf.values()), git, exists);
+  const committedRepos = new Map<string, string>();
+  for (const resolution of repoCommits.values()) committedRepos.set(resolution.repo, resolution.commit);
+  for (const [base, candidate] of candidateOf) ownerOf.set(base, repoCommits.get(candidate)!.repo);
   const queue: Array<{ repo: string; commit: string; prefixes: string[] }> = [];
   for (const repo of new Set(ownerOf.values())) {
-    const repoCommit = repoCommits.get(repo);
+    const repoCommit = committedRepos.get(repo);
     if (!repoCommit) continue;
     const owned = bases.filter((base) => ownerOf.get(base) === repo);
     const whole = owned.some((base) => base === '' || base === repo);

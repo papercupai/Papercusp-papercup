@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/WI-6554700010029211/custody-grading-audit-repair-20261026-v1.json"
+updated_at: 1792978400185
+_body: "content"
+---
+
+{"ok":true,"requestedTargetIds":["EI-27002348609454087"],"receipts":[{"issueId":"EI-27002348609454087","rubricRef":"spec-quality","state":"deduped","idempotencyKey":"grading-audit:EI-27002348609454087","dispatchReservation":{"key":"grading-audit:EI-27002348609454087","reservedAt":"2026-10-26T01:11:09.450Z","snapshot":{"evidenceFingerprint":"f67e4f606dfa676a64c116bbeacee738897f590e68561a8b95d5cd3569f8971f","evaluatorBuild":null,"bindingIds":[],"bindingCurrentness":null}},"renewalNotification":{"state":"delivered","ownerId":"su-90833353-74ea-4261-a807-2ca8f5754935","msgId":"grading-audit-renewal:26314da2008f7652881632ff7cd74d3f9ec4accc88632871835c091290879bcd","queued":1,"pickupConfirmed":false},"launch":{"deduped":true,"opened":0,"failed":0,"mode":"live-task-guard","tasks":[{"taskId":"0mvokae6zwbpgyphugf","logPath":"/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/grading-audit-EI-27002348609454087-3106801-1792977128021.log","label":"grading-audit:EI-27002348609454087"}]},"reason":"existing live grading auditor task '0mvokae6zwbpgyphugf' owns grading-audit:EI-27002348609454087; duplicate launch suppressed"}],"_meta":{"explicitFullRequest":true,"format":"json","_seeAlso":[{"tool":"scorecards:get"},{"tool":"scorecards:list"},{"tool":"scorecards:emit"}]}}

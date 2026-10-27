@@ -1,14 +1,28 @@
 import { expect, it, vi } from 'vitest';
-import { fork, spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('keeps a native tool refusal visible after verbose connection phase clocks', () => {
+  const trace = 'ptool: connection trace ' + JSON.stringify({ event: 'http-request-start', detail: 'x'.repeat(1000) });
+  const output = ['Error: Native CLI process failed', ...Array(20).fill(trace),
+    'stdout:', 'harness_forbidden: short harness requires the private pot',
+    'stderr:', trace, '    at nativeCliResult (fixture.ts:1:1)'].join('\n');
+  const diagnostic = isolatedWorkerFailureDetail(output);
+  expect(diagnostic).toContain('Error: Native CLI process failed');
+  expect(diagnostic).toContain('harness_forbidden: short harness requires the private pot');
+  expect(diagnostic).not.toContain('ptool: connection trace');
+  expect(diagnostic.length).toBeLessThanOrEqual(4000);
+  expect(output).toContain(trace);
+});
 
 it('keeps isolated worker phase ceilings independent of a widened outer file budget', () => {
   const baseline = isolatedWorkerOptions(480_000, {});
@@ -18,6 +32,110 @@ it('keeps isolated worker phase ceilings independent of a widened outer file bud
   expect(widened.testTimeoutMs).toBeLessThan(outerFileMs);
   expect(widened.phaseTimeouts).toMatchObject({ bootstrapMaxMs: 600_000,
     executeMs: 480_000, executeMaxMs: 480_000, teardownMaxMs: 600_000 });
+});
+
+it('rejects a short enclosing proof budget before reading source or allocating a worker', async () => {
+  vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '');
+  const execute = vi.fn();
+  try {
+    await expect(recordIsolatedIntegrationProof({ root: join(tmpdir(), 'proof-source-must-not-be-read'),
+      filePath: 'never-run.test.ts', sourcePaths: [], minimumFileRunTimeoutMs: 90 * 60_000,
+      execute })).rejects.toThrow('PAPERCUSP_TEST_FILE_TIMEOUT_MS >= 5400000');
+    expect(execute).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
+});
+
+it('admits the exact declared proof budget without changing child phase ceilings', () => {
+  const requiredMs = 90 * 60_000;
+  expect(() => assertIsolatedFileRunBudget(requiredMs,
+    { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(requiredMs - 1) })).toThrow('enclosing router');
+  const env = { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(requiredMs) };
+  expect(() => assertIsolatedFileRunBudget(requiredMs, env)).not.toThrow();
+  expect(isolatedWorkerOptions(480_000, env)).toEqual(isolatedWorkerOptions(480_000, {}));
+});
+
+async function withCapturedRouter(options: Parameters<typeof captureIsolatedWorker>[2],
+  check: (child: ChildProcess, result: ReturnType<typeof captureIsolatedWorker>) => Promise<void>) {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-router-phases-'));
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(),
+    exitCode: null, signalCode: null, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  vi.useFakeTimers();
+  const result = captureIsolatedWorker(child, evidenceDir, options);
+  try { await check(child, result); }
+  finally {
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+    await result;
+    vi.useRealTimers();
+    child.stdout!.destroy(); child.stderr!.destroy();
+    rmSync(evidenceDir, { recursive: true, force: true });
+  }
+}
+
+const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, teardownMs: 30 },
+  killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
+
+it('recognizes direct test:file execution across chunks without changing phase budgets', async () => {
+  const options = isolatedTestFileWorkerOptions({}, 1);
+  const { testFileExecutionFromStdout, ...budgets } = options;
+  expect(testFileExecutionFromStdout).toBe(true);
+  expect(budgets).toEqual(isolatedWorkerOptions(120_000 + 600_000 + 2_000, {}, 120_000 + 7_200_000 + 2_000));
+  await withCapturedRouter(routerPhaseOptions, async child => {
+    child.stderr!.emit('data', 'TEST_FILE_LIST_PROGRESS state=started cwd="test"\n');
+    await vi.advanceTimersByTimeAsync(90);
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=sta');
+    await vi.advanceTimersByTimeAsync(5);
+    child.stderr!.emit('data', 'rted cwd="test"\n');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(child.kill).not.toHaveBeenCalled();
+    // A stdout phase transition is not an admitted private-runtime lifetime.
+    child.emit('message', { kind: 'isolated-runtime-stopping' });
+    await vi.advanceTimersByTimeAsync(30);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+});
+
+it.each([
+  'TEST_FILE_LIST_PROGRESS state=started cwd="test"\n',
+  'TEST_FILE_PROGRESS state=running cwd="test"\n',
+  'TEST_FILE_PROGRESS state=started-extra cwd="test"\n',
+  'TEST_FILE_CASE_TRACE {"event":"started","file":"test","name":"case"}\n',
+])('keeps collection and non-start output in bounded bootstrap: %s', async line => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', line);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it('requires opt-in and ignores router starts after timeout', async () => {
+  await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: false }, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+  });
+});
+
+it.each(['execute', 'teardown'] as const)('does not renew %s for repeated or out-of-order router starts', async phase => {
+  await withCapturedRouter(routerPhaseOptions, async (child, result) => {
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    if (phase === 'teardown') child.emit('message', { kind: 'isolated-runtime-stopping' });
+    const budget = routerPhaseOptions.phaseTimeouts[phase === 'execute' ? 'executeMs' : 'teardownMs'];
+    await vi.advanceTimersByTimeAsync(budget - 1);
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: phase });
+  });
 });
 
 function unrelatedCheckpointObservation(): PrivateUnrelatedCheckpointObservation {

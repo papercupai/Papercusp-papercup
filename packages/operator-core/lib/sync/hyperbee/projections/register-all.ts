@@ -31,6 +31,8 @@ import {
   type SupersedablePut,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
+import { mergeRuleFor } from '../merge-rules';
+import type { FeatureClaimsProjectionOpts } from './feature-claims';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 import { buildContributorsProjection } from './contributors';
@@ -70,6 +72,7 @@ import { buildEngineerIssuesProjection } from './engineer-issues';
 import { buildHarnessPlanPartsProjection, type PlanPartsRecomposeBatch } from './harness-plan-parts';
 
 export interface RegisterAllOpts {
+  verifyClaimReplay?: FeatureClaimsProjectionOpts['verifyClaimReplay'];
   workspaceId: string;
   harnessSlug: string;
   /**
@@ -536,7 +539,11 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // P-302 LIVE-2 seam 1: leader leases are hive-home-grained liveness hints
     // (not auth records) and share the same home-scope as the fleet directory.
     hh(buildFleetLeaderLeaseProjection(hiveScoped)),
-  ] as TableProjection<unknown>[];
+  ].map(p => {
+    const mergeRule = mergeRuleFor(p.tableTag);
+    if (!mergeRule) throw new Error(`Missing merge rule for replicated table ${p.tableTag}`);
+    return { ...p, mergeRule };
+  }) as TableProjection<unknown>[];
 }
 
 export function registerAllHarnessProjections(opts: RegisterAllOpts): void {

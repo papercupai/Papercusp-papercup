@@ -144,19 +144,20 @@ html[data-portal-embed='true'] .pc-advshell {
 
 /* Direction B focused work routes. The canonical panes were designed for the
  * resizable chat dock, whose parent supplies the flex/height chain. These
- * routes provide the same chain when the pane is the entire embedded document,
- * without changing the ordinary sidebar presentation. */
-html[data-portal-embed='true'] .portal-focused-work-surface {
+ * routes provide the same viewport chain in both standalone pages and embedded
+ * documents. Without it the virtual list measures its entire content as its
+ * viewport and mounts every row. The chat sidebar does not use this wrapper. */
+.portal-focused-work-surface {
   display: flex;
   width: 100%;
-  height: 100%;
+  height: 100dvh;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-html[data-portal-embed='true'] .portal-focused-work-surface > .plans-pane,
-html[data-portal-embed='true'] .portal-focused-work-surface > .op-inbox {
+.portal-focused-work-surface > .plans-pane,
+.portal-focused-work-surface > .op-inbox {
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -10088,7 +10089,9 @@ html[data-visual-effects='minimal'] .pc-header-quote-text {
 [data-route-transition-page="true"] {
   position: relative;
   transform-origin: 50% 44%;
-  will-change: transform, opacity, filter;
+  /* Permanent transform/filter hints contain fixed descendants, trapping
+     fullscreen readers and Work panes inside the route content box. GSAP
+     applies transforms only while a route transition is running. */
 }
 
 .pc-route-transition {

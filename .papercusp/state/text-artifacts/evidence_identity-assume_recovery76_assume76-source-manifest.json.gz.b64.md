@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery76/assume76-source-manifest.json.gz.b64"
+updated_at: 1792985937942
+_body: "content"
+---
+
+H4sIAAAAAAAAA5WPvW7cMBCEez2FoDo6kct/t3kAFwGSerm7vAi+EwWR5yAw/O6BfU7SBUg/M983L8M4TketfXoYp6Vf92Wn52XHXQ66tX2+rFufsc1Ur9e1d+HZ+egSleLN/O3rz/T4Y/r0tnEPvK38DQRi8GwDFE9AxokSbZVXzpSQ4N473/Dgz3/KjM4zgDIOSjBYWLxFiCowuJhyFNZJWZfv5VZvB8mX7wjOTw/jyzCO4zjtSE94lrbUXQ7s9ZipHrJc1rzgWbY+91ovbWnS2lq3BVu7XeW0bl3OB/a1bqcurZ96e3+jOTBgMZJC0iqyRwcueonGeJuSzkwJXNYKMdksgbXLxWDwbJPV+l3031IfIvOHyJ0bExmXdSEia3XUbBV47cgFgISFWUFEH6wxrKBo74z3SQXxhbMUKv/NnVuvx2+6NQEomKTISyaVLXDUEAJFFKeT5RTFOlMUh2hZkECpHHRWJoryEKZhHF+H1+EXHmRNpl8CAAA=

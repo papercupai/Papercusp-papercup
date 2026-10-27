@@ -76,8 +76,8 @@ describe('turn-provenance ledger writes to one file are serialized (WI-10005327)
   it('an append that arrives while a compaction rewrite is in flight is not wiped', async () => {
     const mod = (await import(/* @vite-ignore */ SUBJECT)) as typeof import('./turn-provenance');
     const p = mod.ledgerPathForSid(SID, dir);
-    // Past the 32 KiB compaction threshold, every row expired: the first append compacts.
-    const expiredLine = JSON.stringify(row('e'.repeat(16), NOW - TTL - 60_000)) + '\n';
+    // Past 32 KiB, with every padding row beyond TTL + historical grace.
+    const expiredLine = JSON.stringify(row('e'.repeat(16), NOW - TTL - mod.LEDGER_GC_GRACE_MS - 60_000)) + '\n';
     writeFileSync(p, expiredLine.repeat(Math.ceil((40 * 1024) / expiredLine.length)));
 
     gate.holdFirstRewrite = true;
@@ -91,5 +91,6 @@ describe('turn-provenance ledger writes to one file are serialized (WI-10005327)
     expect(await Promise.all([first, second])).toEqual([true, true]);
     const live = mod.readLedgerRows(SID, { dir, nowMs: NOW, ttlMs: TTL });
     expect(live.map((r) => r.nonce).sort()).toEqual(['1'.repeat(16), '2'.repeat(16)]);
+    expect(mod.readLedgerRows(SID, { dir, nowMs: NOW, ttlMs: TTL, includeExpired: true })).toHaveLength(2);
   });
 });

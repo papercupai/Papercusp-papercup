@@ -41,7 +41,7 @@ export interface CtxHarnessOpts extends PlanSourceOpts {
  * keep their `opts.harnessSlug ?? operatorHomeHarnessSlug()` defaulting logic.
  */
 export function resolveCtxHarnessSlug(ctx: unknown): string | undefined {
-  const c = ctx as { harnessSlug?: string };
+  const c = (ctx ?? {}) as { harnessSlug?: string };
   const raw = c.harnessSlug?.trim();
   if (!raw || raw === '*') return undefined;
   return raw;
@@ -79,7 +79,7 @@ export function resolveEffectiveHarnessSlug(ctx: unknown): string {
 }
 
 export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts> {
-  const c = ctx as { harnessSlug?: string; workspaceId?: string };
+  const c = (ctx ?? {}) as { harnessSlug?: string; workspaceId?: string };
   const raw = c.harnessSlug?.trim();
   const workspaceId = c.workspaceId?.trim();
   // Preserve the admitted tool context's concrete workspace. Dropping it

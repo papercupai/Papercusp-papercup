@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "capacity-provenance-custody-pointer-v1",
+  "recordedAt": "2026-10-23T15:21:20.156398+00:00",
+  "workItem": "WI-6554700010023077",
+  "custodyWorkItem": "EI-26916143924070538",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "clause": "AUTO-BAR-R-1-P-005@3",
+  "scope": "Historical source authenticity recovery. No new VM execution, provider inventory, source-adequacy certification or shipment is claimed.",
+  "archive": {
+    "pathBase": "Operating account home directory",
+    "root": ".papercusp/evidence/EI-26916143924070538/fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e",
+    "manifest": {
+      "name": "manifest.json",
+      "sha256": "fd8be10e3d327cd903f43d25a10d987c3f17d6643b985bf172478146597b579e"
+    },
+    "original": {
+      "name": "originals/capacity-r1-historical-provenance-2026-10-23.json",
+      "sourcePath": "docs/evidence/capacity-r1-historical-provenance-2026-10-23.json",
+      "sha256": "060e8c5059fbe05427fb2f9cc0831dec54cd0afe46b8ea2cbf287cf63a50c2b4",
+      "byteLength": 19655
+    }
+  },
+  "readerAccess": {
+    "validation": "Resolve archive.root relative to the operating account home directory. Verify the manifest SHA-256 before selecting files[].path equal to archive.original.sourcePath. Read that original artifact and verify both byte length and SHA-256 against the manifest and this pointer. Parse the original JSON only after verification.",
+    "relatedProof": "Historical source paths inside an original remain unchanged. If a source path names another custody pointer in this set, resolve that pointer and verify its original bytes before comparing the historical source digest.",
+    "preservation": "The archived original is byte-identical to the historical source record. This portable pointer contains no replacement measurements or rewritten proof."
+  },
+  "claims": {
+    "newExecution": false,
+    "currentSourceAdequacy": false,
+    "operationalAcceptance": false,
+    "shipment": false
+  },
+  "unresolved": [
+    "Original run file hashes and available headers have been rechecked; no fresh cloud observation was made.",
+    "Historical writer version and direct zero-OOM receipts still need qualification before this artifact can establish the entire R-1 outcome.",
+    "The heavy shared-typecheck sample retains its original failed=0 summary and achieved concurrency; its slowdown and direct OOM counter are unmeasured here.",
+    "No current-revision live-plane binding or independent adequacy judgment was created by this recovery."
+  ]
+}

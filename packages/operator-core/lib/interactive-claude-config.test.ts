@@ -301,6 +301,29 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
   });
 
+  it('scopes the exact task id to this session’s lifecycle hooks, not the user config', async () => {
+    seedHome(home);
+    const taskId = '0123456789abcdefghj';
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: "PAPERCUSP_SID='su-task' /hooks/lifecycle-report.sh" }] }],
+          SessionEnd: [{ hooks: [{ type: 'command', command: "PAPERCUSP_SID='su-task' /hooks/lifecycle-report.sh" }] }],
+        },
+      }),
+    );
+    const { configDir } = await writeInteractiveClaudeConfig({
+      sid: 'su-task', home, agentTaskId: taskId,
+    });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    for (const event of ['SessionStart', 'SessionEnd']) {
+      expect(settings.hooks[event][0].hooks[0].command)
+        .toContain('PAPERCUSP_AGENT_TASK_ID=' + taskId);
+    }
+    expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain(taskId);
+  });
+
   it('WI-3278: the settings merge never writes THROUGH a pre-fix symlink into the global file', async () => {
     seedHome(home);
     const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-relink', home });

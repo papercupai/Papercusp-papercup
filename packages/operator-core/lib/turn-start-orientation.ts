@@ -76,6 +76,7 @@ import {
 } from './owner-directive-status';
 import { alsoSentToNote, directiveDisplayText, directiveNeedsSummary, shortOwner } from './owner-directive-display';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
   id: string;
@@ -3967,7 +3968,7 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+             AND ((item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
                OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
@@ -4040,7 +4041,7 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+             AND ((item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
                OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
@@ -4054,7 +4055,7 @@ export function defaultOrientationDeps(): OrientationDeps {
             JOIN harness_shared.coord_threads t
               ON t.workspace_id = ${ws}
              AND (
-               (t.parent_kind = 'issue' AND h.item_kind IN ('bug', 'change', 'task') AND t.parent_ref = h.feature_id)
+               (t.parent_kind = 'issue' AND h.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND t.parent_ref = h.feature_id)
                OR (t.parent_kind = 'feature' AND h.item_kind IN ('feature', 'chunk') AND t.parent_ref = h.harness_slug || '#' || h.feature_id)
              )
         )

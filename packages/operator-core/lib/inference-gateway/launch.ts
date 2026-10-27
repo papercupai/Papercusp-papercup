@@ -257,11 +257,12 @@ function makeWindowProjector(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (headers: Record<string, string | undefined>, _status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
-  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
+  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean; planType?: string }>();
   return (headers, _status, model, accountId) => {
     const parsedCredits = parseCodexRateLimitHeaders(headers);
     const observedCredits = parsedCredits.usageCreditsAvailable;
     const creditBalance = parsedCredits.creditBalance;
+    const planType = parsedCredits.planType; // WI-6554700010029499
     // HTTP status is transport metadata; only explicit Codex credit headers determine availability.
     const usageCreditsAvailable = observedCredits;
     let w = parseUnifiedWindow(headers);
@@ -318,7 +319,9 @@ function makeWindowProjector(
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
     const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
     const creditChanged = usageCreditsAvailable !== undefined && usageCreditsAvailable !== prev?.usageCreditsAvailable;
-    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged) return; // throttle ordinary meter updates
+    // WI-6554700010029499: a tier change must reach the write seam (its downgrade alarm) unthrottled.
+    const planChanged = planType !== undefined && planType !== prev?.planType;
+    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged && !planChanged) return; // throttle ordinary meter updates
     // Write on a meaningful move in EITHER window (≥0.03 utilization) or a reset roll.
     const significant =
       !prev ||
@@ -327,9 +330,10 @@ function makeWindowProjector(
       Math.abs(util7d - prev.util7d) >= 0.03 ||
       resetAt7d !== prev.resetAt7d ||
       creditChanged ||
+      planChanged ||
       usageCreditsAvailable !== undefined;
     if (!significant) return;
-    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable });
+    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable, planType: planType ?? prev?.planType });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
     // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
     // edge). Live traffic is the most frequent observer, so this is where an escalation
@@ -345,6 +349,7 @@ function makeWindowProjector(
             windowResetAt7d: w7.windowResetAt7d,
             usageCreditsAvailable,
             creditBalance,
+            planType,
           },
           t,
           ws,
@@ -378,14 +383,23 @@ function makeWindowProjector(
 function makeCredentialHealthAlert(
   ws: string | undefined,
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
-): (info: { accountId: string; consecutive401s: number }) => void {
+): (info: { accountId: string; consecutive401s: number; provider?: 'claude' | 'codex'; reason?: string }) => void {
   const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
-  return ({ accountId, consecutive401s }) => {
+  return ({ accountId, consecutive401s, provider, reason }) => {
     void (async () => {
-      const summary = `Inference credential for account '${accountId}' is DEAD — ${consecutive401s} consecutive 401s despite token refresh; spawns/evals on it will fail "produced no turn"`;
+      // WI-6554700010029300: Codex credential death (refresh_token_invalidated / unusable codex-cli
+      // login) is a single terminal rejection, not a 401 streak — word it so the owner knows the fix.
+      const summary =
+        provider === 'codex'
+          ? `Codex credential for account '${accountId}' is DEAD — the provider rejected its refresh/login; it is out of the Codex pool until re-authenticated`
+          : `Inference credential for account '${accountId}' is DEAD — ${consecutive401s} consecutive 401s despite token refresh; spawns/evals on it will fail "produced no turn"`;
       const body =
-        `The inference gateway dropped + refreshed account '${accountId}'s OAuth token after each 401, but the refresh keeps yielding the same invalid credential — so it is genuinely dead/expired (revoked, or its refresh token is bad), not merely stale-cached. ` +
-        `Re-authenticate or replace the credential (accounts:* / re-login) and the gateway's next successful 2xx for this account clears the alert state. Routing has already failed this account over to a healthy account where one exists.`;
+        provider === 'codex'
+          ? `The inference gateway's Codex lane got a terminal credential rejection for account '${accountId}'${reason ? ` (${reason})` : ''}. ` +
+            `The gateway quarantines it and fails over, but every rejected request is capacity the Codex pool silently loses — when the remaining accounts hit their windows, Codex sessions die with "exceeded retry limit, last status: 429". ` +
+            `Fix: re-run \`codex login\` for this account's CODEX_HOME (re-authenticate / replace the credential); the account's next successful 2xx re-arms this alert.`
+          : `The inference gateway dropped + refreshed account '${accountId}'s OAuth token after each 401, but the refresh keeps yielding the same invalid credential — so it is genuinely dead/expired (revoked, or its refresh token is bad), not merely stale-cached. ` +
+            `Re-authenticate or replace the credential (accounts:* / re-login) and the gateway's next successful 2xx for this account clears the alert state. Routing has already failed this account over to a healthy account where one exists.`;
       // Durable, transition-only escalation (idempotent per dead account).
       try {
         const { openEscalation, listEscalations } = await import('../agent-tools/coordination/escalations');
@@ -1289,7 +1303,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // so a known-dead account is disqualified immediately after a restart. Independent try so it works even
     // before the owner-pins table (migration 416) exists.
     try {
-      const [{ loadAccountPool }, { accountBurnAction }] = await Promise.all([
+      const [{ loadAccountPool }, { accountGatewayBurnAction }] = await Promise.all([
         import('../deployment/account-pool-store'),
         import('../deployment/account-pool'),
       ]);
@@ -1308,9 +1322,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           readingAt: Math.max(a.rate?.utilizationAt ?? 0, a.rate?.usageCreditsObservedAt ?? 0) || undefined,
           usageCreditsAvailable: a.rate?.usageCreditsAvailable,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
-          // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
-          // strand an otherwise recovered account after its projection has gone stale.
-          burnAction: accountBurnAction(a, hintNow),
+          // The verdict applies the canonical freshness gate, so a days-old SHED verdict cannot
+          // strand an otherwise recovered account after its projection has gone stale. The GATEWAY
+          // form refuses only a measured wall; a pacing-projection shed ranks as throttle here and
+          // keeps serving (it still refuses the spawn hard pin) — WI-6554700010029796.
+          burnAction: accountGatewayBurnAction(a, hintNow),
         })),
       );
       recordDbOutcome('rate-hints', true);

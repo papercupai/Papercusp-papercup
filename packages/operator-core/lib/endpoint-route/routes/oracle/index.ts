@@ -27,6 +27,7 @@ import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { rolePromptUnavailableDetails } from '../../../prompt-assembly';
 import { getSessionUserOrDefault } from '../../../auth';
 import '../../../agent-tools/index';
 
@@ -112,7 +113,7 @@ const chat = defineTool({
               sink.event(ev.name, ev.data as Record<string, unknown>);
             }
           } else if (ev.kind === 'error') {
-            sink.event('error', { message: ev.error.message });
+            sink.event('error', rolePromptUnavailableDetails(ev.error) ?? { message: ev.error.message });
           } else if (ev.kind === 'done' && ev.result) {
             sink.event('done', ev.result.content);
           }

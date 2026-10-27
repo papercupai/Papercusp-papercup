@@ -68,7 +68,32 @@ function* walkTs(dir: string): Generator<string> {
   }
 }
 
-const CALL = 'managedSetInterval';
+/**
+ * The calls that ARM a managed timer, and where each one carries its literal name.
+ *
+ * `createManagedSweepStarter({ name, intervalMs, options, onError })` (scheduled-registry)
+ * arms `managedSetInterval(definition.name, …, definition.options)` internally, so at that
+ * inner call the name and category are variables. The literals live at the DEFINITION
+ * site, which is why it is a registration call in its own right here. Missing it once
+ * blinded the coverage gate to seven migrated watchdogs (31e22e32d1, 2026-10-24).
+ */
+const CALLS: readonly { call: string; nameFrom: 'first-arg' | 'name-property' }[] = [
+  { call: 'managedSetInterval', nameFrom: 'first-arg' },
+  { call: 'createManagedSweepStarter', nameFrom: 'name-property' },
+];
+
+/**
+ * A literal name, or — for a template literal with a static prefix — the FAMILY name
+ * `<prefix>*`: one call site arming many instances, all with the same executor and target,
+ * so one declaration covers the family. A template with no static prefix stays null.
+ */
+function readName(text: string | undefined): string | null {
+  if (text === undefined) return null;
+  const quoted = /^\s*'([^']*)'/.exec(text)?.[1];
+  if (quoted) return quoted;
+  const prefix = /^\s*`([^`$]*)\$\{/.exec(text)?.[1];
+  return prefix ? `${prefix}*` : null;
+}
 
 /**
  * PURE: blank out comments and string/template BODIES, preserving length and newlines so
@@ -126,35 +151,39 @@ export function stripCommentsAndStringBodies(src: string): string {
  */
 export function extractManagedTimerCalls(source: string): { name: string | null; category: string | null }[] {
   const src = stripCommentsAndStringBodies(source);
-  const out: { name: string | null; category: string | null }[] = [];
-  let i = 0;
-  while ((i = src.indexOf(`${CALL}(`, i)) !== -1) {
-    // Skip a call that is part of a longer identifier (e.g. `wrapManagedSetInterval(`).
-    const prev = i > 0 ? src[i - 1] : '';
-    if (/[A-Za-z0-9_$]/.test(prev)) {
-      i += CALL.length;
-      continue;
-    }
-    const open = i + CALL.length;
-    let depth = 0;
-    let j = open;
-    for (; j < src.length; j++) {
-      const c = src[j];
-      if (c === '(') depth += 1;
-      else if (c === ')') {
-        depth -= 1;
-        if (depth === 0) break;
+  const found: { at: number; name: string | null; category: string | null }[] = [];
+  for (const { call, nameFrom } of CALLS) {
+    let i = 0;
+    while ((i = src.indexOf(`${call}(`, i)) !== -1) {
+      // Skip a call that is part of a longer identifier (e.g. `wrapManagedSetInterval(`),
+      // and the function's own declaration, which is not a registration.
+      const prev = i > 0 ? src[i - 1] : '';
+      if (/[A-Za-z0-9_$]/.test(prev) || /\bfunction\s*$/.test(src.slice(Math.max(0, i - 24), i))) {
+        i += call.length;
+        continue;
       }
+      const open = i + call.length;
+      let depth = 0;
+      let j = open;
+      for (; j < src.length; j++) {
+        const c = src[j];
+        if (c === '(') depth += 1;
+        else if (c === ')') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      // Offsets are preserved by the blanking above, so the ORIGINAL text at this span
+      // still carries the literals the stripped copy erased.
+      const args = source.slice(open + 1, j);
+      const nameText = nameFrom === 'first-arg' ? args : /\bname:([\s\S]*)/.exec(args)?.[1];
+      const name = readName(nameText);
+      const category = /category:\s*'([^']*)'/.exec(args)?.[1] || null;
+      found.push({ at: i, name, category });
+      i = j > i ? j : i + call.length;
     }
-    // Offsets are preserved by the blanking above, so the ORIGINAL text at this span
-    // still carries the literals the stripped copy erased.
-    const args = source.slice(open + 1, j);
-    const name = /^\s*'([^']*)'/.exec(args)?.[1] || null;
-    const category = /category:\s*'([^']*)'/.exec(args)?.[1] || null;
-    out.push({ name, category });
-    i = j > i ? j : i + CALL.length;
   }
-  return out;
+  return found.sort((a, b) => a.at - b.at).map(({ name, category }) => ({ name, category }));
 }
 
 /**
@@ -167,7 +196,7 @@ export function scanManagedTimers(repoRoot: string): ScannedTimer[] {
   for (const root of SCAN_ROOTS) {
     for (const file of walkTs(join(repoRoot, root))) {
       const src = readFileSync(file, 'utf8');
-      if (!src.includes(`${CALL}(`)) continue;
+      if (!CALLS.some(({ call }) => src.includes(`${call}(`))) continue;
       const rel = relative(repoRoot, file).split(sep).join('/');
       for (const call of extractManagedTimerCalls(src)) {
         found.push({ name: call.name, category: call.category, file: rel });

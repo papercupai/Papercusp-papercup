@@ -22,7 +22,12 @@ import { registerSystemAction } from './system-actions';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 registerSystemAction('frozen-candidate-drift-sweep', async () => {
-  const [{ readFrozenRepairMarker }, { detectFrozenCandidateDrift, parseDriftCommits }, { integrationRoot }, { integrationBranch }] =
+  const [
+    { readFrozenRepairMarker },
+    { detectFrozenCandidateDrift, parseDriftCommits, DRIFT_COMMIT_LOG_FORMAT },
+    { integrationRoot },
+    { integrationBranch },
+  ] =
     await Promise.all([
       import('../../release/frozen-repair-edit-marker'),
       import('../../release/frozen-candidate-drift-sweep'),
@@ -35,9 +40,10 @@ registerSystemAction('frozen-candidate-drift-sweep', async () => {
 
   const root = integrationRoot();
   const branch = integrationBranch();
-  // `%x00` separates commits; `%H` then the trailer then --name-only paths. The
+  // `%x00` separates commits; `%H` then the delimited message then --name-only paths. The
   // `Papercusp-Agent:` trailer is the ONLY trustworthy attribution here — git-sync commits
   // the whole tree under one identity, so blame and the subject both name the wrong agent.
+  // WI-6554700010029864: read it from the message; `%(trailers)` missed it on 81% of commits.
   const [log] = await runGitBatch(
     [{
       repo: root,
@@ -46,7 +52,7 @@ registerSystemAction('frozen-candidate-drift-sweep', async () => {
         `${marker.candidate}..${branch}`,
         '--no-merges',
         '--name-only',
-        '--format=%x00%H%n%(trailers:key=Papercusp-Agent)',
+        `--format=${DRIFT_COMMIT_LOG_FORMAT}`,
       ],
     }],
     { timeoutMs: 30_000, maxBuffer: 32 * 1024 * 1024, label: 'frozen-candidate-drift-sweep' },

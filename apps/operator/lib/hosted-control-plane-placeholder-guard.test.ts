@@ -32,8 +32,12 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 describe('hosted control plane bundled boot', () => {
-  it('gives isolated chat children the existing unpinned account-pool route', () => {
-    const unit = readFileSync(resolve(__dirname, '../scripts/systemd/papercusp-hosted-control-plane.service.in'), 'utf8');
+  it.each([
+    'papercusp-hosted-control-plane.service.in',
+    'papercup-dev-api.service.d/65-inference-gateway-auto.conf',
+    'papercup-staging-api.service.d/65-inference-gateway-auto.conf',
+  ])('gives isolated chat children the existing unpinned account-pool route in %s', (source) => {
+    const unit = readFileSync(resolve(__dirname, '../scripts/systemd', source), 'utf8');
     const environment = unit.split('\n').filter(line => line.startsWith('Environment='))
       .map(line => line.slice('Environment='.length));
     const values = Object.fromEntries(environment.map(line => {

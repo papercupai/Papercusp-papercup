@@ -1,10 +1,14 @@
-import { spawnSync } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof,
+} from '../test/isolated-integration-proof';
 
 const root = resolve(__dirname, '../../..');
+const lifecycleOptions = isolatedWorkerOptions(180_000);
 
 describe('disposable operator-api monitoring sources', () => {
   let auditDirectory: string | undefined;
@@ -224,7 +228,7 @@ describe('disposable operator-api device lifecycle', () => {
     expect(existsSync(proof.home), 'Private advertised-route runtime must be disposed').toBe(false);
   }, 260_000);
 
-  it('enforces expiry, revocation and workspace isolation through real HTTP and Postgres', () => {
+  it('enforces expiry, revocation and workspace isolation through real HTTP and Postgres', async context => {
     const probe = `
       import assert from 'node:assert/strict';
       import { createHmac, randomUUID } from 'node:crypto';
@@ -367,6 +371,21 @@ describe('disposable operator-api device lifecycle', () => {
         }
         await request('other-workspace-survives-revocation', '/device/heartbeat', 200,
           { method: 'POST', token: foreignToken });
+        const repairMint = await request('mint-fresh-pair-after-revocation', '/device/desktop/mint-pair-token', 200,
+          { method: 'POST', body: { workspaceId: id } });
+        const repaired = await request('re-pair-after-revocation', '/device/pair', 200,
+          { method: 'POST', body: { pairToken: repairMint.qrPayload.pairToken } });
+        assert.equal(repaired.workspaceId, id);
+        assert.equal(typeof repaired.deviceId, 'string');
+        assert.notEqual(repaired.deviceId, pair.deviceId);
+        assert.equal(typeof repaired.deviceToken, 'string');
+        const repairedConfig = await request('re-paired-device-reads-own-workspace', '/device/runtime-config', 200,
+          { token: repaired.deviceToken, workspace: other });
+        assert.equal(repairedConfig.workspaceId, id);
+        await request('re-paired-device-heartbeat-authorized', '/device/heartbeat', 200,
+          { method: 'POST', token: repaired.deviceToken });
+        await request('old-device-still-revoked-after-re-pair', '/device/heartbeat', 403,
+          { method: 'POST', token: pair.deviceToken });
         console.log('PRIVATE_DEVICE_LIFECYCLE_PROOF=' + JSON.stringify({
           workspace: id, otherWorkspace: other, home: e.HOME, transport: 'real-loopback-http',
           database: 'disposable-migrated-postgres', checks,
@@ -377,33 +396,58 @@ describe('disposable operator-api device lifecycle', () => {
       }
       process.exit(0);
     `;
-    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
-      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
-      cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+    const runId = await recordIsolatedIntegrationProof({
+      root, filePath: 'packages/operator-core/lib/device-operator-api-profile.integration.test.ts',
+      sourcePaths: [
+        'packages/operator-core/lib/endpoint-route/routes/device/pair.ts',
+        'packages/operator-core/lib/endpoint-route/routes/device/_shared.ts',
+        'packages/operator-core/lib/device-pair-store.ts',
+        'packages/operator-core/lib/device-jwt.ts', 'packages/operator-core/lib/device-store.ts',
+        'packages/operator-core/lib/native-device-fixture.ts', 'packages/operator-core/lib/workspace-registry.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/test/private-http-workspace-preflight.ts', 'scripts/with-test-pg.mjs',
+      ],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' };
+        // The outer runner owns reporter receipts. This child supplies its
+        // original lifetime over IPC and retains its own output separately.
+        for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+          'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+          'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE']) delete env[key];
+        const child = fork(resolve(root, 'scripts/with-test-pg.mjs'), [
+          '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe,
+        ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, lifecycleOptions);
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+          timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        const line = result.output.split('\n').find(row => row.startsWith('PRIVATE_DEVICE_LIFECYCLE_PROOF='));
+        expect(line, 'Real device authorization requests must execute').toBeDefined();
+        const proof = JSON.parse(line!.slice('PRIVATE_DEVICE_LIFECYCLE_PROOF='.length));
+        expect(proof.checks.map((check: { name: string }) => check.name)).toEqual([
+          'mint-current-remote-access', 'redeem', 'one-shot-reuse-refused',
+          'mint-expiry-probe', 'expired-pair-token-refused',
+          'workspace-A-device-read', 'workspace-B-device-read',
+          'cross-workspace-revoke-has-no-effect', 'foreign-device-still-authorized',
+          'header-cannot-override-token-workspace', 'unknown-workspace-switch-refused',
+          'workspace-switch-A-to-B', 'switched-token-claims-B', 'switched-device-data-is-B',
+          'workspace-switch-B-to-A', 'switched-device-data-restores-A',
+          ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
+            .map(path => 'expired-device-refused:' + path),
+          'unexpired-device-still-authorized', 'desktop-revoke',
+          ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
+            .map(path => 'revoked-device-refused:' + path),
+          'other-workspace-survives-revocation',
+          'mint-fresh-pair-after-revocation', 're-pair-after-revocation',
+          're-paired-device-reads-own-workspace', 're-paired-device-heartbeat-authorized',
+          'old-device-still-revoked-after-re-pair',
+        ]);
+        expect(proof.transport).toBe('real-loopback-http');
+        expect(proof.database).toBe('disposable-migrated-postgres');
+        expect(existsSync(proof.home), 'Private device runtime must be disposed').toBe(false);
+      },
     });
-    console.log(result.stdout);
-    if (result.stderr) console.log('[private operator child stderr]\n' + result.stderr);
-    expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
-    const line = result.stdout.split('\n').find(row => row.startsWith('PRIVATE_DEVICE_LIFECYCLE_PROOF='));
-    expect(line, 'Real device authorization requests must execute').toBeDefined();
-    const proof = JSON.parse(line!.slice('PRIVATE_DEVICE_LIFECYCLE_PROOF='.length));
-    expect(proof.checks.map((check: { name: string }) => check.name)).toEqual([
-      'mint-current-remote-access', 'redeem', 'one-shot-reuse-refused',
-      'mint-expiry-probe', 'expired-pair-token-refused',
-      'workspace-A-device-read', 'workspace-B-device-read',
-      'cross-workspace-revoke-has-no-effect', 'foreign-device-still-authorized',
-      'header-cannot-override-token-workspace', 'unknown-workspace-switch-refused',
-      'workspace-switch-A-to-B', 'switched-token-claims-B', 'switched-device-data-is-B',
-      'workspace-switch-B-to-A', 'switched-device-data-restores-A',
-      ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
-        .map(path => 'expired-device-refused:' + path),
-      'unexpired-device-still-authorized', 'desktop-revoke',
-      ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
-        .map(path => 'revoked-device-refused:' + path),
-      'other-workspace-survives-revocation',
-    ]);
-    expect(proof.transport).toBe('real-loopback-http');
-    expect(proof.database).toBe('disposable-migrated-postgres');
-    expect(existsSync(proof.home), 'Private device runtime must be disposed').toBe(false);
-  }, 200_000);
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ISOLATED_DEVICE_LIFECYCLE_PROOF_RUN ' + runId);
+  }, lifecycleOptions.testTimeoutMs);
 });

@@ -234,6 +234,10 @@ const RULES: ReadonlyArray<{
       // Plans cleanup uses the same cookie-less desktop-webview POST path and
       // the same requireAllowedOriginOr403 CSRF backstop as Inbox bulk resolve.
       { method: 'POST', path: '/admin/plan-cleanup', auth: VTL },
+      // The Plans pane completion form's submit (plan-item-types-registry-cupboard
+      // -2026-10-20 P-007) posts from the same cookie-less desktop webview and
+      // applies requireAllowedOriginOr403 before reading the body.
+      { method: 'POST', path: '/admin/plan-item-type-fields', auth: VTL },
       // Inbox triage + the standing bulk automation policy (Settings > Autonomy,
       // the Plans pane) post from that same cookie-less desktop webview. VT 403'd
       // both in the shipping shell (webview-fetch-auth.test.ts, WI-6554700010009809);

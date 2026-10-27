@@ -97,7 +97,7 @@ const TRIGGER_EVENT = '(?:insert|update(?:\\s+of\\s+' + TRIGGER_COLUMNS + ')?|de
 // A row-field comparison against a literal has no executable function call.
 // Keep complex WHEN expressions outside this narrow lock-footprint proof.
 const STATIC_TRIGGER_WHEN = '\\s+when\\s*\\(\\s*(?:new|old)\\.[a-z_][a-z0-9_$]*\\s*' +
-  '(?:=|<>|!=|is(?:\\s+not)?\\s+distinct\\s+from)\\s*' +
+  '(?:=|<>|!=|not\\s+like|like|is(?:\\s+not)?\\s+distinct\\s+from)\\s*' +
   "(?:'(?:''|[^'])*'|null|true|false|[0-9]+)\\s*\\)";
 const STATIC_TRIGGER_ACTION = new RegExp(
   '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +

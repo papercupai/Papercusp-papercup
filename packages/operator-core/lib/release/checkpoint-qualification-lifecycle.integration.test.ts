@@ -1,6 +1,14 @@
 /** Real Postgres regression for the shared qualification/repair row. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { execFileSync, spawn } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { classifyReadPaths, writeExecutedSourceMapSnapshot } from '../../../../libs/test-config/src/executed-source-map-reporter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const db = vi.hoisted(() => ({ sql: null as Sql | null }));
@@ -17,6 +25,7 @@ vi.mock('./frozen-repair-edit-marker', () => ({ projectFrozenRepairMarker: () =>
 import {
   beginQualificationTransaction,
   beginStoredQualification,
+  composeStoredQualificationWork,
   checkpointPidIdentity,
   classifyScheduledQualificationJoin,
   configureRunnerLivenessProber,
@@ -24,8 +33,16 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationWorkProgress,
+  recordStoredQualificationWorkYield,
+  recordStoredQualificationNativeCompletion,
+  recordStoredQualificationNativeProducer,
+  recoverStoredQualificationNativeCompletions,
+  continueStoredQualificationWork,
+  type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationVerdict,
+  recordStoredQualificationComposedVerdict,
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
   settleQualificationTransaction,
@@ -43,6 +60,13 @@ import {
 } from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
 import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
+import { evaluatePartialTaskContinuation, registerPartialNativeProducer, partialCurrentExecutionFingerprint,
+  partialTaskCommandInputs, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { vitestConfigLoaderPolicy } from '../../../../scripts/lib/vitest-host-preflight.mjs';
+import { captureRuntimeProofIdentity, runtimeProofFingerprint } from '../../../../scripts/lib/runtime-compatibility.mjs';
+import { createQualificationYieldBoundary, resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -77,6 +101,1229 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it.each(['complete', 'live-predecessor', 'unknown-predecessor', 'missing-terminal', 'terminal-error',
+    'prefix-error', 'missing-post', 'old-fence', 'source-drift', 'different-task'] as const)(
+    'composes a dead native prefix with only its remaining file: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'qualification-prefix-source-'));
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      let fixture: Awaited<ReturnType<typeof nativeRecoveryFixture>> | undefined;
+      try {
+        git('init', '--quiet');
+        for (const file of ['native.test.ts', 'remaining.test.ts', 'input.json']) writeFileSync(join(root, file), '{}\n');
+        git('add', '.');
+        git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
+          'commit', '--quiet', '-m', 'fixture');
+        fixture = await nativeRecoveryFixture({ root, candidate: git('rev-parse', 'HEAD') });
+        fixture.input.manifest.units.push({ id: 'remaining', kind: 'test', path: 'remaining.test.ts' },
+          { id: 'post', kind: 'post-suite', path: 'input.json' });
+        const specifications = fixture.observation.selectedSpecifications;
+        specifications.push({ ...specifications[0]!, testFile: 'remaining.test.ts' });
+        fixture.snapshot.nativeRun.selectedManifest = { specifications: structuredClone(specifications),
+          sha256: createHash('sha256').update(JSON.stringify(specifications)).digest('hex') };
+        fixture.save();
+        const first = fixture.enroll();
+        expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+        expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths)).status)
+          .toBe('updated');
+        const banked = await readStoredQualification(target);
+        expect(banked).toMatchObject({ transaction: { continuation: { receipts: [
+          expect.objectContaining({ unitId: 'native', completionId: 'native-completion' }),
+        ] } } });
+        expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+          pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+        const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 900 };
+        const stored = await readStoredQualification(target);
+        if (stored.status !== 'present') throw new Error('fixture qualification missing');
+        expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: stored.transaction.continuation },
+          { ...input, sourceCommit: input.candidate })).toMatchObject({ reused: ['native'], run: ['post', 'remaining'] });
+
+        // Execute/enroll only the missing file. The old completed file is never
+        // included in this producer's independent selection or output population.
+        const path = join(fixture.directory, 'remaining.json');
+        const selected = [specifications[1]!];
+        const taskKey = scenario === 'different-task' ? 'another-task' : first.taskKey;
+        const producer = registerPartialNativeProducer(path, { attemptId: input.attemptId, runGroupId: input.runId,
+          root, taskKey, workspaceName: first.workspaceName, sourceCommit: input.candidate, registeredAtMs: 550,
+          command: { cwd: root, cmd: 'npm', argv: ['run', 'test'] }, selectedSpecifications: selected }, { NODE_ENV: 'test' });
+        expect((await recordStoredQualificationNativeProducer(target, input, { ...first, taskKey, path,
+          producerPath: producer.path, selectedSpecifications: selected })).status).toBe('updated');
+        const remaining = structuredClone(fixture.snapshot);
+        remaining.completionCheckpoint.runGroupId = input.runId;
+        remaining.rows[0]!.testFile = 'remaining.test.ts';
+        remaining.rows[0]!.executedModules = ['remaining.test.ts'];
+        remaining.nativeRun.selectedManifest = { specifications: structuredClone(selected),
+          sha256: createHash('sha256').update(JSON.stringify(selected)).digest('hex') };
+        const file = remaining.nativeRun.files[0]!;
+        Object.assign(file, { testFile: 'remaining.test.ts', completionId: 'remaining-completion', observedAtMs: 650 });
+        file.proof.sourceEvidence.sources[0]!.path = 'remaining.test.ts';
+        remaining.nativeRun.startedAtMs = 600;
+        if (scenario !== 'missing-terminal') Object.assign(remaining.nativeRun,
+          { finishedAtMs: 700, terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0, modulePopulationMatched: true });
+        if (scenario === 'terminal-error') Object.assign(remaining.nativeRun, { reason: 'failed', unhandledErrorCount: 1 });
+        writeExecutedSourceMapSnapshot(path, remaining);
+        if (scenario === 'prefix-error') {
+          Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: 280, reason: 'failed', unhandledErrorCount: 1 });
+          fixture.save();
+        }
+        if (scenario !== 'missing-post') expect((await recordStoredQualificationWorkProgress(target, { ...input,
+          updates: [{ receipt: { unitId: 'post', completionId: 'post-completion', state: 'pass', observedAtMs: 750,
+            observedCount: 1, worktreeDirty: false, proof: { recordedSha: input.candidate, runContext: input.runContext,
+              runnerIdentity: input.runnerIdentity, executedModules: ['input.json'], inputsCaptured: true,
+              readPaths: [], opaqueReasons: [] } } }] })).status).toBe('updated');
+        if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
+        configureRunnerLivenessProber(() => scenario === 'live-predecessor' ? 'live' :
+          scenario === 'unknown-predecessor' ? 'unknown' : 'dead');
+        const before = await readStoredQualification(target);
+        const request = { ...input, ...(scenario === 'old-fence' ? { runnerId: 'runner-one' } : {}) };
+        const composed = await composeStoredQualificationWork(target, request, { classifyReadPaths: first.classifyReadPaths });
+        if (scenario !== 'complete') {
+          expect(composed).toMatchObject({ status: 'conflict' });
+          expect(await readStoredQualification(target)).toEqual(before);
+          return;
+        }
+        expect(composed).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'pending' },
+          continuation: { receipts: expect.arrayContaining([
+            expect.objectContaining({ unitId: 'native', completionId: 'native-completion' }),
+            expect.objectContaining({ unitId: 'remaining', completionId: 'remaining-completion' }),
+          ]) } } });
+        const result = await recordStoredQualificationComposedVerdict(target, input, {
+          candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true, nowMs: 1000,
+          terminalEvent: { status: 'qualification-prefix-composition-fixture', detail: { scenario } },
+        }, { classifyReadPaths: first.classifyReadPaths });
+        expect(result).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
+      } finally { configureRunnerLivenessProber(null); fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
+    }, 30_000,
+  );
+  it.each(['complete', 'missing-post', 'partial-native', 'native-error', 'missing-output', 'source-drift', 'old-fence'])(
+    'composes the frozen full manifest atomically: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'qualification-composition-source-'));
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      let fixture: Awaited<ReturnType<typeof nativeRecoveryFixture>> | undefined;
+      try {
+        // This is a disposable fixture repository, never the shared checkout.
+        git('init', '--quiet');
+        writeFileSync(join(root, 'native.test.ts'), 'export const native = true;\n');
+        writeFileSync(join(root, 'input.json'), '{}\n');
+        git('add', 'native.test.ts', 'input.json');
+        git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+        fixture = await nativeRecoveryFixture({ root, candidate: git('rev-parse', 'HEAD') });
+        const input = fixture.input;
+        input.manifest.units.push({ id: 'guard', kind: 'guard', path: 'input.json' },
+          { id: 'post', kind: 'post-suite', path: 'input.json' });
+        const observation = fixture.enroll();
+        expect((await recordStoredQualificationNativeProducer(target, input, observation)).status).toBe('updated');
+        expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('updated');
+        const proof = { recordedSha: input.candidate, runContext: input.runContext, runnerIdentity: input.runnerIdentity,
+          executedModules: ['input.json'], inputsCaptured: true, readPaths: [], opaqueReasons: [] };
+        expect((await recordStoredQualificationWorkProgress(target, { ...input, updates:
+          ['guard', ...(scenario === 'missing-post' ? [] : ['post'])].map(id => ({ receipt: {
+            unitId: id, completionId: `${id}-completion`, state: 'pass' as const, observedAtMs: 280,
+            observedCount: 1, worktreeDirty: false, proof,
+          } })) })).status).toBe('updated');
+        if (scenario !== 'partial-native') Object.assign(fixture.snapshot.nativeRun, {
+          finishedAtMs: 290, reason: 'passed', unhandledErrorCount: 0, modulePopulationMatched: true,
+        });
+        if (scenario === 'native-error') Object.assign(fixture.snapshot.nativeRun, { reason: 'failed', unhandledErrorCount: 1 });
+        fixture.save();
+        if (scenario === 'missing-output') rmSync(observation.path);
+        if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
+        const verdict = { candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true,
+          nowMs: 400, terminalEvent: { status: 'qualification-composition-fixture', detail: { scenario } } };
+        const currentDefinition = vi.fn(() => { throw new Error('eligible retained commands must not execute or reauthenticate as current'); });
+        const compositionOptions = { classifyReadPaths: observation.classifyReadPaths,
+          currentCommandDefinition: currentDefinition };
+        const composed = await composeStoredQualificationWork(target,
+          { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) },
+          compositionOptions);
+        expect(composed.status).toBe(scenario === 'complete' ? 'idempotent' : 'conflict');
+        // Even a complete population cannot settle or release the physical owner
+        // before the caller has performed its promotion decision.
+        expect(await readStoredQualification(target)).toMatchObject({ transaction: { outcome: { kind: 'pending' },
+          currentPhysicalRunner: { id: input.runnerId } } });
+        const result = await recordStoredQualificationComposedVerdict(target,
+          { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) }, verdict,
+          compositionOptions);
+        expect(currentDefinition).not.toHaveBeenCalled();
+        if (scenario === 'complete') {
+          expect(result).toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' },
+            currentPhysicalRunner: null, continuation: { receipts: expect.arrayContaining([
+              expect.objectContaining({ unitId: 'native' }), expect.objectContaining({ unitId: 'guard' }),
+              expect.objectContaining({ unitId: 'post' }),
+            ]) } } });
+          expect(await readStoredQualification(target)).toMatchObject({ transaction: { outcome: { kind: 'green' } } });
+        } else {
+          expect(result).toMatchObject({ status: 'conflict' });
+          expect(await readStoredQualification(target)).toMatchObject({ transaction: { outcome: { kind: 'pending' },
+            currentPhysicalRunner: { id: input.runnerId } } });
+        }
+        const events = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM harness_shared.pipeline_events
+          WHERE workspace_id = ${target.workspaceId} AND status = 'qualification-composition-fixture'
+            AND detail->>'scenario' = ${scenario}`;
+        expect(events[0]?.count).toBe(scenario === 'complete' ? 1 : 0);
+      } finally { fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
+    }, 30_000,
+  );
+  it.each(['SIGTERM', 'SIGKILL'] as const)('resumes the independent population after a real native %s before its first snapshot', async signal => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const fixtureRoot = join(root, 'libs/test-config/src/__fixtures__/durable-completion');
+    const config = join(fixtureRoot, 'vitest.config.ts');
+    const argv = [join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs'),
+      'run', '--root', fixtureRoot, '--config', config];
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
+        .some(prefix => key.startsWith(prefix))) env[key] = value;
+    }
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', timeout: 10_000 }).trim();
+    const owner = { attemptId: 'native-crash-attempt', candidate, runnerId: 'native-crash-one',
+      runId: 'native-crash-run-one', leaseDurationMs: 120_000 };
+    // Discovery runs BEFORE the producer; surviving OUT files never define selection.
+    const discovery = execFileSync(process.execPath, [join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
+      cwd: root, env, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+      input: JSON.stringify({ requests: [{ root: fixtureRoot, repositoryRoot: root, config,
+        enumerateFiles: true, enumerateSpecifications: true }] }),
+    });
+    const marker = 'PC_VITEST_CONFIG_CONTRACTS=';
+    const line = discovery.split(/\r?\n/).find(value => value.startsWith(marker));
+    const selected = JSON.parse(line!.slice(marker.length)).results[0];
+    expect(selected.ok, discovery).toBe(true);
+    const specifications: Array<{ testFile: string }> = selected.selectedSpecifications;
+    expect(specifications).toHaveLength(3);
+    await seed();
+    expect((await beginStoredQualification(target, owner)).status).toBe('updated');
+    const directory = mkdtempSync(join(tmpdir(), 'qualification-native-crash-'));
+    const outPath = join(directory, 'out.json');
+    Object.assign(env, {
+      PC_COMPLETION_CRASH_WINDOW: 'before-first-snapshot', PC_COMPLETION_CRASH_SIGNAL: signal,
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/durable-completion-fixture',
+      PC_EXECUTED_SOURCE_MAP_OUT: outPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
+      PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs'),
+      PAPERCUSP_TEST_RUN_GROUP: owner.runId,
+      PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-crash-fixture',
+    });
+    const policy = vitestConfigLoaderPolicy(argv, env);
+    const child = spawn(process.execPath, [...policy.vitestArgs, ...policy.configLoaderArgs], { cwd: fixtureRoot, env, detached: true,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    let output = '';
+    child.stdout!.on('data', chunk => { output += chunk; });
+    child.stderr!.on('data', chunk => { output += chunk; });
+    const stopped = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    const stopOwnedTree = () => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+    };
+    const timer = setTimeout(stopOwnedTree, 120_000);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', () => reject(new Error(`native fixture exited before enrollment: ${output}`)));
+        child.on('message', message => {
+          if ((message as { kind?: string; pid?: number })?.kind === 'native-pre-snapshot-ready') resolve();
+        });
+      });
+      const pidIdentity = checkpointPidIdentity(child.pid!);
+      expect(pidIdentity).not.toBeNull();
+      const input: QualificationWorkProgressInput = { ...owner, pidIdentity: pidIdentity!,
+        root, taskKey: 'qualification', repairHead: null, runContext: 'clean-local',
+        runnerIdentity: `proof-v3 ${process.version} ${process.platform} ${process.arch}`,
+        retryStates: [], updates: [], manifest: { schemaVersion: 1,
+          units: specifications.map(spec => ({ id: spec.testFile, kind: 'test' as const, path: spec.testFile })) } };
+      expect((await reserveStoredQualificationRunner(target, { ...owner, pid: child.pid!, pidIdentity, started: true,
+        evidenceRefs: [`checkpoint-run:${owner.runId}`] })).status).toBe('updated');
+      const registration = registerPartialNativeProducer(outPath, { attemptId: owner.attemptId,
+        sourceCommit: candidate, runGroupId: owner.runId, root, taskKey: 'native-fixture',
+        workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE, registeredAtMs: Date.now(),
+        selectedSpecifications: specifications, command: { cmd: process.execPath, argv, cwd: fixtureRoot } }, env);
+      expect((await recordStoredQualificationNativeProducer(target, input, { path: outPath,
+        producerPath: registration.path, taskKey: 'native-fixture', workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE!,
+        selectedSpecifications: specifications })).status).toBe('updated');
+      child.send({ kind: 'native-producer-registered' });
+      expect(await stopped, output).toEqual({ code: null, signal });
+      stopOwnedTree();
+      expect(output).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=before-first-snapshot signal=${signal}`);
+      expect(existsSync(outPath)).toBe(false);
+      // The production prober measures the exact dead PID; no supplied liveness verdict.
+      const replacement = { ...owner, runnerId: 'native-crash-two', runId: 'native-crash-run-two',
+        pid: process.pid, pidIdentity: checkpointPidIdentity(process.pid)!, started: true };
+      expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+      const resumed = { ...input, ...replacement };
+      expect(await recoverStoredQualificationNativeCompletions(target, resumed, undefined, { recoverMissingSnapshots: true }))
+        .toMatchObject({ status: 'updated', transaction: { continuation: { receipts: [], nativeProducers: [
+          { missingSnapshot: { runnerId: owner.runnerId } },
+        ] } } });
+      const execute = vi.fn(async (_unit: { path: string }) => { throw new Error('replacement-boundary'); });
+      await expect(continueStoredQualificationWork(target, resumed, execute)).rejects.toThrow('replacement-boundary');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(specifications.some(spec => spec.testFile === execute.mock.calls[0]?.[0]?.path)).toBe(true);
+      expect(await readStoredQualification(target)).toMatchObject({ transaction: { attemptId: owner.attemptId,
+        candidate, runId: replacement.runId, continuation: { manifest: input.manifest, receipts: [] } } });
+    } finally {
+      clearTimeout(timer);
+      stopOwnedTree();
+      await stopped;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 150_000);
+
+  it.each(['SIGTERM', 'SIGKILL', 'primary-yield'] as const)('keeps a real acknowledged file banked across %s and executes only its unfinished peer', async scenario => {
+    const signal = scenario === 'primary-yield' ? 'SIGTERM' : scenario;
+    const sourceRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+    const directory = mkdtempSync(join(tmpdir(), 'qualification-banked-native-'));
+    const root = join(directory, 'source');
+    const fixtureRoot = join(root, 'libs/test-config/src/__fixtures__/durable-completion');
+    const config = join(fixtureRoot, 'vitest.config.ts');
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 }).trim();
+    const children: Array<ReturnType<typeof spawn>> = [];
+    let dependencyLease: string | undefined;
+    const generationScript = join(sourceRoot, 'apps/operator/bin/release/dependency-generation.sh');
+    const stop = (child: ReturnType<typeof spawn>) => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+    };
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (!['PC_', 'VITEST', 'PAPERCUSP_TEST_', 'PAPERCUSP_CHECKPOINT_', 'PAPERCUSP_MUTATION_', 'AFFECTED_']
+        .some(prefix => key.startsWith(prefix))) env[key] = value;
+    }
+    const vitest = join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs');
+    // This copied repository is clean and committed. Retain the inherited
+    // committed-source guard while using its source-attested bundle support so
+    // Vite supplies the configuration dependency census required by pass reuse.
+    const argv = [vitest, 'run', '--root', fixtureRoot, '--config', config, '--configLoader', 'bundle'];
+    const start = (environment: NodeJS.ProcessEnv) => {
+      const policy = vitestConfigLoaderPolicy(argv, environment);
+      const child = spawn(process.execPath, [...policy.vitestArgs, ...policy.configLoaderArgs], {
+        cwd: fixtureRoot, env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      children.push(child);
+      let output = '';
+      child.stdout!.on('data', chunk => { output += chunk; });
+      child.stderr!.on('data', chunk => { output += chunk; });
+      const timer = setTimeout(() => stop(child), 120_000);
+      const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+      });
+      return { child, closed, output: () => output };
+    };
+    try {
+      // A small independent source repository gives the native recorder a real
+      // clean SHA even while peers edit the shared checkout. Copy the maintained
+      // reporter/config/helpers; no substitute reporter or authored OUT is used.
+      mkdirSync(join(root, 'libs/test-config'), { recursive: true });
+      cpSync(join(sourceRoot, 'libs/test-config/src'), join(root, 'libs/test-config/src'), { recursive: true });
+      cpSync(join(sourceRoot, 'libs/test-config/package.json'), join(root, 'libs/test-config/package.json'));
+      mkdirSync(join(root, 'libs/generic'), { recursive: true });
+      cpSync(join(sourceRoot, 'libs/generic/module-singleton'), join(root, 'libs/generic/module-singleton'), { recursive: true });
+      mkdirSync(join(root, 'libs/test-config/node_modules/@papercusp'), { recursive: true });
+      symlinkSync(join(root, 'libs/generic/module-singleton'), join(root, 'libs/test-config/node_modules/@papercusp/module-singleton'), 'dir');
+      cpSync(join(sourceRoot, 'scripts/lib'), join(root, 'scripts/lib'), { recursive: true });
+      cpSync(join(sourceRoot, 'package-lock.json'), join(root, 'package-lock.json'));
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'qualification-fixture', private: true, type: 'module', scripts: {
+        preguard: 'node -e "console.log(111)"', guard: 'node -e "console.log(222)"',
+        postguard: 'node -e "console.log(333)"', after: 'node -e "console.log(444)"',
+      } }));
+      writeFileSync(join(root, '.gitignore'), 'node_modules/\n.vitest-tmp/\n');
+      if (existsSync(join(sourceRoot, 'node_modules/.papercusp-dependency-generation'))) {
+        symlinkSync(join(sourceRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+      } else {
+        // A mutable development install cannot grant a reusable prefix. Select
+        // and lease the maintained, already-published exact-input generation;
+        // link its actual dependency bytes and copy its real immutable marker.
+        // This never installs packages or invents a generation for this fixture.
+        // Hermetic setup clears live generation-root environment overrides.
+        // A maintained committed clone has a local origin: read its existing
+        // store record, then still select by THIS checkout's exact inputs.
+        const origin = execFileSync('git', ['-C', sourceRoot, 'remote', 'get-url', 'origin'],
+          { encoding: 'utf8', timeout: 10_000 }).trim();
+        const storeOwner = origin.startsWith('/') && existsSync(origin) ? origin : sourceRoot;
+        const selected = execFileSync('bash', ['-c',
+          'source "$1"; store=$(dependency_generation_resolve_root "$4"); ' +
+          'dependency_generation_select_inputs "$2" "$store" || exit $?; ' +
+          'dependency_generation_acquire_selector_lease "$store" "$DEPENDENCY_GENERATION_ID" "$3" "$DEPENDENCY_GENERATION_TOKEN" || exit $?; ' +
+          'printf "FIXTURE_GENERATION=%s\\nFIXTURE_LEASE=%s\\n" "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_SELECTOR_LEASE"',
+          '--', generationScript, sourceRoot, String(process.pid), storeOwner],
+        { encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+        const generation = selected.split('\n').find(line => line.startsWith('FIXTURE_GENERATION='))?.slice('FIXTURE_GENERATION='.length);
+        dependencyLease = selected.split('\n').find(line => line.startsWith('FIXTURE_LEASE='))?.slice('FIXTURE_LEASE='.length);
+        if (!generation || !dependencyLease) throw new Error('immutable fixture dependency selection unmeasured');
+        const modules = join(generation, 'tree/node_modules');
+        mkdirSync(join(root, 'node_modules'));
+        for (const entry of readdirSync(modules).filter(entry => entry !== '.papercusp-dependency-generation'))
+          symlinkSync(join(modules, entry), join(root, 'node_modules', entry));
+        const marker = Object.fromEntries(readFileSync(join(generation, '.papercusp-dependency-generation'), 'utf8')
+          .trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+        // The same two-field projection setup-release-checkout materializes;
+        // identity/source are from the native selector's leased publication.
+        writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+          `identity=${marker.identity}\nsource=${marker.source}\n`);
+      }
+      // Tests import Vitest from this materialization; launch that same module
+      // graph so a mutable-install Vitest cannot drive immutable-install tests.
+      argv[0] = join(root, 'node_modules/vitest/vitest.mjs');
+      git('init', '--quiet');
+      git('add', '.');
+      git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'native continuation source fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      const owner = { attemptId: 'native-banked-attempt', candidate, runnerId: 'native-banked-one',
+        runId: 'native-banked-run-one', leaseDurationMs: 120_000 };
+      const outPath = join(directory, 'prefix.json');
+      Object.assign(env, { PC_COMPLETION_CONTINUATION_FIXTURE: '1',
+        PC_COMPLETION_CRASH_WINDOW: scenario === 'primary-yield' ? scenario : 'after-first-bank', PC_COMPLETION_CRASH_SIGNAL: signal,
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/durable-completion-fixture',
+        PC_EXECUTED_SOURCE_MAP_OUT: outPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
+        PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs-one'), PAPERCUSP_TEST_RUN_GROUP: owner.runId,
+        PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
+        PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-banked-fixture' });
+      const trace = await import(pathToFileURL(join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
+      // The router already preloads the shared observer. This fixture owns a
+      // copied source graph: replace that observer rather than installing both
+      // and turning each real lifecycle spawn into two observations.
+      const inheritedTrace = nativeProcessTraceEnv({ PC_EXECUTED_SOURCE_MAP_OUT: outPath }).NODE_OPTIONS!;
+      env.NODE_OPTIONS = (env.NODE_OPTIONS ?? '').replaceAll(inheritedTrace, '').trim();
+      Object.assign(env, trace.nativeProcessTraceEnv(env));
+      const discover = (environment: NodeJS.ProcessEnv) => {
+        const output = execFileSync(process.execPath, [join(sourceRoot, 'scripts/resolve-vitest-config-contracts.mjs')], {
+          cwd: sourceRoot, env: environment, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+          input: JSON.stringify({ requests: [{ root: fixtureRoot, repositoryRoot: root, config,
+            env: { PC_TEST_FILTER_LIST: environment.PC_TEST_FILTER_LIST },
+            enumerateFiles: true, enumerateSpecifications: true }] }),
+        });
+        const marker = 'PC_VITEST_CONFIG_CONTRACTS=';
+        const lines = output.split(/\r?\n/).filter(line => line.startsWith(marker));
+        expect(lines, output).toHaveLength(1);
+        const result = JSON.parse(lines[0]!.slice(marker.length)).results[0];
+        expect(result.ok, output).toBe(true);
+        return result.selectedSpecifications as Array<{ testFile: string }>;
+      };
+      const specifications = discover(env);
+      expect(specifications).toHaveLength(2);
+      await seed();
+      expect((await beginStoredQualification(target, owner)).status).toBe('updated');
+      const quantumStartedAtMs = Date.now();
+      const first = start(env);
+      const firstBank = new Promise<void>((resolve, reject) => {
+        first.child.on('message', message => {
+          if ((message as { kind?: string })?.kind === 'native-first-bank-ready') resolve();
+        });
+        first.child.once('close', () => {
+          if (scenario === 'primary-yield') reject(new Error(`native fixture exited before durable yield: ${first.output()}`));
+        });
+      });
+      await new Promise<void>((resolve, reject) => {
+        first.child.once('error', reject);
+        first.child.once('close', () => reject(new Error(`native fixture exited before enrollment: ${first.output()}`)));
+        first.child.on('message', message => {
+          if ((message as { kind?: string })?.kind === 'native-pre-snapshot-ready') resolve();
+        });
+      });
+      const pidIdentity = checkpointPidIdentity(first.child.pid!)!;
+      expect(pidIdentity).toBeTruthy();
+      const runtime = runtimeProofFingerprint(captureRuntimeProofIdentity({ root, environment: env, executable: process.execPath }));
+      expect(runtime).toBeTruthy();
+      const input: QualificationWorkProgressInput = { ...owner, pidIdentity, root, taskKey: 'qualification',
+        repairHead: null, runContext: 'clean-local', runnerIdentity: `proof-v3 ${runtime}`,
+        retryStates: [], updates: [], manifest: { schemaVersion: 1,
+          units: [...specifications.map(spec => ({ id: spec.testFile, kind: 'test' as const, path: spec.testFile })),
+            { id: 'guard:qualification-fixture :: guard', kind: 'guard', path: 'package.json' },
+            { id: 'post:after', kind: 'post-suite', path: 'package.json' }] } };
+      expect((await reserveStoredQualificationRunner(target, { ...owner, pid: first.child.pid!, pidIdentity,
+        started: true, evidenceRefs: [`checkpoint-run:${owner.runId}`] })).status).toBe('updated');
+      const enroll = async (progress: QualificationWorkProgressInput, path: string, selectedSpecifications: typeof specifications) => {
+        const registration = registerPartialNativeProducer(path, { attemptId: owner.attemptId, sourceCommit: candidate,
+          runGroupId: progress.runId, root, taskKey: 'native-fixture', workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE!,
+          registeredAtMs: Date.now(), selectedSpecifications, command: { cmd: process.execPath, argv, cwd: fixtureRoot } }, env);
+        const tracked = new Set(git('ls-files').split('\n'));
+        const classifier = (reads: unknown, repoRoot: string) => classifyReadPaths(reads as string[], {
+          repoRoot, isTracked: path => tracked.has(path) || [...tracked].some(file => file.startsWith(`${path}/`)), exists: existsSync,
+        });
+        expect((await recordStoredQualificationNativeProducer(target, progress, { path, producerPath: registration.path,
+          taskKey: 'native-fixture', workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE!, selectedSpecifications })).status).toBe('updated');
+        return classifier;
+      };
+      const classifier = await enroll(input, outPath, specifications);
+      first.child.send({ kind: 'native-producer-registered' });
+      if (scenario === 'primary-yield') {
+        await firstBank;
+        const budget = resolveQualificationYieldBudget({ startedAtMs: quantumStartedAtMs,
+          quantumMs: Date.now() - quantumStartedAtMs + 50, deadlineEpochMs: Date.now() + 20_000,
+          orphanDeadlineEpochMs: Date.now() + 25_000, yieldReserveMs: 5_000, cleanupReserveMs: 2_000 });
+        if (budget.status !== 'ready') throw new Error(`yield budget refused: ${budget.reason}`);
+        const identity = partialCurrentExecutionFingerprint({ ...input, sourceCommit: candidate })!;
+        let receipts: Array<{ unitId: string; completionId: string }> = [];
+        let boundary: ReturnType<typeof createQualificationYieldBoundary> | undefined;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            boundary = createQualificationYieldBoundary({ identity, budget,
+              unitIds: input.manifest.units.map(unit => unit.id),
+              readDurableProgress: async () => {
+                const recovered = await recoverStoredQualificationNativeCompletions(target, input, classifier);
+                expect(recovered.status).toBe('updated');
+                const stored = await readStoredQualification(target);
+                if (stored.status !== 'present' || !stored.transaction.continuation)
+                  throw new Error('yield progress missing');
+                receipts = stored.transaction.continuation.receipts;
+                return { status: 'ready', identity, receipts: stored.transaction.continuation.receipts };
+              },
+              commitYield: async (cursor, signal) => {
+                const saved = await recordStoredQualificationWorkYield(target, input, {
+                  runnerId: input.runnerId, runId: input.runId, savedAtMs: Date.now(),
+                  executionCutoffEpochMs: cursor.budget.executionCutoffEpochMs,
+                  yieldDeadlineEpochMs: cursor.budget.yieldDeadlineEpochMs,
+                  cleanupDeadlineEpochMs: cursor.budget.cleanupDeadlineEpochMs,
+                  orphanDeadlineEpochMs: cursor.budget.orphanDeadlineEpochMs,
+                  callerDeadlineEpochMs: cursor.budget.callerDeadlineEpochMs,
+                  completed: cursor.completedUnitIds.map(unitId => ({ unitId,
+                    completionId: receipts.find(receipt => receipt.unitId === unitId)!.completionId })),
+                  pendingUnitIds: [...cursor.pendingUnitIds],
+                }, signal);
+                return saved.status === 'updated';
+              },
+              onYield: () => resolve(), onKill: decision => reject(new Error(`primary yield killed: ${decision.reason}`)),
+            });
+          });
+          expect(boundary!.state).toBe('yielded');
+          const yielded = await readStoredQualification(target);
+          expect(yielded).toMatchObject({ transaction: { outcome: { kind: 'pending' },
+            currentPhysicalRunner: { id: owner.runnerId }, continuation: { lastYield: {
+              runnerId: owner.runnerId, runId: owner.runId,
+              completed: receipts.map(({ unitId, completionId }) => ({ unitId, completionId })),
+              pendingUnitIds: input.manifest.units.map(unit => unit.id).filter(id => !receipts.some(receipt => receipt.unitId === id)),
+              callerDeadlineEpochMs: budget.callerDeadlineEpochMs,
+            } } } });
+          expect(await probeRunnerLiveness(yielded.status === 'present' ? yielded.transaction.currentPhysicalRunner : null)).toBe('live');
+          // Cleanup starts only after the cursor is read back, before handoff.
+          process.kill(-first.child.pid!, signal);
+        } finally { boundary?.stop(); }
+      }
+      // Native Vitest handles a parent-requested TERM and exits with 128+15.
+      // The crash fixtures remove that handler and retain the signal directly.
+      expect(await first.closed, first.output()).toEqual(scenario === 'primary-yield'
+        ? { code: 143, signal: null } : { code: null, signal });
+      stop(first.child);
+      expect(first.output()).toContain('COMPLETION_ACK ids=');
+      if (scenario !== 'primary-yield')
+        expect(first.output()).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=after-first-bank signal=${signal}`);
+      const prefixBytes = readFileSync(outPath);
+      const snapshot = JSON.parse(prefixBytes.toString('utf8'));
+      expect(snapshot.worktreeDirty).toBe(false);
+      expect(snapshot.recordedSha).toBe(candidate);
+      const producer = JSON.parse(readFileSync(`${outPath}.producer.json`, 'utf8'));
+      expect(snapshot.nativeRun.startedAtMs).toBeGreaterThanOrEqual(producer.registeredAtMs);
+      expect(snapshot.nativeRun.files).toHaveLength(1);
+      const bankedFile = snapshot.nativeRun.files[0].testFile as string;
+      const bankedId = snapshot.nativeRun.files[0].completionId as string;
+      expect(snapshot.nativeRun.files[0].state, first.output()).toBe('passed');
+      const replacement = { ...owner, runnerId: 'native-banked-two', runId: 'native-banked-run-two',
+        pid: process.pid, pidIdentity: checkpointPidIdentity(process.pid)!, started: true };
+      expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+      const resumed = { ...input, ...replacement };
+      // Corrupt durable bytes and a stale writer must fail without advancing the bank.
+      writeFileSync(outPath, '{"nativeRun":');
+      expect(await recoverStoredQualificationNativeCompletions(target, resumed, classifier)).toMatchObject({ status: 'conflict' });
+      writeFileSync(outPath, prefixBytes);
+      expect(await recoverStoredQualificationNativeCompletions(target, input, classifier)).toMatchObject({ status: 'conflict' });
+      const recovered = await recoverStoredQualificationNativeCompletions(target, resumed, classifier);
+      expect({ status: recovered.status, ...('refusalReason' in recovered ? { refusalReason: recovered.refusalReason } : {}) })
+        // Primary yield already authenticated and banked this exact completion.
+        .toEqual({ status: scenario === 'primary-yield' ? 'idempotent' : 'updated' });
+      const stored = await readStoredQualification(target);
+      if (stored.status !== 'present') throw new Error('banked qualification missing');
+      const grade = () => evaluatePartialTaskContinuation({ root, taskKey: input.taskKey,
+        continuation: stored.transaction.continuation }, { ...resumed, sourceCommit: candidate });
+      expect(grade()).toMatchObject({ reused: [bankedFile], run: specifications.filter(spec => spec.testFile !== bankedFile)
+        .map(spec => spec.testFile).concat(['guard:qualification-fixture :: guard', 'post:after']).sort(), verdict: 'incomplete' });
+      expect(await composeStoredQualificationWork(target, resumed, { classifyReadPaths: classifier }))
+        .toMatchObject({ status: 'conflict', refusalReason: 'native-successor-terminal-unmeasured' });
+      const remaining = specifications.filter(spec => spec.testFile !== bankedFile);
+      const filter = join(directory, 'remaining-files.json');
+      writeFileSync(filter, JSON.stringify(remaining.map(spec => relative(fixtureRoot, join(root, spec.testFile)))));
+      const nextOut = join(directory, 'remaining.json');
+      const nextEnv: NodeJS.ProcessEnv = { ...env, PC_TEST_FILTER_LIST: filter, PC_EXECUTED_SOURCE_MAP_OUT: nextOut,
+        PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs-two'), PAPERCUSP_TEST_RUN_GROUP: replacement.runId };
+      delete nextEnv.PC_COMPLETION_CRASH_WINDOW;
+      delete nextEnv.PC_COMPLETION_CRASH_SIGNAL;
+      expect(discover(nextEnv)).toEqual(remaining);
+      await enroll(resumed, nextOut, remaining);
+      const second = start(nextEnv);
+      expect(await second.closed, second.output()).toEqual({ code: 0, signal: null });
+      const completed = JSON.parse(readFileSync(nextOut, 'utf8'));
+      expect(completed.nativeRun.files.map((file: { testFile: string }) => file.testFile))
+        .toEqual(remaining.map(spec => spec.testFile));
+      expect(completed.nativeRun.files.some((file: { testFile: string }) => file.testFile === bankedFile)).toBe(false);
+      // Actual original npm guard + post commands discharge their separately
+      // frozen obligations. Their runtime reuse closure is deliberately opaque.
+      const evidenceRoot = join(directory, 'commands');
+      const task = 'qualification-fixture :: guard';
+      const scripts = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts;
+      const selection = { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation', executed: false,
+        taskInventory: [{ id: task, dir: '.', command: scripts.guard, isInvariantGuard: true }],
+        tasks: [], unenumerated: [], commandObligations: [] };
+      const prepared = preparePartialTaskCommandDefinitions({ root, selection, evidenceRoot,
+        postSuite: { schemaVersion: 1, coverage: 'complete', units: [{ id: 'post:after', kind: 'post-suite', path: 'package.json' }] },
+        invocations: [{ task, cwd: root, argv: ['npm', 'run', 'guard'] }] });
+      expect(prepared.status).toBe('ready');
+      const guardDefinition = prepared.definitions[0]!;
+      const source = () => ({ commit: git('rev-parse', 'HEAD'), clean: !git('status', '--porcelain') });
+      const capture = async (script: string, task: string, ignoreScripts = false) => {
+        const traceOut = join(directory, `${script}-${ignoreScripts}.trace.json`);
+        const environment = trace.nativeProcessTraceEnv({ ...env, PC_EXECUTED_SOURCE_MAP_OUT: traceOut,
+          npm_config_ignore_scripts: String(ignoreScripts) });
+        const sourceBefore = source(), before = partialTaskCommandInputs(root, '.');
+        const startedAtMs = Date.now();
+        const child = spawn('npm', ['run', script], { cwd: root, env: environment, detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'] });
+        children.push(child);
+        const childIdentity = checkpointPidIdentity(child.pid!)!;
+        const stdout: Buffer[] = [], stderr: Buffer[] = [];
+        child.stdout!.on('data', chunk => stdout.push(chunk));
+        child.stderr!.on('data', chunk => stderr.push(chunk));
+        const timer = setTimeout(() => stop(child), 30_000);
+        const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+        });
+        expect(outcome).toEqual({ code: 0, signal: null });
+        const saved = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
+          task, attempt: resumed.runId, cwd: root, command: ['npm', 'run', script],
+          invocation: { command: ['npm', 'run', script], environmentSha256: createHash('sha256')
+            .update(JSON.stringify(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)))).digest('hex') },
+          originalCommand: scripts[script], before, after: partialTaskCommandInputs(root, '.'),
+          currentExecution: { schemaVersion: 1, fingerprint: partialCurrentExecutionFingerprint({ ...resumed, sourceCommit: candidate }),
+            childPid: child.pid!, childIdentity, sourceBefore, sourceAfter: source() },
+          processTrace: { out: traceOut, rootPid: child.pid! }, startedAtMs, finishedAtMs: Date.now(),
+          exitCode: outcome.code, signal: outcome.signal, error: null, captureComplete: true,
+          stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr),
+        });
+        syncBudgetedTaskNativeExecutionReceipt(saved);
+        return saved;
+      };
+      const current = await readStoredQualification(target);
+      if (current.status !== 'present') throw new Error('current command fence missing');
+      const expected = () => ({ ...resumed, sourceCommit: candidate,
+        runnerReservedAtMs: current.transaction.currentPhysicalRunner!.reservedAtMs, nowMs: Date.now() });
+      const ignored = await capture('guard', task, true);
+      expect(readPartialTaskCommandCompletion(ignored, expected(), guardDefinition)).toMatchObject({ status: 'refused' });
+      // Even a stored zero-exit receipt cannot bypass the task lifecycle check.
+      const guardReceipt = (saved: typeof ignored) => ({ unitId: `guard:${task}`, completionId: `${saved.receipt.sha256}:guard:${task}`,
+        observedAtMs: saved.observation.execution.finishedAtMs, state: 'pass' as const, observedCount: 1,
+        proof: { commandOutcomes: [{ command: task, root: saved.root, receipt: saved.receipt }],
+          opaqueReasons: ['task-command-runtime-inputs-unmeasured'] } });
+      const invalid = guardReceipt(ignored);
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: [{ receipt: invalid }] })).status).toBe('updated');
+      const options = { classifyReadPaths: classifier, currentCommandDefinition: (unit: { kind: string }) =>
+        unit.kind === 'guard' ? guardDefinition : postDefinition };
+      let postDefinition: unknown;
+      expect(await composeStoredQualificationWork(target, resumed, options)).toMatchObject({ status: 'conflict' });
+      const guard = readPartialTaskCommandCompletion(await capture('guard', task), expected(), guardDefinition);
+      expect(guard.status, JSON.stringify(guard)).toBe('ready');
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: guard.receipts.map(receipt =>
+        ({ receipt, supersedesCompletionId: invalid.completionId })) })).status).toBe('updated');
+      const post = await capture('after', 'post:after');
+      postDefinition = { evidenceRoot, commands: [{ id: 'after', task: 'post:after', argv: ['npm', 'run', 'after'],
+        cwd: root, originalCommand: scripts.after, inputs: partialTaskCommandInputs(root, '.'), exitCodes: [0] }] };
+      expect((await recordStoredQualificationWorkProgress(target, { ...resumed, updates: [{ receipt: {
+        unitId: 'post:after', completionId: post.receipt.sha256, observedAtMs: post.observation.execution.finishedAtMs,
+        state: 'pass', observedCount: 1, proof: { commandOutcomes: [{ command: 'after', root: post.root, receipt: post.receipt }],
+          opaqueReasons: ['post-suite-runtime-inputs-unmeasured'] },
+      } }] })).status).toBe('updated');
+      const composed = await composeStoredQualificationWork(target, resumed, options);
+      expect(composed.status, JSON.stringify({ reason: 'refusalReason' in composed ? composed.refusalReason : null,
+        dirty: completed.worktreeDirty, porcelain: git('status', '--porcelain'),
+        config: completed.configSources.status,
+        rows: completed.rows.map((row: { testFile: string; inputsCaptured: boolean; opaqueReasons: string[] }) =>
+          ({ file: row.testFile, captured: row.inputsCaptured, opaque: row.opaqueReasons })) }))
+        .toBe('updated');
+      expect(composed)
+        .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'pending' }, continuation: {
+          receipts: expect.arrayContaining([expect.objectContaining({ unitId: bankedFile, completionId: bankedId })]),
+        } } });
+      const final = await readStoredQualification(target);
+      expect(final).toMatchObject({ transaction: { attemptId: owner.attemptId, candidate,
+        continuation: { receipts: expect.arrayContaining(remaining.map(spec => expect.objectContaining({ unitId: spec.testFile }))) } } });
+      expect(git('status', '--porcelain')).toBe('');
+      expect(await recordStoredQualificationComposedVerdict(target, resumed, { candidate, runId: resumed.runId,
+        reason: 'advanced', green: true, terminalEvent: { status: 'real-native-guard-post-composition', detail: { scenario, signal } } }, options))
+        .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
+    } finally {
+      for (const child of children) stop(child);
+      if (dependencyLease) execFileSync('bash', ['-c',
+        'source "$1"; DEPENDENCY_GENERATION_SELECTOR_LEASE="$2"; dependency_generation_release_selector_lease',
+        '--', generationScript, dependencyLease], { timeout: 10_000 });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  it('recovers a producer killed before its first snapshot only after a measured dead handoff', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      rmSync(observation.path);
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      const options = { recoverMissingSnapshots: true };
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'conflict', refusalReason: 'native-producer-not-proved-dead' });
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      for (const liveness of ['live', 'unknown'] as const) {
+        configureRunnerLivenessProber(() => liveness);
+        expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+          .toMatchObject({ status: 'conflict', refusalReason: 'native-producer-not-proved-dead' });
+      }
+      configureRunnerLivenessProber(() => 'dead');
+      // Recovery remains explicit; the default still refuses a missing artifact.
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'snapshot-unreadable' });
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'updated', transaction: { continuation: { receipts: [], nativeProducers: [
+          { missingSnapshot: { runnerId: 'runner-one', confirmedAtMs: 600 } },
+        ] } } });
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options)).status)
+        .toBe('idempotent');
+      const execute = vi.fn(async () => { throw new Error('unacknowledged replacement'); });
+      await expect(continueStoredQualificationWork(target, input, execute, options)).rejects.toThrow('unacknowledged replacement');
+      expect(execute).toHaveBeenCalledExactlyOnceWith({ id: 'native', kind: 'test', path: 'native.test.ts' });
+      const before = await readStoredQualification(target);
+      fixture.save(); // A late old writer cannot silently add evidence after retirement.
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths, options))
+        .toMatchObject({ status: 'conflict', refusalReason: 'retired-native-output-appeared' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { configureRunnerLivenessProber(null); fixture.cleanup(); }
+  });
+
+  it.each(['banked', 'corrupt'] as const)('never retires a %s native artifact as missing', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      if (damage === 'banked') {
+        expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status)
+          .toBe('updated');
+        rmSync(observation.path);
+      } else writeFileSync(observation.path, '{corrupt');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      configureRunnerLivenessProber(() => 'dead');
+      const before = await readStoredQualification(target);
+      expect(await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths,
+        { recoverMissingSnapshots: true })).toMatchObject({ status: 'conflict', refusalReason: damage === 'banked'
+          ? 'missing-native-output-has-banked-receipts' : 'snapshot-unreadable' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { configureRunnerLivenessProber(null); fixture.cleanup(); }
+  });
+
+  it('persists an admitted retry predecessor and replays its archived receipt without hiding later demotion', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.retryStates = ['fail'];
+      const first = fixture.enroll();
+      fixture.snapshot.nativeRun.files[0]!.state = 'failed';
+      fixture.snapshot.nativeRun.files[0]!.firstAttemptVerdict = 'fail';
+      fixture.snapshot.nativeRun.files[0]!.cases[0]!.status = 'fail';
+      Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: 280, reason: 'failed', unhandledErrorCount: 0,
+        modulePopulationMatched: true });
+      fixture.save();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths)).status).toBe('updated');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 900 };
+      const out = join(fixture.directory, 'retry.json');
+      const producer = registerPartialNativeProducer(out, {
+        attemptId: input.attemptId, runGroupId: input.runId, root: input.root, taskKey: first.taskKey,
+        workspaceName: first.workspaceName, sourceCommit: input.candidate, registeredAtMs: 550,
+        selectedSpecifications: first.selectedSpecifications, command: { cwd: '/repo', cmd: 'npm', argv: ['run', 'test'] },
+      }, { NODE_ENV: 'test' });
+      const observation = { ...first, path: out, producerPath: producer.path };
+      const before = await readStoredQualification(target);
+      expect(await recordStoredQualificationNativeProducer(target, input, observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'native-producer-predecessor-mismatch' });
+      expect(await readStoredQualification(target)).toEqual(before);
+      expect((await recordStoredQualificationNativeProducer(target, input, { ...observation,
+        supersedesCompletionIds: { native: 'native-completion' } })).status).toBe('updated');
+      const retry = structuredClone(fixture.snapshot);
+      retry.completionCheckpoint.runGroupId = 'run-two';
+      Object.assign(retry.nativeRun, { startedAtMs: 600, finishedAtMs: 800, reason: 'passed' });
+      Object.assign(retry.nativeRun.files[0]!, { state: 'passed', firstAttemptVerdict: 'pass',
+        completionId: 'retry-completion', observedAtMs: 700, cases: [{ status: 'pass' }] });
+      writeExecutedSourceMapSnapshot(out, retry);
+      expect(await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths))
+        .toMatchObject({ status: 'updated', transaction: { continuation: {
+          receipts: [{ completionId: 'retry-completion', state: 'pass' }],
+          supersededReceipts: [{ completionId: 'native-completion', state: 'fail' }],
+          nativeProducers: [{}, { supersedesCompletionIds: { native: 'native-completion' } }],
+        } } });
+      expect((await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths)).status).toBe('idempotent');
+      const after = await readStoredQualification(target);
+      fixture.snapshot.nativeRun.files[0]!.state = 'error';
+      fixture.save();
+      expect((await recoverStoredQualificationNativeCompletions(target, input, first.classifyReadPaths)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(after);
+    } finally { fixture.cleanup(); }
+  });
+
+  it('retains enrolled task identity across JSONB and runner replacement, recovering only its recorded OUT', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('idempotent');
+      expect((await recordStoredQualificationWorkProgress(target, fixture.input)).status).toBe('idempotent');
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('idempotent');
+      const stored = await readStoredQualification(target);
+      expect(stored).toMatchObject({ status: 'present', transaction: { continuation: {
+        nativeProducers: [{ taskKey: '@fixture/native::test', runGroupId: 'run-one' }],
+        receipts: [{ unitId: 'native', completionId: 'native-completion' }],
+      } } });
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally { fixture.cleanup(); }
+  });
+
+  it('rolls back the whole recovery batch when a later enrolled OUT is missing', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.manifest.units.push({ id: 'other', kind: 'test', path: 'other.test.ts' });
+      const first = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, first)).status).toBe('updated');
+      const specifications = [{ ...first.selectedSpecifications[0]!, testFile: 'other.test.ts' }];
+      const out = join(fixture.directory, 'missing.json');
+      const producer = registerPartialNativeProducer(out, {
+        attemptId: fixture.input.attemptId, runGroupId: fixture.input.runId, root: fixture.input.root,
+        taskKey: '@fixture/other::test', workspaceName: '@fixture/other', sourceCommit: fixture.input.candidate,
+        registeredAtMs: 210, selectedSpecifications: specifications,
+        command: { cwd: '/repo', cmd: 'npm', argv: ['run', 'test'] },
+      }, { NODE_ENV: 'test' });
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, {
+        path: out, producerPath: producer.path, taskKey: '@fixture/other::test', workspaceName: '@fixture/other',
+        selectedSpecifications: specifications,
+      })).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, first.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: 'snapshot-unreadable' });
+      expect(await readStoredQualification(target)).toEqual(before);
+      expect(before).toMatchObject({ transaction: { continuation: { receipts: [] } } });
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['producer-tamper', 'terminal-demotion'] as const)('refuses %s after banking a native pass', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      if (damage === 'producer-tamper') {
+        const producer = JSON.parse(readFileSync(observation.producerPath, 'utf8'));
+        const { integrity: _seal, ...body } = producer;
+        body.environmentDigest = 'f'.repeat(64);
+        writeFileSync(observation.producerPath, JSON.stringify({ ...body, integrity: { schemaVersion: 1,
+          sha256: createHash('sha256').update(JSON.stringify(body)).digest('hex') } }));
+      } else {
+        fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+        fixture.save();
+      }
+      expect(await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths))
+        .toMatchObject({ status: 'conflict', refusalReason: damage === 'producer-tamper'
+          ? 'native-producer-reference-mismatch' : 'continuation-completion-id-conflict' });
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['selection', 'clock', 'manifest'] as const)('does not enroll a native producer with mismatched %s', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const observation = fixture.enroll();
+      const before = await readStoredQualification(target);
+      if (damage === 'selection') observation.selectedSpecifications[0]!.testNamePattern = 'only-one-case';
+      if (damage === 'clock') fixture.input.nowMs = 209;
+      if (damage === 'manifest') fixture.input.manifest.units = [{ id: 'guard', kind: 'guard', path: 'native.test.ts' }];
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it('stops continuation before execution and before final composition when the latest native artifact is demoted', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      fixture.input.manifest.units.push({ id: 'guard', kind: 'guard', path: 'guard.mjs' });
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths)).status).toBe('updated');
+      const execute = vi.fn(async (unit: { id: string }) => {
+        fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+        fixture.save();
+        return { unitId: unit.id, completionId: 'guard-completion', observedAtMs: 275,
+          state: 'pass' as const, worktreeDirty: false, observedCount: 1,
+          proof: { recordedSha: fixture.input.candidate, runContext: fixture.input.runContext,
+            runnerIdentity: fixture.input.runnerIdentity, executedModules: ['guard.mjs'],
+            readPaths: [], inputsCaptured: true, opaqueReasons: [] } };
+      });
+      const options = { classifyReadPaths: observation.classifyReadPaths };
+      expect(await continueStoredQualificationWork(target, fixture.input, execute, options))
+        .toMatchObject({ status: 'refused', reason: 'completion-conflict', executed: ['guard'] });
+      expect(execute).toHaveBeenCalledTimes(1);
+      execute.mockClear();
+      expect(await continueStoredQualificationWork(target, fixture.input, execute, options))
+        .toMatchObject({ status: 'refused', reason: 'custody-conflict', executed: [] });
+      expect(execute).not.toHaveBeenCalled();
+    } finally { fixture.cleanup(); }
+  });
+
+  it('recovers native OUT through the current fence and replays identically after JSONB key reordering', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('updated');
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('idempotent');
+      const stored = await readStoredQualification(target);
+      expect(stored).toMatchObject({ status: 'present', transaction: { continuation: {
+        receipts: [{ unitId: 'native', completionId: 'native-completion', proof: { inputsCaptured: true, opaqueReasons: [] } }],
+      } } });
+    } finally { fixture.cleanup(); }
+  });
+
+  it('adopts an ended physical run only inside its recorded custody window and never accepts its late write', async () => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await reserveStoredQualificationRunner(target, { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: 43, pidIdentity: 'boot:43', evidenceRefs: ['checkpoint-run:run-two'],
+        incumbentLiveness: 'dead', nowMs: 500 })).status).toBe('updated');
+      const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 600 };
+      expect((await recordStoredQualificationNativeCompletion(target, input, fixture.observation)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      fixture.snapshot.nativeRun.files[0]!.observedAtMs = 501;
+      fixture.snapshot.nativeRun.files[0]!.completionId = 'late-completion';
+      fixture.save();
+      expect(await recordStoredQualificationNativeCompletion(target, input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'native-physical-run-unmeasured-or-outside-custody' });
+      const after = await readStoredQualification(target);
+      expect(after).toEqual(before);
+      expect(await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['run-error', 'config-drift', 'source-drift'] as const)('refuses %s demotion of an already banked native completion', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('updated');
+      const before = await readStoredQualification(target);
+      if (damage === 'run-error') fixture.snapshot.nativeRun.gaps.push('terminal-unhandled-error' as never);
+      if (damage === 'config-drift') fixture.snapshot.configSources.status = 'changed';
+      if (damage === 'source-drift') fixture.snapshot.nativeRun.files[0]!.proof.sourceEvidence.status = 'changed';
+      fixture.save();
+      expect(await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).toMatchObject({
+        status: 'conflict', refusalReason: 'continuation-completion-id-conflict' });
+      // The caller must stop on this refusal; old receipts are not a final-run verdict.
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it.each(['foreign-group', 'before-custody', 'filtered-selection'] as const)('refuses native %s without changing the qualification row', async damage => {
+    const fixture = await nativeRecoveryFixture();
+    try {
+      const before = await readStoredQualification(target);
+      if (damage === 'foreign-group') fixture.snapshot.completionCheckpoint.runGroupId = 'unknown-run';
+      if (damage === 'before-custody') fixture.snapshot.nativeRun.startedAtMs = 199;
+      if (damage === 'filtered-selection') {
+        fixture.snapshot.nativeRun.selectedManifest.specifications[0]!.testNamePattern = 'one-case';
+        fixture.snapshot.nativeRun.selectedManifest.sha256 = createHash('sha256')
+          .update(JSON.stringify(fixture.snapshot.nativeRun.selectedManifest.specifications)).digest('hex');
+      }
+      fixture.save();
+      expect((await recordStoredQualificationNativeCompletion(target, fixture.input, fixture.observation)).status).toBe('conflict');
+      expect(await readStoredQualification(target)).toEqual(before);
+    } finally { fixture.cleanup(); }
+  });
+
+  it('executes only remaining eligible units after an unacknowledged callback interruption', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-execute', candidate: 'candidate-execute', nowMs: 100 });
+    const owner = { attemptId: 'attempt-execute', candidate: 'candidate-execute', runnerId: 'runner-one', runId: 'run-one',
+      pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+    const units = [
+      { id: 'finished', kind: 'test' as const, path: 'finished.test.ts' },
+      { id: 'guard', kind: 'guard' as const, path: 'guard.mjs' },
+      { id: 'pending', kind: 'test' as const, path: 'pending.test.ts' },
+      { id: 'post', kind: 'post-suite' as const, path: 'post.mjs' },
+    ];
+    const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+      observedAtMs: 250, state: 'pass' as const, firstAttemptVerdict: 'pass' as const,
+      worktreeDirty: false, observedCount: 1, proof: { recordedSha: owner.candidate,
+        runContext: 'ci', runnerIdentity: 'proof-v3 node', executedModules: [unit.path],
+        readPaths: [], inputsCaptured: true, opaqueReasons: [] } });
+    const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units }, updates: [{ receipt: receipt(units[0]!) }] };
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-starts-')), starts = join(dir, 'starts.jsonl');
+    const observe = (id: string) => execFileSync(process.execPath, ['-e',
+      'require("node:fs").appendFileSync(process.argv[1], JSON.stringify({id:process.argv[2],pid:process.pid})+"\\n")',
+      starts, id], { timeout: 5_000, maxBuffer: 64 * 1024 });
+    try {
+      await expect(continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id);
+        if (unit.id === 'pending') throw new Error('unacknowledged-worker-stop');
+        return receipt(unit);
+      })).rejects.toThrow('unacknowledged-worker-stop');
+      const interrupted = await readStoredQualification(target);
+      expect(interrupted.status).toBe('present');
+      if (interrupted.status !== 'present') throw new Error('missing durable progress');
+      expect(interrupted.transaction.continuation!.receipts.map(value => value.unitId).sort()).toEqual(['finished', 'guard']);
+      const result = await continueStoredQualificationWork(target, { ...input, updates: [] }, async unit => {
+        observe(unit.id); return receipt(unit);
+      });
+      expect(result).toMatchObject({ status: 'settled', executed: ['pending', 'post'], evaluation: {
+        verdict: 'green', run: [], counts: { selected: 4, passed: 4, pending: 0 } } });
+      const actual = readFileSync(starts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(actual.map(row => row.id)).toEqual(['guard', 'pending', 'pending', 'post']);
+      expect(new Set(actual.map(row => row.pid)).size).toBe(4);
+      expect(await continueStoredQualificationWork(target, { ...input, runnerId: 'other', updates: [] }, async () => {
+        throw new Error('a losing runner must not start');
+      })).toMatchObject({ status: 'refused', executed: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('resumes command and post-suite phases without executing or hiding outstanding test work', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-phases', candidate: 'candidate-phases', nowMs: 100 });
+    const owner = { attemptId: 'attempt-phases', candidate: 'candidate-phases', runnerId: 'runner-one', runId: 'run-one',
+      pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+    const units = [
+      { id: 'test', kind: 'test' as const, path: 'pending.test.ts' },
+      { id: 'command', kind: 'guard' as const, path: 'guard.mjs' },
+      { id: 'post', kind: 'post-suite' as const, path: 'post.mjs' },
+    ];
+    const receipt = (unit: typeof units[number]) => ({ unitId: unit.id, completionId: `completion:${unit.id}`,
+      observedAtMs: 250, state: 'pass' as const, firstAttemptVerdict: 'pass' as const,
+      worktreeDirty: false, observedCount: 1, proof: { recordedSha: owner.candidate,
+        runContext: 'ci', runnerIdentity: 'proof-v3 node', executedModules: [unit.path],
+        readPaths: [], inputsCaptured: true, opaqueReasons: [] } });
+    const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units }, updates: [] };
+    const dir = mkdtempSync(join(tmpdir(), 'qualification-command-phases-')), starts = join(dir, 'starts.jsonl');
+    const observe = (id: string) => execFileSync(process.execPath, ['-e',
+      'require("node:fs").appendFileSync(process.argv[1], JSON.stringify({id:process.argv[2],pid:process.pid})+"\\n")',
+      starts, id], { timeout: 5_000, maxBuffer: 64 * 1024 });
+    try {
+      // An observed zero exit without dependency proof is retained as evidence,
+      // but remains executable. Diagnostic receipts cannot authorize a skip.
+      expect(await continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id);
+        const { proof: _proof, ...observed } = receipt(unit);
+        return { ...observed, completionId: 'unmeasured-command' };
+      }, { unitIds: ['command'] })).toMatchObject({ status: 'settled', executed: ['command'],
+        evaluation: { verdict: 'incomplete', reused: [], run: ['command', 'post', 'test'] } });
+      await expect(continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id);
+        if (unit.id === 'post') {
+          const stored = await readStoredQualification(target);
+          expect(stored.status).toBe('present');
+          if (stored.status !== 'present') throw new Error('missing durable command outcome');
+          expect(stored.transaction.continuation!.receipts.map(value => value.unitId)).toEqual(['command']);
+          throw new Error('post-command-interruption');
+        }
+        return receipt(unit);
+      }, { unitIds: ['command', 'post'] })).rejects.toThrow('post-command-interruption');
+      const result = await continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id); return receipt(unit);
+      }, { unitIds: ['command', 'post'] });
+      expect(result).toMatchObject({ status: 'settled', executed: ['post'], evaluation: {
+        verdict: 'incomplete', run: ['test'], reused: ['command', 'post'],
+        counts: { selected: 3, passed: 2, pending: 1 } } });
+      const before = await readStoredQualification(target);
+      const forbidden = vi.fn(async () => { throw new Error('must not start another command'); });
+      for (const [unitIds, reason] of [
+        [[], 'unit-selection-invalid'], [['command', 'command'], 'unit-selection-invalid'],
+        [['missing'], 'unit-selection-outside-manifest'],
+      ] as const) {
+        expect(await continueStoredQualificationWork(target, input, forbidden, { unitIds }))
+          .toEqual({ status: 'refused', reason, executed: [] });
+      }
+      expect(await continueStoredQualificationWork(target,
+        { ...input, updates: [{ receipt: receipt(units[0]!) }] }, forbidden, { unitIds: ['post'] }))
+        .toEqual({ status: 'refused', reason: 'unit-selection-mixed-updates', executed: [] });
+      expect(await continueStoredQualificationWork(target, { ...input, runnerId: 'other' }, forbidden,
+        { unitIds: ['post'] })).toMatchObject({ status: 'refused', executed: [] });
+      expect(forbidden).not.toHaveBeenCalled();
+      expect(await readStoredQualification(target)).toEqual(before);
+      // A scoped completion never settles the qualification or authorizes green.
+      if (before.status !== 'present') throw new Error('missing live qualification');
+      expect(before.transaction.phase).toBe('running');
+      expect(before.transaction.outcome).toEqual({ kind: 'pending' });
+      expect(await continueStoredQualificationWork(target, input, async unit => {
+        observe(unit.id); return receipt(unit);
+      }, { unitIds: ['test'] })).toMatchObject({ status: 'settled', executed: ['test'],
+        evaluation: { verdict: 'green', run: [], counts: { selected: 3, passed: 3 } } });
+      const actual = readFileSync(starts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(actual.map(row => row.id)).toEqual(['command', 'command', 'post', 'post', 'test']);
+      expect(new Set(actual.map(row => row.pid)).size).toBe(5);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('persists production post-suite native output in the real row before a later command interruption', async () => {
+    const { createCheckpointQualificationPostSuiteExecutor, runCmd } = await import('../../../../apps/operator/lib/release/green-checkpoint');
+    await seed();
+    const nowMs = Date.now();
+    const root = mkdtempSync(join(tmpdir(), 'qualification-post-suite-output-'));
+    try {
+      const source = 'console.log(12345);\n';
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { 'lint:tsc': 'node guard.mjs' } }));
+      writeFileSync(join(root, 'guard.mjs'), source);
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 10_000 }).trim();
+      git('init', '--quiet'); git('add', '.');
+      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      await beginStoredQualification(target, { attemptId: 'attempt-post', candidate, nowMs });
+      const owner = { attemptId: 'attempt-post', candidate, runnerId: 'runner-post', runId: 'run-post',
+        pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 60_000, started: true, nowMs: nowMs + 1 };
+      expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+      const input: QualificationWorkProgressInput = { ...owner, nowMs: nowMs + 2, repairHead: null, root,
+        taskKey: 'qualification', manifest: { schemaVersion: 1, units: [
+          { id: 'test:pending.test.ts', kind: 'test', path: 'pending.test.ts' },
+          { id: 'post:lint:tsc', kind: 'post-suite', path: 'package.json' },
+          { id: 'post:lint:tsc:operator', kind: 'post-suite', path: 'package.json' },
+        ] }, retryStates: [], runContext: 'ci', runnerIdentity: 'proof-v3 node', updates: [] };
+      const execute = createCheckpointQualificationPostSuiteExecutor({ target, progress: input }, async (cmd, args, options) => {
+        if (args.includes('lint:tsc:operator')) {
+          const saved = await readStoredQualification(target);
+          expect(saved.status).toBe('present');
+          if (saved.status !== 'present') throw new Error('missing qualification');
+          expect(saved.transaction.continuation!.receipts.map(row => row.unitId)).toEqual(['post:lint:tsc']);
+          throw new Error('following post-suite command interrupted');
+        }
+        return runCmd(cmd, args, { ...options, timeoutMs: 10_000 });
+      });
+      expect(await execute('npm', ['run', 'lint:tsc'], { cwd: root })).toMatchObject({ code: 0 });
+      await expect(execute('npm', ['run', 'lint:tsc:operator'], { cwd: root }))
+        .rejects.toThrow('following post-suite command interrupted');
+      const saved = await readStoredQualification(target);
+      if (saved.status !== 'present') throw new Error('missing durable post-suite outcome');
+      expect(saved.transaction.continuation!.receipts).toMatchObject([
+        { unitId: 'post:lint:tsc', state: 'pass', proof: { opaqueReasons: ['post-suite-runtime-inputs-unmeasured'] } },
+        { unitId: 'post:lint:tsc:operator', state: 'infra' },
+      ]);
+      const outcomes = saved.transaction.continuation!.receipts[0]!.proof?.commandOutcomes;
+      if (!Array.isArray(outcomes)) throw new Error('missing command artifacts');
+      const pin = outcomes[0], bytes = readFileSync(join(pin.root, pin.receipt.ref));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(pin.receipt.sha256);
+      const artifact = JSON.parse(bytes.toString());
+      expect(artifact.execution).toMatchObject({ command: ['npm', 'run', 'lint:tsc'], cwd: root, exitCode: 0 });
+      expect(artifact).toMatchObject({ originalCommand: 'node guard.mjs', sourceInputsUnchanged: true,
+        runtimeClosure: 'unmeasured', orderedChainQualified: false });
+      const loaded = artifact.processTrace.loaderSources.entries.find((entry: { url: string }) => entry.url.endsWith('/guard.mjs'));
+      expect(loaded, 'the acknowledged row must resolve its archived native loader bytes').toBeDefined();
+      const loadedBytes = readFileSync(join(pin.root, loaded.artifact.ref));
+      expect(loadedBytes.toString()).toBe(source);
+      expect(createHash('sha256').update(loadedBytes).digest('hex')).toBe(loaded.artifact.sha256);
+      expect(readFileSync(join(pin.root, artifact.execution.logs.stdout.ref), 'utf8')).toContain('12345');
+      expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: saved.transaction.continuation },
+        { ...input, sourceCommit: input.candidate })).toMatchObject({ status: 'ready', verdict: 'incomplete', reused: [],
+        invalidated: [{ id: 'post:lint:tsc', reason: 'pass-proof-invalid-or-unmeasured' }] });
+      expect(saved.transaction.outcome).toEqual({ kind: 'pending' });
+      // A scoped driver fixture supplies an independently eligible proof. This
+      // does not turn production raw source observations into runtime closure.
+      const original = saved.transaction.continuation!.receipts[0]!;
+      const qualified = { ...original, completionId: 'qualified-post-fixture', worktreeDirty: false,
+        proof: { ...original.proof, recordedSha: candidate, runContext: input.runContext,
+          runnerIdentity: input.runnerIdentity, executedModules: ['package.json'],
+          inputsCaptured: true, readPaths: [], opaqueReasons: [] } };
+      expect((await recordStoredQualificationWorkProgress(target, { ...input,
+        updates: [{ receipt: qualified, supersedesCompletionId: original.completionId }] })).status).toBe('updated');
+      const child = vi.fn().mockRejectedValue(new Error('completed command reran'));
+      const resume = () => createCheckpointQualificationPostSuiteExecutor({ target, progress: input }, child);
+      expect(await resume()('npm', ['run', 'lint:tsc'], { cwd: root }))
+        .toMatchObject({ code: 0, stdout: expect.stringContaining('12345') });
+      expect(child).not.toHaveBeenCalled();
+      const resumed = await readStoredQualification(target);
+      if (resumed.status !== 'present') throw new Error('missing resumed qualification');
+      expect(resumed.transaction.continuation!.receipts[0]!.completionId).toBe(qualified.completionId);
+      expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: resumed.transaction.continuation },
+        { ...input, sourceCommit: candidate })).toMatchObject({ verdict: 'incomplete', reused: ['post:lint:tsc'] });
+      writeFileSync(join(pin.root, loaded.artifact.ref), 'console.log(99999);\n');
+      await expect(resume()('npm', ['run', 'lint:tsc'], { cwd: root })).rejects.toThrow('reuse-artifact-digest');
+      expect(child).not.toHaveBeenCalled();
+      const refused = await readStoredQualification(target);
+      if (refused.status !== 'present') throw new Error('missing refused qualification');
+      expect(refused.transaction.continuation!.receipts).toEqual(resumed.transaction.continuation!.receipts);
+      expect(refused.transaction.outcome).toEqual({ kind: 'pending' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers exact pending test, guard and post-suite units from durable JSONB after runner replacement', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-work', candidate: 'candidate-work', nowMs: 100 });
+    const owner = { attemptId: 'attempt-work', candidate: 'candidate-work', runnerId: 'runner-one', runId: 'run-one',
+      pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+    const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'qualification',
+      runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units: [
+        { id: 'finished', kind: 'test', path: 'finished.test.ts' },
+        { id: 'pending', kind: 'test', path: 'pending.test.ts' },
+        { id: 'guard', kind: 'guard', path: 'guard.mjs' },
+        { id: 'post', kind: 'post-suite', path: 'post.mjs' },
+      ] }, updates: [{ receipt: { unitId: 'finished', completionId: 'durable-completion', observedAtMs: 250,
+        state: 'pass', firstAttemptVerdict: 'pass', worktreeDirty: false, observedCount: 1,
+        proof: { recordedSha: 'candidate-work', runContext: 'ci', runnerIdentity: 'proof-v3 node',
+          executedModules: ['finished.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [] } } }] };
+    expect((await recordStoredQualificationWorkProgress(target, input)).status).toBe('updated');
+    const replacement = { ...owner, runnerId: 'runner-two', runId: 'run-two', pid: 43, pidIdentity: 'boot:43',
+      incumbentLiveness: 'dead' as const, nowMs: 50_000 };
+    expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+    const recovered = await readStoredQualification(target);
+    expect(recovered.status).toBe('present');
+    if (recovered.status !== 'present') throw new Error('missing recovered qualification');
+    const checkpoint = { root: input.root, taskKey: input.taskKey, continuation: { ...recovered.transaction.continuation,
+      attemptId: input.attemptId, candidate: input.candidate, repairHead: null } };
+    // Independent population established before reading the production evaluator's answer.
+    const pending = ['guard', 'pending', 'post'];
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...input, sourceCommit: input.candidate }))
+      .toMatchObject({ status: 'ready', verdict: 'incomplete', run: pending, reused: ['finished'],
+        counts: { selected: 4, passed: 1, pending: 3 } });
+    const beforeLateWrite = JSON.stringify(recovered.transaction);
+    expect(await recordStoredQualificationWorkProgress(target, { ...input, nowMs: 50_100 })).toMatchObject({
+      status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    const afterLateWrite = await readStoredQualification(target);
+    expect(afterLateWrite.status).toBe('present');
+    if (afterLateWrite.status === 'present') expect(JSON.stringify(afterLateWrite.transaction)).toBe(beforeLateWrite);
+  });
+
+  it('serializes competing continuation custody requests and refuses the losing writer', async () => {
+    await seed();
+    await beginStoredQualification(target, { attemptId: 'attempt-race', candidate: 'candidate-race', nowMs: 100 });
+    const reserve = (number: number) => ({ attemptId: 'attempt-race', candidate: 'candidate-race',
+      runnerId: `runner-${number}`, runId: `run-${number}`, pid: number + 40, pidIdentity: `boot:${number + 40}`,
+      leaseDurationMs: 1000, started: true, incumbentLiveness: 'unknown' as const, nowMs: 200 });
+    const requests = [reserve(1), reserve(2)];
+    const results = await Promise.all(requests.map(input => reserveStoredQualificationRunner(target, input)));
+    expect(results.map(result => result.status).sort()).toEqual(['conflict', 'updated']);
+    const loser = requests[results.findIndex(result => result.status === 'conflict')]!;
+    expect(await recordStoredQualificationWorkProgress(target, { ...loser, repairHead: null, root: '/repo',
+      taskKey: 'qualification', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+      updates: [], manifest: { schemaVersion: 1, units: [{ id: 'a', kind: 'test', path: 'a.test.ts' }] }, nowMs: 300 }))
+      .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    const stored = await readStoredQualification(target);
+    expect(stored.status).toBe('present');
+    if (stored.status === 'present') expect(stored.transaction.continuation).toBeUndefined();
+  });
+
   it.each(['skipped-locked', 'migrations-pending'])(
     'persists %s as a pre-suite no-verdict outcome',
     async (reason) => {
@@ -487,3 +1734,50 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     }
   });
 });
+
+/** Native artifact contract fixture; actual Vitest crash proof remains in the recorder suite. */
+async function nativeRecoveryFixture(options: { root?: string; candidate?: string } = {}) {
+  await seed();
+  await beginStoredQualification(target, { attemptId: 'attempt-native', candidate: options.candidate ?? 'candidate-native', nowMs: 100 });
+  const owner = { attemptId: 'attempt-native', candidate: options.candidate ?? 'candidate-native', runnerId: 'runner-one', runId: 'run-one',
+    evidenceRefs: ['checkpoint-run:run-one'], pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+  expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
+  const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: options.root ?? '/repo', taskKey: 'qualification',
+    runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], updates: [], nowMs: 300,
+    manifest: { schemaVersion: 1, units: [{ id: 'native', kind: 'test', path: 'native.test.ts' }] } };
+  const specifications = [{ testFile: 'native.test.ts', projectName: null, pool: 'forks',
+    testNamePattern: null as string | null, testLines: null, testIds: null, testTagsFilter: null }];
+  const snapshot = { workspaceName: '@fixture/native', recordedSha: owner.candidate, worktreeDirty: false,
+    completionCheckpoint: { schemaVersion: 1, qualificationAttemptId: owner.attemptId,
+      runGroupId: owner.runId, runContext: input.runContext, runnerIdentity: input.runnerIdentity, state: 'partial', noPersist: true },
+    configSources: { status: 'unchanged' },
+    rows: [{ testFile: 'native.test.ts', executedModules: ['native.test.ts'], readPaths: [join(input.root, 'input.json')],
+      inputsCaptured: true, opaqueReasons: [] }],
+    nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 220, finishedAtMs: null, gaps: [],
+      terminalHook: null, reason: null, unhandledErrorCount: null, modulePopulationMatched: false,
+      selectedManifest: { specifications: structuredClone(specifications), sha256: createHash('sha256')
+        .update(JSON.stringify(specifications)).digest('hex') },
+      files: [{ testFile: 'native.test.ts', state: 'passed', firstAttemptVerdict: 'pass',
+        completionId: 'native-completion', observedAtMs: 250, cases: [{ status: 'pass' }],
+        proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable', reasons: [],
+          sources: [{ path: 'native.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }] } } }] } };
+  const directory = mkdtempSync(join(tmpdir(), 'native-qualification-')), file = join(directory, 'out.json');
+  const save = () => writeExecutedSourceMapSnapshot(file, snapshot);
+  save();
+  const observation = { path: file, workspaceName: snapshot.workspaceName,
+    selectedSpecifications: specifications,
+    classifyReadPaths: (reads: unknown, root: string) => classifyReadPaths(reads as string[], {
+      repoRoot: root, isTracked: path => path === 'input.json', exists: () => false,
+    }) };
+  const enroll = () => {
+    const taskKey = '@fixture/native::test';
+    const producer = registerPartialNativeProducer(file, {
+      attemptId: input.attemptId, runGroupId: input.runId, root: input.root, taskKey,
+      workspaceName: snapshot.workspaceName, sourceCommit: input.candidate, registeredAtMs: 210,
+      selectedSpecifications: structuredClone(specifications), command: { cwd: input.root, cmd: 'npm', argv: ['run', 'test'] },
+    }, { NODE_ENV: 'test' });
+    return { ...observation, selectedSpecifications: structuredClone(specifications), taskKey, producerPath: producer.path };
+  };
+  return { owner, input, snapshot, save, observation, enroll, directory,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+}

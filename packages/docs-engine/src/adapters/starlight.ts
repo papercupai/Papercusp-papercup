@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { humanize } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
 import { parseOkfFrontmatter } from '../okf.js';
+import { forEachBoundedBatch } from './file-batches.js';
 import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface StarlightContentAdapterOptions {
@@ -288,11 +289,13 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     options?.onTiming?.({ component: 'starlight', phase: 'walk', state: 'completed', elapsedMs: walkMs, count: files.length });
     const readParseStartedAt = Date.now();
     options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'started', count: files.length });
-    for (const abs of files) {
+    // Bounded batches overlap filesystem waits without retaining the full raw
+    // corpus. Results are consumed in source order so completion timing cannot
+    // change which file wins a duplicate slug.
+    await forEachBoundedBatch(files, readSafe, (abs, content) => {
+      if (content === null) return;
       const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
       const slug = slugFromRelPath(rel);
-      const content = await readSafe(abs);
-      if (content === null) continue;
       const { meta, body } = parseFrontmatter(content);
       const slugs = slug === '' ? [] : slug.split('/');
       const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
@@ -317,7 +320,7 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
         absolutePath: abs,
       };
       cache.set(slug, page);
-    }
+    });
     const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
     options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
     options?.onTiming?.({

@@ -143,8 +143,9 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(guidance?.when).toContain('For `systemd-run`');
     expect(guidance?.when).toContain('`-- executable argv` after options');
     expect(guidance?.when).toContain('`&&` starts another command');
-    const commandDescription = (bashTool as unknown as { args?: { shape?: Record<string, { description?: string }> } }).args
-      ?.shape?.command?.description ?? '';
+    // WI-6554700010029664: args is a preprocess pipe (cmd → command fold); `out` is the object.
+    const commandDescription = (bashTool as unknown as { args?: { out?: { shape?: Record<string, { description?: string }> } } })
+      .args?.out?.shape?.command?.description ?? '';
     expect(commandDescription).toContain('literal `\\n` inside a shell-quoted program');
     expect(commandDescription).toContain('quoted heredoc');
     expect(commandDescription).toContain('line-continuation SyntaxError');

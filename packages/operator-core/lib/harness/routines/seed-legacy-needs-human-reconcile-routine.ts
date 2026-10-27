@@ -14,8 +14,7 @@
  *   tsx seed-legacy-needs-human-reconcile-routine.ts --inactive
  *   tsx seed-legacy-needs-human-reconcile-routine.ts --cap 50
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import {
   DEFAULT_LEGACY_NEEDS_HUMAN_RECONCILE_CAP,
@@ -33,41 +32,27 @@ function argValue(flag: string): string | undefined {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const cap = legacyNeedsHumanReconcileCap(argValue('--cap') ?? DEFAULT_LEGACY_NEEDS_HUMAN_RECONCILE_CAP);
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const id = `rt_${SLUG}_${NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, cap };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, tier, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${NAME}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            ${TARGET_ROLE}, 'skip', 'skip-old', ${active}, 'durable', now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      tier = EXCLUDED.tier,
-      -- active intentionally NOT re-applied on conflict: a re-seed must never
-      -- clobber an operator's runtime pause/resume.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-legacy-needs-human-reconcile-routine] seeded "${NAME}" for "${SLUG}" ` +
-      `(ws=${ws}, active=${active}, tier=durable, cron=${CRON}, cap=${cap}).`,
-  );
-  await sql.end({ timeout: 5 });
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(
-      '[seed-legacy-needs-human-reconcile-routine] FAILED:',
-      error instanceof Error ? error.message : error,
-    );
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-legacy-needs-human-reconcile-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const cap = legacyNeedsHumanReconcileCap(argValue('--cap') ?? DEFAULT_LEGACY_NEEDS_HUMAN_RECONCILE_CAP);
+    const triggerConfig = { cron: CRON, cap };
+    return {
+      installSlug: SLUG,
+      name: NAME,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: TARGET_ROLE,
+      tier: 'durable' as const,
+      cap,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, cap, triggerConfig }) => {
+    console.log(
+        `[seed-legacy-needs-human-reconcile-routine] seeded "${NAME}" for "${SLUG}" ` +
+          `(ws=${ws}, active=${active}, tier=durable, cron=${CRON}, cap=${cap}).`,
+      );
+    await sql.end({ timeout: 5 });
+  },
+});

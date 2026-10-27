@@ -3,13 +3,10 @@ import {
   type CapPreservingOperativeTruncation,
 } from '../../operative-clause';
 import { workItemFetchHint } from '../../work-item-fetch-hint';
-import {
-  assessHeldItemOwnership,
-  renderHeldItemOwnershipWarning,
-  type CarryBriefHeldItem,
-} from '../../carry-brief';
-import { controlStateHash } from './control-anchor';
+import type { CarryBriefHeldItem } from '../../carry-brief';
 
+// This module's recovery prompt is also used by lightweight boundary code. Keep
+// store/control imports dynamic at their work sites so prompt-only imports stay cheap.
 export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
 export const AUTOMATIC_COMPACTION_RECOVERY_MARKER = '⟦post-compaction-recovery⟧' as const;
 
@@ -441,6 +438,8 @@ export async function buildCompactionRecovery(
         })();
     recovery.coverage.heldItems = true;
     if (held.length) {
+      const { assessHeldItemOwnership, renderHeldItemOwnershipWarning } =
+        await import('../../carry-brief');
       recovery.checkpoints = held.map((h) => {
         // EI-19952485326105760: a plain head-only slice here reproduces the SAME
         // defect the carry-brief held-item render already fixed — append-style
@@ -641,7 +640,9 @@ export async function buildAutomaticCompactionRecovery(
         recovery.coverage.planAuthority !== false,
       memoryEpoch,
       controlGeneration: recovery.control?.generation ?? null,
-      controlStateHash: recovery.control ? controlStateHash(recovery.control.state) : null,
+      controlStateHash: recovery.control
+        ? (await import('./control-anchor')).controlStateHash(recovery.control.state)
+        : null,
       fallback: {
         verb: 'coord:orient',
         args: { afterCompaction: true },

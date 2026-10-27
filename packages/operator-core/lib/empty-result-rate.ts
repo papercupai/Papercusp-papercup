@@ -81,13 +81,13 @@ export function rollupEmptyResults(rows: EmptyResultRow[]): EmptyResultRollup {
 }
 
 /**
- * The canonical live query — code:run calls whose result was a detected mis-mapping,
+ * The canonical live query — all code:run calls and detected mis-mappings,
  * per agent, over the last `$1` days. Runnable as-is via dev:pg_query.
  *
  * The numerator keys off `metadata_json ? 'emptyMapping'` (the jsonb key-exists
  * operator), stamped by code:run's handler ONLY when the detector fired. The
- * denominator counts every code:run row in the same window, so the ratio is a real
- * rate rather than a raw count that grows with fleet size.
+ * denominator counts every code:run row in the same window, including owners
+ * with no mis-mappings, so the ratio is a real fleet rate.
  */
 export const EMPTY_RESULT_RATE_SQL = `
 SELECT coord_owner_id AS owner_id,
@@ -98,7 +98,6 @@ FROM harness_shared.tool_invocations
 WHERE tool_name = 'code:run'
   AND invoked_at > now() - (($1)::int || ' days')::interval
 GROUP BY coord_owner_id
-HAVING count(*) FILTER (WHERE metadata_json ? '${EMPTY_MAPPING_METADATA_KEY}') > 0
 ORDER BY empty_runs DESC
 `;
 

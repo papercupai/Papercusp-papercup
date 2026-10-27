@@ -1139,11 +1139,26 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       specVersion: '1.0',
       specId: 'bugs-only-drain',
       revision: 3,
-      view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      view: {
+        filter: {
+          all: [
+            { all: [{ field: 'kind', op: 'in', value: ['bug'] }] },
+            { not: { any: [{ field: 'title', op: 'word', value: 'p2p' }] } },
+          ],
+        },
+      },
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
-    // Tier 1 dry (no bug in the feature table), tier 2 must not widen to F-in-backlog, tier 3 off.
-    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+    // A nested issue-only kind leaf proves tier 1 cannot match; skip it before evaluating the
+    // rest of this issue-lane filter, and do not widen tier 2 into F-in-backlog.
+    const steps: string[] = [];
+    expect(await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step) => steps.push(step),
+    })).toBeNull();
+    expect(steps).toContain('candidate-feature-family-skip-issue-only');
+    expect(steps).not.toContain('candidate-feature-tier-1');
+    expect(steps).not.toContain('candidate-feature-tier-2');
   });
 
   // EI-7481 (the reported shape): under a bare-leaf `kind='bug'` spec with the issue lane ON, the

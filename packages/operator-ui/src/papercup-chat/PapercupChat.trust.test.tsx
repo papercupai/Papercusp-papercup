@@ -13,11 +13,20 @@
  *
  * plus a smoke render of the whole view over a fake controller.
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CardPresentation, ChatTurn, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
+import type { CardPresentation, ChatResultBlock, ChatTurn, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
 import { ChatMarkdown, PapercupChat, askTranscriptPlaceholder, lookedAtTools, papercupChatUrlTransform } from './PapercupChat';
 import type { PapercupChatController } from './use-papercup-chat';
+
+const reportMarkdownParses = vi.hoisted(() => vi.fn());
+vi.mock('./remark-work-refs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./remark-work-refs')>();
+  return { ...original, remarkWorkRefs: (...args: Parameters<typeof original.remarkWorkRefs>) => {
+    reportMarkdownParses();
+    return original.remarkWorkRefs(...args);
+  } };
+});
 
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: [], loading: false, error: null }),
@@ -275,6 +284,67 @@ describe('PapercupChat — the view over a controller', () => {
     ],
   };
 
+  const resultBlock: ChatResultBlock = {
+    id: 'shared-result-one', kind: 'document', title: 'Model-supplied title',
+    sources: [{ ref: 'document:one', label: 'Document source' }],
+    actions: [{ id: 'open', kind: 'open', ref: 'document:one', label: 'Open document' }],
+  };
+  const resultTurn: ChatTurn = { id: 'result-turn', role: 'assistant', text: '', createdAt: 1000, results: [resultBlock] };
+
+  it.each(['owner', 'public'] as const)('P010 inert scoped results: renders through the current %s host without dispatching on replay', async hostTrust => {
+    const resolve = vi.fn(async () => ({ ok: true as const, value: { ...resultBlock,
+      title: 'Authorized document', text: '**Safe result** <script>alert(1)</script> <img src=x onerror=alert(1)> '
+        + '<b onclick="alert(1)">handler</b> [unsafe](javascript:alert(1)) [data](data:text/html,x) '
+        + '[Safe link](https://example.com/result) WI-4321' } }));
+    const activate = vi.fn(async () => ({ ok: true as const, value: undefined }));
+    const context = { authorizationKey: 'caller:one:revision1', host: { resolve, activate } };
+    const view = render(<PapercupChat chat={controller({ turns: [resultTurn] })} hostTrust={hostTrust}
+      harnessSlug="papercusp" resultContext={context} />);
+    await screen.findByText('Authorized document');
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ authorizationKey: context.authorizationKey,
+      result: resultBlock, signal: expect.any(AbortSignal) }));
+    const result = view.container.querySelector('[data-result-id="shared-result-one"]')!;
+    expect(result.textContent).toContain('Document source');
+    expect(result.querySelector('strong')?.textContent).toBe('Safe result');
+    expect(result.querySelector('script, img, [onerror], [onclick], a[href^="javascript:"], a[href^="data:"]')).toBeNull();
+    const safeLink = result.querySelector('a[href="https://example.com/result"]');
+    expect(safeLink?.getAttribute('target')).toBe('_blank');
+    expect(safeLink?.getAttribute('rel')).toContain('noopener');
+    expect(result.querySelector('[data-ref-kind]') !== null).toBe(hostTrust === 'owner');
+    expect(screen.queryByText(/returned no answer/)).toBeNull();
+    expect(activate).not.toHaveBeenCalled();
+    view.rerender(<PapercupChat chat={controller({ turns: [structuredClone(resultTurn)] })} hostTrust={hostTrust}
+      harnessSlug="papercusp" resultContext={context} />);
+    expect(activate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
+    await waitFor(() => expect(activate).toHaveBeenCalledTimes(1));
+    expect(activate).toHaveBeenCalledWith({ resultId: resultBlock.id, actionId: 'open', kind: 'open', ref: 'document:one' },
+      expect.objectContaining({ authorizationKey: context.authorizationKey }));
+  });
+
+  it('P010 inert scoped results: withholds contents and actions without a host authorization boundary', () => {
+    const view = render(<PapercupChat chat={controller({ turns: [resultTurn] })} hostTrust="owner" />);
+    expect(screen.getByText('This result is unavailable.')).toBeTruthy();
+    expect(view.container.querySelector('[data-result-id]')).toBeNull();
+    expect(screen.queryByText(resultBlock.title)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open document' })).toBeNull();
+  });
+
+  it('P010 inert scoped results: hides a formerly authorized result when the host authorization epoch changes', async () => {
+    const resolve = vi.fn(async (request: { authorizationKey: string }) => request.authorizationKey === 'allowed'
+      ? { ok: true as const, value: { ...resultBlock, title: 'Previously authorized document' } }
+      : { ok: false as const, code: 'unauthorized' as const });
+    const activate = vi.fn(async () => ({ ok: true as const, value: undefined }));
+    const chat = controller({ turns: [resultTurn] });
+    const view = render(<PapercupChat chat={chat} hostTrust="owner" resultContext={{ authorizationKey: 'allowed', host: { resolve, activate } }} />);
+    await screen.findByText('Previously authorized document');
+    view.rerender(<PapercupChat chat={chat} hostTrust="owner" resultContext={{ authorizationKey: 'revoked', host: { resolve, activate } }} />);
+    expect(screen.queryByText('Previously authorized document')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open document' })).toBeNull();
+    await screen.findByText('This result is not available to this caller.');
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it.each(['owner', 'public'] as const)(
     'the default report renderer preserves markdown and applies %s work-ref trust without a host override',
     (hostTrust) => {
@@ -299,6 +369,26 @@ describe('PapercupChat — the view over a controller', () => {
       }
     },
   );
+
+  it('reuses default report markdown on status refresh and still updates changed text and trust', () => {
+    reportMarkdownParses.mockClear();
+    const turn = (status: string, text = '**Escalation** resolved in WI-4321'): ChatTurn => ({
+      id: 'stable-report', role: 'assistant', text: '', createdAt: 1000,
+      report: { title: 'Progress', plans: [{ title: 'Work', items: [{ id: 'P-001', status, text }] }] },
+    });
+    const view = render(<PapercupChat chat={controller({ turns: [turn('wip')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    const initialParses = reportMarkdownParses.mock.calls.length;
+    expect(initialParses).toBeGreaterThan(0);
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    expect(reportMarkdownParses).toHaveBeenCalledTimes(initialParses);
+    expect(screen.getByTitle('done')).toBeTruthy();
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="owner" harnessSlug="papercusp" />);
+    expect(reportMarkdownParses.mock.calls.length).toBeGreaterThan(initialParses);
+    expect(screen.getByLabelText('WI-6601')).toBeTruthy();
+    view.rerender(<PapercupChat chat={controller({ turns: [turn('done', 'Updated **WI-6601**')] })} hostTrust="public" harnessSlug="papercusp" />);
+    expect(screen.queryByLabelText('WI-6601')).toBeNull();
+    expect(screen.getByText('WI-6601').closest('strong')).toBeTruthy();
+  });
 
   it('public host: shows the capability notice, the transcript, provenance and the Looked at line', () => {
     const chat = controller({ turns });

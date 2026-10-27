@@ -71,12 +71,14 @@ import {
   foldFilteredSnapshotRows,
   formatSnapshotFoldStall,
   isSnapshotOp,
+  summarizeOp,
   produceFilteredSnapshotIntoLog,
   type SnapshotFoldProgressCallback,
   type SnapshotFoldStall,
   type SnapshotValueTransform,
 } from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { scanFilteredSnapshotIndex } from './snapshot-index-fold';
 import {
   findLatestCompleteSnapshot,
   findLatestCompleteSnapshotDetailed,
@@ -196,7 +198,7 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
 const ORIGINAL_BLOCK_HASH = Symbol('proof-verified-original-block-sha256');
 
 /** A local get() alone cannot prove persisted bytes still match the signed head. */
-async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
+export async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, sourceLength: number) {
   const signed = core as ReadableCore & {
     state: { length: number; fork: number; byteLength: number; signature: Buffer;
       hash(): Buffer; createTreeBatch(): unknown };
@@ -230,12 +232,15 @@ async function signedSeedSource(core: ReadableCore, sourceKeyHex: string, source
     Object.defineProperty(op, ORIGINAL_BLOCK_HASH, { value: createHash('sha256').update(proof.block.value).digest('hex') });
     return op;
   } };
-  const selected = await findLatestCompleteSnapshotDetailed(log);
+  const selected = await findLatestCompleteSnapshotDetailed({ ...log, get: async index => {
+    const op = await log.get(index);
+    return op ? summarizeOp(op) : null;
+  } });
   if (selected.kind === 'unreadable') throw new Error('[seed:corestore] original snapshot selection unreadable');
   return { log, sourceHead, assertHead, hint: selected.kind === 'found' ? selected.seed : null };
 }
 
-function sourceSpanRecorder(sourceLength: number) {
+export function sourceSpanRecorder(sourceLength: number) {
   const blocks = createHash('sha256');
   const snapshot = createHash('sha256');
   const inventory = createHash('sha256');
@@ -382,30 +387,24 @@ export async function exportSeedUuidIdempotencySource(inp: {
   const privacy = seedSnapshotValueTransform(inp.redactValues);
   const options = { now: foldNow, excludeTables: SEED_EXCLUDED_TABLES,
     priorSnapshotHint: source.hint, requireComplete: true };
-  const original = await foldFilteredSnapshotRows(source.log, { ...options, onSourceBlock: recorder.read });
-  const projected = await foldFilteredSnapshotRows(source.log, { ...options, transformValue: privacy.transform });
-  if (original.seedIndex !== projected.seedIndex || original.chunkCount !== projected.chunkCount) {
-    throw new Error('[seed:corestore] privacy census snapshot span mismatch');
-  }
+  const original = await scanFilteredSnapshotIndex(source.log, { ...options, onSourceBlock: recorder.read });
   source.assertHead();
   if (core.length !== inp.sourceLength) throw new Error('[seed:corestore] UUID source export head changed');
-  const rows = original.rows;
   const span = recorder.finish(original);
-  const projectedRows = new Map(projected.rows.map(row => [JSON.stringify([row.table, row.hbKey]), row]));
   const winners: SeedSourceInput['winners'][number][] = [];
   const path = join(inp.outputDir, inp.segment);
   const file = await open(path, 'wx', 0o600);
   const digest = createHash('sha256');
+  let rowCount = 0;
   try {
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index]!;
-      const projected = projectedRows.get(JSON.stringify([row.table, row.hbKey]));
+    for await (const { row, projected } of original.folder.streamRows(source.log.get,
+      { now: foldNow, transformValue: privacy.transform })) {
       const privacyProjection = !projected ? { disposition: 'drop' } :
         JSON.stringify(projected.value) === JSON.stringify(row.value) ? { disposition: 'carry' } :
           { disposition: 'redact', value: projected.value };
       winners.push({ table: row.table, hbKey: row.hbKey,
         disposition: privacyProjection.disposition as 'carry' | 'redact' | 'drop' });
-      const text = JSON.stringify({ ...row, segment: inp.segment, line: index + 1,
+      const text = JSON.stringify({ ...row, segment: inp.segment, line: ++rowCount,
         storedValueJson: JSON.stringify(row.value), privacyProjection }) + '\n';
       digest.update(text);
       await file.writeFile(text);
@@ -419,7 +418,7 @@ export async function exportSeedUuidIdempotencySource(inp: {
   }
   await file.close();
   return { sourceKeyHex: inp.sourceKeyHex, sourceLength: inp.sourceLength,
-    rowCount: rows.length, rowsPath: path, rowsSha256: digest.digest('hex'),
+    rowCount, rowsPath: path, rowsSha256: digest.digest('hex'),
     sourceBlocksRead: span.sourceBlocksRead, sourceBlocksJsonSha256: span.sourceBlocksJsonSha256,
     sourceInput: { ...span, sourceHead: source.sourceHead, foldNow, winners,
       ...(inp.executionBinding ? { executionBinding: inp.executionBinding } : {}) },

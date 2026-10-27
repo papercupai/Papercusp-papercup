@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildSshConnectionCommands } from "../app/settings/remote-access/ssh-connection-commands";
 
 import {
   HOSTED_LOGIN_CHOICE,
@@ -104,11 +105,28 @@ function gcpProfile(name = "cloud") {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
 
 describe("psu connection transport argv", () => {
+  it("keeps saved cloud identities outside a private runtime home", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-private-runtime-"));
+    roots.push(home);
+    const ownerStore = savedStore(home, [hostedProfile()]);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("PAPERCUSP_HOME", join(home, "isolated-runtime"));
+
+    expect(defaultPsuConnectionStorePath()).toBe(join(home, "isolated-runtime", "psu-connections.json"));
+    expect(loadPsuConnectionStore().profiles).toEqual([]);
+    expect(loadPsuConnectionStore(ownerStore).profiles).toHaveLength(1);
+    expect(defaultPsuConnectionStorePath(home)).toBe(ownerStore);
+
+    vi.stubEnv("PAPERCUSP_HOME", "");
+    expect(defaultPsuConnectionStorePath()).toBe(ownerStore);
+  });
+
   it("strips only transport flags and preserves every other argv cell in exact order", () => {
     const parsed = parsePsuConnectionArgs([
       "--connect",
@@ -157,6 +175,33 @@ describe("psu connection transport argv", () => {
 });
 
 describe("personal computer connections", () => {
+  it.each(["", "alice"])("executes the UI-generated commands through the real profile store and terminal/GUI dispatch (user %j)", async (user) => {
+    const home = tempHome();
+    const { commands } = buildSshConnectionCommands({ host: "100.64.0.2", user, name: "laptop" });
+    expect(commands).not.toBeNull();
+    // Generated values cannot contain whitespace, so these are the actual argv cells copied by the UI.
+    const argv = (command: string) => command.split(" ").slice(1);
+    await runPsuConnectionFrontController(argv(commands!.save), { home, interactive: false, output: vi.fn() });
+    expect(loadPsuConnectionStore(defaultPsuConnectionStorePath(home)).profiles).toEqual([
+      expect.objectContaining({ kind: "ssh", host: "100.64.0.2", target: user ? `${user}@100.64.0.2` : "100.64.0.2" }),
+    ]);
+    const sshCalls: string[][] = [];
+    const runInteractive = vi.fn(async () => ({ code: 0 }));
+    const openBrowser = vi.fn();
+    const deps = { home, interactive: true, commandAvailable: () => true, notice: vi.fn(), runInteractive, openBrowser,
+      reservePort: async () => ({ port: 45124, release: async () => {} }),
+      probeOperator: vi.fn(async () => {}), waitForGuiClose: async () => {},
+      runCommand: async (_command: string, args: string[]) => { sshCalls.push(args); return { code: args.includes("check") ? 1 : 0 }; },
+    };
+    await runPsuConnectionFrontController(argv(commands!.terminal), deps);
+    expect(runInteractive).toHaveBeenCalledOnce();
+    expect(sshCalls.find(args => args.includes("ControlMaster=yes"))?.at(-1)).toBe(user ? `${user}@100.64.0.2` : "100.64.0.2");
+    await runPsuConnectionFrontController(argv(commands!.gui), deps);
+    expect(openBrowser).toHaveBeenCalledWith("http://127.0.0.1:45124");
+    expect(runInteractive).toHaveBeenCalledOnce();
+    expect(sshCalls.at(-1)).toContain("cancel");
+  });
+
   it("saves a personal SSH alias and removes its access from this picker", async () => {
     const home = tempHome();
     const output = vi.fn();

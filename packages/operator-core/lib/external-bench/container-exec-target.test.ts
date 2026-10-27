@@ -13,6 +13,7 @@ import { basename, join } from 'node:path';
 
 import {
   CONTAINER_CODEX_BIN_PATH,
+  resolveContainerClaudeBinary,
   materializeDockerExecWrapper,
   renderDockerExecWrapper,
   validateDockerExecTarget,
@@ -45,6 +46,32 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
+describe('native Claude container binary', () => {
+  function nativeBinary(dir: string, name = 'claude') {
+    const header = Buffer.alloc(20);
+    header.write('7f454c460201', 0, 'hex'); header.writeUInt16LE(62, 18);
+    const binary = join(dir, name);
+    writeFileSync(binary, header, { mode: 0o755 });
+    return binary;
+  }
+  it('pins the versioned ELF target and ignores a host docker-wrapper override', () => {
+    const dir = mkdtempSync(join(root, 'native-'));
+    const binary = nativeBinary(dir, '2.1.293');
+    symlinkSync(binary, join(dir, 'claude'));
+    expect(resolveContainerClaudeBinary({ arch: 'x64', env: { PATH: dir, PAPERCUSP_BACKEND_BIN_CLAUDE: fakeDocker } })).toBe(binary);
+  });
+  it('refuses npm scripts, foreign architectures, directories, nonexecutables and ambiguous mounts', () => {
+    const dir = mkdtempSync(join(root, 'native-refuse-'));
+    const script = join(dir, 'script'); writeFileSync(script, '#!/usr/bin/env node\n', { mode: 0o755 });
+    const data = join(dir, 'data'); writeFileSync(data, 'no', { mode: 0o600 });
+    const binary = nativeBinary(dir);
+    const comma = nativeBinary(dir, 'with,comma');
+    for (const candidate of [script, data, dir, comma]) expect(() => resolveContainerClaudeBinary({ binary: candidate, arch: 'x64' })).toThrow();
+    expect(() => resolveContainerClaudeBinary({ binary, arch: 'arm64' })).toThrow(/architecture/);
+    expect(() => resolveContainerClaudeBinary({ binary, platform: 'darwin' })).toThrow(/Linux/);
+  });
+});
+
 function runWrapper(args: string[], env: Record<string, string>) {
   const { wrapperPath } = materializeDockerExecWrapper(target, {
     dir: mkdtempSync(join(root, 'w-')),
@@ -56,6 +83,83 @@ function runWrapper(args: string[], env: Record<string, string>) {
   const argv = readFileSync(argvLog, 'utf8').split('\n').slice(0, -1);
   return { r, argv, wrapperPath };
 }
+
+describe('stock Claude image environment admission', () => {
+  // Unlike the argv-only Docker double above, model inspection and execute
+  // the command with Docker's image-default + explicit -e environment merge.
+  function launch(imageEnv: Record<string, string>, guarded = true, inspection?: { id?: unknown; env?: unknown }) {
+    const dir = mkdtempSync(join(root, 'image-env-'));
+    const docker = join(dir, 'docker');
+    const argvFile = join(dir, 'argv.json');
+    writeFileSync(docker, `#!${process.execPath}
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const args = process.argv.slice(2), env = ${JSON.stringify(imageEnv)};
+fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(args));
+if (args[0] === 'inspect') {
+  process.stdout.write(JSON.stringify(${JSON.stringify(inspection)} ?? { id: 'c'.repeat(64), env: Object.entries(env).map(([k, v]) => k + '=' + v) }));
+  process.exit(0);
+}
+let i = 1;
+while (args[i].startsWith('-')) {
+  const flag = args[i++];
+  if (flag === '-e') { const key = args[i++]; env[key] = process.env[key]; }
+  else if (flag === '-w') i++;
+}
+i++;
+const child = spawnSync(args[i], args.slice(i + 1), { env, stdio: 'inherit' });
+process.exit(child.status ?? 127);
+`, { mode: 0o755 });
+    const wrapper = materializeDockerExecWrapper({ ...target, binPath: process.execPath }, {
+      dir, dockerBin: docker, dockerHost: '', guardClaudeEnv: guarded,
+      forwardEnvPatterns: ['^ANTHROPIC_AUTH_TOKEN$', '^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$'],
+    });
+    const result = spawnSync(wrapper.wrapperPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
+      env: { ANTHROPIC_AUTH_TOKEN: 'ASSIGNMENT_TOKEN_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    return { result, args: JSON.parse(readFileSync(argvFile, 'utf8')) as string[] };
+  }
+
+  it.each(['CLAUDE_CODE_EXTRA_BODY', '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL', 'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_ENVIRONMENT_KIND', 'ENABLE_TOOL_SEARCH', 'NODE_OPTIONS', 'HTTPS_PROXY',
+    'MAX_THINKING_TOKENS', 'FORCE_PROMPT_CACHING_5M', 'USE_API_CONTEXT_MANAGEMENT'])
+  ('rejects an undeclared image control before the CLI starts (%s)', key => {
+    const { result, args } = launch({ PATH: '/usr/bin:/bin', [key]: 'IMAGE_SECRET_SENTINEL' });
+    expect(result.status, result.stderr).toBe(126);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(key);
+    expect(result.stderr).not.toContain('IMAGE_SECRET_SENTINEL');
+    expect(args.join(' ')).not.toContain('ASSIGNMENT_TOKEN_SENTINEL');
+    expect(args[0]).toBe('inspect');
+  });
+
+  it('overrides declared image controls while preserving task tool environment and argument boundaries', () => {
+    const { result, args } = launch({ PATH: '/task/tools:/usr/bin:/bin', VIRTUAL_ENV: '/task/venv', NODE_VERSION: '22',
+      ANTHROPIC_AUTH_TOKEN: 'IMAGE_SECRET_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '0' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ PATH: '/task/tools:/usr/bin:/bin', VIRTUAL_ENV: '/task/venv', NODE_VERSION: '22',
+      ANTHROPIC_AUTH_TOKEN: 'ASSIGNMENT_TOKEN_SENTINEL', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' });
+    expect(args.join(' ')).not.toContain('ASSIGNMENT_TOKEN_SENTINEL');
+    expect(args).toContain('c'.repeat(64));
+    expect(args).not.toContain(target.containerId);
+  });
+
+  it.each([{}, { id: 'replaced-container', env: [] }, { id: 'c'.repeat(64), env: null },
+    { id: 'c'.repeat(64), env: ['not-an-env-assignment'] }])
+  ('fails closed on unverifiable Docker inspection (%j)', inspection => {
+    const { result, args } = launch({}, true, inspection);
+    expect(result.status, result.stderr).toBe(126);
+    expect(result.stdout).toBe('');
+    expect(args[0]).toBe('inspect');
+  });
+
+  it('leaves the existing unguarded Codex wrapper environment behavior intact', () => {
+    const { result } = launch({ PATH: '/usr/bin:/bin', CLAUDE_CODE_EXTRA_BODY: 'image-default' }, false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).CLAUDE_CODE_EXTRA_BODY).toBe('image-default');
+  });
+});
 
 describe('validateDockerExecTarget', () => {
   it.each([
@@ -300,6 +404,28 @@ describe('session-dir relocation (D-026 step 3)', () => {
 });
 
 describe('config origin rewrite (D-033 step 2)', () => {
+  it.each([true, false])('rewrites only the isolated Claude gateway and refuses an unmapped origin (mapped=%s)', mapped => {
+    const base = mkdtempSync(join(root, 'claude-origin-')), homes = join(base, 'homes');
+    const home = join(homes, 'claude-session'); mkdirSync(home, { recursive: true });
+    const log = join(base, 'docker.json'), docker = join(base, 'docker');
+    writeFileSync(docker, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify({args: process.argv.slice(2), env: process.env}));\n`, { mode: 0o755 });
+    const { wrapperPath } = materializeDockerExecWrapper({ ...target, binPath: '/opt/claude',
+      sessionRelocation: { sessionEnv: 'CLAUDE_CONFIG_DIR', roots: [{ hostRoot: homes, perTaskDir: join(base, 'task-homes') }] },
+      originRewrites: mapped ? [{ from: 'http://127.0.0.1:32001', to: 'http://egress:8788' }] : [] },
+      { dir: mkdtempSync(join(base, 'wrapper-')), dockerBin: docker, dockerHost: '',
+        forwardEnvPatterns: ['^CLAUDE_CONFIG_DIR$', '^ANTHROPIC_(BASE_URL|AUTH_TOKEN)$'] });
+    const result = spawnSync(wrapperPath, ['-p'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin',
+      CLAUDE_CONFIG_DIR: home, ANTHROPIC_BASE_URL: 'http://127.0.0.1:32001', ANTHROPIC_AUTH_TOKEN: 'secret-test-token' } });
+    expect(result.status, result.stderr).toBe(mapped ? 0 : 126);
+    if (mapped) {
+      const observed = JSON.parse(readFileSync(log, 'utf8'));
+      expect(observed.env.ANTHROPIC_BASE_URL).toBe('http://egress:8788');
+      expect(observed.env.ANTHROPIC_AUTH_TOKEN).toBe('secret-test-token');
+      expect(observed.args).toContain('CLAUDE_CONFIG_DIR');
+      expect(observed.args).not.toContain('secret-test-token');
+    } else { expect(existsSync(log)).toBe(false); expect(result.stderr).toMatch(/loopback origin/); }
+  });
+
   const GW = 'http://papercusp-egress:41001', MCP = 'http://papercusp-egress:41002';
   const config = [
     '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',

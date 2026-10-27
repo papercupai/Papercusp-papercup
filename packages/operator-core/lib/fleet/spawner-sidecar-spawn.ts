@@ -348,12 +348,15 @@ async function spawnSpawnerSidecarInner(socketPath: string | undefined, startupB
   // runSpawnerSidecarServer). In DEV (tsx, real source tree) run the .ts entry via
   // tsx.
   const selfPath = fileURLToPath(import.meta.url);
+  const nodeExecutable = process.versions.bun
+    ? await (await import('../bundled-node')).resolveBundledNode() : process.execPath;
+  if (!nodeExecutable) throw new Error('Retained Node is required for the spawner sidecar');
   const plan = resolveSidecarSpawnPlan({
     selfPath,
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
     bundledScriptName: 'spawner-sidecar.mjs',
-    execPath: process.execPath,
+    execPath: nodeExecutable,
     spawnerPid: process.pid,
   });
 
@@ -681,7 +684,7 @@ export function getSpawnerSidecarProcess(): ChildProcess | null {
 }
 
 /** Test seam — inject a fake sidecar ChildProcess without spawning the real
- *  `npx tsx` child. Pass null to reset. */
+ *  Node/tsx child. Pass null to reset. */
 export function _setSpawnerSidecarProcessForTests(proc: ChildProcess | null): void {
   sidecarProcess = proc;
   sidecarReady = !!proc;

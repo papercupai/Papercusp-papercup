@@ -771,13 +771,16 @@ export default defineTool({
     // is checked first because a runtime-minted key with both histories is a
     // declared gate, not an unregistered catalog family.
     let emitterEvidence: KeyFireEvidence | null = null;
+    let fireEvidenceProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
     if (unknownEventKey) {
       const evidence = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
         timeoutMs: 1_000,
         label: 'events-await:keyFireEvidence',
       });
-      if (evidence.value && evidence.value.fires > 0) {
+      if (evidence.degraded || evidence.value === null) {
+        fireEvidenceProbeFailure = evidence.reason ?? 'error';
+      } else if (evidence.value.fires > 0) {
         emitterEvidence = evidence.value;
         unknownEventKey = false;
       }
@@ -1702,6 +1705,12 @@ export default defineTool({
               ? {
                   unknown_event_key: true,
                   unknown_event_key_advice: `NO KNOWN EMITTER for "${eventKey}" — it matches no family in events:catalog, no announced gate, and no key in its family ("${eventKey.split(':').slice(0, 2).join(':')}") has EVER fired on this host, so this await will most likely only TIME OUT. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            ...(fireEvidenceProbeFailure
+              ? {
+                  unknown_event_key_advice: `NO MATCHING CATALOG FAMILY for '${eventKey}' — it matches no family in events:catalog and no announced gate. Prior fire history could not be checked (${fireEvidenceProbeFailure}); this does NOT establish that the key or its family has never fired. If you mistyped a key, events:cancel and re-await the exact one (events:catalog lists them). If a peer is meant to emit it, have them DECLARE it first (events:emit { announce:true }) and await the key it returns. Registered anyway — this is a warning, not a refusal.`,
+                  fire_history_probe: { status: 'unknown', reason: fireEvidenceProbeFailure },
                 }
               : {}),
             // EI-18676056143796303: the key emits but is missing from the catalog.

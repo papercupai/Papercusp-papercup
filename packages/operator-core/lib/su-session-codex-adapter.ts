@@ -13,10 +13,13 @@ import { createInterface } from 'node:readline';
 
 import {
   assertNeverSuSession,
+  SU_SESSION_INPUT_LIMITS,
   type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
+  type SuSessionExecutionKind,
+  type SuSessionInputPart,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -43,6 +46,8 @@ import {
   findCodexRolloutPath,
 } from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { readCodexVisibleHistory } from './su-session-codex-history';
+import type { SuStdioPeer } from './su-session-stdio-peer';
 import { codexPlanCall, codexTokenUsage } from './su-session-usage';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
@@ -72,7 +77,10 @@ export type CodexNativeCommandVerdict = { ok: true } | ({ ok: false } & SuSessio
 
 export interface CodexSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  /** Only attached programmatic runtimes advertise these explicit controls. */
+  queue?(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
+  steer?(input: { ownerId: string; turnId: string; activeTurnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -85,6 +93,7 @@ export interface CodexSuSessionControls {
 
 export interface CodexSuSessionDescriptorOptions {
   agentChatId: string;
+  executionKind?: SuSessionExecutionKind;
   model?: string | null;
   /** D-026: the approvals mode the engine launched in, when it has one. */
   approvals?: SuApprovalsMode;
@@ -96,6 +105,8 @@ export interface CodexSuSessionDescriptorOptions {
 }
 
 export interface CreateCodexSuSessionAdapterOptions extends CodexSuSessionDescriptorOptions {
+  /** Set only by a transport which validates and delivers typed input. */
+  typedInput?: boolean;
   host?: SuSessionHost<'codex'>;
   controls?: Partial<CodexSuSessionControls>;
   ready?: boolean;
@@ -278,8 +289,13 @@ function defaultControls(): CodexSuSessionControls {
  */
 export function codexCapabilities(): SuSessionCapabilities {
   return {
+    version: 2,
+    input: { parts: [], origins: ['owner'] },
     commands: {
       owner_turn: { state: 'supported', implementation: 'native' },
+      queue: { state: 'unsupported', reason: 'explicit queue delivery is not attached to this runtime' },
+      steer: { state: 'unsupported', reason: 'active-turn steering is not attached to this runtime' },
+      handoff: { state: 'unsupported', reason: 'identity-safe execution transfer requires the managed handoff coordinator' },
       interrupt: { state: 'supported', implementation: 'native' },
       resume: {
         state: 'conditional',
@@ -287,8 +303,9 @@ export function codexCapabilities(): SuSessionCapabilities {
         reason: 'requires the tracked rollout and a live or P-004-reconciled managed runtime',
       },
       fork: {
-        state: 'unsupported',
-        reason: 'the tracked Codex psu path exposes exact resume but no identity-safe native fork transport',
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'forks must use the tracked launcher with native_fork_source so the child receives its own durable identity',
       },
       focus: { state: 'supported', implementation: 'host' },
       end: {
@@ -401,7 +418,7 @@ function commandRefusal(verdict: Exclude<CodexNativeCommandVerdict, { ok: true }
 function descriptorFor(
   binding: PuiSuSessionBinding,
   runtime: CodexSuRuntimeBinding,
-  options: CodexSuSessionDescriptorOptions,
+  options: CreateCodexSuSessionAdapterOptions,
 ): SuSessionDescriptor<'codex'> {
   if (!binding.ownerId || !binding.workspaceId) {
     throw new Error('Codex SU-session binding requires ownerId and workspaceId');
@@ -417,6 +434,7 @@ function descriptorFor(
       harnessSlug: binding.harnessSlug,
     },
     lifecycle: 'starting',
+    executionKind: options.executionKind ?? 'pty',
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
@@ -425,7 +443,14 @@ function descriptorFor(
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
     modes: [...(options.modes ?? [])],
-    capabilities: codexCapabilities(),
+    capabilities: (() => {
+      const capabilities = codexCapabilities();
+      const attached = options.executionKind === 'programmatic' ? options.controls : undefined;
+      return { ...capabilities, commands: { ...capabilities.commands,
+        ...(attached?.queue ? { queue: { state: 'supported' as const, implementation: 'host' as const } } : {}),
+        ...(attached?.steer ? { steer: { state: 'supported' as const, implementation: 'native' as const } } : {}),
+      } };
+    })(),
     backendExtension: {
       backend: 'codex',
       codexHome: runtime.nativeSession.codexHome,
@@ -458,7 +483,12 @@ export class CodexSuSessionAdapter {
     this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
-      descriptor: descriptorFor(binding, runtime, options),
+      descriptor: (() => {
+        const descriptor = descriptorFor(binding, runtime, options);
+        return options.executionKind === 'programmatic' && options.typedInput && options.controls?.ownerTurn
+          ? { ...descriptor, capabilities: { ...descriptor.capabilities, input: { parts: ['text', 'image', 'file'] as const, origins: ['owner'] as const, limits: SU_SESSION_INPUT_LIMITS } } }
+          : descriptor;
+      })(),
       executeCommand: (command: SuSessionCommand<'codex'>, context: SuSessionCommandContext<'codex'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor: SuSessionDescriptor<'codex'>) => {
@@ -723,7 +753,7 @@ export class CodexSuSessionAdapter {
     }
   }
 
-  async consumeRolloutSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
+  async consumeRolloutSnapshot({ preserveLifecycle = false, deferForkHistory = false }: { preserveLifecycle?: boolean; deferForkHistory?: boolean } = {}): Promise<void> {
     if (!this.runtimeValue.rolloutPath) {
       throw new Error('Codex runtime has no resolved rollout path');
     }
@@ -732,7 +762,49 @@ export class CodexSuSessionAdapter {
     if (this.ownerTurnReceipts) {
       this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
     }
-    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    for await (const line of readCodexRolloutSnapshotLines(this.runtimeValue.rolloutPath)) {
+      // A paginated fork's own rollout omits inherited turns. Defer the entire
+      // replay to its native view, avoiding an out-of-order partial replay.
+      if (deferForkHistory) {
+        const row = asRecord(JSON.parse(line));
+        if (row?.type === 'session_meta' && asRecord(row.payload)?.forked_from_id) return;
+      }
+      this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    }
+  }
+
+  /** Historical questions are transcript text, never new actionable cards.
+   * This path does not touch the live turn, queue, lifecycle or tool executor. */
+  async consumeThreadHistory(request: SuStdioPeer['request']): Promise<void> {
+    if (this.ownerTurnReceipts) this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
+    const nativeId = this.runtimeValue.nativeSession.rolloutId;
+    for await (const { turn, items } of readCodexVisibleHistory(request, nativeId)) {
+      let turnId = `codex-history-${String(turn.id)}`;
+      for await (const item of items) {
+        const fresh = this.host.claimNativeRecord(`codex-history:${nativeId}:${String(turn.id)}:${String(item.id)}`);
+        if (item.type === 'userMessage') {
+          const content = (Array.isArray(item.content) ? item.content : []).map(part => {
+            const value = asRecord(part);
+            return value?.type === 'text' && typeof value.text === 'string' ? value.text : '';
+          }).filter(Boolean).join('\n');
+          turnId = this.replayTurnId(content, String(turn.id));
+          if (!fresh) continue;
+          this.emitTranscript({ turnId, role: 'owner', channel: 'text', content });
+        } else if (!fresh) continue;
+        else if (item.type === 'agentMessage' || item.type === 'plan') {
+          this.emitTranscript({ turnId, role: 'assistant', channel: 'text', content: String(item.text ?? '') });
+        } else if (item.type === 'reasoning') {
+          const content = [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])]
+            .filter(value => typeof value === 'string').join('\n');
+          this.emitTranscript({ turnId, role: 'assistant', channel: 'reasoning', content });
+        } else if (['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'functionCallOutput', 'webSearch', 'collabAgentToolCall'].includes(String(item.type))) {
+          const name = String(item.tool ?? item.name ?? item.type), callId = String(item.id);
+          this.host.emit({ type: 'tool', phase: 'started', turnId, callId, name, input: asJsonValue(item) });
+          this.host.emit({ type: 'tool', phase: 'completed', turnId, callId, name, output: asJsonValue(item),
+            isError: item.status === 'failed' || item.exitCode != null && item.exitCode !== 0 });
+        }
+      }
+    }
   }
 
   /** P-004 calls this after an exact resume/carry replacement attaches. The
@@ -772,17 +844,32 @@ export class CodexSuSessionAdapter {
     let verdict: CodexNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
+      case 'queue':
         // Shown live under this id already; a later replay must not take it.
         this.receiptMatcher.markUsed(command.turnId);
-        context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({
+        if (command.type === 'owner_turn') context.transition('running', 'owner turn accepted');
+        verdict = await (command.type === 'queue' ? this.controls.queue! : this.controls.ownerTurn)({
           ownerId,
           turnId: command.turnId,
           content: command.content,
-          ...(command.model ? { model: command.model } : {}),
-          ...(command.approvals ? { approvals: command.approvals } : {}),
+          ...(command.input ? { input: command.input } : {}),
+          ...(command.model !== undefined ? { model: command.model } : {}),
+          ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
+        break;
+      case 'steer':
+        if (['cwd', 'effort', 'sandbox', 'sandboxPolicy', 'approvalPolicy', 'outputSchema', 'config']
+          .some(key => Object.prototype.hasOwnProperty.call(command, key))) {
+          return commandRefusal(refused('steer_overrides_unsupported', 'Native steering accepts input only; queue a new turn to change configuration', false));
+        }
+        this.receiptMatcher.markUsed(command.turnId);
+        verdict = await this.controls.steer!({ ownerId, turnId: command.turnId,
+          activeTurnId: command.activeTurnId, content: command.content,
+          ...(command.input ? { input: command.input } : {}),
+          ...(command.model !== undefined ? { model: command.model } : {}),
+          ...(command.approvals !== undefined ? { approvals: command.approvals } : {}),
+        });
         break;
       case 'interrupt':
         verdict = await this.controls.interrupt({ ownerId, reason: command.reason });
@@ -806,14 +893,16 @@ export class CodexSuSessionAdapter {
         verdict = await this.controls.end({ ownerId, reason: command.reason });
         break;
       case 'fork':
-        // Capability dispatch refuses this before the executor is reached.
+        // The tracked launcher owns child allocation and lineage registration.
         return commandRefusal(
           refused(
-            'unsupported',
-            'the tracked Codex psu path exposes exact resume but no identity-safe native fork transport',
-            false,
+            'fork_requires_launcher',
+            'Codex native fork requires the tracked launcher with native_fork_source to register the child before exact resume',
+            true,
           ),
         );
+      case 'handoff':
+        return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:
         return assertNeverSuSession(command);
     }

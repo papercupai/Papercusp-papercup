@@ -54,6 +54,8 @@ const argsSchema = z.object({
     'Work item whose existing spec-test-adequacy completion gate should be checked before filing. Advisory only; does not change the certification evidence selection. A single workItemIds entry supplies the default target.',
   ),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
+  bindingIds: z.array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)).max(500).optional()
+    .describe('Exact immutable evidence binding row IDs. An empty array selects no proof.'),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   includeDraft: z.boolean().optional(),
@@ -142,7 +144,7 @@ async function findBuildStrandedPendingCard(
 export default defineTool({
   name: 'plans:certify-spec-clauses',
   description:
-    "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
+    "Evaluate spec-test adequacy on server-measured evidence. Passing test-checked clauses return mechanicalProof and card.status='not-required' without scorecard emission or audit; counts.mechanicallyVerified records these clauses. Passing judgment clauses file the evaluator's unedited draft through scorecards:emit and its exact-replay gate. Non-passing clauses report wouldBlock and are never filed. Select with workItemIds and specIds; bindingIds pins the exact proof cohort, including through replay. evidenceRefs must be persisted evidence_ref values from plans:get-spec-evidence, not test-run IDs. limit is an evidence-row ceiling, not a clause count; omit it for the 1000-row default or set it above the filtered cohort. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
   guidance: {
     when: 'Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.',
     notWhen:
@@ -203,6 +205,7 @@ export default defineTool({
         classRef: args.classRef,
         ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
         ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
+        ...(args.bindingIds !== undefined ? { bindingIds: args.bindingIds } : {}),
         ...(args.specIds ? { specIds: args.specIds } : {}),
         ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
         ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),

@@ -21,6 +21,7 @@ vi.mock('./pg-read-query', async (importOriginal) => {
 const {
   checkAcceptanceBarApproverEligibility,
   getRubricWithoutSeeding,
+  previewAcceptanceBarAmendment,
   readRubric,
   readRubricWithoutSeeding,
 } = await import('./rubrics');
@@ -89,6 +90,26 @@ describe('rubric read-only lookups', () => {
 
     await expect(readRubric('absent-rubric')).resolves.toEqual({ kind: 'missing' });
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+  });
+
+  it('an amendment preview preserves a backing read failure instead of reporting a missing rubric', async () => {
+    h.sql.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(
+      previewAcceptanceBarAmendment({ rubricId: 'active-rubric' }),
+    ).rejects.toThrow('rubric_read_failed:');
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('an amendment preview returns null only for a successful missing lookup without seeding', async () => {
+    h.sql.mockResolvedValueOnce([]);
+
+    await expect(
+      previewAcceptanceBarAmendment({ rubricId: 'absent-rubric' }),
+    ).resolves.toBeNull();
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.sql).toHaveBeenCalledTimes(1);
   });
 
   it('reports an approver-screen backing read failure separately from a missing rubric', async () => {

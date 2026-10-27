@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "parent": "WI-10005889",
+  "repair": "EI-27007718704640207",
+  "priorArtifact": "docs/evidence/get-feedback-p002-owner-provenance-compatibility-2026-10-26.json",
+  "priorArtifactSha256": "fb80300ccb8eb40a01cf99c92aeb9109cdcc75ae319f5ce3856ce6409c2a756f",
+  "scope": "Attributed caller owner consistency before activity telemetry and lifecycle effects. This evidence does not establish native actor history, exhaustive lease ABA, parent acceptance or shipment.",
+  "rootCause": "The activity report handler trusted the explicit owner before comparing it with the attributable caller. Native-session classification later checked the presented owner and could not establish caller authority before telemetry.",
+  "durableFix": "Resolve caller identity and refuse a different non-transport owner before live native-session observation, telemetry or lifecycle effects. Preserve matching-owner and transport-only ingestion.",
+  "detectorGapAndGuard": "Existing foreign native-session coverage checked owner/session incarnation, but lacked attributed-caller owner-spoof cases. Maintained unit regressions now cover both omitted and victim-matching native session IDs, assert zero telemetry/classification/release/heal calls, and retain matching-owner and transport-only controls. A maintained integration case asserts owner_mismatch and zero database rows.",
+  "sourcePins": {
+    "packages/operator-core/lib/agent-tools/activity/report.ts": "93e72cc78d8feaec8b3106d435f780947ee53898a3fab578259d65c15a193fdf",
+    "packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts": "d40aa0fa6d3c9f6f645497717d8f635bbb5117fae4d75265c948fb4c191caa97",
+    "packages/operator-core/lib/agent-tools/activity/activity.integration.test.ts": "e981ee302d40d0b2c9be170a2f1c1686a538d484b8688773a26f3ac1b306ce03"
+  },
+  "originalDistinguishingExperiment": {
+    "replayed": false,
+    "before": {
+      "passed": 14,
+      "failed": 2,
+      "log": "/tmp/gf-p002-owner-provenance-before-20261026.log",
+      "logSha256": "06d766271755a106551110fd5e75ad9c807b47ef567255e989a75eebd3b5c5d6"
+    },
+    "after": {
+      "passed": 16,
+      "failed": 0,
+      "log": "/tmp/gf-p002-owner-provenance-after-20261026.log",
+      "logSha256": "16987321c439e9c9676b89ab78904c4ddf9d25f146cff010153c01511aba31ae"
+    },
+    "historicalProvenance": "Both original legs were dirty working-tree runs at HEAD30c8a3d0b8; they identify the regression and do not substitute for committed qualification."
+  },
+  "committedUnits": {
+    "commitSha": "3bea28d963eba2beb7654cc90911dafe6fc2cff4",
+    "driver": "node scripts/lint-as-committed.mjs test:file --any --ref=3bea28d963eba2beb7654cc90911dafe6fc2cff4 -- packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts packages/operator-core/lib/agent-tools/activity/report-lifecycle.test.ts packages/operator-core/lib/agent-tools/activity/report-contention.test.ts packages/operator-core/lib/agent-tools/activity/report-args-contract.test.ts packages/operator-core/lib/agent-tools/activity/report-session-end-release.test.ts",
+    "exitCode": 0,
+    "passed": 63,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "canonicalReadback": "testing:runs exact testRunIds, each independently read as pass, exact commit, clean and collectionFailed:false",
+    "runs": [
+      { "id": 22104618, "file": "report-contention.test.ts", "passed": 4 },
+      { "id": 22104619, "file": "report-session-end-release.test.ts", "passed": 21 },
+      { "id": 22104620, "file": "report-foreign-session.test.ts", "passed": 16 },
+      { "id": 22104621, "file": "report-lifecycle.test.ts", "passed": 15 },
+      { "id": 22104622, "file": "report-args-contract.test.ts", "passed": 7 }
+    ],
+    "log": "/tmp/gf-p002-owner-provenance-committed-units-20261026.log",
+    "logSha256": "4dc32519306e2dc1785f800058d7c6e558af89c872acea732b0914ea050d9a71",
+    "state": "/tmp/gf-p002-owner-provenance-committed-units-20261026.state.json"
+  },
+  "committedIntegration": {
+    "commitSha": "56859cff637cd26d472f6c2c35e0e1406053f792",
+    "driver": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=56859cff637cd26d472f6c2c35e0e1406053f792 -- packages/operator-core/lib/agent-tools/activity/activity.integration.test.ts",
+    "testRunId": 22104698,
+    "exitCode": 0,
+    "passed": 22,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "canonicalReadback": "testing:runs exact committed file and timestamp returned the single pass row22104698,22/0/0,clean,collectionFailed:false",
+    "preflight": "Guard, foreign-session regression, final integration fixture and both driver scripts matched the chosen commit before spawn.",
+    "privatePostgres": "Maintained with-test-pg provisioned the throwaway database and completed shutdown; terminal driver exit0.",
+    "log": "/tmp/gf-p002-owner-provenance-committed-integration-20261026.log",
+    "logSha256": "feafcd29da012ee1a6be48184f2ebeb19ae39210b9253a89c29979d2d7fb09e2",
+    "state": "/tmp/gf-p002-owner-provenance-committed-integration-20261026.state.json"
+  },
+  "reporterSink": "Both drivers used safe Node spawn with PAPERCUSP_TEST_RUNS_DB_URL=resolveScriptPgUrl().url. No credentials are retained. The committed test:file router validated inserted durable receipts; canonical ledger readback followed.",
+  "verificationDisposition": "Scoped owner-boundary repair verified in committed source and maintained tests; no remaining repair-specific verification gap.",
+  "preservedLimitations": [
+    "The transport-only/no-attributable-caller ingestion route remains supported",
+    "No new GF-P002-source or R2 canonical binding is claimed",
+    "Native actor matrix, lease ABA/custody/cohort and independent acceptance remain with owned parent WI-10005889",
+    "No live gate, runtime deployment or shipment claim"
+  ]
+}

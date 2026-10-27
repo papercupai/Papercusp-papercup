@@ -1,10 +1,11 @@
 /** P-029: requirement-labelled closure reuses the BAR map and conformance ledger. */
 import { parseBarMappings } from '../acceptance-bar-seed';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { readLatestRubricCheckResults } from '../check-results-ledger';
 import { evaluateRequirementEnforcement, type RequirementEnforcement } from './conformance-contract';
 import { conformanceLedgerRef, doneWhenCheckId, type ConformanceCheckVerdict, type OpenDriftAlarm } from './conformance-run';
-import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-run-deps';
+import { productionConformanceDeps } from './conformance-run-deps';
 import { approvedDeviations } from './deviation';
 import type { WorkItem } from '../work-items';
 
@@ -133,6 +134,7 @@ export async function conformanceClosureAssessment(input: {
   completion: RequirementClosureDeclaration;
   item?: WorkItem;
   skipConformance?: boolean;
+  phases?: PhaseTracker;
 }): Promise<ConformanceClosureAssessment> {
   const declaredRequirements = [...new Set([
     ...(input.completion.discharges ?? []),
@@ -149,7 +151,8 @@ export async function conformanceClosureAssessment(input: {
     ...fields,
     refusal,
   });
-  const plan = await readPlanBySlug(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
+  const plan = await trackPhase(input.phases, 'conformance:closure:plan', () =>
+    readPlanBySlug(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }));
   if (!plan) return result({ code: 'conformance_mapping_unavailable', error: `Cannot read linked plan ${input.planSlug}.` }, { applicable: true });
   if (input.item && plan.parsed.frontmatter.frozenTests === 'pilot') {
     const { frozenTestsClosureRefusal } = await import('../agent-tools/work_items/frozen-tests-gate');
@@ -162,13 +165,22 @@ export async function conformanceClosureAssessment(input: {
   const runtime = productionConformanceDeps(input);
   let verdicts: Awaited<ReturnType<typeof readLatestRubricCheckResults>> | undefined;
   return evaluateConformanceClosureAssessment({ planContent: plan.row.content, planItemIds: input.planItemIds, completion: input.completion }, {
-    listOpenDriftAlarms: runtime.listOpenDriftAlarms,
+    listOpenDriftAlarms: () => trackPhase(input.phases, 'conformance:closure:drift', runtime.listOpenDriftAlarms),
     async readDoneWhenVerdict(requirement) {
       // Tests have a canonical ledger even before the first conformance sweep fires.
       if (requirement.doneWhenCheck?.kind === 'tests') {
-        return (await judgeTestsFromLedger({ files: requirement.doneWhenCheck.files, workspaceId: input.workspaceId })).verdict;
+        // Reuse the run adapter: it retains one immutable dependency cache for this
+        // close, preserves named case selectors, and carries the request's phases.
+        return (await trackPhase(input.phases, `conformance:closure:tests:${requirement.barKey}`, () =>
+          runtime.evaluateCheck({
+            barKey: requirement.barKey,
+            role: 'done-when',
+            checkId: doneWhenCheckId(requirement.barKey),
+            check: requirement.doneWhenCheck!,
+          })))?.verdict ?? null;
       }
-      verdicts ??= await readLatestRubricCheckResults({ rubricRef: conformanceLedgerRef(input.harnessSlug, input.planSlug), workspaceId: input.workspaceId });
+      verdicts ??= await trackPhase(input.phases, 'conformance:closure:results', () =>
+        readLatestRubricCheckResults({ rubricRef: conformanceLedgerRef(input.harnessSlug, input.planSlug), workspaceId: input.workspaceId }));
       return verdicts.get(doneWhenCheckId(requirement.barKey))?.status ?? null;
     },
   });

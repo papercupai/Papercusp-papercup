@@ -1,0 +1,261 @@
+---
+rel_path: "evidence/shared-search-restart-papercusp-2026-10-22/personal-social-dispatch-20261025-a/red-protocol.json"
+updated_at: 1792955447150
+_body: "content"
+---
+
+{
+  "schemaVersion": 1,
+  "plan": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "scope": "controlled actual personal:search and social:search projected dispatch",
+  "inventory": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-inventory-20261023-v2.json",
+    "sha256": "42c2be9bea124d343066f5191f940388e43f2358bd361aca38f1f22cc025940a"
+  },
+  "fields": [
+    {
+      "id": "papercusp/personal:search/title",
+      "product": "papercusp",
+      "surface": "personal:search",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/personal:search/snippet",
+      "product": "papercusp",
+      "surface": "personal:search",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/personal:search/occurredAt",
+      "product": "papercusp",
+      "surface": "personal:search",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/social:search/postId",
+      "product": "papercusp",
+      "surface": "social:search",
+      "policy": {
+        "fieldPath": "postId",
+        "authority": "Personal Vault provider document + current provider registry/platform usability",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server owner grant/social scope intersection + disclosure + reference resolution",
+      "versionSource": "canonical document revision and minted roundtrip post reference; occurredAt alone is not freshness",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/social:search/title",
+      "product": "papercusp",
+      "surface": "social:search",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "Personal Vault provider document + current provider registry/platform usability",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server owner grant/social scope intersection + disclosure + reference resolution",
+      "versionSource": "canonical document revision and minted roundtrip post reference; occurredAt alone is not freshness",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/social:search/snippet",
+      "product": "papercusp",
+      "surface": "social:search",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "Personal Vault provider document + current provider registry/platform usability",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server owner grant/social scope intersection + disclosure + reference resolution",
+      "versionSource": "canonical document revision and minted roundtrip post reference; occurredAt alone is not freshness",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/social:search/occurredAt",
+      "product": "papercusp",
+      "surface": "social:search",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "Personal Vault provider document + current provider registry/platform usability",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server owner grant/social scope intersection + disclosure + reference resolution",
+      "versionSource": "canonical document revision and minted roundtrip post reference; occurredAt alone is not freshness",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    },
+    {
+      "id": "papercusp/social:search/replyable",
+      "product": "papercusp",
+      "surface": "social:search",
+      "policy": {
+        "fieldPath": "replyable",
+        "authority": "Personal Vault provider document + current provider registry/platform usability",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server owner grant/social scope intersection + disclosure + reference resolution",
+      "versionSource": "canonical document revision and minted roundtrip post reference; occurredAt alone is not freshness",
+      "policyRef": "shared-search-restart-papercusp-2026-10-22#R-3,D-012,D-013",
+      "staleBehavior": "retain-as-stale-without-current-claim",
+      "evidenceStatus": "unmeasured"
+    }
+  ],
+  "sourcePins": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/personal/search.ts",
+      "sha256": "2c1fc8082d17bc67aa7217d061b44c2b2693cacd644fcb46e954f324f4f91e52"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/social/search.ts",
+      "sha256": "7538faa69150aebb090ed19c8838c97bae999f36f0cff83fdcff9d916fa7b470"
+    },
+    {
+      "path": "packages/operator-core/lib/capability-verbs/social-read.ts",
+      "sha256": "1c1d869d2b9537d021c5ef47d979bcafc4879fd56293d876c3c39a6baf8e65ed"
+    },
+    {
+      "path": "packages/operator-core/lib/capability-verbs/social.ts",
+      "sha256": "3acf02ca8c420e5f9af12cf20005a1eeb8b8a1d7e3441111287a5ed2c7b810c7"
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/store.ts",
+      "sha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8"
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/authorization.ts",
+      "sha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368"
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts",
+      "sha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243"
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/disclosure-labels.ts",
+      "sha256": "4ae83755f27e08389b76f2451dabb794aacffbde49956316a962a611a1f84561"
+    },
+    {
+      "path": "packages/operator-core/lib/integrations/provider-registry.ts",
+      "sha256": "8f3f5ac8493ebd57332dd0dfa59a30c47ef18567b96eb6ac898ae6adf7d3bb29"
+    },
+    {
+      "path": "packages/operator-core/lib/capability-verbs/social-provider.fixture.ts",
+      "sha256": "d6eebee0990d40c4b920bf5723a7a7a379eda762f5cf7c6a189764f69802727f"
+    },
+    {
+      "path": "libs/generic/tooldef/src/dispatch-projected.ts",
+      "sha256": "888b3b2a32a2f45713cdc4f0737960ee1fa7834db73b9084702ce1c736aeb9aa"
+    },
+    {
+      "path": "libs/generic/tooldef/src/dispatch-stack.ts",
+      "sha256": "a51a5f5d3b820d2026a00fcbadc164f1d6975a2a1ab4f98bc421000000c7844f"
+    },
+    {
+      "path": "libs/papercusp/libs/db/sql/1414-vault-mail-partition.sql",
+      "sha256": "3c94440911c7bd496a745fcbaa05c62d56482ac6f03f2a4b708495fb25d302be"
+    }
+  ],
+  "cases": [
+    "projected-fields",
+    "content-and-candidates",
+    "grant-transitions",
+    "personal-disclosure",
+    "social-disclosure",
+    "social-unattributed-withholding"
+  ],
+  "controls": [
+    "foreign-user",
+    "ungranted-source",
+    "social-mail-exclusion",
+    "same-id-update",
+    "candidate-insert-delete",
+    "revoked-grant",
+    "privacy-rule",
+    "restricted-label",
+    "disclosure-ledger",
+    "egress-refusal",
+    "no-identity-withholding"
+  ],
+  "seams": [
+    "synthetic session user",
+    "unavailable embedding leg",
+    "owned disposable Postgres with admin client",
+    "installed synthetic Bluesky provider package; no provider invoked"
+  ],
+  "limits": [
+    "No production provider revisions or clocks; field currentness stays unknown.",
+    "No host authentication/RLS/full runtime closure or quality/cost/budget qualification."
+  ],
+  "qualification": {
+    "qualifiedBaseline": false,
+    "rankingTreatment": false,
+    "shipped": false
+  }
+}
+

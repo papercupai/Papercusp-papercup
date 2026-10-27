@@ -13,12 +13,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+const readOperatorDbEnvLocalMock = vi.hoisted(() => vi.fn(() => ({} as Record<string, string>)));
+vi.mock('@papercusp/db-org/operator-db-env', async () => ({
+  ...await vi.importActual('@papercusp/db-org/operator-db-env'),
+  readOperatorDbEnvLocal: readOperatorDbEnvLocalMock,
+}));
 import {
   isValidVersion,
   isValidChannel,
   isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
+  checkReleaseHostEnvFile,
+  launchDetachedCut,
+  type SpawnLike,
   orchestratorNeedsStagingSyncLock,
   wrapWithStagingSyncLock,
   STAGING_SYNC_LOCK,
@@ -27,6 +36,12 @@ import {
   readCutStatus,
   collectHandoff,
   preflightCut,
+  preflightCutAsync,
+  runProbeSpecAsync,
+  parseRemoteTagSha,
+  SOURCE_IDENTITY_GUARDS,
+  type ProbeSpec,
+  type SmokeTargetProbe,
   desktopReleaseTag,
   DOGFOOD_CANONICAL_REMOTE,
   isReleaseArtifact,
@@ -52,6 +67,105 @@ import {
   type GitRunner,
   type ReleaseToolingDrift,
 } from './release-cut-launch';
+
+describe('detached cut database credentials', () => {
+  it.each(['canonical', 'explicit-admin', 'explicit-database'] as const)('transports %s DB pins without exposing secrets', async (mode) => {
+    const configuredUrl = 'postgres://fixture:configured-secret@localhost/configured';
+    const explicitUrl = 'postgres://fixture:explicit-secret@localhost/explicit';
+    readOperatorDbEnvLocalMock.mockReturnValue({ HARNESS_ADMIN_DATABASE_URL: configuredUrl });
+    const explicit = mode === 'canonical' ? {} : mode === 'explicit-admin'
+      ? { HARNESS_ADMIN_DATABASE_URL: explicitUrl } : { DATABASE_URL: explicitUrl };
+    let credentialPath = '';
+    let received: Record<string, string> = {};
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      expect(argv.join(' ')).not.toContain('configured-secret');
+      expect(argv.join(' ')).not.toContain('explicit-secret');
+      credentialPath = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!.split(':').slice(1).join(':');
+      received = Object.fromEntries(fs.readFileSync(credentialPath, 'utf8').split('\0').filter(Boolean)
+        .map((record) => [record.slice(0, record.indexOf('=')), record.slice(record.indexOf('=') + 1)]));
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('close', 0));
+      return child;
+    });
+    try {
+      const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+        root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+      spawnMock as unknown as SpawnLike, { PATH: '/usr/bin', HOME: '/fixture', ...explicit,
+        PAPERCUSP_TRANSFORMERS_MODEL_CACHE: "/fixture/model cache's pack",
+        PRIVATE_PROVIDER_KEY: 'do-not-forward' });
+      expect(result.launched).toBe(true);
+      expect(readOperatorDbEnvLocalMock).toHaveBeenCalledWith('/canonical/apps/operator/.env.local');
+      const selectedUrl = mode === 'canonical' ? configuredUrl : explicitUrl;
+      expect(received).toEqual({ PATH: '/usr/bin', HOME: '/fixture', HARNESS_ADMIN_DATABASE_URL: selectedUrl, DATABASE_URL: selectedUrl,
+        PAPERCUSP_TRANSFORMERS_MODEL_CACHE: "/fixture/model cache's pack" });
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      expect(result.argv.join(' ')).not.toContain('do-not-forward');
+    } finally {
+      readOperatorDbEnvLocalMock.mockReturnValue({});
+    }
+  });
+
+  it('releases the credential when systemd admission throws', async () => {
+    let credentialPath = '';
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      credentialPath = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!.split(':').slice(1).join(':');
+      expect(fs.existsSync(credentialPath)).toBe(true);
+      throw new Error('fixture admission failure');
+    });
+    const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+      root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+    spawnMock as unknown as SpawnLike, { PATH: '/usr/bin' });
+    expect(result).toMatchObject({ launched: false, reason: 'fixture admission failure' });
+    expect(fs.existsSync(credentialPath)).toBe(false);
+  });
+
+  it.skipIf(process.platform !== 'linux')('preserves the new unit notify socket through the real credential runner', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-notify-env-'));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    // Observe the workload environment without running the cutter or touching
+    // its shared lock/sentinels. The generated wrapper and env runner are real.
+    fs.writeFileSync(path.join(bin, 'bash'), `#!${process.execPath}\n` +
+      'process.stdout.write(JSON.stringify({ notify: process.env.NOTIFY_SOCKET, ' +
+      'database: process.env.DATABASE_URL, provider: process.env.PRIVATE_PROVIDER_KEY }));\n', { mode: 0o755 });
+    const unitSocket = "@fixture unit's notify socket";
+    const database = 'postgres://fixture:secret@localhost/fixture';
+    let observed: Record<string, string> = {};
+    const spawnMock = vi.fn((_binary: string, argv: string[]) => {
+      const credential = argv.find((arg) => arg.startsWith('--property=LoadCredential='))!
+        .slice('--property=LoadCredential='.length);
+      const separator = credential.indexOf(':');
+      fs.copyFileSync(credential.slice(separator + 1), path.join(dir, credential.slice(0, separator)));
+      const payloadIndex = argv.findIndex((arg) => !arg.startsWith('--'));
+      const program = argv[payloadIndex];
+      // systemd resolves the service executable independently of the payload's
+      // PATH and unescapes $$ before executing each ExecStart argument.
+      const result = spawnSync(program === 'bash' ? '/bin/bash' : program,
+        argv.slice(payloadIndex + 1).map((arg) => arg.replaceAll('$$', '$')), {
+          env: { PATH: '/usr/bin:/bin', CREDENTIALS_DIRECTORY: dir,
+            NOTIFY_SOCKET: unitSocket, PRIVATE_PROVIDER_KEY: 'manager-only-secret' },
+          encoding: 'utf8', timeout: 10_000,
+        });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      observed = JSON.parse(result.stdout);
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('close', result.status));
+      return child;
+    });
+    try {
+      const result = await launchDetachedCut({ version: '0.0.27', channel: 'alpha', expectedSourceSha: 'a'.repeat(40),
+        root: '/isolated/papercusp-desktop', runtime: { ownerName: 'Fixture', canonicalDesktopRoot: '/canonical/papercusp-desktop' } },
+      spawnMock as unknown as SpawnLike, { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, DATABASE_URL: database,
+        NOTIFY_SOCKET: '@wrong-operator-socket', PRIVATE_PROVIDER_KEY: 'operator-only-secret' });
+      expect(result.launched).toBe(true);
+      expect(observed).toEqual({ notify: unitSocket, database });
+      expect(result.argv.join(' ')).not.toContain('@wrong-operator-socket');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('version / channel validation', () => {
   it('accepts X.Y.Z and X.Y.Z-prerelease, rejects junk', () => {
@@ -155,6 +269,35 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       .toThrow(/seed_mode_conflict/);
   });
 
+  it('explicit seedless passes the real audited Server guard and records its source-bound reason', () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-cut-seedless-'));
+    const guard = fileURLToPath(new URL('../../../papercusp-desktop/bin/lib/release-seed-guard.sh', import.meta.url));
+    try {
+      for (const mode of [{}, { reuseSeed: true }, { seedless: true }]) {
+        const env = buildCutEnv({}, sourceSha, { ownerName: 'Avi', ...mode });
+        const result = spawnSync('bash', ['-c',
+          'source "$1"; release_seed_guard "gui server" dogfood "$2"; result=$?; printf "status=%s reason=%s\\n" "$PROVENANCE_SEED_STATUS" "$PROVENANCE_SEED_REASON"; exit "$result"',
+          'test', guard, seedDir], {
+          encoding: 'utf8',
+          env: { ...process.env, PAPERCUSP_RELEASE_AUDIT: '1',
+            PAPERCUSP_ALLOW_SEEDLESS_RELEASE: '0', PAPERCUSP_ALLOW_SEEDLESS_REASON: '', ...env },
+        });
+        expect(result.error).toBeUndefined();
+        if ('seedless' in mode) {
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toContain('status=absent-allowed');
+          expect(result.stdout).toContain(`seedless:true source=${sourceSha}`);
+        } else {
+          expect(result.status).toBe(1);
+          expect(result.stdout).toContain('status=refused');
+          expect(env).not.toHaveProperty('PAPERCUSP_ALLOW_SEEDLESS_RELEASE');
+        }
+      }
+    } finally {
+      fs.rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
   it('defers tags only by explicit opt-in while keeping publish disabled and exact source binding', () => {
     const env = buildCutEnv({}, sourceSha, { ...runtime, deferTag: true });
     expect(env).toMatchObject({ PAPERCUSP_RELEASE_DEFER_TAG: '1', PAPERCUSP_PUBLISH_GITHUB: '0',
@@ -201,6 +344,82 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty(
       'PAPERCUSP_HEAD_SNAPSHOT_TIMEOUT_MS',
     );
+  });
+
+  // WI-6554700010029602: release-host.sh reads PAPERCUSP_RELEASE_HOST_ENV, but the cut env
+  // is an explicit allowlist, so a host-migration candidate could only bake the canonical
+  // (permanent, legacy) file. Unlike the timeout, a bad value must be FATAL: a silent
+  // fallback bakes the old update source with nothing red.
+  it('forwards an explicit release-host env file, and refuses a non-absolute one', () => {
+    const file = '/home/owner/.papercusp/release-host-gcs.env';
+    expect(buildCutEnv({}, sourceSha, { ...runtime, releaseHostEnv: file })).toMatchObject({
+      PAPERCUSP_RELEASE_HOST_ENV: file,
+    });
+    expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty('PAPERCUSP_RELEASE_HOST_ENV');
+    for (const bad of ['', '   ', 'release-host-gcs.env', '~/.papercusp/release-host-gcs.env']) {
+      expect(() => buildCutEnv({}, sourceSha, { ...runtime, releaseHostEnv: bad })).toThrow(
+        /release_host_env_invalid/,
+      );
+    }
+    const argv = buildCutArgv('/r/papercusp-desktop', '0.0.30', 'alpha', {}, sourceSha, '/usr/bin', {
+      ...runtime,
+      releaseHostEnv: file,
+    });
+    expect(argv.at(-1)).toContain(`PAPERCUSP_RELEASE_HOST_ENV='${file}'`);
+  });
+
+  describe('checkReleaseHostEnvFile', () => {
+    const home = '/home/owner';
+    const file = '/home/owner/.papercusp/release-host-gcs.env';
+    const secret = 'https://cupboard.example.test/releases/SECRETPATHSEGMENT';
+    const reader = (text: string) => (p: string) => {
+      if (p !== file) throw Object.assign(new Error('nope'), { code: 'ENOENT' });
+      return text;
+    };
+
+    it('accepts a file that defines an https host, in every shell assignment form', () => {
+      for (const text of [
+        `PAPERCUSP_RELEASE_HOST=${secret}\n`,
+        `# comment\nexport PAPERCUSP_RELEASE_HOST="${secret}"\nPAPERCUSP_UPDATE_BASE_URL=${secret}\n`,
+        `PAPERCUSP_RELEASE_HOST='${secret}'\r\n`,
+      ]) {
+        expect(checkReleaseHostEnvFile(file, home, reader(text))).toBeNull();
+      }
+      expect(checkReleaseHostEnvFile('/home/owner/.papercusp/release-host.env', home, () => `PAPERCUSP_RELEASE_HOST=${secret}`)).toBeNull();
+    });
+
+    it('refuses paths outside ~/.papercusp or with a non-release-host name', () => {
+      for (const bad of [
+        '/tmp/release-host-gcs.env',
+        '/home/owner/.papercusp/sub/release-host-gcs.env',
+        '/home/owner/.papercusp/../.papercusp/release-host-gcs.env',
+        'release-host-gcs.env',
+      ]) {
+        expect(checkReleaseHostEnvFile(bad, home, reader(''))).toMatch(/^release_host_env_invalid/);
+      }
+      for (const name of ['r2.env', 'release-storage.env', 'release-host-gcs.env.bak', 'release-host-.env']) {
+        expect(checkReleaseHostEnvFile(`/home/owner/.papercusp/${name}`, home, reader(''))).toMatch(
+          /^release_host_env_invalid/,
+        );
+      }
+    });
+
+    it('refuses a missing file, an empty or commented host, and a non-https host', () => {
+      expect(checkReleaseHostEnvFile(file, home, () => {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      })).toMatch(/^release_host_env_unreadable .*ENOENT/);
+      for (const text of ['', 'PAPERCUSP_RELEASE_HOST=\n', `# PAPERCUSP_RELEASE_HOST=${secret}\n`, 'PAPERCUSP_RELEASE_HOST=""']) {
+        expect(checkReleaseHostEnvFile(file, home, reader(text))).toMatch(/^release_host_env_no_host/);
+      }
+      // Last assignment wins, exactly as `set -a; . file` would export it.
+      expect(checkReleaseHostEnvFile(file, home, reader(`PAPERCUSP_RELEASE_HOST=${secret}\nPAPERCUSP_RELEASE_HOST=\n`)))
+        .toMatch(/^release_host_env_no_host/);
+      const insecure = 'http://cupboard.example.test/releases/SECRETPATHSEGMENT';
+      const reason = checkReleaseHostEnvFile(file, home, reader(`PAPERCUSP_RELEASE_HOST=${insecure}\n`));
+      expect(reason).toMatch(/without an https:\/\/ scheme/);
+      // The host's path segment is the shared secret: refusals must never carry it.
+      expect(reason).not.toContain('SECRETPATHSEGMENT');
+    });
   });
 
   it('only forwards a migration smoke bypass backed by matching exact-source proof', () => {
@@ -314,6 +533,8 @@ describe('buildCutArgv', () => {
     );
     const seedlessInner = seedlessArgv[seedlessArgv.length - 1];
     expect(seedlessInner).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
+    expect(seedlessInner).toContain("PAPERCUSP_ALLOW_SEEDLESS_RELEASE='1'");
+    expect(seedlessInner).toContain(`PAPERCUSP_ALLOW_SEEDLESS_REASON='release:cut seedless:true source=${sourceSha};`);
     expect(seedlessInner).not.toContain('git restore -- package.json');
   });
   it('full-history is rendered into the detached command as a present-empty value', () => {
@@ -584,7 +805,136 @@ describe('collectHandoff', () => {
 });
 
 const dependencySource = 'a'.repeat(64);
-const dependencyReady = { readDependencyGeneration: () => `v1-${dependencySource}` };
+const dependencyReady = {
+  readDependencyGeneration: () => `v1-${dependencySource}`,
+  runModelCachePreflight: () => ({ exitCode: 0, output: 'fixture model cache ready' }),
+  runSourceIdentityPreflight: () => ({ exitCode: 0, output: 'fixture source identity clean' }),
+};
+
+// EI-27109514509838099: the release:cut handler ran preflightCut's spawnSync probes on the
+// operator's main thread (three source-identity guards measured 21.6s back to back), and
+// the event-loop sentinel SIGKILLed the host at its 20s wedge limit mid-call.
+describe('preflightCutAsync (event-loop-safe preflight, EI-27109514509838099)', () => {
+  const root = '/root/papercusp-desktop';
+  const workspace = '/root';
+  const { runSourceIdentityPreflight: _identity, runModelCachePreflight: _model, ...asyncReady } = dependencyReady;
+  const deps = { ...asyncReady, home: '/home/tester', exists: () => true, isUnitActive: () => false };
+  const spinner = () => {
+    const state = { ticks: 0, spinning: true };
+    const spin = (): void => {
+      if (!state.spinning) return;
+      state.ticks++;
+      setImmediate(spin);
+    };
+    setImmediate(spin);
+    return state;
+  };
+
+  it('routes every source-identity and model probe through the async runner and reports its results', async () => {
+    const specs: ProbeSpec[] = [];
+    const run = (spec: ProbeSpec): Promise<SmokeTargetProbe> => {
+      specs.push(spec);
+      const label = spec.command === 'bash' ? 'model' : path.basename(spec.args[0]!);
+      return new Promise((resolve) => setTimeout(() => resolve({ exitCode: 0, output: `async:${label}` }), 20));
+    };
+    const r = await preflightCutAsync({}, { root }, deps, run);
+    const identity = specs.filter((s) => s.command === process.execPath);
+    expect(identity.map((s) => s.args[0])).toEqual(SOURCE_IDENTITY_GUARDS.map((g) => path.join(workspace, 'scripts', g)));
+    expect(identity.every((s) => s.cwd === workspace && s.timeoutMs === 30_000)).toBe(true);
+    expect(specs.filter((s) => s.command === 'bash')).toHaveLength(1);
+    for (const guard of SOURCE_IDENTITY_GUARDS) {
+      expect(r.checks.find((c) => c.name === `source-identity:${guard}`)).toMatchObject({ ok: true, detail: `async:${guard}` });
+    }
+    expect(r.checks.find((c) => c.name === 'embedding-models')).toMatchObject({ ok: true, detail: 'async:model' });
+  });
+
+  it('surfaces an async probe failure as the same hard blocker the sync path reports', async () => {
+    const run = async (spec: ProbeSpec): Promise<SmokeTargetProbe> =>
+      spec.args[0]?.endsWith('check-no-box-identity.mjs')
+        ? { exitCode: 1, output: 'box identity leaked' }
+        : { exitCode: 0, output: 'clean' };
+    const r = await preflightCutAsync({}, { root }, deps, run);
+    expect(r.go).toBe(false);
+    expect(r.blockers.join('\n')).toMatch(/source-identity:check-no-box-identity\.mjs: .*exit 1.*box identity leaked/);
+  });
+
+  it('runProbeSpecAsync keeps the event loop serving while the child runs, and reports exit, timeout and spawn failure like spawnSync', async () => {
+    const loop = spinner();
+    const done = await runProbeSpecAsync({
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => { console.log("probe-out"); process.exit(3); }, 300)'],
+      timeoutMs: 10_000,
+    });
+    loop.spinning = false;
+    expect(done.exitCode).toBe(3);
+    expect(done.output).toContain('probe-out');
+    // spawnSync would have starved the loop for the whole 300ms child.
+    expect(loop.ticks).toBeGreaterThan(10);
+
+    const timedOut = await runProbeSpecAsync({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'], timeoutMs: 200 });
+    expect(timedOut.exitCode).toBeNull();
+    expect(timedOut.output).toMatch(/timed out after 200ms/);
+
+    const missing = await runProbeSpecAsync({ command: '/nonexistent/papercusp-probe-binary', args: [], timeoutMs: 1_000 });
+    expect(missing.exitCode).toBeNull();
+  });
+
+  describe('release-tag network probe (20s ls-remote bound = the sentinel limit)', () => {
+    const sourceSha = 'b'.repeat(40);
+    const release = { version: '0.0.32', channel: 'alpha' as const, sourceSha };
+    const tag = 'desktop-v0.0.32-alpha';
+    const tagRun = (answer: SmokeTargetProbe, specs: ProbeSpec[] = []) =>
+      async (spec: ProbeSpec): Promise<SmokeTargetProbe> => {
+        specs.push(spec);
+        return spec.command === 'git' ? answer : { exitCode: 0, output: 'clean' };
+      };
+
+    it('prefetches git ls-remote through the async runner and passes a tag at sourceSha', async () => {
+      const specs: ProbeSpec[] = [];
+      const r = await preflightCutAsync({}, { root, release }, deps,
+        tagRun({ exitCode: 0, output: `warning: redirecting to elsewhere\n${sourceSha}\trefs/tags/${tag}\n` }, specs));
+      const git = specs.filter((s) => s.command === 'git');
+      expect(git).toHaveLength(1);
+      expect(git[0]!.args).toEqual(['-C', workspace, 'ls-remote', '--refs', '--tags', DOGFOOD_CANONICAL_REMOTE, `refs/tags/${tag}`]);
+      expect(git[0]!.timeoutMs).toBe(20_000);
+      expect(r.checks.find((c) => c.name === 'release-tag')).toMatchObject({ ok: true });
+    });
+
+    it('a remote that answered without the tag is the hard missing-tag blocker', async () => {
+      const r = await preflightCutAsync({}, { root, release }, deps, tagRun({ exitCode: 0, output: '' }));
+      expect(r.go).toBe(false);
+      expect(r.blockers.join('\n')).toMatch(/release-tag: .*desktop-v0\.0\.32-alpha is missing .*prepare-tag/);
+    });
+
+    it.each([128, null])('a failed or timed-out probe (exit %s) is WARN-only UNMEASURED, never "missing"', async (exitCode) => {
+      const r = await preflightCutAsync({}, { root, release }, deps,
+        tagRun({ exitCode, output: 'fatal: unable to access remote' }));
+      const check = r.checks.find((c) => c.name === 'release-tag')!;
+      expect(check).toMatchObject({ ok: false, warnOnly: true });
+      expect(check.detail).toMatch(/could NOT read .*UNMEASURED/);
+      expect(r.blockers.some((b) => b.startsWith('release-tag'))).toBe(false);
+    });
+
+    it('a deferred tag never probes the network', async () => {
+      const specs: ProbeSpec[] = [];
+      await preflightCutAsync({}, { root, release, deferTag: true }, deps, tagRun({ exitCode: 0, output: '' }, specs));
+      expect(specs.some((s) => s.command === 'git')).toBe(false);
+    });
+
+    it('parseRemoteTagSha only accepts a full-sha line naming the exact tag', () => {
+      expect(parseRemoteTagSha({ exitCode: 0, output: `${'c'.repeat(40)}\trefs/tags/${tag}-rc\n` }, tag)).toBeNull();
+      expect(parseRemoteTagSha({ exitCode: 0, output: `deadbeef\trefs/tags/${tag}\n` }, tag)).toBeNull();
+      expect(parseRemoteTagSha({ exitCode: 0, output: `${'c'.repeat(40)}\trefs/tags/${tag}\n` }, tag)).toBe('c'.repeat(40));
+      expect(() => parseRemoteTagSha({ exitCode: null, output: 'probe timed out after 20000ms' }, tag)).toThrow(/unmeasured.*timed out/);
+    });
+  });
+
+  it('the release:cut tool handler never calls the synchronous preflightCut', () => {
+    const handler = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'agent-tools', 'release', 'cut.ts'), 'utf8');
+    expect(handler).not.toMatch(/\bpreflightCut\s*\(/);
+    expect(handler).toMatch(/await preflightCutAsync\(/);
+  });
+});
 
 describe('preflightCut', () => {
   const root = '/root/papercusp-desktop';
@@ -626,10 +976,115 @@ describe('preflightCut', () => {
       'before dependency preparation',
     );
   });
+  it.each([1, null])('blocks an unavailable model cache (probe exit %s)', (exitCode) => {
+    const result = preflightCut({}, { root }, { ...dependencyReady, home,
+      exists: (p) => allPresent.has(p), isUnitActive: () => false,
+      runModelCachePreflight: () => ({ exitCode, output: 'required embedding models missing' }),
+    });
+    expect(result.go).toBe(false);
+    expect(result.blockers.join()).toContain('embedding-models');
+    expect(result.checks.find((c) => c.name === 'embedding-models')?.warnOnly).toBeUndefined();
+  });
+  it('uses the real model helper to reject absent and partial weights before admitting a complete cache', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-model-cache-'));
+    const desktop = path.join(workspace, 'papercusp-desktop');
+    const helper = path.join(desktop, 'bin', 'lib', 'transformers-models.sh');
+    const cache = path.join(workspace, "model cache's pack");
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    fs.copyFileSync(fileURLToPath(new URL('../../../papercusp-desktop/bin/lib/transformers-models.sh', import.meta.url)), helper);
+    vi.stubEnv('PAPERCUSP_TRANSFORMERS_MODEL_CACHE', cache);
+    const check = () => preflightCut({}, { root: desktop }, {
+      ...dependencyReady, runModelCachePreflight: undefined, home,
+      exists: () => true, isUnitActive: () => false,
+      releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),
+    });
+    try {
+      expect(check().blockers.join()).toContain('embedding-models');
+      const names = spawnSync('bash', [helper, 'names'], { encoding: 'utf8' }).stdout.trim().split('\n');
+      for (const name of names) {
+        const weights = path.join(cache, 'onnx-community', name, 'onnx');
+        fs.mkdirSync(weights, { recursive: true });
+        fs.writeFileSync(path.join(weights, 'model.onnx'), 'fixture header');
+        fs.writeFileSync(path.join(weights, 'model.onnx_data.part'), 'partial');
+      }
+      expect(check().blockers.join()).toContain('embedding-models');
+      for (const name of names) fs.writeFileSync(path.join(cache, 'onnx-community', name, 'onnx', 'model.onnx_data'), 'complete');
+      expect(check().go).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
   it('a missing verify script is WARN-only (cut can still run)', () => {
     const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
     expect(r.go).toBe(true); // warnOnly does not block
     expect(r.checks.find((c) => c.name.includes('verify-provenance'))!.ok).toBe(false);
+  });
+  describe('mandatory selected-source identity gate', () => {
+    const guards = [
+      'check-no-owner-name-tags.mjs',
+      'check-no-box-identity.mjs',
+      'check-no-identity-literals.mjs',
+    ];
+    const base = { ...dependencyReady, home, exists: () => true, isUnitActive: () => false,
+      releaseToolingDrift: () => ({ state: 'current' as const, staleFiles: [] }),
+    };
+    it.each(guards.flatMap((script) => [1, null].map((exitCode) => [script, exitCode] as const)))(
+      'blocks %s exit %s and still measures every guard', (failedScript, exitCode) => {
+        const runSourceIdentityPreflight = vi.fn((scriptPath: string) => ({
+          exitCode: path.basename(scriptPath) === failedScript ? exitCode : 0,
+          output: 'selected target scan',
+        }));
+        const result = preflightCut({}, { root, orchestratorRoot: '/current/papercusp-desktop' }, {
+          ...base, runSourceIdentityPreflight,
+        });
+        expect(result.go).toBe(false);
+        expect(result.blockers.join()).toContain(`source-identity:${failedScript}`);
+        expect(result.checks.find((c) => c.name === `source-identity:${failedScript}`)?.warnOnly).toBeUndefined();
+        expect(runSourceIdentityPreflight.mock.calls).toEqual(guards.map((script) => [
+          path.join('/root', 'scripts', script), '/root',
+        ]));
+      },
+    );
+    it('reports every guard even when the runner throws', () => {
+      const runSourceIdentityPreflight = vi.fn(() => { throw new Error('guard spawn unavailable'); });
+      const result = preflightCut({}, { root }, { ...base, runSourceIdentityPreflight });
+      expect(result.go).toBe(false);
+      expect(result.blockers.filter((c) => c.includes('source-identity:'))).toHaveLength(3);
+      expect(runSourceIdentityPreflight).toHaveBeenCalledTimes(3);
+      expect(result.checks.find((c) => c.name === `source-identity:${guards[0]}`)?.detail).toContain('guard spawn unavailable');
+    });
+    it('executes only the selected target guards in its workspace and refuses missing scripts', () => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "cut identity's target-"));
+      const desktop = path.join(workspace, 'papercusp-desktop');
+      const orchestrator = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-identity-current-'));
+      const leak = path.join(workspace, 'source-leak.txt');
+      for (const dir of [workspace, orchestrator]) fs.mkdirSync(path.join(dir, 'scripts'));
+      const check = () => preflightCut({}, {
+        root: desktop, orchestratorRoot: path.join(orchestrator, 'papercusp-desktop'),
+      }, { ...base, runSourceIdentityPreflight: undefined });
+      try {
+        for (const script of guards) {
+          fs.writeFileSync(path.join(workspace, 'scripts', script),
+            "import fs from 'node:fs'; console.log(process.cwd()); process.exitCode = fs.existsSync('source-leak.txt') ? 1 : 0;\n");
+          fs.writeFileSync(path.join(orchestrator, 'scripts', script), 'process.exit(0);\n');
+        }
+        fs.writeFileSync(leak, 'selected source still carries a leak');
+        const blocked = check();
+        expect(blocked.go).toBe(false);
+        expect(blocked.blockers.filter((c) => c.includes('source-identity:'))).toHaveLength(3);
+        expect(blocked.checks.find((c) => c.name === `source-identity:${guards[1]}`)?.detail).toContain(workspace);
+        fs.unlinkSync(leak);
+        expect(check().go).toBe(true);
+        fs.unlinkSync(path.join(workspace, 'scripts', guards[1]));
+        const missing = check();
+        expect(missing.go).toBe(false);
+        expect(missing.blockers.join()).toContain(`source-identity:${guards[1]}`);
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+        fs.rmSync(orchestrator, { recursive: true, force: true });
+      }
+    });
   });
   describe('exact release tag (EI-24611322499942803)', () => {
     const sourceSha = 'b'.repeat(40);
@@ -810,6 +1265,8 @@ describe('preflight dependency-generation contract', () => {
         fs.writeFileSync(path.join(workspace, 'node_modules', '.papercusp-dependency-generation'), marker);
       }
       const result = preflightCut({}, { root: path.join(workspace, 'papercusp-desktop'), orchestratorRoot }, {
+        runModelCachePreflight: dependencyReady.runModelCachePreflight,
+        runSourceIdentityPreflight: dependencyReady.runSourceIdentityPreflight,
         exists: () => true,
         isUnitActive: () => false,
         releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),

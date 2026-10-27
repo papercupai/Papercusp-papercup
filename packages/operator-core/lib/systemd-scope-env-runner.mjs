@@ -388,6 +388,14 @@ export function main(argv = process.argv) {
     } else if (logPath) {
       runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt);
     } else {
+      // A Node payload with inherited stdio needs no resident wrapper. Replace
+      // this process so its caller's integration root cannot retain a second
+      // staging generation for the payload's whole lifetime. PID, cgroup and
+      // inherited descriptors survive; the payload receives its exact env.
+      // process.execPath also avoids introducing PATH resolution here.
+      if (command === process.execPath && process.platform !== 'win32' && typeof process.execve === 'function') {
+        process.execve(command, [command, ...args], environment);
+      }
       const child = spawn(command, args, { env: environment, stdio: 'inherit' });
       // WI-1064487: same grace as the durable branch. stdio is inherited here so there are no
       // pipes of ours to break, but a runner that dies instantly still tears the cgroup down

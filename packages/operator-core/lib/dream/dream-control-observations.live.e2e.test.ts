@@ -25,16 +25,37 @@ const clauseIds = ['r2:dream-action-decisions', 'r2:gym-admission-decisions',
   'r2:full-admission-and-spend', 'r2:scout-zero-route-lens-cap-provenance',
   'r2:actual-attempts-or-explicit-policy-skips'];
 
-async function observe(origin: string, args: Record<string, unknown>): Promise<Snapshot> {
+async function observe(origin: string, args: Record<string, unknown>, request: typeof fetch = fetch): Promise<Snapshot> {
   const url = new URL('/api/zero-harness/rest-query', origin);
   url.searchParams.set('name', 'learning.dream');
   url.searchParams.set('args', JSON.stringify(args));
-  const response = await fetch(url, { signal: AbortSignal.timeout(25_000) });
-  expect(response.status, `Dream observation HTTP status from ${origin}`).toBe(200);
-  const body = await response.json() as { rows: Snapshot[] };
-  expect(body.rows).toHaveLength(1);
-  return body.rows[0];
+  const startedAt = Date.now();
+  let phase = 'fetch';
+  try {
+    const response = await request(url, { signal: AbortSignal.timeout(25_000) });
+    phase = 'http-status';
+    expect(response.status, `Dream observation HTTP status from ${origin}`).toBe(200);
+    phase = 'response-json';
+    const body = await response.json() as { rows: Snapshot[] };
+    phase = 'row-count';
+    expect(body.rows).toHaveLength(1);
+    return body.rows[0];
+  } catch (error) {
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    throw new Error(`Dream observation failed phase=${phase} origin=${origin} endpoint=${url.pathname} elapsedMs=${Date.now() - startedAt}: ${detail}`, { cause: error });
+  }
 }
+
+describe('Dream observation request diagnostics', () => {
+  it('retains endpoint, phase, and elapsed time when the request times out', async () => {
+    const request: typeof fetch = async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    };
+    await expect(observe('http://127.0.0.1:3170', {}, request)).rejects.toThrow(
+      /Dream observation failed phase=fetch origin=http:\/\/127\.0\.0\.1:3170 endpoint=\/api\/zero-harness\/rest-query elapsedMs=\d+: TimeoutError:/,
+    );
+  });
+});
 
 describe.skipIf(!enabled)('Dream control observation live METHOD', () => {
   it('retains coherent source/runtime/TTL and fail-closed clauses with native runtime witnesses', async () => {

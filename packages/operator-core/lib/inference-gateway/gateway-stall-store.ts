@@ -27,6 +27,7 @@ import { getOrgPg } from '@papercusp/db-org';
 export interface GatewayStallEvent {
   ownerId: string;
   accountId: string;
+  /** epoch ms — stored rounded up so a stall is never released before its reset */
   soonestResetAt: number;
   /** epoch ms — matches gateway.ts's in-memory StallEvent.at */
   at: number;
@@ -49,13 +50,31 @@ export interface GatewayStallStore {
   listSince(sinceMs: number): Promise<GatewayStallEvent[]>;
 }
 
+function integerEpochMs(value: number, field: string, round: (value: number) => number): number {
+  const ms = round(value);
+  if (!Number.isSafeInteger(ms)) throw new RangeError(`${field} must be finite, safe epoch milliseconds`);
+  return ms;
+}
+
+function normalizeStallEvent(e: GatewayStallEvent): GatewayStallEvent {
+  // Reset/backoff arithmetic can produce fractional milliseconds. PostgreSQL bigint
+  // parameters cannot. Preserve the deadline by rounding it up; recorded times and
+  // exclusive read watermarks round down to the table's millisecond precision.
+  return {
+    ...e,
+    soonestResetAt: integerEpochMs(e.soonestResetAt, 'soonestResetAt', Math.ceil),
+    at: integerEpochMs(e.at, 'at', Math.floor),
+  };
+}
+
 class PgGatewayStallStore implements GatewayStallStore {
   async record(e: GatewayStallEvent, workspaceId: string): Promise<void> {
+    const event = normalizeStallEvent(e);
     const { sql } = getOrgPg();
     await sql`
       INSERT INTO harness_shared.gateway_stall_events
              (workspace_id, owner_id, account_id, soonest_reset_at, recorded_at_ms)
-      VALUES (${workspaceId}, ${e.ownerId}, ${e.accountId}, ${e.soonestResetAt}, ${e.at})
+      VALUES (${workspaceId}, ${event.ownerId}, ${event.accountId}, ${event.soonestResetAt}, ${event.at})
     `;
     // Opportunistic prune (mirrors the in-memory ring's own age-based prune on write) —
     // no separate scheduled reaper needed for a low-volume, short-lived append table.
@@ -64,9 +83,9 @@ class PgGatewayStallStore implements GatewayStallStore {
   }
 
   async listSince(sinceMs: number): Promise<GatewayStallEvent[]> {
-    const { sql } = getOrgPg();
     const cutoff = Date.now() - STALL_MAX_AGE_MS;
-    const floor = Math.max(sinceMs, cutoff);
+    const floor = Math.max(integerEpochMs(sinceMs, 'sinceMs', Math.floor), cutoff);
+    const { sql } = getOrgPg();
     const rows = await sql<
       Array<{ owner_id: string; account_id: string; soonest_reset_at: string | number; recorded_at_ms: string | number }>
     >`
@@ -88,13 +107,13 @@ class PgGatewayStallStore implements GatewayStallStore {
 export class InMemoryGatewayStallStore implements GatewayStallStore {
   rows: Array<GatewayStallEvent & { workspaceId: string }> = [];
   async record(e: GatewayStallEvent, workspaceId: string): Promise<void> {
-    this.rows.push({ ...e, workspaceId });
+    this.rows.push({ ...normalizeStallEvent(e), workspaceId });
     const cutoff = Date.now() - STALL_MAX_AGE_MS;
     this.rows = this.rows.filter((r) => r.at >= cutoff);
   }
   async listSince(sinceMs: number): Promise<GatewayStallEvent[]> {
     const cutoff = Date.now() - STALL_MAX_AGE_MS;
-    const floor = Math.max(sinceMs, cutoff);
+    const floor = Math.max(integerEpochMs(sinceMs, 'sinceMs', Math.floor), cutoff);
     return this.rows
       .filter((r) => r.at > floor)
       .sort((a, b) => a.at - b.at)

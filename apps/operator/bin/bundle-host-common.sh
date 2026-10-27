@@ -8,6 +8,30 @@ if [[ "${PAPERCUSP_BUNDLE_HOST_COMMON_LOADED:-}" == "1" ]]; then
 fi
 PAPERCUSP_BUNDLE_HOST_COMMON_LOADED=1
 
+# Resolve the selected source, never an enclosing checkout's identity.
+bundle_host_source_sha() { # <canonical source root> [node command...]
+  local repo_root="$1"
+  shift
+  local -a source_node=("${@:-node}")
+  if [[ -f "$repo_root/.verifier-source.json" ]]; then
+    "${source_node[@]}" --input-type=module - "$repo_root" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const { verifyVerifierSourceSync } = await import(pathToFileURL(join(root, 'packages/operator-core/lib/verifier-source.ts')));
+const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT || join(root, '.verifier-source.json'), 'utf8'));
+verifyVerifierSourceSync(root, receipt, { runtimeArtifacts: true });
+process.stdout.write(receipt.sourceCommit.slice(0, 12));
+NODE
+  elif [[ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]]; then
+    echo 'bundle-host.sh: pinned source receipt requires its archive marker' >&2
+    return 78
+  elif [[ "$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)" == "$repo_root" ]]; then
+    git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true
+  fi
+}
+
 # Keep step boundaries outside redirected compiler logs. A killed parent cannot
 # print those logs afterward; the private builder reads this retained journal.
 # Packaging callers without a journal keep the same command/exit contract.
@@ -44,6 +68,14 @@ bundle_host_cached_package() { # <repo root> <command> [args...]
 }
 
 bundle_host_prepare_esbuild() { # <repo root>
+  if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
+    # The whole maintained recipe resolves its supplied original contexts before
+    # its first compile. A rejected BG context must never acquire an npm compiler.
+    local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
+    "${guarded_node[@]}" "$1/scripts/source-preview.mjs" bg-compiler \
+      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" --check
+    return $?
+  fi
   [[ -z "$BUNDLE_HOST_ESBUILD_PATH" ]] || return 0
   local compiler
   compiler="$(bundle_host_cached_package "$1" npx --yes --package=esbuild@0.25.0 -c 'command -v esbuild')" || return 1
@@ -57,6 +89,14 @@ bundle_host_prepare_esbuild() { # <repo root>
 bundle_host_esbuild() { # <repo root> [compiler args...]
   local repo_root="$1"
   shift
+  if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
+    # BG preparation supplies an ORIGINAL per-invocation record and a private
+    # pinned compiler. Never fall through to npx on a custody refusal.
+    local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
+    "${guarded_node[@]}" "$repo_root/scripts/source-preview.mjs" bg-compiler \
+      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@"
+    return $?
+  fi
   bundle_host_prepare_esbuild "$repo_root" || return 1
   # Each use holds the maintained cache lease through version validation AND
   # compilation. Cache cleanup between uses can remove the memoized path; that
@@ -248,6 +288,32 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
   mv -f "$tmp" "$output" || return 1
   mv -f "$meta" "$output.meta.json" || return 1
   rm -f "$stamp"
+}
+
+# The installed PRIMARY and launcher recipes are shared with disposable setup.
+# Callers retain their platform boundary and version/dogfood defines.
+bundle_host_primary() { # <repo root> <out dir> [esbuild boundary args...]
+  local repo_root="$1" out_dir="$2"
+  shift 2
+  local output="$out_dir/serve.mjs" tmp="$out_dir/serve.new.mjs"
+  mkdir -p "$out_dir" || return 1
+  bundle_host_run_step primary-compile bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/bin/serve.ts" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$tmp" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
+    "${HOST_BANNER_DEFINES[@]}" "$@" || return 1
+  bundle_host_run_step primary-ascii-and-syntax node "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check || return 1
+  mv -f "$tmp" "$output"
+}
+
+bundle_host_launcher() { # <repo root> <output> <source stem> [compaction args...]
+  local repo_root="$1" output="$2" stem="$3"
+  shift 3
+  mkdir -p "$(dirname "$output")" || return 1
+  # These ARE the CLI entrypoints; never suppress isCliEntry() here.
+  bundle_host_run_step "launcher-$stem" bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/scripts/$stem.mjs" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$output" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
+    "${HOST_BANNER_DEFINES[@]}" --external:@lydell/* "$@"
 }
 
 bundle_host_workers() {

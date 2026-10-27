@@ -48,6 +48,9 @@ export interface ScanOptions {
   fs?: CgroupFs;
   /** Test seam for the nonblocking inventory scan; omitted in production. */
   asyncFs?: AsyncCgroupFs;
+  /** Maximum wall-clock time for async inventory IO; the production default leaves
+   *  room inside task-reconcile's 30s cadence for the rest of the tick. */
+  asyncIoDeadlineMs?: number;
   cgroupRoot?: string;
   /** Kernel-relative path of the systemd user manager root. Derived from our own
    *  cgroup when omitted. */
@@ -102,16 +105,74 @@ const nodeAsyncCgroupFs: AsyncCgroupFs = {
   isDir: (path) => stat(path).then((s) => s.isDirectory(), () => false),
 };
 
+interface AsyncScanProgress {
+  userManagerRoot: string | null;
+  ownedRootAbs: string | null;
+  ownedRootExists: boolean | null;
+}
+
+const DEFAULT_ASYNC_SCAN_DEADLINE_MS = 20_000;
+
+function incompleteAsyncScanResult(progress: AsyncScanProgress): ScanResult {
+  return {
+    processes: [],
+    ownedRootAbs: progress.ownedRootAbs,
+    ownedRootExists: progress.ownedRootExists,
+    userManagerRoot: progress.userManagerRoot,
+    // A deadline is incomplete owned coverage just like hitting the process cap:
+    // absence cannot justify closing or cleaning up a task.
+    ownedTruncated: true,
+    foreignTruncated: true,
+    unlistedIdentityByPid: new Map(),
+    scanTimedOut: true,
+  };
+}
+
 /**
  * Inventory's kernel snapshot. Reuse the SAME scanner and classification rules
  * against an in-memory CgroupFs; only the IO changes. Prefetch both cgroup
  * passes and procfs facts with bounded concurrency, including the terminal
  * window's application pid set. A failed read stays null/unknown as in the
- * synchronous reconciler. `reconcileTick` uses this scan by default too
+ * synchronous reconciler. An unresolved operation returns an explicitly
+ * incomplete result by the deadline so reconcileTick never treats partial
+ * absence as proof. `reconcileTick` uses this scan by default too
  * (jev-memory-timeouts-to-zero-2026-10-01 P-004).
  */
 export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanResult> {
   if (opts.fs && opts.fs !== nodeCgroupFs && !opts.asyncFs) return scanProcesses(opts);
+
+  const deadlineMs = opts.asyncIoDeadlineMs ?? DEFAULT_ASYNC_SCAN_DEADLINE_MS;
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
+    throw new RangeError('asyncIoDeadlineMs must be a positive finite number');
+  }
+  const root = opts.cgroupRoot ?? CGROUP_ROOT;
+  const knownManager = opts.userManagerRoot ?? null;
+  const progress: AsyncScanProgress = {
+    userManagerRoot: knownManager,
+    ownedRootAbs: knownManager
+      ? absCgroupDir(`${knownManager}/${TASK_ROOT_SLICE}`, root)
+      : null,
+    ownedRootExists: null,
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<ScanResult>((resolve) => {
+    timer = setTimeout(
+      () => resolve(incompleteAsyncScanResult(progress)),
+      Math.ceil(deadlineMs),
+    );
+  });
+
+  try {
+    return await Promise.race([scanProcessesAsyncComplete(opts, progress), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function scanProcessesAsyncComplete(
+  opts: ScanOptions,
+  progress: AsyncScanProgress,
+): Promise<ScanResult> {
   const source = opts.asyncFs ?? nodeAsyncCgroupFs;
   const root = opts.cgroupRoot ?? CGROUP_ROOT;
   const selfPid = opts.selfPid ?? process.pid;
@@ -125,6 +186,8 @@ export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanRe
   const selfCgroup = await file(`/proc/${selfPid}/cgroup`);
   const manager = opts.userManagerRoot ?? deriveUserManagerRoot(parseProcCgroup(selfCgroup ?? ''));
   const owned = absCgroupDir(manager ? `${manager}/${TASK_ROOT_SLICE}` : `/${TASK_ROOT_SLICE}`, root);
+  progress.userManagerRoot = manager;
+  progress.ownedRootAbs = owned;
   const roots = manager ? [owned, absCgroupDir(manager, root)] : [owned];
   const pending = roots.map((dir) => ({ dir, depth: 0 }));
   const visited = new Set<string>();
@@ -133,7 +196,9 @@ export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanRe
     const batch = pending.splice(0, 32).filter(({ dir }) => !visited.has(dir));
     for (const { dir } of batch) visited.add(dir);
     const nodes = await mapWithConcurrency(batch, 16, async ({ dir, depth }) => {
-      if (!(await source.isDir(dir))) return { dir, depth, children: [] as string[] };
+      const dirExists = await source.isDir(dir);
+      if (dir === owned) progress.ownedRootExists = dirExists;
+      if (!dirExists) return { dir, depth, children: [] as string[] };
       const [names, content] = await Promise.all([source.readDir(dir), file(`${dir}/cgroup.procs`)]);
       directories.set(dir, names);
       for (const pid of parseCgroupProcs(content ?? '')) pids.add(pid);
@@ -242,16 +307,20 @@ function readProcFacts(
 export interface ScanResult {
   processes: ScannedProcess[];
   /** Absolute path walked for the owned pass — surfaced so a misconfigured root
-   *  shows up as "scanned nothing" rather than as "nothing is running". */
-  ownedRootAbs: string;
-  ownedRootExists: boolean;
+   *  shows up as "scanned nothing" rather than as "nothing is running". Null
+   *  means the async deadline elapsed before the root path could be derived. */
+  ownedRootAbs: string | null;
+  /** Null means the async deadline elapsed before root presence was checked. */
+  ownedRootExists: boolean | null;
   userManagerRoot: string | null;
-  /** The OWNED pass hit its cap — absence is no longer provable, so the caller must
-   *  not close rows on this scan. */
+  /** The OWNED pass hit its cap or async deadline — absence is no longer provable,
+   *  so the caller must not close rows on this scan. */
   ownedTruncated: boolean;
   /** The FOREIGN pass hit its cap — the courtesy view is partial. Carries NO
    *  implication for ledger correctness and must never degrade the verdict. */
   foreignTruncated: boolean;
+  /** True only when the async IO deadline won the scan race. */
+  scanTimedOut?: boolean;
   /**
    * User-manager processes the FOREIGN pass read but did NOT list because their
    * cmdline misses `foreignSignature`: pid → kernel identity. Never displayed

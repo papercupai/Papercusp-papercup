@@ -27,9 +27,12 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { MultiSessionTestbed } from '../../../packages/operator-core/test/_multi-session-testbed';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
@@ -118,6 +121,67 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/rm -rf "\$ISOLATED_WEBVIEW_ROOT"/);
   });
 
+  it.each([
+    ['success', 0, '{"before":null,"after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 0],
+    ['evaluation error', 17, 'partial response', 'evaluation context was destroyed', 1],
+    ['existing sentinel', 0, '{"before":"ambient","after":"verify-tauri-headless-isolated-v1","cleared":true}', '', 1],
+    ['timeout', 124, 'evaluation pending', '', 1],
+  ] as const)('retains the real storage probe evidence for %s', (kind, probeExit, stdout, stderr, expectedExit) => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-storage-evidence-'));
+    try {
+      const helper = src.match(/verify_isolated_storage_sentinel\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      expect(helper).toBeTruthy();
+      const tools = join(work, 'agent-tools');
+      writeFileSync(tools, [
+        '#!/usr/bin/env bash',
+        'printf "%s" "$FIXTURE_STDOUT"',
+        'printf "%s" "$FIXTURE_STDERR" >&2',
+        kind === 'timeout' ? 'exec sleep 60' : 'exit "$FIXTURE_PROBE_EXIT"',
+      ].join('\n'), { mode: 0o700 });
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', helper,
+        'WORK="$FIXTURE_ROOT"; BRIDGE_PID=1234; HEALTH_PROBE_TIMEOUT=1',
+        'verify_isolated_storage_sentinel',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, VH_RUN_DIR: '', FIXTURE_ROOT: work,
+          VERIFY_TAURI_AGENT_TOOLS_BIN: tools, FIXTURE_STDOUT: stdout,
+          FIXTURE_STDERR: stderr, FIXTURE_PROBE_EXIT: String(probeExit) },
+      });
+      expect(result.status, result.stderr).toBe(expectedExit);
+      const evidence = join(work, 'phases/boot/isolated-storage');
+      expect(readFileSync(join(evidence, 'probe.status'), 'utf8').trim()).toBe(String(probeExit));
+      expect(readFileSync(join(evidence, 'probe.stdout'), 'utf8')).toBe(stdout);
+      expect(readFileSync(join(evidence, 'probe.stderr'), 'utf8')).toBe(stderr);
+      if (probeExit !== 0) {
+        expect(result.stderr).toContain(`exit=${probeExit}`);
+        expect(result.stderr).toContain('storage isolation is unmeasured');
+        expect(result.stderr).toContain(stdout);
+        if (stderr) expect(result.stderr).toContain(stderr);
+      }
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it.each([0, 1])('preserves an earlier failed step when teardown also fails (initial exit=%s)', (initialExit) => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-teardown-first-failure-'));
+    try {
+      const block = src.match(/  if \[ "\$stop_rc" -ne 0 \]; then\n[\s\S]*?\n  fi/)?.[0];
+      expect(block).toBeTruthy();
+      writeFileSync(join(work, 'stop.log'), 'unverified process\n');
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', 'WORK="$FIXTURE_ROOT"; ec="$FIXTURE_INITIAL_EXIT"; stop_rc=1',
+        'step=isolated-webview-storage; artifacts_retained=1',
+        'vh_step() { step="$1"; }; log() { :; }', block,
+        'printf "%s %s %s" "$ec" "$step" "$artifacts_retained"',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, FIXTURE_ROOT: work, FIXTURE_INITIAL_EXIT: String(initialExit) },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`1 ${initialExit ? 'isolated-webview-storage' : 'generated-stop-script'} 0`);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
   it('creates a private registered workspace and overrides hostile inherited identity at the real launch boundary', () => {
     const work = mkdtempSync(join(tmpdir(), 'dream-workspace-isolation-'));
     try {
@@ -165,7 +229,62 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\\n'");
+    expect(src).toContain('grep -Fxq "PAPERCUSP_PSU_PTY_DIR=$ISOLATED_HOME/psu-pty" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('export PAPERCUSP_PSU_PTY_DIR="$ISOLATED_HOME/psu-pty"');
+    expect(src).toContain("printf 'export PAPERCUSP_PSU_PTY_DIR=%q\\n' \"$ISOLATED_HOME/psu-pty\"");
   });
+
+  it('cannot wake a host outside the isolated discovery root, while its own host remains reachable', async () => {
+    const live = MultiSessionTestbed.create();
+    const isolated = MultiSessionTestbed.create();
+    const isolatedRoot = resolve(isolated.psuPtyDir, '..');
+    try {
+      const owner = live.session('ambient caller').ownerId;
+      const liveHost = await live.spawnSocketHost(owner);
+      const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="') && line.includes('PAPERCUSP_HOME='));
+      const devUrlHelper = src.match(/verify_tauri_dev_url\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      expect(envLine).toBeTruthy();
+      expect(devUrlHelper).toBeTruthy();
+      const discovery = pathToFileURL(resolve(__dirname, '../../../packages/operator-core/lib/events/await/psu-pty-discovery.ts')).href;
+      const probe = join(isolatedRoot, 'discover.mts');
+      writeFileSync(probe, [
+        `import { findLiveHostAsync, injectIntoHost } from ${JSON.stringify(discovery)};`,
+        'const owner = process.env.FIXTURE_OWNER;',
+        'const host = await findLiveHostAsync(owner, undefined, { verifyIdentity: () => true });',
+        'const delivered = host ? await injectIntoHost(host.sock, { mode: "turn", data: "isolated fixture", ownerId: owner }) : false;',
+        'console.log(JSON.stringify({ found: Boolean(host), delivered }));',
+      ].join('\n'));
+      const run = async (isolatedLaunch: boolean) => {
+        const script = [
+          'set -eu', 'WORK="$FIXTURE_ROOT"; ISOLATED_HOME="$WORK"',
+          'ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_WORKSPACES_ROOT="$WORK/workspaces"',
+          'ISOLATED_CODEX_HOMES_DIR="$WORK/codex"; ISOLATED_GH_CONFIG_DIR="$WORK/gh"',
+          'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234; DEV_PORT=33799',
+          'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
+          'VERIFY_TAURI_DEV_HOST=127.0.0.1', devUrlHelper!,
+          isolatedLaunch ? envLine! : 'ISOLATED_ENV_LINE=""',
+          'eval "$ISOLATED_ENV_LINE \\"$FIXTURE_NODE\\" --import tsx \\"$FIXTURE_PROBE\\""',
+        ].join('\n');
+        const result = await promisify(execFile)('bash', ['-c', script], {
+          cwd: resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 30_000,
+          env: { ...process.env, PAPERCUSP_PSU_PTY_DIR: live.psuPtyDir,
+            FIXTURE_OWNER: owner, FIXTURE_ROOT: isolatedRoot, FIXTURE_NODE: process.execPath, FIXTURE_PROBE: probe },
+        });
+        return JSON.parse(result.stdout.trim());
+      };
+      // Positive control: the ambient socket and the real discovery/inject path work.
+      expect(await run(false)).toEqual({ found: true, delivered: true });
+      await expect.poll(() => liveHost.received.length).toBe(1);
+      expect(await run(true)).toEqual({ found: false, delivered: false });
+      expect(liveHost.received).toHaveLength(1);
+      const isolatedHost = await isolated.spawnSocketHost(owner);
+      expect(await run(true)).toEqual({ found: true, delivered: true });
+      await expect.poll(() => isolatedHost.received.length).toBe(1);
+      expect(liveHost.received).toHaveLength(1);
+    } finally {
+      await Promise.all([live.destroy(), isolated.destroy()]);
+    }
+  }, 100_000);
 
   it('repins the actual launch command after a port retry, overriding the initial isolated env line', () => {
     const work = mkdtempSync(join(tmpdir(), 'verifier-api-retry-'));

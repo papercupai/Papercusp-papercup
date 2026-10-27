@@ -8,7 +8,7 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { runControlMutation } from '../../gateway-control/control-harness';
+import { runControlMutation, type ControlHarnessDeps } from '../../gateway-control/control-harness';
 import {
   parseRoutineSnap,
   readRoutineSnap,
@@ -206,7 +206,7 @@ export function reconcileRoutineRestore(current: RoutineSnap, restore: RoutineSn
  * The driver must be able to restore even while the operator HTTP host is down. */
 export async function revertRoutineAudit(
   args: { auditId: string; dryRun?: boolean },
-  deps: { sql: Sql; workspaceId: string; actor: string },
+  deps: { sql: Sql; workspaceId: string; actor: string; writeAudit?: ControlHarnessDeps['writeAudit'] },
 ) {
   const { sql, workspaceId } = deps;
   const rows = await sql<AuditRow[]>`
@@ -238,7 +238,7 @@ export async function revertRoutineAudit(
       return { ok, detail: ok ? undefined : 'routine row did not reflect the restored snapshot' };
     },
     describe: (current) => ({ auditId: args.auditId, current, restore, proposed: reconcileRoutineRestore(current, restore, auditedNext) }),
-  }, { dryRun: args.dryRun });
+  }, { dryRun: args.dryRun }, { writeAudit: deps.writeAudit });
   return {
     ok: true, routine: row.subject, sourceAuditId: args.auditId, dryRun: outcome.dryRun,
     applied: outcome.applied, reverted: outcome.reverted, preview: outcome.preview,
@@ -247,7 +247,9 @@ export async function revertRoutineAudit(
 }
 
 function splitRoutineSubject(subject: string): { installSlug: string; name: string } | null {
-  const slash = subject.indexOf('/');
+  // Install slugs include managed submodule paths (papercusp/libs/...).
+  // Routine names are the final segment of this audited subject.
+  const slash = subject.lastIndexOf('/');
   if (slash <= 0 || slash === subject.length - 1) return null;
   return { installSlug: subject.slice(0, slash), name: subject.slice(slash + 1) };
 }

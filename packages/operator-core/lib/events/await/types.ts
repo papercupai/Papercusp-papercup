@@ -337,6 +337,8 @@ export interface DeliveryWork extends DeliveryRow {
   note: string | null;
   /** Ephemeral proof-gated cancellation request; never persisted to the delivery row. */
   hostCancellation?: HostDeliveryCancellation;
+  /** Delivery row to use for an inbox replay after stale loop components were removed. */
+  inboxDeliveryId?: number;
   /** Ambient-push delivery rail (ambient-semantic-push P-003): a pre-rendered,
    *  already-injection-door-capped teaser block that rides THIS wake's injection.
    *  Populated ONLY when PAPERCUSP_AMBIENT_CURSOR is on (fail-soft, best-effort);

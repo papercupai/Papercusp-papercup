@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { lstat, open, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { pollUntil } from './poll-until';
@@ -98,6 +98,22 @@ async function readEvidenceTail(filePath?: string): Promise<Record<string, unkno
     return failure.code === 'ENOENT'
       ? { path: filePath, observed: true, exists: false }
       : { path: filePath, observed: false, error: { code: failure.code, message: failure.message } };
+  }
+}
+
+/** Preserve the full private Zellij log before its fixture directory is removed. */
+export function preserveWorkbenchSessionLog(logPath: string, directory: string, fileStem: string) {
+  const destinationPath = path.join(directory, fileStem + '-zellij.log');
+  try {
+    mkdirSync(directory, { recursive: true });
+    copyFileSync(logPath, destinationPath);
+    return { sourcePath: logPath, path: destinationPath, observed: true, exists: true, bytes: statSync(destinationPath).size };
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException;
+    return failure.code === 'ENOENT'
+      ? { sourcePath: logPath, path: destinationPath, observed: true, exists: false }
+      : { sourcePath: logPath, path: destinationPath, observed: false,
+        error: { code: failure.code, message: failure.message } };
   }
 }
 

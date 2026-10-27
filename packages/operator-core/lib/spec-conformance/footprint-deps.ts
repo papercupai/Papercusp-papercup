@@ -20,6 +20,7 @@ import { repoHeadSha, runGit } from '../harness/docs/git-runner';
 import { ensureBootstrap, getTxPool, readQueue } from '../agent-tools/locks/su-lock-store';
 import { acquireWithContentionRetry } from '../agent-tools/locks/contention-retry';
 import { TERMINAL_WORK_ITEM_STATES } from '../work-items';
+import { normalizeTakenBy } from '../sync/hyperbee/projections/harness-features';
 import { SPEC_CONFORMANCE_ACTOR } from './conformance-run-deps';
 import type { FootprintCommit, FootprintCommitWindow, FootprintDeps, PlanFootprintCoverage } from './footprint';
 
@@ -83,7 +84,7 @@ export function createFootprintDeps(input: FootprintDepsInput): FootprintDeps {
 
     async readPlanCoverage(): Promise<PlanFootprintCoverage> {
       const rows = (await sql()`
-        SELECT feature_id, assignee, status,
+        SELECT feature_id, taken_by AS assignee, status,
                jsonb_path_query_array(coalesce(payload, '{}'::jsonb), 'strict $.**.filesChanged[*]') AS files
           FROM harness_shared.work_items
          WHERE workspace_id = ${input.workspaceId}
@@ -96,7 +97,8 @@ export function createFootprintDeps(input: FootprintDepsInput): FootprintDeps {
       }));
       const holderItem = new Map<string, string>();
       for (const row of rows) {
-        if (row.assignee && !terminal.has(row.status) && !holderItem.has(row.assignee)) holderItem.set(row.assignee, row.feature_id);
+        const ownerId = normalizeTakenBy(row.assignee);
+        if (ownerId && !terminal.has(row.status) && !holderItem.has(ownerId)) holderItem.set(ownerId, row.feature_id);
       }
       const heldLocks: Array<PlanFootprintCoverage['heldLocks'][number]> = [];
       if (holderItem.size > 0) {

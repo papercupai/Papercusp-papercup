@@ -46,6 +46,22 @@ export const GRADING_INTEGRITY_AUDIT_POLICY = 'grading-integrity-audit';
  */
 export const ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY = 'acceptance-bar-amendment-review';
 
+/** Prospective review of the supplied method and its current validation evidence.
+ * A new assessment is a separate attempt; the default menu holds one reviewer. */
+export const METHOD_REVIEW_POLICY = 'method-review';
+
+/** Never infer approval scope from question prose or transcript source refs. */
+export function methodReviewTarget(request: { policy?: string; methodReviewRubricRef?: string }): string | null {
+  if (request.policy !== METHOD_REVIEW_POLICY) {
+    if (request.methodReviewRubricRef !== undefined) throw new Error('method_review_target_requires_method_review_policy');
+    return null;
+  }
+  if (typeof request.methodReviewRubricRef !== 'string' || !request.methodReviewRubricRef.trim()) {
+    throw new Error('method_review_requires_acceptance_rubric');
+  }
+  return request.methodReviewRubricRef.trim();
+}
+
 /**
  * Pre-start critique of a plan's acceptance bars and spec clauses
  * (verification-system-improvements-2026-10-10 P-007 / D-003 / D-004). plans:start
@@ -74,6 +90,7 @@ export const SELECTION_POLICIES: Readonly<Record<string, SelectionBounds>> = Obj
   [ACCEPTANCE_GRADING_POLICY]: { min: 1, max: 2 },
   [GRADING_INTEGRITY_AUDIT_POLICY]: { min: 1, max: 1 },
   [ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY]: { min: 1, max: 1 },
+  [METHOD_REVIEW_POLICY]: { min: 1, max: 1 },
   [BAR_CRITIQUE_POLICY]: { min: 1, max: 2 },
 });
 

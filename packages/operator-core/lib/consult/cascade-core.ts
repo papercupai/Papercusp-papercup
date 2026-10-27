@@ -274,7 +274,12 @@ export type CascadeDispatch = (opts: {
    *  dispatcher's verification wait, and the reply gate refuses an author the
    *  row does not name yet. The post-dispatch stamp stays as the backstop. */
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
-}) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean }>;
+}) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean; targetCapacityUnavailable?: string }>;
+
+function routingWithUnavailableTarget(routing: unknown, detail?: string): Record<string, unknown> {
+  const snapshot = typeof routing === 'string' ? JSON.parse(routing) : routing;
+  return { ...snapshot, ...(detail ? { targetCapacityUnavailable: detail } : {}) };
+}
 
 /** Shared launch receipt, also committed atomically with initial selection. */
 export function pendingCascadeDispatch(opts: Parameters<CascadeDispatch>[0], cursor: number) {
@@ -336,13 +341,20 @@ export async function continueCascadeDispatchCore(
   const routing = typeof row.routing === 'string' ? JSON.parse(row.routing) as typeof row.routing : row.routing;
   const pending = routing.cascadeDispatch;
   const isCurrent = async () => {
+    // Expiry admits a competing continuation; the token fences actual use.
+    // Revalidate and renew atomically after slow preflight when no claimant
+    // replaced us. Requiring an unexpired timestamp here misreported a live,
+    // unreplaced dispatch as a closed consult. A changed token/cursor/responder
+    // or terminal consultation still refuses renewal and prevents the spawn.
     const current = await sql`
-      SELECT conversation_id FROM harness_shared.consult_state
+      UPDATE harness_shared.consult_state
+         SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
+           ${sql.json({ leaseUntil: new Date(now().getTime() + 120_000).toISOString() } as never)}::jsonb)
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')
          AND cascade_cursor = ${row.cascade_cursor} AND responder_id = ${pending.responder}
          AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
-         AND (routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz > ${now().toISOString()}::timestamptz`;
+       RETURNING conversation_id`;
     return current.length > 0;
   };
   try {
@@ -369,9 +381,10 @@ export async function continueCascadeDispatchCore(
     // than waiting a whole new TTL for a responder that cannot arrive.
     await sql`
       UPDATE harness_shared.consult_state
-         SET routing = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
+         SET routing = (CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
                THEN (routing - 'cascadeDispatch') #- ARRAY['selection', 'selected', ${String(row.cascade_cursor)}, 'answeringOwnerId']
-               ELSE routing - 'cascadeDispatch' END,
+               ELSE routing - 'cascadeDispatch' END) || ${sql.json(result.targetCapacityUnavailable
+                 ? { targetCapacityUnavailable: result.targetCapacityUnavailable } : {})}::jsonb,
              expires_at = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
                THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
@@ -544,7 +557,27 @@ export async function advanceCascade(
     }
   }
   const selected = selectionFromRouting(params.routing);
-  const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
+  const unavailableTarget = routingWithUnavailableTarget(params.routing).targetCapacityUnavailable;
+  const event = typeof unavailableTarget === 'string' && unavailableTarget
+    ? makeDigestEntry(params.event.ownerId, 'dispatch_failed', params.nowIso, unavailableTarget)
+    : params.event;
+  const digest = [...digestFromRow(params.digest), event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
+  if (typeof unavailableTarget === 'string' && unavailableTarget) {
+    // The normal terminal writer still settles/alerts the requester. Stop
+    // before both the selected menu and refill, preserving this slot's CAS.
+    const wrote = await sql`
+      UPDATE harness_shared.consult_state
+         SET cascade_digest = ${sql.json(digest as never)},
+             routing = jsonb_set(routing, '{targetCapacityUnavailable}', to_jsonb(${unavailableTarget}::text))
+               #- ARRAY['selection', 'selected', ${String(params.cascadeCursor)}, 'answeringOwnerId'],
+             updated_at = ${params.nowIso}::timestamptz
+       WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
+         AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
+         AND (${params.expectedState ?? null}::text IS NULL OR state = ${params.expectedState ?? null})
+         AND (${params.expectedExpiresAt ?? null}::timestamptz IS NULL OR expires_at = ${params.expectedExpiresAt ?? null}::timestamptz)
+      RETURNING conversation_id`;
+    return { advanced: false, exhausted: wrote.length > 0, raced: wrote.length === 0, next: null, woke: 0 };
+  }
   const nextIdx = params.cascadeCursor + 1;
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
   const clearFailedAnsweringOwner = params.event.kind === 'dispatch_failed';
@@ -553,11 +586,11 @@ export async function advanceCascade(
   // awaiting a fresh TTL. Reuse this same finite menu/refill walk, guarded by
   // the slot we just wrote. A concurrent reply/expiry refresh wins the CAS.
   const skipUndispatched = async (
-    ownerId: string, cursor: number, routing: unknown, expiresAt: string,
+    ownerId: string, cursor: number, routing: unknown, expiresAt: string, targetCapacityUnavailable?: string,
   ): Promise<AdvanceCascadeResult> => {
     const result = await advanceCascade({
       ...params,
-      routing,
+      routing: routingWithUnavailableTarget(routing, targetCapacityUnavailable),
       cascadeCursor: cursor,
       digest,
       expectedState: params.stateOnAdvance,
@@ -767,7 +800,7 @@ export async function advanceCascade(
             next: { ownerId: first.ownerId, via: first.via }, woke: 0, pending: true,
             ...(sel.refill ? {} : { refilled: true }) };
           if (woke === 0 && !r.answeringOwnerId) {
-            const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt);
+            const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt, r.targetCapacityUnavailable);
             return { ...result, ...(sel.refill ? {} : { refilled: true }) };
           }
         }
@@ -893,7 +926,7 @@ export async function advanceCascade(
     if (r.pending) return { advanced: true, exhausted: false, raced: false,
       next: { ownerId: next.ownerId, via: next.via }, woke: 0, pending: true };
     if (woke === 0 && !r.answeringOwnerId) {
-      return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt);
+      return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt, r.targetCapacityUnavailable);
     }
   }
   return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };

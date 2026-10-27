@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-links.mjs';
+import { expandAffectedWorkspaceNames } from './lib/affected-path-routes.mjs';
 // Find workspaces affected by a git diff and run their vitest suites.
 //
 // Usage:
@@ -38,6 +39,7 @@ import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-lin
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   readFileSync,
+  realpathSync,
   existsSync,
   appendFileSync,
   mkdirSync,
@@ -113,6 +115,7 @@ import {
   TEST_REUSE_SKIP_LIST_ENV,
   estimateReuseSavings,
   formatReuseAlarmLine,
+  formatReuseExclusionLines,
   formatTestReuseLine,
   formatTestReuseTotalLine,
   laneOfFromSplit,
@@ -130,9 +133,11 @@ import {
 } from "./lib/test-pass-reuse.mjs";
 import {
   LANE_SCRIPTS as SHARED_LANE_SCRIPTS,
+  defaultRunnerIdentity,
   restoreCandidateCheckpointForReuse,
 } from "./lib/targeted-task-reuse.mjs";
 import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
+import { admitTaskDeadline } from "./lib/task-deadline.mjs";
 import {
   crossRootTestPatterns,
   isUnderDir,
@@ -201,9 +206,15 @@ import {
 } from "./lib/batch-watchdog.mjs";
 import {
   normalizePartialFiles,
+  partialTaskCommandInputs,
   partialTaskCheckpointPath,
   partialTaskSkipListPath,
   readPartialTaskCheckpoint,
+  registerPartialNativeProducer,
+  registerPartialNativeProducerChannels,
+  preparePartialNativeProducerChannels,
+  preparePartialNativeProducerSelection,
+  preparePartialRemainingSelection,
   writePartialTaskCheckpointAtomic,
 } from "./lib/partial-task-resume.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
@@ -242,6 +253,8 @@ import {
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import { nativeProcessTraceEnv } from "./lib/vitest-startup-trace.mjs";
+import { ciTestRunGroupGuardFailure } from "./lib/test-run-group-guard.mjs";
+import { readTaskCgroupMemoryScope } from "./lib/task-cgroup-limits.mjs";
 import {
   classifyAffectedBlastRadius,
   createCgroupMemoryObserver,
@@ -265,15 +278,18 @@ import {
   resolveTaskBudget,
   resolveWorkerMemoryMb,
   isSharedAdmissionTimeout,
+  isSharedAdmissionDeferral,
   isTaskDeadlineRefusal,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
   writeBudgetedTaskNativeExecutionReceipt,
+  syncBudgetedTaskNativeExecutionReceipt,
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
+  captureNpmTaskRuntimeIdentity,
   closureDigestManifestPath,
   decidePassingTaskVerdict,
   diffClosureDigests,
@@ -876,8 +892,24 @@ function refuseOnTaskBudget(error) {
 }
 const SCHEDULER_CONFIG = (() => {
   try {
+    // Only a measured finite cgroup gets a private envelope. Unidentified
+    // callers keep legacy conservative shared accounting.
+    const memoryBudgetScope = TASK_CGROUP_MEMORY_MAX_MB == null
+      ? null : readTaskCgroupMemoryScope();
     return resolveTaskBudget({
       workerBudget: SCHEDULER_WORKER_BUDGET,
+      ...(memoryBudgetScope ? {
+        memoryBudgetScope,
+        sharedMemoryBudgetMb: resolveMemoryBudgetMb({
+          affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
+          workerBudget: SCHEDULER_WORKER_BUDGET,
+          workerMemoryMb: resolveWorkerMemoryMb({
+            affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
+            nodeOptions: process.env.NODE_OPTIONS,
+            fallback: 1024,
+          }),
+        }),
+      } : {}),
       memoryBudgetMb: resolveMemoryBudgetMb({
         affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
         memAvailableMb: MEM_AVAILABLE_MB,
@@ -934,6 +966,7 @@ function emitMutationProbeWindow() {
 // representation means equals-form callers get the same positional-argument
 // safety checks and changed-path cardinality reporting as space-form callers.
 const VALUE_FLAGS = new Set([
+  "--qualification-work",
   "--base",
   "--range-from",
   "--range-to",
@@ -1024,6 +1057,11 @@ const runIntegration = has("--integration") || integrationOnly;
 // rail (the same `AFFECTED_PARTIAL_RESUME=1` marker the integration vitest config checks).
 const partialResumeRequested =
   has("--partial-resume") || process.env.AFFECTED_PARTIAL_RESUME === "1";
+const qualificationWorkFile = arg("--qualification-work", null);
+if (has('--qualification-work') && !qualificationWorkFile) {
+  errSync('--qualification-work requires an integrity-sealed checkpoint path');
+  process.exit(2);
+}
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1133,6 +1171,11 @@ const changedPathsOverride = (() => {
 const printAffected = has("--print-affected");
 const printSelection = has("--print-selection");
 const syncAstroSelection = has("--sync-astro");
+const enumerateSelectionSpecifications = has("--enumerate-specifications");
+if (enumerateSelectionSpecifications && !printSelection) {
+  errSync('--enumerate-specifications requires --print-selection');
+  process.exit(2);
+}
 if (syncAstroSelection && !printSelection) {
   errSync('--sync-astro requires --print-selection');
   process.exit(2);
@@ -1156,18 +1199,24 @@ if (syncAstroSelection && !printSelection) {
 // rather than producing a partial report nobody can tell is partial. What was and was
 // not instrumented is REPORTED (see the COVERAGE_PASSTHROUGH line below), because a
 // silently partial lcov is what makes the downstream patch gate vacuous.
-const coverageRequested = has("--coverage");
+// P016/D017: reuse the checkpoint's producer; local runs remain explicitly opt-in.
+const coverageRequested = has("--coverage") || process.env.GREEN_CHECKPOINT === "1";
 
 /** Does this workspace script invoke vitest directly (not via a composite line)? */
 function scriptRunsVitestDirectly(scriptText) {
-  return /(^|[\s;&|])vitest(\s|$)/.test(scriptText ?? "");
+  return !/[;&|]/.test(scriptText ?? "") && /(^|\s)vitest(\s|$)/.test(scriptText ?? "");
 }
 
 /** The coverage args to append for ONE task — empty unless `--coverage` applies. */
 function coverageArgsFor(t) {
   if (!coverageRequested) return [];
   if (t.isInvariantGuard) return [];
-  return scriptRunsVitestDirectly(t.ws.scripts?.[t.script]) ? ["--coverage"] : [];
+  const command = t.ws.scripts?.[t.script];
+  if (!scriptRunsVitestDirectly(command)) return [];
+  // Auto collection is only supported by the already-enrolled shared producer.
+  // A manual --coverage keeps its existing ability to request ordinary LCOV elsewhere.
+  if (!has("--coverage") && !resolveTaskReportExpectation({ command, wsDir: join(ROOT, t.ws.dir) }).expectsReport) return [];
+  return ["--coverage"];
 }
 
 // --related — narrow each affected workspace's run to the TEST FILES that could
@@ -1209,6 +1258,7 @@ const KNOWN_FLAGS = [
   "--integration",
   "--integration-only",
   "--partial-resume",
+  "--qualification-work",
   "--all",
   "--dry",
   "--dry-run",
@@ -1217,6 +1267,7 @@ const KNOWN_FLAGS = [
   "--changed-paths",
   "--print-affected",
   "--print-selection",
+  "--enumerate-specifications",
   "--sync-astro",
   "--related",
   "--related-cross-root",
@@ -1616,6 +1667,29 @@ function formatWorkspaceCommand(ws, script, extraArgs = []) {
   return argv.map(shellQuote).join(" ");
 }
 
+// Shared by the independent selection census and the actual child boundary.
+function originalNpmTaskInvocation(t, extraArgs = []) {
+  return { cmd: 'npm', cwd: t.ws.standalone ? join(ROOT, t.ws.dir) : ROOT,
+    argv: ['run', t.script, ...(t.ws.standalone ? [] : ['--workspace', t.ws.dir]),
+      ...(extraArgs.length ? ['--', ...extraArgs] : [])] };
+}
+
+function taskGuardArguments(t) {
+  return [...emptySuiteGuardArgs({ scriptText: t.ws.scripts[t.script] ?? '',
+    wsAbsDir: join(ROOT, t.ws.dir), script: t.script, reuseSkipped: t.reuseSkipped ?? null,
+    selectedFiles: Array.isArray(t.relatedFiles) ? t.relatedFiles : null }),
+    ...(t.guardArgs ?? []), ...(t.guardBase ? ['--base', t.guardBase] : [])];
+}
+
+function selectedTaskInvocations(tasks) {
+  return tasks.map(t => {
+    const spec = originalNpmTaskInvocation(t, [...taskGuardArguments(t), ...coverageArgsFor(t)]);
+    const empty = originalNpmTaskInvocation(t, [...taskGuardArguments({ ...t, relatedFiles: [] }), ...coverageArgsFor(t)]);
+    return { task: `${t.ws.name} :: ${t.script}`, cwd: spec.cwd, argv: [spec.cmd, ...spec.argv],
+      emptyArgv: [empty.cmd, ...empty.argv] };
+  });
+}
+
 /**
  * Every submodule path declared in `.gitmodules` (e.g. `libs/papercusp`), memoized.
  *
@@ -1766,6 +1840,8 @@ const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 // cannot boot the binary and a `test` that tries would be red on every change to this package.
 const STANDALONE_PACKAGE_DIRS = [
   "papercusp-desktop",
+  // Shared card/result renderers are a file dependency outside root workspaces.
+  "libs/generic/chat-cards",
   "libs/generic/sse",
   "libs/papercusp/packages/file-claim",
   "tools/perf-test/wdio",
@@ -2124,6 +2200,23 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 ]);
 
 const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    // P-008: notification aliases and wrappers cross workspace boundaries.
+    workspace: "@papercusp/operator-core",
+    script: "lint:fire-and-forget-classification",
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) ||
+      /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(f) ||
+      f === "scripts/fire-and-forget-classification.json" || f === ".gitmodules",
+  },
+  {
+    workspace: "@papercusp/operator-core",
+    script: "lint:new-clones",
+    forwardChangedPaths: true,
+    forwardBase: true,
+    appliesTo: (f) => /\.tsx?$/.test(f) || f === "scripts/check-new-clones.mts" ||
+      f === "scripts/new-clones-baseline.json" || f === "scripts/affected-tests.mjs" ||
+      f === "package.json" || f === "packages/operator-core/package.json",
+  },
   {
     workspace: "@papercusp/operator-core",
     script: "lint:condition-rail",
@@ -5268,19 +5361,7 @@ async function resolveAffected(changed) {
     ownedChangedPaths,
     alwaysPropagate: new Set([...routeSelected, ...(merged.added ?? [])]),
   });
-  const affected = new Set(directlyChanged);
-  const queue = [...seeds];
-  while (queue.length) {
-    const name = queue.shift();
-    const dependents = reverseDeps.get(name);
-    if (!dependents) continue;
-    for (const d of dependents) {
-      if (!affected.has(d)) {
-        affected.add(d);
-        queue.push(d);
-      }
-    }
-  }
+  const affected = expandAffectedWorkspaceNames(seeds, reverseDeps, directlyChanged);
 
   return [...affected].map((name) => wsByName.get(name)).filter(Boolean);
 }
@@ -5548,10 +5629,28 @@ async function resolveExecutedMapContext() {
 async function executedMapFor(ctx, wsName, files) {
   if (!ctx.enabled) return { map: null, rows: 0, error: null };
   if (!files.length) return { map: new Map(), rows: 0, error: null };
+  // Qualification allocates per-task diagnostic channels later. Until that
+  // topology is resolved, related selection keeps the static superset.
+  if (qualificationWorkFile) return { map: null, rows: 0, error: 'runtime-topology-unmeasured' };
+  // Related selection is shared by a workspace's lanes. Only prune when every
+  // selected lane has the same measured interpreter; an opaque/mixed lane runs wide.
+  const identities = tasks.filter(t => t.ws.name === wsName &&
+    (t.script === 'test' || SHARED_LANE_SCRIPTS.includes(t.script))).map(t =>
+    defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+      enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT ||
+        (executedMapRecordingEnabled() && process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID &&
+          process.env.PAPERCUSP_TEST_RUN_GROUP)),
+    }), undefined, {
+      workspaceRoot: join(ROOT, t.ws.dir), scriptText: t.ws.scripts[t.script],
+      preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+    }));
+  const runnerIdentity = identities[0];
+  if (!runnerIdentity || identities.some(identity => identity !== runnerIdentity))
+    return { map: null, rows: 0, error: 'runtime-topology-unmeasured' };
   let out;
   try {
     out = await Promise.race([
-      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files }),
+      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files, runnerIdentity }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("executed-map read timed out")), 15_000).unref(),
       ),
@@ -5857,7 +5956,9 @@ if (coverageRequested) {
   for (const t of skipped) {
     const why = t.isInvariantGuard
       ? "repo-wide invariant guard (would clobber the workspace's real report)"
-      : "script does not invoke vitest directly";
+      : !scriptRunsVitestDirectly(t.ws.scripts?.[t.script])
+        ? "script does not invoke vitest directly"
+        : "per-test collector is not enrolled; execution coverage remains unmeasured";
     errSync(`  COVERAGE_SKIPPED\t${t.ws.name} :: ${t.script}\t${why}`);
   }
   if (instrumented.length === 0) {
@@ -5872,7 +5973,10 @@ if (printSelection) {
   // Reuse the final maintained selection and native config bridge. This never emits an
   // executed-file line, loads duration history, acquires test admission, or runs a cohort.
   const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
-    syncAstro: syncAstroSelection });
+    syncAstro: syncAstroSelection, enumerateSpecifications: enumerateSelectionSpecifications });
+  selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
+    command: task.ws.scripts[task.script], isInvariantGuard: task.isInvariantGuard === true }));
+  selection.invocations = selectedTaskInvocations(tasks);
   outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
   terminalSuppressed = true;
   process.exit(0);
@@ -5973,7 +6077,67 @@ if (printAffected) {
   process.exit(0);
 }
 
+let qualificationPhysicalExecution;
+if (qualificationWorkFile) {
+  try {
+    const identity = partialSourceIdentity();
+    const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, { enabled: true }));
+    if (!identity || !runnerIdentity || identity.sourceDigest !== createHash('sha256').update('').digest('hex'))
+      throw new Error('qualification-source-unmeasured-or-dirty');
+    const checkpoint = readPartialTaskCheckpoint(qualificationWorkFile);
+    if (!checkpoint?.continuation || checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit ||
+        checkpoint.sourceDigest !== createHash('sha256').update(runnerIdentity).digest('hex') ||
+        !process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID?.trim() ||
+        !process.env.PAPERCUSP_TEST_RUN_GROUP) throw new Error('qualification-work-unmeasured');
+    qualificationPhysicalExecution = checkpoint.physicalExecution;
+    if (!/^[a-f0-9]{64}$/.test(qualificationPhysicalExecution?.fingerprint) ||
+        !isAbsolute(qualificationPhysicalExecution?.evidenceRoot ?? '') ||
+        !Array.isArray(qualificationPhysicalExecution?.tasks) ||
+        !qualificationPhysicalExecution.tasks.every(task => typeof task === 'string'))
+      throw new Error('qualification-physical-execution-unmeasured');
+    const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
+      enumerateSpecifications: true });
+    selection.taskInventory = tasks.map(task => ({ id: `${task.ws.name} :: ${task.script}`, dir: task.ws.dir,
+      command: task.ws.scripts[task.script], isInvariantGuard: task.isInvariantGuard === true }));
+    const remaining = preparePartialRemainingSelection(checkpoint, { root: ROOT, taskKey: checkpoint.taskKey,
+      attemptId: process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID.trim(),
+      candidate: identity.sourceCommit, sourceCommit: identity.sourceCommit,
+      repairHead: checkpoint.continuation.repairHead, manifest: checkpoint.continuation.manifest,
+      retryStates: checkpoint.continuation.retryStates,
+      runContext: process.env.GREEN_CHECKPOINT === '1' ? 'green-checkpoint' : 'clean-local', runnerIdentity },
+    { selection, postSuite: { schemaVersion: 1, coverage: 'complete',
+      units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === 'post-suite') } });
+    if (remaining.status !== 'ready') throw new Error(remaining.reason);
+    const planned = new Map(remaining.tasks.map(task => [task.id, task]));
+    for (let index = tasks.length - 1; index >= 0; index--) {
+      const task = tasks[index], plan = planned.get(`${task.ws.name} :: ${task.script}`);
+      if (!plan) tasks.splice(index, 1);
+      else if (plan.runner === 'vitest' || plan.runner === 'command-chain') {
+        task.relatedFiles = plan.files.map(file => relative(join(ROOT, task.ws.dir), join(ROOT, file)));
+        // Keep the original nonempty source population for channel validation.
+        // The filter list narrows execution, never the manifest owed by this run.
+        task.qualificationSelection = {
+          ...selection, tasks: selection.tasks.filter(row => row.id === plan.id),
+          files: selection.tasks.find(row => row.id === plan.id).files,
+          unenumerated: selection.unenumerated.filter(row => row.task === plan.id),
+          commandObligations: selection.commandObligations.filter(row => row.task === plan.id),
+        };
+      }
+    }
+    outSync(`QUALIFICATION_REMAINING tasks=${tasks.length} omitted=${remaining.omitted.length} ` +
+      `files=${remaining.tasks.reduce((count, task) => count + task.files.length, 0)} verdict=incomplete`);
+  } catch (error) {
+    errSync(`QUALIFICATION_REMAINING status=refused reason=${JSON.stringify(String(error?.message ?? error))}`);
+    process.exit(1);
+  }
+}
+
 if (!tasks.length) {
+  if (qualificationWorkFile) {
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 reason=qualification-work-bank-complete');
+    terminalEmitted = true;
+    process.exit(0);
+  }
   // Two genuinely different empty outcomes, kept as DISTINCT reasons (EI-19454727576364875).
   // Collapsing them would hide the more interesting one: "workspaces were selected but none of
   // them declares a test script" is a coverage smell worth noticing, whereas "this change routes
@@ -6062,14 +6226,14 @@ outSync(
 );
 
 // Before the dry-run exit on purpose: `--dry` then shows what WOULD be reused (it only reads).
-await armTestPassReuse(tasks);
+if (!qualificationWorkFile) await armTestPassReuse(tasks);
 // Partial integration resume is opt-in and prepared before any child is spawned. The list
 // preflight establishes the exact manifest that the checkpoint is allowed to name; failures in
 // this optional rail fail open to the ordinary full integration task.
 const PARTIAL_TASK_CACHE_DIR =
   process.env.AFFECTED_PARTIAL_RESUME_CACHE_DIR || join(homedir(), ".papercusp", "cache");
 const PARTIAL_TEST_PATH_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-preparePartialResumes(tasks);
+if (!qualificationWorkFile) preparePartialResumes(tasks);
 
 if (dry) {
   outSync(
@@ -6164,22 +6328,6 @@ async function armTestPassReuse(taskList) {
         .join(",")})`,
     );
   }
-  // The identity of the node the task will spawn (npm -> PATH node), not this process's: the
-  // proof was stamped by the vitest process. vitest-config re-checks it against its own process.
-  // reuseRunnerIdentity prefixes the proof format (P-001), so older-format proofs never match.
-  let runnerIdentity = null;
-  try {
-    runnerIdentity = reuseRunnerIdentity(
-      execFileSync(
-        "node",
-        ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"],
-        { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
-      ),
-    );
-  } catch {
-    runnerIdentity = null;
-  }
-  if (!runnerIdentity) return off("no-runner-identity");
   let client = null;
   try {
     client = await connectExecutedMapPg();
@@ -6248,6 +6396,21 @@ async function armTestPassReuse(taskList) {
   };
   try {
     for (const t of unitTasks) {
+      const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+        enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT ||
+          qualificationPhysicalExecution?.tasks.includes(taskKey(t)) ||
+          (executedMapRecordingEnabled() && process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID &&
+            process.env.PAPERCUSP_TEST_RUN_GROUP)),
+      }), undefined, {
+        workspaceRoot: join(ROOT, t.ws.dir), scriptText: t.ws.scripts[t.script],
+        preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+      });
+      if (!runnerIdentity) {
+        const label = `${t.ws.name}::${t.script}`;
+        outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=no-runner-identity`);
+        await recordReuse(label, { offReason: 'no-runner-identity', eligible: t.relatedFiles?.length });
+        continue;
+      }
       const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
       const prefix = wsRel === "" ? "" : `${wsRel}/`;
       const lane = laneOfTaskScript(t.script);
@@ -6256,6 +6419,7 @@ async function armTestPassReuse(taskList) {
         : null;
       const cacheKey = JSON.stringify([
         t.ws.name,
+        runnerIdentity,
         lane,
         requestedFiles == null ? null : [...requestedFiles].sort(),
       ]);
@@ -6270,14 +6434,15 @@ async function armTestPassReuse(taskList) {
               if (lane !== null) {
                 let laneCandidates = files;
                 if (laneCandidates == null) {
-                  if (!proofFilesByWorkspace.has(t.ws.name)) {
+                  const runtimeKey = JSON.stringify([t.ws.name, runnerIdentity]);
+                  if (!proofFilesByWorkspace.has(runtimeKey)) {
                     proofFilesByWorkspace.set(
-                      t.ws.name,
-                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext })
+                      runtimeKey,
+                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext, runnerIdentity })
                         .then((listed) => listed.files),
                     );
                   }
-                  laneCandidates = await proofFilesByWorkspace.get(t.ws.name);
+                  laneCandidates = await proofFilesByWorkspace.get(runtimeKey);
                 }
                 try {
                   laneOf = await laneClassifier(
@@ -6301,6 +6466,7 @@ async function armTestPassReuse(taskList) {
                 client,
                 workspaceName: t.ws.name,
                 runContext,
+                runnerIdentity,
                 ...(files == null ? {} : { files }),
               });
               return { ...loadedProofs, error: null, laneOf, laneNote };
@@ -6341,7 +6507,7 @@ async function armTestPassReuse(taskList) {
           laneNote ??= ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
         }
       }
-      const { skip, summary, watch } = selectReusablePasses({
+      const { skip, summary, watch, exclusions } = selectReusablePasses({
         candidates,
         proofs,
         judgedSha,
@@ -6410,6 +6576,16 @@ async function armTestPassReuse(taskList) {
             runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, dirty: false },
         ),
       );
+      // WI-6554700010026699 (R-3/R-4): every excluded candidate's cause goes to the retained
+      // journal in full (one write, so a large task costs one append); stdout carries a bounded
+      // sample that names the journal and run group holding the rest. Diagnostic only: nothing
+      // here can change `skip`, which was decided above.
+      const exclusionLines = formatReuseExclusionLines(label, exclusions, {
+        runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+        journal: RUN_LOG_PATH,
+      });
+      if (exclusionLines.records.length > 0) logLine(`${exclusionLines.records.join("\n")}\n`);
+      outSync(exclusionLines.sample);
     }
     if (reuseTotals.tasks > 0) outSync(formatTestReuseTotalLine(reuseTotals));
   } finally {
@@ -6549,22 +6725,7 @@ function spawnSpecFor(t, extraArgs) {
     // `--workspace <dir>` does not resolve for it — npm fails with "No workspaces
     // found". Run it the way a human would: `npm run <script>` with cwd = its own dir,
     // which resolves against ITS package.json and its own node_modules/.bin.
-    if (t.ws.standalone) {
-      const argv = [
-        "run",
-        t.script,
-        ...(extraArgs.length ? ["--", ...extraArgs] : []),
-      ];
-      return { cmd: "npm", argv, cwd: join(ROOT, t.ws.dir) };
-    }
-    const argv = [
-      "run",
-      t.script,
-      "--workspace",
-      t.ws.dir,
-      ...(extraArgs.length ? ["--", ...extraArgs] : []),
-    ];
-    return { cmd: "npm", argv, cwd: ROOT };
+    return originalNpmTaskInvocation(t, extraArgs);
   }
   // No npm (a PACKAGED install — see the note above). The direct-exec fallback below
   // reproduces `npm run` for a script that is a single binary invocation; a standalone
@@ -6718,7 +6879,18 @@ function preparePartialResumeTask(t) {
   }
   const workspaceRoot = join(ROOT, t.ws.dir);
   const key = taskKey(t);
-  const expected = { root: ROOT, taskKey: key, ...identity };
+  const runnerIdentity = defaultRunnerIdentity(ROOT, nativeProcessTraceEnv(process.env, {
+    enabled: Boolean(process.env.PC_EXECUTED_SOURCE_MAP_OUT || executedMapRecordingEnabled()),
+  }), undefined, {
+    workspaceRoot, scriptText: t.ws.scripts[t.script],
+    preScript: t.ws.scripts[`pre${t.script}`], postScript: t.ws.scripts[`post${t.script}`],
+  });
+  if (!runnerIdentity) {
+    outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(key)} reason=runtime-identity-unavailable`);
+    return null;
+  }
+  const expected = { root: ROOT, taskKey: key, ...identity, runnerIdentity,
+    sourceDigest: createHash('sha256').update(JSON.stringify([identity.sourceDigest, runnerIdentity])).digest('hex') };
   const checkpointPath = partialTaskCheckpointPath(PARTIAL_TASK_CACHE_DIR, ROOT, key);
   const existing = readPartialTaskCheckpoint(checkpointPath, expected);
   const checkpoint = existing && samePartialManifest(existing.selectedFiles, listed.files)
@@ -6752,7 +6924,8 @@ function preparePartialResumeTask(t) {
     workspaceRoot,
     taskKey: key,
     sourceCommit: identity.sourceCommit,
-    sourceDigest: identity.sourceDigest,
+    sourceDigest: expected.sourceDigest,
+    runnerIdentity,
     checkpointPath,
     selectedFiles: listed.files,
     passedFiles,
@@ -6788,8 +6961,8 @@ function preparePartialResumes(taskList) {
 // series receives AFFECTED_TASK_VERDICT_PROOF_GROUP; only the CACHE identity substitutes that
 // initial group while the real child keeps this process's own run group.
 const TASK_VERDICT_CACHE_ENABLED =
-  process.env.GREEN_CHECKPOINT === "1" ||
-  process.env.AFFECTED_TASK_VERDICT_RESUME === "1";
+  !qualificationWorkFile && (process.env.GREEN_CHECKPOINT === "1" ||
+  process.env.AFFECTED_TASK_VERDICT_RESUME === "1");
 // Ordinary local `npm test` has no gate-supplied proof group. It may use the existing stable
 // cross-run proof only when the caller explicitly opted into resumable execution, and never
 // while GREEN_CHECKPOINT is active (a gate without proof state must stay fail-closed).
@@ -7119,17 +7292,7 @@ const taskContexts = tasks.map((t) => ({
   // pass-reuse skip list covers every file the task would run, which empties it on purpose.
   // A guard that diffs git must see the same base this runner used to select it;
   // otherwise a clean-after-git-sync tree looks like a no-op to the child process.
-  guardArgs: [
-    ...emptySuiteGuardArgs({
-      scriptText: t.ws.scripts[t.script] ?? "",
-      wsAbsDir: join(ROOT, t.ws.dir),
-      script: t.script,
-      reuseSkipped: t.reuseSkipped ?? null,
-      selectedFiles: Array.isArray(t.relatedFiles) ? t.relatedFiles : null,
-    }),
-    ...(t.guardArgs ?? []),
-    ...(t.guardBase ? ["--base", t.guardBase] : []),
-  ],
+  guardArgs: taskGuardArguments(t),
   cacheProvenance: dependencyProvenanceForTask(t),
 }));
 const TASK_CONTEXT_SHARD_PLAN = planAffectedTaskShards(taskContexts, {
@@ -7172,7 +7335,7 @@ function runCapturedTask(
     Number.isFinite(context.__retry?.budgetMs) && context.__retry.budgetMs > 0
       ? context.__retry.budgetMs
       : null;
-  const taskTimeoutMs =
+  const historyTimeoutMs =
     retryBudgetMs ??
     resolveTaskTimeoutMs({
       overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
@@ -7182,7 +7345,17 @@ function runCapturedTask(
       quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
       maxMs: BATCH_TIMEOUT_MAX_MS,
     });
-  const taskTimeoutSource =
+  // Reuse the native deadline contract and its cleanup reserve. A task may
+  // have queued since the plan preflight; never start a watchdog beyond the
+  // launcher's cutoff and lose its final receipt to the outer timeout.
+  const launchBudget = process.env.PC_HEAVY_RELEASE_GATE === '1' ? null : admitTaskDeadline({
+    env: process.env, nowMs: Date.now(),
+    knownEstimateMs: Number.isFinite(taskDurationMs) ? Math.ceil(taskDurationMs) : 0,
+    knownTasks: taskDurationMs == null ? 0 : 1, unknownTasks: taskDurationMs == null ? 1 : 0,
+  });
+  const taskTimeoutMs = launchBudget?.childCutoffEpochMs == null ? historyTimeoutMs
+    : Math.min(historyTimeoutMs, Math.max(1, launchBudget.childCutoffEpochMs - Date.now()));
+  const taskTimeoutSource = taskTimeoutMs < historyTimeoutMs ? 'launcher-deadline' :
     retryBudgetMs != null
       ? "retry-budget"
       : BATCH_TIMEOUT_OVERRIDE_MS != null
@@ -7222,7 +7395,8 @@ function runCapturedTask(
   // the positional-filter form preserved them). Same scoping rule as before: only the initial,
   // complete invocation is narrowed; a targeted retry already carries its own file list.
   const relatedFilterList =
-    extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) && spawnTask.relatedFiles.length > 0
+    extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) &&
+      (spawnTask.relatedFiles.length > 0 || spawnTask.qualificationSelection)
       ? writeRelatedFilterList(RUN_LOG_ROOT, spawnTask.relatedFiles)
       : null;
   // P-008 (gate-file-level-test-reuse-2026-09-27): the task's per-file pass-reuse skip list, armed
@@ -7259,6 +7433,18 @@ function runCapturedTask(
     ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
       .update(JSON.stringify([taskKey(context.t), taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
     : null;
+  const qualificationAttemptId = process.env.PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID?.trim();
+  const qualificationNativeOut = recordsExecutedMap && qualificationAttemptId &&
+    process.env.PAPERCUSP_TEST_RUN_GROUP && extraArgs.length === 0 && scriptOverride == null
+    ? integrationSourceMapOut ?? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.sources.json`
+    : null;
+  const qualificationTaskOut = qualificationPhysicalExecution?.tasks.includes(spawnTaskKey) &&
+    extraArgs.length === 0 && scriptOverride == null
+    ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.task.sources.json` : null;
+  const requiresCiRunGroup = Boolean(
+    process.env.CI || process.env.PAPERCUSP_TEST_RUN_SOURCE === "ci",
+  );
+  const expectedCiRunGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [PC_TEST_PARTIAL_SKIP_LIST_ENV]: _inheritedPartialSkipList,
@@ -7286,6 +7472,8 @@ function runCapturedTask(
       ? { [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut } : {}),
     ...(integrationSourceMapOut
       ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
+    ...(qualificationNativeOut ? { [EXECUTED_MAP_OUT_ENV]: qualificationNativeOut } : {}),
+    ...(!qualificationNativeOut && qualificationTaskOut ? { [EXECUTED_MAP_OUT_ENV]: qualificationTaskOut } : {}),
     ...(context.partialResume?.armed ? { AFFECTED_PARTIAL_RESUME: "1" } : {}),
     ...(context.partialResume?.skipList
       ? { [PC_TEST_PARTIAL_SKIP_LIST_ENV]: context.partialResume.skipList.path }
@@ -7316,6 +7504,12 @@ function runCapturedTask(
   // router makes that router collide with its live parent and refuse the test
   // with EEXIST before executing a single assertion. Nested children own no
   // outer barrier, so keep the same boundary testing:run already enforces.
+  const runGroupGuardFailure = ciTestRunGroupGuardFailure({
+    required: requiresCiRunGroup,
+    expectedRunGroupId: expectedCiRunGroupId,
+    actualRunGroupId: childEnv.PAPERCUSP_TEST_RUN_GROUP,
+    boundary: "before-admission",
+  });
   delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
   delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
   // The caller's selector and partial-resume channel are task-local. Strip both from a direct
@@ -7369,6 +7563,11 @@ function runCapturedTask(
         // differs between the per-run and cross-run identities. Shared so the two can never
         // drift apart: a field added to one would otherwise silently weaken the other.
         const cacheIdentitySpec = {
+          runtimeIdentity: cmd === "npm" ? captureNpmTaskRuntimeIdentity({ root: ROOT,
+            workspaceRoot: join(ROOT, spawnTask.ws.dir), environment: nativeProcessTraceEnv(childEnv),
+            scriptText: spawnTask.ws.scripts[spawnTask.script],
+            preScript: spawnTask.ws.scripts[`pre${spawnTask.script}`],
+            postScript: spawnTask.ws.scripts[`post${spawnTask.script}`] }) : null,
           taskKey: taskKey(context.t),
           // lint:as-committed isolates its cache by source repository. Only that
           // explicit immutable launch may compare relocated checkout commands.
@@ -7432,6 +7631,7 @@ function runCapturedTask(
             taskVerdictCacheRead.cache,
             childCacheGroup,
             taskKey(context.t),
+            cacheIdentity,
           ),
           identity: cacheIdentity,
         });
@@ -7489,6 +7689,7 @@ function runCapturedTask(
               taskVerdictCacheRead.cache,
               crossRunGroup,
               taskKey(context.t),
+              crossRunCacheIdentity,
             ),
             identity: crossRunCacheIdentity,
           });
@@ -7581,14 +7782,99 @@ function runCapturedTask(
     env: childEnv,
     settle: classifyGovernedTestProcessOutcome,
   };
-  return runGovernedTestProcess(
+  const runExecution = runGroupGuardFailure
+    ? Promise.reject(runGroupGuardFailure)
+    : runGovernedTestProcess(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
+    const admissionRunGroupGuardFailure = ciTestRunGroupGuardFailure({
+      required: requiresCiRunGroup,
+      expectedRunGroupId: expectedCiRunGroupId,
+      actualRunGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
+      boundary: "after-admission",
+    });
+    if (admissionRunGroupGuardFailure ||
+        governedEnv.PAPERCUSP_TEST_RUN_GROUP !== childEnv.PAPERCUSP_TEST_RUN_GROUP) {
+      throw admissionRunGroupGuardFailure ?? Object.assign(
+        new Error("test-run-group-changed-after-admission"),
+        { code: "AFFECTED_TEST_RUN_GROUP_GUARD" },
+      );
+    }
     const startedAt = Date.now();
+    // Register before spawn, using the maintained native config selector rather than
+    // deriving the population from whatever outcomes happen to survive interruption.
+    // Unsupported scripts retain ordinary execution and cannot supply continuation proof.
+    if (qualificationNativeOut) {
+      try {
+        const selection = spawnTask.qualificationSelection ?? enumerateAffectedTaskSelection([spawnTask], {
+          root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+        });
+        const task = {
+          id: taskKey(spawnTask), dir: spawnTask.ws.dir, command: spawnTask.ws.scripts[spawnTask.script],
+        };
+        const identity = partialSourceIdentity();
+        if (!identity) throw new Error("native-producer-source-unmeasured");
+        const registration = {
+          attemptId: qualificationAttemptId, runGroupId: governedEnv.PAPERCUSP_TEST_RUN_GROUP,
+          root: ROOT, taskKey: taskKey(context.t), workspaceName: spawnTask.ws.name,
+          sourceCommit: identity.sourceCommit, registeredAtMs: Date.now(),
+          command: { cmd, argv, cwd },
+        };
+        if (selection.tasks[0]?.runner === "command-chain") {
+          const checkpoint = qualificationWorkFile && readPartialTaskCheckpoint(qualificationWorkFile);
+          if (!checkpoint?.continuation || checkpoint.continuation.attemptId !== qualificationAttemptId ||
+              checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit)
+            throw new Error("native-channel-work-unmeasured");
+          const prepared = preparePartialNativeProducerChannels({ selection, task, root: ROOT,
+            remainingFiles: spawnTask.relatedFiles?.map(file => relative(ROOT, join(cwd, file))),
+            ...(spawnTask.qualificationSelection ? { observedSelection: enumerateAffectedTaskSelection([spawnTask], {
+              root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+            }) } : {}),
+            outPath: qualificationNativeOut, postSuite: { schemaVersion: 1, coverage: "complete",
+              units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === "post-suite") } });
+          if (prepared.status !== "ready") throw new Error(prepared.reason);
+          const enrolled = registerPartialNativeProducerChannels(qualificationNativeOut, prepared, registration, governedEnv);
+          for (const { path, producer } of enrolled.producers)
+            outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(producer.taskKey)} path=${JSON.stringify(path)}`);
+        } else {
+          let prepared;
+          if (spawnTask.qualificationSelection) {
+            const checkpoint = qualificationWorkFile && readPartialTaskCheckpoint(qualificationWorkFile);
+            if (!checkpoint?.continuation || checkpoint.continuation.attemptId !== qualificationAttemptId ||
+                checkpoint.root !== ROOT || checkpoint.sourceCommit !== identity.sourceCommit)
+              throw new Error("native-channel-work-unmeasured");
+            const channels = preparePartialNativeProducerChannels({ selection, task, root: ROOT,
+              remainingFiles: spawnTask.relatedFiles.map(file => relative(ROOT, join(cwd, file))),
+              observedSelection: enumerateAffectedTaskSelection([spawnTask], {
+                root: ROOT, filterDir: RUN_LOG_ROOT, enumerateSpecifications: true,
+              }), outPath: qualificationNativeOut, postSuite: { schemaVersion: 1, coverage: "complete",
+                units: checkpoint.continuation.manifest.units.filter(unit => unit.kind === "post-suite") } });
+            prepared = channels.status === "ready"
+              ? { status: "ready", selectedSpecifications: channels.channels[0]?.selectedSpecifications }
+              : channels;
+          } else prepared = preparePartialNativeProducerSelection(selection, task, ROOT);
+          if (prepared.status !== "ready") throw new Error(prepared.reason);
+          // A fully banked native selection contributes no producer. Its original
+          // npm invocation still runs below, including every owed lifecycle guard.
+          if (prepared.selectedSpecifications?.length) {
+            const enrolled = registerPartialNativeProducer(qualificationNativeOut,
+              { ...registration, selectedSpecifications: prepared.selectedSpecifications }, governedEnv);
+            outSync(`QUALIFICATION_NATIVE_PRODUCER task=${JSON.stringify(taskKey(context.t))} path=${JSON.stringify(enrolled.path)}`);
+          }
+        }
+      } catch (error) {
+        outSync(`QUALIFICATION_NATIVE_PRODUCER_REFUSED task=${JSON.stringify(taskKey(context.t))} reason=${JSON.stringify(String(error?.message ?? error))}`);
+        // Qualification must stop before spawn if its narrowed native config
+        // widened or enrollment failed. Ordinary diagnostic enrollment remains optional.
+        if (qualificationWorkFile) throw error;
+      }
+    }
     // Extend existing OUT diagnostics without replacing npm or its shell. The
     // selected script is metadata; command below is the actual spawn invocation.
-    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut);
+    const qualificationCapture = Boolean(qualificationTaskOut);
+    const nativeReceiptArmed = Boolean(qualificationCapture || inheritedExecutedMapOut || integrationSourceMapOut || qualificationNativeOut);
     const nativeWrapperInputs = () => {
+      if (qualificationCapture) return partialTaskCommandInputs(ROOT, spawnTask.ws.dir);
       try {
         const paths = ["package.json", relative(ROOT, join(ROOT, spawnTask.ws.dir, "package.json"))];
         return [...new Set(paths)].map(path => ({
@@ -7597,14 +7883,29 @@ function runCapturedTask(
       } catch { return null; }
     };
     const nativeBefore = nativeReceiptArmed ? nativeWrapperInputs() : null;
+    const sourceSnapshot = () => {
+      const source = partialSourceIdentity();
+      return { commit: source?.sourceCommit ?? null,
+        clean: source?.sourceDigest === createHash('sha256').update('').digest('hex') };
+    };
+    const sourceBefore = qualificationCapture ? sourceSnapshot() : null;
+    let observedChildIdentity = null;
     const nativeObservation = (status, signal, error, stdoutBytes, stderrBytes, childPid = null) => nativeReceiptArmed ? {
-      task: spawnTaskKey, attempt: journalLabel, cwd, command: [cmd, ...argv],
+      task: spawnTaskKey, attempt: qualificationCapture ? process.env.PAPERCUSP_TEST_RUN_GROUP : journalLabel,
+      cwd, command: [cmd, ...argv],
+      ...(qualificationCapture ? {
+        invocation: { command: [cmd, ...argv], environmentSha256: createHash('sha256')
+          .update(JSON.stringify(Object.entries(governedEnv).filter(([, value]) => value !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b)))).digest('hex') },
+        currentExecution: { schemaVersion: 1, fingerprint: qualificationPhysicalExecution.fingerprint,
+          childPid, childIdentity: observedChildIdentity, sourceBefore, sourceAfter: sourceSnapshot() },
+      } : {}),
       originalCommand: spawnTask.ws.scripts[spawnTask.script] ?? null,
       startedAtMs: startedAt, finishedAtMs: Date.now(), exitCode: status, signal,
       error: error ? String(error.message ?? error) : null,
       captureComplete: !error, stdout: stdoutBytes, stderr: stderrBytes,
       before: nativeBefore, after: nativeWrapperInputs(),
-      processTrace: { out: integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
+      processTrace: { out: qualificationNativeOut || qualificationTaskOut || integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
     } : null;
     const stdout = [];
     const stderr = [];
@@ -7626,6 +7927,11 @@ function runCapturedTask(
         // holding these capture pipes and made a 45m timeout close at 49.8m.
         detached: true,
       });
+      if (qualificationCapture && child.pid) {
+        try { observedChildIdentity = `${readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()}:${
+          readFileSync(`/proc/${child.pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]}`; }
+        catch { /* Unmeasured child identity cannot authenticate current completion. */ }
+      }
     } catch (error) {
       // Node normally reports child startup failures through the `error` event, but
       // E2BIG is thrown synchronously before a ChildProcess exists. Letting that throw
@@ -7768,11 +8074,15 @@ function runCapturedTask(
     // Policy + its two safety properties (MONOTONE — never kills earlier than the time-only
     // watchdog did; BOUNDED — extensions stop at BATCH_TIMEOUT_MAX_MS, under the ~120m gate
     // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
+    // Recompute at arming time: process preparation/spawn consumed part of the
+    // same launcher budget. Output progress must never extend past cleanup.
+    const launcherWatchdogMs = launchBudget?.childCutoffEpochMs == null ? Infinity
+      : Math.max(1, launchBudget.childCutoffEpochMs - Date.now());
     const watchdog = createProgressAwareWatchdog({
-      timeoutMs: taskTimeoutMs,
+      timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs),
       // P-004: a retry's ceiling IS its budget (see retryBudgetMs above); the initial pass keeps
       // the gate-wide BATCH_TIMEOUT_MAX_MS so its extension policy is byte-identical to before.
-      maxMs: watchdogCeilingMs,
+      maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs),
       stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
       extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
       onExtend: () => emitProgress("watchdog-extended"),
@@ -7874,7 +8184,9 @@ function runCapturedTask(
       resolveRun(result);
     });
     }),
-  ).catch((error) => {
+  );
+  return runExecution.catch((error) => {
+    const isRunGroupGuardFailure = error?.code === "AFFECTED_TEST_RUN_GROUP_GUARD";
     // Admission/loader failures are attributed to this task rather than
     // rejecting the scheduler shard and losing the terminal run marker.
     const message = error instanceof Error ? error.message : String(error);
@@ -7883,7 +8195,9 @@ function runCapturedTask(
       signal: null,
       stdout: "",
       stderr: "",
-      error: Object.assign(new Error(message), { code: "GOVERNED_ADMISSION_FAILED" }),
+      error: Object.assign(new Error(message), {
+        code: isRunGroupGuardFailure ? "AFFECTED_TEST_RUN_GROUP_GUARD" : "GOVERNED_ADMISSION_FAILED",
+      }),
       __elapsedMs: 0,
       __timeoutMs: taskTimeoutMs,
       __timeoutSource: taskTimeoutSource,
@@ -7892,7 +8206,7 @@ function runCapturedTask(
       __watchdogTimedOut: false,
       __watchdogDeadlineMs: taskTimeoutMs,
       __watchdogKillReason: null,
-      __governedAdmissionError: true,
+      __governedAdmissionError: !isRunGroupGuardFailure,
       ...(cacheDecision
         ? {
             __cacheStatus: "miss",
@@ -7909,9 +8223,9 @@ function runCapturedTask(
     // pre-empted — leaving a verdict of failed=0 while this admission error sat in the log
     // three lines above it.
     observedNonzeroExits++;
-    observedAdmissionErrors++;
+    if (!isRunGroupGuardFailure) observedAdmissionErrors++;
     rawErrSync(
-      `AFFECTED_TASK_PROGRESS state=governed-admission-error task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `AFFECTED_TASK_PROGRESS state=${isRunGroupGuardFailure ? "run-group-guard-error" : "governed-admission-error"} task=${JSON.stringify(taskKey(spawnTask))} ` +
         `elapsedSec=0 capturedBytes=0 stalledForSec=0 timeoutMs=${taskTimeoutMs} ` +
         `timeoutSource=${taskTimeoutSource} durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
         `exitStatus=1 signal=none reason=${JSON.stringify(message)}`,
@@ -7942,7 +8256,13 @@ function journalCapturedTaskOutput(t, r, allocation, label) {
   const error = r.error ? JSON.stringify(r.error.message) : "none";
   if (r.__nativeExecution) {
     try {
-      const native = writeBudgetedTaskNativeExecutionReceipt(`${RUN_LOG_PATH}.native`, r.__nativeExecution);
+      const native = writeBudgetedTaskNativeExecutionReceipt(
+        r.__nativeExecution.currentExecution ? qualificationPhysicalExecution.evidenceRoot : `${RUN_LOG_PATH}.native`,
+        r.__nativeExecution);
+      if (r.__nativeExecution.currentExecution) {
+        syncBudgetedTaskNativeExecutionReceipt(native);
+        outSync(`QUALIFICATION_TASK_COMPLETION=${JSON.stringify({ task: taskKey(t), root: native.root, receipt: native.receipt })}`);
+      }
       appendAllSync(RUN_LOG_PATH, [`AFFECTED_TASK_NATIVE_RECEIPT=${JSON.stringify({
         task: taskKey(t), attempt: label, root: native.root, receipt: native.receipt,
         orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
@@ -8026,6 +8346,7 @@ function persistPartialResumeCheckpoint(context, value) {
     taskKey: partial.taskKey,
     sourceCommit: partial.sourceCommit,
     sourceDigest: partial.sourceDigest,
+    runnerIdentity: partial.runnerIdentity,
   };
   const current = readPartialTaskCheckpoint(partial.checkpointPath, expected);
   const selectedFiles = current?.selectedFiles ?? partial.selectedFiles;
@@ -8247,6 +8568,17 @@ const admissionIntent = (() => {
   }
 })();
 
+// Use the maintained runner/config resolver. Aliases of one Vitest config
+// share an exclusion key; unknown/native scripts retain exclusive admission.
+// Lane scripts are the existing partition of the default unit configuration.
+const taskAdmissionKey = ({ t }) => {
+  const command = SHARED_LANE_SCRIPTS.includes(t.script) ? 'vitest run' : t.ws.scripts?.[t.script];
+  const report = resolveTaskReportExpectation({ command, wsDir: join(ROOT, t.ws.dir) });
+  if (!report.expectsReport || !report.config) return '*';
+  try { return createHash('sha256').update(realpathSync(join(ROOT, t.ws.dir, report.config))).digest('hex'); }
+  catch { return '*'; }
+};
+
 let initialPool;
 
 // WI-1734042: a passing fresh-process retry is only a FLAKE when the two attempts
@@ -8262,10 +8594,16 @@ publishPreemptReadyMarker();
 try {
   initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   ...SCHEDULER_CONFIG,
+  readMemAvailableMb,
+  // Keep release-gate tasks on the single global lane. A waiter defers once the
+  // current holder's measured age reaches its remaining queue budget; ordinary
+  // invocations share one accounted envelope at task/config granularity.
+  ...(process.env.PC_HEAVY_RELEASE_GATE === '1'
+    ? { deferWhenHolderOlderThanBudget: true }
+    : { taskAdmissionKey }),
   // EI-20801764054303492 route (a): the startup budget is sized ONCE, from a reading taken before
   // any child exists. A long run's real memory picture drifts underneath it, so admission
   // re-measures and may only ever admit fewer workers than the ceiling already allows.
-  readMemAvailableMb,
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => cgroupMemoryObserver.withWorkers(allocation.workers,
@@ -8329,17 +8667,23 @@ try {
     errSync(`Full run log: ${RUN_LOG_PATH}`);
     process.exit(78);
   }
-  if (!isSharedAdmissionTimeout(error)) throw error;
-  errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
+  const admissionDeferral = isSharedAdmissionDeferral(error);
+  if (!admissionDeferral && !isSharedAdmissionTimeout(error)) throw error;
+  const admissionReason = admissionDeferral ? "admission-deferred" : "admission-starved";
+  errSync(`AFFECTED_TESTS_REFUSAL kind=${admissionReason} detail=${String(error?.message ?? error)}`);
   errSync(
-    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved ` +
+    `AFFECTED_TESTS_RESULT status=refused reason=${admissionReason} ` +
       formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
   );
   errSync(
-    "NOT MEASURED — the full task plan could not finish within its shared-admission " +
-      "queue budget. Settled shards retain their coverage and observed exit counters " +
-      "above; this is not a full test verdict. The holder is named in the " +
-      "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
+    admissionDeferral
+      ? "NOT MEASURED — the release-gate holder had already consumed this run's remaining " +
+          "shared-admission queue budget, so the run deferred without a test verdict. Settled " +
+          "shards retain their coverage and observed exit counters above."
+      : "NOT MEASURED — the full task plan could not finish within its shared-admission " +
+          "queue budget. Settled shards retain their coverage and observed exit counters " +
+          "above; this is not a full test verdict. The holder is named in the " +
+          "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
   );
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
@@ -8581,6 +8925,9 @@ if (retryPoolTasks.length > 0) {
           : null,
       onAdmissionNotice: (line) => errSync(line),
       admissionIntent,
+      // Retries may rewrite the script/config inside runTask; retain exclusive
+      // admission until that actual command has been chosen.
+      ...(process.env.PC_HEAVY_RELEASE_GATE === '1' ? {} : { taskAdmissionKey: () => '*' }),
       runTask: async (context, allocation) => {
         // WI-1734042: capture immediately before THIS child starts. This brackets the two
         // attempts without treating files written by the retry itself as input drift, and

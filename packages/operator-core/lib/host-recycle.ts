@@ -44,7 +44,7 @@
 import { closeAllBootedHarnesses, dropAllReplicationLivenessTracking } from './sync/hyperbee/boot-all';
 import { markGracefulDrainInstalled, markShuttingDown, runBeforeHostExitHooks } from './shutdown-state';
 import { isLoopElevated } from './event-loop-lag-monitor';
-export { installFatalDiagnostics, _resetFatalDiagnosticsForTests, type FatalDiagnosticsOpts } from './process-supervision/fatal-diagnostics';
+export { installFatalDiagnostics, describeFatalPgError, _resetFatalDiagnosticsForTests, type FatalDiagnosticsOpts } from './process-supervision/fatal-diagnostics';
 
 /** The slice of `@hono/node-server`'s server this helper needs. */
 export interface RecycleServerLike {

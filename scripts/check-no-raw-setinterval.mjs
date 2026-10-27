@@ -122,6 +122,11 @@ export const SEPARATE_PROCESS_ALLOWLIST = new Set([
   // in-host twin (createTestProcessDemandSampler in agent-tools/testing/run.ts)
   // IS registered via managedSetInterval. [P-018]
   'scripts/lib/governed-test-process.mjs',
+  // Isolated runtime-admission test child, launched by runCapability in
+  // resource-governor/runtime-admission.integration.test.ts. The hold action
+  // keeps its own process alive until that test observes its persisted PID and
+  // SIGKILLs its process group; it cannot register a timer in the operator host.
+  'scripts/lib/runtime-compatibility-admission.mjs',
   // WI-10004963: the RSS sampler inside collectSidecarPerformance. It runs only in the
   // embedder-eval bench CLI (`npx tsx .../bench/embedder-eval-cli.ts`), which no host
   // module imports, and it samples THAT process's own memory, so a registry entry would

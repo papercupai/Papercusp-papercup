@@ -131,6 +131,7 @@ const releaseAllResourcesForOwnerMock = vi.fn(
 );
 const heldResourcesByOwner = new Map<string, string[]>();
 const releaseTrace: Array<{ owner: string; resource: string }> = [];
+const releaseOwnerResourcesScopedNames: string[][] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
   holders: [] as Array<Record<string, unknown>>,
   draining: false,
@@ -178,6 +179,21 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     heldResourcesByOwner.delete(owner);
     return result;
   },
+  // EI-27114494366587753: the fire's teardown now names its lock set and runs under
+  // resource scope. Same bookkeeping as the bulk form, confined to those names.
+  releaseOwnerResourcesScoped: async (...a: unknown[]) => {
+    const owner = a[2] as string;
+    const names = a[3] as string[];
+    releaseOwnerResourcesScopedNames.push([...names]);
+    const held = heldResourcesByOwner.get(owner) ?? [];
+    const result = await releaseAllResourcesForOwnerMock(a[0], a[1] as string, owner);
+    const freed = held.filter((resource) => names.includes(resource));
+    releaseTrace.push(...[...freed].reverse().map((resource) => ({ owner, resource })));
+    const kept = held.filter((resource) => !names.includes(resource));
+    if (kept.length > 0) heldResourcesByOwner.set(owner, kept);
+    else heldResourcesByOwner.delete(owner);
+    return result;
+  },
   readResourceQueue: (...a: unknown[]) => readResourceQueueMock(a[0], a[1] as Record<string, unknown>),
   clearResourceExclusiveQueue: (...a: unknown[]) =>
     clearResourceExclusiveQueueMock(a[0], a[1] as string, a[2] as string, a[3] as string),
@@ -209,7 +225,11 @@ const recordingTx: FakeTx = (strings, ...values) => {
 let fakeTxImpl: FakeTx = recordingTx;
 const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
 const lockReadPool: FakeTx = () => Promise.resolve([]);
-const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string; options?: { leaseRenewal?: boolean } }> = [];
+const workspaceTxnCalls: Array<{
+  coordinationDomain: string;
+  owner: string;
+  options?: { leaseRenewal?: boolean; resources?: readonly string[] };
+}> = [];
 let workspaceTxnFailure: Error | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
@@ -766,6 +786,39 @@ describe('WI-10000734 omitted serving-handle recovery', () => {
       reason: 'lazy serving recovery failed: substrate routing unavailable: migration 1142 failed',
     });
   });
+
+  it('refuses duplicate boot when a live owner is outside PG discovery', async () => {
+    const bootSingleHarness = vi.fn();
+    const getForeignStoreOwner = vi.fn(async () => ({ pid: 7199, processIdentity: 'linux:boot:incarnation' }));
+    const result = await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => null,
+      bootSingleHarness,
+      getForeignStoreOwner,
+      getPgGitServingCapability: async () => ({
+        status: 'absent', retryable: true, reason: 'serving handle omitted from owner snapshot',
+      }),
+    });
+    expect(result).toEqual({
+      status: 'unknown', retryable: true,
+      reason: 'serving discovery does not reach live Corestore owner process 7199; ' +
+        'authenticated owner capability or an explicit store handoff is required; duplicate boot refused',
+    });
+    expect(getForeignStoreOwner).toHaveBeenCalledExactlyOnceWith(request);
+    expect(bootSingleHarness).not.toHaveBeenCalled();
+  });
+
+  it('uses a valid owner capability without consulting the physical lock', async () => {
+    const getForeignStoreOwner = vi.fn();
+    const bootSingleHarness = vi.fn();
+    expect(await resolveGitServingStateWithBootRecovery(request, {
+      getBootedHarness: () => null,
+      getPgGitServingCapability: async () => ready(),
+      getForeignStoreOwner,
+      bootSingleHarness,
+    })).toMatchObject({ status: 'ready' });
+    expect(getForeignStoreOwner).not.toHaveBeenCalled();
+    expect(bootSingleHarness).not.toHaveBeenCalled();
+  });
 });
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
@@ -1066,6 +1119,7 @@ beforeEach(() => {
   clearResourceExclusiveQueueMock.mockResolvedValue(undefined);
   clearResourceWaiterMock.mockReset();
   clearResourceWaiterMock.mockResolvedValue(undefined);
+  releaseOwnerResourcesScopedNames.length = 0;
   liveLockHoldingsMock.mockReset();
   liveLockHoldingsMock.mockResolvedValue([]);
   liveLockHoldingsStrictMock.mockReset();
@@ -1270,6 +1324,20 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     runGitSyncMock.mockResolvedValue({ ...syncedOutcome, committedCount: 1, localCommitSha: undefined });
     await action(ctx);
     expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
+  });
+
+  it('EI-270796: emits at the root callback and does not emit the aggregate proof again', async () => {
+    const commit = { sha: 'b'.repeat(40), committedAtMs: 1_000 };
+    runGitSyncMock.mockImplementationOnce(async (_slug, options) => {
+      const notify = options.onRootCommit as (proof: typeof commit) => void;
+      notify(commit);
+      expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+        commit.sha, { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } }, commit.committedAtMs,
+      );
+      return { ...syncedOutcome, localCommitSha: commit.sha, localCommitAtMs: 4_000, localCommits: [commit] };
+    });
+    await action(ctx);
+    expect(emitGitSyncCommittedEventMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([1_000, undefined])('EI-255886: carries producer time %s without retimestamping on action replay', async (localCommitAtMs) => {
@@ -1598,10 +1666,11 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     // 35 virtual milliseconds, including the not-yet-expired boundary.
   }, 15_000);
 
-  it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {
+  it('stamps every whole-fire metadata marker with its per-fire lock owner, PID and workflow identity', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const workflowId = '57405569-c444-4c6f-86f3-eecd68ffec36';
 
-    await action(ctx);
+    await action({ ...ctx, workflowId });
 
     const patches = gitSyncActivityPatches();
     expect(patches.length).toBeGreaterThan(1);
@@ -1609,6 +1678,20 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(owner).toMatch(new RegExp(`^system:git-sync:${process.pid}:`));
     expect(primaryLockOwners()).toEqual(new Set([owner]));
     expect(patches.every((patch) => patch.owner === owner && patch.owner_pid === process.pid)).toBe(true);
+    expect(patches.every((patch) => patch.workflow_id === workflowId)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'complete', workflow_id: workflowId });
+  });
+
+  it('preserves workflow identity in the terminal error marker', async () => {
+    const workflowId = 'sched-.routinesTick-2026-10-24T03:00:00.000Z-11';
+    runGitSyncMock.mockRejectedValue(new Error('git exploded'));
+
+    await expect(action({ ...ctx, workflowId })).rejects.toThrow('git exploded');
+
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    expect(patches.every((patch) => patch.workflow_id === workflowId)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'error', workflow_id: workflowId });
   });
 
   it('persists count-bearing completion-settlement progress for routine health readers', async () => {
@@ -1688,6 +1771,10 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(loadHarnessRegistryMock).toHaveBeenCalled();
     expect(loadHarnessRegistryMock.mock.calls.every(([workspaceId]) => workspaceId === 'ws-42')).toBe(true);
     expect(runGitSyncMock).not.toHaveBeenCalledWith('papercup', expect.objectContaining({ repoPath: ambientSibling }));
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    expect(patches.every((patch) => patch.workflow_id === null)).toBe(true);
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'complete', workflow_id: null });
   });
 });
 
@@ -3386,6 +3473,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const initialResources = ['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule'];
       expect(acquiredResources()).toEqual(initialResources);
       const initialOwner = (tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner;
+      // EI-27114494366587753: each acquire holds only ITS resource's key (shared
+      // workspace gate + per-resource key), never the exclusive workspace key that
+      // serialized every agent's file-lock op behind git-sync.
+      expect(workspaceTxnCalls.slice(0, 3).map((call) => call.options)).toEqual(
+        initialResources.map((resource) => ({ resources: [resource] })),
+      );
+      expect(
+        tryAcquireResourceMock.mock.calls.slice(0, 3).map(([, opts]) => (opts as { scope?: string }).scope),
+      ).toEqual(['resource', 'resource', 'resource']);
 
       const heartbeatTimer = timers.find((timer) => timer.ms === 60_000);
       expect(heartbeatTimer).toBeDefined();
@@ -3405,6 +3501,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(releasedResources()).toEqual([...initialResources].reverse());
       // Primary cleanup plus the settlement barrier's acquire/release transactions.
       expect(workspaceTxnCalls).toHaveLength(7);
+      // The teardown names exactly the fire's lock set and locks only those names.
+      expect(releaseOwnerResourcesScopedNames[0]).toEqual(initialResources);
+      expect(workspaceTxnCalls[4]?.options).toEqual({ resources: initialResources });
 
       const callsAfterRelease = tryHeartbeatResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);
@@ -5726,7 +5825,58 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
   });
 
   const contentSignature = (errors: GitSyncOutcome['contentErrors']): string =>
-    [...new Set(errors.map((e) => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e');
+    'sha256:' + createHash('sha256').update(
+      [...new Set(errors.map((e) => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e'),
+    ).digest('hex');
+
+  it('bounds health/escalation previews while retaining every exact quarantine blocker in PG artifacts', async () => {
+    const errors = Array.from({ length: 8169 }, (_, i) => ({
+      ...contentErrorOutcome.contentErrors[0]!,
+      file: `src/long-${i}-${'path'.repeat(40)}.mdx`,
+      error: `error-${i}-${'detail'.repeat(100)}`,
+      excludedRoot: `src/root-${i}.ts`,
+      excludedRootReason: `held by su-peer for WI-${i} — turn-scoped hold`,
+      contentHash: createHash('sha256').update(String(i)).digest('hex'),
+    }));
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: errors });
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: contentSignature(errors) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const patch = routinePatches().find(p => p.last_content_error_count === errors.length)!;
+    expect(patch).toMatchObject({ last_status: 'quarantined', local_sync_status: 'synced', last_content_errors_omitted: 8149 });
+    expect(patch.last_content_errors).toHaveLength(20);
+    expect(String(patch.last_content_error_signature)).toHaveLength(71);
+    expect(Buffer.byteLength(JSON.stringify(patch))).toBeLessThan(32_000);
+    const escalation = contentUpserts()[0]!.body;
+    expect(escalation).toMatchObject({ needs_human: true, file_count: 8169, files_omitted: 8149 });
+    expect(escalation.files).toHaveLength(20);
+    expect(Buffer.byteLength(JSON.stringify(escalation))).toBeLessThan(64_000);
+    const writes = unsafeCalls.filter(c => c.text.includes('INSERT INTO harness_shared.harness_text_artifacts'));
+    expect(writes.length).toBeGreaterThan(0);
+    const artifact = writes.find(c => c.params[1] === patch.last_content_errors_artifact)!;
+    expect(artifact.params[4]).toBe('ws-42');
+    expect(JSON.parse(String(artifact.params[2])).files).toEqual(errors);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    const human = upsertConditionWorkItemMock.mock.calls[0]![1] as { summary: string; payload: Record<string, unknown> };
+    expect(Buffer.byteLength(human.summary)).toBeLessThan(1500);
+    expect(human.payload).toMatchObject({ fileCount: 8169, filesOmitted: 8149, evidenceArtifact: patch.last_content_errors_artifact });
+    warn.mockRestore();
+  });
+
+  it('keeps the existing fixer budget and condition key when a legacy raw signature is first hashed', async () => {
+    const errors = contentErrorOutcome.contentErrors;
+    const legacy = [...new Set(errors.map(e => `${e.scope}\u001f${e.file}\u001f${e.detectorKey}`))].sort().join('\u001e');
+    counterRows = [{ et: 0, lo: [], ct: 4, cs: legacy }];
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await action(ctx);
+    expect(contentUpserts()[0]!.body).toMatchObject({ needs_human: true, consecutive_content_error_ticks: 5 });
+    expect(upsertConditionWorkItemMock.mock.calls[0]![0]).toBe(`git-sync-content:papercup:${createHash('sha256').update(legacy).digest('hex').slice(0, 24)}`);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 
   // EI-24099226502437988: JSONB rejects \u0000, so a NUL anywhere in the outcome patch
   // failed the whole write — and the bridge leg that pushes origin runs after it.
@@ -5901,9 +6051,10 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       await action(ctx);
 
       const input = upsertConditionWorkItemMock.mock.calls[0]![1] as {
-        payload: { files: Array<Record<string, unknown>> };
+        payload: { files: Array<Record<string, unknown>>; evidenceArtifact: string };
       };
-      const recorded = input.payload.files[0]!;
+      const artifact = unsafeCalls.find(c => c.text.includes('INSERT INTO harness_shared.harness_text_artifacts') && c.params[1] === input.payload.evidenceArtifact)!;
+      const recorded = JSON.parse(String(artifact.params[2])).files[0]!;
       const expectedContentHash = createHash('sha256').update(text, 'utf8').digest('hex');
       const expectedVerdictHash = createHash('sha256')
         .update(JSON.stringify({ detectorKey: 'identity-leak', error: recorded.error }), 'utf8')
@@ -5912,13 +6063,14 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       expect(recorded).toMatchObject({
         scope: 'superproject',
         file,
-        detector: 'identity-leak',
+        detectorKey: 'identity-leak',
         contentHash: expectedContentHash,
         detectorResultHash: expectedVerdictHash,
       });
       expect(recorded.contentHash).not.toBe(staleError.contentHash);
       expect(recorded.detectorResultHash).not.toBe(staleError.detectorResultHash);
       expect(recorded.error).toContain('hardcoded home path');
+      expect(input.payload.files[0]).toMatchObject({ contentHash: expectedContentHash, detectorResultHash: expectedVerdictHash });
     } finally {
       warn.mockRestore();
       rmSync(join(repoDir, 'docs'), { recursive: true, force: true });

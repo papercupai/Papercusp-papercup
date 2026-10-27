@@ -503,7 +503,10 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
         : { ok: false, error: first?.error ?? 'bind_failed', ...(first?.message ? { message: first.message } : {}) };
     },
     async retract(target, bindingId, reason) {
-      await retractSpecEvidence({ harnessSlug: target.harnessSlug, bindingId, reason, actorId: AUTOBIND_ACTOR_ID });
+      const result = await retractSpecEvidence({ workspaceId: target.workspaceId,
+        harnessSlug: target.harnessSlug, bindingId, reason, actorId: AUTOBIND_ACTOR_ID });
+      if (result.status !== 'retracted' && result.status !== 'already_retracted')
+        throw new Error(`autobind_retraction_not_applied:${target.workspaceId}/${target.harnessSlug}/${bindingId}:${result.status}`);
     },
   };
 }

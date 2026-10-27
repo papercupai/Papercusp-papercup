@@ -27,11 +27,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { HaikuTurnResult } from './haiku';
+import { ConversationContext, type ContextCheckpoint, type ContextHost, type ContextRecord,
+  type ContextScope } from '@papercusp/chat-protocol/context';
+import { OperatorConversationContext } from './operator-conversation-context';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -72,11 +75,15 @@ const {
   maxTurnSeq,
   listTurnsBetween,
 } = await import('./operator-conversations');
-const { compactConversation, KEEP_RECENT_TURNS } = await import(
+const { compactConversation: compactAuthenticated, KEEP_RECENT_TURNS } = await import(
   './operator-conversation-compaction'
 );
+const compactConversation = (id: string, opts: Parameters<typeof compactAuthenticated>[1] = {}) =>
+  compactAuthenticated(id, { ...opts, context: { workspaceId: WS, ownerId: 'context-owner', authorize: async () => true,
+    ...opts.context } });
 
 let rootSql: postgres.Sql;
+let testDatabaseUrl: string;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();
@@ -90,6 +97,7 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
+  testDatabaseUrl = u.toString();
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // Baseline shapes (000-baseline.sql:1731 / :1922), minus the tsvector /
@@ -130,6 +138,8 @@ beforeAll(async () => {
   await rootSql.unsafe(
     readFileSync(resolve(SQL_DIR, '168-operator-conversation-summary.sql'), 'utf8'),
   );
+  const contextMigration = resolve(SQL_DIR, '1574-operator-conversation-context-checkpoint.sql');
+  await rootSql.unsafe(readFileSync(existsSync(contextMigration) ? contextMigration : `${contextMigration}.DRAFT`, 'utf8'));
   h.sql = rootSql;
   h.db = drizzle(rootSql);
 }, 90_000);
@@ -148,11 +158,273 @@ function stubSummarizer(text: string, costUsd = 0.0012) {
   return { fn, prompts };
 }
 
+describe('P010 production compactor adoption', () => {
+  async function seeded() {
+    const [row] = await rootSql.unsafe(`INSERT INTO harness_shared.operator_conversations
+      (workspace_id, started_at) VALUES ($1,$2) RETURNING id`, [WS, Date.now()]);
+    const id = String(row.id);
+    for (let i = 0; i < 26; i++) await appendTurn({ conversationId: id,
+      role: i % 2 ? 'assistant' : 'user', text: `production turn ${i}` });
+    return id;
+  }
+  async function stored(id: string) {
+    const [row] = await rootSql.unsafe(`SELECT context_state,summary_text,summary_through_seq
+      FROM harness_shared.operator_conversations WHERE id=$1`, [id]);
+    return row;
+  }
+
+  it('refuses an unauthenticated compaction before a provider or history mutation', async () => {
+    const id = await seeded(); const summarize = vi.fn();
+    await expect(compactAuthenticated(id, { summarize })).resolves.toEqual({ outcome: 'unauthorized' });
+    expect(summarize).not.toHaveBeenCalled();
+    expect((await stored(id)).context_state).toBeNull();
+  });
+
+  it('journals failed measured usage without advancing coverage or replaying the same source', async () => {
+    const id = await seeded();
+    const summarize = vi.fn(async () => ({ status: 'failed' as const, model: 'failed-model',
+      costUsd: 0.006, tokensIn: 42, tokensOut: 5 }));
+    expect((await compactConversation(id, { summarize })).outcome).toBe('llm_unavailable');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.summary_through_seq).toBeNull();
+    expect(row.context_state.journal).toEqual([expect.objectContaining({ status: 'failed',
+      usage: { costUsd: 0.006, inputTokens: 42, outputTokens: 5 } })]);
+    expect(h.spendRecorded).toContain(0.006);
+    expect((await compactConversation(id, { summarize })).outcome).toBe('llm_unavailable');
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists incurred usage after current authority is revoked without projecting a summary', async () => {
+    const id = await seeded(); let authorized = true;
+    const summarize = vi.fn(async () => { authorized = false;
+      return { text: 'must not commit', model: 'stub', costUsd: 0.007, tokensIn: 10, tokensOut: 2 }; });
+    const result = await compactConversation(id, { summarize,
+      context: { workspaceId: WS, ownerId: 'context-owner', authorize: async () => authorized } });
+    expect(result.outcome).toBe('unauthorized');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.journal).toEqual([expect.objectContaining({ usage: expect.objectContaining({ costUsd: 0.007 }) })]);
+    expect(h.spendRecorded).toContain(0.007);
+  });
+
+  it('cancellation after summary usage commits neither legacy nor shared coverage', async () => {
+    const id = await seeded(); const controller = new AbortController();
+    const result = await compactConversation(id, { signal: controller.signal, summarize: async (_prompt, signal) => {
+      expect(signal).toBe(controller.signal); controller.abort();
+      return { text: 'obsolete', model: 'stub', costUsd: 0.008, tokensIn: 11, tokensOut: 3 };
+    } });
+    expect(result.outcome).toBe('cancelled');
+    const row = await stored(id);
+    expect(row.summary_text).toBeNull(); expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.checkpoint.operation.failure).toBe('cancelled');
+    expect(row.context_state.journal).toHaveLength(1);
+  });
+});
+
+describe('P010 uncertain compaction accounting', () => {
+  const policy = { budgetTokens: 1300, maxMessageChars: 120 };
+  async function fixture() {
+    const [row] = await rootSql.unsafe(`INSERT INTO harness_shared.operator_conversations
+      (workspace_id, started_at) VALUES ($1, $2) RETURNING id`, [WS, Date.now()]);
+    const scope: ContextScope = { conversationId: String(row.id), ownerId: 'context-owner' };
+    const history: ContextRecord[] = Array.from({ length: 24 }, (_, i) => ({
+      id: `turn-${i}`, scope: { ...scope }, role: i % 2 ? 'assistant' : 'user',
+      text: `turn ${i} ${'context '.repeat(40)}`, provenance: { source: 'operator-turn', ref: `turn-${i}` },
+    }));
+    const summarize: ContextHost['summarize'] = async input => ({ status: 'completed',
+      text: 'Remember the earlier decision.', coveredIds: input.records.map(r => r.id),
+      usage: { inputTokens: 21, outputTokens: 8, costUsd: 0.002 } });
+    const make = (sql: postgres.Sql = rootSql, overrides: Partial<ConstructorParameters<typeof OperatorConversationContext>[0]> = {}) =>
+      new OperatorConversationContext({ sql, workspaceId: WS, scope, authorize: async () => true, summarize, ...overrides });
+    const host = make();
+    await host.initialize(history, 'history-v1');
+    return { scope, history, host, make, summarize };
+  }
+
+  it('two PG clients admit one summary and a fresh host recovers the committed checkpoint', async () => {
+    const f = await fixture();
+    const clients = [postgres(testDatabaseUrl, { max: 1 }), postgres(testDatabaseUrl, { max: 1 })];
+    const provider = vi.fn(f.summarize);
+    try {
+      const hosts = clients.map(sql => f.make(sql, { summarize: provider }));
+      const claimErrors: string[] = [];
+      for (const host of hosts) {
+        const cas = host.compareAndSwap.bind(host);
+        host.compareAndSwap = async (...args) => {
+          try { return await cas(...args); }
+          catch (error) {
+            claimErrors.push(JSON.stringify({ error: String(error), revision: args[1], next: args[2].revision,
+              scope: args[2].scope, phase: args[2].operation?.phase }));
+            throw error;
+          }
+        };
+      }
+      const results = await Promise.all(hosts.map((host, i) =>
+        new ConversationContext(host).compact(f.scope, `operation-${i}`, policy)));
+      expect(claimErrors).toEqual([]);
+      expect(results.map(r => r.ok ? r.value.outcome : r.code)).toEqual(expect.arrayContaining(['compacted']));
+      expect(results.filter(r => r.ok && r.value.outcome === 'compacted')).toHaveLength(1);
+      expect(provider).toHaveBeenCalledTimes(1);
+      const [stored] = await clients[1].unsafe(`SELECT jsonb_typeof(context_state) AS context_type
+        FROM harness_shared.operator_conversations WHERE id = $1`, [f.scope.conversationId]);
+      expect(stored.context_type).toBe('object');
+      const fresh = f.make(clients[1]);
+      const recovered = await new ConversationContext(fresh).recover(f.scope, policy);
+      expect(recovered.ok).toBe(true);
+      if (!recovered.ok) throw new Error(recovered.code);
+      expect(recovered.value.checkpoint.summary?.coveredIds.length).toBeGreaterThan(0);
+      expect(await fresh.readUsage(f.scope)).toEqual([expect.objectContaining({
+        status: 'completed', usage: { inputTokens: 21, outputTokens: 8, costUsd: 0.002 },
+      })]);
+    } finally { await Promise.all(clients.map(sql => sql.end({ timeout: 5 }))); }
+  });
+
+  it('aborting inside a legacy projection rolls back both coverage writes while keeping liability', async () => {
+    const f = await fixture(); const controller = new AbortController();
+    const projecting = f.make(rootSql, { project: async (tx, next) => {
+      if (next.operation?.phase !== 'completed' || !next.summary) return;
+      await tx.unsafe(`UPDATE harness_shared.operator_conversations SET summary_text='partial'
+        WHERE id=$1`, [f.scope.conversationId]);
+      controller.abort();
+    } });
+    const result = await new ConversationContext(projecting).compact(f.scope, 'projection-cancel', policy, controller.signal);
+    expect(result).toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    const [row] = await rootSql.unsafe(`SELECT context_state,summary_text
+      FROM harness_shared.operator_conversations WHERE id=$1`, [f.scope.conversationId]);
+    expect(row.summary_text).toBeNull();
+    expect(row.context_state.checkpoint.summary).toBeNull();
+    expect(row.context_state.journal).toHaveLength(1);
+    expect(await new ConversationContext(f.make()).recover(f.scope, policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
+  });
+
+  it('retains measured failed housekeeping and never calls its provider again for the same source', async () => {
+    const f = await fixture();
+    const provider = vi.fn(async () => ({ status: 'failed' as const, usage: { inputTokens: 17, costUsd: 0.001 } }));
+    const host = f.make(rootSql, { summarize: provider });
+    const first = await new ConversationContext(host).compact(f.scope, 'failed-summary', policy);
+    expect(first.ok && first.value.outcome).toBe('summary-failed');
+    expect((await f.host.read(f.scope))?.summary).toBeNull();
+    await new ConversationContext(f.make()).compact(f.scope, 'retry-must-not-dispatch', policy);
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(await f.host.readUsage(f.scope)).toEqual([{ operationId: 'failed-summary', status: 'failed',
+      usage: { inputTokens: 17, costUsd: 0.001 } }]);
+  });
+
+  it('preserves unknown usage as null instead of inventing a measured zero', async () => {
+    const f = await fixture();
+    await new ConversationContext(f.make(rootSql, { summarize: async () => ({ status: 'incomplete' }) }))
+      .compact(f.scope, 'unknown-summary', policy);
+    expect(await f.host.readUsage(f.scope)).toEqual([{ operationId: 'unknown-summary', status: 'incomplete', usage: null }]);
+    expect((await f.host.read(f.scope))?.summary).toBeNull();
+  });
+
+  it('recovers commit success with lost acknowledgement without another summary or usage charge', async () => {
+    const f = await fixture();
+    const provider = vi.fn(f.summarize);
+    const host = f.make(rootSql, { summarize: provider });
+    const cas = host.compareAndSwap.bind(host);
+    host.compareAndSwap = async (...args) => {
+      const result = await cas(...args);
+      if (result && args[2].operation?.phase === 'completed') throw new Error('lost ACK after commit');
+      return result;
+    };
+    expect(await new ConversationContext(host).compact(f.scope, 'ack-lost', policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    expect((await new ConversationContext(f.make()).recover(f.scope, policy)).ok).toBe(true);
+    expect(provider).toHaveBeenCalledTimes(1);
+    const receipt = (await f.host.readUsage(f.scope))[0];
+    await f.host.observeUsage(f.scope, receipt);
+    expect(await f.host.readUsage(f.scope)).toHaveLength(1);
+    await expect(f.host.observeUsage(f.scope, { ...receipt, usage: { costUsd: 0 } })).rejects.toThrow('conflict');
+  });
+
+  it('leaves a pre-commit failure pending: provider completion is no proof of coverage', async () => {
+    const f = await fixture();
+    const provider = vi.fn(f.summarize);
+    const host = f.make(rootSql, { summarize: provider });
+    const cas = host.compareAndSwap.bind(host);
+    host.compareAndSwap = async (...args) => {
+      if (args[2].operation?.phase === 'completed') throw new Error('write unavailable before commit');
+      return cas(...args);
+    };
+    expect(await new ConversationContext(host).compact(f.scope, 'pending-summary', policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    const fresh = f.make();
+    expect(await new ConversationContext(fresh).recover(f.scope, policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    expect(await new ConversationContext(fresh).compact(f.scope, 'never-repeat-effect', policy))
+      .toMatchObject({ ok: false, code: 'needs-reconciliation' });
+    expect((await fresh.read(f.scope))?.summary).toBeNull();
+    expect(await fresh.readUsage(f.scope)).toHaveLength(1);
+    expect(provider).toHaveBeenCalledTimes(1);
+    await expect(fresh.initialize(f.history, 'new-history')).rejects.toThrow('needs-reconciliation');
+  });
+
+  it('records incurred liability after revocation while refusing coverage and scoped reads', async () => {
+    const f = await fixture();
+    let allowed = true;
+    const host = f.make(rootSql, { authorize: async () => allowed, summarize: async input => {
+      allowed = false;
+      return f.summarize(input);
+    } });
+    expect(await new ConversationContext(host).compact(f.scope, 'revoked-summary', policy))
+      .toMatchObject({ ok: false, code: 'unauthorized' });
+    await expect(host.read(f.scope)).rejects.toThrow('unauthorized');
+    expect((await f.host.read(f.scope))?.summary).toBeNull();
+    expect(await f.host.readUsage(f.scope)).toEqual([expect.objectContaining({ operationId: 'revoked-summary',
+      usage: expect.objectContaining({ costUsd: 0.002 }) })]);
+    await expect(f.make(rootSql, { scope: { ...f.scope, ownerId: 'other-owner' } }).read({ ...f.scope, ownerId: 'other-owner' }))
+      .rejects.toThrow('invalid-context');
+    await expect(f.make(rootSql, { workspaceId: 'other-workspace' }).read(f.scope)).rejects.toThrow('unauthorized');
+  });
+
+  it('checks cancellation after the awaited authority fence and leaves coverage unchanged', async () => {
+    const f = await fixture();
+    const ac = new AbortController();
+    let cancelAtFence = false;
+    const host = f.make(rootSql, { authorize: async () => {
+      await Promise.resolve();
+      if (cancelAtFence) ac.abort();
+      return true;
+    } });
+    const previous = (await host.read(f.scope))!;
+    const next: ContextCheckpoint = { ...previous, revision: previous.revision + 1 };
+    cancelAtFence = true;
+    expect(await host.compareAndSwap(f.scope, previous.revision, next, { signal: ac.signal })).toBe(false);
+    expect((await f.host.read(f.scope))?.revision).toBe(previous.revision);
+    expect(await f.host.readUsage(f.scope)).toEqual([]);
+  });
+
+  it('advances history revisions, rejects source rewrites and keeps stale CAS from overwriting a receipt', async () => {
+    const f = await fixture();
+    const stale = (await f.host.read(f.scope))!;
+    await expect(f.host.initialize(f.history.map((m, i) => i ? m : { ...m, text: 'rewritten' }), 'history-v1'))
+      .rejects.toThrow('conflict');
+    await new ConversationContext(f.host).compact(f.scope, 'journal-survives', policy);
+    expect(await f.host.compareAndSwap(f.scope, stale.revision, { ...stale, revision: stale.revision + 1 }, {})).toBe(false);
+    expect(await f.host.readUsage(f.scope)).toHaveLength(1);
+    const extended = [...f.history, { ...f.history.at(-1)!, id: 'turn-24', role: 'user' as const }];
+    const checkpoint = await f.host.initialize(extended, 'history-v2');
+    expect(checkpoint.operation).toBeNull();
+    expect(checkpoint.summary?.coveredIds.length).toBeGreaterThan(0);
+    expect(checkpoint.history.at(-1)?.id).toBe('turn-24');
+  });
+
+  it('rejects malformed history versions and non-finite liability instead of serializing them as null', async () => {
+    const f = await fixture();
+    await expect(f.host.initialize(f.history, ' history-v2')).rejects.toThrow('invalid-context');
+    await expect(f.host.observeUsage(f.scope, { operationId: 'invalid-usage', status: 'failed',
+      usage: { costUsd: Number.NaN } })).rejects.toThrow('invalid-context');
+    expect(await f.host.readUsage(f.scope)).toEqual([]);
+  });
+});
+
 describe('conversation compaction lifecycle (PG)', () => {
   let convId: string;
 
   it('seeds a long conversation and the first pass folds the aged-out backlog', async () => {
-    const conv = await getOrCreateActiveConversation();
+    const conv = await getOrCreateActiveConversation(WS);
     convId = conv.id;
     // 30 turns, seq 0..29. The EARLY DECISION lives at seq 1 — far outside
     // the KEEP_RECENT_TURNS tail.

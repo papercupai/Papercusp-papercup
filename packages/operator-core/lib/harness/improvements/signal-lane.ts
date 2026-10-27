@@ -51,6 +51,8 @@ export const METRIC_SOURCES: readonly string[] = [
   'failed-spawn',
   'stalled-feature',
   'loop-stalled',
+  // WI-6554700010029793: a scheduling-liveness fact (one routine skipped by the engine).
+  'routine-starvation',
   'stale-protective-hold',
   'stuck-plan',
   'ship-link-stuck',

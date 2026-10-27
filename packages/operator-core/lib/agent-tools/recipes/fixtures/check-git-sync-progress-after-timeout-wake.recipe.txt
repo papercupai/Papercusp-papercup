@@ -1,0 +1,59 @@
+const installSlug = inputs.installSlug;
+const resource = inputs.resource;
+if (typeof installSlug !== 'string' || !installSlug.trim() || installSlug.length > 120 ||
+    typeof resource !== 'string' || resource !== `git-sync:${installSlug}`) {
+  throw new Error('Explicit installSlug and matching git-sync:<installSlug> resource are required');
+}
+const [routineRead, lockRead] = await Promise.all([
+  tools.routines.list({ installSlug, name: 'git-sync', limit: 1 }),
+  tools.locks.list({ resource }),
+]);
+if (!Array.isArray(routineRead.routines) || !Array.isArray(lockRead.resources)) {
+  throw new Error('Structured routine and resource evidence unavailable');
+}
+const rows = (routineRead.routines ?? []).filter(r => r.installSlug === installSlug && r.name === 'git-sync');
+const totalMatches = routineRead.count ?? null;
+const registered = lockRead.resources.find(r => r.resource === resource);
+const holders = (Array.isArray(lockRead.holders) ? lockRead.holders : registered?.holders ?? [])
+  .filter(h => h.resource === resource);
+const row = rows[0];
+const h = row?.health ?? {};
+// Routine health projects only metadata keys that have actually been written.
+const optional = (value, key) => value != null && key in value ? value[key] : null;
+const contentErrors = optional(h, 'last_content_errors');
+const preview = value => typeof value === 'string'
+  ? { text: value.slice(0, 512), omittedChars: Math.max(0, value.length - 512) }
+  : null;
+return {
+  request: { installSlug, resource },
+  routine: {
+    found: Boolean(row),
+    totalMatches,
+    returnedMatches: rows.length,
+    scopeComplete: totalMatches === rows.length && rows.length <= 1,
+    active: row?.active ?? null,
+    paused: row?.paused ?? null,
+    lastFiredAt: row?.lastFiredAt ?? null,
+    lastStatus: optional(h, 'last_status'),
+    lastError: preview(optional(h, 'last_error')),
+    localCommit: { headSha: optional(h, 'head_sha'), lastSyncedAt: optional(h, 'last_synced_at') },
+    // A local commit clock does not establish successful remote publication.
+    remotePublication: 'not-measured',
+    contentErrors: {
+      preview: Array.isArray(contentErrors) ? contentErrors.slice(0, 20).map(preview) : null,
+      total: optional(h, 'last_content_error_count'),
+      omitted: optional(h, 'last_content_errors_omitted'),
+      artifact: optional(h, 'last_content_errors_artifact'),
+    },
+  },
+  lock: {
+    registered: Boolean(registered),
+    draining: lockRead.draining ?? null,
+    scopeComplete: lockRead.registryCount?.truncatedByLimit === false,
+    holderCount: holders.length,
+    holdersOmitted: Math.max(0, holders.length - 20),
+    holders: holders.slice(0, 20).map(h => ({
+      owner: h.owner, mode: h.mode, status: h.status, expiresAt: h.expires_ts ?? null,
+    })),
+  },
+};

@@ -63,10 +63,13 @@ function sampleForPattern(pattern: string): string {
   while (/\(([^()]*)\)/.test(sample)) sample = sample.replace(/\(([^()]*)\)/, (_m, inner: string) => inner.split('|')[0]!);
   // Character classes: `[a-z0-9]` → its first character, dropped entirely under `*` or `?`
   // (zero repetitions satisfy them); escapes → the escaped character, `\d` → a digit.
+  // A bounded repeat `{n}` / `{n,m}` / `{n,}` takes its minimum count (e.g. a Slack/Discord
+  // snowflake id `^[0-9]{17,20}$`).
   const expanded = sample
-    .replace(/\[(\^?)([^\]]+)\](\*|\+|\?)?/g, (_m, negated: string, cls: string, quantifier?: string) =>
-      quantifier === '*' || quantifier === '?' ? '' : negated ? 'a' : cls[0]!,
+    .replace(/\[(\^?)([^\]]+)\](\*|\+|\?|\{(\d+)(?:,\d*)?\})?/g, (_m, negated: string, cls: string, quantifier?: string, min?: string) =>
+      quantifier === '*' || quantifier === '?' ? '' : (negated ? 'a' : cls[0]!).repeat(min ? Number(min) : 1),
     )
+    .replace(/\\d\{(\d+)(?:,\d*)?\}/g, (_m, min: string) => '1'.repeat(Number(min)))
     .replace(/\\d/g, '1')
     .replace(/\\(.)/g, '$1');
   const matcher = new RegExp(pattern);

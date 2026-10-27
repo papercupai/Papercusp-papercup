@@ -36,6 +36,28 @@ function row(overrides: Partial<Parameters<typeof judgePlanClosureObservation>[1
 }
 
 describe('judgePlanClosureObservation', () => {
+  it.each([false, true])('rejects a matching young verdict from another evaluator (satisfied=%s)', (satisfied) => {
+    const read = judgePlanClosureObservation('p', [{ ...row({ satisfied }), build_sha: 'd740fc3802' }],
+      NOW, PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, 'ba18a1e11a');
+    expect(read.status).toBe('stale');
+    expect(read.status !== 'fresh' && read.detail).toContain('evaluator');
+  });
+
+  it.each([null, undefined])('rejects a verdict with unknown evaluator provenance (%s)', (build_sha) => {
+    expect(judgePlanClosureObservation('p', [{ ...row(), build_sha }], NOW,
+      PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, 'ba18a1e11a').status).toBe('stale');
+  });
+
+  it('does not reuse a verdict when the reading evaluator identity is unknown', () => {
+    expect(judgePlanClosureObservation('p', [{ ...row(), build_sha: 'ba18a1e11a' }], NOW,
+      PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, null).status).toBe('stale');
+  });
+
+  it('accepts the same evaluator reported as full and abbreviated commit hashes', () => {
+    expect(judgePlanClosureObservation('p', [{ ...row(), build_sha: 'ba18a1e11a' }], NOW,
+      PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS, 'ba18a1e11a' + '0'.repeat(30)).status).toBe('fresh');
+  });
+
   it('serves a matching, young observation as the gate verdict', () => {
     const read = judgePlanClosureObservation('p', [row()], NOW);
     expect(read).toEqual({

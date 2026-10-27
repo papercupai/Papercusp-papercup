@@ -1,0 +1,1 @@
+{"schemaVersion":1,"kind":"native-node-process-event","event":"module-load-start","processIdentity":"ff0c2efd-929d-422d-9eed-b73263501fae","pid":2945807,"ppid":2942352,"atMs":1792906661206,"loadId":10,"url":"file:///home/marsh-office/.local/node25/lib/node_modules/npm/node_modules/nopt/lib/nopt-lib.js","scope":"node-sync-load-hook"}

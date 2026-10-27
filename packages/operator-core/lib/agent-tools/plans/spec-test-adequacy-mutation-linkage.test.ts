@@ -69,6 +69,55 @@ describe('ledger-derived mutation catches (R-7)', () => {
     expect(rating(row).rating).toBe('pass');
   });
 
+  it('does not let a sibling assertion in the same test file substantiate a clause-targeted mutation', () => {
+    const targetClause: SpecClauseRevision = {
+      ...clause,
+      specId: 'SPEC-P-010',
+      currentRevision: 1,
+      revision: 1,
+      planItemId: 'P-010',
+      behavior: 'The search architecture doc identifies the lexical seam as the only entry point for lexical ranking.',
+      falsifier: { observation: 'The doc names another lexical entry point.' },
+      contentHash: 'spec-p-010-rev-1',
+    };
+    const filePath = 'packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts';
+    const clauseCase = 'pg_textsearch (BM25) configuration page > names the seam as the only lexical entry point, with exactly the leg functions production code uses (SPEC-P-010)';
+    const siblingCase = 'pg_textsearch (BM25) configuration page > states the preload requirement and the signal that proves the library is loaded';
+    const positive = proof('test');
+    const mutant = proof('mutation');
+
+    for (const row of [positive, mutant]) {
+      row.specId = targetClause.specId;
+      row.specRevision = targetClause.revision;
+      row.specFingerprint = targetClause.contentHash;
+      row.testRunProvenance!.filePath = filePath;
+      (row.details.currentMeasurement as { testPaths: string[] }).testPaths = [filePath];
+    }
+    positive.testRunExecution!.passedCaseTitles = [clauseCase];
+    (positive.details.adequacy as Record<string, unknown>).testCases = [clauseCase];
+    Object.assign(mutant.testRunProvenance!, {
+      mutationFailedCaseTitles: [siblingCase],
+      mutationFailureLines: [`${siblingCase}: expected preload requirement`],
+    });
+    Object.assign(mutant.testRunProvenance!.mutationBaseline!, {
+      passedCaseTitles: [siblingCase],
+    });
+    const mutationAdequacy = mutant.details.adequacy as Record<string, unknown>;
+    mutationAdequacy.targeted = targetClause.specId.toLowerCase();
+    mutationAdequacy.testCases = [siblingCase];
+    mutationAdequacy.coverageRungs = { l3: true };
+
+    const result = evaluateSpecTestAdequacy({
+      clause: targetClause,
+      evidence: [positive, mutant],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.ratings.falsifiability.evidence).toContain('measured failed case is missing');
+    expect(result.ratings['plan-class-risk-floor'].rating).not.toBe('pass');
+  });
+
   it.each(['baseline', 'copy-baseline'])('credits filtered skips when the %s ledger measured the declared case passing', leg => {
     const row = proof('mutation');
     row.testRunExecution!.skipped = 39;
@@ -299,6 +348,30 @@ describe('canonical falsifier scenario to mutation case alignment', () => {
       classRef: 'plan-class-feature-ship',
     }).ratings.falsifiability;
   }
+
+  it.each([
+    null,
+    { observation: 'A seeded edit is attributed to the wrong work-item.' },
+    { observation: 'A seeded edit is attributed to the wrong work-item.', probeMethod: 'Join recorded edits.' },
+    { observation: 'A seeded edit is attributed to the wrong work-item.', requiredScenarios: [] },
+  ])('accepts exact current baseline/caught-case self-target proof without declared scenarios: %j', falsifier => {
+    const targetClause = { ...publishClause(), falsifier };
+    expect(rate(targetClause, publishCase).rating).toBe('pass');
+    expect(rate(targetClause, publishCase, { targeted: 'SPEC-P-024' }).rating).toBe('unknown');
+
+    const positive = scenarioProof('test', publishCase);
+    const caught = scenarioProof('mutation', publishCase);
+    // A filtered calibration must name this case; a complete zero-skip suite already passed every case.
+    caught.testRunProvenance!.mutationBaseline!.skipped = 1;
+    caught.testRunProvenance!.mutationBaseline!.passedCaseTitles = [mentionsCase];
+    expect(evaluateSpecTestAdequacy({ clause: targetClause, evidence: [positive, caught],
+      classRef: 'plan-class-feature-ship' }).ratings.falsifiability.rating).toBe('unknown');
+
+    const mismatchedPositive = scenarioProof('test', mentionsCase);
+    expect(evaluateSpecTestAdequacy({ clause: targetClause,
+      evidence: [mismatchedPositive, scenarioProof('mutation', publishCase)],
+      classRef: 'plan-class-feature-ship' }).ratings.falsifiability.rating).toBe('unknown');
+  });
 
   it('does not let a same-spec self-targeted mentions case prove publish-via-gateway', () => {
     const result = rate(publishClause(), mentionsCase, {

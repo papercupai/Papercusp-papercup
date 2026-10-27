@@ -6,7 +6,7 @@
  * A transport receipt is explicitly NOT proof of a running agent or a live deploy.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolve } from 'node:path';
 import {
@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
   kernelDenied: false, kernelUnavailable: false, suToken: 'test-only-original-bearer-not-a-real-credential',
+  policyRevision: 'current',
 }));
 vi.mock('./superuser-token', async (orig) => ({
   ...await orig<typeof import('./superuser-token')>(), readSuperuserToken: () => h.suToken,
@@ -65,7 +66,8 @@ vi.mock('./projected-tool-deps', () => ({
       ? { decision: 'deny', code: 'policy-unavailable', reason: 'session authority reader unavailable' }
       : h.revoked || h.kernelDenied
         ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
-        : { decision: 'allow' },
+        : { decision: 'allow', applied: true, revisionSource: 'applied',
+          executionRevision: { specificationRevision: 'a'.repeat(64), stateRevision: h.policyRevision } },
     checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
       h.denyPickupClaim && toolName === 'work_items:claim'
         ? { decision: 'deny', reason: 'current target claim confinement' } : null,
@@ -120,10 +122,13 @@ const { planItemLaneBlockReason, planItemLiveClaimReason } = await import('./sch
 await import('./agent-tools/work_items/get');
 await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
+await import('./agent-tools/work_items/review-admission');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
 const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
 const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
+const { requestAdmissionReview } = await import('./work-item-admission-review');
+const { appendFleetMembershipEvent } = await import('./fleet-membership-store');
 const originalContext = {
   workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
   runId: 'original-run', spawnId: 'original-spawn', parentSpawnId: 'original-parent',
@@ -136,18 +141,25 @@ const originalContext = {
 // session id rather than assigning the principal's ordinary bearer identity.
 const reviewerOwnerId = 'reviewer-session';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
+const { readWorkItemAdmissionSnapshot } = await import('./work-items-admission-promoter');
+const { observeFallback, fallbackObservationCounters, _pendingFallbackObservationCount,
+  flushFallbackObservations } = await import('./degradation/fallback-observations');
 
 let db: FreshPgDb;
 let run = 0;
 const scope = { workspaceId: 'default', harnessSlug: 'papercusp' };
 beforeAll(async () => {
-  db = await createFreshPgDb('admission-recovery-chain');
+  db = await createFreshPgDb('admission_recovery_chain');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, resolve(import.meta.dirname,
     '../../../libs/papercusp/libs/db/sql/944-work-queue-admission-dedup.sql'));
+  // The supported snapshot reader also projects occurrence/readiness stock.
+  for (const migration of ['831-issue-occurrence-ledger.sql', '1294-work-item-readiness-payload-projections.sql']) {
+    await applyMigrationForTest(db.sql, resolve(import.meta.dirname, '../../../libs/papercusp/libs/db/sql', migration));
+  }
   await db.sql.unsafe(`
     CREATE EXTENSION IF NOT EXISTS vector;
     ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS embedding vector(3),
@@ -158,12 +170,16 @@ beforeAll(async () => {
         SELECT value = ANY(ARRAY['done','dropped','deprecated','passed','failed','resolved','closed']::text[])
       $$;
     CREATE TABLE harness_shared.operator_secrets(name text PRIMARY KEY, value_b64 text);
+    CREATE TABLE harness_shared.audit_log (
+      id text PRIMARY KEY, ts bigint NOT NULL, workspace_id text NOT NULL,
+      actor text NOT NULL, action text NOT NULL, subject text NOT NULL, details jsonb
+    );
     CREATE TABLE harness_shared.system_principals (
       workspace_id text, name text, capabilities jsonb, PRIMARY KEY (workspace_id, name)
     );
     CREATE TABLE harness_shared.routines (
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
-      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
+      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz, metadata jsonb
     );
     -- Claim admission now reads the active operation-worker receipt even for
     -- ordinary targets; an empty session table proves this fixture has no bound worker.
@@ -205,6 +221,7 @@ beforeEach(async () => {
   h.denyPickupClaim = false;
   h.kernelDenied = false;
   h.kernelUnavailable = false;
+  h.policyRevision = 'current';
   h.suToken = 'test-only-original-bearer-not-a-real-credential';
   h.dispatches.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
@@ -212,7 +229,8 @@ beforeEach(async () => {
   h.claim.mockReset().mockImplementation(wi.claimWorkItem);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines,
-    harness_shared.system_principals`;
+    harness_shared.system_principals, harness_shared.fleet_assignment, harness_shared.fleet_membership_events,
+    harness_shared.audit_log`;
   await db.sql`INSERT INTO harness_shared.system_principals VALUES
     ('default', 'reviewer', '["coord:write","work_items:read","work_items:write"]')`;
   await db.sql`INSERT INTO harness_shared.routines
@@ -240,6 +258,223 @@ function request(id: string) {
 }
 
 describe('original authority context fidelity', () => {
+  it('drains queued fallback observations before retiring a fresh PG fixture', async () => {
+    // Start with no ambient work so the observation belongs to this lifecycle.
+    await flushFallbackObservations({ sql: db.sql });
+    const queries: string[] = [];
+    const retiring = await createFreshPgDb('admission_fallback_cleanup', {
+      onQuery: (query) => queries.push(query),
+    });
+    const failedBefore = fallbackObservationCounters().failed;
+    expect(observeFallback('admission-cleanup-regression', {
+      eligible: 1, applied: 0, reason: 'queued-at-teardown',
+    })).toBe(true);
+    expect(_pendingFallbackObservationCount()).toBe(1);
+    await retiring.cleanup();
+    expect(_pendingFallbackObservationCount()).toBe(0);
+    expect(fallbackObservationCounters().failed).toBe(failedBefore);
+    expect(queries.some((query) => query.includes('INSERT INTO harness_shared.fallback_observations')))
+      .toBe(true);
+  });
+
+  it('fails fresh PG teardown on a lost observation while still closing its pool', async () => {
+    await flushFallbackObservations({ sql: db.sql });
+    const retiring = await createFreshPgDb('admission_fallback_rejected');
+    await retiring.sql.unsafe(`ALTER TABLE harness_shared.fallback_observations
+      ADD CONSTRAINT reject_cleanup_probe CHECK (reason <> 'rejected-at-teardown')`);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      observeFallback('admission-cleanup-regression', {
+        eligible: 1, applied: 0, reason: 'rejected-at-teardown',
+      }, { sql: retiring.sql });
+      await expect(retiring.cleanup()).rejects.toThrow('Fresh PG cleanup lost fallback observations');
+      expect(_pendingFallbackObservationCount()).toBe(0);
+      await expect(retiring.sql`SELECT 1`).rejects.toMatchObject({ code: 'CONNECTION_ENDED' });
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it.each(['due', 'legacy'] as const)(
+    'screens and replays a %s ordinary slot with the operator string timestamp representation', async (slot) => {
+      const original = await create('String timestamp ordinary admission');
+      if (slot === 'due') await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
+        WHERE id = 'original-promoter'`;
+      // Reproduce the production wire shape with a real PG connection, rather
+      // than replacing the scheduler, slot writes, or screening composition.
+      const wireSql = postgres(db.url, {
+        max: 2, prepare: false, onnotice: () => {},
+        types: { timestamptz: { to: 1184, from: [1184], serialize: String, parse: (value: string) => value } },
+      });
+      try {
+        const [clock] = await wireSql`SELECT now() AS now`;
+        expect(typeof clock!.now).toBe('string');
+        const options = { ...scope, runId: `string-clock-${slot}`, batchSize: 10,
+          recentTerminalDays: 30, model: undefined };
+        const deps = { sql: wireSql, lockSql: db.sql, llmCall: h.model,
+          authorize: authorizeAdmissionRecovery, dispatch };
+        const result = await runAdmissionPromoterWithRecovery(options, deps);
+        expect(result).toMatchObject({ promoted: 1, modelCalled: false });
+        expect(await row(original.id)).toMatchObject({ admission: 'admitted' });
+        const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines
+          WHERE id = 'original-promoter'`;
+        const savedSlot = routine!.metadata.admissionOrdinarySlot;
+        expect(Date.parse(savedSlot.dueAt)).toBeGreaterThan(Date.parse(clock!.now));
+        expect(await runAdmissionPromoterWithRecovery(options, deps)).toEqual(result);
+        const [replayed] = await db.sql`SELECT metadata FROM harness_shared.routines
+          WHERE id = 'original-promoter'`;
+        expect(replayed!.metadata.admissionOrdinarySlot).toEqual(savedSlot);
+        expect(h.model).not.toHaveBeenCalled();
+      } finally {
+        await wireSql.end({ timeout: 5 });
+      }
+    },
+  );
+
+  it('retains a durable ordinary opportunity while unrelated exact recoveries keep arriving', async () => {
+    const original = await create('Ordinary fairness target');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    const [natural] = await db.sql`SELECT next_fire_at FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    await request(original.id);
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({ state: 'held', stage: 'screen' });
+
+    const unrelated = await create('First unrelated exact recovery');
+    await request(unrelated.id);
+    const [preserved] = await db.sql`SELECT metadata->'admissionOrdinarySlot' AS slot
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(new Date(preserved!.slot.dueAt)).toEqual(natural!.next_fire_at);
+    await tick();
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+
+    // Advance the persisted timer as if the host restarted after the natural
+    // deadline. A new exact request must not replace that ordinary obligation.
+    await db.sql`UPDATE harness_shared.routines SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb), '{admissionOrdinarySlot}',
+      jsonb_build_object('dueAt', now() - interval '1 second')) WHERE id = 'original-promoter'`;
+    const next = await create('Second unrelated exact recovery');
+    const queued = await request(next.id);
+    const ordinaryRunId = `chain-ordinary-restart-${++run}`;
+    const invoke = (runId = ordinaryRunId) => runAdmissionPromoterWithRecovery({
+      ...scope, runId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+    }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+    h.model.mockRejectedValueOnce(new Error('controlled interruption after ordinary slot claim'));
+    await expect(invoke()).rejects.toThrow('controlled interruption after ordinary slot claim');
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({
+      requestId: queued.request.requestId, state: 'queued',
+    });
+    const [retained] = await db.sql`SELECT metadata->'admissionOrdinarySlot' AS slot
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(retained!.slot.runId).toBe(ordinaryRunId);
+
+    // Re-enter through the production composition with only PG as continuity.
+    const successorRunId = `${ordinaryRunId}-successor`;
+    await invoke(successorRunId);
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
+    const [ledger] = await db.sql`SELECT detail FROM harness_shared.admission_runs WHERE id = ${ordinaryRunId}`;
+    expect(ledger!.detail.componentScreening.itemIds).toContain(original.id);
+    expect(ledger!.detail.componentScreening.receipts).toContainEqual({
+      itemId: original.id, stage: 'recheck', reason: 'selected',
+    });
+    const calls = h.model.mock.calls.length;
+    expect(await invoke()).toMatchObject({ runId: ordinaryRunId });
+    expect(await invoke(successorRunId)).toMatchObject({ runId: ordinaryRunId });
+    expect(h.model).toHaveBeenCalledTimes(calls);
+    expect((await row(next.id)).payload._admissionRecovery).toMatchObject({ state: 'queued' });
+    const [scheduled] = await db.sql`SELECT next_fire_at <= now() AS due
+      FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(scheduled!.due).toBe(true);
+    await tick();
+    expect(await row(next.id)).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId });
+    // A later ordinary cycle replaces the small metadata witness. The original
+    // workflow still reads its own completed ledger rather than consuming C.
+    await tick();
+    const afterCycle = h.model.mock.calls.length;
+    expect(await invoke()).toMatchObject({ runId: ordinaryRunId });
+    expect(h.model).toHaveBeenCalledTimes(afterCycle);
+  });
+
+  it('keeps an explicit target separate from a due ordinary slot', async () => {
+    const selected = await create('Explicit target');
+    const unrelated = await create('Unrelated ordinary target');
+    const slot = { dueAt: '2000-01-01T00:00:00.000Z' };
+    await db.sql`UPDATE harness_shared.routines SET metadata =
+      ${JSON.stringify({ admissionOrdinarySlot: slot })}::text::jsonb WHERE id = 'original-promoter'`;
+    const result = await runAdmissionPromoterWithRecovery({
+      ...scope, runId: `chain-exact-${++run}`, batchSize: 10, recentTerminalDays: 30,
+      model: undefined, targetItemIds: [selected.id],
+    }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+    expect(result.promoted).toBe(1);
+    expect(await row(selected.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(routine!.metadata.admissionOrdinarySlot).toEqual(slot);
+  });
+
+  it('serializes competing ordinary invocations without a transaction across model I/O', async () => {
+    const original = await create('Concurrent ordinary slot');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const waiting = new Promise<void>((resolve) => { finish = resolve; });
+    h.model.mockImplementationOnce(async () => {
+      entered();
+      await waiting;
+      return { text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+        json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } };
+    });
+    const first = tick();
+    try {
+      await started;
+      expect(await tick()).toMatchObject({ batchSize: 0, promoted: 0, modelCalled: false });
+      const [tx] = await db.sql`SELECT count(*)::int AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND state = 'idle in transaction'`;
+      expect(tx!.count).toBe(0);
+    } finally {
+      finish();
+      await first;
+    }
+    expect(h.model).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles an ordinary slot after the last finite recurrence', async () => {
+    await create('Final ordinary occurrence');
+    await db.sql`UPDATE harness_shared.routines SET
+      trigger_config = '{"rrule":"FREQ=DAILY;COUNT=1","dtstart":"2000-01-01T00:00:00.000Z"}',
+      metadata = '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}'
+      WHERE id = 'original-promoter'`;
+    expect(await tick()).toMatchObject({ promoted: 1 });
+    const [routine] = await db.sql`SELECT metadata FROM harness_shared.routines WHERE id = 'original-promoter'`;
+    expect(routine!.metadata.admissionOrdinarySlot.dueAt).toBeNull();
+  });
+
+  it.each(['paused', 'role', 'workspace', 'harness', 'malformed'] as const)(
+    'refuses ordinary screening with a %s promoter rather than consuming queued authority', async (invalid) => {
+      const original = await create('Refused ordinary slot');
+      await request(original.id);
+      await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"2000-01-01T00:00:00.000Z"}}' WHERE id = 'original-promoter'`;
+      if (invalid === 'paused') await db.sql`UPDATE harness_shared.routines SET active = false`;
+      if (invalid === 'role') await db.sql`UPDATE harness_shared.routines SET target_role = 'system:other'`;
+      if (invalid === 'workspace') await db.sql`UPDATE harness_shared.routines SET workspace_id = 'other'`;
+      if (invalid === 'harness') await db.sql`UPDATE harness_shared.routines SET install_slug = 'other'`;
+      if (invalid === 'malformed') await db.sql`UPDATE harness_shared.routines SET metadata =
+        '{"admissionOrdinarySlot":{"dueAt":"not-a-date"}}'`;
+      await expect(tick()).rejects.toThrow();
+      expect(h.model).not.toHaveBeenCalled();
+      expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+      expect((await row(original.id)).payload._admissionRecovery.state).toBe('queued');
+    },
+  );
+
   it('uses ordinary component screening for an authenticated scope-held request beyond the FIFO window', async () => {
     const original = await create('Component screening target');
     const twin = await create(original.title);
@@ -255,11 +490,15 @@ describe('original authority context fidelity', () => {
     expect(exact.guardRefusals).toEqual(expect.arrayContaining([
       expect.objectContaining({ itemId: original.id, reason: 'outside-mutation-scope' }),
     ]));
+    const [exactLedger] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${`${exact.runId}:recovery:${original.id}`}`;
+    expect(exactLedger).toBeDefined();
+    expect(exactLedger!.detail).not.toHaveProperty('componentScreening');
     const held = (await row(original.id)).payload._admissionRecovery;
     expect(held).toMatchObject({ requestId: first.request.requestId, state: 'held', stage: 'screen' });
     expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
     // This is a separate ordinary tick, with no targetItemIds or request replay.
-    await tick();
+    const ordinary = await tick();
     expect(h.model).toHaveBeenCalledTimes(2);
     expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     // The outside-window twin participates in the component's adjudication but
@@ -271,9 +510,46 @@ describe('original authority context fidelity', () => {
     expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql });
+    expect(snapshot.runs.find((entry) => entry.id === ordinary.runId)?.detail).toMatchObject({
+      componentScreening: { itemIds: [original.id], receipts: [
+        { itemId: original.id, stage: 'recheck', reason: 'selected' },
+      ] },
+    });
   });
 
-  it('keeps a prioritized component pending when a peer claims its twin before ordinary screening', async () => {
+  it('persists a refused component request on the ordinary ledger without granting priority or mutating it', async () => {
+    const original = await create('Refused component target');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    await db.sql`UPDATE harness_shared.work_items SET payload =
+      jsonb_set(payload, '{_admissionRecovery,signature}', ${db.sql.json('0'.repeat(64))})
+      WHERE feature_id = ${original.id}`;
+    const before = await row(original.id);
+    // Keep this rejected request and its twin beyond the ordinary FIFO batch.
+    for (let i = 0; i < 31; i++) {
+      const earlier = await create(`Unrelated refusal backlog ${i}`);
+      await db.sql`UPDATE harness_shared.work_items SET created_ts = ${i + 1} WHERE feature_id = ${earlier.id}`;
+    }
+    const ordinary = await tick();
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql });
+    const detail = snapshot.runs.find((entry) => entry.id === ordinary.runId)?.detail;
+    expect(detail).toMatchObject({ status: 'complete', componentScreening: { itemIds: [], receipts: [
+      { itemId: original.id, stage: 'provenance', reason: 'recovery-refused' },
+    ] } });
+    expect(JSON.stringify(detail?.componentScreening)).not.toContain('signature');
+    expect(await row(original.id)).toEqual(before);
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(h.model).toHaveBeenCalledTimes(1);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('judges an authenticated original while keeping its newly claimed twin read-only', async () => {
     const original = await create('Protected component screening target');
     const twin = await create(original.title);
     const [a, b] = [original.id, twin.id].sort();
@@ -285,10 +561,34 @@ describe('original authority context fidelity', () => {
     expect(held).toMatchObject({ state: 'held', stage: 'screen', reason: expect.stringContaining('outside-mutation-scope') });
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = ${twin.id}`;
     await tick();
-    expect(h.model).toHaveBeenCalledTimes(1);
-    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    // The ordinary authenticated comparison exception permits a read-only
+    // claimed twin; it grants no assignment or write authority over that twin.
+    expect(h.model).toHaveBeenCalledTimes(2);
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
     expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: 'live-peer' });
     expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('retains selection receipts when the ordinary model call fails after selection', async () => {
+    const original = await create('Failed component screening');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValueOnce({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    const before = await row(original.id);
+    h.model.mockRejectedValue(new Error('expected external fixture failure'));
+    await expect(tick()).rejects.toThrow('expected external fixture failure');
+    const snapshot = await readWorkItemAdmissionSnapshot({ ...scope, sql: db.sql, state: 'failed' });
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.runs[0]!.detail).toMatchObject({ status: 'failed', componentScreening: {
+      itemIds: [original.id], receipts: [{ itemId: original.id, stage: 'recheck', reason: 'selected' }],
+    } });
+    expect(await row(original.id)).toEqual(before);
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
     expect(h.claim).not.toHaveBeenCalled();
     expect(h.wake).not.toHaveBeenCalled();
   });
@@ -346,6 +646,269 @@ async function row(id: string) {
       AND harness_slug = ${scope.harnessSlug} AND feature_id = ${id}`;
   return r!;
 }
+
+const reviewLeader = 'su-11111111-1111-4111-8111-111111111111';
+function reviewAuthority() {
+  return { kind: 'signed-spawn' as const, role: 'reviewer', expiresAtSec: 0,
+    context: originalContext, credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) };
+}
+async function placeReview(id: string) {
+  for (const [ownerId, fleetRole] of [[reviewLeader, 'leader'], [reviewerOwnerId, 'member']]) {
+    await appendFleetMembershipEvent({ workspaceId: scope.workspaceId, ownerId: ownerId!,
+      fleetSlug: 'review-fleet', fleetRole: fleetRole! }, db.sql);
+  }
+  await db.sql`INSERT INTO harness_shared.fleet_assignment
+    (workspace_id, harness_slug, work_item_id, fleet_slug, agent_id, claim_active)
+    VALUES ('default', 'papercusp', ${id}, 'review-fleet', ${reviewerOwnerId}, true)`;
+}
+function review(id: string, caller = reviewerOwnerId) {
+  return requestAdmissionReview({ ...scope, workItemId: id }, { caller, authority: reviewAuthority() }, db.sql);
+}
+async function claimOriginal(id: string) {
+  await db.sql`UPDATE harness_shared.work_items SET taken_by = ${reviewerOwnerId}, status = 'wip'
+    WHERE feature_id = ${id}`;
+}
+function distinctPair(a: string, b: string) {
+  return { text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+    json: { judgements: [{ pairKey: [a, b].sort().join('::'), verdict: 'distinct', reason: 'Independent fixes' }] } };
+}
+
+async function parkForReview(id: string) {
+  const parker = 'su-60edb7f2-8b60-4e26-8146-dd81a0033bba';
+  const at = new Date().toISOString();
+  const releaseContract = {
+    owner: reviewLeader, trigger: 'work-item:done:EI-26925756106103124',
+    condition: `Canonical ${id} admissionReview is reviewed and admissionHold is absent; fleet leader reopens the original GitNexus lane after verifying that condition.`,
+    evidence: 'a live resolver or producer registration can still satisfy the condition', reachability: 'reachable',
+  };
+  const reason = 'Canonical admission review must finish before repair executes';
+  const patch = {
+    _claimHold: true, _ei: { source: 'su', created_by: 'su-respawn-5d5addf964d9c7aca0012b9866cf572d' },
+    claim_hold_by: parker, claim_hold_reason: reason, claim_hold_at: at, claim_hold_release: releaseContract,
+    externalBlockers: [{ ref: `admission-review:${id}`, kind: 'runtime', status: 'active',
+      capability: 'live-dependency', capabilitySource: 'explicit',
+      summary: reason, evidence: 'canonical pending review', nextVerb: 'work_items:get',
+      createdAt: at, updatedAt: at, createdBy: parker }],
+    admissionReview: { state: 'pending', retryAttempts: 0, lastRetryAt: null },
+  };
+  await db.sql`UPDATE harness_shared.work_items SET status = 'blocked', taken_by = NULL, admission = 'unreviewed',
+    payload = payload || ${db.sql.typed(JSON.stringify(patch), 25)}::jsonb WHERE feature_id = ${id}`;
+  await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
+    VALUES (${id + '-park'}, ${Date.parse(at)}, ${scope.workspaceId}, ${parker}, 'work_items:claim_hold:set', ${id},
+      ${db.sql.typed(JSON.stringify({ mode: 'claim_hold', by: parker, reason, releaseContract }), 25)}::jsonb)`;
+  await placeReview(id);
+}
+
+describe('authenticated admission-only review composition (EI-270226)', () => {
+  it('reviews another executor custody with canonical fleet authority without claiming or waking', async () => {
+    const original = await create('Held original review');
+    await claimOriginal(original.id);
+    await placeReview(original.id);
+    const before = await row(original.id);
+    const queued = await review(original.id, reviewLeader);
+    expect(queued).toMatchObject({ queued: true, pickupConfirmed: false });
+    expect((await db.sql`SELECT jsonb_typeof(payload->'_admissionReviewRequest') AS type
+      FROM harness_shared.work_items WHERE feature_id = ${original.id}`)[0]!.type).toBe('object');
+    expect((await row(original.id)).payload._admissionReviewRequest).toMatchObject({ requestId: queued.requestId });
+    expect(await tick()).toMatchObject({ promoted: 1, merged: 0 });
+    const after = await row(original.id);
+    expect(after).toMatchObject({ taken_by: before.taken_by, status: before.status, admission: 'admitted',
+      payload: { _admissionReviewReceipt: { requestId: queued.requestId, pickupConfirmed: false } } });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('reviews the audited original blocked park with distinct creator, parker and leader without releasing it', async () => {
+    const original = await create('Original GitNexus admission-only park');
+    await request(original.id);
+    await parkForReview(original.id);
+    const before = await row(original.id);
+    await review(original.id, reviewLeader);
+    expect(await tick()).toMatchObject({ promoted: 1, merged: 0 });
+    const after = await row(original.id);
+    expect(after).toMatchObject({ status: 'blocked', taken_by: null, admission: 'admitted' });
+    for (const key of ['_claimHold', '_ei', 'claim_hold_by', 'claim_hold_reason', 'claim_hold_at',
+      'claim_hold_release', 'externalBlockers', '_admissionRecovery']) {
+      expect(after.payload[key]).toEqual(before.payload[key]);
+    }
+    expect(after.payload._admissionReviewReceipt).toMatchObject({ pickupConfirmed: false });
+    expect(after.payload.admissionReview).toMatchObject({ state: 'reviewed', retryAttempts: 1 });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['human', 'policy', 'unknown', 'mixed', 'malformed', 'unaudited', 'wrong-audit', 'unknown-trigger', 'self-trigger', 'owner'] as const)(
+    'refuses an audited park with %s protection without changing its bytes', async kind => {
+      const original = await create();
+      await parkForReview(original.id);
+      const payload = (await row(original.id)).payload;
+      if (kind === 'human') payload.externalBlockers[0].kind = 'human';
+      if (kind === 'policy') payload.claim_hold_reason = 'policy-tier: D-020 requires owner approval';
+      if (kind === 'unknown') delete payload.externalBlockers[0].capabilitySource;
+      if (kind === 'mixed') payload.externalBlockers.push({ ...payload.externalBlockers[0], ref: 'other-runtime-dependency' });
+      if (kind === 'malformed') delete payload.externalBlockers[0].updatedAt;
+      if (kind === 'unknown-trigger') payload.claim_hold_release.trigger = `work-item:claimable:${original.id}`;
+      if (kind === 'self-trigger') payload.claim_hold_release.trigger = `work-item:done:${original.id}`;
+      if (kind === 'owner') payload.claim_hold_release.owner = 'su-22222222-2222-4222-8222-222222222222';
+      await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.typed(JSON.stringify(payload), 25)}::jsonb
+        WHERE feature_id = ${original.id}`;
+      // Keep audit equality for semantic contract refusals; don't let another
+      // mismatched field accidentally satisfy the negative test.
+      if (['policy', 'unknown-trigger', 'self-trigger', 'owner'].includes(kind)) {
+        await db.sql`UPDATE harness_shared.audit_log SET details = ${db.sql.typed(JSON.stringify({
+          mode: 'claim_hold', by: payload.claim_hold_by, reason: payload.claim_hold_reason,
+          releaseContract: payload.claim_hold_release,
+        }), 25)}::jsonb WHERE subject = ${original.id}`;
+      }
+      if (kind === 'unaudited') await db.sql`DELETE FROM harness_shared.audit_log WHERE subject = ${original.id}`;
+      if (kind === 'wrong-audit') await db.sql`UPDATE harness_shared.audit_log SET actor = 'human' WHERE subject = ${original.id}`;
+      const before = await row(original.id);
+      await expect(review(original.id, reviewLeader)).rejects.toThrow();
+      expect(await row(original.id)).toEqual(before);
+      expect(h.model).not.toHaveBeenCalled();
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses malformed persisted requests instead of silently falling through to recovery', async () => {
+    const original = await create();
+    await claimOriginal(original.id);
+    await review(original.id);
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+      '{_admissionReviewRequest}', ${db.sql.typed(JSON.stringify('malformed'), 25)}::jsonb)
+      WHERE feature_id = ${original.id}`;
+    const before = await row(original.id);
+    await expect(tick()).rejects.toThrow('malformed admission review request');
+    expect(await row(original.id)).toEqual(before);
+    expect(h.model).not.toHaveBeenCalled();
+  });
+
+  it('enforces the actual review write policy independently of dispatch and claim permissions', async () => {
+    const original = await create();
+    await claimOriginal(original.id);
+    h.kernelDenied = true;
+    const before = await row(original.id);
+    await expect(review(original.id)).rejects.toThrow('revoked');
+    expect(await row(original.id)).toEqual(before);
+    h.kernelDenied = false;
+    await review(original.id);
+    h.kernelDenied = true;
+    await expect(tick()).rejects.toThrow('revoked');
+    expect((await row(original.id)).admission).toBe('pending');
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['custody', 'request', 'policy', 'denied'] as const)(
+    'refuses %s drift during model latency before persistence', async drift => {
+      const original = await create('Latency review subject');
+      const twin = await create(original.title);
+      await claimOriginal(original.id);
+      await review(original.id);
+      h.model.mockImplementationOnce(async () => {
+        if (drift === 'custody') await db.sql`UPDATE harness_shared.work_items
+          SET taken_by = 'other-executor' WHERE feature_id = ${original.id}`;
+        if (drift === 'request') await db.sql`UPDATE harness_shared.work_items
+          SET payload = jsonb_set(payload, '{_admissionReviewRequest,requestId}',
+            '"99999999-9999-4999-8999-999999999999"'::jsonb) WHERE feature_id = ${original.id}`;
+        if (drift === 'policy') h.policyRevision = 'changed';
+        if (drift === 'denied') h.kernelDenied = true;
+        return distinctPair(original.id, twin.id);
+      });
+      await expect(tick()).rejects.toThrow();
+      expect(await row(original.id)).toMatchObject({ admission: 'pending' });
+      expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+      expect((await row(twin.id)).admission).toBe('pending');
+      expect(h.model).toHaveBeenCalledTimes(1);
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['foreign', 'expired', 'revoked', 'tampered'] as const)(
+    'refuses %s review authority without admission or custody writes', async invalid => {
+      const original = await create();
+      await claimOriginal(original.id);
+      const authority = reviewAuthority();
+      if (invalid === 'foreign') authority.context = { ...originalContext, workspaceId: 'other' };
+      if (invalid === 'expired') authority.expiresAtSec = 1;
+      if (invalid === 'revoked') authority.credentialSha256 = '0'.repeat(64);
+      if (invalid !== 'tampered') {
+        await expect(requestAdmissionReview({ ...scope, workItemId: original.id },
+          { caller: reviewerOwnerId, authority }, db.sql)).rejects.toThrow();
+      } else {
+        await review(original.id);
+        await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+          '{_admissionReviewRequest,signature}', ${db.sql.typed(JSON.stringify('0'.repeat(64)), 25)}::jsonb)
+          WHERE feature_id = ${original.id}`;
+        await expect(tick()).rejects.toThrow('signature');
+      }
+      expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: reviewerOwnerId, status: 'wip' });
+      expect(h.model).not.toHaveBeenCalled();
+    },
+  );
+
+  it('holds a duplicate subject without mutating its outside-scope twin or merge links', async () => {
+    const original = await create('Review duplicate original');
+    const twin = await create(original.title);
+    await claimOriginal(original.id);
+    const twinBefore = await row(twin.id);
+    await review(original.id);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'r-finding-merge',
+        reason: 'Same fix' }] } });
+    expect(await tick()).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    expect(await row(twin.id)).toEqual(twinBefore);
+    expect(await db.sql`SELECT * FROM harness_shared.dedup_edges`).toEqual([]);
+    expect(await db.sql`SELECT * FROM harness_shared.dedup_adjudications`).toEqual([]);
+    expect((await row(original.id)).taken_by).toBe(reviewerOwnerId);
+  });
+
+  it('refuses reference drift during judging without recording a successful review', async () => {
+    const original = await create('Reference drift review');
+    const twin = await create(original.title);
+    await claimOriginal(original.id);
+    await review(original.id);
+    h.model.mockImplementationOnce(async () => {
+      await db.sql`UPDATE harness_shared.work_items SET title = 'changed during judging', updated_ts = updated_ts + 1
+        WHERE feature_id = ${twin.id}`;
+      return distinctPair(original.id, twin.id);
+    });
+    expect(await tick()).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    expect((await row(original.id)).admission).toBe('pending');
+    expect((await row(original.id)).payload).not.toHaveProperty('_admissionReviewReceipt');
+    expect((await row(twin.id)).admission).toBe('pending');
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('preserves immutable recovery and requires separate eligible handoff then target-owned pickup', async () => {
+    const original = await create('Original recovery preserved through review');
+    await request(original.id);
+    await claimOriginal(original.id);
+    const saved = (await row(original.id)).payload._admissionRecovery;
+    await review(original.id);
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(saved);
+    expect(h.wake).not.toHaveBeenCalled();
+    // A distinct custody transition is required; review is never that transition.
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, status = 'open'
+      WHERE feature_id = ${original.id}`;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      requestId: saved.requestId, state: 'delivered', pickupConfirmed: false });
+    expect(h.wake).toHaveBeenCalledTimes(1);
+    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true });
+    expect(await row(original.id)).toMatchObject({ taken_by: reviewerOwnerId });
+    expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
+      'work_items:pickup', 'work_items:get', 'work_items:claim',
+    ]);
+    // Delivery's immutable receipt does not mutate into a pickup attestation.
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({ pickupConfirmed: false });
+  });
+});
 /** A separate target-owned call. Context represents the authenticated transport
  * boundary, NOT presence.agentRole and NOT the original requester's privilege.
  * Capabilities are loaded from fresh PG by the real transport principal resolver.

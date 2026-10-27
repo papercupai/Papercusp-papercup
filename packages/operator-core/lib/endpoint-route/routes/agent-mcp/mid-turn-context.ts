@@ -1120,7 +1120,7 @@ const midTurnContext = defineTool({
         harness: (await harnessResolved) || undefined, client: body.client,
         incidentAttribution: body.incidentAttribution,
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
-      }, clampToBudget(memoryBlock).length).catch(() => '');
+      }).catch(() => ''); // Its own reserved budget: the memory block never shrinks it (P-005).
       return Response.json({
         ok: true,
         text: composeMidTurnContextText(memoryBlock, failureHint, ruleContext, codeIntel),

@@ -7,6 +7,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const { ledgerDir, openDeliveryLedger, codeIntelDelivery } = await import(path.join(HERE, '..', 'delivery-ledger.mjs'));
+const { ledgerDir, openDeliveryLedger, codeIntelDelivery, MAX_DELIVERY_RECEIPTS } = await import(path.join(HERE, '..', 'delivery-ledger.mjs'));
 
 const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-unit-')) });
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
@@ -43,7 +44,7 @@ describe('delivery ledger', () => {
     a.commit();
     b.commit();
     expect(openDeliveryLedger('su-a', env).confirmed()).toBe('tok-a');
-    expect(readdirSync(ledgerDir(env)).sort()).toEqual(['su-a.token', 'su-b.token']);
+    expect(readdirSync(ledgerDir(env)).sort()).toEqual(['su-a.emissions', 'su-a.token', 'su-b.emissions', 'su-b.token']);
   });
 
   it('cannot be steered outside its directory by the session id', () => {
@@ -51,12 +52,68 @@ describe('delivery ledger', () => {
     const ledger = openDeliveryLedger('../../escape', env);
     ledger.offer('tok-x');
     ledger.commit();
-    expect(readdirSync(ledgerDir(env))).toEqual(['.._.._escape.token']);
+    expect(readdirSync(ledgerDir(env)).sort()).toEqual(['.._.._escape.emissions', '.._.._escape.token']);
   });
 
   it('opens nothing without a session id', () => {
     expect(openDeliveryLedger('', home())).toBeNull();
     expect(openDeliveryLedger(undefined, home())).toBeNull();
+  });
+
+  it('preserves the original token and distinct control revisions across a fresh successor', () => {
+    const env = home();
+    const desired = { specificationRevision: '1'.repeat(64), stateRevision: '2'.repeat(64) };
+    const applied = { ...desired, stateRevision: '3'.repeat(64) };
+    const payload = 'private hook context\n';
+    const first = openDeliveryLedger('su-1', env);
+    first.offer('token-before-carry', { payload, client: 'codex', nativeSessionId: 'native-before',
+      control: { targetOwnerId: 'su-1', generation: 18, stateHash: '4'.repeat(64),
+        state: { activation: { status: 'prepared', desired, prepared: desired, applied },
+          privateText: 'private hook context' } } });
+    const receipts = path.join(ledgerDir(env), 'su-1.emissions');
+    expect(existsSync(receipts)).toBe(false);
+    expect(first.commit()).toBe(true);
+    const originalPath = path.join(receipts, readdirSync(receipts)[0]);
+    const originalBytes = readFileSync(originalPath, 'utf8');
+    expect(JSON.parse(originalBytes)).toMatchObject({ stage: 'stdout-emitted', token: 'token-before-carry',
+      nativeSessionId: 'native-before', payloadSha256: createHash('sha256').update(payload).digest('hex'),
+      payloadBytes: Buffer.byteLength(payload), control: { generation: 18, desired, prepared: desired, applied } });
+    expect(originalBytes).not.toContain('private hook context');
+    const successor = openDeliveryLedger('su-1', env);
+    expect(successor.confirmed()).toBe('token-before-carry');
+    successor.offer('token-after-carry', { payload: 'successor\n', client: 'codex', nativeSessionId: 'native-after' });
+    expect(successor.commit()).toBe(true);
+    expect(openDeliveryLedger('su-1', env).confirmed()).toBe('token-after-carry');
+    expect(readFileSync(originalPath, 'utf8')).toBe(originalBytes);
+    // A repeated token also retains its first emission, rather than relabeling it.
+    successor.offer('token-before-carry', { payload: 'different', nativeSessionId: 'native-after' });
+    expect(successor.commit()).toBe(true);
+    expect(readFileSync(originalPath, 'utf8')).toBe(originalBytes);
+  });
+
+  it('does not advance the current token if an immutable receipt cannot be written', () => {
+    const env = home();
+    const ledger = openDeliveryLedger('su-1', env);
+    writeFileSync(path.join(ledgerDir(env), 'su-1.emissions'), 'not a directory');
+    ledger.offer('unpreserved-token', { payload: 'printed\n' });
+    expect(ledger.commit()).toBe(false);
+    expect(openDeliveryLedger('su-1', env).confirmed()).toBeNull();
+    expect(readdirSync(ledgerDir(env))).toEqual(['su-1.emissions']);
+  });
+
+  it('bounds retained receipts and keeps the current emission during rapid commits', () => {
+    const env = home();
+    const ledger = openDeliveryLedger('su-1', env);
+    for (let n = 0; n < MAX_DELIVERY_RECEIPTS + 5; n++) {
+      ledger.offer(`token-${n}`);
+      expect(ledger.commit()).toBe(true);
+    }
+    const receipts = path.join(ledgerDir(env), 'su-1.emissions');
+    const names = readdirSync(receipts);
+    expect(names).toHaveLength(MAX_DELIVERY_RECEIPTS);
+    expect(names.every(name => /^[a-f0-9]{64}\.json$/.test(name))).toBe(true);
+    expect(names.map(name => JSON.parse(readFileSync(path.join(receipts, name), 'utf8')).token))
+      .toContain(`token-${MAX_DELIVERY_RECEIPTS + 4}`);
   });
 });
 

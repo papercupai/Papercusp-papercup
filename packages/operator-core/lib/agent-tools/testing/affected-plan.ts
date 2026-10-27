@@ -161,6 +161,24 @@ export async function deriveAffectedPlan(input: {
   }
 
   const probe = parseAffectedProbe(outcome.stdout);
+  // WI-6554700010029567: a clean exit is NOT a completed enumeration. The script emits its
+  // AFFECTED_DERIVATION banner on every path that selects anything — INCLUDING a genuinely
+  // empty selection (`workspaces=0`) — so a missing banner means the probe never reached
+  // its selection, and reporting `workspaces: []` would hand the caller a false "nothing
+  // to verify" (observed live: derivation:null + 0 workspaces for six code paths, while the
+  // identical call minutes later selected 9 workspaces / 48 tasks).
+  if (probe.derivation === null) {
+    return {
+      ok: false,
+      error: 'probe_failed',
+      detail:
+        `the --print-affected derivation exited ${outcome.code ?? 'without a code'} but printed no ` +
+        `AFFECTED_DERIVATION banner, so the enumeration did not complete. The affected set is ` +
+        `UNDETERMINED — this is NOT evidence that it is empty. Re-run testing:run { changedPaths }.`,
+      exitCode: outcome.code,
+      stderrTail: tail(`${outcome.stdout}\n${outcome.stderr}`),
+    };
+  }
   const taskCommands = probe.taskCommands.slice(0, AFFECTED_PLAN_MAX_ROWS);
   const guards = probe.guards.slice(0, AFFECTED_PLAN_MAX_ROWS);
 

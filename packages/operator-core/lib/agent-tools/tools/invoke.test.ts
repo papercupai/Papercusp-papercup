@@ -76,6 +76,10 @@ describe('tools:invoke registration', () => {
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional
     expect(def.args.safeParse({}).success).toBe(false); // name required
     expect(def.args.safeParse({ name: '' }).success).toBe(false); // non-empty
+    const chaining = (toolInvoke as unknown as { guidance: { chaining: string } }).guidance.chaining;
+    expect(chaining).toContain('tools:invoke({ name, args })');
+    expect(chaining).toContain('papercusp/servingGeneration` metadata from tools/list');
+    expect(chaining).toContain('legacy callable schemas may reject');
   });
 
   it('is advertised as a write and resolves each call to its target\'s effect (D-021)', () => {

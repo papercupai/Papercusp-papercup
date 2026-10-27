@@ -91,7 +91,7 @@
  */
 import type { Sql } from 'postgres';
 
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -1298,38 +1298,22 @@ export async function runAgentProductivitySweepOnce(
   };
 }
 
-let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Idempotent. Runtime gate: FLAGS.AGENT_PRODUCTIVITY_WATCHDOG (checked per tick,
  * so the kill-switch takes effect without a restart).
  */
-export function startAgentProductivityWatchdog(
-  sql: Sql,
-  opts: { intervalMs?: number } = {},
-): void {
-  const intervalMs = opts.intervalMs ?? AGENT_PRODUCTIVITY_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'agent-productivity-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runAgentProductivitySweepOnce(sql)
-        .catch((e) => {
+const armAgentProductivityWatchdog = createManagedSweepStarter({
+  name: 'agent-productivity-watchdog',
+  intervalMs: AGENT_PRODUCTIVITY_SWEEP_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'timeout-reaper' },
+  onError: (e) => {
           console.warn(
             `[agent-productivity-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // The alarm condition is an agent present for a WINDOW without having
-    // worked. Nothing emits an event for work that never happened, so the
-    // passage of time in that state is the only trigger available.
-    { category: 'watchdog', classification: 'timeout-reaper' },
-  );
+        },
+});
+
+export function startAgentProductivityWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armAgentProductivityWatchdog(() => runAgentProductivitySweepOnce(sql), opts.intervalMs);
 }

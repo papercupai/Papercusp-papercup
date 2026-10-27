@@ -48,6 +48,7 @@ import { RECOVERY_DOOR_TOOL, RECOVERY_DOOR_DISPATCH_WRAPPER, isRecoveryDoorCall 
 import { isLazyIdentityLaunchRecord } from './lazy-launch-record';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
+import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -860,6 +861,25 @@ export async function checkIdentityGrantKernel(
     );
   }
   const toolName = resolveMcpName(request.toolName)?.expose.mcp?.name ?? request.toolName;
+  // WI-6554700010029046: a released accepted-operation worker must not be able
+  // to promote itself, but the first-party UserPromptSubmit hook still needs one
+  // exact door that asks the host to mint a distinct SU assignment. This admits
+  // only the hook-declared transport to that handler; it grants no operation
+  // tool and changes neither requiredTools nor the effect-claim check below.
+  // The handler independently rereads the exact receipt, hook-captured owner
+  // directive and released claim before it launches anything.
+  if ('acceptedOperation' in record &&
+      isHookReleasedOperationContinuationCall({ toolName, ctx: request.ctx })) {
+    return {
+      decision: 'allow', availability: 'available', applied: true,
+      policyRevision: policy.policyRevision, executionRevision: applied, revisionSource: 'applied',
+      ...(version?.sessionId && version.rowVersion
+        ? { serverAudit: { identityLaunchRecord: {
+          advSessionId: version.sessionId, xmin: version.rowVersion,
+        } } }
+        : {}),
+    };
+  }
   // The accepted operation's requested tools are a further ceiling carried by
   // the host-owned launch receipt. Tool arguments and nested dispatch cannot
   // alter this list. An empty list deliberately permits no operation tools.

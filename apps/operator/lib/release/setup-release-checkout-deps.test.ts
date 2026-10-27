@@ -309,7 +309,7 @@ describe('setup-release-checkout.sh dependency-generation retention wiring', () 
   it('WI-41491: uses the immutable-token selector and transports the chosen workspace closure', () => {
     const source = readFileSync(SCRIPT_PATH, 'utf8');
     const configure = source.indexOf(
-      'dependency_generation_configure_workspace_dirs \\',
+      '    configure_release_dependency_workspace_dirs\n',
     );
     const tokenSelect = source.indexOf(
       'dependency_generation_select_prevalidated \\',
@@ -879,6 +879,63 @@ describe('setup-release-checkout.sh pinned submodule node_modules survive the re
     expect(extract).toBeGreaterThan(clone);
     expect(restoreCall).toBeGreaterThan(extract);
     expect(loopEnd).toBeGreaterThan(restoreCall);
+  });
+});
+
+describe('setup-release-checkout.sh generation package copy-up', () => {
+  it('preserves frozen donor modes and snapshot while retiring hardlinked patch targets', () => {
+    const work = mkdtempSync(join(tmpdir(), 'generation-copy-up-'));
+    const donor = join(work, 'generation/node_modules/example');
+    const target = join(work, 'checkout/node_modules/example');
+    mkdirSync(join(donor, 'bin'), { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(join(donor, 'index.js'), 'original dependency\n');
+    writeFileSync(join(donor, 'bin/tool'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(donor, 'index.js'), 0o444);
+    chmodSync(join(donor, 'bin/tool'), 0o555);
+    chmodSync(join(donor, 'bin'), 0o555);
+    chmodSync(donor, 0o555);
+    try {
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
+        'source "$GENERATION_SCRIPT"',
+        'source <(sed -n "/^copy_up_generation_dependency_path()/,/^}/p" "$SETUP_SCRIPT")',
+        'dependency_generation_tree_fingerprint "$DONOR" > "$WORK/before"',
+        'cp -al "$DONOR" "$TARGET"',
+        'copy_up_generation_dependency_path "$TARGET"',
+        'dependency_generation_tree_fingerprint "$DONOR" > "$WORK/after"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+          SETUP_SCRIPT: SCRIPT_PATH,
+          PINNED_DEPENDENCY_GENERATION_ID: 'fixture-generation',
+          DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(work, 'copy.lock'),
+          DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+          DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+          WORK: work,
+          DONOR: donor,
+          TARGET: target,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(statSync(join(donor, 'index.js')).mode & 0o777).toBe(0o444);
+      expect(statSync(join(donor, 'bin/tool')).mode & 0o777).toBe(0o555);
+      expect(readFileSync(join(work, 'after'), 'utf8')).toBe(readFileSync(join(work, 'before'), 'utf8'));
+      for (const path of ['index.js', 'bin/tool']) {
+        expect(statSync(join(target, path)).ino).not.toBe(statSync(join(donor, path)).ino);
+        expect(statSync(join(target, path)).mode & 0o200).toBe(0o200);
+      }
+      writeFileSync(join(target, 'index.js'), 'patched dependency\n');
+      expect(readFileSync(join(donor, 'index.js'), 'utf8')).toBe('original dependency\n');
+      expect(readdirSync(dirname(target))).toEqual(['example']);
+    } finally {
+      // Only directories need write permission to unlink their children.
+      chmodSync(donor, 0o755);
+      chmodSync(join(donor, 'bin'), 0o755);
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2389,6 +2446,119 @@ exec "$REGRESSION_REAL_GIT" "$@"
 
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('does not match requested ref');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+  });
+
+  it.each([
+    { dependenciesOnly: true, fault: 'none' },
+    { dependenciesOnly: false, fault: 'none' },
+    { dependenciesOnly: true, fault: 'input-mismatch' },
+    { dependenciesOnly: true, fault: 'native-missing' },
+    { dependenciesOnly: true, fault: 'native-probe-drift' },
+  ])('dependencies-only=$dependenciesOnly fault=$fault preserves frozen input readiness', ({ dependenciesOnly, fault }) => {
+    const workspace = 'libs/generic/sse';
+    const asset = 'apps/operator/public/runtime/asset.js';
+    const rootfs = 'papercusp-desktop/src-tauri/resources/papercup-runtime.tar.gz';
+    const nativeProbe = join(dirname(releaseRoot), 'native-probed');
+    writeFileSync(join(integrationRoot, '.gitignore'),
+      'node_modules/\n**/dist/\napps/operator/public/runtime/\n' + rootfs + '\n');
+    writeFileSync(join(integrationRoot, 'package.json'), JSON.stringify({
+      name: 'preparation-fixture', private: true, workspaces: [workspace],
+    }));
+    mkdirSync(join(integrationRoot, workspace), { recursive: true });
+    writeFileSync(join(integrationRoot, workspace, 'package.json'), JSON.stringify({
+      name: '@papercusp/sse', version: '1.0.0', scripts: { build: 'node build.cjs' },
+    }));
+    writeFileSync(join(integrationRoot, workspace, 'build.cjs'),
+      "require('node:fs').mkdirSync('dist', {recursive:true}); require('node:fs').writeFileSync('dist/index.js', 'built');");
+    mkdirSync(dirname(join(integrationRoot, rootfs)), { recursive: true });
+    writeFileSync(join(integrationRoot, rootfs), '');
+    writeFileSync(join(integrationRoot, dirname(rootfs), '.rootfs-build-stamp'), JSON.stringify({
+      rootfsSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    }));
+    mkdirSync(dirname(join(integrationRoot, asset)), { recursive: true });
+    writeFileSync(join(integrationRoot, asset), 'donor asset');
+    mkdirSync(join(integrationRoot, 'node_modules/@papercusp'), { recursive: true });
+    symlinkSync('../../' + workspace, join(integrationRoot, 'node_modules/@papercusp/sse'));
+    addPkg(integrationRoot, 'better-sqlite3');
+    writeFileSync(join(integrationRoot, 'node_modules/better-sqlite3/index.js'),
+      fault === 'native-missing' ? "throw new Error('missing native binding');" :
+        "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); " +
+        (fault === 'native-probe-drift' ? "require('node:fs').writeFileSync(__dirname + '/probe-generated.node', 'changed'); " : '') +
+        "} prepare() { return { get() { return { result:1 }; } }; } close() {} };");
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'preparation fixture');
+    targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
+    git(releaseRoot, 'fetch', '-q', 'origin');
+    git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
+    rmSync(join(releaseRoot, 'ignored-cache'), { recursive: true });
+    rmSync(join(releaseRoot, 'untracked-sentinel.txt'));
+
+    const generationRoot = join(dirname(releaseRoot), 'generations');
+    const env = { ...sourceCloneEnv(), PREPARATION_NATIVE_PROBE: nativeProbe };
+    const published = spawnSync('bash', ['-c',
+      'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; ' +
+        'dependency_generation_publish_input_selector "$3" "$(dependency_generation_input_fingerprint_ref "$2" HEAD)"; ' +
+        'printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
+      'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env });
+    expect(published.status, published.stdout + published.stderr).toBe(0);
+    const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
+    expect(identity).toBeDefined();
+    if (fault === 'input-mismatch') {
+      writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3, packages: { '': { name: 'different-inputs' } },
+      }));
+      git(integrationRoot, 'add', 'package-lock.json');
+      git(integrationRoot, 'commit', '-q', '-m', 'different target dependency inputs');
+      targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
+      git(releaseRoot, 'fetch', '-q', 'origin');
+      git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
+    }
+    const result = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
+      ...(dependenciesOnly ? ['--dependencies-only'] : []),
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
+      '--node-modules', 'force', '--node-modules-copy', 'copy',
+      '--node-modules-generation-id', identity!, '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env });
+
+    if (fault !== 'none') {
+      expect(result.status, result.stdout + result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
+      expect(result.stdout).toContain(fault === 'input-mismatch' ? 'committed input/generation mismatch' :
+        fault === 'native-missing' ? 'publish a native-complete generation' : 'materialized dependency tree drift');
+      expect(result.stdout).not.toContain('rebuilding in the release checkout');
+      if (fault === 'input-mismatch') {
+        expect(existsSync(join(releaseRoot, 'node_modules'))).toBe(false);
+      }
+      return;
+    }
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(readFileSync(nativeProbe, 'utf8')).toBe('checked');
+    expect(readFileSync(join(releaseRoot, 'node_modules/.papercusp-dependency-generation'), 'utf8'))
+      .toContain(`identity=${identity}\n`);
+    expect(git(releaseRoot, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+    for (const path of [asset, rootfs, workspace + '/dist/index.js']) {
+      expect(existsSync(join(releaseRoot, path)), path).toBe(!dependenciesOnly);
+    }
+    if (dependenciesOnly) {
+      expect(result.stdout).toContain('SETUP_RELEASE_DEPENDENCIES_ONLY');
+      const ignored = git(releaseRoot, 'ls-files', '--others', '--ignored', '--exclude-standard').split('\n').filter(Boolean);
+      expect(ignored.length).toBeGreaterThan(0);
+      expect(ignored.filter(path => !path.startsWith('node_modules/'))).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['--dependencies-only'],
+    ['--prepare-existing', '--dependencies-only', '--build-spa'],
+    ['--prepare-existing', '--dependencies-only', '--spa-only'],
+    ['--prepare-existing', '--dependencies-only', '--source-only'],
+  ])('refuses incompatible dependencies-only arguments %j before checkout mutation', (...args) => {
+    const result = spawnSync('bash', [SCRIPT_PATH, ...args,
+      '--integration', integrationRoot, '--release', releaseRoot], { encoding: 'utf8' });
+    expect(result.status, result.stdout + result.stderr).toBe(2);
+    expect(readFileSync(join(releaseRoot, 'untracked-sentinel.txt'), 'utf8')).toBe('keep me\n');
     expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
   });
 

@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a16aff-7257-7682-bd28-43c65eade77f",
+  "capturedAt": "2026-10-23T23:19:56.889Z",
+  "kind": "current fixture observation of common access override primitives",
+  "historicalBaselineAccepted": false,
+  "canonicalAcceptance": "OPEN",
+  "command": "npm run test:file -- packages/agent-mcp/src/gate-bypass.test.ts packages/operator-core/lib/auth-config-overrides.test.ts packages/operator-core/lib/capability-envelope/policy.test.ts",
+  "nativeProcessSession": 66007,
+  "exitCode": 0,
+  "runnerFinalResult": "TEST_FILE_RESULT requested=3 executed=3 matched=3 status=passed head=9d49c12b4e uncommittedPaths=0/3 provenance=unknown startedAt=2026-10-23T23:15:04.132Z childSubstituted=0 skippedTests=0",
+  "ledgerRows": [
+    {
+      "id": "21851844",
+      "file_path": "packages/agent-mcp/src/gate-bypass.test.ts",
+      "status": "pass",
+      "started_at": "2026-10-23 23:15:28.221+00",
+      "harness_slug": null,
+      "workspace_id": "papercusp-workspace",
+      "is_scratch_config": false,
+      "worktree_dirty": true,
+      "passed": "4",
+      "failed": "0",
+      "skipped": "0",
+      "collection_failed": "false"
+    },
+    {
+      "id": "21851848",
+      "file_path": "packages/operator-core/lib/capability-envelope/policy.test.ts",
+      "status": "pass",
+      "started_at": "2026-10-23 23:15:51.48+00",
+      "harness_slug": null,
+      "workspace_id": "papercusp-workspace",
+      "is_scratch_config": false,
+      "worktree_dirty": true,
+      "passed": "28",
+      "failed": "0",
+      "skipped": "0",
+      "collection_failed": "false"
+    },
+    {
+      "id": "21851849",
+      "file_path": "packages/operator-core/lib/auth-config-overrides.test.ts",
+      "status": "pass",
+      "started_at": "2026-10-23 23:16:19.595+00",
+      "harness_slug": null,
+      "workspace_id": "papercusp-workspace",
+      "is_scratch_config": false,
+      "worktree_dirty": true,
+      "passed": "9",
+      "failed": "0",
+      "skipped": "0",
+      "collection_failed": "false"
+    }
+  ],
+  "counts": {
+    "passed": 41,
+    "failed": 0,
+    "skipped": 0,
+    "files": 3
+  },
+  "source": {
+    "before": {
+      "sourceHashes": {
+        "packages/agent-mcp/src/gate-bypass.ts": "f7ae2cee0f18ef6a16627ae77c2f88c19d1672df2e2b06c27b627f4b12340992",
+        "packages/agent-mcp/src/gate-bypass.test.ts": "f3ee75dd45f0f4577dd8a5a4fa43c6df1bdae63273acc327f5e38a3d525472dc",
+        "packages/operator-core/lib/auth-config-overrides.ts": "7ac689c052a6a0ccddc1f729462539a89a143b4170d1cb274eae000c8488ab0b",
+        "packages/operator-core/lib/auth-config-overrides.test.ts": "3c8f4f332ba3875093fc63d3a10bec0a13e445c79f8b96c8ef668551523b800d",
+        "packages/operator-core/lib/capability-envelope/policy.ts": "91931f3bf35f66a022b7cbee64cb62c7e74e883c7991144cbf777b8cefa69ca0",
+        "packages/operator-core/lib/capability-envelope/policy.test.ts": "87fc59c37cf8cb12fd23867547de1d411e59c079bae543c71301a85147d13de0"
+      },
+      "head": "9d49c12b4e976ee6e84fc70bd7498a77ef540d2b",
+      "dirty": ""
+    },
+    "after": {
+      "sourceHashes": {
+        "packages/agent-mcp/src/gate-bypass.ts": "f7ae2cee0f18ef6a16627ae77c2f88c19d1672df2e2b06c27b627f4b12340992",
+        "packages/agent-mcp/src/gate-bypass.test.ts": "f3ee75dd45f0f4577dd8a5a4fa43c6df1bdae63273acc327f5e38a3d525472dc",
+        "packages/operator-core/lib/auth-config-overrides.ts": "7ac689c052a6a0ccddc1f729462539a89a143b4170d1cb274eae000c8488ab0b",
+        "packages/operator-core/lib/auth-config-overrides.test.ts": "3c8f4f332ba3875093fc63d3a10bec0a13e445c79f8b96c8ef668551523b800d",
+        "packages/operator-core/lib/capability-envelope/policy.ts": "91931f3bf35f66a022b7cbee64cb62c7e74e883c7991144cbf777b8cefa69ca0",
+        "packages/operator-core/lib/capability-envelope/policy.test.ts": "87fc59c37cf8cb12fd23867547de1d411e59c079bae543c71301a85147d13de0"
+      },
+      "head": "3c1f46d5591693f8640ab1b34d3109759eaefc14"
+    },
+    "namedSixHashesUnchanged": true,
+    "importGraphSnapshotRetained": false,
+    "qualification": "HEAD moved during execution. The runner marked result provenance UNKNOWN. Named six source/test hashes match before/after; this does not freeze imported dependencies or prove a single executed commit."
+  },
+  "observations": [
+    {
+      "channel": "auth tier -> gateBypass",
+      "testRunId": "21851844",
+      "observed": "Four existing cases pass: isSuperuser=true input flags map to role/capability/quota bypass; paired power-user maps to role/capability bypass with quota enforced; neither and power-user-only do not acquire those bypasses.",
+      "boundary": "Pure function arguments in a unit process; no authenticated live superuser/power-user request or actual resource argument was exercised."
+    },
+    {
+      "channel": "testing-role envelope and environment kill-switch",
+      "testRunId": "21851848",
+      "observed": "The existing suite passes both the testing-role skip of per-role deny/allow checks and preservation of protected capability checks for the tested fleet roles; setting PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off restores the tested per-role denial. Explicit superuser/power-user callers are separately exempted before fleet-envelope checks.",
+      "boundary": "Pure evaluator fixture cases. This does not authorize arbitrary tools or prove each handler's resource/argument gates, fleet positions, or native mode delivery."
+    },
+    {
+      "channel": "host resolver, runtime flags and persisted override shape",
+      "testRunId": "21851849",
+      "observed": "Nine existing cases pass for flag-off fallthrough, the testing-full-access kill-switch, replacement role membership, narrow-only safe-tool removal, sandbox additions and setter/refresh round trips.",
+      "boundary": "PG state and flag IO are mocked; setTestingFullAccessResolver is captured at the mock seam. No live auth/config values were changed."
+    }
+  ],
+  "sourceReadOnlyFollowups": [
+    {
+      "channel": "?superuser=1",
+      "source": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1707",
+      "read": "The current request builder checks loopback and a valid superuser bearer before constructing the superuser context.",
+      "observationStatus": "SOURCE READ ONLY; no new HTTP admission probe."
+    },
+    {
+      "channel": "scoped cross-workspace tools",
+      "source": "packages/operator-core/lib/endpoint-route/routes/transport/scoped-superuser-transport-boundary.ts:87",
+      "read": "The current shared boundary combines scoped workspace, crossWorkspace tool metadata and the runtime clamp flag; reviewed safe-tool exceptions are subtractable through authSafeToolsRemoveSet.",
+      "observationStatus": "SOURCE READ ONLY; no complete per-tool argument census."
+    }
+  ],
+  "limits": [
+    "All three rows are non-scratch and workspace-scoped but harness_slug is null and worktree_dirty is true; do not bind them as a clean harness acceptance cohort.",
+    "The parent runner reported a committed-source substitution for release/operator-artifact.ts; the final footer reported childSubstituted=0. These are different scopes and do not establish a clean import graph.",
+    "The transient /tmp/pcv report path was unavailable at the subsequent read; this document relies on native tool results plus the exact test-run ledger ids.",
+    "The legal stack population, full-access launch-env/query/principal-kind census, effective argument scopes and four historical vault observations remain open. These fixture cases close none of those acceptance clauses.",
+    "No repeated suite or settled ACK work was run. Original baseline, matrix and population supplement stay unchanged."
+  ]
+}

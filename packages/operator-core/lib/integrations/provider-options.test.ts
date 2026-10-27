@@ -132,6 +132,31 @@ describe('listProviderOptions', () => {
     ]);
   });
 
+  it('offers create destinations only from providers that can create tickets', async () => {
+    const readOnly = vi.fn(async () => ({ options: [{ value: 'P1', label: 'Read only' }] }));
+    const writable = vi.fn(async () => ({ options: [{ value: 'P1', label: 'Writable' }] }));
+    const d = deps([
+      provider('fixture-reader', ['ticket.containers'], readOnly),
+      provider('fixture-writer', ['ticket.containers', 'ticket.create'], writable),
+    ], [source('reader', 'fixture-reader'), source('writer', 'fixture-writer')]);
+
+    const listed = await listProviderOptions(sql, {
+      ...SCOPE, capability: 'ticket.containers', args: { purpose: 'create' },
+    }, d);
+    expect(listed.groups.map(group => group.sourceId)).toEqual(['writer']);
+    expect(readOnly).not.toHaveBeenCalled();
+    expect(writable).toHaveBeenCalledOnce();
+
+    await expect(listProviderOptions(sql, {
+      ...SCOPE, capability: 'ticket.containers', args: { purpose: 'create' }, sourceId: 'reader',
+    }, d)).rejects.toMatchObject({ code: 'provider_capability_unsupported', status: 409 });
+
+    // Read pickers retain containers from both providers.
+    const readable = await listProviderOptions(sql, { ...SCOPE, capability: 'ticket.containers' }, d);
+    expect(readable.groups.map(group => group.sourceId)).toEqual(['reader', 'writer']);
+    expect(readOnly).toHaveBeenCalledOnce();
+  });
+
   it('answers an empty list when no connected provider declares the capability', async () => {
     const d = deps([provider('fixture-mail', ['mail.folders'], vi.fn())], [source('77777777-7777-4777-8777-777777777777', 'fixture-mail')]);
     expect(await listProviderOptions(sql, { ...SCOPE, capability: 'chat.channels' }, d)).toEqual({ capability: 'chat.channels', groups: [] });

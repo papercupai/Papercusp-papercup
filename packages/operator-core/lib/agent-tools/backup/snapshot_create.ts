@@ -68,7 +68,11 @@ export default defineTool({
     const context = note ? { note } : undefined;
     if (args.resumeSnapshotId !== undefined) {
       const receipt = await workspaceBackupFor(ws).reconcileSnapshotReceipt(args.resumeSnapshotId);
-      if (!args.resumeProducer || !receipt.stillRunning) {
+      // An explicitly resumed terminal failure must reach snapshot(), which
+      // revalidates and reopens only receipts proven recoverable under the
+      // cross-process producer lock. Successful/protected terminal receipts
+      // remain read-only at this layer.
+      if (!args.resumeProducer || (!receipt.stillRunning && receipt.status !== 'failed')) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
       }
     }

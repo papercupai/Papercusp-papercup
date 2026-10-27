@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { buildSync } from 'esbuild';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -192,6 +193,54 @@ describe('findIdentityLeakError', () => {
     // a green-checkpoint leg. The runtime string is byte-identical either way.
     await expect(findIdentityLeakError('x.txt', '', REPO_ROOT)).resolves.toBeNull();
     await expect(findIdentityLeakError('x.bin', '\x00\xff/home/', REPO_ROOT)).resolves.toBeNull();
+  });
+});
+
+describe('published native consultation evidence', () => {
+  const prefix = 'docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-';
+  const records = [
+    { file: prefix + 'actors-2026-10-23.json', locators: 3,
+      sourceSha256: 'b00e369e8d0b8fd90bd00313057f313edae60e318b52295305f6e0a224eed192' },
+    { file: prefix + 'current-2026-10-23.json', locators: 4,
+      sourceSha256: '4e126c50d1d2d7b122ec68ea8b50aedeaebda2250a94e5b6977728c9625e48b9' },
+  ];
+
+  it.each(records)('keeps $file safe for distribution', async ({ file }) => {
+    const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+    await expect(findIdentityLeakError(file, text, REPO_ROOT)).resolves.toBeNull();
+    expect(JSON.parse(serializeIdentitySafeJson(JSON.parse(text)))).toEqual(JSON.parse(text));
+  });
+
+  it.each(records)('marks $file locators as display references and pins their originals', ({ file, locators, sourceSha256 }) => {
+    const record = JSON.parse(readFileSync(join(REPO_ROOT, file), 'utf8'));
+    expect(record.publication).toMatchObject({
+      serializer: 'scripts/lib/identity-leak-patterns.mjs --serialize-json',
+      locatorValues: 'redacted-display-only',
+      sourceDocumentSha256: sourceSha256,
+    });
+    const originalLocators = Object.entries(record.publication.originalLocatorSha256);
+    expect(originalLocators).toHaveLength(locators);
+    for (const [pointer, digest] of originalLocators) {
+      expect(digest).toMatch(/^[a-f0-9]{64}$/);
+      const value = pointer.split('/').slice(1).reduce((node, key) =>
+        node[key.replace(/~1/g, '/').replace(/~0/g, '~')], record);
+      expect(typeof value).toBe('string');
+      expect(value).toContain('builduser');
+    }
+  });
+
+  it('binds the published actor supplement and preserves native source-byte witnesses', () => {
+    const actorsRaw = readFileSync(join(REPO_ROOT, records[0].file), 'utf8');
+    const actors = JSON.parse(actorsRaw);
+    const current = JSON.parse(readFileSync(join(REPO_ROOT, records[1].file), 'utf8'));
+    expect(current.relatedEvidence.nativeActorSupplement).toMatchObject({
+      path: records[0].file,
+      sha256: createHash('sha256').update(actorsRaw).digest('hex'),
+    });
+    expect(actors.nativeSnapshots.source44024.capturedSha256).toBe(
+      '88b01275741bcb0bc91206996572f63e6f693e240ef878bbd751b9866664ce0f',
+    );
+    expect(actors.nativeSnapshots.source44024.capturedCompleteBytes).toBe(4189328);
   });
 });
 

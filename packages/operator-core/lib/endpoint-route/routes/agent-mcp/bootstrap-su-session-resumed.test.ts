@@ -16,7 +16,7 @@ vi.setConfig({ testTimeout: 15_000 });
 
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 beforeAll(async () => {
-  const mod = await import('./bootstrap-su');
+  const mod = await import('./bootstrap-su-resume');
   routes = mod.default as unknown as typeof routes;
 }, 60_000);
 
@@ -44,9 +44,13 @@ const armInboxWakeMock = vi.hoisted(() =>
     minSleepSec: 60,
   })),
 );
+const principalMock = vi.hoisted(() => vi.fn(async () => ({ slug: 'system:superuser', kind: 'system',
+  trust: 'trusted', authMethod: 'bearer-token' })));
+const assumeInspectMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ ok: true, state: 'handoff-accepted' })));
+vi.mock('../../../session-assume-runtime', () => ({ inspectManagedAssumeRequest: assumeInspectMock }));
 
 vi.mock('../../../auth/require-principal', () => ({
-  requirePrincipal: vi.fn(async () => {}),
+  requirePrincipal: principalMock,
   PrincipalCheckError: class PrincipalCheckError extends Error {
     status = 401;
     reason = 'denied';
@@ -72,6 +76,8 @@ vi.mock('../../../agent-tools/coordination/presence', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  principalMock.mockResolvedValue({ slug: 'system:superuser', kind: 'system', trust: 'trusted', authMethod: 'bearer-token' });
+  assumeInspectMock.mockResolvedValue({ ok: true, state: 'handoff-accepted' });
   claimResumeMock.mockResolvedValue(true);
   acquireResumeMock.mockResolvedValue({
     status: 'acquired',
@@ -115,6 +121,27 @@ async function postTransition(
 }
 
 describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
+  it.each(['thaw', 'complete-return'])('routes managed %s without acquiring or reactivating a session', async action => {
+    const request = { transitionKey: 'opaque-fixture-reference' };
+    const afterExit = action === 'complete-return';
+    const res = await postResumed({ assumeHost: { request, afterExit, action } });
+    expect(res.status).toBe(200);
+    expect(assumeInspectMock).toHaveBeenCalledWith(request, afterExit, action);
+    expect(acquireResumeMock).not.toHaveBeenCalled();
+    expect(claimResumeMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an ordinary authenticated principal and failed custody inspection', async () => {
+    principalMock.mockResolvedValue({ slug: 'system:app', kind: 'system', trust: 'trusted', authMethod: 'bearer-token' });
+    expect((await postResumed({ assumeHost: { request: {}, afterExit: true } })).status).toBe(403);
+    expect(assumeInspectMock).not.toHaveBeenCalled();
+    principalMock.mockResolvedValue({ slug: 'system:superuser', kind: 'system', trust: 'trusted', authMethod: 'bearer-token' });
+    assumeInspectMock.mockRejectedValueOnce(new Error('private custody detail'));
+    const res = await postResumed({ assumeHost: { request: {}, afterExit: true } });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ ok: false, reason: 'assume-custody-unverified' });
+    expect(acquireResumeMock).not.toHaveBeenCalled();
+  });
   it('preserves retirement refusals for keyed and legacy callers without rearming wakes', async () => {
     acquireResumeMock.mockResolvedValue({ status: 'retired', acquired: false });
     claimResumeMock.mockResolvedValue('retired');

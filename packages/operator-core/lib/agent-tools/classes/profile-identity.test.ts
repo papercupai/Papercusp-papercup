@@ -132,3 +132,73 @@ describe('classes embedding profile identity', () => {
     );
   });
 });
+
+describe('classes:define caller cancellation', () => {
+  const withSignal = (signal: AbortSignal) => Object.assign({}, CTX, { signal }) as never;
+
+  it('does not acquire an embedder or write for an already-cancelled caller', async () => {
+    const controller = new AbortController();
+    const reason = new Error('caller cancelled');
+    controller.abort(reason);
+    M.buildQueryEmbedderResolved.mockResolvedValue(null);
+
+    await expect(defineTool.handler(DEFINE_ARGS, withSignal(controller.signal))).rejects.toBe(reason);
+
+    expect(M.buildQueryEmbedderResolved).not.toHaveBeenCalled();
+    expect(M.defineCapabilityClass).not.toHaveBeenCalled();
+  });
+
+  it('does not write when cancellation arrives during embedder acquisition', async () => {
+    const controller = new AbortController();
+    const reason = new Error('cancelled while acquiring');
+    let release!: (value: null) => void;
+    M.buildQueryEmbedderResolved.mockReturnValue(new Promise<null>((resolve) => { release = resolve; }));
+
+    const running = defineTool.handler(DEFINE_ARGS, withSignal(controller.signal));
+    controller.abort(reason);
+    release(null);
+
+    await expect(running).rejects.toBe(reason);
+    expect(M.defineCapabilityClass).not.toHaveBeenCalled();
+  });
+
+  it.each(['resolved', 'rejected'] as const)(
+    'does not write after cancellation when the embedding promise %s',
+    async (outcome) => {
+      const controller = new AbortController();
+      const reason = new Error('cancelled during embedding');
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      let settle!: () => void;
+      const embed = vi.fn((_text: string, _signal?: AbortSignal) => new Promise<number[]>((resolve, reject) => {
+        settle = () => outcome === 'resolved' ? resolve([0.2]) : reject(reason);
+        entered();
+      }));
+      M.buildQueryEmbedderResolved.mockResolvedValue({
+        mode: 'gemma', dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed,
+      });
+
+      const running = defineTool.handler(DEFINE_ARGS, withSignal(controller.signal));
+      await started;
+      controller.abort(reason);
+      settle();
+
+      await expect(running).rejects.toBe(reason);
+      expect(embed).toHaveBeenCalledWith('CRM email\nSend customer email.', controller.signal);
+      expect(M.defineCapabilityClass).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still defines the class without a vector after an ordinary embedding failure', async () => {
+    const embed = vi.fn().mockRejectedValue(new Error('embedding unavailable'));
+    M.buildQueryEmbedderResolved.mockResolvedValue({
+      mode: 'gemma', dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed,
+    });
+
+    await defineTool.handler(DEFINE_ARGS, CTX);
+
+    expect(M.defineCapabilityClass).toHaveBeenCalledWith(
+      'sql-handle', expect.objectContaining({ embedding: null, embeddingProfile: null }),
+    );
+  });
+});

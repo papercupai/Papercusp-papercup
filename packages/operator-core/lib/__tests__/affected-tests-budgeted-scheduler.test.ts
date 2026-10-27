@@ -1,12 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { readTaskCgroupMemoryScope } from '../../../../scripts/lib/task-cgroup-limits.mjs';
 import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
@@ -14,6 +16,7 @@ import {
   admissionMutexName,
   classifyAffectedBlastRadius,
   createCgroupMemoryObserver,
+  createNativeArtifactPersister,
   durationEstimate,
   emptyDurationHistory,
   estimateBudgetedTaskWallMs,
@@ -23,6 +26,7 @@ import {
   formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
+  isSharedAdmissionDeferral,
   isSharedAdmissionTimeout,
   mergeDurationHistory,
   pidsEventRefusalDelta,
@@ -39,18 +43,22 @@ import {
   resolveMemoryBudgetMb,
   resolveTaskBudget,
   resolveWorkerMemoryMb,
+  retainReporterEvaluatorArtifacts,
+  retainNativeProofPacket,
+  verifyNativeProofPacket,
   runBudgetedTaskShards,
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
   writeBudgetedTaskNativeExecutionReceipt,
+  syncBudgetedTaskNativeExecutionReceipt,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS policy module, no declaration file.
 import { resolveTaskTimeoutMs } from '../../../../scripts/lib/batch-watchdog.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — plain-Node entrypoint, consumed directly by scripts/*.mjs.
-import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
+import { withFsMutex, withFsMutexBudget } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
@@ -58,6 +66,325 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('private native proof custody (P002)', () => {
+  const roots: string[] = [];
+  afterAll(() => roots.forEach(root => rmSync(root, { recursive: true, force: true })));
+  function fixture(attempts: Array<'primary' | 'detail'> = ['primary']) {
+    const root = mkdtempSync(join(tmpdir(), 'native-custody-'));
+    roots.push(root);
+    const producer = join(root, 'producer');
+    mkdirSync(producer);
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: basename(root) };
+    const expected = attempts.map((attempt, index) => {
+      const out = join(producer, `out-${index}.json`);
+      for (const suffix of ['.modules', '.native-processes', '.processes']) mkdirSync(out + suffix);
+      const code = Buffer.from('export const exact = "é\\u0000";\n');
+      const sha256 = createHash('sha256').update(code).digest('hex');
+      const codeRef = join(out + '.modules', `${sha256}.js`);
+      writeFileSync(codeRef, code);
+      const pin = { codeRef, sha256, byteLength: code.length };
+      const moduleEvaluations = { schemaVersion: 'vitest-evaluator-inputs-v1',
+        scope: 'vitest-inlined-evaluator-inputs', basis: 'before-evaluator-call', entries: [pin, pin], vmInputs: [pin] };
+      writeFileSync(out, JSON.stringify({ rows: [{ moduleEvaluations }], diagnostics: [{ moduleEvaluations }],
+        nativeRun: { state: 'partial', reason: 'fixture-diagnostic', files: [{ proof: { inputs: { moduleEvaluations } } }] } }));
+      for (const suffix of ['source', 'stream', 'json']) {
+        const bytes = Buffer.from(suffix === 'json' ? '{"kind":"observation"}' : `raw-${suffix}\u0000\xff`);
+        const digest = createHash('sha256').update(bytes).digest('hex');
+        writeFileSync(join(out + '.native-processes', `${digest}.${suffix}`), bytes);
+      }
+      writeFileSync(join(out + '.processes', 'process.closed'), '{"state":"closed"}');
+      const auxiliary = ['command-exit', 'stdout', 'stderr', 'report', 'cleanup'].map(role => {
+        const path = join(producer, `${index}.${role}`);
+        writeFileSync(path, Buffer.from(`exact-${role}\u0000\xff`));
+        return { role, path, state: 'produced' as const };
+      });
+      return { id: `group-${index}`, attempt, selected: [join(producer, `test-${index}.ts`)],
+        runner: 'vitest' as const, armed: true, out, auxiliary };
+    });
+    const observations = expected.map(group => ({ id: group.id, out: group.out, captureComplete: true }));
+    const directory = join(root, 'packet');
+    const contract = { identity, expected };
+    const save = () => retainNativeProofPacket(directory, { ...contract, observations,
+      execution: { state: 'failed' }, cleanup: { complete: false } });
+    return { root, producer, directory, contract, observations, save };
+  }
+
+  function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract) {
+    expect(fs.existsSync(f.producer)).toBe(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'import { readFileSync, statSync } from "node:fs"; import { join } from "node:path";' +
+      'const [directory,locator,contract]=JSON.parse(process.argv[1]);' +
+      'try { const r=verifyNativeProofPacket(directory,locator,contract);' +
+      'const entries=r.manifest.groups.flatMap(g=>[...g.families.flatMap(f=>f.entries),...g.auxiliary.filter(a=>a.artifact)]);' +
+      'process.stdout.write(JSON.stringify({refused:false,pid:process.pid,status:r.status,manifest:r.manifest,' +
+      'objects:entries.map(e=>({original:e.original??e.path,pin:e.artifact,mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
+      'bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")}))})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
+      JSON.stringify([f.directory, locator, contract])], { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status })
+      .toEqual({ error: undefined, stderr: '', status: 0 });
+    const result = JSON.parse(child.stdout);
+    expect(result.pid).not.toBe(process.pid);
+    return result;
+  }
+
+  it('P003 reconciles independent raw-byte pins and private modes for two primaries and a detail after retirement', () => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    const originals = f.contract.expected.flatMap(group => [group.out,
+      ...['.modules', '.native-processes', '.processes'].flatMap(suffix =>
+        readdirSync(group.out + suffix).map(name => join(group.out + suffix, name))),
+      ...group.auxiliary.map(entry => entry.path)]).map(original => {
+      const bytes = readFileSync(original);
+      return { original, bytes: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex'), length: bytes.length };
+    });
+    const saved = f.save();
+    expect(saved.status).toBe('complete');
+    expect(fs.statSync(f.directory).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(join(f.directory, 'objects')).mode & 0o777).toBe(0o700);
+    rmSync(f.producer, { recursive: true });
+    const result = consumeRetained(f, saved.locator);
+    expect(result.status).toBe('complete');
+    expect(result.objects).toHaveLength(originals.length);
+    for (const expected of originals) expect(result.objects.find((entry: { original: string }) => entry.original === expected.original))
+      .toMatchObject({ bytes: expected.bytes, pin: { sha256: expected.sha256, byteLength: expected.length }, mode: 0o600 });
+    expect(result.manifest.groups.map((group: { references: unknown[] }) => group.references.length)).toEqual([9, 9, 9]);
+    expect(result.manifest.verdicts).toMatchObject({ execution: { state: 'failed' }, cleanup: { complete: false },
+      producerRetirement: 'not-performed', protocol: 'unqualified', nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  });
+
+  it.each(['group', 'attempt', 'family', 'occurrence', 'auxiliary', 'workspace', 'harness', 'run',
+    'population', 'bytes', 'length', 'escape', 'object-mode', 'native-object', 'process-object'])
+  ('P003 refuses retained-only %s loss or corruption after producer retirement', mutation => {
+    const f = fixture(['primary', 'primary', 'detail']), saved = f.save();
+    const manifest = structuredClone(saved.manifest), contract = structuredClone(f.contract);
+    const detail = manifest.groups[2];
+    if (mutation === 'group') manifest.groups.pop();
+    if (mutation === 'attempt') detail.attempt = 'primary';
+    if (mutation === 'family') detail.families.pop();
+    if (mutation === 'occurrence') detail.references.pop();
+    if (mutation === 'auxiliary') detail.auxiliary.pop();
+    if (mutation === 'workspace') contract.identity.workspace = 'foreign';
+    if (mutation === 'harness') contract.identity.harness = 'foreign';
+    if (mutation === 'run') contract.identity.runId = 'foreign';
+    if (mutation === 'population') contract.expected.pop();
+    const entry = detail.families[1].entries[0];
+    if (mutation === 'bytes') writeFileSync(join(f.directory, 'objects', entry.artifact.ref), Buffer.from('corrupt'));
+    if (mutation === 'length') entry.artifact.byteLength++;
+    if (mutation === 'escape') entry.artifact.ref = '../' + entry.artifact.ref;
+    if (mutation === 'object-mode') chmodSync(join(f.directory, 'objects', entry.artifact.ref), 0o644);
+    if (mutation === 'native-object') detail.families.find(family => family.family === 'C')!.entries.pop();
+    if (mutation === 'process-object') detail.families.find(family => family.family === 'D')!.entries.pop();
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    rmSync(f.producer, { recursive: true });
+    expect(consumeRetained(f, { ...saved.locator, manifest: pin }, contract)).toMatchObject({ refused: true });
+  });
+
+  it.each(['pending', 'missing-out', 'truncated-stream'])('P003 keeps %s custody partial independently of terminal execution and cleanup', fault => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    if (fault === 'pending') writeFileSync(join(f.contract.expected[2].out + '.processes', 'worker.pending'), 'pending');
+    if (fault === 'missing-out') rmSync(f.contract.expected[2].out);
+    if (fault === 'truncated-stream') f.observations[2].captureComplete = false;
+    const saved = retainNativeProofPacket(f.directory, { ...f.contract, observations: f.observations,
+      execution: { state: 'closed', exitCode: 0 }, cleanup: { complete: true } });
+    expect(saved.status).toBe('partial');
+    rmSync(f.producer, { recursive: true });
+    const result = consumeRetained(f, saved.locator);
+    expect(result).toMatchObject({ refused: false, status: 'partial', manifest: { verdicts: {
+      custody: 'partial', execution: { state: 'closed', exitCode: 0 }, cleanup: { complete: true },
+      protocol: 'unqualified', nativeProof: 'unqualified', acceptance: 'unmeasured' } } });
+    expect(result.manifest.gaps.length).toBeGreaterThan(0);
+  });
+
+  it('reads every primary/detail family and duplicate occurrence in a fresh process after producer removal', () => {
+    const f = fixture(['primary', 'primary', 'detail']);
+    const first = f.save(), again = f.save();
+    expect(first.status).toBe('complete');
+    expect(again.locator).toEqual(first.locator);
+    expect(first.manifest.groups.map(group => group.references.length)).toEqual([9, 9, 9]);
+    const original = first.manifest.groups.map(group => group.families.map(family => family.entries.map(entry => ({
+      bytes: readFileSync(entry.original).toString('base64'), artifact: entry.artifact,
+    }))));
+    rmSync(f.producer, { recursive: true });
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({status:r.status,verdicts:r.manifest.verdicts,groups:r.manifest.groups.length}));',
+      JSON.stringify([f.directory, first.locator, f.contract])], { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status }).toEqual({ error: undefined, stderr: '', status: 0 });
+    expect(JSON.parse(child.stdout)).toMatchObject({ status: 'complete', groups: 3, verdicts: {
+      execution: { state: 'failed' }, cleanup: { complete: false }, nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+    for (const groups of original) for (const entries of groups) for (const entry of entries)
+      expect(readFileSync(join(f.directory, 'objects', entry.artifact.ref)).toString('base64')).toBe(entry.bytes);
+  });
+
+  it('retains and verifies explicit partial custody at the content budget without charging metadata twice', () => {
+    const f = fixture();
+    const group = f.contract.expected[0];
+    const payload = JSON.parse(readFileSync(group.out, 'utf8'));
+    payload.padding = 'x'.repeat(1024 * 1024);
+    writeFileSync(group.out, JSON.stringify(payload));
+    // Four legal objects almost fill the 64MiB capture budget. The next
+    // auxiliary object exceeds it; the retained content must remain readable
+    // as partial even when its manifest or a second reporter read would not fit.
+    for (const spec of group.auxiliary.slice(0, 4)) writeFileSync(spec.path, Buffer.alloc(15 * 1024 * 1024));
+    const saved = f.save();
+    const remaining = 64 * 1024 * 1024 - saved.manifest.bytesRead - 2;
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining));
+    const full = f.save();
+    expect(full.status).toBe('complete');
+    expect(verifyNativeProofPacket(f.directory, full.locator, f.contract).status).toBe('complete');
+    writeFileSync(group.auxiliary[4].path, Buffer.alloc(remaining + 1024));
+    const partial = f.save();
+    expect(partial.status).toBe('partial');
+    expect(partial.manifest.gaps).toContain('group-0:cleanup:custody limit');
+    expect(verifyNativeProofPacket(f.directory, partial.locator, f.contract)).toMatchObject({
+      status: 'partial', verified: true, manifest: { verdicts: { nativeProof: 'unqualified', acceptance: 'unmeasured' } },
+    });
+  });
+
+  it('keeps a retained reporter with an unsupported reference population explicitly partial', () => {
+    const f = fixture(), group = f.contract.expected[0];
+    const payload = JSON.parse(readFileSync(group.out, 'utf8'));
+    payload.rows = Array.from({ length: 4097 }, () => ({}));
+    writeFileSync(group.out, JSON.stringify(payload));
+    const saved = f.save();
+    expect(saved.status).toBe('partial');
+    expect(saved.manifest.gaps).toContain('group-0:A:custody observation population');
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+  });
+
+  it.each(['group', 'A', 'B', 'C', 'D', 'auxiliary', 'pending', 'truncated-stream'])('keeps %s absence/pending explicit and refuses complete custody', omission => {
+    const f = fixture(['primary', 'detail']);
+    const group = f.contract.expected[1];
+    if (omission === 'group') f.observations.pop();
+    else if (omission === 'truncated-stream') f.observations[1].captureComplete = false;
+    else if (omission === 'auxiliary') rmSync(group.auxiliary[0].path);
+    else if (omission === 'pending') writeFileSync(join(group.out + '.processes', 'process.pending'), 'pending');
+    else rmSync(group.out + (({ A: '', B: '.modules', C: '.native-processes', D: '.processes' } as Record<string, string>)[omission] ?? ''), { recursive: true });
+    const saved = f.save();
+    expect(saved.status).toBe('partial');
+    expect(saved.manifest.groups).toHaveLength(2);
+    expect(saved.manifest.gaps.length).toBeGreaterThan(0);
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+    expect(saved.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  });
+
+  it.each(['bytes', 'workspace', 'harness', 'run', 'population', 'root-mode', 'object-mode', 'leaf-symlink', 'ancestor-symlink'])('rejects %s corruption or private-boundary violations', mutation => {
+    const f = fixture();
+    const saved = f.save();
+    let directory = f.directory;
+    const contract = structuredClone(f.contract);
+    const pin = saved.manifest.groups[0].families[0].entries[0].artifact;
+    const object = join(f.directory, 'objects', pin.ref);
+    if (mutation === 'bytes') { const bytes = readFileSync(object); bytes[0] ^= 1; writeFileSync(object, bytes); }
+    if (mutation === 'workspace') contract.identity.workspace = 'foreign';
+    if (mutation === 'harness') contract.identity.harness = 'foreign';
+    if (mutation === 'run') contract.identity.runId = 'foreign';
+    if (mutation === 'population') contract.expected.push({ ...contract.expected[0], id: 'omitted' });
+    if (mutation === 'root-mode') chmodSync(directory, 0o755);
+    if (mutation === 'object-mode') chmodSync(object, 0o644);
+    if (mutation === 'leaf-symlink') { rmSync(object); symlinkSync(join(f.producer, 'out-0.json'), object); }
+    if (mutation === 'ancestor-symlink') { const alias = join(f.root, 'alias'); symlinkSync(f.directory, alias); directory = alias; }
+    expect(() => verifyNativeProofPacket(directory, saved.locator, contract)).toThrow();
+  });
+
+  it.each(['family', 'occurrence', 'auxiliary', 'verdict'])('rejects a self-consistent manifest omitting %s from the independent contract', mutation => {
+    const f = fixture(), saved = f.save();
+    const manifest = structuredClone(saved.manifest);
+    if (mutation === 'family') manifest.groups[0].families.pop();
+    if (mutation === 'occurrence') manifest.groups[0].references.pop();
+    if (mutation === 'auxiliary') manifest.groups[0].auxiliary.pop();
+    // @ts-expect-error Deliberately forge an invalid native-proof qualification.
+    if (mutation === 'verdict') manifest.verdicts.nativeProof = 'qualified';
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects')).persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin }, f.contract)).toThrow();
+  });
+
+  it('refuses a resealed detail manifest missing its produced OUT declaration in a fresh retained-only consumer (P003)', () => {
+    const f = fixture(['primary', 'primary', 'detail']), saved = f.save();
+    const manifest = structuredClone(saved.manifest);
+    const detail = manifest.groups[2];
+    detail.families.find(family => family.family === 'A')!.entries = [];
+    detail.references = [];
+    const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    rmSync(f.producer, { recursive: true });
+    expect(fs.existsSync(f.producer)).toBe(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'try { const r=verifyNativeProofPacket(...JSON.parse(process.argv[1]));' +
+      'process.stdout.write(JSON.stringify({refused:false,status:r.status,pid:process.pid})); }' +
+      'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
+      JSON.stringify([f.directory, { ...saved.locator, manifest: pin }, f.contract])],
+    { encoding: 'utf8', timeout: 15_000 });
+    expect({ error: child.error, stderr: child.stderr, status: child.status })
+      .toEqual({ error: undefined, stderr: '', status: 0 });
+    const result = JSON.parse(child.stdout);
+    expect(result.pid).not.toBe(process.pid);
+    expect(result).toMatchObject({ refused: true });
+  });
+});
+
+// Read failure evidence before the fixture's finally block removes its trace.
+// An absent entry is unknown startup progress, not proof the child never ran.
+function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: string, phase: string) {
+  if (!child.error) return;
+  const events: { pid?: number; event?: string; atMs?: number; loadId?: number; url?: string }[] = [];
+  let traceReadError: string | null = null;
+  let traceFiles = 0;
+  try {
+    const names = readdirSync(`${out}.native-processes`).filter(name => /^[a-f0-9]{64}\.json$/.test(name));
+    traceFiles = names.length;
+    const buffer = Buffer.alloc(128 * 1024 + 1);
+    for (const name of names.slice(0, 2048)) {
+      const fd = openSync(join(`${out}.native-processes`, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let length = 0;
+      try {
+        if (!fstatSync(fd).isFile()) continue;
+        while (length < buffer.length) {
+          const count = readSync(fd, buffer, length, buffer.length - length, null);
+          if (!count) break;
+          length += count;
+        }
+      } finally { closeSync(fd); }
+      if (length > 128 * 1024) continue;
+      const bytes = buffer.subarray(0, length);
+      if (createHash('sha256').update(bytes).digest('hex') !== name.slice(0, 64)) continue;
+      const row = JSON.parse(bytes.toString('utf8'));
+      if (row.kind === 'native-node-process-event') events.push(row);
+    }
+  } catch (error) { traceReadError = error instanceof Error ? error.name : 'unknown'; }
+  events.sort((a, b) => (a.atMs ?? 0) - (b.atMs ?? 0));
+  const terminalLoads = new Set(events.filter(row => row.event === 'module-load-return' || row.event === 'module-load-error')
+    .map(row => `${row.pid}:${row.loadId}`));
+  const tail = (value: Buffer | string | null) => {
+    const bytes = Buffer.from(value ?? '');
+    return { byteLength: bytes.length, tailBase64: bytes.subarray(-2048).toString('base64') };
+  };
+  const diagnostic = {
+    phase, pid: child.pid, code: (child.error as NodeJS.ErrnoException).code ?? null,
+    status: child.status, signal: child.signal,
+    traceStatus: events.length ? 'observed' : 'unknown', traceFiles, traceReadError,
+    traceTruncated: traceFiles > 2048, eventCount: events.length,
+    rootProcess: {
+      entryObserved: events.some(row => row.pid === child.pid && row.event === 'node-entry'),
+      exitStartedObserved: events.some(row => row.pid === child.pid && row.event === 'node-exit-start'),
+      exitCompletedObserved: events.some(row => row.pid === child.pid && row.event === 'node-exit'),
+      loadTraceLimited: events.some(row => row.pid === child.pid &&
+        (row.event === 'module-load-limit' || row.event === 'trace-limit')),
+      lastEvent: events.filter(row => row.pid === child.pid).at(-1)?.event ?? null,
+    },
+    lastEvents: events.slice(-8).map(({ pid, event, atMs }) => ({ pid, event, atMs })),
+    pendingLoads: events.filter(row => row.event === 'module-load-start' && !terminalLoads.has(`${row.pid}:${row.loadId}`))
+      .slice(-8).map(({ pid, loadId, url }) => ({ pid, loadId, url: url?.slice(-512) })),
+    stdout: tail(child.stdout), stderr: tail(child.stderr),
+  };
+  child.error.message += `\nNATIVE_FIXTURE_FAILURE ${JSON.stringify(diagnostic)}`;
+  throw child.error;
+}
 
 describe('native npm lifecycle diagnostics', () => {
   function observe(root: string, fail: string | null = null, shell = '/bin/sh') {
@@ -78,7 +405,7 @@ describe('native npm lifecycle diagnostics', () => {
     const child = spawnSync(command[0]!, command.slice(1), { cwd: root, timeout: 20_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         npm_config_script_shell: shell, PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, `npm-lifecycle:${fail ?? 'success'}`);
     return { task: 'native-npm-protocol-fixture', attempt: 'initial', cwd: root, command,
       originalCommand: scripts.test, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
       signal: child.signal, error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
@@ -188,6 +515,35 @@ describe('native npm lifecycle diagnostics', () => {
 });
 
 describe('native affected-task parent receipt transport', () => {
+  it('retains bounded native timeout diagnostics after fixture cleanup', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-process-timeout-'));
+    let failure: Error | undefined;
+    let observed: ReturnType<typeof spawnSync> | undefined;
+    try {
+      const out = join(root, 'source-map.json');
+      // A real blocked child, with the production preload and inherited loader.
+      // Startup may itself exceed the ceiling; its progress then stays unknown.
+      observed = spawnSync(process.execPath, ['-e',
+        "process.stdout.write('fixture-ready'); process.stderr.write('fixture-stderr'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);"], {
+        cwd: REPO_ROOT, timeout: 2000,
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }),
+      });
+      try { assertNativeFixtureCompleted(observed, out, 'forced-timeout'); }
+      catch (error) { failure = error as Error; }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+    expect(failure).toBe(observed!.error);
+    const diagnostic = JSON.parse(failure!.message.split('\nNATIVE_FIXTURE_FAILURE ')[1]!);
+    expect(diagnostic).toMatchObject({ phase: 'forced-timeout', code: 'ETIMEDOUT', pid: observed!.pid,
+      stdout: { byteLength: observed!.stdout.length }, stderr: { byteLength: observed!.stderr.length } });
+    expect(Buffer.from(diagnostic.stdout.tailBase64, 'base64')).toEqual(Buffer.from(observed!.stdout).subarray(-2048));
+    expect(Buffer.from(diagnostic.stderr.tailBase64, 'base64')).toEqual(Buffer.from(observed!.stderr).subarray(-2048));
+    expect(diagnostic.lastEvents.length).toBeLessThanOrEqual(8);
+    expect(diagnostic.pendingLoads.length).toBeLessThanOrEqual(8);
+    expect(diagnostic.traceStatus).toBe(diagnostic.eventCount ? 'observed' : 'unknown');
+    expect(readdirSync(dirname(root))).not.toContain(root.split('/').at(-1));
+  }, 15_000);
+
   it.each([16384, 16385, 55278])('retains bounded authenticated observations from %i artifacts including streams', count => {
     const root = mkdtempSync(join(tmpdir(), 'native-process-population-'));
     try {
@@ -246,11 +602,11 @@ describe('native affected-task parent receipt transport', () => {
       const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT,
         env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
           PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
-      if (child.error) throw child.error;
+      assertNativeFixtureCompleted(child, out, 'process-step-root');
       const unrelated = spawnSync(process.execPath, ['-e', 'process.exitCode = 0'], {
         env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
           PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
-      if (unrelated.error) throw unrelated.error;
+      assertNativeFixtureCompleted(unrelated, out, 'unrelated-process');
       const input = { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
         startedAtMs, finishedAtMs: Date.now(), exitCode: child.status, signal: child.signal,
         error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
@@ -318,7 +674,7 @@ describe('native affected-task parent receipt transport', () => {
     const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT, timeout: 15_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, nested ? 'nested-reporter' : 'reporter');
     return { out, input: { task: 'native-reporter-fixture', attempt: 'initial', cwd: REPO_ROOT,
       command, startedAtMs, finishedAtMs: Date.now(), exitCode: child.status,
       signal: child.signal, error: null, captureComplete: true, stdout: child.stdout,
@@ -380,6 +736,31 @@ describe('native affected-task parent receipt transport', () => {
       entries: [pin], vmInputs: [{ ...pin, inputIndex: 0, api: 'runInThisContext', filename: 'observed.ts' }],
       reasons: ['external-loader-bytes-unobserved'] } };
   }
+  it('retains historical evaluator custody without inventing a native execution receipt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'historical-evaluator-custody-'));
+    try {
+      const out = join(root, 'original.json');
+      const { bytes, pin, observation } = evaluatorObservation(out);
+      const payload = { rows: [{ moduleEvaluations: observation }] };
+      const original = Buffer.from(JSON.stringify(payload));
+      const store = createNativeArtifactPersister(join(root, 'retained'));
+      const reporter = store.persist(original, 'native-vitest-out.json');
+      const retained = retainReporterEvaluatorArtifacts(payload, out, store.persist);
+      expect(retained).toMatchObject({ status: 'retained', referencesVisited: 2, gaps: [] });
+      // A foreign codeRef stays rejected even when the expected digest exists.
+      const foreign = { rows: [{ moduleEvaluations: { ...observation,
+        entries: [{ ...pin, codeRef: join(root, 'elsewhere', basename(pin.codeRef)) }], vmInputs: [] } }] };
+      expect(retainReporterEvaluatorArtifacts(foreign, out, store.persist)).toMatchObject({
+        status: 'partial', entries: [], gaps: ['evaluator-sidecar-rejected:redirected-reference'] });
+      expect(() => store.persist(bytes, '../escape')).toThrow('invalid artifact bytes or suffix');
+      rmSync(`${out}.modules`, { recursive: true });
+      expect(readFileSync(join(store.root, reporter.ref))).toEqual(original);
+      for (const row of retained.entries)
+        expect(readFileSync(join(store.root, row.artifact.ref))).toEqual(bytes);
+      expect(readdirSync(store.root).some(name => name.endsWith('.receipt.json'))).toBe(false);
+      expect(JSON.parse(readFileSync(join(store.root, reporter.ref), 'utf8'))).toEqual(payload);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each(['passed', 'failed'] as const)('archives evaluator reference occurrences and bytes without qualifying %s reporter output', reason => {
     const root = mkdtempSync(join(tmpdir(), 'native-evaluator-retained-'));
     try {
@@ -557,6 +938,67 @@ describe('native affected-task parent receipt transport', () => {
       exitCode: child.status, signal: child.signal, error: null, captureComplete: true,
       stdout: child.stdout, stderr: child.stderr, before: inputs, after: structuredClone(inputs) };
   }
+  it.each(['valid', 'missing', 'symlink', 'corrupt', 'malformed', 'unavailable', 'oversized', 'budget'])
+  ('archives bounded loader-source references without erasing process evidence: %s', scenario => {
+    const root = mkdtempSync(join(tmpdir(), 'native-loader-source-'));
+    try {
+      const out = join(root, 'out.json'), sourceRoot = `${out}.native-processes`;
+      mkdirSync(sourceRoot);
+      const publish = (bytes: Buffer, suffix: string) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const ref = `${sha256}.${suffix}`;
+        writeFileSync(join(sourceRoot, ref), bytes);
+        return { ref, sha256, byteLength: bytes.length };
+      };
+      const bytes = Buffer.alloc(scenario === 'budget' ? 16 * 1024 * 1024 : 20, 65);
+      const source = { ...publish(bytes, 'source'), status: 'hashed', scope: 'node-loader-returned-source',
+        artifactUnavailable: false };
+      const file = join(sourceRoot, source.ref);
+      if (scenario === 'missing') rmSync(file);
+      if (scenario === 'symlink') {
+        rmSync(file);
+        const other = join(root, 'other'); writeFileSync(other, bytes); symlinkSync(other, file);
+      }
+      if (scenario === 'corrupt' || scenario === 'budget') writeFileSync(file, Buffer.alloc(bytes.length, 66));
+      if (scenario === 'malformed') source.ref = '../outside.source';
+      if (scenario === 'unavailable') source.artifactUnavailable = true;
+      if (scenario === 'oversized') source.byteLength = 16 * 1024 * 1024 + 1;
+      const stream = { ...publish(Buffer.alloc(0), 'stream'), scope: 'node-writable-call-inputs',
+        observedByteLength: 0, captureComplete: true };
+      const event = (event: string, atMs: number, fields = {}) => publish(Buffer.from(JSON.stringify({
+        schemaVersion: 1, kind: 'native-node-process-event', event, atMs, processIdentity: 'loader-fixture',
+        pid: 901, ppid: 1, ...fields,
+      })), 'json');
+      event('node-entry', 100);
+      const loads = scenario === 'budget' ? 5 : 2;
+      for (let i = 0; i < loads; i++) event('module-load-return', 101 + i,
+        { loadId: i + 1, url: 'file:///native-fixture.mjs', source });
+      event('node-exit', 110, { exitListenersComplete: true, streams: { stdout: stream, stderr: stream } });
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), {
+        ...nativeObservation(), startedAtMs: 100, finishedAtMs: 110, processTrace: { out, rootPid: 901 },
+      });
+      const trace = result.observation.processTrace, archive = trace.loaderSources!;
+      expect(trace.events).toHaveLength(loads + 2);
+      expect(trace.streams).toHaveLength(2);
+      expect(archive.referencesVisited).toBe(loads);
+      if (scenario === 'valid') {
+        expect(archive).toMatchObject({ status: 'retained', bytesRead: bytes.length, bytesRetained: bytes.length, gaps: [] });
+        expect(archive.entries).toHaveLength(2);
+        expect(archive.entries.map(row => row.loadId)).toEqual([1, 2]);
+        expect(readFileSync(join(result.root, archive.entries[0]!.artifact.ref)).equals(bytes)).toBe(true);
+        expect(archive.entries[0]!.artifact).toEqual(archive.entries[1]!.artifact);
+      } else {
+        expect(archive.status).toBe('partial');
+        expect(archive.entries).toHaveLength(0);
+        expect(archive.gaps.length).toBeGreaterThan(0);
+        expect(archive.bytesRead).toBe(scenario === 'budget' ? 64 * 1024 * 1024 : scenario === 'corrupt' ? loads * bytes.length : 0);
+        if (scenario === 'budget') expect(archive.gaps).toContain('native-loader-source-rejected:total-byte-limit');
+      }
+      expect(result.observation.runtimeClosure).toBe('unmeasured');
+      expect(result.observation.orderedChainQualified).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains the actual command and binary streams in immutable independently hashed artifacts', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-task-receipt-'));
     try {
@@ -611,31 +1053,142 @@ describe('native affected-task parent receipt transport', () => {
       expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('redirected');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('executes the production OUT observation and settled journal with native binary output', () => {
+  it.each([
+    ['stream', 'growth'], ['event', 'growth'], ['persist', 'growth'],
+    ['stream', 'symlink'], ['event', 'symlink'], ['persist', 'symlink'],
+    ['stream', 'replacement'], ['event', 'replacement'], ['persist', 'replacement'],
+  ] as const)('bounds native artifact IO and rejects a %s %s race', (role, fault) => {
+    const root = mkdtempSync(join(tmpdir(), 'native-artifact-race-'));
+    try {
+      const out = join(root, 'out.json'), source = `${out}.native-processes`;
+      const retained = join(root, 'retained');
+      mkdirSync(source); mkdirSync(retained);
+      const publish = (bytes: Buffer, suffix: string) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const ref = `${sha256}.${suffix}`;
+        writeFileSync(join(source, ref), bytes);
+        return { ref, sha256, byteLength: bytes.length };
+      };
+      const stream = { ...publish(Buffer.from('native bytes'), 'stream'),
+        scope: 'node-writable-call-inputs', observedByteLength: 12, captureComplete: true };
+      const empty = { ...publish(Buffer.alloc(0), 'stream'),
+        scope: 'node-writable-call-inputs', observedByteLength: 0, captureComplete: true };
+      const entry = publish(Buffer.from(JSON.stringify({ schemaVersion: 1,
+        kind: 'native-node-process-event', event: 'node-entry', pid: 901, ppid: 1,
+        processIdentity: 'race-fixture', atMs: 100 })), 'json');
+      publish(Buffer.from(JSON.stringify({ schemaVersion: 1,
+        kind: 'native-node-process-event', event: 'node-exit', pid: 901, ppid: 1,
+        processIdentity: 'race-fixture', atMs: 110, exitListenersComplete: true,
+        streams: { stdout: stream, stderr: empty } })), 'json');
+      const stdout = Buffer.from('aggregate bytes');
+      const target = role === 'stream' ? join(source, stream.ref) : role === 'event' ?
+        join(source, entry.ref) : join(retained,
+          `${createHash('sha256').update(stdout).digest('hex')}.stdout`);
+      const expected = role === 'stream' ? stream.byteLength : role === 'event' ? entry.byteLength : stdout.length;
+      let injected = false, bytesRead = 0;
+      const fds = new Map<number, string>();
+      const inject = () => {
+        if (injected) return;
+        injected = true;
+        if (fault === 'growth') appendFileSync(target, Buffer.alloc(2 * 1024 * 1024));
+        else {
+          const bytes = readFileSync(target), replacement = join(root, 'replacement');
+          writeFileSync(replacement, bytes);
+          rmSync(target);
+          if (fault === 'symlink') symlinkSync(replacement, target);
+          else fs.renameSync(replacement, target);
+        }
+      };
+      // Execute the production writer with real file descriptors and only the
+      // race boundary injected; the pathname reader is measured on old source too.
+      const start = SCHEDULER_SRC.indexOf('const comparisonHash =');
+      const end = SCHEDULER_SRC.indexOf('export function prepareBudgetedTaskComparison');
+      const writer = new Script(`(() => {${SCHEDULER_SRC.slice(start, end)
+        .replaceAll('export function ', 'function ')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
+        .runInNewContext({ ...fs, Buffer, createHash, basename, dirname, isAbsolute, join,
+          relative, resolve, structuredClone,
+          openSync: (file: string, flags: number) => {
+            if (file === target && fault === 'symlink') inject();
+            const fd = fs.openSync(file, flags); fds.set(fd, file); return fd;
+          },
+          closeSync: (fd: number) => { fds.delete(fd); return fs.closeSync(fd); },
+          readSync: (fd: number, buffer: Buffer, offset: number, length: number, position: null) => {
+            if (fds.get(fd) === target) inject();
+            const count = fs.readSync(fd, buffer, offset, length, position);
+            if (fds.get(fd) === target) bytesRead += count;
+            return count;
+          },
+          readFileSync: (file: string) => {
+            if (file === target) inject();
+            const bytes = fs.readFileSync(file);
+            if (file === target) bytesRead += bytes.length;
+            return bytes;
+          },
+        }) as typeof writeBudgetedTaskNativeExecutionReceipt;
+      const input = { task: 'race-fixture', attempt: 'initial', cwd: REPO_ROOT,
+        command: ['node', 'fixture'], startedAtMs: 100, finishedAtMs: 110,
+        exitCode: 0, signal: null, error: null, captureComplete: true,
+        stdout, stderr: Buffer.alloc(0), processTrace: { out, rootPid: 901 } };
+      if (role === 'persist') expect(() => writer(retained, input)).toThrow('artifact bytes differ');
+      else {
+        const trace = writer(retained, input).observation.processTrace;
+        expect(trace.events).toHaveLength(0);
+        expect(trace.streams).toHaveLength(0);
+        expect(trace.gaps.some(gap => gap.startsWith('native-process-trace-unreadable:'))).toBe(true);
+      }
+      expect(injected).toBe(true);
+      expect(bytesRead).toBeLessThanOrEqual(expected + 1);
+      expect(fds.size).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each([false, true])('executes the production OUT observation and settled journal with native binary output, qualification %s', qualification => {
     const root = mkdtempSync(join(tmpdir(), 'native-production-journal-'));
     try {
       const input = nativeObservation();
       const task = { ws: { name: 'native-fixture', dir: 'packages/operator-core', scripts: { test: 'native fixture' } }, script: 'test' };
-      const observationStart = AFFECTED_TESTS_SRC.indexOf('const nativeReceiptArmed =');
+      const observationStart = AFFECTED_TESTS_SRC.indexOf('const qualificationCapture =');
       const observationEnd = AFFECTED_TESTS_SRC.indexOf('const stdout = [];', observationStart);
       expect(observationStart).toBeGreaterThan(0); expect(observationEnd).toBeGreaterThan(observationStart);
-      const observe = (out: string | null) => new Script(
+      const observe = (out: string | null, integrationOut: string | null = null,
+        qualificationOut: string | null = null) => new Script(
         `${AFFECTED_TESTS_SRC.slice(observationStart, observationEnd)}\nnativeObservation;`,
-      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: null,
+      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: integrationOut,
+        qualificationNativeOut: qualificationOut, qualificationTaskOut: qualification ? 'task.json' : null,
+        qualificationPhysicalExecution: { fingerprint: 'a'.repeat(64) },
+        process: { env: { PAPERCUSP_TEST_RUN_GROUP: 'run' } }, governedEnv: {},
+        partialTaskCommandInputs: () => [{ path: 'package.json', sha256: 'a'.repeat(64) }],
+        partialSourceIdentity: () => ({ sourceCommit: 'candidate', sourceDigest: createHash('sha256').update('').digest('hex') }),
         ROOT: REPO_ROOT, spawnTask: task, spawnTaskKey: input.task, journalLabel: input.attempt,
         startedAt: input.startedAtMs, cwd: input.cwd, cmd: input.command[0], argv: input.command.slice(1),
         relative: (a: string, b: string) => resolve(b).slice(resolve(a).length + 1),
         join, readFileSync, createHash, Date, Set });
-      expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      if (!qualification) expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      for (const [inheritedOut, integrationOut, qualificationOut, expectedOut] of [
+        ['inherited.json', null, null, 'inherited.json'],
+        [null, 'integration.json', null, 'integration.json'],
+        [null, null, 'qualification.json', 'qualification.json'],
+        ['inherited.json', 'integration.json', null, 'integration.json'],
+        ['inherited.json', 'integration.json', 'qualification.json', 'qualification.json'],
+      ] as const) {
+        const captured = observe(inheritedOut, integrationOut, qualificationOut)(
+          0, null, null, input.stdout, input.stderr, 321,
+        );
+        expect(captured.processTrace).toEqual({ out: qualification ? qualificationOut ?? 'task.json' : expectedOut, rootPid: 321 });
+      }
       const observation = observe('requested.json')(0, null, null, input.stdout, input.stderr);
       expect(observation.command).toEqual(input.command);
-      expect(observation.before).toHaveLength(2);
+      expect(observation.before).toHaveLength(qualification ? 1 : 2);
       expect(observation.before).toEqual(observation.after);
       const journalStart = AFFECTED_TESTS_SRC.indexOf('function journalCapturedTaskOutput(');
       const journalEnd = AFFECTED_TESTS_SRC.indexOf('\n}\n\nfunction emitCapturedTaskOutput(', journalStart) + 2;
-      const log = join(root, 'run.log'), errors: string[] = [];
+      const log = join(root, 'run.log'), errors: string[] = [], announcements: string[] = [], synced: string[] = [];
       const journal = new Script(`(${AFFECTED_TESTS_SRC.slice(journalStart, journalEnd)})`).runInNewContext({
         taskKey: () => input.task, RUN_LOG_PATH: log, writeBudgetedTaskNativeExecutionReceipt,
+        qualificationPhysicalExecution: { evidenceRoot: join(root, 'qualification') },
+        syncBudgetedTaskNativeExecutionReceipt: (saved: ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>) => {
+          syncBudgetedTaskNativeExecutionReceipt(saved); synced.push(saved.receipt.ref);
+        },
+        outSync: (line: string) => { expect(synced).toHaveLength(1); announcements.push(line); },
         appendAllSync: (path: string, chunks: string[]) => appendFileSync(path, chunks.join('')),
         rawErrSync: (text: string) => errors.push(text),
         formatTaskOutcomeFields: () => ({ exitStatus: 0, signal: 'none' }),
@@ -650,6 +1203,9 @@ describe('native affected-task parent receipt transport', () => {
       expect(receipt.execution.command).toEqual(input.command);
       expect(readFileSync(join(marker.root, receipt.execution.logs.stdout.ref))).toEqual(input.stdout);
       expect(marker.orderedChainQualified).toBe(false);
+      expect(announcements).toHaveLength(qualification ? 1 : 0);
+      if (qualification) expect(JSON.parse(announcements[0]!.slice('QUALIFICATION_TASK_COMPLETION='.length)))
+        .toEqual({ task: input.task, root: marker.root, receipt: marker.receipt });
       expect(errors).toEqual([]);
       // Artifact failure is a diagnostic miss; the ordinary settled journal must still survive.
       writeFileSync(join(marker.root, receipt.execution.logs.stdout.ref), 'tampered');
@@ -905,6 +1461,135 @@ describe('R12 native command-local artifact preparation', () => {
     };
     return { root, pins, selection, receipt, stdout, files, pin, saveSelection, saveReceipt, saveStdout };
   }
+  describe('bounded reads', () => {
+    // Instrument the real native IO boundary, including the old readFile path.
+    // Mutations happen after real bytes are read, before the reader can accept them.
+    function observeRead(root: string, pins: unknown, target: string, mutation = 'none') {
+      // The launcher correctly substitutes HEAD for dirty checkout modules in
+      // native children. Use an exact private snapshot of this test's subject,
+      // keeping the loader and its unchanged dependency checks enabled.
+      const subjectRoot = join(root, 'reader-subject');
+      mkdirSync(subjectRoot);
+      const modulePath = join(subjectRoot, 'budgeted-task-scheduler.mjs');
+      const subjectBytes = readFileSync(join(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'));
+      writeFileSync(modulePath, subjectBytes);
+      // This dependency evolves with the scheduler. A symlink is resolved back
+      // into the checkout and the native loader can substitute older HEAD bytes.
+      const mutexBytes = readFileSync(join(REPO_ROOT, 'scripts/lib/fs-mutex.mjs'));
+      writeFileSync(join(subjectRoot, 'fs-mutex.mjs'), mutexBytes);
+      const mutexSha256 = createHash('sha256').update(mutexBytes).digest('hex');
+      for (const dependency of ['task-exit-class.mjs', 'executed-source-map.mjs',
+        'task-cgroup-limits.mjs', 'task-deadline.mjs'])
+        symlinkSync(join(REPO_ROOT, 'scripts/lib', dependency), join(subjectRoot, dependency));
+      const subjectSha256 = createHash('sha256').update(subjectBytes).digest('hex');
+      const script = `
+        import fs from 'node:fs';
+        import promises from 'node:fs/promises';
+        import { createHash } from 'node:crypto';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { pathToFileURL } from 'node:url';
+        const config = JSON.parse(fs.readFileSync(0, 'utf8'));
+        const subjectSha256 = createHash('sha256').update(fs.readFileSync(config.modulePath)).digest('hex');
+        if (subjectSha256 !== config.subjectSha256) throw new Error('private reader subject differs');
+        const mutexSha256 = createHash('sha256').update(fs.readFileSync(
+          new URL('./fs-mutex.mjs', pathToFileURL(config.modulePath)))).digest('hex');
+        if (mutexSha256 !== config.mutexSha256) throw new Error('private mutex subject differs');
+        const originalBytes = fs.statSync(config.target).size < 1024 * 1024
+          ? fs.readFileSync(config.target) : null;
+        let bytesRead = 0, fullFileReads = 0, opens = 0, closes = 0, mutated = false;
+        const mutate = () => {
+          if (mutated || config.mutation === 'none') return;
+          mutated = true;
+          if (config.mutation === 'grow') fs.truncateSync(config.target, 64 * 1024 * 1024 + 1);
+          if (config.mutation === 'shrink') fs.truncateSync(config.target, 1);
+          if (config.mutation === 'rewrite') fs.writeFileSync(config.target, originalBytes);
+          if (config.mutation === 'replace') {
+            fs.renameSync(config.target, config.target + '.before');
+            fs.writeFileSync(config.target, originalBytes);
+          }
+        };
+        const readFile = promises.readFile.bind(promises);
+        promises.readFile = async (path, ...args) => {
+          const result = await readFile(path, ...args);
+          if (String(path) === config.target) {
+            fullFileReads++; bytesRead += Buffer.byteLength(result); mutate();
+          }
+          return result;
+        };
+        const open = promises.open.bind(promises);
+        promises.open = async (path, ...args) => {
+          const handle = await open(path, ...args);
+          if (String(path) === config.target) {
+            opens++;
+            const read = handle.read.bind(handle), close = handle.close.bind(handle);
+            handle.read = async (...args) => {
+              const result = await read(...args); bytesRead += result.bytesRead; mutate(); return result;
+            };
+            handle.close = async () => { closes++; return close(); };
+          }
+          return handle;
+        };
+        syncBuiltinESMExports();
+        const { readBudgetedTaskComparisonArtifacts } = await import(pathToFileURL(config.modulePath));
+        let accepted = false, error = null;
+        try { await readBudgetedTaskComparisonArtifacts(config.root, config.pins); accepted = true; }
+        catch (cause) { error = String(cause.message); }
+        console.log(JSON.stringify({ accepted, error, bytesRead, fullFileReads, opens, closes, mutated,
+          subjectSha256, mutexSha256 }));
+      `;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        input: JSON.stringify({ root, pins, target, mutation, modulePath, subjectSha256, mutexSha256 }),
+        encoding: 'utf8', timeout: 20_000,
+      });
+      if (child.error) throw child.error;
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout.trim()) as { accepted: boolean; error: string | null;
+        bytesRead: number; fullFileReads: number; opens: number; closes: number; mutated: boolean;
+        subjectSha256: string; mutexSha256: string };
+      expect(result.subjectSha256).toBe(subjectSha256);
+      expect(result.mutexSha256).toBe(mutexSha256);
+      return result;
+    }
+    it.each(['artifact', 'current input'])('rejects an oversized %s before reading its contents', kind => {
+      const f = fixture();
+      try {
+        const target = kind === 'artifact' ? join(f.root, f.pins.selection.ref)
+          : join(f.pins.repositoryRoot, f.files[0]!);
+        truncateSync(target, 64 * 1024 * 1024 + 1);
+        const observed = observeRead(f.root, f.pins, target);
+        expect(observed.accepted).toBe(false);
+        expect(observed.error).toContain('exceeded read budget');
+        expect(observed.bytesRead).toBe(0);
+        expect(observed.fullFileReads).toBe(0);
+        expect(observed.closes).toBe(observed.opens);
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+    it('accepts an artifact at the byte ceiling and closes its descriptor', () => {
+      const f = fixture();
+      try {
+        const target = join(f.root, f.pins.selection.ref);
+        truncateSync(target, 64 * 1024 * 1024);
+        f.pins.selection.sha256 = createHash('sha256').update(readFileSync(target)).digest('hex');
+        expect(observeRead(f.root, f.pins, target)).toMatchObject({ accepted: true,
+          bytesRead: 64 * 1024 * 1024, fullFileReads: 0, opens: 1, closes: 1 });
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+    it.each(['artifact', 'current input'].flatMap(kind =>
+      ['grow', 'shrink', 'replace', 'rewrite'].map(mutation => ({ kind, mutation }))))
+    ('rejects $kind that can $mutation during a read', ({ kind, mutation }) => {
+      const f = fixture();
+      try {
+        const target = kind === 'artifact' ? join(f.root, f.pins.selection.ref)
+          : join(f.pins.repositoryRoot, f.files[0]!);
+        const originalLength = readFileSync(target).length;
+        const observed = observeRead(f.root, f.pins, target, mutation);
+        expect(observed).toMatchObject({ accepted: false, fullFileReads: 0,
+          opens: 1, closes: 1, mutated: true });
+        expect(observed.error).toContain('changed during read');
+        expect(observed.bytesRead).toBeLessThanOrEqual(originalLength);
+      } finally { rmSync(f.root, { recursive: true, force: true }); }
+    });
+  });
   it('resolves raw receipts and logs, preserving script order, guard inputs and partial selection', async () => {
     const f = fixture();
     try {
@@ -1269,7 +1954,7 @@ describe('R12 original ordered native occurrence qualification', () => {
     const child = spawnSync('npm', ['run', 'test'], { cwd: appRoot, timeout: 20_000,
       env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
         npm_config_script_shell: '/bin/sh', PAPERCUSP_TEST_STARTUP_TRACE: '0' }) });
-    if (child.error) throw child.error;
+    assertNativeFixtureCompleted(child, out, 'ordered-native-reporter');
     if (child.status !== 0) throw new Error(`native Vitest fixture exited ${child.status}: ${String(child.stderr)}`);
     const retained = writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, {
       task, attempt: 'initial', cwd: appRoot, command: ['npm', 'run', 'test'], originalCommand: command,
@@ -1873,6 +2558,323 @@ describe('runBudgetedTasks', () => {
       rmSync(lockRoot, { recursive: true, force: true });
     }
   });
+});
+
+describe('task-sized shared admission (EI-26797533961242022)', () => {
+  it('wires the real affected runner private ceiling separately from its shared envelope', async () => {
+    const start = AFFECTED_TESTS_SRC.indexOf('const SCHEDULER_CONFIG = (() => {');
+    const end = AFFECTED_TESTS_SRC.indexOf('\n})();', start) + '\n})();'.length;
+    const makeBudget = (scope: string | null, max: number | null = 8192) =>
+      new Script(AFFECTED_TESTS_SRC.slice(start, end) + '\nSCHEDULER_CONFIG;').runInNewContext({
+        process: { env: { NODE_OPTIONS: '--max-old-space-size=131072', AFFECTED_MAX_CONCURRENT_TASKS: '4' } },
+        TASK_CGROUP_MEMORY_MAX_MB: max, SCHEDULER_WORKER_BUDGET: 8,
+        SCHEDULER_WORKER_MEMORY_MB: 1024, TASK_CGROUP_PIDS_MAX: null, MEM_AVAILABLE_MB: 1,
+        readTaskCgroupMemoryScope: () => scope, resolveMemoryBudgetMb, resolveWorkerMemoryMb,
+        resolveTaskBudget, refuseOnTaskBudget: (error: Error) => { throw error; },
+      });
+    const budget = makeBudget('cgroup:/fixture-private');
+    expect(budget).toMatchObject({ memoryBudgetMb: 6144,
+      memoryBudgetScope: 'cgroup:/fixture-private', sharedMemoryBudgetMb: 1_048_576 });
+    expect(makeBudget(null)).not.toHaveProperty('memoryBudgetScope');
+    expect(makeBudget('cgroup:/fixture-private', null)).not.toHaveProperty('memoryBudgetScope');
+    const release = deferred<void>(), started = deferred<void>();
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started.resolve(); await release.promise;
+    }, { workers: 3, workerBudget: 8, maxConcurrentTasks: 4, resource: 'runner-host',
+      workerMemoryMb: 131_072, memoryBudgetMb: 1_048_576, timeoutMs: 8000 });
+    try {
+      await started.promise;
+      const result = await runBudgetedTasks(['runner-private'], { ...config, ...budget,
+        admissionTimeoutMs: 1000, onAdmissionNotice: () => {}, taskAdmissionKey: task => task,
+        runTask: async (_task, allocation) => allocation.workers,
+      });
+      // Shared worker accounting remains conservative: six effective private
+      // worker tokens minus the host reader's three leaves three available.
+      expect(result.results.map(row => row.value)).toEqual([3]);
+    } finally { release.resolve(); await holder; }
+  }, 20_000);
+
+  it('rejects incomplete scoped budgets instead of silently granting unknown capacity', async () => {
+    for (const fields of [
+      { memoryBudgetScope: 'cgroup:/fixture' },
+      { memoryBudgetScope: '', sharedMemoryBudgetMb: 10000 },
+      { memoryBudgetScope: ' ', sharedMemoryBudgetMb: 10000 },
+      { sharedMemoryBudgetMb: 10000 },
+      { memoryBudgetScope: 'cgroup:/fixture', sharedMemoryBudgetMb: NaN },
+    ]) {
+      expect(() => resolveTaskBudget({ ...config, ...fields })).toThrow('Scoped admission');
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        workers: 1, workerBudget: 4, workerMemoryMb: 1024, memoryBudgetMb: 4096,
+        maxConcurrentTasks: 2, resource: 'invalid', ...fields,
+      })).rejects.toThrow('Scoped admission');
+    }
+  });
+
+  it('reads a shared cgroup identity and preserves unknown identity on missing/malformed proc data', () => {
+    expect(readTaskCgroupMemoryScope({ readFile: () => '0::/user.slice/task.scope\n' }))
+      .toBe('cgroup:/user.slice/task.scope');
+    for (const text of ['2:cpu:/legacy', '0::relative', '0::/../escape', ''])
+      expect(readTaskCgroupMemoryScope({ readFile: () => text })).toBeNull();
+    expect(readTaskCgroupMemoryScope({ readFile: () => { throw new Error('unreadable'); } })).toBeNull();
+  });
+
+  it('fails closed for a live reader with an incomplete scoped lease, then progresses after release', async () => {
+    const readers = join(mutexLockRoot, `${admissionMutexName()}.readers`);
+    const lease = join(readers, 'scoped-malformed.lock');
+    mkdirSync(lease, { recursive: true });
+    writeFileSync(join(lease, 'owner.json'), JSON.stringify({ pid: process.pid,
+      host: 'fixture', startedAt: new Date().toISOString(),
+      admission: { workers: 1, workerBudget: 8, memoryBudgetMb: 7168, workerMemoryMb: 1024,
+        maxConcurrentTasks: 4, resource: 'malformed-holder', memoryBudgetScope: 'cgroup:/fixture' } }));
+    const options = { workers: 1, workerBudget: 8, memoryBudgetMb: 7168, workerMemoryMb: 1024,
+      maxConcurrentTasks: 4, resource: 'malformed-peer', memoryBudgetScope: 'cgroup:/peer',
+      sharedMemoryBudgetMb: 65_536, timeoutMs: 100, retryMs: 5 };
+    let ran = false;
+    try {
+      await expect(withFsMutexBudget(admissionMutexName(), async () => { ran = true; }, options))
+        .rejects.toThrow('Timed out');
+      expect(ran).toBe(false);
+    } finally { rmSync(lease, { recursive: true, force: true }); }
+    await expect(withFsMutexBudget(admissionMutexName(), async () => 'after-release', options))
+      .resolves.toBe('after-release');
+  });
+
+  it('does not charge an unrelated reader against a private cgroup memory budget', async () => {
+    const release = deferred<void>();
+    let started = false;
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; await release.promise;
+    }, { workers: 3, workerBudget: 8, maxConcurrentTasks: 4, resource: 'host-reader',
+      workerMemoryMb: 131_072, memoryBudgetMb: 1_048_576, timeoutMs: 8_000 });
+    try {
+      await until(() => started, 'the host-budget reader');
+      const run = runBudgetedTasks(['private'], { ...config,
+        workerBudget: 8, maxConcurrentTasks: 4, memoryBudgetMb: 7168,
+        memoryBudgetScope: 'cgroup:fixture-private', sharedMemoryBudgetMb: 1_048_576,
+        admissionTimeoutMs: 1000, onAdmissionNotice: () => {}, taskAdmissionKey: task => task,
+        runTask: async (_task, allocation) => allocation.workers });
+      await expect(run).resolves.toMatchObject({ results: [{ value: 4 }] });
+      // A different cgroup must still obey the host's explicitly shared budget.
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        workers: 1, workerBudget: 8, maxConcurrentTasks: 4, resource: 'capped-private',
+        workerMemoryMb: 1024, memoryBudgetMb: 7168,
+        memoryBudgetScope: 'cgroup:fixture-private', sharedMemoryBudgetMb: 393_216,
+        timeoutMs: 100, retryMs: 5,
+      })).rejects.toThrow('Timed out');
+    } finally { release.resolve(); await holder; }
+  }, 20_000);
+
+  it('retains same-cgroup reservations and live legacy writer exclusion until release', async () => {
+    const release = deferred<void>();
+    let started = false, queued = false, peerStarted = false;
+    const options = { workers: 1, workerBudget: 8, maxConcurrentTasks: 4,
+      workerMemoryMb: 4096, memoryBudgetMb: 7168,
+      memoryBudgetScope: 'cgroup:fixture-shared', sharedMemoryBudgetMb: 65_536,
+      timeoutMs: 8000, retryMs: 5 };
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; await release.promise;
+    }, { ...options, resource: 'same-cgroup-holder' });
+    let peer: Promise<unknown> | undefined;
+    try {
+      await until(() => started, 'the same-cgroup reader');
+      peer = withFsMutexBudget(admissionMutexName(), async () => { peerStarted = true; }, {
+        ...options, resource: 'same-cgroup-peer', onWaiting: () => { queued = true; },
+      });
+      await until(() => queued, 'same-cgroup memory exclusion');
+      expect(peerStarted).toBe(false);
+    } finally { release.resolve(); await Promise.allSettled([holder, ...(peer ? [peer] : [])]); }
+    expect(peerStarted).toBe(true);
+
+    const writerRelease = deferred<void>(), acquired = deferred<void>();
+    const writer = withFsMutex(admissionMutexName(), async () => {
+      acquired.resolve(); await writerRelease.promise;
+    });
+    await acquired.promise;
+    try {
+      await expect(withFsMutexBudget(admissionMutexName(), async () => 'must-not-run', {
+        ...options, resource: 'private-under-writer', timeoutMs: 100,
+      })).rejects.toThrow('Timed out');
+    } finally { writerRelease.resolve(); await writer; }
+    await expect(withFsMutexBudget(admissionMutexName(), async () => 'after-release', {
+      ...options, resource: 'private-after-writer',
+    })).resolves.toBe('after-release');
+  }, 20_000);
+
+  it('reports a blocking reader and exact reservation constraints when no writer exists', async () => {
+    const release = deferred<string>();
+    let started = false, peerStarted = false;
+    const notices: string[] = [];
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      taskAdmissionKey: (task: string) => task, onAdmissionNotice: () => {} };
+    const holder = withFsMutexBudget(admissionMutexName(), async () => {
+      started = true; return release.promise;
+    }, { workers: 3, workerBudget: 4, maxConcurrentTasks: 2, resource: 'reader-holder',
+      workerMemoryMb: 131_072, memoryBudgetMb: 524_288,
+      intent: { purpose: 'retained-matrix' }, timeoutMs: 8_000 });
+    let peer: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the high-reservation reader');
+      peer = runBudgetedTasks(['peer'], { ...options, maxConcurrentTasks: 1, memoryBudgetMb: 4096,
+        onAdmissionNotice: line => { notices.push(line); },
+        runTask: async () => { peerStarted = true; return 'peer'; } });
+      await until(() => notices.length > 0, 'the reader-aware wait notice');
+      expect(notices[0]).toContain(`pid=${process.pid}`);
+      expect(notices[0]).toContain('resource=reader-holder');
+      expect(notices[0]).toContain('purpose=retained-matrix');
+      expect(notices[0]).toContain('constraints=task-cap,memory-reservation');
+      expect(notices[0]).toContain('availableMemoryMb=-389120');
+      expect(notices[0]).toContain('readers=1[');
+      expect(notices[0]).not.toContain('(owner unknown)');
+      expect(peerStarted).toBe(false);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(peer ? [peer] : [])]);
+    }
+    expect(peerStarted).toBe(true);
+  }, 20_000);
+
+  it('identifies an eligible FIFO predecessor separately from resident readers', async () => {
+    const root = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR!;
+    const queue = join(root, `${admissionMutexName()}.queue`);
+    const ticket = join(queue, '0000000000000-predecessor.ticket');
+    mkdirSync(ticket, { recursive: true });
+    writeFileSync(join(ticket, 'owner.json'), JSON.stringify({ pid: process.pid,
+      startedAt: new Date().toISOString(), ownerId: 'fixture-owner', taskId: 'fixture-task',
+      admission: { workers: 1, workerMemoryMb: 1024, workerBudget: 4, memoryBudgetMb: 4096,
+        maxConcurrentTasks: 2, resource: 'older-config' } }));
+    let notice: string | undefined, ran = false;
+    const run = withFsMutexBudget(admissionMutexName(), async () => { ran = true; }, {
+      workers: 1, workerMemoryMb: 1024, workerBudget: 4, memoryBudgetMb: 4096,
+      maxConcurrentTasks: 2, resource: 'new-config', timeoutMs: 8_000, retryMs: 5,
+      onWaiting: info => { notice = formatAdmissionHolder(info.owner); },
+    });
+    try {
+      await until(() => !!notice, 'the eligible predecessor notice');
+      expect(notice).toContain('constraints=queue-predecessor');
+      expect(notice).toContain('owner=fixture-owner task=fixture-task');
+      expect(notice).toContain(`predecessorPid=${process.pid} predecessorResource=older-config`);
+      expect(notice).toContain('readers=0[');
+      expect(ran).toBe(false);
+    } finally {
+      rmSync(ticket, { recursive: true, force: true });
+      await run;
+    }
+    expect(ran).toBe(true);
+  }, 20_000);
+
+  it.each(['wildcard', 'memory'])('keeps %s exclusions across independent invocations', async mode => {
+    const release = deferred<string>();
+    let started = false, queued = false, peerStarted = false;
+    const options = { ...config, admissionTimeoutMs: 8_000, onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: string) => mode === 'wildcard' && task === 'holder' ? '*' : task };
+    const holder = runBudgetedTasks(['holder'], { ...options,
+      workerMemoryMb: mode === 'memory' ? 4096 : config.workerMemoryMb,
+      runTask: async () => { started = true; return release.promise; } });
+    let peer: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the exclusive or memory-saturating holder');
+      peer = runBudgetedTasks(['peer'], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+        runTask: async () => { peerStarted = true; return 'peer'; } });
+      await until(() => queued, 'the peer to encounter the shared exclusion');
+      expect(peerStarted).toBe(false);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(peer ? [peer] : [])]);
+    }
+    expect(peerStarted).toBe(true);
+  }, 20_000);
+
+  it('uses the spare lane for integration before a long unit child finishes, without multiplying workers', async () => {
+    const long = deferred<string>(), short = deferred<string>(), peer = deferred<string>();
+    const starts: string[] = [];
+    let workers = 0, peakWorkers = 0, peerQueued = false;
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: { id: string }) => task.id,
+      estimateMs: (task: { id: string }) => task.id === 'long' ? 100 : 1,
+      runTask: async (task: { id: string }, allocation: { workers: number }) => {
+        starts.push(task.id); workers += allocation.workers; peakWorkers = Math.max(peakWorkers, workers);
+        try { return await ({ long, short, peer })[task.id as 'long' | 'short' | 'peer'].promise; }
+        finally { workers -= allocation.workers; }
+      },
+    };
+    const broad = runBudgetedTasks([{ id: 'long' }, { id: 'short' }], options);
+    let narrow: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => starts.length === 2, 'the broad active wave');
+      narrow = runBudgetedTasks([{ id: 'peer' }], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      });
+      await until(() => peerQueued, 'integration to queue behind the full envelope');
+      short.resolve('short');
+      await until(() => starts.includes('peer'), 'integration to use the released lane while long remains resident');
+      expect(starts).toHaveLength(3);
+      expect(peakWorkers).toBeLessThanOrEqual(config.workerBudget);
+      expect(workers).toBe(4); // long=3, integration is clamped to the remaining one token.
+    } finally {
+      long.resolve('long'); short.resolve('short'); peer.resolve('peer');
+      await Promise.allSettled([broad, ...(narrow ? [narrow] : [])]);
+    }
+  }, 20_000);
+
+  it('serializes duplicate configs but does not let their queued ticket block a disjoint config', async () => {
+    const release = deferred<string>();
+    let started = false, duplicateQueued = false, duplicates = 0, integration = false;
+    const options = { ...config, admissionTimeoutMs: 8_000,
+      onAdmissionNotice: () => {},
+      taskAdmissionKey: (task: string) => task === 'integration' ? 'integration-config' : 'unit-config',
+    };
+    const holder = runBudgetedTasks(['holder', 'initial'], { ...options,
+      estimateMs: task => task === 'holder' ? 100 : 1,
+      runTask: async task => {
+      if (task === 'initial') return 'initial';
+      started = true; return release.promise;
+    } });
+    let duplicate: ReturnType<typeof runBudgetedTasks> | undefined;
+    let independent: ReturnType<typeof runBudgetedTasks> | undefined;
+    try {
+      await until(() => started, 'the config holder');
+      duplicate = runBudgetedTasks(['duplicate'], { ...options,
+        onAdmissionNotice: (_, info) => { if (info.kind === 'queued') duplicateQueued = true; },
+        runTask: async () => { duplicates++; return 'duplicate'; },
+      });
+      await until(() => duplicateQueued, 'the duplicate config to queue');
+      independent = runBudgetedTasks(['integration'], { ...options, runTask: async () => {
+        integration = true; return 'integration';
+      } });
+      await until(() => integration, 'the disjoint config to pass the blocked duplicate');
+      expect(duplicates).toBe(0);
+    } finally {
+      release.resolve('holder');
+      await Promise.allSettled([holder, ...(duplicate ? [duplicate] : []), ...(independent ? [independent] : [])]);
+    }
+    expect(duplicates).toBe(1);
+  }, 20_000);
+
+  it('releases a task lease after failure so the same config can run again', async () => {
+    const options = { ...config, admissionTimeoutMs: 1_000, taskAdmissionKey: () => 'same-config', onAdmissionNotice: () => {} };
+    await expect(runBudgetedTasks(['broken'], { ...options, runTask: async () => { throw new Error('fixture failure'); } }))
+      .rejects.toThrow('fixture failure');
+    await expect(runBudgetedTasks(['restored'], { ...options, runTask: async () => 'restored' }))
+      .resolves.toMatchObject({ results: [{ value: 'restored' }] });
+  });
+
+  it('rechecks the launcher deadline after queueing and retains an attributable refusal before spawning', async () => {
+    const acquired = deferred<void>(), release = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => { acquired.resolve(); await release.promise; });
+    await acquired.promise;
+    const runTask = vi.fn(async () => 'must-not-run');
+    const running = runBudgetedTasks(['schema'], { ...config, runTask,
+      admissionTimeoutMs: 8_000, deadlineEpochMs: Date.now() + 1_000,
+      estimateMs: () => 50, taskAdmissionKey: () => 'integration-config', onAdmissionNotice: () => {},
+    });
+    const outcome = running.then(() => null, error => error as Error);
+    try { await new Promise<void>(done => setTimeout(done, 1_200)); }
+    finally { release.resolve(); await holder; }
+    expect((await outcome)?.message).toContain('TASK_DEADLINE_REFUSAL');
+    expect(runTask).not.toHaveBeenCalled();
+  }, 20_000);
 });
 
 describe('cooperative shared admission (WI-10006150)', () => {
@@ -3162,6 +4164,16 @@ describe('operator-visible budget markers', () => {
 });
 
 describe('affected-tests scheduler wiring', () => {
+  it('bounds initial watchdog and progress extensions by the maintained launcher cleanup cutoff', () => {
+    const body = AFFECTED_TESTS_SRC.slice(AFFECTED_TESTS_SRC.indexOf('const launchBudget ='));
+    expect(body).toMatch(/const launchBudget = [\s\S]{0,100}?admitTaskDeadline\(\{/);
+    expect(body).toContain('launchBudget.childCutoffEpochMs - Date.now()');
+    const watchdog = body.slice(body.indexOf('const watchdog = createProgressAwareWatchdog({'),
+      body.indexOf('let progressTimer = null;'));
+    expect(watchdog).toContain('timeoutMs: Math.min(taskTimeoutMs, launcherWatchdogMs)');
+    expect(watchdog).toContain('maxMs: Math.min(watchdogCeilingMs, launcherWatchdogMs)');
+  });
+
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
     expect(AFFECTED_TESTS_SRC).toContain('initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {
@@ -3427,6 +4439,41 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(second.budgetMs).toBeCloseTo(8_000 - first.waitedMs, -2);
   }, 20_000);
 
+  it('defers a release-gate waiter once the unreclaimed holder has consumed its remaining queue budget', async () => {
+    const previousReleaseGate = process.env.PC_HEAVY_RELEASE_GATE;
+    process.env.PC_HEAVY_RELEASE_GATE = '1';
+    const release = deferred<void>(), started = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const runTask = vi.fn(async () => 'must-not-run');
+    let thrown: unknown;
+    try {
+      await started.promise;
+      // The caller below receives a 1.5s queue budget. Make the holder's recorded
+      // lease age exceed that same budget before the caller enters admission.
+      await new Promise<void>((resolveNext) => setTimeout(resolveNext, 1_600));
+      thrown = await runBudgetedTasks(['waiting-gate'], {
+        ...config,
+        admissionTimeoutMs: 1_500,
+        deferWhenHolderOlderThanBudget: true,
+        onAdmissionNotice: () => {},
+        runTask,
+      }).then(() => null, (error: unknown) => error);
+    } finally {
+      release.resolve();
+      await holder;
+      if (previousReleaseGate === undefined) delete process.env.PC_HEAVY_RELEASE_GATE;
+      else process.env.PC_HEAVY_RELEASE_GATE = previousReleaseGate;
+    }
+
+    expect(thrown).toMatchObject({ code: 'EADMISSIONDEFERRED' });
+    expect(isSharedAdmissionDeferral(thrown)).toBe(true);
+    expect(isSharedAdmissionTimeout(thrown)).toBe(false);
+    expect(runTask).not.toHaveBeenCalled();
+  }, 20_000);
+
   it('records the GRANT instant, so a holder\'s hold duration is measurable rather than inferred from attempt-start', async () => {
     // `startedAt` is stamped when a caller begins TRYING, so it silently includes that
     // caller's own queue wait. Reading it as "held since" overstates the hold by exactly the
@@ -3529,9 +4576,11 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     // shape the gate records as a lost run — so bounding the wait is only safe if the throw
     // is caught and reported. Pinned structurally: the catch must re-throw anything that is
     // NOT admission starvation, so this can never become a blanket swallow.
-    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=admission-starved');
-    expect(AFFECTED_TESTS_SRC).toContain('status=refused reason=admission-starved');
-    expect(AFFECTED_TESTS_SRC).toMatch(/if\s*\(!isSharedAdmissionTimeout\(error\)\)\s*throw error;/);
+    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=${admissionReason}');
+    expect(AFFECTED_TESTS_SRC).toContain('status=refused reason=${admissionReason}');
+    expect(AFFECTED_TESTS_SRC).toContain('admissionDeferral ? "admission-deferred" : "admission-starved"');
+    expect(AFFECTED_TESTS_SRC).toContain('deferWhenHolderOlderThanBudget: true');
+    expect(AFFECTED_TESTS_SRC).toMatch(/if\s*\(!admissionDeferral && !isSharedAdmissionTimeout\(error\)\)\s*throw error;/);
     // And the queue notices must be routed to `errSync` (stderr AND the run log), not left on
     // the scheduler's `console.error` default, which never reaches RUN_LOG_PATH.
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
@@ -3540,6 +4589,8 @@ describe('shared test-process admission queue (WI-1490656)', () => {
   it.each([
     { reason: 'admission-starved', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
     { reason: 'admission-starved', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+    { reason: 'admission-deferred', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'admission-deferred', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
     { reason: 'deadline-insufficient', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
     { reason: 'deadline-insufficient', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
   ])('retains settled shard evidence on $reason: $completedTasks completed', (sample) => {
@@ -3555,11 +4606,18 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(endAt).toBeGreaterThan(bodyAt);
     const output: string[] = [];
     const exit = new Error('captured process exit');
+    const admissionError = sample.reason === 'admission-deferred'
+      ? Object.assign(
+          new Error(`Admission deferred for fs-mutex "${admissionMutexName()}"`),
+          { code: 'EADMISSIONDEFERRED' },
+        )
+      : new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`);
     const context = {
       ...terminalCounters,
-      error: new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`),
+      error: admissionError,
       isTaskDeadlineRefusal: () => sample.reason === 'deadline-insufficient',
       isSharedAdmissionTimeout,
+      isSharedAdmissionDeferral: (error: unknown) => isSharedAdmissionDeferral(error),
       tasks: Array.from({ length: 5 }),
       readTerminalCounters: () => ({
         tasks: 5, failed: 0, quarantinedFailed: 0, timedOutTasks: 0,

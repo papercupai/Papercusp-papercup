@@ -144,7 +144,7 @@ export function makeSuperproject(root: string): Superproject {
   // A shipped desktop dev script naming the owner: the public export must redact it,
   // because the shell is copied after the shared selection's scrub (P-004/P-013).
   write(repo, DESKTOP_OWNER_NAMING_FILE, `#!/bin/sh\n# rig maintained by ${FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME}\necho ok\n`);
-  write(repo, 'papercusp-desktop/src-tauri/Cargo.toml', '[package]\nname = "papercusp-desktop"\nlicense = "Elastic-2.0"\n');
+  write(repo, 'papercusp-desktop/src-tauri/Cargo.toml', '[package]\nname = "papercusp-desktop"\nlicense = "LicenseRef-Sustainable-Use-1.0"\n');
   for (const p of PUBLIC_DESKTOP_DROPPED) write(repo, p, 'internal\n');
   write(repo, 'packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json', '{"entries":[]}\n');
   write(repo, 'packages/operator-core/lib/memory/bench/fixtures/prose-gold-set.v1.json', '{"queries":[]}\n');

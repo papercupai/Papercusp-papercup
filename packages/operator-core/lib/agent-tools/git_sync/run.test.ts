@@ -29,6 +29,9 @@ afterAll(() => {
   else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
 });
 afterEach(() => {
+  vi.doUnmock('../../serving-build');
+  vi.doUnmock('../../serving-host-identity');
+  vi.doUnmock('../../module-repo-root');
   vi.doUnmock('../../harness/operator-home-harness');
   vi.doUnmock('../../workspace-registry');
   vi.doUnmock('../../operator-notes');
@@ -38,6 +41,27 @@ afterEach(() => {
 });
 
 describe('git-sync:run', () => {
+  it('checks the exact target again at the worker before firing', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+    vi.doMock('../../serving-host-identity', () => ({ getServingHostIdentity: () => ({ buildSha: 'a'.repeat(40) }) }));
+    vi.doMock('../../module-repo-root', () => ({ moduleRepoRoot: () => '/selected' }));
+    const { default: tool } = await import('./run');
+    const { getServingBuild } = await import('../../serving-build');
+    const target = { environment: getServingBuild(), buildSha: 'a'.repeat(40), installRoot: '/selected' };
+    for (const changed of [{ ...target, environment: target.environment === 'main' ? 'staging' as const : 'main' as const },
+      { ...target, buildSha: 'b'.repeat(40) }, { ...target, installRoot: '/another' }]) {
+      expect(parse(await tool.handler({ target: changed }, MAKE_CTX()) as never))
+        .toMatchObject({ ok: false, fired: false, reason: 'execution-target-mismatch' });
+    }
+    expect(fireSpy).not.toHaveBeenCalled();
+    expect(parse(await tool.handler({ target }, MAKE_CTX()) as never)).toMatchObject({ ok: true, fired: true });
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('papercusp', 'default', null);
+  });
+
   it('accepts an optional reason without rejecting the strict args schema', async () => {
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
     vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));

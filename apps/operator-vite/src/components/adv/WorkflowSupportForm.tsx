@@ -34,7 +34,7 @@ async function searchCase(query: string, sources: readonly string[]): Promise<Ca
   // ACL and disclosure path; no source content is copied into the submit input.
   const result = await runScheduleTool('documents:search', { query, sources: [...sources], legs: ['organization'], limit: 50 });
   if (!result.ok || !result.data) throw new Error(result.message ?? 'Case search failed');
-  const data = result.data.data as { legs?: { organization?: { allowed?: boolean } }; results?: unknown[]; error?: string } | undefined;
+  const data = result.data as { legs?: { organization?: { allowed?: boolean } }; results?: unknown[]; error?: string };
   if (!data || data.error || data.legs?.organization?.allowed !== true || !Array.isArray(data.results)) {
     throw new Error('Support sources are unavailable or access was refused');
   }

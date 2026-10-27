@@ -100,6 +100,27 @@ describe.runIf(process.platform === 'linux')('listOwnFiles over a real directory
     expect(missing.files).toEqual([]);
     expect(missing.error).toMatch(/^find exited 1: .*gone/);
   });
+
+  it('keeps surviving files complete when a direct child vanishes between readdir and size lookup', async () => {
+    const vanished = join(dir, 'vanishing.bin');
+    const kept = join(dir, 'kept.bin');
+    writeFileSync(vanished, randomBytes(256 * KIB));
+    writeFileSync(kept, randomBytes(256 * KIB));
+    const raceAtStat: CensusSpawn = (cmd, args) => {
+      // Real GNU find reads the entry, then this action removes only that child
+      // before %b needs its stat. No timing loop or mocked find result.
+      const printf = args.indexOf('-printf');
+      expect(printf).toBeGreaterThan(0);
+      const raced = [...args];
+      raced.splice(printf, 0, '-exec', 'sh', '-c',
+        'if [ "$1" = "$2" ]; then rm -- "$1"; fi', 'race', '{}', vanished, ';');
+      return spawn(cmd, raced, { stdio: ['ignore', 'pipe', 'pipe'] });
+    };
+
+    expect(await listOwnFiles(dir, { floorBytes: 0, sudo: null, spawn: raceAtStat })).toEqual({
+      files: [{ path: kept, bytes: Number(lstatSync(kept).blocks) * 512 }],
+    });
+  });
 });
 
 describe('listOwnFiles subprocess contract', () => {
@@ -117,7 +138,7 @@ describe('listOwnFiles subprocess contract', () => {
     const [cmd, args] = calls[0]!;
     expect(cmd).toBe('/usr/bin/sudo');
     expect(args.slice(0, 2)).toEqual(['-n', '--']);
-    expect(args.slice(args.indexOf('find'))).toEqual(['find', '/mnt/data/x', '-maxdepth', '1', '-type', 'f', '-printf', '%b %p\\0']);
+    expect(args.slice(args.indexOf('find'))).toEqual(['find', '/mnt/data/x', '-maxdepth', '1', '-ignore_readdir_race', '-type', 'f', '-printf', '%b %p\\0']);
     expect(listing).toEqual({
       files: [
         { path: '/mnt/data/x/dump one.bin', bytes: 2 * GIB },

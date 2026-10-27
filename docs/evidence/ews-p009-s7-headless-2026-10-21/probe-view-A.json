@@ -1,0 +1,91 @@
+{
+ "href": "/adv?tab=harnesses&slug=papercusp&scope=self&welcome=0&sel=WI-6554700010021944",
+ "canvas": true,
+ "legendText": "blocks (arrow points to the blocked item)blocker already done \u2014 gates nothingbroken \u2014 blocker resolves to no itemitem blocked on an event (its own event or gate blocker)holder waits on an event (an agent\u2019s await for an item it holds)stale wait \u2014 its agent\u2019s session ended, or the await expiredevent being waited on (dashed when every wait on it is stale)placeholder for that missing blockercame from a planitem state: done \u00b7 active \u00b7 blocked \u00b7 open",
+ "nodeCount": 53,
+ "eventNodeCount": 14,
+ "edges": {
+  "holderAwait": 14,
+  "itemBlocker": 11,
+  "stale": 2,
+  "holderAwaitDrawnAsBlocker": 0,
+  "blockerDrawnAsHolderAwait": 0,
+  "blocks": 57
+ },
+ "samples": {
+  "provingDone": [
+   "Event work-item:done:EI-26871346179438274 \u2014 event \u00b7 1 wait \u00b7 proving key, every wait on it is stale"
+  ],
+  "broad": [
+   "Event plan:acceptance:interchangeable-su-execution-backends-2026-10-23 \u2014 event \u00b7 14 waits \u00b7 broad key"
+  ],
+  "stale": [
+   "Event work-item:done:EI-26871346179438274 \u2014 event \u00b7 1 wait \u00b7 proving key, every wait on it is stale",
+   "Event work-item:unblocked:WI-6554700010021944 \u2014 event \u00b7 1 wait \u00b7 change-notification key, every wait on it is stale"
+  ],
+  "subject": [
+   "WI-6554700010021944 \u2014 Clone providers, advice only. Authoring: plans:new and plans:add-item return functions similar to the item text or its anchors, and flag anchors that belong to copy families; the anchors plan's autho\u2026 (depth 2, open)"
+  ],
+  "labels": [
+   "EI-26791911007324083 \u2014 Verify completion of WI-6554700010021951: Runtime evidence join. Join tool_invocations to the API/tool registry-to-implementation links to mark hot and never-executed implementations. An optional one-line claim-brief flag, and dead-code evi (depth 0, done)",
+   "EI-26792816542286134 \u2014 Verify completion of WI-6554700010021948: Code-to-Postgres lineage: parse SQL in TS template strings and migrations with a maintained Postgres parser, and map each table and column to the functions that read and write it, the sync-resolver  (depth 0, done)",
+   "EI-26795254844437205 \u2014 Verify completion of WI-6554700010021947: Change-history intelligence: co-change pairs from commit history (no authorship), and symbol provenance from tool_invocations Edit records joined to sessions and work-items (not git blame), with a g (depth 0, done)",
+   "EI-26871346179438274 \u2014 Background git-sync publication refuses Corestore ownership during host recovery (depth 0, open)",
+   "EI-26876020047563191 \u2014 Contribution consult stayed awaiting responder after ended target and zero confirmed pickup (depth 0, open)",
+   "EI-26888532483668147 \u2014 Mutation binding infers a nested-repository subject relative to the superproject commit (depth 0, open)",
+   "EI-26890886088545117 \u2014 Expected HTTP refusal controls trigger the tool failure-loop alarm (depth 0, open)",
+   "EI-26918784207930580 \u2014 Contribution certification grades verification bindings outside the item-close proof cohort (depth 0, open)",
+   "EI-26919110513959929 \u2014 Independent P003 grading auditor parked without emitting its required verdict (depth 0, open)",
+   "EI-26921894537325741 \u2014 Grading reviewer stops on native credit error until manual bounded repair (depth 0, open)",
+   "EI-26950986185170419 \u2014 Single-responder consult receives two distinct source-review responders (depth 0, open)",
+   "EI-26978998663805465 \u2014 Managed Codex continuation keeps unusable native-session claim on direct MCP while same-SID CLI recovers (depth 0, open)",
+   "EI-26984429971170997 \u2014 Verify completion of WI-6554700010029053: D038 R20 fixture cleanup: ownership-bound canonical disposal for shared session and issued records (depth 0, done)",
+   "EI-26988952094450362 \u2014 Verify completion of WI-6554700010025500: Extend existing native card/approval handlers for the baseline request families, including scoped permissions, question variants and MCP form/URL flows. Preserve descriptions, request IDs, provenanc (depth 0, open)",
+   "EI-27012322061709291 \u2014 Installed Codex fork test leaves native scratch after close and fails ENOTEMPTY teardown (depth 0, open)",
+   "Event plan-lane:code-intel-reuse-signals-2026-10-21#P-019 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-010 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-011 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-012 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-013 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-014 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-015 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-016 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-017 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-018 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan-lane:interchangeable-su-execution-backends-2026-10-23#P-019 \u2014 event \u00b7 1 wait \u00b7 uncatalogued key",
+   "Event plan:acceptance:interchangeable-su-execution-backends-2026-10-23 \u2014 event \u00b7 14 waits \u00b7 broad key",
+   "Event work-item:done:EI-26871346179438274 \u2014 event \u00b7 1 wait \u00b7 proving key, every wait on it is stale",
+   "Event work-item:unblocked:WI-6554700010021944 \u2014 event \u00b7 1 wait \u00b7 change-notification key, every wait on it is stale",
+   "WI-10005298 \u2014 Restore current git-sync publication after fetches hit the critical disk reserve (depth 0, open)",
+   "WI-6554700010021946 \u2014 Semantic code index: function-level embeddings (normalized body plus a one-line summary) in pgvector through the embed sidecar, incremental per blob SHA. Concept-search becomes hybrid (lexical, graph\u2026 (depth 0, blocked)",
+   "WI-6554700010025189 \u2014 Drive interchangeable SU execution backends through shipment on the self route (depth 0, open)",
+   "WI-6554700010025499 \u2014 Carry typed text/images and individually supported file references through existing client input, command persistence, replay and both engines. Define asset ownership/lifetime and permission checks; \u2026 (depth 0, open)",
+   "WI-6554700010025501 \u2014 Expose native Codex thread/fork through the tracked fork path and preserve existing Claude fork behavior. Register child lineage/native IDs/configuration before success; do not copy live claims/locks\u2026 (depth 0, open)",
+   "WI-6554700010025502 \u2014 Extend existing session host/persistence/task-ledger enrollment and supervisor for both execution kinds: authoritative runtime generations, single active driver, reconnect/readiness, tool streams, bo\u2026 (depth 0, open)",
+   "WI-6554700010027795 \u2014 Unblock P010 exact source publication through canonical git-sync (depth 0, done)",
+   "WI-6554700010028352 \u2014 Null plan context crashes rubric writes through ctxToPlanSourceOpts (depth 0, done)",
+   "WI-6554700010028395 \u2014 Scheduled standard rubric drops input harness before platform instruments (depth 0, done)",
+   "WI-6554700010029053 \u2014 D038 R20 fixture cleanup: ownership-bound canonical disposal for shared session and issued records (depth 0, done)",
+   "EI-26884506856928758 \u2014 P010 private native completion fixture still lacks qualified coverage after real test (depth 1, done)",
+   "WI-6554700010025503 \u2014 Route existing owner/peer/event/timer wakes through durable session commands to the selected runtime. Reuse event/inbox/scheduler stores and delivery receipts; distinguish accepted/consumed/completed\u2026 (depth 1, blocked)",
+   "WI-6554700010029044 \u2014 D037 R20 staging proof: live-safe disposable fixture lifecycle adapter (depth 1, done)",
+   "WI-6554700010021944 \u2014 Clone providers, advice only. Authoring: plans:new and plans:add-item return functions similar to the item text or its anchors, and flag anchors that belong to copy families; the anchors plan's autho\u2026 (depth 2, open)",
+   "WI-6554700010025504 \u2014 Connect native compaction and managed warm/cold carry/recycle to structured runtimes, including preflush, exact identity/history binding, mode restoration, context telemetry and re-arming of existing\u2026 (depth 2, blocked)",
+   "WI-6554700010021953 \u2014 Measure each new leg/provider's issued, independently observed receipt when available, observed acted-on/not-acted-on/unknown and provider-specific grep-after-push through existing outcome instrument\u2026 (depth 3, blocked)",
+   "WI-6554700010025505 \u2014 Implement explicit PTY\u2194programmatic handoff within each provider: quiesce, settle/persist, fence the old generation, start/resume the target, verify identity/readiness, then commit routing. Keep one \u2026 (depth 3, blocked)",
+   "WI-6554700010025506 \u2014 Implement the separately named Claude\u2194Codex context-transfer path and refusals. Preserve the logical conversation/checkpoint references while creating valid target-native identity/settings; disclose \u2026 (depth 4, blocked)",
+   "WI-6554700010025507 \u2014 Thread independent execution-kind selection through existing PSU/capability/fleet launch and scheduler placement paths, persist choices per worker and support mixed fleets. Reuse tracked presence/cla\u2026 (depth 4, blocked)",
+   "WI-6554700010025508 \u2014 Extend existing events/descriptors/usage ledgers and watchdog readers for the chosen backend/generation. Preserve counter units, context-versus-billing distinction, readable reasoning limits and expl\u2026 (depth 4, blocked)",
+   "WI-6554700010025509 \u2014 Expose backend selection and common input/steer/stop/cards/resume/fork/end controls in existing owner surfaces; preserve PUI/GUI product boundaries. Qualify Codex native remote-TUI attachment where s\u2026 (depth 5, blocked)",
+   "WI-6554700010025510 \u2014 Extend maintained differential/adversarial suites to cover the approved scenario population across all four combinations, every new contract boundary and supported-version refusal path. Include negat\u2026 (depth 6, blocked)",
+   "WI-6554700010025511 \u2014 Run bounded isolated current-build acceptance with real Claude and Codex runtimes plus a small explicitly selected mixed-backend canary. Exercise image understanding, questions/approvals, native fork\u2026 (depth 7, blocked)",
+   "WI-6554700010025513 \u2014 Publish canonical operational docs with docs:author, selection/handoff/recovery runbooks, extension/version boundaries and the verified parity matrix. Reuse existing release and monitoring surfaces; \u2026 (depth 8, blocked)"
+  ],
+  "subjectHolderKey": []
+ },
+ "labelCounts": {
+  "proving": 1,
+  "broad": 1,
+  "stale": 2
+ }
+}

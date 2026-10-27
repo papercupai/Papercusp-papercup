@@ -1,9 +1,12 @@
 /** Retained evidence for the existing testing:run route; this module launches nothing. */
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import type { OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
+import { retainNativeProofPacket, verifyNativeProofPacket,
+  type NativeCustodyAuxiliary, type NativeCustodyGroup, type NativeCustodyIdentity,
+  type NativeCustodyLocator } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 export interface TestRunDeadline {
   startedAtMs: number;
@@ -40,19 +43,24 @@ export interface TestRunArtifactPaths {
   reports: string;
   ownedDatabases: string;
   runtimeInputs: string;
+  nativeProof: string;
 }
 export class TestRunArtifactPacket {
   readonly paths: TestRunArtifactPaths;
   childState: 'not-started' | 'pending' | 'closed' = 'not-started';
   cleanupResult?: OwnedTestDbCleanupResult;
   readonly groupCleanups: Array<{ directory: string | null; cleanup: unknown }> = [];
+  private selectedFiles: string[] = [];
+  private outputLogs: string[] = [];
+  private custodyIdentity?: NativeCustodyIdentity;
+  private nativeLocator?: NativeCustodyLocator;
   constructor(readonly runId: string, readonly root: string, readonly deadline: TestRunDeadline,
     base = papercuspPath('test-artifacts', 'testing-run')) {
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const directory = mkdtempSync(join(base, 'run-'));
     this.paths = { directory, manifest: join(directory, 'manifest.json'), phases: join(directory, 'phases.jsonl'),
       reports: join(directory, 'reports'), ownedDatabases: join(directory, 'owned-databases'),
-      runtimeInputs: join(directory, 'executed-inputs') };
+      runtimeInputs: join(directory, 'executed-inputs'), nativeProof: join(directory, 'native-proof') };
     for (const dir of [this.paths.reports, this.paths.ownedDatabases, this.paths.runtimeInputs]) {
       mkdirSync(dir, { mode: 0o700 });
     }
@@ -69,6 +77,7 @@ export class TestRunArtifactPacket {
   /** Selected bytes and dependency lock are pins, not a claim of a loaded import closure.
    * The maintained reporter owns loaded-source evidence; preserve its runtime inputs too. */
   captureSelectedSources(files: string[], worktree: unknown, root = this.root): void {
+    this.selectedFiles = files.map(file => resolve(root, file));
     const inputs = [...new Set([...files, 'package.json', 'package-lock.json', 'scripts/test-files.mjs'])].map(file => {
       const path = resolve(root, file);
       const local = relative(root, path);
@@ -80,10 +89,65 @@ export class TestRunArtifactPacket {
       coverage: 'selected files and dependency lock; loaded import closure is reporter-owned',
       runtimeInputs: this.paths.runtimeInputs });
   }
+  bindNativeIdentity(workspace: string | undefined, harness: string | undefined): void {
+    this.custodyIdentity = { workspace: workspace || 'unscoped', harness: harness || 'unscoped', runId: this.runId };
+  }
+  captureOutputLogs(paths: string[]): void { this.outputLogs = [...paths]; }
+  /** Seal after cleanup has its own outcome. No retention failure may prevent
+   * confirmed-close cleanup, and a pending edition cannot be rewritten by a late close. */
+  private retainNative(detail: Record<string, unknown>): unknown {
+    const identity = this.custodyIdentity ?? { workspace: 'unscoped', harness: 'unscoped', runId: this.runId };
+    const auxiliary: NativeCustodyAuxiliary[] = [];
+    const required = ['source.json', 'configuration.json', 'router.json', 'ledger.json', 'phases.jsonl'];
+    for (const name of required) auxiliary.push({ role: name, state: 'produced', path: join(this.paths.directory, name) });
+    const inventory = (directory: string, role: string, depth = 0): void => {
+      if (depth > 8 || auxiliary.length > 4096) throw new Error('packet auxiliary inventory limit');
+      for (const name of readdirSync(directory).sort()) {
+        const path = join(directory, name), stat = lstatSync(path);
+        if (stat.isSymbolicLink()) throw new Error('packet auxiliary redirected');
+        if (stat.isDirectory()) inventory(path, `${role}/${name}`, depth + 1);
+        else auxiliary.push({ role: `${role}/${name}`, state: 'produced', path });
+      }
+    };
+    for (const [role, path] of [['reports', this.paths.reports], ['owned-databases', this.paths.ownedDatabases],
+      ['executed-inputs', this.paths.runtimeInputs]] as const) inventory(path, role);
+    this.outputLogs.forEach((path, index) => auxiliary.push({ role: `router-output/${index}`, state: 'produced', path }));
+    const routers = readdirSync(this.paths.directory).filter(name => name.startsWith('native-router-')).sort();
+    const routerGroups: NativeCustodyGroup[] = [];
+    const routerVerdicts = [];
+    for (const name of routers) {
+      const directory = join(this.paths.directory, name);
+      const declaration = JSON.parse(readFileSync(join(directory, 'expected.json'), 'utf8'));
+      const locator = JSON.parse(readFileSync(join(directory, 'locator.json'), 'utf8'));
+      const verified = verifyNativeProofPacket(directory, locator, { identity, expected: declaration.expected });
+      routerGroups.push(...declaration.expected);
+      routerVerdicts.push(verified.status);
+      inventory(directory, name);
+    }
+    if (routers.length) {
+      const actual = routerGroups.filter(group => group.attempt === 'primary').flatMap(group => group.selected).sort();
+      if (JSON.stringify(actual) !== JSON.stringify([...this.selectedFiles].sort()))
+        throw new Error('packet selected/router population mismatch');
+    }
+    const pending = this.childState === 'pending';
+    const group: NativeCustodyGroup = { id: 'packet', attempt: 'primary', selected: this.selectedFiles.length
+      ? this.selectedFiles : [this.root], runner: 'unsupported', armed: false, out: null, auxiliary };
+    const saved = retainNativeProofPacket(this.paths.nativeProof, { identity, expected: [group],
+      observations: [{ id: group.id, out: null }], execution: { childState: this.childState, result: detail.result ?? null },
+      cleanup: detail.cleanup ?? null, ...(this.nativeLocator ? { predecessor: this.nativeLocator } : {}) });
+    this.nativeLocator = saved.locator;
+    return { directory: saved.directory, locator: saved.locator, byteCustody: saved.status,
+      writerState: pending ? 'pending' : 'settled', routerCustody: routerVerdicts,
+      nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'not-performed' };
+  }
   finish(detail: Record<string, unknown>): void {
     this.stage('retained', { childState: this.childState });
+    let nativeCustody: unknown;
+    try { nativeCustody = this.retainNative(detail); }
+    catch (error) { nativeCustody = { byteCustody: 'unavailable', error: String(error),
+      nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'retained' }; }
     this.write('manifest.json', { schemaVersion: 1, runId: this.runId, root: this.root,
       deadline: this.deadline, state: 'retained', childState: this.childState, paths: this.paths,
-      groupCleanups: this.groupCleanups, ...detail });
+      groupCleanups: this.groupCleanups, ...detail, nativeCustody });
   }
 }

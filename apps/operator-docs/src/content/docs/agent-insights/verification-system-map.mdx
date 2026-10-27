@@ -232,6 +232,7 @@ From `AcceptanceBarSnapshotCode` (`packages/operator-core/lib/acceptance-bar-con
 | `bar_snapshot_role_invalid` | A bar's `role` value is not valid. |
 | `bar_snapshot_mandatory_invalid` | A bar's `mandatory` value is not valid. |
 | `bar_snapshot_scope_invalid` | A bar's `scope` value is not valid. |
+| `bar_snapshot_pending_delivery_selection_invalid` | The final accept's `pendingDeliveryBarKeys` names a BAR that is unknown or not eligible. Only existing deployed or live BARs whose check is `kind:"instrument"` with `instrumentKey:"none"` may be left pending delivery. Repair the request; no rubric amendment is needed. |
 | `bar_snapshot_pass_ratings_invalid` | A bar's `passRatings` value is not valid. |
 | `bar_snapshot_coverage_invalid` | A bar's coverage declaration is not valid. |
 | `bar_snapshot_check_missing` | A bar has no machine check. |

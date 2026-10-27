@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "r2gcs-p004-current-worker-v1",
+  "workItem": "WI-6554700010025563",
+  "operationId": "cdff891f-a0d4-41af-a0aa-2de7f047f006",
+  "startedAt": "2026-10-24T16:24:14.599Z",
+  "runtimeTaskId": "0mvmlxii0ndp5l01r4u",
+  "runtime": "isolated current-source local Workerd with private real GCS and actual GitHub operator authentication",
+  "origin": "http://127.0.0.1:18879",
+  "instrument": {
+    "path": "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+    "testPath": "apps/operator-public/src/routes/workspace-host-artifacts.test.ts"
+  },
+  "sourceHashesBefore": {
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "a351d5c184e212e4347af06c2463a5b26baacb6bc2f020f0af5063d721679633",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa"
+  },
+  "checks": [
+    {
+      "name": "anonymous-write-denied",
+      "status": 401,
+      "ok": true
+    },
+    {
+      "name": "reconnect-resumes-original-HTTP-multipart-operation",
+      "ok": true,
+      "operationId": "cdff891f-a0d4-41af-a0aa-2de7f047f006",
+      "uploadId": "cdff891f-a0d4-41af-a0aa-2de7f047f006"
+    },
+    {
+      "name": "HTTP-completion-replay-retains-generation-and-exact-bytes",
+      "ok": true,
+      "generation": "1792859059825187",
+      "sha256": "0dd859301db73854059b7f8e3c3cea12435931391117a4874f089f92671e641e"
+    },
+    {
+      "name": "unfinalized-GCS-object-public-request-denied",
+      "status": 404,
+      "ok": true
+    },
+    {
+      "name": "raw-private-bucket-anonymous-denied",
+      "status": 403,
+      "ok": true
+    },
+    {
+      "name": "admitted-finalized-manifest-public-positive-control",
+      "status": 200,
+      "ok": true
+    }
+  ],
+  "scope": "Current-build isolated HTTP and provider proof; not production deployment, historical source census or final independent acceptance.",
+  "result": "pass",
+  "cleanup": "own random-digest object and own provider upload only; isolated local D1 receipts retained",
+  "sourceHashesAfter": {
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "a351d5c184e212e4347af06c2463a5b26baacb6bc2f020f0af5063d721679633",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa"
+  },
+  "sourceStable": true,
+  "observedAt": "2026-10-24T16:24:22.328Z"
+}

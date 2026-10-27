@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
@@ -124,6 +124,75 @@ test('installCudaProvider runs ORT cuda12 install and verifies all provider file
   assert.equal(call[1][0], join(packageRoot, 'script', 'install.js'));
   assert.equal(call[2].env.ONNXRUNTIME_NODE_INSTALL, '1');
   assert.deepEqual(inspectCudaProvider({ env, resolvePackageRoot: () => packageRoot }).missing, []);
+});
+
+test('complete read-only CUDA providers are reused without downloading or changing shared inodes', () => {
+  const packageRoot = fakeOrtPackage();
+  const target = { os: 'linux', cpu: 'x64' };
+  const env = { npm_config_os: 'linux', npm_config_cpu: 'x64' };
+  const files = providerFilePaths({ packageRoot, target });
+  try {
+    for (const file of files) {
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(`${file}.generation`, 'pinned provider');
+      chmodSync(`${file}.generation`, 0o444);
+      linkSync(`${file}.generation`, file);
+    }
+    const result = installCudaProvider({
+      env,
+      host: { platform: 'linux', arch: 'x64' },
+      resolvePackageRoot: () => packageRoot,
+      run: () => assert.fail('complete providers must not invoke the downloader'),
+    });
+    assert.equal(result.reused, true);
+    assert.deepEqual(result.files, files);
+    for (const file of files) {
+      assert.equal(statSync(file).ino, statSync(`${file}.generation`).ino);
+      assert.equal(statSync(file).mode & 0o777, 0o444);
+      assert.equal(readFileSync(file, 'utf8'), 'pinned provider');
+    }
+  } finally {
+    rmSync(packageRoot, { recursive: true, force: true });
+  }
+});
+
+test('repair detaches read-only shared providers and replaces an empty asset without mutating the generation', () => {
+  const packageRoot = fakeOrtPackage();
+  const target = { os: 'linux', cpu: 'x64' };
+  const env = { npm_config_os: 'linux', npm_config_cpu: 'x64' };
+  const files = providerFilePaths({ packageRoot, target });
+  const originals = ['pinned provider', 'pinned provider', ''];
+  try {
+    files.forEach((file, i) => {
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(`${file}.generation`, originals[i]);
+      chmodSync(`${file}.generation`, 0o444);
+      linkSync(`${file}.generation`, file);
+    });
+    assert.deepEqual(inspectCudaProvider({ env, resolvePackageRoot: () => packageRoot }).missing, [files[2]]);
+    let calls = 0;
+    const result = installCudaProvider({
+      env,
+      host: { platform: 'linux', arch: 'x64' },
+      resolvePackageRoot: () => packageRoot,
+      run: () => {
+        calls += 1;
+        for (const file of files) writeFileSync(file, 'repaired provider');
+        return { status: 0 };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.skipped, false);
+    files.forEach((file, i) => {
+      assert.notEqual(statSync(file).ino, statSync(`${file}.generation`).ino);
+      assert.equal(readFileSync(file, 'utf8'), 'repaired provider');
+      assert.equal(readFileSync(`${file}.generation`, 'utf8'), originals[i]);
+      assert.equal(statSync(`${file}.generation`).mode & 0o777, 0o444);
+    });
+    assert.ok(readdirSync(join(files[0], '..')).every((name) => !name.includes('.install-')));
+  } finally {
+    rmSync(packageRoot, { recursive: true, force: true });
+  }
 });
 
 test('the installed upstream parser recognizes the force flag during an npm local lifecycle', () => {

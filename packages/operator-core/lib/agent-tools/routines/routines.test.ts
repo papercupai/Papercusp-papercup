@@ -1213,7 +1213,7 @@ describe('routines:list', () => {
     expect(b.routines[0].health.git_sync_exclusions.warning).toContain('last completed sweep');
   });
 
-  it('surfaces the writer-backed content-error paths and signature in routine health', async () => {
+  it.each([0, 8168])('surfaces content-error totals and full-evidence reference beside a preview (%i omitted)', async (omitted) => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
     sqlMock.mockResolvedValue([
@@ -1232,6 +1232,9 @@ describe('routines:list', () => {
           last_synced_at: now - 30_000,
           consecutive_content_error_ticks: 1,
           last_content_errors: ['root/docs/evidence/bad.json [identity-leak]'],
+          last_content_error_count: omitted + 1,
+          last_content_errors_omitted: omitted,
+          last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
           last_content_error_signature: 'stable-file-detector-signature',
         },
       },
@@ -1243,6 +1246,11 @@ describe('routines:list', () => {
     expect(b.routines[0].health.consecutive_content_error_ticks).toBe(1);
     expect(b.routines[0].health.last_content_errors).toEqual(['root/docs/evidence/bad.json [identity-leak]']);
     expect(b.routines[0].health.last_content_error_signature).toBe('stable-file-detector-signature');
+    expect(b.routines[0].health).toMatchObject({
+      last_content_error_count: omitted + 1,
+      last_content_errors_omitted: omitted,
+      last_content_errors_artifact: 'git-sync/content-errors/sha256.json',
+    });
   });
 
   it('surfaces the git-sync head_sha through the callable health reader', async () => {
@@ -2234,6 +2242,45 @@ describe('routines:list', () => {
     expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_800);
     expect(routines[0]!.health.last_error).toBe(lastError);
     expect(routines[0]!.health.git_sync_freshness.execution.holds_exclusive_locks).toBe(heldLocks);
+  });
+
+  it('preserves git_sync_activity when earlier health diagnostics exhaust the nested budget', () => {
+    const activity = {
+      active: true,
+      phase: 'local-sync',
+      started_at: 1_798_267_200_000,
+    };
+    const row = {
+      installSlug: 'papercusp',
+      name: 'git-sync',
+      cron: '0 */2 * * * *',
+      active: true,
+      nextFireAt: null,
+      group: 'release',
+      paused: null,
+      lastFiredAt: null,
+      lastFire: null,
+      health: {
+        last_error: 'earlier diagnostic '.repeat(1_500),
+        diagnostic_details: 'additional detail '.repeat(1_500),
+        git_sync_activity: activity,
+      },
+    };
+
+    const trimmed = listTool.shape!.trimmed!({ count: 1, routines: [row] }, { args: {} } as never) as {
+      count: number;
+      routines: Array<Record<string, unknown>>;
+    };
+    const health = trimmed.routines[0]!.health as Record<string, unknown>;
+    const assertActivityPreserved = (projected: Record<string, unknown>) =>
+      expect(projected.git_sync_activity).toEqual(activity);
+    // Control for the observed pre-fix all-or-nothing fallback: the guard must reject
+    // a health-json-budget marker that replaces the complete oversized health object.
+    const preFixHealth = { __papercusp_truncated__: true, reason: 'health-json-budget' };
+
+    expect(() => assertActivityPreserved(preFixHealth)).toThrow();
+    assertActivityPreserved(health);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_800);
   });
 
   it('CONTROL: the PRE-FIX allowlist is caught — proving the guard above can fail', async () => {

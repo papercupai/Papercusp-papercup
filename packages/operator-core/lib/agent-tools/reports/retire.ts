@@ -10,7 +10,7 @@
  * borrowing it would let any agent in a pot retire a peer's `pot`-visible report.
  * This verb therefore applies its own narrower rule: you may retire a report you
  * AUTHORED. The check runs in two stages so it cannot leak existence — an invisible
- * report is `not_found` (same answer reports:get gives), and only a report you can
+ * report is `not_found` on this write path, and only a report you can
  * already see can come back `not_author`.
  *
  * Server-only.

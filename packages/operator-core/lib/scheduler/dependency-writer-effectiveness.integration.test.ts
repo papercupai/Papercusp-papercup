@@ -48,7 +48,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyPlanItemAnchorMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   applyClaimPathReadDeps,
@@ -172,6 +172,7 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql
     .unsafe(

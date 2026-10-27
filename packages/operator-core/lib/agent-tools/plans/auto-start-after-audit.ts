@@ -16,7 +16,7 @@
  */
 import { parsePlan } from './parser';
 
-/** Calls `plans:start` for one slug; returns the tool's raw `{ data }` result. */
+/** Calls `plans:start` for one slug; returns its raw handler response. */
 export type PlanStartInvoker = (args: { slug: string; harness?: string }) => Promise<unknown>;
 
 export type AutoStartOutcome =
@@ -49,12 +49,36 @@ interface StartItemResult {
   autoApproved?: unknown;
 }
 
-function firstStartResult(raw: unknown): StartItemResult | null {
-  const data = (raw as { data?: unknown } | null | undefined)?.data;
-  const results = (data as { results?: unknown } | null | undefined)?.results;
+function firstResultFromEnvelope(value: unknown): StartItemResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const envelope = value as { data?: unknown; results?: unknown };
+  const data = envelope.data as { results?: unknown } | null | undefined;
+  const results = Array.isArray(envelope.results) ? envelope.results : data?.results;
   if (!Array.isArray(results) || results.length === 0) return null;
   const first = results[0];
   return first && typeof first === 'object' ? (first as StartItemResult) : null;
+}
+
+function firstStartResult(raw: unknown): StartItemResult | null {
+  const structured = firstResultFromEnvelope(raw);
+  if (structured) return structured;
+
+  // A nested plans:start handler returns its normal result-door ToolResult on
+  // transport contexts: the bulk envelope is JSON in content[].text instead
+  // of the structured { data } shape used by machine callers.
+  const content = (raw as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return null;
+  for (const item of content) {
+    const text = (item as { text?: unknown } | null | undefined)?.text;
+    if (typeof text !== 'string') continue;
+    try {
+      const result = firstResultFromEnvelope(JSON.parse(text));
+      if (result) return result;
+    } catch {
+      // Ignore non-JSON text blocks and keep looking for the bulk result.
+    }
+  }
+  return null;
 }
 
 function asText(value: unknown): string | undefined {

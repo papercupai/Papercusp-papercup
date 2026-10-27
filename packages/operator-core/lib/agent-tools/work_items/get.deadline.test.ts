@@ -9,6 +9,10 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { WorkItemIdAmbiguousError } from '../../work-items-physical-row';
+import { runToolOrchestration } from '@papercusp/agent-mcp';
+import type { ProjectedTool } from '@papercusp/tooldef';
+import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { applyNestedProjection } from '../../result-projection';
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
@@ -98,6 +102,83 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('keeps completion proof in nested A/B/C reads regardless of the outer code:run pick', async () => {
+    vi.useRealTimers();
+    const evidence = { summary: 'unchanged stored completion proof' };
+    const stored = {
+      id: 'WI-nested-proof', kind: 'feature', family: 'feature', harness: 'papercusp',
+      state: 'done', title: 'Nested proof', updatedAt: '2026-10-25T02:07:54.505Z',
+      payload: { _completionEvidence: evidence }, terminalCompletionEvidence: evidence,
+    };
+    const read = (_id: string, _harness?: string, options?: { payloadProjection?: string }) => ({
+      ...stored,
+      ...(options?.payloadProjection === 'none'
+        ? { payload: null, terminalCompletionEvidence: undefined }
+        : {}),
+    });
+    getWorkItem.mockImplementation(async (...args) => read(...args as [string]));
+    getWorkItemsByIds.mockImplementation(async (ids: string[], harness?: string, options?: { payloadProjection?: string }) =>
+      ids.map(id => read(id, harness, options)));
+    const parentProjection = { pick: ['ok', 'summary', 'childFailures'] };
+    const childProjection = {
+      pick: ['results[].hasCompletionEvidence', 'results[].workItem.terminalCompletionEvidence.summary'],
+    };
+    const tx = { currentCaller: true };
+    const principal = { slug: 'current-caller' };
+    const authenticatedPrincipal = { ownerId: 'su-nested-proof' };
+    const custody = Symbol('custody');
+    const observed: Array<Record<string | symbol, unknown>> = [];
+    const tool = {
+      pluginName: 'nested-proof', description: 'Real work_items:get handler',
+      inputSchema: { type: 'object' }, capabilities: [], effect: 'read', needsWorkspaceTx: true,
+      expose: { mcp: { name: 'work_items:get' } },
+      fn: async (args: unknown, callCtx: Record<string | symbol, unknown>) => {
+        observed.push(callCtx);
+        const result = await get.handler(args as never, callCtx as never) as Out;
+        return { content: [{ type: 'text', text: JSON.stringify(result.data) }] };
+      },
+    } as unknown as ProjectedTool;
+    const run = async (outerPick: boolean, childPick: boolean) => {
+      const result = await runToolOrchestration(
+        `const r = await tools.workItems.get(${JSON.stringify({
+          id: stored.id, ...(childPick ? { projection: childProjection } : {}),
+        })}); return { has: r.results[0].hasCompletionEvidence, proof: r.results[0].workItem.terminalCompletionEvidence?.summary };`,
+        {
+          ctx: {
+            ...ctx, log: vi.fn(), role: 'su', isSuperuser: true, tx, principal, authenticatedPrincipal,
+            [custody]: 'original-custody',
+            ...(outerPick ? {
+              sourceProjection: parentProjection,
+              sourceMaterialization: { trigger: 'projection', pickPaths: 3, promotedToFull: true, structuredSource: true },
+            } : {}),
+          } as never,
+          deps: {}, tools: [tool], allowed: new Set(['work_items:get']),
+          wrapDispatch: bindCurrentCallerDispatch,
+        },
+      );
+      return applyNestedProjection(result, outerPick ? parentProjection : null);
+    };
+
+    // Same stored row, changing only outer and explicit child projection controls.
+    for (const result of [await run(false, false), await run(true, false), await run(true, true)]) {
+      expect(result).toMatchObject({ ok: true, summary: { has: true, proof: evidence.summary }, childFailures: [] });
+    }
+    expect(stored.payload._completionEvidence).toBe(evidence);
+    for (const callCtx of observed) {
+      expect(callCtx.tx).toBe(tx);
+      expect(callCtx.principal).toBe(principal);
+      expect(callCtx.authenticatedPrincipal).toBe(authenticatedPrincipal);
+      expect(callCtx[custody]).toBe('original-custody');
+      expect(callCtx.uiClientId).toBe(ctx.uiClientId);
+      expect(callCtx.workspaceId).toBe(ctx.workspaceId);
+    }
+    expect(observed[1]?.sourceProjection).toBeUndefined();
+    expect(observed[1]?.sourceMaterialization).toBeUndefined();
+    expect(observed[2]?.sourceProjection).toEqual(childProjection);
+    expect(observed[2]?.sourceMaterialization).toMatchObject({ pickPaths: 2 });
+    expect(parentProjection).toEqual({ pick: ['ok', 'summary', 'childFailures'] });
   });
 
   it('returns a retryable timeout instead of not-found when the base read never settles', async () => {

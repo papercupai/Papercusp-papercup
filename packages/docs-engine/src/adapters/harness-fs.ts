@@ -19,7 +19,8 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
-import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
+import { forEachBoundedBatch } from './file-batches.js';
+import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface HarnessFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. */
@@ -142,21 +143,37 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
   // Cache pages by slug for getContent lookup.
   let pageCache: Map<string, FsPage> | null = null;
 
-  async function buildPages(): Promise<Map<string, FsPage>> {
-    if (pageCache) return pageCache;
+  async function buildPages(options?: DocListPagesOptions): Promise<Map<string, FsPage>> {
+    if (pageCache) {
+      options?.onTiming?.({ component: 'harness-fs', phase: 'cache', state: 'cached', count: pageCache.size });
+      return pageCache;
+    }
+    const buildStartedAt = Date.now();
+    options?.onTiming?.({ component: 'harness-fs', phase: 'build', state: 'started' });
     const cache = new Map<string, FsPage>();
 
     // docs/ tree
+    const walkStartedAt = Date.now();
+    options?.onTiming?.({ component: 'harness-fs', phase: 'walk', state: 'started' });
     const docsFiles = await walkDocs(docsRoot, maxDepth);
-    for (const abs of docsFiles) {
+    const walkMs = Math.max(0, Date.now() - walkStartedAt);
+    options?.onTiming?.({ component: 'harness-fs', phase: 'walk', state: 'completed', elapsedMs: walkMs, count: docsFiles.length });
+    const readParseStartedAt = Date.now();
+    options?.onTiming?.({
+      component: 'harness-fs',
+      phase: 'read-parse',
+      state: 'started',
+      count: docsFiles.length + stateFiles.length,
+    });
+
+    await forEachBoundedBatch(docsFiles, readSafe, (abs, content) => {
+      if (content === null) return;
       // The historical default includes the `docs/` directory in the slug.
       // A declared root is itself the docs corpus, so its slugs are relative
       // to that root (e.g. agent-insights/runbook), matching docs:author's
       // returned self-read ref.
       const rel = path.relative(legacyDocsRoot ? projectPath : docsRoot, abs);
       const slug = slugFromRelPath(rel);
-      const content = await readSafe(abs);
-      if (content === null) continue;
       const slugs = slug.split('/');
       cache.set(slug, {
         slug,
@@ -166,33 +183,39 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
         toc: extractHeadings(content),
         absolutePath: abs,
       });
-    }
+    });
 
     // State files
-    for (const relFile of stateFiles) {
-      const abs = path.join(projectPath, relFile);
-      const content = await readSafe(abs);
-      if (content === null) continue;
-      const slug = slugFromRelPath(relFile);
-      const slugs = slug.split('/');
-      cache.set(slug, {
-        slug,
-        slugs,
-        url: `/project-docs?harness=__SLUG__&path=${encodeURIComponent(relFile)}`,
-        title: extractTitle(content, humanize(path.basename(slug))),
-        toc: extractHeadings(content),
-        absolutePath: abs,
-      });
-    }
+    await forEachBoundedBatch(
+      stateFiles,
+      async (relFile) => readSafe(path.join(projectPath, relFile)),
+      (relFile, content) => {
+        if (content === null) return;
+        const abs = path.join(projectPath, relFile);
+        const slug = slugFromRelPath(relFile);
+        const slugs = slug.split('/');
+        cache.set(slug, {
+          slug,
+          slugs,
+          url: `/project-docs?harness=__SLUG__&path=${encodeURIComponent(relFile)}`,
+          title: extractTitle(content, humanize(path.basename(slug))),
+          toc: extractHeadings(content),
+          absolutePath: abs,
+        });
+      },
+    );
 
     pageCache = cache;
+    const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
+    options?.onTiming?.({ component: 'harness-fs', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
+    options?.onTiming?.({ component: 'harness-fs', phase: 'build', state: 'completed', elapsedMs: Math.max(0, Date.now() - buildStartedAt), count: cache.size });
     return cache;
   }
 
   return {
     name,
-    async listPages(): Promise<DocPage[]> {
-      const cache = await buildPages();
+    async listPages(options?: DocListPagesOptions): Promise<DocPage[]> {
+      const cache = await buildPages(options);
       return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
     },
     async getPage(slug: string): Promise<DocPage | null> {

@@ -26,18 +26,53 @@ import {
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import { LANE_SCRIPTS } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { PC_TEST_PARTIAL_SKIP_LIST_ENV, TEST_REUSE_SKIP_LIST_ENV } from '../../../../scripts/lib/test-pass-reuse.mjs';
+import { RELATED_FILTER_LIST_ENV } from '../../../../scripts/lib/related-tests.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+
+// Names a fresh VM context resolves by itself (JSON, String, undefined, ...). Node globals such as
+// `process` are NOT here, so a slice reading one must get it from the context below.
+const VM_BUILTINS = new Set<string>(runInNewContext('Object.getOwnPropertyNames(globalThis)', {}));
+
+/**
+ * WI-6554700010029777: identifiers the slice READS but does not DECLARE. The VM context below is a
+ * hand-written list of exactly these, so a production edit that adds a module-level reference to the
+ * slice (17dd034cc1 added `qualificationPhysicalExecution`) used to surface as 14 opaque
+ * ReferenceErrors. Listing them lets captureEnvironment fail by name instead.
+ */
+function freeIdentifiers(nodes: readonly ts.Node[]): string[] {
+  const declared = new Set<string>();
+  const used = new Set<string>();
+  const bind = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) declared.add(name.text);
+    else for (const el of name.elements) if (!ts.isOmittedExpression(el)) bind(el.name);
+  };
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) || ts.isParameter(n)) bind(n.name);
+    if (ts.isIdentifier(n)) {
+      const p = n.parent;
+      const isMemberName = (ts.isPropertyAccessExpression(p) && p.name === n)
+        || ((ts.isPropertyAssignment(p) || ts.isMethodDeclaration(p)) && p.name === n)
+        || (ts.isBindingElement(p) && (p.name === n || p.propertyName === n));
+      if (!isMemberName) used.add(n.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  nodes.forEach(visit);
+  return [...used].filter(u => !declared.has(u)).sort();
+}
 
 // Execute the production child-environment statements. No suites, admission or DB writes
 // are needed to exercise the boundary that decides whether the real reporter is armed.
 function captureEnvironment({
   workspace = '@probe/core', script = 'test:integration', env = {}, extraArgs = [],
-  scriptOverride = null, journalLabel = 'initial', runToken = 'run-a',
+  scriptOverride = null, journalLabel = 'initial', runToken = 'run-a', qualificationTasks = null,
 }: {
   workspace?: string; script?: string; env?: NodeJS.ProcessEnv; extraArgs?: string[];
   scriptOverride?: string | null; journalLabel?: string; runToken?: string;
+  /** Task keys of a physical qualification execution; null = not a qualification run. */
+  qualificationTasks?: string[] | null;
 } = {}): NodeJS.ProcessEnv {
   const source = readFileSync(AFFECTED_TESTS, 'utf8');
   const ast = ts.createSourceFile('affected-tests.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -52,18 +87,27 @@ function captureEnvironment({
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   const task = { ws: { name: workspace }, script };
+  const spawnTask = { ...task, script: scriptOverride ?? script };
+  const taskKey = (t: typeof task) => `${t.ws.name}::${t.script}`;
+  const sandbox: Record<string, unknown> = {
+    process: { env }, spawnTask, spawnTaskKey: taskKey(spawnTask),
+    context: { t: task }, allocation: { workers: 1 }, specEnv: {},
+    relatedFilterList: null, reuseSkipList: null, extraArgs, scriptOverride, journalLabel,
+    RUN_LOG_ROOT: '/tmp/capture', RUN_TOKEN: runToken, LANE_SCRIPTS,
+    executedMapRecordingEnabled: () => executedMapRecordingEnabled(env), executedMapResultPath,
+    EXECUTED_MAP_WORKSPACE_ENV, EXECUTED_MAP_RESULT_ENV, EXECUTED_MAP_OUT_ENV,
+    EXECUTED_MAP_NO_PERSIST_ENV, PC_TEST_PARTIAL_SKIP_LIST_ENV, TEST_REUSE_SKIP_LIST_ENV,
+    RELATED_FILTER_LIST_ENV, createHash, taskKey,
+    qualificationPhysicalExecution: qualificationTasks ? { tasks: qualificationTasks } : undefined,
+  };
+  const slice = statements.slice(start, end + 1);
+  expect(
+    freeIdentifiers(slice).filter(n => !(n in sandbox) && !VM_BUILTINS.has(n)),
+    'runCapturedTask slice reads names this test does not supply; add each to the sandbox',
+  ).toEqual([]);
   return { ...runInNewContext(
     `${source.slice(statements[start].getStart(ast), statements[end].end)}\nchildEnv;`,
-    {
-      process: { env }, spawnTask: { ...task, script: scriptOverride ?? script },
-      context: { t: task }, allocation: { workers: 1 }, specEnv: {},
-      relatedFilterList: null, reuseSkipList: null, extraArgs, scriptOverride, journalLabel,
-      RUN_LOG_ROOT: '/tmp/capture', RUN_TOKEN: runToken, LANE_SCRIPTS,
-      executedMapRecordingEnabled: () => executedMapRecordingEnabled(env), executedMapResultPath,
-      EXECUTED_MAP_WORKSPACE_ENV, EXECUTED_MAP_RESULT_ENV, EXECUTED_MAP_OUT_ENV,
-      EXECUTED_MAP_NO_PERSIST_ENV, PC_TEST_PARTIAL_SKIP_LIST_ENV, TEST_REUSE_SKIP_LIST_ENV,
-      createHash, taskKey: (t: typeof task) => `${t.ws.name}::${t.script}`,
-    },
+    sandbox,
   ) };
 }
 
@@ -87,6 +131,28 @@ describe('completed-module failure diagnostics (WI-6554700010017368)', () => {
     expect(captureEnvironment({ script: 'lint:el-tools', env: {
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: '/outer/shared.json',
     } }).PAPERCUSP_TEST_FAILURE_DETAILS_PATH).toBeUndefined();
+  });
+});
+
+describe('runCapturedTask slice harness (WI-6554700010029777)', () => {
+  it('lists read-but-undeclared names, skipping member names, bound names and keys', () => {
+    const src = 'const a = b + c.d; const { [K]: e, f: g, h } = i; const o = { p: q, r }; (s) => s + t;';
+    const sf = ts.createSourceFile('x.mjs', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    expect(freeIdentifiers(sf.statements)).toEqual(['K', 'b', 'c', 'i', 'q', 'r', 't']);
+  });
+
+  it('routes a physical-qualification member task to its own task source map', () => {
+    const own = `${executedMapResultPath('/tmp/capture', 'run-a', '@probe/core::test')}.task.sources.json`;
+    expect(captureEnvironment({ script: 'test', qualificationTasks: ['@probe/core::test'] })[EXECUTED_MAP_OUT_ENV])
+      .toBe(own);
+    // Not a member, a retry file set, or an overridden script: no task map.
+    expect(captureEnvironment({ script: 'test', qualificationTasks: ['@probe/other::test'] })[EXECUTED_MAP_OUT_ENV])
+      .toBeUndefined();
+    expect(captureEnvironment({ script: 'test', qualificationTasks: ['@probe/core::test'], extraArgs: ['a.test.ts'] })[
+      EXECUTED_MAP_OUT_ENV]).toBeUndefined();
+    // The key matches the overridden spawn script, so only the scriptOverride check can refuse it.
+    expect(captureEnvironment({ script: 'test', qualificationTasks: ['@probe/core::test:x'], scriptOverride: 'test:x' })[
+      EXECUTED_MAP_OUT_ENV]).toBeUndefined();
   });
 });
 

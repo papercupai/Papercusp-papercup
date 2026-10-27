@@ -102,6 +102,54 @@ describe('resolveSessionStates is TOTAL — unknown is in band, never omitted', 
     expect(JSON.stringify(timings)).not.toContain(ownerId);
   });
 
+  it('fills a freed host-discovery slot while an earlier lookup is blocked, with at most sixteen active', async () => {
+    const owners = Array.from({ length: 33 }, (_, i) => `su-host-discovery-${i}`);
+    let releaseFirst!: () => void;
+    let sawLaterOwner!: () => void;
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const laterOwner = new Promise<void>((resolve) => { sawLaterOwner = resolve; });
+    const lookups: string[] = [];
+    let active = 0;
+    let peak = 0;
+    const discovery = resolveSessionStates(owners.map((ownerId, i) => ({
+      ownerId, heartbeatAt: iso(5_000), stale: false, host: 'test-host', pid: i + 1,
+    })), {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () => new Map(owners.map(ownerId => [ownerId, SIGNALLED])),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => false,
+      findHostAsyncFn: async (ownerId) => {
+        lookups.push(ownerId);
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          if (ownerId === owners[0]) await first;
+          else await Promise.resolve();
+          if (ownerId === owners[16]) sawLaterOwner();
+          if (ownerId === owners[17]) throw new Error('unreadable discovery record');
+          return ownerId === owners[32] ? { pid: 1000 } : null;
+        } finally { active -= 1; }
+      },
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let filledFreedSlot: boolean;
+    try {
+      filledFreedSlot = await Promise.race([
+        laterOwner.then(() => true),
+        new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 200); }),
+      ]);
+    } finally { clearTimeout(timer); releaseFirst(); }
+    const out = await discovery;
+    expect(filledFreedSlot, 'a slow owner must not leave fifteen discovery slots idle').toBe(true);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(16);
+    expect(lookups).toEqual(owners);
+    expect([...out.keys()]).toEqual(owners);
+    expect(out.get(owners[17])?.sessionState).toBe('ended');
+    expect(out.get(owners[32])?.sessionState).toBe('parked');
+  });
+
   it('marks an unmeasured subject UNKNOWN in band, on three independent channels', async () => {
     const out = await resolveSessionStates(
       subjects,

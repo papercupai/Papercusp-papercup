@@ -99,12 +99,13 @@ describe('assessGenerationPreflight — dedup saturation (R-5, R-6)', () => {
 });
 
 describe('leadingDedupSkips', () => {
-  it('passes over throttle skips and stops at any other tick', () => {
+  it('passes over non-running gates and stops at a ran tick', () => {
     const ticks = [
       skipTick('dedup-saturated'),
       skipTick('admission-throttle-deep'),
       skipTick('dedup-saturated'),
       { status: 'gated', gate: 'workspace-ceiling', detail: { reason: 'workspace-ceiling' } },
+      { status: 'ran', ideasGenerated: 4, ideasDeduped: 1 },
       skipTick('dedup-saturated'),
     ] satisfies GenerationPreflightTick[];
     expect(leadingDedupSkips(ticks)).toBe(2);

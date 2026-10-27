@@ -236,7 +236,10 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
           peerNamespaceRefspec(devA),
         ],
         mirror,
-        { timeoutMs: 30_000 },
+        // Match fetchOverDuplex's plain-interpreter protocol boundary. An
+        // inherited test loader can otherwise fail in git's temporary GIT_DIR
+        // before the negative control reaches the unescaped script path.
+        { timeoutMs: 30_000, env: { NODE_OPTIONS: '', BUN_OPTIONS: '', TSX_TSCONFIG_PATH: '' } },
       );
 
     // NEGATIVE CONTROL: the exact string 0.0.14 shipped.
@@ -299,7 +302,8 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
             url,
             peerNamespaceRefspec(devA),
           ],
-          { cwd: mirror, env: { ...process.env, PATH: binDir }, timeout: 30_000 },
+          { cwd: mirror, env: { ...process.env, PATH: binDir, NODE_OPTIONS: '', BUN_OPTIONS: '',
+            TSX_TSCONFIG_PATH: '' }, timeout: 30_000 },
           (err, _stdout, stderr) =>
             resolve({ code: err ? Number((err as NodeJS.ErrnoException).code ?? 1) : 0, stderr: String(stderr) }),
         );

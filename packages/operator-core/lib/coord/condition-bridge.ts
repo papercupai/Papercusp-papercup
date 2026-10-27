@@ -37,9 +37,15 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { createWorkItem, setWorkItemState } from '../work-items';
+import { claimWorkItem, createWorkItem, setWorkItemState } from '../work-items';
 import { resolveWorkItemPot } from '../pot-membership';
 import { findConditionObject, linkWorkItemToCondition, type ConditionObject } from './condition-object';
+// TYPE-ONLY on purpose: a runtime import of './gate-ownership' closes a cycle back into
+// this module (gate-ownership → presence-wakeability → inbox-wake → events/await/engine →
+// progress-lease → condition-upsert → condition-bridge). The runtime reader is loaded
+// lazily in {@link readLiveGateOwnerForAssignment}.
+import type { CellOwnership } from './gate-ownership';
+import type { ActionableCondition } from './actionable-conditions';
 
 // The condition-key opt-in CATALOG lives in the zero-import leaf './actionable-conditions'
 // (P-013/D-012 of gate-verdict-liveness-and-repair-reliability-2026-08-31): the
@@ -130,6 +136,17 @@ export interface AcquireResult {
   duplicateLeftOpen?: string;
   /** Why the stand-down settle of {@link duplicateLeftOpen} failed (the refusal's message). */
   duplicateLeftOpenError?: string;
+  /**
+   * Set only when THIS call assigned the item under an assignment policy
+   * ({@link ActionableCondition.assignTo}): the agent it was assigned to at creation,
+   * or — on adoption — the live gate owner an unassigned incumbent was handed to.
+   */
+  assignedTo?: string;
+  /**
+   * Set only when THIS call minted the item under an assignment policy and left it
+   * unassigned: why (the same sentence is written into the item's summary).
+   */
+  unassignedReason?: string;
   /**
    * Set when nothing was written, and WHY:
    *   • `not-actionable`      — the key is not opted in.
@@ -386,6 +403,140 @@ export async function claimConditionKey(
 }
 
 /**
+ * What the assignment policy observed about the live gate owner.
+ *
+ * `ok: false` = the read itself failed. That is reported as its own reason rather
+ * than folded into "no owner", because "nobody owns the gate" and "we could not tell
+ * who owns the gate" call for different responses from whoever reads the item.
+ */
+export type GateOwnerObservation =
+  | { ok: true; ownership: CellOwnership; heldByLiveHolder: boolean }
+  | { ok: false; error: string };
+
+/** The decision for one mint: an assignee, or the stated reason there is none. */
+export type ConditionAssignment = { assignee: string; reason: null } | { assignee: null; reason: string };
+
+/**
+ * PURE. Who a freshly minted condition item is assigned to
+ * (gate-repair-plane-on-current-build-2026-10-15 P-004, BAR R-4).
+ *
+ * Returns `null` when the catalog entry declares no policy — the item lands
+ * unassigned with nothing to explain, which is the default for every condition
+ * that is not the gate's (see {@link ActionableCondition.assignTo}).
+ *
+ * Assigns ONLY on a positive liveness verdict (`heldByLiveHolder`, computed by the
+ * caller with `ownershipHeldByLiveHolder`). Every other outcome leaves the item
+ * unassigned with a reason naming which case it was: a stale or stalled holder is
+ * named, so a reader can see who the gate was last held by and that they are gone.
+ */
+export function decideConditionAssignment(
+  policy: ActionableCondition['assignTo'],
+  observed: GateOwnerObservation | null,
+): ConditionAssignment | null {
+  if (policy !== 'live-gate-owner') return null;
+  if (!observed) {
+    return { assignee: null, reason: 'Left unassigned: the live gate owner was not read for this mint.' };
+  }
+  if (!observed.ok) {
+    return {
+      assignee: null,
+      reason: `Left unassigned: the gate ownership could not be read (${observed.error}).`,
+    };
+  }
+  const own = observed.ownership;
+  const holder = own.takenBy?.trim() || null;
+  if (observed.heldByLiveHolder && holder) return { assignee: holder, reason: null };
+  if (own.claimState === null) {
+    const detail = own.unknown
+      ? [own.unknown.code, own.unknown.detail].filter(Boolean).join(': ')
+      : 'no detail recorded';
+    return { assignee: null, reason: `Left unassigned: the gate ownership is unmeasured (${detail}).` };
+  }
+  if (holder) {
+    return {
+      assignee: null,
+      reason:
+        `Left unassigned: the recorded gate owner ${holder} is not a live owner ` +
+        `(claim ${own.claimState}, assessment ${own.assessment ?? 'unknown'}, ` +
+        `session ${own.holderSessionState ?? 'unknown'}).`,
+    };
+  }
+  return {
+    assignee: null,
+    reason: `Left unassigned: the gate has no live owner (${own.eventKey} is ${own.claimState}).`,
+  };
+}
+
+/**
+ * The production gate-owner read: `readGateOwnership` for the condition's STORED
+ * harness, judged with the same positive-liveness rule every stand-down path uses.
+ * Loaded lazily (see the type-only import at the top for the cycle it avoids).
+ */
+export async function readLiveGateOwnerForAssignment(harness: string): Promise<GateOwnerObservation> {
+  try {
+    const { readGateOwnership, ownershipHeldByLiveHolder } = await import('./gate-ownership');
+    const ownership = await readGateOwnership({ harness });
+    return { ok: true, ownership, heldByLiveHolder: ownershipHeldByLiveHolder(ownership) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Injection seam for {@link acquireConditionOwner}; production uses the defaults. */
+export interface AcquireConditionOwnerDeps {
+  readGateOwner?: (harness: string) => Promise<GateOwnerObservation>;
+}
+
+/**
+ * Offer an ADOPTED, still-unassigned condition owner to the live gate owner.
+ *
+ * The mint assigns at creation, but a mint made while the gate was unowned lands
+ * unassigned, and every later fire of the same condition ADOPTS that row. Without this
+ * step the common sequence (alarm fires unowned, an owner claims the gate minutes later,
+ * the alarm re-fires) leaves the item unassigned for its whole life.
+ *
+ * Reads gate ownership only when it can matter: the entry declares a policy AND the
+ * incumbent has no holder. The claim is a compare-and-set on an UNHELD row
+ * (`claimWorkItem`), so a peer who claimed the item in between is never displaced.
+ * Fail-soft like the mint: any failure leaves the incumbent as it was and adoption
+ * still returns it, because adoption is the load-bearing half of the caller.
+ *
+ * Returns the assignee written, or null when nothing was assigned.
+ */
+async function assignAdoptedConditionOwner(
+  conditionKey: string,
+  incumbentId: string,
+  harness: string,
+  workspaceId: string | undefined,
+  deps: AcquireConditionOwnerDeps,
+): Promise<string | null> {
+  const policy = actionableConditionFor(conditionKey)?.assignTo;
+  if (!policy) return null;
+  try {
+    const sql = getOrgPg().sql;
+    const rows = await sql<{ taken_by: string | null }[]>`
+      SELECT taken_by
+        FROM harness_shared.work_items
+       WHERE feature_id = ${incumbentId}
+         AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
+       LIMIT 1`;
+    if (!rows[0] || (rows[0].taken_by ?? '') !== '') return null;
+    const assignment = decideConditionAssignment(
+      policy,
+      await (deps.readGateOwner ?? readLiveGateOwnerForAssignment)(harness),
+    );
+    if (!assignment?.assignee) return null;
+    const claimed = await claimWorkItem(incumbentId, assignment.assignee, {
+      harness,
+      assignedBy: CONDITION_BRIDGE_ACTOR,
+    });
+    return claimed ? assignment.assignee : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Ensure an actionable condition has exactly one owning work-item.
  *
  * Idempotent: calling it repeatedly while the condition stays open adopts the
@@ -394,6 +545,7 @@ export async function claimConditionKey(
 export async function acquireConditionOwner(
   conditionKey: string,
   spec: ConditionOwnerSpec,
+  deps: AcquireConditionOwnerDeps = {},
 ): Promise<AcquireResult> {
   const key = conditionKey.trim();
   if (!isActionableConditionKey(key)) {
@@ -446,16 +598,38 @@ export async function acquireConditionOwner(
   //    will nonetheless refuse us, which is precisely the state that produces an
   //    unownable condition. The link read remains as the second opinion for a
   //    row that carries the association but (somehow) not the key.
+  //
+  //    Adoption is also the RE-FIRE path, so it is where an unowned mint gets its second
+  //    chance (b50c critique, plan D-007): an alarm that fired while nobody owned the
+  //    gate minted unassigned; when it fires again after an owner claimed the gate, the
+  //    incumbent is offered to that owner instead of staying unassigned forever.
   const holder = await findConditionKeyHolder(key, { harnessSlug: harness, workspaceId: spec.workspaceId });
-  if (holder) return { conditionKey: key, workItem: holder, created: false };
-  const existing = await findConditionObject(key, { harnessSlug: harness });
-  if (existing.workItem) return { conditionKey: key, workItem: existing.workItem, created: false };
+  const adopted = holder ?? (await findConditionObject(key, { harnessSlug: harness })).workItem;
+  if (adopted) {
+    const assignedTo = await assignAdoptedConditionOwner(key, adopted, harness, spec.workspaceId, deps);
+    return { conditionKey: key, workItem: adopted, created: false, ...(assignedTo ? { assignedTo } : {}) };
+  }
 
   // 3. Mint, then try to take the key. Deliberately optimistic — see the header.
+  //
+  //    Assigned AT CREATION (P-004) when the entry declares a policy: createWorkItem's
+  //    `assignee` claims in the same INSERT, so there is no window in which the alarm
+  //    item sits unassigned while the live gate owner never hears of it. The ownership
+  //    read is fail-soft — a failed read leaves the item unassigned with that reason;
+  //    it never stops the mint, which is the load-bearing half of this function.
+  const policy = actionableConditionFor(key)?.assignTo;
+  const assignment = policy
+    ? decideConditionAssignment(policy, await (deps.readGateOwner ?? readLiveGateOwnerForAssignment)(harness))
+    : null;
+  const summary =
+    assignment?.reason != null
+      ? [spec.summary?.trim(), `Assignment: ${assignment.reason}`].filter(Boolean).join('\n\n')
+      : spec.summary;
   const item = await createWorkItem({
     kind: 'bug',
     title: spec.title,
-    summary: spec.summary,
+    summary,
+    ...(assignment?.assignee ? { assignee: assignment.assignee, assignedBy: CONDITION_BRIDGE_ACTOR } : {}),
     harness,
     severity: spec.severity ?? 'major',
     workspaceId: spec.workspaceId,
@@ -504,7 +678,13 @@ export async function acquireConditionOwner(
   //    successful claim (the claim is the load-bearing half).
   await linkWorkItemToCondition(item.id, key, { harness }).catch(() => undefined);
 
-  return { conditionKey: key, workItem: item.id, created: true };
+  return {
+    conditionKey: key,
+    workItem: item.id,
+    created: true,
+    ...(assignment?.assignee ? { assignedTo: assignment.assignee } : {}),
+    ...(assignment?.reason != null ? { unassignedReason: assignment.reason } : {}),
+  };
 }
 
 /**
@@ -637,6 +817,98 @@ export async function releaseConditionOwner(
     ...(settleSkipped ? { settleSkipped } : {}),
     ...(settleError ? { settleError } : {}),
   };
+}
+
+/**
+ * Per-tick bound for {@link reconcileHeldConditionOwners}. Each candidate costs one
+ * exact-key envelope read, so the sweep stays small and rotates instead of scanning.
+ */
+export const HELD_CONDITION_SWEEP_LIMIT = 20;
+
+/** One non-terminal, bridge-minted row that still holds a condition key. */
+export interface HeldConditionOwner {
+  workItem: string;
+  conditionKey: string;
+  harness: string;
+}
+
+/**
+ * PURE. Which held keys did the aggregate reconcile NOT cover this tick?
+ *
+ * `reconcileConditions` only acts on a key that is BOTH in the bounded aggregate
+ * fold AND in the actionable catalog. Every other bridge-minted holder has no path
+ * to settle, which is how WI-6554700010029296 stranded 214 `alarm:*` items: they
+ * were minted while `alarm:` was actionable, the catalog was narrowed, and from then
+ * on nothing presented their resolution to the bridge. They stayed open, claimable
+ * as kind=bug, and recycled through hundreds of holders.
+ */
+export function heldOwnersNeedingExactReconcile(
+  holders: readonly HeldConditionOwner[],
+  coveredKeys: ReadonlySet<string>,
+): HeldConditionOwner[] {
+  return holders.filter((h) => !coveredKeys.has(h.conditionKey));
+}
+
+/**
+ * Settle bridge-minted items whose condition RESOLVED but which the aggregate
+ * reconcile cannot reach (WI-6554700010029296).
+ *
+ * Reconciles from the HOLDER side: list non-terminal `_bridge` rows that still hold
+ * a key, skip the keys the aggregate pass already presented (`coveredKeys`), fold
+ * each remaining key exactly via `readKeyOpen`, and settle only on an explicit
+ * `false`. `true` (still open) and `null` (no lifecycle evidence) are left alone.
+ * Absence of evidence is not a resolution, and an open orphan is a policy question
+ * (see WI-6554700010016287), not a reconcile defect.
+ *
+ * Release is deliberately NOT gated on the actionable catalog. The catalog decides
+ * what may be MINTED; an item already minted must still be able to close.
+ *
+ * Rotation is stateless: candidates are ordered by md5(feature_id || minute bucket)
+ * and capped at `limit`, so every holder is examined over successive ticks without
+ * module-scoped state. Fail-soft per holder.
+ */
+export async function reconcileHeldConditionOwners(opts: {
+  coveredKeys: ReadonlySet<string>;
+  readKeyOpen: (conditionKey: string) => Promise<boolean | null>;
+  workspaceId?: string;
+  now?: number;
+  limit?: number;
+}): Promise<ReleaseResult[]> {
+  const limit = opts.limit ?? HELD_CONDITION_SWEEP_LIMIT;
+  if (limit <= 0) return [];
+  const bucket = String(Math.floor((opts.now ?? Date.now()) / 60_000));
+  const sql = getOrgPg().sql;
+  const rows = await sql<{ feature_id: string; condition_key: string; harness_slug: string }[]>`
+    SELECT feature_id, condition_key, harness_slug
+      FROM harness_shared.work_items
+     WHERE condition_key IS NOT NULL
+       AND (payload -> ${BRIDGE_MINT_MARKER}) IS NOT NULL
+       AND (status IS NULL OR status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
+     ORDER BY md5(feature_id || ${bucket})
+     LIMIT 2000`;
+  const candidates = heldOwnersNeedingExactReconcile(
+    rows.map((r) => ({ workItem: r.feature_id, conditionKey: r.condition_key, harness: r.harness_slug })),
+    opts.coveredKeys,
+  ).slice(0, limit);
+
+  const out: ReleaseResult[] = [];
+  for (const holder of candidates) {
+    try {
+      if ((await opts.readKeyOpen(holder.conditionKey)) !== false) continue;
+      out.push(
+        await releaseConditionOwner(holder.conditionKey, {
+          harness: holder.harness,
+          workspaceId: opts.workspaceId,
+          settle: true,
+          reason: `condition '${holder.conditionKey}' resolved — closed by the condition bridge holder sweep`,
+        }),
+      );
+    } catch {
+      // One unreadable key must not stop the rest; the next tick retries it.
+    }
+  }
+  return out;
 }
 
 /**

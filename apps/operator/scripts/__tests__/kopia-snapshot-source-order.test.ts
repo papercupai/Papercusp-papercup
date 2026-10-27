@@ -38,7 +38,7 @@
  * check would pass against a script that computes a perfect list and then
  * hands it over in the wrong order, which is precisely the bug.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -81,6 +81,7 @@ function writeFakes(alreadySnapshotted: string[]): void {
 if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
   [ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }
   if [[ " $* " == *" --json "* ]]; then echo '[]'; exit 0; fi
+  [ "\${KOPIA_TEST_FAIL_DISCOVERY:-0}" != 1 ] || exit 45
   cat <<'LISTING'
 ${listing}
 LISTING
@@ -90,7 +91,13 @@ if [ "$1" = "snapshot" ] && [ "$2" = "create" ]; then
   [ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }
   shift 2
   { printf '%s\\n' "$@"; echo '${INVOCATION_END}'; } >> ${JSON.stringify(join(dir, 'create-argv'))}
+  for source in "$@"; do
+    [ "$source" != "\${KOPIA_TEST_FAIL_CREATE_SOURCE:-}" ] || exit 42
+  done
   exit 0
+fi
+if [ "$1" = "snapshot" ] && [ "$2" = "expire" ]; then
+  [ "\${KOPIA_TEST_FAIL_RETENTION:-0}" != 1 ] || exit 44
 fi
 exit 0
 `,
@@ -102,40 +109,49 @@ exit 0
 /** Separates one `kopia snapshot create` invocation's argv from the next. */
 const INVOCATION_END = '--end-of-invocation--';
 
+function sweepEnvironment(requiredDir: string, procRoot?: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    HOME: join(dir, 'home'),
+    KOPIA_BACKUP_GUARD_ACTIVE: '1',
+    KOPIA_SNAPSHOT_LOG_DIR: join(dir, 'log'),
+    KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
+    KOPIA_HOLD_SUDO_BIN: join(dir, 'sudo'),
+    KOPIA_HOLD_PSQL_BIN: join(dir, 'psql'),
+    KOPIA_SNAPSHOT_BIN: join(dir, 'kopia'),
+    KOPIA_LOG_DIR: join(dir, 'kopia-cli-logs'),
+    KOPIA_TEST_EXPECT_LOG_DIR: join(dir, 'kopia-cli-logs'),
+    PAPERCUSP_HOST_PG_DUMP_DIR: requiredDir,
+    ...(procRoot ? { KOPIA_SNAPSHOT_PROC_ROOT: procRoot } : {}),
+  };
+}
+
 /** Run the sweep and return the source arguments of each kopia invocation, in order. */
-function runSweepInvocations(requiredDir: string, procRoot?: string): string[][] {
-  return runSweepRawInvocations(requiredDir, procRoot)
+function runSweepInvocations(requiredDir: string, procRoot?: string, expectedStatus = 0): string[][] {
+  return runSweepRawInvocations(requiredDir, procRoot, expectedStatus)
     .map((inv) => inv.filter((arg) => !arg.startsWith('--')))
     .filter((inv) => inv.length > 0);
 }
 
 /** Run the sweep and return each kopia invocation's FULL argv, flags included, in order. */
-function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[][] {
+function runSweepRawInvocations(requiredDir: string, procRoot?: string, expectedStatus = 0): string[][] {
   rmSync(join(dir, 'create-argv'), { force: true });
+  let actualStatus: number | null = 0;
   try {
     execFileSync('/usr/bin/env', ['bash', '-x', SCRIPT], {
-    env: {
-      ...process.env,
-      HOME: join(dir, 'home'),
-      KOPIA_BACKUP_GUARD_ACTIVE: '1', // do not re-enter the pressure guard
-      KOPIA_SNAPSHOT_LOG_DIR: join(dir, 'log'),
-      KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
-      KOPIA_HOLD_SUDO_BIN: join(dir, 'sudo'),
-      KOPIA_HOLD_PSQL_BIN: join(dir, 'psql'),
-      KOPIA_SNAPSHOT_BIN: join(dir, 'kopia'),
-      KOPIA_LOG_DIR: join(dir, 'kopia-cli-logs'),
-      KOPIA_TEST_EXPECT_LOG_DIR: join(dir, 'kopia-cli-logs'),
-      PAPERCUSP_HOST_PG_DUMP_DIR: requiredDir,
-      ...(procRoot ? { KOPIA_SNAPSHOT_PROC_ROOT: procRoot } : {}),
-    },
+      env: sweepEnvironment(requiredDir, procRoot),
       timeout: 60_000,
     });
   } catch (error) {
-    const failure = error as Error & { stderr?: Buffer; stdout?: Buffer };
-    const logPath = join(dir, 'log', 'snapshot-all.log');
-    const phaseLog = existsSync(logPath) ? readFileSync(logPath, 'utf8').slice(-8000) : '';
-    throw new Error(`${failure.message}\nShell phase trace:\n${String(failure.stderr ?? '').slice(-2000)}\n${phaseLog}\n${String(failure.stdout ?? '').slice(-1000)}`);
+    const failure = error as Error & { status?: number | null; stderr?: Buffer; stdout?: Buffer };
+    actualStatus = failure.status ?? null;
+    if (actualStatus !== expectedStatus) {
+      const logPath = join(dir, 'log', 'snapshot-all.log');
+      const phaseLog = existsSync(logPath) ? readFileSync(logPath, 'utf8').slice(-8000) : '';
+      throw new Error(`${failure.message}\nShell phase trace:\n${String(failure.stderr ?? '').slice(-2000)}\n${phaseLog}\n${String(failure.stdout ?? '').slice(-1000)}`);
+    }
   }
+  expect(actualStatus).toBe(expectedStatus);
   const invocations: string[][] = [[]];
   for (const line of readFileSync(join(dir, 'create-argv'), 'utf8').split('\n')) {
     if (line === INVOCATION_END) invocations.push([]);
@@ -145,8 +161,8 @@ function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[
 }
 
 /** Run the sweep and return the source arguments, in the order kopia saw them. */
-function runSweep(requiredDir: string, procRoot?: string): string[] {
-  return runSweepInvocations(requiredDir, procRoot).flat();
+function runSweep(requiredDir: string, procRoot?: string, expectedStatus = 0): string[] {
+  return runSweepInvocations(requiredDir, procRoot, expectedStatus).flat();
 }
 
 beforeEach(() => {
@@ -160,6 +176,67 @@ beforeEach(() => {
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('kopia-snapshot-all.sh producer failure status', () => {
+  function runWithFailure(extraEnv: NodeJS.ProcessEnv) {
+    return spawnSync('/usr/bin/env', ['bash', SCRIPT], {
+      env: { ...sweepEnvironment(join(dir, 'dumps')), ...extraEnv },
+      timeout: 60_000,
+      encoding: 'utf8',
+    });
+  }
+
+  it('returns a required snapshot failure while still attempting the tail', () => {
+    writeFakes(['/srv/tail']);
+    const result = runWithFailure({ KOPIA_TEST_FAIL_CREATE_SOURCE: join(dir, 'dumps') });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(42);
+    expect(readFileSync(join(dir, 'create-argv'), 'utf8')).toContain('/srv/tail');
+  });
+
+  it('returns a tail snapshot failure after the required snapshot succeeds', () => {
+    writeFakes(['/srv/tail']);
+    const result = runWithFailure({ KOPIA_TEST_FAIL_CREATE_SOURCE: '/srv/tail' });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(42);
+    expect(readFileSync(join(dir, 'create-argv'), 'utf8')).toContain(join(dir, 'dumps'));
+  });
+
+  it('returns a retention failure after successful snapshot creation', () => {
+    writeFakes([]);
+    const result = runWithFailure({ KOPIA_TEST_FAIL_RETENTION: '1' });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(44);
+    expect(readFileSync(join(dir, 'create-argv'), 'utf8')).toContain(join(dir, 'dumps'));
+  });
+
+  it('retains a failed pre-snapshot hook status while still snapshotting', () => {
+    writeFakes([]);
+    writeFileSync(
+      join(dir, 'home', '.config', 'kopia', 'hooks', 'pre-snapshot.sh'),
+      '#!/usr/bin/env bash\nexit 43\n',
+    );
+    const result = runWithFailure({});
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(43);
+    expect(readFileSync(join(dir, 'create-argv'), 'utf8')).toContain(join(dir, 'dumps'));
+  });
+
+  it('reports discovery failure while still attempting the required source', () => {
+    writeFakes(['/srv/tail']);
+    const result = runWithFailure({ KOPIA_TEST_FAIL_DISCOVERY: '1' });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(45);
+    const argv = readFileSync(join(dir, 'create-argv'), 'utf8');
+    expect(argv).toContain(join(dir, 'dumps'));
+    expect(argv).not.toContain('/srv/tail');
+  });
+});
 
 describe('kopia-snapshot-all.sh source ordering', () => {
   it('puts a NEVER-snapshotted required source FIRST, ahead of covered sources', () => {
@@ -449,7 +526,7 @@ describe('kopia-snapshot-all.sh sweep rotation', () => {
     expect(existsSync(leftover)).toBe(false);
   });
 
-  it('records the progress of a sweep that ran to the end, for the next sweep to read', () => {
+  it('records completed source progress after an unsuccessful sweep, for the next sweep to read', () => {
     // The fake Kopia below prints real per-source output and finishes only a and c.
     writeFakes(SOURCES);
     const createArgv = join(dir, 'create-argv');
@@ -476,7 +553,7 @@ exit 0
     );
     chmodSync(join(dir, 'kopia'), 0o755);
 
-    runSweep(join(dir, 'dumps'));
+    runSweep(join(dir, 'dumps'), undefined, 1);
     const state = readFileSync(join(dir, 'log', 'snapshot-all.sweep-state'), 'utf8')
       .trim()
       .split('\n')
@@ -549,7 +626,7 @@ exit 0
 `,
     );
     chmodSync(join(dir, 'kopia'), 0o755);
-    runSweep(join(dir, 'dumps'));
+    runSweep(join(dir, 'dumps'), undefined, 137);
 
     // Never reached (c, d) first, then the killed run's a and b, tied, in discovery order.
     writeFakes(SOURCES);

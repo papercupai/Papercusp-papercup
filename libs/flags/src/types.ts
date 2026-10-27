@@ -17,6 +17,14 @@ export const FLAGS = {
   // (or previous holder's) working set, and file-anchored code notes on first touch.
   CODE_INTEL_PUSH_RESUME: "papercusp-code-intel-push-resume",
   CODE_INTEL_PUSH_NOTES: "papercusp-code-intel-push-notes",
+  // Reuse briefs share the maintained flag store. Each provider ships ON and
+  // can be reversibly withdrawn without suppressing its peers (P019/R16).
+  CODE_INTEL_REUSE_CLONES: "papercusp-code-intel-reuse-clones",
+  CODE_INTEL_REUSE_COCHANGE: "papercusp-code-intel-reuse-cochange",
+  CODE_INTEL_REUSE_PROVENANCE: "papercusp-code-intel-reuse-provenance",
+  CODE_INTEL_REUSE_SQL: "papercusp-code-intel-reuse-sql",
+  CODE_INTEL_REUSE_COVERAGE: "papercusp-code-intel-reuse-coverage",
+  CODE_INTEL_REUSE_SEMANTIC: "papercusp-code-intel-reuse-semantic",
   // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
   // tools/UI kill-switch, not a hidden rollout of otherwise finished work.

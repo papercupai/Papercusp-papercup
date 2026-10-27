@@ -37,6 +37,25 @@ const STANDALONE_PKG_NAME = '@papercusp/desktop';
 
 const pkgAt = (rel: string) => JSON.parse(readFileSync(resolve(REPO_ROOT, rel, 'package.json'), 'utf8'));
 
+describe('affected-tests: shared chat-card detectors', () => {
+  it('routes renderer changes to standalone unit and integration tasks and their consumers', () => {
+    const r = spawnSync('node', [AFFECTED_TESTS, '--changed-paths',
+      'libs/generic/chat-cards/src/structured-results.tsx', '--integration', '--print-affected'], {
+      cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+      timeout: 300_000, killSignal: 'SIGKILL',
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split('\n');
+    const commands = lines.filter(line => line.startsWith('AFFECTED_WS_CMD\t@papercusp/chat-cards\t'))
+      .map(line => line.split('\t')[2]);
+    expect(commands).toEqual(expect.arrayContaining([
+      'npm --prefix libs/generic/chat-cards run --silent test',
+      'npm --prefix libs/generic/chat-cards run --silent test:integration',
+    ]));
+    expect(lines).toContain('AFFECTED_WS\t@papercusp/operator-ui');
+  });
+});
+
 // The submodule is not always checked out (a shallow/partial clone). Skip rather than
 // fail there — a missing submodule is not a regression in this wiring.
 const submodulePresent = existsSync(resolve(REPO_ROOT, STANDALONE_DIR, 'package.json'));

@@ -31,14 +31,21 @@
  *     a checkpoint succeeds. Every public entry point is fail-soft (a single
  *     bad candidate never sinks the sweep).
  *
- * Server-only (node:sqlite; the desktop webview's data lives in the local
+ * Server-only (runtime SQLite; the desktop webview's data lives in the local
  * user's home dir, which only makes sense to inspect from the same host).
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
 import { escalateAlarm, resolveAlarm, DEFAULT_ALARM_ESCALATION_COOLDOWN_MS, type AlarmAttentionDeps } from '../alarm-attention';
+
+// Bun does not provide node:sqlite. Load only the current interpreter's builtin;
+// both implement the synchronous prepare/all/close operations used below. This
+// avoids another native addon and retains Node's existing SQLite implementation.
+const sqlite = createRequire(import.meta.url);
+const WalDatabase = process.versions.bun ? sqlite('bun:sqlite').Database : sqlite('node:sqlite').DatabaseSync;
 
 export const WAL_GUARD_CONDITION_KEY = 'alarm:localstorage-wal';
 
@@ -171,10 +178,12 @@ export function checkpointOne(dbPath: string): WalCheckpointOutcome {
   if (!existsSync(dbPath)) {
     return { dbPath, ok: false, walBytesBefore: before, walBytesAfter: before, error: 'db_file_missing' };
   }
-  let db: InstanceType<typeof DatabaseSync> | undefined;
+  let db: Pick<DatabaseSync, 'prepare' | 'close'> | undefined;
   try {
-    db = new DatabaseSync(dbPath);
-    const rows = db.prepare('PRAGMA wal_checkpoint(TRUNCATE);').all() as Array<{
+    const opened: Pick<DatabaseSync, 'prepare' | 'close'> =
+      new WalDatabase(dbPath, process.versions.bun ? { create: false, readwrite: true } : {});
+    db = opened;
+    const rows = opened.prepare('PRAGMA wal_checkpoint(TRUNCATE);').all() as Array<{
       busy: number;
       log: number;
       checkpointed: number;

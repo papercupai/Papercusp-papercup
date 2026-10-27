@@ -135,6 +135,15 @@ describe('D166 private row-drop plan transport', () => {
       expect(rows[1]).toMatchObject({ hbKey: 'z-private', privacyProjection: { disposition: 'drop' } });
       expect(own.length).toBe(2);
       expect(config.sources[0].sourceInput.executionBinding).toEqual(execution);
+      for (const phase of ['before', 'after']) {
+        const path = join(censusDir, `uuid-execution-${phase}.private.json`);
+        expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(execution);
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+      }
+      const executionSha256 = createHash('sha256').update(JSON.stringify(execution)).digest('hex');
+      expect(JSON.parse(await readFile(join(censusDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toEqual({ schema: 'papercusp-uuid-census-execution-check-v1', verdict: 'equal', changedFields: [],
+          beforeSha256: executionSha256, afterSha256: executionSha256 });
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) }, deps)).rejects.toThrow('binding changed');
       await expect(exportSeedUuidIdempotencyCensus(inputs, deps)).rejects.toThrow('EEXIST');
       const captureDir = join(dir, 'capture'); await mkdir(captureDir, { mode: 0o700 });
@@ -178,6 +187,24 @@ describe('D166 private row-drop plan transport', () => {
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, { readFrozenExecution: drift }))
         .rejects.toThrow('execution changed');
       expect(await readdir(refusedDir)).not.toContain('uuid-census.private.json');
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-before.private.json'), 'utf8'))).toEqual(execution);
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-after.private.json'), 'utf8')))
+        .toEqual({ ...execution, sourceCommit: 'f'.repeat(40) });
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toMatchObject({ verdict: 'changed', changedFields: ['sourceCommit'], beforeSha256: executionSha256 });
+      // A second attempt must preserve the failed attempt's original measurements.
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, deps)).rejects.toThrow('EEXIST');
+      expect(JSON.parse(await readFile(join(refusedDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toMatchObject({ verdict: 'changed', changedFields: ['sourceCommit'] });
+      const unreadableDir = join(dir, 'unreadable-after'); await mkdir(unreadableDir, { mode: 0o700 });
+      const unreadable = vi.fn().mockResolvedValueOnce(execution).mockRejectedValueOnce(new Error('fixture final binding refused'));
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: unreadableDir }, { readFrozenExecution: unreadable }))
+        .rejects.toThrow('fixture final binding refused');
+      expect(await readdir(unreadableDir)).not.toContain('uuid-census.private.json');
+      expect(JSON.parse(await readFile(join(unreadableDir, 'uuid-execution-before.private.json'), 'utf8'))).toEqual(execution);
+      expect(JSON.parse(await readFile(join(unreadableDir, 'uuid-execution-check.private.json'), 'utf8')))
+        .toEqual({ schema: 'papercusp-uuid-census-execution-check-v1', verdict: 'read-failed',
+          error: { name: 'Error', message: 'fixture final binding refused' } });
     } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
@@ -903,12 +930,15 @@ describe('refreshCorestoreStateForSeed', () => {
 });
 
 describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
+  function lockClient(acquired = true) {
+    const session = Object.assign(vi.fn(async () => [{ acquired }]), { release: vi.fn() });
+    const client = { reserve: vi.fn(async () => session), end: vi.fn(async () => {}) };
+    return { session, client, createLockClient: () => ({ sql: client as never }) };
+  }
+
   it('refuses a second cut before its backfill/INSERT callback runs', async () => {
-    const tx = vi.fn(async () => [{ acquired: false }]) as never;
-    const begin = vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => run(tx));
-    const pg = {
-      begin,
-    } as never;
+    const { session, client, createLockClient } = lockClient(false);
+    const pg = vi.fn() as never;
     const backfillOrInsert = vi.fn(async () => 'must-not-run');
 
     await expect(
@@ -917,75 +947,65 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
         workspaceId: 'papercusp-workspace',
         hive: 'papercusp',
         run: backfillOrInsert,
+        createLockClient,
       }),
     ).rejects.toThrow(/another seed cut is already refreshing or opening/);
     expect(backfillOrInsert).not.toHaveBeenCalled();
-    expect(begin).toHaveBeenCalledTimes(1);
-    expect(tx).toHaveBeenCalledTimes(1);
+    expect(session).toHaveBeenCalledTimes(1);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 
-  it('holds the transaction around the cut callback and forwards the transaction SQL handle', async () => {
-    const tx = vi.fn(async () => [{ acquired: true }]) as never;
-    let transactionOpen = false;
-    const pg = {
-      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
-        transactionOpen = true;
-        try {
-          return await run(tx);
-        } finally {
-          transactionOpen = false;
-        }
-      }),
-    } as never;
-    const run = vi.fn(async (transaction: unknown) => {
-      expect(transaction).toBe(tx);
-      expect(transactionOpen).toBe(true);
-      // The refresh performs multiple awaited PG reads. The singleton must still
-      // own its transaction when the callback resumes, not just when it starts.
-      // Two turns let an incorrectly returned array-of-promises commit first.
+  it('holds the session across the callback and forwards the ordinary data pool', async () => {
+    const { session, client, createLockClient } = lockClient();
+    const pg = vi.fn() as never;
+    const run = vi.fn(async (dataPool: unknown) => {
+      expect(dataPool).toBe(pg);
+      expect(session.release).not.toHaveBeenCalled();
       await Promise.resolve();
       await Promise.resolve();
-      expect(transactionOpen).toBe(true);
+      expect(session.release).not.toHaveBeenCalled();
+      expect(client.end).not.toHaveBeenCalled();
       return 'cut-opened';
     });
 
     await expect(
-      withCutSeedSingleton({ pg, workspaceId: 'ws-1', hive: 'papercusp', run }),
+      withCutSeedSingleton({ pg, workspaceId: 'ws-1', hive: 'papercusp', run, createLockClient }),
     ).resolves.toBe('cut-opened');
-    expect(transactionOpen).toBe(false);
-    expect(run).toHaveBeenCalledWith(tx);
+    expect(run).toHaveBeenCalledWith(pg);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back when the cut callback fails after an asynchronous pause', async () => {
-    const tx = vi.fn(async () => [{ acquired: true }]) as never;
-    const events: string[] = [];
+  it('closes the dedicated lock client when the cut callback fails', async () => {
+    const { session, client, createLockClient } = lockClient();
+    const pg = vi.fn() as never;
     const failure = new Error('backfill failed');
-    const pg = {
-      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
-        try {
-          const result = await run(tx);
-          events.push('commit');
-          return result;
-        } catch (error) {
-          events.push('rollback');
-          throw error;
-        }
-      }),
-    } as never;
 
     await expect(withCutSeedSingleton({
       pg,
       workspaceId: 'ws-1',
       hive: 'papercusp',
+      createLockClient,
       run: async () => {
-        events.push('started');
         await Promise.resolve();
-        await Promise.resolve();
-        events.push('failed');
         throw failure;
       },
     })).rejects.toBe(failure);
-    expect(events).toEqual(['started', 'failed', 'rollback']);
+    expect(session.release).toHaveBeenCalledTimes(1);
+    expect(client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes a lock client whose connection reservation fails', async () => {
+    const { client, createLockClient } = lockClient();
+    const failure = new Error('connection unavailable');
+    client.reserve.mockRejectedValueOnce(failure);
+    const run = vi.fn();
+    await expect(withCutSeedSingleton({
+      pg: vi.fn() as never, workspaceId: 'ws-1', hive: 'papercusp', run, createLockClient,
+    })).rejects.toBe(failure);
+    expect(run).not.toHaveBeenCalled();
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 });
 

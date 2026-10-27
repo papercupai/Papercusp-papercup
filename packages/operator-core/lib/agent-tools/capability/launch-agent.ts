@@ -90,6 +90,7 @@ import {
   type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
+  type ResumeTarget,
   normalizeLaunchMode,
   resolveLaunchMode,
 } from '../../agent-launch-core';
@@ -109,10 +110,13 @@ import {
   describeSessionEndTime,
   hasAdvSessionTerminalEvidence,
   markAdvSessionEnded,
+  readAdvSessionLaunchRecordByOwner,
   releaseAdvSessionResume,
   RESUME_RESERVATION_MAX_LEASE_SEC,
 } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
+import { listTasks } from '../../task-manager/store';
+import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHostAsync, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
@@ -131,6 +135,7 @@ import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
   resolveSavedFleetLaunchSpec,
+  savedOriginalMemberLaunchSpec,
   type SavedFleetLaunchConfig,
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
@@ -139,6 +144,39 @@ import {
  * successor's already-enrolled first-turn provenance. It is not part of the
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+
+/** The ledger orders by started_at DESC. Read TWO unqualified candidates so a
+ * tie or a newer running/later-incarnation row cannot disappear behind a filter.
+ * Only wake-resume tasks record both the native PID and exact ADV identity. */
+async function readSuccessorTerminalTask(source: ResumeTarget): Promise<TaskRow | null> {
+  if (!source.workspaceId || !source.ownerId || !source.sessionId) return null;
+  const rows = await listTasks({ workspaceId: source.workspaceId, coordOwnerId: source.ownerId,
+    sessionId: source.sessionId, includeEnded: true, limit: 2 });
+  if (!rows.length) return null;
+  const task = rows[0];
+  const started = Date.parse(task.startedAt);
+  const bindingStarted = Date.parse(source.binding?.startedAt ?? '');
+  // Unknown timestamps and precision-collapsed ties are deliberately ambiguous.
+  if (!Number.isFinite(started) || started <= 0 || rows.some((row, i) =>
+    !Number.isFinite(Date.parse(row.startedAt)) || Date.parse(row.startedAt) <= 0 ||
+    (i > 0 && Date.parse(row.startedAt) >= started))) {
+    throw new Error('newest predecessor task ordering is unknown or tied');
+  }
+  if (task.workspaceId !== source.workspaceId || task.detail.coordOwnerId !== source.ownerId ||
+      task.sessionId !== source.sessionId || task.class !== 'agent-session' ||
+      task.detail.launchSurface !== 'wake-resume-headless' || task.detail.advSessionId !== source.advSessionId ||
+      !source.pid || task.pid !== source.pid || !Number.isFinite(bindingStarted) || started <= bindingStarted ||
+      !isTerminalState(task.state) || !task.endedAt || !Number.isFinite(Date.parse(task.endedAt)) ||
+      Date.parse(task.endedAt) < started) {
+    throw new Error('newest predecessor task lacks exact terminal ADV/PID/incarnation custody');
+  }
+  return task;
+}
+
+function successorTaskFingerprint(task: TaskRow): string {
+  return JSON.stringify([task.taskId, task.workspaceId, task.sessionId, task.pid, task.startedAt,
+    task.endedAt, task.state, task.detail.coordOwnerId, task.detail.advSessionId, task.detail.launchSurface]);
+}
 
 /** Exact scorecard binding stored on a fresh headless grading-auditor task row. */
 export interface GradingAuditTaskDetail {
@@ -302,7 +340,10 @@ function headlessResumeLogNote(tail: string | null): string {
 }
 
 function err(text: string) {
-  return { content: [{ type: 'text' as const, text }], isError: true };
+  // Every err() return is before the spawn loop. Recovery callers must distinguish
+  // these definite refusals from a lost reply or a partially opened launch.
+  return { content: [{ type: 'text' as const, text }], isError: true,
+    data: { ok: false, error: text, launchFailure: { stage: 'pre-spawn' as const, processesOpened: 0 } } };
 }
 
 /**
@@ -549,14 +590,14 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          'First-turn request; REQUIRED for resume/fork except a guarded system:lineage-neutral-successor resume. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
+          'First-turn brief: required for resume/fork except guarded lineage-neutral resume; optional for fresh plan/member briefs or seeded successor. Verify turn/claim pickup separately.',
         ),
       plan: z
         .string()
         .max(120)
         .optional()
         .describe(
-          'Plan slug to bind the agent to — it launches on the plan and auto-kicks-off against it (the fleet:launch-on-plan behavior, without needing a fleet).',
+          "Plan binding with automatic kickoff; no fleet required.",
         ),
       harness: z
         .string()
@@ -576,7 +617,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'Exact work-item id that authorizes this launch under a work-scope exception (for example, the scorecard being independently audited).',
+          'Exact work-item id authorizing a work-scope exception, such as the audited scorecard.',
         ),
       feature: z
         .string()
@@ -606,7 +647,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume full context with a required non-empty brief, except a guarded system:lineage-neutral-successor resume for a dormant critical frozen-tests author. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
+          "agentId=latest, sessionId=exact. Brief required except guarded system:lineage-neutral-successor. LIVE auto-forks; fork:false refuses. For ordinary in-place continuation, send `{ resume, brief }`. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too to retain target/saved-fleet settings; overrides may conflict. Fresh context: successor.",
         ),
       successor: z
         .object({
@@ -619,13 +660,13 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
+          "ENDED predecessor: fresh context, same owner/claims, seeded brief; explicit fresh-context `account`, `model`, or `carry` settings and backend allowed. Visible by default when `headless` is omitted or `false`. Incompatible with restoreVisible; LIVE refuses (use resume).",
         ),
       successorLineageMode: z
         .literal('system:lineage-neutral-successor')
         .optional()
         .describe(
-          'Request the system lineage parent only for a dormant critical frozen-tests author recovered through `resume`. The handler requires an identity-preserving successor, verifies the exact non-terminal manifest author and independence, and rejects caller-authored prompt/profile overrides. Not valid for ordinary resume, fork, or explicit successor.',
+          'System lineage parent for dormant critical frozen-tests author via resume only. Requires identity-preserving successor and verified non-terminal manifest author/independence. Caller prompt/profile overrides refuse; ordinary resume/fork/explicit successor ineligible.',
         ),
       originalRouting: z.object({
         ownerId: z.string().min(1).max(120),
@@ -634,32 +675,39 @@ export default defineTool({
         codexHome: z.string().min(1).max(500),
         profileFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
       }).strict().optional().describe(
-        'Repair the provider route of an exact quiescent Codex thread using its saved gateway account. Pin its original owner, adv row, UUID, isolated home and codexOriginalRoutingFingerprint. Requires an existing healthy profile/transcript; live or changed custody refuses, without fork, successor, shutdown or profile repair. Omit all runtime/settings overrides.',
+        "Repair quiescent Codex via saved gateway; pin owner/adv/UUID/home/codexOriginalRoutingFingerprint. Requires unchanged healthy custody. LIVE or changed profile/transcript refuses. No fork/successor/shutdown/profile repair or runtime overrides.",
+      ),
+      restoreOriginalMember: z.object({
+        ownerId: z.string().min(1).max(120),
+        advSessionId: z.number().int().positive(),
+        sessionId: z.string().uuid(),
+      }).strict().optional().describe(
+        'Restore a terminal Codex fleet member using its immutable pre-resume routing receipt. Exact native resume only; missing original provenance, live/unknown writer, changed binding/settings or caller profile overrides refuse. Uses ordinary supported psu account routing, including default; not gateway provider repair.',
       ),
       fork: z
         .boolean()
         .optional()
         .describe(
-          'Resume routing: omit this for the normal protective behavior (a LIVE source is automatically forked); `true` always branches to a FRESH identity; explicit `false` requires an in-place resume and fails closed if the source is LIVE, rather than silently changing to a fork.',
+          "Resume: omitted auto-forks LIVE; true always forks with new identity; false requires non-live in-place recovery.",
         ),
       restoreVisible: z
         .boolean()
         .optional()
         .describe(
-          'Recover an exact resume.sessionId after its desktop window disappeared. No surviving host: ordinary exact resume. A surviving host is shut down gracefully ONLY with kernel cgroup proof its window is dead; alive/unknown/non-window hosts are refused. For stale headless hosts omit this flag and use ordinary exact resume. Verify the restored visible terminal.',
+          "Restore exact resume.sessionId's lost desktop window. No host: ordinary resume. Existing host: graceful shutdown only with kernel cgroup proof the window died; alive/unknown/non-window hosts refuse. For stale headless hosts use ordinary resume. Verify restored window.",
         ),
       agent: z
         .enum(['claude', 'codex', 'omp'])
         .optional()
         .describe(
-          'Which agent CLI backs a FRESH launch (default: the psu default). For resume, an explicit different backend requests a session port that retains the source identity; supply a compatible model. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend. An identity-preserving successor may explicitly override the predecessor backend.',
+          "FRESH: psu default. On resume, an explicit different backend requests a session port that retains the source identity; model must fit. Live-source resumes automatically fork, so they cannot cross backends. A fork keeps the recorded backend; successor may override.",
         ),
       role: z
         .string()
         .max(120)
         .optional()
         .describe(
-          'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). Discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id; roles:known lists built-in ids. This is not a lane/job label; put lane direction in the brief or label.',
+          "Target persona: roles:list {harnessSlug} → roles[].id; roles:known=built-ins. Put lane direction in brief/label.",
         ),
       stack: z
         .array(z.string().min(1))
@@ -671,7 +719,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet.",
+          "Fleet to JOIN, including window colour. Omitted on FRESH: caller's presence fleet; on RESUME/FORK: source's latest durable membership. See independent to suppress fresh inheritance.",
         ),
       independent: z
         .boolean()
@@ -687,7 +735,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty).',
+          'No window; logs in workspace fleet-logs. Default false=visible. Headless retains injectable managed pty.',
         ),
       count: z
         .number()
@@ -695,20 +743,20 @@ export default defineTool({
         .min(1)
         .optional()
         .describe(
-          'How many agents to launch with this brief/plan (default 1 — or the length of `members` when that is given). Every actual start is independently admitted by the durable resource governor. Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).',
+          "Count (default1, or members.length). Each start needs durable resource-governor admission. In-place resume forbids multiple starts; fork instead.",
         ),
       members: z
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'Index-aligned FRESH multi-launch config (entry 0 = agent 1). Set fields override top-level args, then system defaults. Registered roles only; invalid personas fail atomically before launch. Missing entries use flat args; omitted count uses members.length. Not for resume/fork. claimKinds requires a self-pulling fleet via fleet:launch-on-plan.',
+          "FRESH entries (0=agent1) override flat args/defaults; missing entries inherit, count defaults to length. Invalid roles refuse atomically. No resume/fork; claimKinds needs self-pulling fleet:launch-on-plan.",
         ),
       cwd: z
         .string()
         .max(500)
         .optional()
         .describe(
-          "Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session's own recorded cwd.",
+          "FRESH cwd: absolute or relative to harness project. Resume retains recorded cwd.",
         ),
       label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
       display: z
@@ -716,20 +764,20 @@ export default defineTool({
         .max(40)
         .optional()
         .describe(
-          "WI-4272 (demo/recording): open the window(s) on this X display (e.g. ':110') instead of the owner's desktop seat. Linux + visible only.",
+          "X display override (e.g. ':110'); Linux visible windows only.",
         ),
       account: z
         .string()
         .max(120)
         .optional()
         .describe(
-          "Account routing for a fresh launch or successor: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. For ordinary in-place resume, omit it to use the target's recorded or saved-fleet account. An explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile. Always resolved — a scripted launch must never block on the interactive account picker.",
+          "FRESH/successor: default=system login, auto=gateway, pool id=pin; no picker. For ordinary in-place resume, omit it to retain target/saved-fleet account; overrides may conflict.",
         ),
       model: z
         .string()
         .max(80)
         .optional()
-        .describe('Model override for a fresh launch or successor (e.g. an opus/sonnet spec). For ordinary in-place resume, omit it to use the target session model; an explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile.'),
+        .describe('FRESH/successor model override. For ordinary in-place resume, omit it to retain target model; explicit overrides may conflict with saved fleet profile.'),
       effort: z.string().min(1).max(40).optional()
         .describe('Reasoning effort for every member (low|medium|high|xhigh|max); members[].effort overrides it. Human model aliases resolve through config:tiers-get launchAliases.'),
       extraArgs: z
@@ -737,7 +785,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "Extra psu flags passed through as individually shell-quoted argv values (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag or structured JSON value needs no tool change.",
+          "Extra psu flags as individually shell-quoted argv entries; structured JSON and new flags need no tool change.",
         ),
       idempotencyKey: z
         .string()
@@ -745,7 +793,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.',
+          "Reuse SAME key after uncertain delivery. Replay returns deduped:true and original launch, preventing duplicate windows.",
         ),
     });
     // Keep the fresh/source distinction in the published schema, but validate it
@@ -761,7 +809,7 @@ export default defineTool({
           .enum(['warm', 'cold'])
           .optional()
           .describe(
-            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value. Do not set it with in-place `resume`/`fork`: the schema rejects it and the target session's loop/profile carry is retained.",
+            "FRESH/successor carry; members[i].carry overrides. Do not set it with in-place `resume`/`fork`: rejected; target loop/profile retained.",
           ),
       })
       .superRefine((value, refinement) => {
@@ -925,10 +973,24 @@ export default defineTool({
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
-    const internalKickoffOrigin =
-      (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
-        ? 'loop-fire'
-        : null;
+    const internalKickoff = (ctx as typeof ctx & {
+      [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' | {
+        origin: 'loop-fire'; loopFire?: { routineId: string; wakeCount: number };
+      };
+    })[INTERNAL_LOOP_FIRE_ORIGIN];
+    const internalLoopFire = typeof internalKickoff === 'object' && internalKickoff?.origin === 'loop-fire'
+      ? internalKickoff.loopFire : null;
+    // Extend the existing private hint, rather than accepting fire identity as
+    // public launch arguments or inferring it from quoted kickoff text.
+    const internalKickoffOrigin = internalKickoff === 'loop-fire' ||
+      (typeof internalKickoff === 'object' && internalKickoff?.origin === 'loop-fire')
+      ? (typeof internalLoopFire?.routineId === 'string' && internalLoopFire.routineId.trim() &&
+          Number.isInteger(internalLoopFire.wakeCount) && internalLoopFire.wakeCount > 0
+        ? JSON.stringify({ origin: 'loop-fire', loopFire: {
+            routineId: internalLoopFire.routineId, wakeCount: internalLoopFire.wakeCount,
+          } })
+        : 'loop-fire')
+      : null;
     const gradingAuditTaskDetail = (ctx as typeof ctx & {
       [INTERNAL_GRADING_AUDIT_TASK_DETAIL]?: GradingAuditTaskDetail;
     })[INTERNAL_GRADING_AUDIT_TASK_DETAIL];
@@ -992,6 +1054,17 @@ export default defineTool({
       return err('An internal expected source binding requires an identity-preserving successor.');
     }
     const sourceAction = isResume || isSuccessor;
+    if (args.restoreOriginalMember) {
+      const pin = args.restoreOriginalMember;
+      if (!isResume || args.resume?.sessionId !== pin.sessionId || args.resume?.agentId ||
+          (args.fork !== undefined && args.fork !== false) ||
+          ['successor', 'successorLineageMode', 'originalRouting', 'restoreVisible', 'agent', 'account',
+            'model', 'effort', 'carry', 'fleet', 'extraArgs', 'members', 'plan', 'cwd', 'role', 'headless',
+            'independent', 'goalVerifier', 'feature', 'stack', 'contextSize', 'compactionLimit']
+            .some((key) => (args as Record<string, unknown>)[key] !== undefined))
+        return err('restoreOriginalMember requires an exact resume without fork, successor or profile overrides.');
+      args = { ...args, fork: false };
+    }
     if (args.originalRouting && (!isResume || !args.resume?.sessionId || args.resume.agentId ||
         args.resume.sessionId !== args.originalRouting.sessionId ||
         ['successor', 'fork', 'restoreVisible', 'agent', 'account', 'model', 'carry', 'fleet', 'extraArgs',
@@ -1166,9 +1239,12 @@ export default defineTool({
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
     let successorBrief: string | null = null;
-    const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
+    const successorPreparation: { reconcile?: () => Promise<string | null>;
+      beforeSpawn?: () => Promise<void>; release?: () => Promise<void> } = {};
     let reconcileOriginalRouting: (() => Promise<void>) | null = null;
     let recheckInPlaceResume: (() => Promise<void>) | null = null;
+    let originalMemberTarget: ResumeTarget | null = null;
+    let recheckOriginalMember: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
     let sourceStillLive = false;
     let blindReviewResumeAuthorized = false;
@@ -1243,6 +1319,15 @@ export default defineTool({
       resumeSourceEnded = hasAdvSessionTerminalEvidence(target);
       resumeModel = target.model;
       resumeAccount = target.account;
+      if (args.restoreOriginalMember) {
+        const pin = args.restoreOriginalMember;
+        if (target.agent !== 'codex' || target.workspaceId !== workspaceId || target.live || !target.endedAt ||
+            target.ownerId !== pin.ownerId || target.advSessionId !== pin.advSessionId ||
+            target.sessionId !== pin.sessionId || target.binding?.coordOwnerId !== pin.ownerId ||
+            target.binding?.sessionId !== pin.sessionId || !target.binding.startedAt)
+          return err('restoreOriginalMember refused: exact original binding must be terminal and unchanged.');
+        originalMemberTarget = target;
+      }
       if (args.originalRouting) {
         const pin = args.originalRouting;
         if (typeof target.headless !== 'boolean') return err('originalRouting refused: recorded placement is unavailable.');
@@ -1489,6 +1574,7 @@ export default defineTool({
           }
           const current = await resolveResumeTarget({ agentId: binding.coordOwnerId });
           if (!current.ok || current.advSessionId !== target.advSessionId ||
+              current.ownerId !== target.ownerId || current.sessionId !== target.sessionId || current.pid !== target.pid ||
               current.binding?.coordOwnerId !== binding.coordOwnerId ||
               current.binding?.sessionId !== binding.sessionId ||
               current.binding?.startedAt !== binding.startedAt ||
@@ -1509,7 +1595,38 @@ export default defineTool({
             return 'Cannot start successor: an active native Codex writer appeared during preparation. No process was opened.';
           }
           if (current.endedAt != null) return null;
-          if (!hasAdvSessionTerminalEvidence(current)) {
+          const task = !hasAdvSessionTerminalEvidence(current) ? await readSuccessorTerminalTask(current) : null;
+          if (task) {
+            const fingerprint = successorTaskFingerprint(task);
+            const claimKey = `successor-task:${randomUUID()}`;
+            const expected = { workspaceId: current.workspaceId!, binding };
+            // Exact terminal task evidence replaces only the legacy stale-age
+            // wait, never the row lock, reservation or expected-binding pin.
+            const reserve = () => acquireAdvSessionResume(target.advSessionId, claimKey,
+              RESUME_RESERVATION_MAX_LEASE_SEC, 1, undefined, false, expected);
+            const reservation = await reserve();
+            if (!reservation.acquired) return `Cannot start successor: task custody reservation refused (${reservation.status}). No process was opened.`;
+            successorPreparation.release = async () => { await releaseAdvSessionResume(target.advSessionId, claimKey); };
+            const expiresAt = Date.parse(reservation.leaseExpiresAt);
+            successorPreparation.beforeSpawn = async () => {
+              if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('task custody lease expired');
+              const lease = await reserve();
+              if (!lease.acquired || !lease.replayed) throw new Error('task custody lease lost before spawn');
+              const fresh = await resolveResumeTarget({ agentId: binding.coordOwnerId });
+              if (!fresh.ok || fresh.ownerId !== target.ownerId || fresh.advSessionId !== target.advSessionId ||
+                  fresh.sessionId !== target.sessionId || fresh.workspaceId !== target.workspaceId ||
+                  fresh.harnessSlug !== target.harnessSlug || fresh.pid !== target.pid ||
+                  fresh.binding?.coordOwnerId !== binding.coordOwnerId || fresh.binding?.sessionId !== binding.sessionId ||
+                  fresh.binding?.startedAt !== binding.startedAt) throw new Error('predecessor binding changed after task observation');
+              const latest = await readSuccessorTerminalTask(fresh);
+              if (!latest || successorTaskFingerprint(latest) !== fingerprint) throw new Error('predecessor task changed after observation');
+              if (fresh.live || await findLiveHostAsync(binding.coordOwnerId)) throw new Error('LIVE source host appeared after task observation');
+              const writer = readSourceCodexWriter();
+              if (writer && (writer.held || !['free', 'no-lock-file'].includes(writer.reason)))
+                throw new Error('active or unknown native Codex writer appeared after task observation');
+            };
+            await successorPreparation.beforeSpawn();
+          } else if (!hasAdvSessionTerminalEvidence(current)) {
             const verdicts = await resolveSessionStates(
               [{ ownerId: binding.coordOwnerId }],
               { hydratePerId: true },
@@ -1532,6 +1649,7 @@ export default defineTool({
           if (!ended) {
             return 'Cannot start successor: predecessor binding reconciliation lost its compare-and-swap. Re-resolve the source; no process was opened.';
           }
+          await successorPreparation.beforeSpawn?.();
           notes.push(`✓ Reconciled terminal predecessor binding #${target.advSessionId} before successor launch; actual exit time remains unknown.`);
           return null;
         };
@@ -1750,7 +1868,7 @@ export default defineTool({
     })) {
       return err(
         `Cannot launch a managed fork of ${resumeId ?? 'that session'}: tracked fork is unavailable for this ` +
-          `${resumeAgent ?? 'unknown'} source. It currently requires a Claude source with a native session id, ` +
+          `${resumeAgent ?? 'unknown'} source. It requires a Claude or Codex source with a native session id, ` +
           'coord owner and tracked session row. No process was admitted or opened. ' +
           'Resume in place with `fork:false` only after the source and its writer have ended, ' +
           'or launch a fresh agent with a context-seeded brief.',
@@ -1857,7 +1975,33 @@ export default defineTool({
       provenance: SavedFleetLaunchSpecProvenance;
       reusePath: string;
     } | null = null;
-    if (fleetSlug) {
+    if (args.restoreOriginalMember && !fleetSlug)
+      return err('restoreOriginalMember refused: durable target fleet membership is unavailable.');
+    if (fleetSlug && args.restoreOriginalMember && originalMemberTarget) {
+      const pin = args.restoreOriginalMember;
+      const exact = { advSessionId: pin.advSessionId, sessionId: pin.sessionId };
+      const record = await readAdvSessionLaunchRecordByOwner(pin.ownerId, workspaceId, exact);
+      const original = savedOriginalMemberLaunchSpec(record, pin, workspaceId, fleetSlug);
+      if (!original.ok) return err(`restoreOriginalMember refused: ${original.message}`);
+      const targetSnapshot = JSON.stringify({ ok: true, ...originalMemberTarget });
+      const recordSnapshot = JSON.stringify(record);
+      recheckOriginalMember = async () => {
+        const current = await resolveResumeTarget({ sessionId: pin.sessionId });
+        const currentRecord = await readAdvSessionLaunchRecordByOwner(pin.ownerId, workspaceId, exact);
+        if (!current.ok || !current.endedAt || current.live || JSON.stringify(current) !== targetSnapshot ||
+            JSON.stringify(currentRecord) !== recordSnapshot)
+          throw new Error('restoreOriginalMember refused: original binding or routing settings changed before spawn.');
+      };
+      args = { ...args, headless: original.config.headless ?? false, account: original.config.account,
+        model: composeModelSpec(original.config.model, original.config.effort),
+        extraArgs: original.config.extraArgs };
+      savedLaunchCarry = original.config.carry;
+      persistedHeadcountProfile = { workspaceId, fleetSlug, target: 1, enabled: true, config: original.config,
+        nextAttemptAt: null, backoffMs: 0, lastError: null };
+      savedLaunchSpecMeta = { provenance: { source: 'adv_sessions.launch_spec.originalMemberLaunch',
+        workspaceId, fleetSlug, target: null }, reusePath: 'exact native original-member receipt -> capability:launch-agent resume' };
+      notes.push('✓ Restored original member routing from its immutable exact native receipt.');
+    } else if (fleetSlug) {
       if (sourceAction) {
         const requestedExtraArgs = neutralLineageRequested ? undefined : args.extraArgs;
         const { profileArgs, modeArgs } = splitSavedProfileExtraArgs(requestedExtraArgs);
@@ -2077,6 +2221,14 @@ export default defineTool({
         strandNote = stranded.goalPlacementRefusalNote(record);
       }
       return err(goalLaunch.refusal.message + strandNote);
+    }
+    if (args.restoreOriginalMember) {
+      const profile = goalLaunch.effective;
+      if ((profile.agent !== undefined && profile.agent !== resumeAgent) ||
+          (profile.account !== undefined && profile.account !== args.account) ||
+          (profile.model !== undefined && composeModelSpec(profile.model, profile.effort) !== args.model) ||
+          (profile.headless !== undefined && profile.headless !== args.headless))
+        return err('restoreOriginalMember refused: inherited goal profile conflicts with original member routing.');
     }
 
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
@@ -2377,7 +2529,7 @@ export default defineTool({
               modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
-              launchMode: args.originalRouting ? null : launchMode,
+              launchMode: args.originalRouting || args.restoreOriginalMember ? null : launchMode,
               extraArgs: args.extraArgs ?? null,
             })
           : buildAgentLaunchCommand({
@@ -2460,6 +2612,7 @@ export default defineTool({
       workspaceId,
       idempotencyKey: args.idempotencyKey,
       launchedBy: callerOwnerId,
+      ...(isSuccessor ? { failClosed: true } : {}),
     });
     if (!claim.won) {
       const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
@@ -2500,6 +2653,7 @@ export default defineTool({
         failure = `Cannot start successor: predecessor reconciliation failed (${(e as Error)?.message ?? e}). No process was opened.`;
       }
       if (failure) {
+        await successorPreparation.release?.();
         await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(failure);
       }
@@ -2515,6 +2669,7 @@ export default defineTool({
         const { clearContextEstimate } = await import('../coordination/presence');
         await clearContextEstimate(resumeOwnerId);
       } catch (error) {
+        await successorPreparation.release?.();
         await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(`Cannot start successor: failed to invalidate predecessor context pressure (${String(error)}). No process was opened.`);
       }
@@ -2620,6 +2775,7 @@ export default defineTool({
         };
         try {
           if (recheckInPlaceResume) await recheckInPlaceResume();
+          if (recheckOriginalMember) await recheckOriginalMember();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
           if (isResume && !fork && resumeSourceEnded) {
             if (!resumeSourceAdvSessionId || !targetOwnerId || !callerOwnerId)
@@ -2652,7 +2808,9 @@ export default defineTool({
           },
           async (admissionContext) => {
             if (recheckInPlaceResume) await recheckInPlaceResume();
+            if (recheckOriginalMember) await recheckOriginalMember();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
+            await successorPreparation.beforeSpawn?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
             const governedEnv = {
@@ -2745,6 +2903,8 @@ export default defineTool({
             code: 500,
             error: `governed spawn failed: ${(error as Error)?.message ?? error}`,
           };
+        } finally {
+          await successorPreparation.release?.();
         }
       }),
     );

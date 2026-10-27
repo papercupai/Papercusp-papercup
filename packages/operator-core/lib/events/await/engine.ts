@@ -203,6 +203,8 @@ function emitterIdentity(source: string | undefined, workspaceId: string): Agent
 }
 
 export interface EmitAwaitedEventOpts {
+  /** Internal durable task-outbox fence, checked before any event fan-out. */
+  taskTerminal?: import('./store').TaskTerminalFence;
   /** Exact event key, e.g. `lock:grant:<ticket>` / `plan-run:finished:<id>`. */
   key: string;
   /** Carried on wake deliveries + the notify message body. */
@@ -239,6 +241,8 @@ export interface EmitAwaitedEventOpts {
 
 export interface EmitResult {
   ok: true;
+  /** False when the fail-soft key-fire write failed; durable producers must retry. */
+  latchRecorded?: boolean;
   key: string;
   /** Wake awaits fired by this emit (deliveries queued). */
   woken: number;
@@ -338,8 +342,6 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   const ws = opts.workspaceId ?? activeWorkspaceId();
   // Both code- and agent-emitted fires use this seam; declarations never call it.
   const { emitSystemEvent } = await import('../engine');
-  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
-    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // EI-13705: record the fire on the UNCONDITIONAL per-key latch BEFORE claiming
   // await rows. The bridge can start an event between an awaiter's pre-registration
@@ -363,11 +365,17 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // subscribers; undefined (latch failed / stub) ⇒ the separate read below.
   let latchedSubscribers: LatchedEventSubscriber[] | undefined;
   const subscriberScope = eventKeySubscriberScope();
+  const superseded = (): EmitResult => ({
+    ok: true, key: opts.key, latchRecorded: false, woken: 0,
+    notified: [], msgId: null, waiters: 0,
+  });
   try {
     const latch = await recordKeyFire({
       eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload,
       subscribersFrom: subscriberScope,
+      ...(opts.taskTerminal ? { taskTerminal: opts.taskTerminal } : {}),
     });
+    if (opts.taskTerminal && (!latch || latch.superseded)) return superseded();
     if (latch && latch.announcementPending === false) announcementPending = false;
     if (latch && latch.provingWaiterPending === false) provingWaiterPending = false;
     if (latch) {
@@ -399,7 +407,12 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     const detail = (e as { detail?: unknown } | null)?.detail;
     log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`
       + (typeof detail === 'string' && detail ? ` | ${detail.replace(/\s+/g, ' ')}` : ''));
+    // A fenced outbox must retain its retry path when the authority is unknown.
+    if (opts.taskTerminal) return superseded();
   }
+
+  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
+    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // pui-agent-context-cockpit P-026: reuse the activity ledger + its existing
   // SSE transport as the fleet transition tape. This pure-filtered append only
@@ -421,6 +434,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     reason: 'event',
     payload: opts.payload,
     source: opts.source,
+    ...(opts.taskTerminal ? { taskTerminal: opts.taskTerminal } : {}),
   });
   // composable-event-awaits-2026-07-11: a fired row tagged with node_id is a composed-await LEAF.
   // It does NOT wake/notify its subscriber directly — its (already atomic, exactly-once) claim
@@ -591,6 +605,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
   return {
     ok: true,
+    latchRecorded: latchAnswered,
     key: opts.key,
     woken: wakes.length - deferred,
     deferred,
@@ -1306,22 +1321,44 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         ) {
           resumes++;
         }
+        // A mixed wake whose superseded loop components were stripped can reach
+        // the inbox through its surviving event. An inbox write proves no loop
+        // turn started, so settle only non-loop rows and leave the event root
+        // independent from every stale loop row it shared a pump group with.
+        const inboxFallbackWithLoopComponents = outcome.channel === 'inbox' && loopDeliveryGroup;
+        const loopRowsToDrop = inboxFallbackWithLoopComponents
+          ? group.filter((d) => deliveryContainsLoopMarker(d.payload))
+          : [];
+        const settlementGroup = inboxFallbackWithLoopComponents
+          ? group.filter((d) => !deliveryContainsLoopMarker(d.payload))
+          : group;
+        for (const loopRow of loopRowsToDrop) {
+          await markDeliveryDropped(loopRow.id, 'loop turn was not started; this delivery only reached the inbox');
+          stats.dropped++;
+        }
+        if (settlementGroup.length === 0) {
+          deliveryRowsSettled = true;
+          log(`wake #${headline.id} inbox notice did not satisfy its loop turn; dropped ${loopRowsToDrop.length} loop component(s)`);
+          continue;
+        }
+        const settlementHeadline = settlementGroup[settlementGroup.length - 1];
+        const settlementSiblings = settlementGroup.slice(0, -1);
         // P-006/D-004: forward the executor's turn-start attestation only when it has one, so an
         // unattested delivery is booked exactly as before (awaiting the pump's pickup sweep).
         await (outcome.turnProof
-          ? markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof)
-          : markDeliveryDelivered(headline.id, outcome.channel, group.length));
+          ? markDeliveryDelivered(settlementHeadline.id, outcome.channel, settlementGroup.length, outcome.turnProof)
+          : markDeliveryDelivered(settlementHeadline.id, outcome.channel, settlementGroup.length));
         recordSettledDeliveryStats(stats, outcome.channel);
-        if (siblings.length > 0) {
-          await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
-          stats.coalesced += siblings.length;
+        if (settlementSiblings.length > 0) {
+          await markDeliveriesCoalesced(settlementSiblings.map((d) => d.id), settlementHeadline.id);
+          stats.coalesced += settlementSiblings.length;
         }
         deliveryRowsSettled = true;
         if (earlyResumeExit) {
           const observed = earlyResumeExit as { d: DeliveryWork; exit: ResumeTurnExitRaw; context?: ResumeTurnContext };
           void handleSettledResumeTurnExit(group, observed.d, observed.exit, downstreamOutcomeHandler, observed.context);
         }
-        log(`wake #${headline.id} delivered → ${subscriberId} via ${outcome.channel} (${group.length} event(s): ${group.map((d) => d.eventKey).join(', ')})`);
+        log(`wake #${settlementHeadline.id} delivered → ${subscriberId} via ${outcome.channel} (${settlementGroup.length} event(s): ${settlementGroup.map((d) => d.eventKey).join(', ')})`);
         continue;
       }
       if (outcome.kind === 'park') {

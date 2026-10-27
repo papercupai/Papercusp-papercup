@@ -27,7 +27,31 @@ import type { Plugin } from 'vite';
 
 export const FLAGS_BOOTSTRAP_URL = 'http://127.0.0.1:3070/api/flags/bootstrap';
 
-type FetchLike = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+type FetchLike = (url: string, init?: RequestInit) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+
+/** Optional pre-hydration seeds must not hold the document behind an API stall. */
+async function readBootstrapJson(url: string, fetchImpl: FetchLike): Promise<unknown> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await fetchImpl(url, { signal: controller.signal });
+        return response.ok ? await response.json() : undefined;
+      })(),
+      new Promise<undefined>(resolve => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve(undefined);
+        }, 2_000);
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Insert the seed script so it runs before the deferred module bundle. */
 export function injectFlagsSeed(html: string, payload: unknown): string {
@@ -36,14 +60,13 @@ export function injectFlagsSeed(html: string, payload: unknown): string {
 }
 
 /** The transform, with the fetch injectable so it is testable without a host. */
-export async function seedIndexHtmlWithFlags(html: string, fetchImpl: FetchLike = fetch): Promise<string> {
-  try {
-    const res = await fetchImpl(FLAGS_BOOTSTRAP_URL);
-    if (!res.ok) return html;
-    return injectFlagsSeed(html, await res.json());
-  } catch {
-    return html;
-  }
+export async function seedIndexHtmlWithFlags(
+  html: string,
+  fetchImpl: FetchLike = fetch,
+  apiTarget = FLAGS_BOOTSTRAP_URL,
+): Promise<string> {
+  const payload = await readBootstrapJson(new URL('/api/flags/bootstrap', apiTarget).href, fetchImpl);
+  return payload === undefined ? html : injectFlagsSeed(html, payload);
 }
 
 /** Match host-spa's pre-hydration workspace identity on the separate dev server. */
@@ -55,14 +78,9 @@ export async function seedIndexHtmlWithWorkspace(
 ): Promise<string> {
   let workspace = new URL(requestUrl ?? '/', 'http://localhost').searchParams.get('ws')?.trim();
   if (!workspace) {
-    try {
-      const response = await fetchImpl(new URL('/api/workspaces', apiTarget).href);
-      if (response.ok) {
-        const registry = await response.json() as { current?: unknown };
-        if (typeof registry.current === 'string') workspace = registry.current.trim();
-      }
-    } catch {
-      // A disconnected host leaves identity to the existing browser fallback.
+    const registry = await readBootstrapJson(new URL('/api/workspaces', apiTarget).href, fetchImpl);
+    if (registry && typeof registry === 'object' && 'current' in registry && typeof registry.current === 'string') {
+      workspace = registry.current.trim();
     }
   }
   if (!workspace) return html;
@@ -76,10 +94,13 @@ export const flagsBootstrapPlugin: Plugin = {
   apply: 'serve',
   transformIndexHtml: {
     order: 'pre',
-    handler: async (html, context) => seedIndexHtmlWithWorkspace(
-      await seedIndexHtmlWithFlags(html),
-      context.originalUrl,
-      process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070',
-    ),
+    handler: async (html, context) => {
+      const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
+      return seedIndexHtmlWithWorkspace(
+        await seedIndexHtmlWithFlags(html, fetch, apiTarget),
+        context.originalUrl,
+        apiTarget,
+      );
+    },
   },
 };

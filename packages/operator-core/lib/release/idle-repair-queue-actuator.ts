@@ -43,6 +43,11 @@ import type { Sql } from 'postgres';
 import type { ReleaseFixerDispatchSkip } from '../harness/routines/release-actions';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import {
+  currentRepairLimbExecutor,
+  parseRepairLimbExecutor,
+  type RepairLimbExecutor,
+} from './repair-limb-executor';
 
 export const IDLE_REPAIR_QUEUE_MS = 60 * 60_000;
 export const IDLE_RUNG_GRACE_MS = 30 * 60_000;
@@ -340,6 +345,32 @@ export interface IdleQueueFixerHandoffDeps {
   ) => Promise<FrozenCandidateRepairQueue | null>;
 }
 
+/** The slice of `dispatchReleaseFixer`'s signature the idle rung calls (injected for tests). */
+export type FrozenRepairFixerDispatcher<T, R> = (
+  target: T,
+  candidate: string,
+  failingTests: string[],
+  repairQueue: FrozenCandidateRepairQueue,
+  checkpointEvidence: undefined,
+  deps: { onSkip: (skip: ReleaseFixerDispatchSkip) => void },
+) => Promise<R>;
+
+/**
+ * Build the idle rung's `dispatch` handoff. A frozen-repair dispatch targets the queue's
+ * mutable REPAIR HEAD, never its immutable candidate pin: `candidateSnapshotMatchesDispatch`
+ * refuses any candidate other than `queue.repairHead`, and green-checkpoint's own frozen
+ * dispatcher passes `queue.repairHead`. Passing `queue.candidate` made every idle-rung dispatch
+ * skip as `snapshot-mismatch` once a fix had been admitted (WI-6554700010029686: five skips
+ * handed 8c03b5dcd156 while the repair head was 327e4d1d, 2026-10-26).
+ */
+export function idleQueueFixerDispatch<T, R>(
+  target: T,
+  dispatch: FrozenRepairFixerDispatcher<T, R>,
+): (reserved: FrozenCandidateRepairQueue, onSkip: (skip: ReleaseFixerDispatchSkip) => void) => Promise<R> {
+  return (reserved, onSkip) =>
+    dispatch(target, reserved.repairHead, reserved.failingTests, reserved, undefined, { onSkip });
+}
+
 /**
  * The idle rung may report success only after the durable queue row names the spawned fixer.
  * The reservation closes the read/launch/write race; finalization binds the launch receipt to
@@ -538,25 +569,124 @@ export const IDLE_ACTUATOR_SELF_MANAGED_NOTE =
  * host) is at least {@link IDLE_PASS_LEASE_MS} old, and returns the stored episode. An
  * `mtime_ms`-only change is a refresh stamp to git-export (WI-10003624), so this causes no churn.
  */
-export async function claimIdleActuatorPass(
-  sql: Sql,
-  o: { installSlug: string; workspaceId: string; nowMs: number },
-): Promise<{ claimed: false } | { claimed: true; episode: IdleQueueEpisode | null }> {
-  const rows = await sql<{ escalation: unknown }[]>`
-    INSERT INTO harness_shared.harness_escalations
-           (harness_slug, phase, escalation, supervisor_notes, mtime_ms, workspace_id)
-    VALUES (${o.installSlug}, ${IDLE_REPAIR_QUEUE_PHASE}, NULL, ${IDLE_ACTUATOR_SELF_MANAGED_NOTE},
-            ${o.nowMs}, ${o.workspaceId})
-    ON CONFLICT (harness_slug, phase) DO UPDATE SET mtime_ms = EXCLUDED.mtime_ms
-     WHERE harness_shared.harness_escalations.mtime_ms <= ${o.nowMs - IDLE_PASS_LEASE_MS}
-    RETURNING escalation`;
-  return rows.length === 0 ? { claimed: false } : { claimed: true, episode: parseEpisode(rows[0].escalation) };
+/**
+ * gate-repair-plane-on-current-build-2026-10-15 R-2: the pass lease names its holder. The
+ * winning claim writes `gate_health.idleActuatorClaim` on the green-checkpoint routine IN THE
+ * SAME STATEMENT as the lease upsert, so no reader can see a lease without its attribution. A
+ * host that loses the lease to a DIFFERENT executor records `gate_health.idleActuatorStandDown`
+ * naming that winner ({@link recordIdleActuatorStandDown}).
+ */
+export const IDLE_ACTUATOR_CLAIM_FIELD = 'idleActuatorClaim';
+export const IDLE_ACTUATOR_STAND_DOWN_FIELD = 'idleActuatorStandDown';
+
+export interface IdleActuatorPassClaim extends RepairLimbExecutor {
+  claimedAtMs: number;
 }
 
-/** Persist (or, with `null`, clear) the episode. Always carries the self-managed note. */
+export interface IdleActuatorStandDown extends RepairLimbExecutor {
+  atMs: number;
+  winner: IdleActuatorPassClaim;
+}
+
+export function parseIdleActuatorPassClaim(value: unknown): IdleActuatorPassClaim | null {
+  const executor = parseRepairLimbExecutor(value);
+  const claimedAtMs = (value as { claimedAtMs?: unknown } | null)?.claimedAtMs;
+  if (!executor || typeof claimedAtMs !== 'number' || !Number.isFinite(claimedAtMs)) return null;
+  return { ...executor, claimedAtMs };
+}
+
+export async function claimIdleActuatorPass(
+  sql: Sql,
+  o: { installSlug: string; workspaceId: string; nowMs: number; executor?: RepairLimbExecutor },
+): Promise<{ claimed: false } | { claimed: true; episode: IdleQueueEpisode | null; claim: IdleActuatorPassClaim;
+  /** False when no green-checkpoint routine row exists to carry the attribution. */
+  attributed: boolean }> {
+  const claim: IdleActuatorPassClaim = { ...(o.executor ?? currentRepairLimbExecutor()), claimedAtMs: o.nowMs };
+  const rows = await sql<{ escalation: unknown; attributed: boolean }[]>`
+    WITH lease AS (
+      INSERT INTO harness_shared.harness_escalations
+             (harness_slug, phase, escalation, supervisor_notes, mtime_ms, workspace_id)
+      VALUES (${o.installSlug}, ${IDLE_REPAIR_QUEUE_PHASE}, NULL, ${IDLE_ACTUATOR_SELF_MANAGED_NOTE},
+              ${o.nowMs}, ${o.workspaceId})
+      ON CONFLICT (harness_slug, phase) DO UPDATE SET mtime_ms = EXCLUDED.mtime_ms
+       WHERE harness_shared.harness_escalations.mtime_ms <= ${o.nowMs - IDLE_PASS_LEASE_MS}
+      RETURNING escalation
+    ), stamp AS (
+      UPDATE harness_shared.routines
+         SET metadata = jsonb_set(
+               COALESCE(metadata, '{}'::jsonb),
+               '{gate_health}',
+               COALESCE(NULLIF(metadata->'gate_health', 'null'::jsonb), '{}'::jsonb)
+                 || jsonb_build_object(${IDLE_ACTUATOR_CLAIM_FIELD}::text, ${JSON.stringify(claim)}::text::jsonb),
+               true)
+       WHERE install_slug = ${o.installSlug}
+         AND workspace_id = ${o.workspaceId}
+         AND target_role = 'system:green-checkpoint'
+         AND EXISTS (SELECT 1 FROM lease)
+      RETURNING 1
+    )
+    SELECT lease.escalation, EXISTS (SELECT 1 FROM stamp) AS attributed FROM lease`;
+  return rows.length === 0
+    ? { claimed: false }
+    : { claimed: true, episode: parseEpisode(rows[0].escalation), claim, attributed: rows[0].attributed === true };
+}
+
+/**
+ * The losing side of R-2. A host that did not get the pass lease records one no-op naming the
+ * executor that holds it — only when that holder is a DIFFERENT executor (losing to this
+ * process's own earlier pass is just a tick inside its lease), and only once per (loser,
+ * winning claim), so a host ticking through someone else's 10-minute lease writes once.
+ */
+export async function recordIdleActuatorStandDown(
+  sql: Sql,
+  o: { installSlug: string; workspaceId: string; nowMs: number; executor?: RepairLimbExecutor },
+): Promise<{ recorded: boolean; winner: IdleActuatorPassClaim | null }> {
+  const me = o.executor ?? currentRepairLimbExecutor();
+  const standDown = { ...me, atMs: o.nowMs };
+  const updated = await sql<{ winner: unknown }[]>`
+    UPDATE harness_shared.routines
+       SET metadata = jsonb_set(
+             metadata,
+             '{gate_health}',
+             metadata->'gate_health' || jsonb_build_object(
+               ${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text,
+               ${JSON.stringify(standDown)}::text::jsonb
+                 || jsonb_build_object('winner', metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text)),
+             true)
+     WHERE install_slug = ${o.installSlug}
+       AND workspace_id = ${o.workspaceId}
+       AND target_role = 'system:green-checkpoint'
+       AND jsonb_typeof(metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text) = 'object'
+       AND (metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text->>'hostId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text->>'processId')
+           IS DISTINCT FROM (${me.hostId}::text, ${me.processId}::text)
+       AND (metadata->'gate_health'->${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text->>'hostId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text->>'processId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text->'winner'->>'hostId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text->'winner'->>'processId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_STAND_DOWN_FIELD}::text->'winner'->>'claimedAtMs')
+           IS DISTINCT FROM
+           (${me.hostId}::text, ${me.processId}::text,
+            metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text->>'hostId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text->>'processId',
+            metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text->>'claimedAtMs')
+    RETURNING metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text AS winner`;
+  if (updated.length > 0) return { recorded: true, winner: parseIdleActuatorPassClaim(updated[0].winner) };
+  const current = await sql<{ winner: unknown }[]>`
+    SELECT metadata->'gate_health'->${IDLE_ACTUATOR_CLAIM_FIELD}::text AS winner
+      FROM harness_shared.routines
+     WHERE install_slug = ${o.installSlug} AND workspace_id = ${o.workspaceId}
+       AND target_role = 'system:green-checkpoint'
+     LIMIT 1`;
+  return { recorded: false, winner: parseIdleActuatorPassClaim(current[0]?.winner) };
+}
+
+/** Persist (or, with `null`, clear) the episode. Always carries the self-managed note, and a
+ * non-null episode carries the writing executor's host and build (R-1). */
 export async function saveIdleActuatorEpisode(
   sql: Sql,
-  o: { installSlug: string; workspaceId: string; nowMs: number; episode: IdleQueueEpisode | null },
+  o: { installSlug: string; workspaceId: string; nowMs: number; episode: IdleQueueEpisode | null;
+    executor?: RepairLimbExecutor },
 ): Promise<void> {
   if (!o.episode) {
     await sql`
@@ -570,7 +700,8 @@ export async function saveIdleActuatorEpisode(
     INSERT INTO harness_shared.harness_escalations
            (harness_slug, phase, escalation, supervisor_notes, mtime_ms, workspace_id)
     VALUES (${o.installSlug}, ${IDLE_REPAIR_QUEUE_PHASE},
-            ${JSON.stringify({ kind: IDLE_REPAIR_QUEUE_PHASE, harness_slug: o.installSlug, ...o.episode })},
+            ${JSON.stringify({ kind: IDLE_REPAIR_QUEUE_PHASE, harness_slug: o.installSlug, ...o.episode,
+              ...(o.executor ?? currentRepairLimbExecutor()) })},
             ${IDLE_ACTUATOR_SELF_MANAGED_NOTE}, ${o.nowMs}, ${o.workspaceId})
     ON CONFLICT (harness_slug, phase)
     DO UPDATE SET escalation = EXCLUDED.escalation, supervisor_notes = EXCLUDED.supervisor_notes,
@@ -587,6 +718,33 @@ export interface IdleQueueActuatorObservation {
   snapshot: IdleQueueSnapshot;
   episode: IdleQueueEpisode | null;
   result: IdleQueuePassResult;
+  /**
+   * The writing executor: host, process and loaded build (R-1; absent on records written
+   * before gate-repair-plane-on-current-build-2026-10-15#P-038).
+   */
+  executor?: RepairLimbExecutor;
+  /** The code-content marker of the writing build (absent on records written before it). */
+  marker?: string;
+}
+
+/**
+ * gate-repair-plane-on-current-build-2026-10-15 R-6 / P-006: a constant every pass record
+ * carries, so a record proves WHICH CODE executed by content, not by a build sha that can
+ * describe a dirty bundle. Change the value only to run a fresh proof.
+ *
+ * #D-010 / #P-038: the first value's records carried no executor stamp, so R-6 could not tell
+ * from a record alone whether the build that wrote it contains the marker. The R-6 subject is
+ * now the first pass record carrying THIS value whose own `executor.executingBuild.sha`
+ * contains it; a record whose stamped sha lacks it is a dirty-bundle execution (residue).
+ */
+export const IDLE_ACTUATOR_PASS_MARKER = 'gate-repair-plane-r6-proof-2026-10-27-stamped';
+
+/** One pass record, stamped with the writing executor and this build's marker. */
+export function buildIdleQueueActuatorObservation(
+  pass: Omit<IdleQueueActuatorObservation, 'version' | 'marker' | 'executor'>,
+  executor: RepairLimbExecutor = currentRepairLimbExecutor(),
+): IdleQueueActuatorObservation {
+  return { version: 1, ...pass, executor, marker: IDLE_ACTUATOR_PASS_MARKER };
 }
 
 export async function recordIdleQueueActuatorObservation(sql: Sql,
@@ -787,8 +945,21 @@ export async function checkIdleRepairQueue(
     // ticks it; without this two hosts could read the same episode and both wake or escalate.
     // The claim is one atomic upsert on the episode row: it advances mtime_ms only when the last
     // pass (any host) is at least IDLE_PASS_LEASE_MS old, and hands back the stored episode.
-    const claim = await claimIdleActuatorPass(sql, { installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)() });
-    if (!claim.claimed) return null;
+    const executor = currentRepairLimbExecutor();
+    const claim = await claimIdleActuatorPass(sql, { installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), executor });
+    if (!claim.claimed) {
+      // R-2: losing the lease to another executor is a recorded no-op that names the winner.
+      const standDown = await recordIdleActuatorStandDown(sql, {
+        installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), executor,
+      });
+      if (standDown.recorded && standDown.winner) {
+        console.warn(
+          `[idle-repair-queue-actuator] ${installSlug}: stood down; pass lease held by ` +
+            `${standDown.winner.hostId} (build ${standDown.winner.executingBuild.sha ?? 'unresolved'})`,
+        );
+      }
+      return null;
+    }
     const storedEpisode = claim.episode;
 
     const startedAtMs = (opts.nowMs ?? Date.now)();
@@ -841,7 +1012,9 @@ export async function checkIdleRepairQueue(
       },
       loadEpisode: async () => storedEpisode,
       saveEpisode: async (nextEpisode) => {
-        await saveIdleActuatorEpisode(sql, { installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), episode: nextEpisode });
+        await saveIdleActuatorEpisode(sql, {
+          installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), episode: nextEpisode, executor,
+        });
         episode = nextEpisode;
       },
       dispatchFixer: async () => {
@@ -850,8 +1023,7 @@ export async function checkIdleRepairQueue(
         const target = { installSlug, workspaceId };
         return dispatchIdleQueueFixer(q, {
           reserve: (current) => reserveFrozenCandidateRepairFixer(target, current),
-          dispatch: (reserved, onSkip) =>
-            dispatchReleaseFixer(target, reserved.candidate, reserved.failingTests, reserved, undefined, { onSkip }),
+          dispatch: idleQueueFixerDispatch(target, dispatchReleaseFixer),
           finalize: (reserved, fired) => finalizeFrozenCandidateRepairFixer(target, reserved, fired),
         });
       },
@@ -890,9 +1062,10 @@ export async function checkIdleRepairQueue(
       },
     });
     if (queue && snapshot) {
-      await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue, {
-        version: 1, startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
-      });
+      await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue,
+        buildIdleQueueActuatorObservation({
+          startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
+        }, executor));
     }
     if (queueMeasured && result.decision === 'not-idle') {
       const { resolveAlarm } = await import('../alarm-attention');

@@ -55,6 +55,18 @@ describe('decideDisposition provenance (GN-BENCH-PROVENANCE)', () => {
     expect(v.residue).toEqual([]);
   });
 
+  it('CALIBRATION: a Codebase-Memory arm that clears every bar on one shared tree yields replace, not upgrade', () => {
+    // Same data as the dirty-tree case below minus the provenance fault, so that case's
+    // `inconclusive` is attributable to parity alone and `replace` is a distinct, pinned outcome.
+    const v = decideDisposition([
+      arm('baseline-lsp-rg', 1), arm('gitnexus-installed', 2), arm('gitnexus-candidate', 2), arm('codebase-memory', 4),
+    ]);
+    expect(v.decision).toBe('replace');
+    expect(v.decision).not.toBe('upgrade');
+    expect(v.residue).toEqual([]);
+    expect(v.reasons.join(' ')).toContain('Codebase-Memory clears every bar and wins');
+  });
+
   it('a tree-fingerprint mismatch downgrades the SAME winning candidate to inconclusive and names the fingerprints', () => {
     const v = decideDisposition(winningSet('tree-bbbb'));
     expect(v.decision).toBe('inconclusive');

@@ -21,6 +21,8 @@ import { SuSessionHost, registerSuSessionHost } from '../su-session-host.ts';
 import { _resetSuClientLeaseForTest } from '../su-session-client-lease.ts';
 import type { SuSessionCommandStore } from '../su-session-commands.ts';
 import type { SuSessionHostOwner } from '../su-session-persistence.ts';
+import { SuNativeCards } from '../su-session-native-cards.ts';
+import type { DurableSuSessionRecord } from '../su-session-persistence.ts';
 import { createHash } from 'node:crypto';
 import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
@@ -38,6 +40,7 @@ import {
   runRoutedSuSessionOp,
   registerSuNativeToolDispatcher,
   runOnSuNativeToolOwner,
+  routeSuNativeCard,
 } from '../su-session-owner-routing.ts';
 
 const supported = { state: 'supported', implementation: 'native' } as const;
@@ -72,6 +75,7 @@ function descriptor(): SuSessionDescriptor<'claude'> {
 
 // What this worker's database read "would" return for the owner record.
 let ownerRecord: SuSessionHostOwner | null = null;
+let cardRecord: DurableSuSessionRecord | null = null;
 const receipts = new Map<string, { fingerprint: string; outcome?: unknown }>();
 const commandStore: SuSessionCommandStore = {
   async reserve(command, fingerprint) {
@@ -88,13 +92,17 @@ const commandStore: SuSessionCommandStore = {
 };
 _configureSuSessionRoutingForTest({
   readOwner: async () => ownerRecord,
-  readDurable: async () => null,
+  readDurable: async input => cardRecord?.advSessionId === input.advSessionId ? cardRecord : null,
   commandStore,
 });
 _resetSuClientLeaseForTest({ grant: async () => undefined, renew: async () => undefined, detach: async () => true, expired: async () => [] });
 
 let host: SuSessionHost<'claude'> | null = null;
 const executed: string[] = [];
+let cards: SuNativeCards | null = null;
+let cardEvents: unknown[] = [];
+let cardAnswer: unknown = null;
+let releaseCardHost: (() => void) | undefined;
 
 // D-063 reuses this real worker/IPC fixture. Only the host's authenticated
 // funding/provenance inputs and persistence are fixture-owned. Observation
@@ -157,6 +165,37 @@ startWorkerOwnerRpc();
 
 async function handle(message: any): Promise<unknown> {
   switch (message.op) {
+    case 'open-private-card': {
+      cards?.cancel(); cardEvents = []; cardAnswer = null;
+      releaseCardHost?.();
+      const base = descriptor();
+      const d = { ...base, identity: { ...base.identity, advSessionId: 79, agentChatId: 'native-card-chat',
+        backend: message.backend, nativeSessionId: `native-card-${message.backend}` }, lifecycle: 'ready',
+        backendExtension: message.backend === 'codex' ? { backend: 'codex', codexHome: null } : base.backendExtension } as SuSessionDescriptor;
+      releaseCardHost = registerSuSessionHost(new SuSessionHost({ descriptor: d, executeCommand: async () => ({ status: 'completed' }) }));
+      cardRecord = { advSessionId: 79, agentChatId: d.identity.agentChatId, workspaceId: ADDRESS.workspaceId,
+        ownerId: d.identity.ownerId, nativeSessionId: d.identity.nativeSessionId, backend: message.backend,
+        harnessSlug: 'fixture', runtimeGeneration: 1, lifecycle: 'ready', descriptor: d,
+        pid: process.pid, cwd: null, endedAt: null };
+      cards = new SuNativeCards(ADDRESS.workspaceId, 'pui-native:79:1', event => cardEvents.push(event));
+      const request = message.url ? { serverName: 'fixture', mode: 'url' as const, message: '',
+        url: 'https://auth.example/?code=PRIVATE_NATIVE', elicitationId: 'auth' }
+        : { serverName: 'fixture', mode: 'form' as const, message: '', requestedSchema: { type: 'object' as const,
+          properties: { apiKey: { type: 'string' as const, minLength: 3 } }, required: ['apiKey'] } };
+      if (message.backend === 'claude') {
+        void cards.handleClaudeElicitation(request as never, 'native-card-turn', {
+          requestId: 'private', signal: new AbortController().signal,
+        }).then(answer => { cardAnswer = answer; });
+      } else {
+        cards.handle('codex', { id: 'private', method: 'mcpServer/elicitation/request', params: request }, 'native-card-turn',
+          frame => { cardAnswer = frame; });
+      }
+      return { owner: localSuSessionHostOwner(), record: cardRecord, events: cardEvents };
+    }
+    case 'set-card-record': cardRecord = message.record; return { ok: true };
+    case 'private-card-route': return routeSuNativeCard(message.input);
+    case 'private-card-state': return { answer: cardAnswer, events: cardEvents };
+    case 'cancel-private-card': cards?.cancel(); return { ok: true };
     case 'open-native-engine': {
       const base = descriptor();
       const nativeDescriptor: SuSessionDescriptor<'codex'> = { ...base,

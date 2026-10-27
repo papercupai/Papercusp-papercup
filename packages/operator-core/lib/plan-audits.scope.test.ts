@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const M = vi.hoisted(() => ({
   activeWorkspaceId: vi.fn(() => "ambient-workspace"),
@@ -20,7 +23,50 @@ import {
   getLatestPlanAudit,
   getPlanItemStatuses,
   resolvePlanItemHomeHarness,
+  repoCitationDeps,
 } from "./plan-audits";
+
+async function nativeRoots(check: (root: string, workspace: string) => void | Promise<void>) {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'native-citation-'));
+  try {
+    const root = path.join(workspace, 'parent');
+    await mkdir(path.join(root, '.git'), { recursive: true });
+    await mkdir(path.join(workspace, 'mobile', '.git'), { recursive: true });
+    await writeFile(path.join(workspace, 'mobile', 'app.rs'), 'fn native() {}');
+    await check(root, workspace);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+}
+
+describe('R-1 native citation context', () => {
+  it('preserves parent precedence', async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'native-precedence-'));
+    try {
+      const root = path.join(workspace, 'parent');
+      await mkdir(path.join(root, 'mobile'), { recursive: true });
+      await mkdir(path.join(workspace, 'mobile', '.git'), { recursive: true });
+      await writeFile(path.join(root, 'mobile', 'app.rs'), 'parent');
+      await writeFile(path.join(workspace, 'mobile', 'app.rs'), 'sibling');
+      const deps = repoCitationDeps(root);
+      expect(deps.readFile('mobile/app.rs')).toBe('parent');
+      expect(deps.locateRepository!('mobile/app.rs')).toEqual({ repoRoot: root, absolutePath: path.join(root, 'mobile', 'app.rs') });
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+});
+
+describe('R-3 native citation context', () => {
+  it('refuses unadmitted roots and shadowing', async () => {
+    await nativeRoots(async (root, workspace) => {
+      await mkdir(path.join(workspace, 'unadmitted'), { recursive: true });
+      await writeFile(path.join(workspace, 'unadmitted', '.git'), 'gitdir: elsewhere');
+      await writeFile(path.join(workspace, 'unadmitted', 'app.rs'), 'fn unadmitted() {}');
+      const deps = repoCitationDeps(root);
+      expect(deps.locateRepository!('mobile/app.rs')).toEqual({ repoRoot: path.join(workspace, 'mobile'), absolutePath: path.join(workspace, 'mobile', 'app.rs') });
+      expect(deps.locateRepository!('../mobile/app.rs')).toBeNull();
+      expect(deps.locateRepository!(path.join(workspace, 'mobile', 'app.rs'))).toBeNull();
+      expect(deps.statFile('unadmitted/app.rs')).toBeNull();
+    });
+  });
+});
 
 const row = {
   plan_slug: "scoped-plan",
@@ -156,7 +202,7 @@ describe("getPlanItemStatuses harness scope", () => {
 
     const items = await getPlanItemStatuses("shared-slug", { harnessSlug: "email" });
 
-    expect(items).toEqual([{ itemId: "P-001", status: "done", itemText: "email item" }]);
+    expect(items).toEqual([{ itemId: "P-001", status: "done", itemText: "email item", deliverable: null }]);
     expect(M.sql.mock.calls[0]?.[3]).toEqual("email");
   });
 

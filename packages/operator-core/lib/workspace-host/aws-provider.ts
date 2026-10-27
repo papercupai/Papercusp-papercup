@@ -296,6 +296,9 @@ export interface AwsCreatedSnapshot extends AwsProviderMutationResult {
  * and SSM clients; the provider contract tests inject an in-memory fake.
  */
 export interface AwsWorkspaceHostSdkClient {
+  /** Production finite-trial clients verify controller identity and their installed AWS deadline. */
+  assertCanaryAdmission?(identity: { workspaceId: string; hostId: string;
+    runId?: string; teardownDeadlineAt?: string }): Promise<void>;
   validateConnection(connection: WorkspaceHostProviderConnection): Promise<WorkspaceHostConnectionValidation>;
   listScopes(connection: WorkspaceHostProviderConnection): Promise<readonly WorkspaceHostScope[]>;
   listRegions(
@@ -897,6 +900,17 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     return this.client.validateConnection(ctx.connection);
   }
 
+  private async assertCanaryAdmission(ctx: WorkspaceHostProviderContext, hostId: string): Promise<void> {
+    if (!this.client.assertCanaryAdmission) {
+      if (ctx.canaryRunId !== undefined || ctx.canaryTeardownDeadlineAt !== undefined) {
+        throw new Error('AWS canary requires its independently verified provider deadline');
+      }
+      return;
+    }
+    await this.client.assertCanaryAdmission({ workspaceId: ctx.workspaceId, hostId,
+      runId: ctx.canaryRunId, teardownDeadlineAt: ctx.canaryTeardownDeadlineAt });
+  }
+
   private async verifyRetainedVolume(
     resources: readonly WorkspaceHostResourceRef[], hostId: string, ctx: WorkspaceHostProviderContext,
     writer?: string, requireAttached = false,
@@ -967,6 +981,12 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
   }
 
   async plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan> {
+    const desired = 'desired' in request ? request.desired : undefined;
+    if (desired?.provider && ['canaryRunId', 'canaryTeardownDeadlineAt', 'canaryDeadline', 'awsCanaryDeadline']
+      .some(key => desired.provider![key] !== undefined)) {
+      throw new Error('AWS canary identity and deadline must come from validated controller admission');
+    }
+    if (request.action !== 'destroy') await this.assertCanaryAdmission(ctx, hostIdFor(request));
     if (request.action !== 'provision' && request.host.target !== AWS_WORKSPACE_HOST_TARGET) {
       throw new Error(`AWS provider cannot plan host target '${request.host.target}'`);
     }
@@ -1533,6 +1553,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
     const input = stepInput(request.step);
+    if (['create-data-volume', 'run-instance', 'start-instance', 'repair-instance', 'create-snapshot'].includes(input.op)) {
+      await this.assertCanaryAdmission(ctx, input.hostId);
+    }
     switch (input.op) {
       case 'create-data-volume': {
         const created = await this.client.createVolume(input.request);

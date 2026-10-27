@@ -800,6 +800,24 @@ describe('fleet headcount target (WI-2479)', () => {
     expect(await readBackoffTarget()).toMatchObject({ backoffMs: 0, nextAttemptAt: null, lastError: null });
   });
 
+  it('a boot-failure hold defers the next attempt past the 15-minute backoff cap (WI-6554700010029299)', async () => {
+    await insertFleet('headcount-boot-hold');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-boot-hold', target: 2, config, sql: rootSql });
+    const readHoldTarget = async () =>
+      (await listFleetHeadcountTargets(WS, rootSql)).find((target) => target.fleetSlug === 'headcount-boot-hold');
+    const holdMs = 6 * 60 * 60_000;
+    await recordFleetHeadcountAttempt({
+      workspaceId: WS, fleetSlug: 'headcount-boot-hold', succeeded: false,
+      error: 'boot-failure hold', holdMs, now: 10_000_000, sql: rootSql,
+    });
+    // The hold governs WHEN; the exponential backoff itself stays on its own ladder.
+    expect(await readHoldTarget()).toMatchObject({ backoffMs: 60_000, nextAttemptAt: 10_000_000 + holdMs, lastError: 'boot-failure hold' });
+    expect(await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-boot-hold', now: 10_000_000 + 16 * 60_000, sql: rootSql })).toBeNull();
+    // Without a hold, the same failure retries on the backoff (control).
+    await recordFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-boot-hold', succeeded: false, error: 'plain failure', now: 20_000_000, sql: rootSql });
+    expect(await readHoldTarget()).toMatchObject({ backoffMs: 120_000, nextAttemptAt: 20_000_000 + 120_000 });
+  });
+
   it('disables automatic top-up without erasing the canonical launch recipe', async () => {
     await insertFleet('headcount-disabled-profile');
     await setFleetHeadcountTarget({

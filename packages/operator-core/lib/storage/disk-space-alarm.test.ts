@@ -36,12 +36,14 @@ import {
   type DiskAlarmPolicy,
   type DiskAlarmContext,
 } from './disk-space-alarm';
+import { DECLARED_MOUNT_ALARM_CONDITION_KEY, DECLARED_MOUNT_ALARM_TITLE } from './declared-mounts';
 
 const GIB = 1024 ** 3;
 
 // Unit fixtures never touch the live census/cooldown database.
 function runDiskSpaceAlarmOnce(deps: Parameters<typeof runDiskSpaceAlarmWithDefaults>[0] = {}, policy?: DiskAlarmPolicy) {
-  return runDiskSpaceAlarmWithDefaults({ readContext: async () => ({ devices: [], receipt: null }), recentlyEscalated: async () => false, ...deps }, policy);
+  // readMissingMounts: null keeps the host's real /etc/fstab out of every fixture.
+  return runDiskSpaceAlarmWithDefaults({ readContext: async () => ({ devices: [], receipt: null }), recentlyEscalated: async () => false, readMissingMounts: async () => null, ...deps }, policy);
 }
 
 function snap(p: Partial<DiskSnapshot> = {}): DiskSnapshot {
@@ -739,5 +741,43 @@ describe('describeWriteHeadroomBreach (EI-23424266636870803)', () => {
       /([\d.]+) GiB write-headroom reserve/,
     )?.[1];
     expect(Number(real)).toBeCloseTo(criticalWriteHeadroomBytes(REAL_BOX.totalBytes) / GIB, 1);
+  });
+});
+
+// P-015 (disk-durable-headroom-2026-10-15): a `nofail` fstab bind that did not come up
+// sends agent scratch back onto `/` with no error, so the tick checks it on its own key.
+describe('runDiskSpaceAlarmOnce — declared bind mounts', () => {
+  const missing = [{ source: '/mnt/data/papercusp-scratch/home', target: '/home/u/.papercusp/scratch', options: ['bind', 'nofail'] }];
+  const healthyDisk = async () => [snap({ path: '/', freeBytes: 250 * GIB, freePct: 0.5 })];
+
+  it('escalates a declared-but-unmounted bind under its own condition key, even when free space is healthy', async () => {
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
+    const resolve = vi.fn(async () => true);
+    const result = await runDiskSpaceAlarmOnce({ sample: healthyDisk, escalate, resolve, readMissingMounts: async () => missing });
+    expect(result.breaches).toEqual([]);
+    const declared = escalate.mock.calls.map((call) => call[0]).filter((input) => input.data?.conditionKey === DECLARED_MOUNT_ALARM_CONDITION_KEY);
+    expect(declared).toHaveLength(1);
+    expect(declared[0]!.title).toBe(DECLARED_MOUNT_ALARM_TITLE);
+    expect(declared[0]!.body).toContain('/home/u/.papercusp/scratch');
+    expect(declared[0]!.body).toContain('/mnt/data/papercusp-scratch/home');
+    expect(declared[0]!.data).toMatchObject({ missingMounts: [{ target: '/home/u/.papercusp/scratch', source: '/mnt/data/papercusp-scratch/home' }] });
+    expect(resolve.mock.calls.map((call) => (call as unknown as [{ conditionKey: string }])[0].conditionKey))
+      .not.toContain(DECLARED_MOUNT_ALARM_CONDITION_KEY);
+  });
+
+  it('resolves the declared-mount condition when every declared bind is mounted', async () => {
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
+    const resolve = vi.fn(async (_input: { conditionKey: string }) => true);
+    await runDiskSpaceAlarmOnce({ sample: healthyDisk, escalate, resolve, readMissingMounts: async () => [] });
+    expect(resolve.mock.calls.map((call) => call[0].conditionKey)).toContain(DECLARED_MOUNT_ALARM_CONDITION_KEY);
+    expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('neither escalates nor resolves when fstab/mountinfo is unreadable (unknown is not healthy)', async () => {
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
+    const resolve = vi.fn(async (_input: { conditionKey: string }) => true);
+    await runDiskSpaceAlarmOnce({ sample: healthyDisk, escalate, resolve, readMissingMounts: async () => null });
+    expect(resolve.mock.calls.map((call) => call[0].conditionKey)).not.toContain(DECLARED_MOUNT_ALARM_CONDITION_KEY);
+    expect(escalate).not.toHaveBeenCalled();
   });
 });

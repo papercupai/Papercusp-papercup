@@ -272,8 +272,8 @@ export function creatorDraftsRoute(): Hono<{ Bindings: Env }> {
     return c.json(draftResponse(draft));
   });
 
-  // Upload bytes to the existing R2 bucket. The capability is single-use and
-  // the object is create-only by convention: a second upload cannot overwrite
+  // Upload through the private storage port. The capability is single-use and
+  // the write is generation-fenced: a second upload cannot overwrite
   // a content-addressed artifact or silently change a submitted draft.
   app.put('/creator-drafts/:id/artifact', async (c) => {
     const draft = await getCreatorDraft(c.env.DB, c.req.param('id'));
@@ -299,10 +299,12 @@ export function creatorDraftsRoute(): Hono<{ Bindings: Env }> {
     if (actualHash !== manifest.artifact.content_hash) {
       return c.json({ error: 'artifact_hash_mismatch', expected: manifest.artifact.content_hash, actual: actualHash }, 400);
     }
-    await c.env.ARTIFACTS.put(key, bytes, {
+    const stored = await c.env.ARTIFACTS.put(key, bytes, {
+      onlyIf: { etagDoesNotMatch: '*' },
       httpMetadata: { contentType: manifest.artifact.content_type },
       customMetadata: { draftId: draft.id, contentHash: actualHash, ownerGithubUserId: String(draft.owner_github_user_id) },
     });
+    if (!stored) return c.json({ error: 'artifact_exists' }, 409);
     const changes = await setCreatorDraftArtifact(c.env.DB, draft.id, {
       key,
       contentHash: actualHash,

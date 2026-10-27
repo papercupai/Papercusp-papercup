@@ -98,6 +98,7 @@ describe('task terminal enforcement-provider overlap (real PG)', () => {
       )
     `;
 
+    const consoleWarn = vi.spyOn(console, 'warn');
     const root = import('../connected-apps/enforce').then(
       value => ({ value, error: null }),
       error => ({ value: null, error: error instanceof Error ? error.stack || error.message : String(error) }),
@@ -134,6 +135,8 @@ describe('task terminal enforcement-provider overlap (real PG)', () => {
       expect(initialized.error).toBeNull();
       expect(initialized.value?.enforceAppKeyScope).toBeTypeOf('function');
       expect(warnings, warnings.join('\n')).toEqual([]);
+      expect(consoleWarn.mock.calls.map(args => args.map(String).join(' '))
+        .filter(line => /\[events\] (match failed|local rule reload failed)/.test(line))).toEqual([]);
       expect(emissionCalls).toBe(1);
       expect(moduleState('../events/await/engine.ts').evaluated).toBe(true);
       expect(await h.sql`
@@ -146,11 +149,13 @@ describe('task terminal enforcement-provider overlap (real PG)', () => {
       `).toEqual([{
         fire_count: 1,
         last_payload: {
+          terminalEventRevision: 1,
           taskId, state: 'killed', exitCode: 137, exitReason: 'oom-kill',
           taskClass: 'bash-job', harness: 'papercusp', launchedBy: 'test-enforce-overlap-owner',
         },
       }]);
     } finally {
+      consoleWarn.mockRestore();
       const outcome = await root;
       if (outcome.error) console.info('TERMINAL_ENFORCE_ROOT_FAILURE', outcome.error);
     }

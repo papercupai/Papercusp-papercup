@@ -886,22 +886,13 @@ export function resolveProjectRoot(
   if (!withinProjectBoundary(file, fallbackRoot)) {
     return { root: fallbackRoot, error: `file ${file} is outside project boundary ${fallbackRoot}; refusing cross-project navigation` };
   }
-  // TypeScript: tsserver finds a file's own tsconfig by walking UP from the
-  // document it is asked to open, so the client root only has to CONTAIN the
-  // file — it does not have to hold a tsconfig itself.
-  //
-  // It does not hold one: this repository has NO root tsconfig.json (only
-  // tsconfig.base.json) and ~100 per-project ones. An earlier comment here
-  // asserted "the monorepo root carries the tsconfig"; that was never true.
-  // It stays harmless for position-addressed ops precisely because they open a
-  // document and let tsserver do the walking.
-  //
-  // ⚠ The symbol search does NOT get to reuse that reasoning, and must not be
-  // "simplified" to call this function for TypeScript. navto searches the
-  // server's LOADED PROJECTS rather than the open document, so it needs a root
-  // that actually holds a tsconfig.json — see nearestTsProjectRoot, used by
-  // resolveSymbolSearchScope below.
-  if (language === 'typescript') return { root: fallbackRoot, error: null };
+  // Scope server admission and its configured-source memory census to the
+  // same project selected for symbol search. A repository root can contain
+  // unrelated projects whose dependencies/configurations are unavailable.
+  // Config-free position requests retain their inferred-project fallback;
+  // symbol search separately requires a declared project.
+  if (language === 'typescript')
+    return { root: nearestTsProjectRoot(file, fallbackRoot) ?? fallbackRoot, error: null };
 
   const markers = specForLanguage(language).projectMarkers;
   let dir = dirname(resolvePath(file));

@@ -61,8 +61,6 @@ import {
   compactInputSchema,
   compactWireBytes,
   COMPACT_DROPPED_KEYS,
-  isFormatImpliedPattern,
-  isVacuousPropertyNames,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
@@ -115,13 +113,12 @@ function nameSegment(key: string): string {
 
 /**
  * Project a schema onto its CONTRACT: the sorted set of `path=value` leaves,
- * with prose keywords excluded at every non-name-keyed position, and the two
- * RESTATEMENTS the reducer may drop normalized away: a `type` its enum/const
- * already entails, and a `pattern` that is zod's own regex for its `format`.
+ * with only the five approved prose/advisory keywords excluded at schema
+ * positions. Explicit types, patterns and propertyNames remain in the check.
  *
  * Prose is excluded from BOTH sides on purpose — the contract is what remains
  * once prose is disregarded, so equality of these two projections is exactly
- * the claim "compaction removed only prose and restatements".
+ * the claim "compaction removed only the approved keywords".
  */
 function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out: string[]): void {
   if (node === null || typeof node !== 'object') {
@@ -143,26 +140,8 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
   // live catalog produces, and every instance was an `added` `{}`, never a
   // `missing` constraint.
   const schema = node as Record<string, unknown>;
-  const omitType = !inNameKeyedMap && typeIsImplied(schema);
-  // A `pattern` that is exactly zod's regex for the sibling `format` restates the
-  // format; the reducer drops it (lever 1). Normalize it away on BOTH sides by the
-  // reducer's OWN exported rule so the two cannot drift. The `format` line survives
-  // on both sides, so dropping the format, or a pattern the format does NOT imply,
-  // still shows as `missing`. Without this, the 60 catalog tools with uuid /
-  // date-time / email fields failed on a drop that is not a contract change
-  // (measured 2026-10-13, WI-6554700010009813).
-  const omitPattern = !inNameKeyedMap && isFormatImpliedPattern(schema);
-  // A `propertyNames` every JSON key satisfies (zod's `{ type: 'string' }` beside a
-  // z.record) constrains nothing; the reducer drops it (WI-10006197). Same move as
-  // the pattern rule above: normalize by the reducer's OWN exported predicate, so a
-  // CONSTRAINING propertyNames dropped by mistake still shows as `missing`.
   const entries = Object.entries(schema).filter(
-    ([key, value]) =>
-      inNameKeyedMap ||
-      (!PROSE_KEYS.has(key) &&
-        !(key === 'type' && omitType) &&
-        !(key === 'pattern' && omitPattern) &&
-        !(key === 'propertyNames' && isVacuousPropertyNames(value))),
+    ([key]) => inNameKeyedMap || !PROSE_KEYS.has(key),
   );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {
@@ -257,9 +236,10 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
  * (a name absent from the full schema's same map), recursively, then drops
  * those added definitions.
  *
- * Strict by construction: an added definition whose BODY differs from the
- * subschema it replaced restores the wrong leaves and still fails the contract
- * check, and a ref with siblings or into an AUTHORED definition is left alone.
+ * An authored definition may also replace an identical inline schema. Expand
+ * that reference only where the full schema did not already have the same
+ * reference. Original reference sites and authored definition bodies remain
+ * subject to the exact comparison; changed constraints cannot be normalized away.
  */
 function inlineHoisted(compact: unknown, full: unknown): unknown {
   if (!isSchemaObject(compact)) return compact;
@@ -276,10 +256,10 @@ function inlineHoisted(compact: unknown, full: unknown): unknown {
     }
     if (names.size > 0) added.set(mapKey, names);
   }
-  if (added.size === 0) return compact;
-  const inline = (node: unknown, hops: number): unknown => {
+  const inline = (node: unknown, expected: unknown, hops: number): unknown => {
     if (hops > 64) throw new Error('inlineHoisted: a $ref chain deeper than 64 hops is a hoisting cycle');
-    if (Array.isArray(node)) return node.map((entry) => inline(entry, hops));
+    if (Array.isArray(node)) return node.map((entry, index) =>
+      inline(entry, Array.isArray(expected) ? expected[index] : undefined, hops));
     if (!isSchemaObject(node)) return node;
     const ref = node.$ref;
     if (typeof ref === 'string' && Object.keys(node).length === 1) {
@@ -287,13 +267,16 @@ function inlineHoisted(compact: unknown, full: unknown): unknown {
       if (match) {
         const [, mapKey, escaped] = match;
         const name = (escaped ?? '').replace(/~1/g, '/').replace(/~0/g, '~');
-        const body = added.get(mapKey ?? '')?.get(name);
-        if (body !== undefined) return inline(body, hops + 1);
+        const originalRef = isSchemaObject(expected) ? expected.$ref : undefined;
+        const body = added.get(mapKey ?? '')?.get(name) ??
+          (expected !== undefined && ref !== originalRef ? resolveLocalRef(compact, ref) : undefined);
+        if (body !== undefined) return inline(body, expected, hops + 1);
       }
     }
-    return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, inline(value, hops)]));
+    return Object.fromEntries(Object.entries(node).map(([key, value]) =>
+      [key, inline(value, isSchemaObject(expected) ? expected[key] : undefined, hops)]));
   };
-  const restored = inline(compact, 0) as Record<string, unknown>;
+  const restored = inline(compact, full, 0) as Record<string, unknown>;
   for (const [mapKey, names] of added) {
     const defs = restored[mapKey] as Record<string, unknown>;
     for (const name of names.keys()) delete defs[name];
@@ -424,7 +407,7 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
     ).toEqual([]);
   });
 
-  it('removes every redundant type constraint from real compact schemas', () => {
+  it('retains explicit types even when enum or const already implies them', () => {
     const redundant: string[] = [];
     const visit = (node: unknown, path: string, inNameKeyedMap: boolean): void => {
       if (node === null || typeof node !== 'object') return;
@@ -439,8 +422,12 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
       }
     };
 
-    for (const row of rows) visit(compactInputSchema(row.inputSchema ?? {}), row.name, false);
-    expect(redundant.slice(0, 8), `${redundant.length} real compact schema(s) retained an implied type`).toEqual([]);
+    for (const row of rows) visit(row.inputSchema ?? {}, row.name, false);
+    const full = [...redundant].sort();
+    expect(full.length, 'the real catalog must exercise explicit implied types').toBeGreaterThan(0);
+    redundant.length = 0;
+    for (const row of rows) visit(inlineHoisted(compactInputSchema(row.inputSchema ?? {}), row.inputSchema ?? {}), row.name, false);
+    expect(redundant.sort()).toEqual(full);
   });
 
   it('removes every prose keyword at every depth, and keeps prose-NAMED properties', () => {
@@ -533,6 +520,23 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
         'IDENTICAL to the full schema for every catalog tool. That means the contract ' +
         'comparison above is not measuring anything, so its green is vacuous.',
     ).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: authored-definition reuse preserves recursive refs and still exposes damaged constraints', () => {
+    const leaf = { type: 'string', minLength: 1, maxLength: 200, pattern: '^[a-z]+$' };
+    const full = {
+      type: 'object',
+      properties: { value: leaf, head: { $ref: '#/$defs/node' } },
+      $defs: {
+        leaf: { ...leaf },
+        node: { type: 'object', properties: { next: { $ref: '#/$defs/node' } } },
+      },
+    };
+    const compact = compactInputSchema(full) as typeof full;
+    expect(contractOf(inlineHoisted(compact, full))).toEqual(contractOf(full));
+    const damaged = structuredClone(compact);
+    damaged.$defs.leaf.minLength = 2;
+    expect(contractOf(inlineHoisted(damaged, full))).not.toEqual(contractOf(full));
   });
 
   it('MEASURES the catalog-wide byte reduction and reports it (no magic threshold)', () => {

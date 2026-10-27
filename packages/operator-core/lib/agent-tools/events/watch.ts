@@ -200,6 +200,15 @@ const predicateWatchSchema = z.object({
   interval_sec: watchIntervalSchema,
 });
 
+/** Shared with the behavioral SU experiment so it consumes the delivered protocol. */
+export function claimableWatchBeforeSleep(pattern: string, once: boolean) {
+  return !once && pattern === 'work-item:claimable'
+    ? { tool: 'scheduler:get_next', required: true,
+        afterMiss: { tool: 'loop:end', required: true },
+        reason: 'Re-run scheduler:get_next BEFORE sleeping: work may predate this watch or arrive during registration. Continue on a claim; only a verified miss permits loop:end to stop the timer loop and end your turn, with this standing watch retained.' }
+    : undefined;
+}
+
 export default defineTool({
   name: 'watch:create',
   description:
@@ -686,6 +695,11 @@ export default defineTool({
             ? DEFAULT_TIMEOUT_SEC
             : null);
 
+    // Claimable is an edge event, not a snapshot. Both a fresh registration and
+    // joining a standing watch must direct the member to recheck AFTER it is
+    // armed. A successful pull continues work; a miss may sleep with the watch.
+    const beforeSleep = claimableWatchBeforeSleep(args.pattern, once);
+
     // WI-10005697: a STANDING pattern watch is the one registration nothing ever
     // consumes — a standing fire matches without setting fired_at — so the drained-lane
     // member contract's own "register work-item:claimable and end your turn" step added a
@@ -722,9 +736,10 @@ export default defineTool({
                   ...(args.payload_filter !== undefined ? { payload_filter: args.payload_filter } : {}),
                 },
                 deduped: { joined_watch_id: existingStanding.id },
+                ...(beforeSleep ? { beforeSleep } : {}),
                 wake_handle: handleNote,
                 advice:
-                  'You ALREADY HOLD this exact standing watch — no second row was created, and the one you hold is live. End your turn; you will be re-woken on matches, at most once per min_sleep_sec. Re-running this registration is idempotent, so you never need an "do I already have one?" check first.',
+                  beforeSleep?.reason ?? 'You ALREADY HOLD this exact standing watch — no second row was created, and the one you hold is live. End your turn; you will be re-woken on matches, at most once per min_sleep_sec. Re-running this registration is idempotent, so you never need an "do I already have one?" check first.',
               }),
             },
           ],
@@ -764,9 +779,10 @@ export default defineTool({
               ...(args.payload_filter !== undefined ? { payload_filter: args.payload_filter } : {}),
             },
             wake_handle: handleNote,
+            ...(beforeSleep ? { beforeSleep } : {}),
             advice: once
               ? 'Registered a one-shot wake. End your turn now — you will be re-invoked exactly once when it fires (or at the deadline). Do not poll.'
-              : 'Registered a standing wake watch (floored). End your turn — you will be re-woken on matches, at most once per min_sleep_sec, with bursts coalesced into one wake.',
+              : beforeSleep?.reason ?? 'Registered a standing wake watch (floored). End your turn — you will be re-woken on matches, at most once per min_sleep_sec, with bursts coalesced into one wake.',
           }),
         },
       ],

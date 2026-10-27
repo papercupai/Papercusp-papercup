@@ -1,0 +1,174 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "59945744fbc85fb8d5cd60ef37bbf2c405a8fdb6bb1d3b8d81089f8c7ae76c2e.supporting-original",
+      "sha256": "59945744fbc85fb8d5cd60ef37bbf2c405a8fdb6bb1d3b8d81089f8c7ae76c2e",
+      "byteLength": 5894
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "scope": "Portal local mode: two windows, A-to-B target/workspace selection, second-window isolation and reload. Excludes real desktop pixels, launch, agent continuity and unavailable/reconnect.",
+  "cases": [
+    {
+      "window": 0,
+      "name": "before",
+      "url": "http://127.0.0.1:44339/?app=home&ws=test-runtime-f4ee13f6-fd6-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-f4ee13f6-fd6-a",
+      "status": 200,
+      "registry": {
+        "current": "test-runtime-f4ee13f6-fd6-a",
+        "workspaces": [
+          {
+            "id": "test-runtime-f4ee13f6-fd6-a",
+            "name": "R1 machine A",
+            "createdAt": 0
+          }
+        ]
+      },
+      "profileStatus": 200,
+      "profile": {
+        "updated_at": "2026-10-24T06:33:21.962Z",
+        "display_name": "R1 destination a"
+      },
+      "screenshot": "docs/evidence/machine-first-r1-portal-0-before-20261024.png"
+    },
+    {
+      "window": 1,
+      "name": "before",
+      "url": "http://127.0.0.1:44339/?app=home&ws=test-runtime-f4ee13f6-fd6-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-f4ee13f6-fd6-a",
+      "status": 200,
+      "registry": {
+        "current": "test-runtime-f4ee13f6-fd6-a",
+        "workspaces": [
+          {
+            "id": "test-runtime-f4ee13f6-fd6-a",
+            "name": "R1 machine A",
+            "createdAt": 0
+          }
+        ]
+      },
+      "profileStatus": 200,
+      "profile": {
+        "updated_at": "2026-10-24T06:33:21.962Z",
+        "display_name": "R1 destination a"
+      },
+      "screenshot": "docs/evidence/machine-first-r1-portal-1-before-20261024.png"
+    },
+    {
+      "window": 0,
+      "name": "after",
+      "url": "http://127.0.0.1:44339/?app=desktops&desktopHost=r1-host-b&host=r1-host-b&step=operate&tab=desktops&ws=test-runtime-f4ee13f6-fd6-b",
+      "workspace": "test-runtime-f4ee13f6-fd6-b",
+      "status": 200,
+      "registry": {
+        "current": "test-runtime-f4ee13f6-fd6-b",
+        "workspaces": [
+          {
+            "id": "test-runtime-f4ee13f6-fd6-b",
+            "name": "R1 machine B",
+            "createdAt": 0
+          }
+        ]
+      },
+      "profileStatus": 200,
+      "profile": {
+        "updated_at": "2026-10-24T06:33:22.289Z",
+        "display_name": "R1 destination b"
+      },
+      "screenshot": "docs/evidence/machine-first-r1-portal-0-after-20261024.png"
+    },
+    {
+      "window": 1,
+      "name": "retained",
+      "url": "http://127.0.0.1:44339/?app=home&ws=test-runtime-f4ee13f6-fd6-a&desktopHost=r1-host-a",
+      "workspace": "test-runtime-f4ee13f6-fd6-a",
+      "status": 200,
+      "registry": {
+        "current": "test-runtime-f4ee13f6-fd6-a",
+        "workspaces": [
+          {
+            "id": "test-runtime-f4ee13f6-fd6-a",
+            "name": "R1 machine A",
+            "createdAt": 0
+          }
+        ]
+      },
+      "profileStatus": 200,
+      "profile": {
+        "updated_at": "2026-10-24T06:33:21.962Z",
+        "display_name": "R1 destination a"
+      },
+      "screenshot": "docs/evidence/machine-first-r1-portal-1-retained-20261024.png"
+    },
+    {
+      "window": 0,
+      "name": "reload",
+      "url": "http://127.0.0.1:44339/?app=desktops&desktopHost=r1-host-b&host=r1-host-b&step=operate&tab=desktops&ws=test-runtime-f4ee13f6-fd6-b",
+      "workspace": "test-runtime-f4ee13f6-fd6-b",
+      "status": 200,
+      "registry": {
+        "current": "test-runtime-f4ee13f6-fd6-b",
+        "workspaces": [
+          {
+            "id": "test-runtime-f4ee13f6-fd6-b",
+            "name": "R1 machine B",
+            "createdAt": 0
+          }
+        ]
+      },
+      "profileStatus": 200,
+      "profile": {
+        "updated_at": "2026-10-24T06:33:22.289Z",
+        "display_name": "R1 destination b"
+      },
+      "screenshot": "docs/evidence/machine-first-r1-portal-0-reload-20261024.png"
+    }
+  ],
+  "errors": [],
+  "runtime": {
+    "root": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.machine-first-r1-gui-candidate-v12-20261024/releases/SM74kfSjUSj9zREjlSOQX-20261024064202668-4185728-37b03739",
+    "pid": 39976,
+    "origin": "http://127.0.0.1:44339",
+    "operatorOrigin": "http://127.0.0.1:45829",
+    "workspace": "test-runtime-f4ee13f6-fd6-local",
+    "home": "/tmp/machine-first-r1-v12-portal-home-ntQZqI"
+  },
+  "result": "passed",
+  "cleanup": {
+    "exitCode": 0,
+    "signal": null
+  },
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010016648",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "acceptance": "Partial R1 Portal functional proof; full desktop, launch, agent continuity, unavailable/reconnect, independent acceptance and shipment remain.",
+  "sourceHashes": {
+    "packages/operator-core/lib/workspaces-tauri.ts": "14e8f7140e68a4bc619df25e3e80dd9c9c99b7e039a4c85d5d586f06ea14f671",
+    "packages/operator-core/lib/__tests__/workspaces-tauri.test.ts": "06285d835bc739c421908ac0d249944472e42ef5e762121d2ad585108ae62030",
+    "portal/packages/ui/src/shell.tsx": "a903e00bcf749e8e2ff842f0171e956994c5159f9b864d3be637da8c87831ffa"
+  },
+  "regression": {
+    "red": "/tmp/machine-first-r1-explicit-discovery-red-20261024.log:2failed20passed0skipped",
+    "green": "/tmp/machine-first-r1-explicit-discovery-green-20261024.log:22passed0skipped",
+    "typecheck": "/tmp/machine-first-r1-gui-v12-build-20261024.log:clean0errors3274files"
+  },
+  "trace": "docs/evidence/machine-first-r1-portal-currentbuild-20261024.zip",
+  "fixtureCleanup": {
+    "stoppedAt": "2026-10-24T06:46:16.505Z",
+    "targetAExit": 0,
+    "targetBExit": 0,
+    "localExit": 0,
+    "ownedPidsAbsent": true,
+    "privateAuthRemoved": true
+  },
+  "buildCleanup": {
+    "published": true,
+    "wrapper": "failed on final locks:release ptool exit1",
+    "recovered": "Abandoned build locks explicitly released; authoritative own queue empty.",
+    "followup": "EI-26842246787593077"
+  }
+}

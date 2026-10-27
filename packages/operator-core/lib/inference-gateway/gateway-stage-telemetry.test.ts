@@ -11,6 +11,7 @@ import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt, type GatewayCarryTrialAttemptResult,
   type GatewayCarryTrialBinding } from './gateway';
 import { processMonotonicClock } from '../process-monotonic-clock';
+import { MODEL_REQUEST_ID_HEADER, isModelRequestId } from '../observability/tracing';
 import { readProcessIdentity } from '../process-identity';
 import { CACHE_POLICY_VERSION } from './cache-policy';
 import {
@@ -49,7 +50,8 @@ it.each((['bearer', 'oauth'] as const).flatMap(transport =>
       usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } };
     upstream = http.createServer((req, res) => {
       req.resume(); req.once('end', () => {
-        res.writeHead(200, { 'content-type': framing === 'json' ? 'application/json' : 'text/event-stream' });
+        res.writeHead(200, { 'content-type': framing === 'json' ? 'application/json' : 'text/event-stream',
+          [MODEL_REQUEST_ID_HEADER]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999' });
         res.end(framing === 'json' ? JSON.stringify(completed)
           : `data: ${JSON.stringify({ type: 'response.completed', response: completed })}${framing === 'sse' ? '\n\n' : ''}`);
       });
@@ -77,11 +79,18 @@ it.each((['bearer', 'oauth'] as const).flatMap(transport =>
       openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const port = await gateway.listen(0);
     const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof' },
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof',
+        [MODEL_REQUEST_ID_HEADER]: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:888' },
       body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TAIL_PROMPT', stream: transport === 'oauth' || framing !== 'json',
         reasoning: { effort: 'high' } }) });
     await response.text();
     const { timeline } = await recentTimeline(port);
+    const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=su-tail-proof`)).json();
+    const modelRequestId = response.headers.get(MODEL_REQUEST_ID_HEADER);
+    expect(isModelRequestId(modelRequestId)).toBe(true);
+    expect(modelRequestId).toBe(`${report.process.instanceId}:${timeline.requestId}`);
+    expect(modelRequestId).not.toContain('aaaaaaaa');
+    expect(modelRequestId).not.toContain('bbbbbbbb');
     if (transport === 'oauth' && framing === 'sse-without-final-newline') {
       // The maintained OAuth kernel requires a terminated terminal SSE frame.
       // Flushing observational bytes must not make this failed send successful.
@@ -866,15 +875,24 @@ it.each(['anthropic', 'codex'] as const)(
       requestAbsorbMs: 0, selfHeal: { enabled: false },
     });
     const port = await gateway.listen(0);
-    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) :
-      await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
-        body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    const send = () => fetch(`http://127.0.0.1:${port}/v1/${protocol === 'anthropic' ? 'messages' : 'responses'}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}`,
+        [MODEL_REQUEST_ID_HEADER]: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999' },
+      body: protocol === 'anthropic' ? anthropicTrialBody() : JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }),
+    });
+    const response = await send();
     expect(response.status).toBe(200); await response.text();
     expect(writes).toBe(1); expect(results).toHaveLength(1); expect(changedObserver).not.toHaveBeenCalled();
     const { body: _privateBody, signal: _signal, ...identity } = attempts[0]!;
     expect(results[0]).toEqual({ ...identity, reservationRef: `fixture:${identity.attemptId}`,
       outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true });
+    expect(isModelRequestId(attempts[0]!.gatewayRequestId)).toBe(true);
+    expect(attempts[0]!.gatewayRequestId).toBe(response.headers.get(MODEL_REQUEST_ID_HEADER));
+    expect(attempts[0]!.gatewayRequestId).not.toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:999');
+    const next = await send(); await next.text();
+    expect(next.status).toBe(200);
+    expect(attempts[1]!.gatewayRequestId).toBe(next.headers.get(MODEL_REQUEST_ID_HEADER));
+    expect(attempts[1]!.gatewayRequestId).not.toBe(attempts[0]!.gatewayRequestId);
     expect(JSON.stringify(results)).not.toMatch(/PRIVATE_|costUsd"/);
   });
 
@@ -927,10 +945,15 @@ it('carry trial reports separate results for each selected-provider failover att
   expect(attempts.map(a => a.accountId)).toEqual(['account-a', 'account-b']);
   expect(results.map(r => r.attemptId)).toEqual(attempts.map(a => a.attemptId));
   expect(new Set(results.map(r => r.attemptId)).size).toBe(2);
+  expect(isModelRequestId(attempts[0]!.gatewayRequestId)).toBe(true);
+  expect(attempts.map(a => a.gatewayRequestId)).toEqual([
+    response.headers.get(MODEL_REQUEST_ID_HEADER), response.headers.get(MODEL_REQUEST_ID_HEADER),
+  ]);
   expect(results.map(r => r.responseStatus)).toEqual([429, 200]);
   for (let i = 0; i < results.length; i++) {
     expect(results[i]).toMatchObject({ credentialSha256: attempts[i]!.credentialSha256,
-      bodySha256: attempts[i]!.bodySha256, reservationRef: `fixture:${attempts[i]!.attemptId}`,
+      bodySha256: attempts[i]!.bodySha256, gatewayRequestId: attempts[i]!.gatewayRequestId,
+      reservationRef: `fixture:${attempts[i]!.attemptId}`,
       costUsdMeasurementMissing: true });
     expect(results[i]).not.toHaveProperty('costUsd');
   }
@@ -1035,6 +1058,47 @@ it('Anthropic binding authenticates the final API-key account without retaining 
   expect(attempts[0]).toMatchObject({ transport: 'anthropic-http', accountId: 'native-api',
     credentialHeader: 'x-api-key', credentialSha256: sha256('PRIVATE_API_KEY'),
     body: wire!.body, bodySha256: sha256(wire!.body) });
+});
+
+it.each((['api-key', 'oauth'] as const).flatMap(authMode => [true, false].map(withBeta => ({ authMode, withBeta }))))(
+  'Anthropic binding snapshots final provider headers for $authMode/$withBeta admission', async ({ authMode, withBeta }) => {
+  const attempts: GatewayCarryTrialAttempt[] = [];
+  const results: GatewayCarryTrialAttemptResult[] = [];
+  let wire: { version: string | null; beta: string | null } | undefined;
+  upstream = http.createServer((req, res) => {
+    req.resume();
+    wire = { version: req.headers['anthropic-version'] as string ?? null,
+      beta: req.headers['anthropic-beta'] as string ?? null };
+    res.setHeader('content-type', 'application/json'); res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native-account', authMode, token: async () => 'PRIVATE_PROVIDER_TOKEN' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: anthropicTrialBinding(async attempt => {
+      attempts.push(attempt);
+      return { ...fixtureReservation(attempt), observeAttemptResult: async result => { results.push(result); } };
+    }),
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}`,
+      ...(withBeta ? { 'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'context-1m-2025-08-07,interleaved-thinking-2025-05-14' } : {}) },
+    body: anthropicTrialBody() });
+  expect(response.status).toBe(200); await response.text();
+  expect(attempts).toHaveLength(1);
+  const headers = { version: attempts[0].anthropicVersion, beta: attempts[0].anthropicBeta };
+  expect(headers).toEqual(wire);
+  expect(headers.version).toBe('2023-06-01');
+  expect(headers.beta?.includes('context-1m-2025-08-07') ?? false).toBe(withBeta);
+  expect(headers.beta?.includes('oauth-2025-04-20') ?? false).toBe(authMode === 'oauth');
+  expect(Object.isFrozen(attempts[0])).toBe(true);
+  expect(Reflect.set(attempts[0], 'anthropicBeta', 'changed-after-admission')).toBe(false);
+  expect(attempts[0].anthropicBeta).toBe(wire!.beta);
+  expect(results.length).toBeGreaterThan(0);
+  for (const result of results) expect(result).toMatchObject({ anthropicVersion: wire!.version, anthropicBeta: wire!.beta });
+  expect(JSON.stringify(headers)).not.toContain('PRIVATE_');
 });
 
 it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt', 'empty-ref'] as const)(

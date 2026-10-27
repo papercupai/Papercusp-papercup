@@ -16,7 +16,9 @@
  * changes nothing for any off-box exposure (defense-in-depth per
  * loopback-guard.ts; the primary perimeter remains the loopback bind).
  */
-import { getSessionUser, getSessionUserOrDefault, type User } from '../auth';
+import { getSessionUser, getSessionUserOrDefault, resolveSessionToken, type User, type SessionUser } from '../auth';
+import { operatorChatSessionAuthority } from '../operator-chat-store';
+import { activeWorkspaceId } from '../workspace-registry';
 import { isLoopbackHost } from './loopback-guard';
 import { currentLoopbackPeerIsForeign } from '../auth/loopback-peer-trust';
 import { requestIsExternal } from '../auth/forwarded-request-trust';
@@ -36,8 +38,8 @@ function requestHost(req: Request): string | null {
   }
 }
 
-export async function getSessionUserOrLocalDefault(req: Request): Promise<User | null> {
-  let user: User | null = null;
+export async function getSessionUserOrLocalDefault(req: Request): Promise<(User & { workspace_id: string }) | null> {
+  let user: SessionUser | null = null;
   try {
     user = await getSessionUser(req.headers);
   } catch {
@@ -53,8 +55,34 @@ export async function getSessionUserOrLocalDefault(req: Request): Promise<User |
   // rewritten to localhost gets no default-user fallback either.
   if (requestIsExternal(req.headers)) return null;
   try {
-    return await getSessionUserOrDefault(req.headers);
+    const local = await getSessionUserOrDefault(req.headers);
+    // A cookie carries its minted workspace. Only the trusted local fallback
+    // uses the host's request workspace; a card body never chooses authority.
+    return local ? { ...local, workspace_id: activeWorkspaceId() } : null;
   } catch {
     return null;
   }
+}
+
+/** Capture responder provenance using the same perimeter as the card family.
+ * A presented cookie always stays session-bound, even if the legacy resolver
+ * returns the local default after expiry. The decision transaction rejects it;
+ * revocation must never turn a browser session into desktop authority. */
+export async function getSessionUserOrLocalDefaultAuthority(req: Request) {
+  const token = await resolveSessionToken(req.headers);
+  const user = await getSessionUserOrLocalDefault(req);
+  if (!user) return null;
+  const workspaceId = user.workspace_id;
+  const current = operatorChatSessionAuthority({ workspaceId, principalId: user.id,
+    credential: token ? { kind: 'user-session', token, userId: user.id }
+      : { kind: 'local-desktop', userId: user.id },
+    capability: 'chat:write', toolName: 'chat:ask_choice' });
+  // The locality decision is host evidence, never request/model-provided data.
+  const local = isLoopbackHost(requestHost(req)) && !currentLoopbackPeerIsForeign()
+    && !requestIsExternal(req.headers);
+  return { user, authorize: async (tx: Parameters<typeof current>[0]) => {
+    if (!token && (!local || activeWorkspaceId() !== workspaceId
+      || currentLoopbackPeerIsForeign())) return false;
+    return current(tx);
+  } };
 }

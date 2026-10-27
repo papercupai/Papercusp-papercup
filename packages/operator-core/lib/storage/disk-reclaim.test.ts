@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionClass } from './retention-policy';
+import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createWorkspaceHostCutRetentionDelegate } from './disk-reclaim';
+import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -27,9 +30,78 @@ const policy: RetentionClass[] = [
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
 
+describe('hourly standing reclaim registration', () => {
+  it('keeps the shared hourly cadence wired to the DBOS workflow', () => {
+    expect(DISK_RECLAIM_CRONTAB).toBe('0 12 * * * *');
+    const workflows = readFileSync(new URL('../dbos/periodic-workflows.ts', import.meta.url), 'utf8');
+    expect(workflows).toMatch(/DBOS\.registerScheduled\(\s*diskRetentionReclaimWorkflow,\s*\{\s*name:\s*['"]diskRetentionReclaim['"],\s*crontab:\s*DISK_RECLAIM_CRONTAB\s*\}\s*\)/);
+  });
+});
+
+describe('workspace-host native owner scheduling', () => {
+  it('passes the current admission snapshot and deadline to the existing native owner', async () => {
+    let pins = [{ paths: ['/cut/sidecar'], expiresAt: '2099-01-01T00:00:00.000Z' }];
+    let nowMs = Date.now();
+    let isPinned = pinProtection(pins, nowMs, path => path);
+    const reclaim = vi.fn(async (_input: unknown, _protection: unknown) => ({ ok: true, cuts: [] }));
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
+      protection: () => ({ pins, isPinned, nowMs }), loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: reclaim }) });
+    expect(delegate.classId).toBe('workspace-host-cut-intermediates');
+    expect(await delegate.run(true, undefined, 1234)).toEqual({ ok: true, detail: { ok: true, cuts: [] } });
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: true, notAfterMs: 1234, pins, nowMs }, isPinned);
+    const previous = isPinned;
+    pins = [{ paths: ['/cut/extracted'], expiresAt: '2099-01-01T00:00:00.000Z' }];
+    nowMs += 1000;
+    isPinned = pinProtection(pins, nowMs, path => path);
+    await delegate.run(false, undefined, 5678);
+    expect(reclaim).toHaveBeenLastCalledWith({ repoRoot: '/repo', dryRun: false, notAfterMs: 5678, pins, nowMs }, isPinned);
+    expect(reclaim.mock.calls[0]?.[1]).toBe(previous);
+  });
+
+  it.each(['protection', 'deadline', 'snapshot time'])('refuses missing %s before loading or invoking the writer', async missing => {
+    const loadOwner = vi.fn();
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo', loadOwner,
+      protection: () => missing === 'protection' ? undefined : { pins: [], isPinned: pinProtection([]),
+        nowMs: missing === 'snapshot time' ? NaN : Date.now() } });
+    await expect(delegate.run(false, undefined, missing === 'deadline' ? undefined : 1234))
+      .rejects.toThrow('not admitted');
+    expect(loadOwner).not.toHaveBeenCalled();
+  });
+
+  it('preserves an owning writer failure as an incomplete delegate result', async () => {
+    const detail = { ok: false, cuts: [{ workDir: '/cut', status: 'failed' as const, reason: 'retained overage' }] };
+    const delegate = createWorkspaceHostCutRetentionDelegate({ repoRoot: '/repo',
+      protection: () => ({ pins: [], isPinned: pinProtection([]), nowMs: Date.now() }),
+      loadOwner: async () => ({ reclaimWorkspaceHostCutIntermediatesWithProtection: async () => detail }) });
+    expect(await delegate.run(false, undefined, 1234)).toEqual({ ok: false, detail });
+  });
+});
+
 describe('per-root allocated-byte caps', () => {
   const capped = () => compilePolicy(policy.map((cls) => cls.id === 'scratch' ? { ...cls, maxBytes: 100 } : cls), '/home/test');
   const sized = (name: string, age: number, bytes: number) => ({ ...entry(`/scratch/${name}`, 'scratch', age), bytes });
+  it('keeps finite caps on the shipped generic agent classes', () => {
+    // Match the route policyRoots actually discovers. Age/count classes owned
+    // by another collector need that owner's proof, even when this policy
+    // declares maxBytes; a declaration cannot prove delegated enforcement.
+    const ageCountAgentClasses = RETENTION_POLICY.filter((cls) =>
+      cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest'));
+    const genericAgentClasses = ageCountAgentClasses.filter((cls) =>
+      cls.enforcers.some((enforcer) => enforcer.kind === 'standing-reclaim' && !enforcer.via));
+    expect(genericAgentClasses.map(cls => cls.id).sort()).toEqual([
+      'agent-evidence', 'offload-work-copies', 'papercusp-home-run-dirs', 'papercusp-scratch',
+      'repo-scratch', 'tmp-scratch', 'workspace-db-dumps',
+    ]);
+    const restores = RETENTION_POLICY.find(cls => cls.id === 'workspace-restores')!;
+    expect(restores.keep.kind).toBe('keep');
+    expect(retentionRootSizeCap(restores)).toBeUndefined();
+    // Preserve the original declaration check for delegated classes too.
+    for (const cls of ageCountAgentClasses) {
+      const bytes = retentionRootSizeCap(cls);
+      expect(Number.isSafeInteger(bytes), cls.id).toBe(true);
+      expect(bytes, cls.id).toBeGreaterThan(0);
+    }
+  });
   it('counts recent entries and selects the oldest until within the cap', () => {
     const caps: RetentionCapReceipt[] = [];
     const selected = selectRetentionEntries([sized('new', 1, 60), sized('middle', 2, 60), sized('old', 3, 20)], capped(), now, caps);
@@ -177,6 +249,41 @@ describe('bounded scheduled retention drain', () => {
   });
 });
 
+describe('policy root discovery', () => {
+  it('shares prefix metadata within a pass without following symlinks or caching the next pass', async () => {
+    const roots = compilePolicy([
+      { ...policy[0]!, id: 'logs', roots: ['~/.workspaces/*/logs'] },
+      { ...policy[0]!, id: 'restores', roots: ['~/.workspaces/*/restore-*'] },
+    ], '/home/test');
+    const directories: Record<string, string[]> = {
+      '/home/test/.workspaces': ['one', 'alias', 'file', 'unreadable'],
+      '/home/test/.workspaces/one': ['logs', 'restore-old', 'restore-link', 'restore-file'],
+    };
+    let current = 'old';
+    const inspect = vi.fn(async (path: string) => {
+      if (path.endsWith('/unreadable')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      const symlink = path.endsWith('/alias') || path.endsWith('/restore-link');
+      const file = path.endsWith('/file') || path.endsWith('/restore-file');
+      return { isDirectory: () => !file && !symlink, isSymbolicLink: () => symlink };
+    });
+    const list = vi.fn(async (path: string) => (directories[path] ?? []).map(name => name === 'restore-old' ? `restore-${current}` : name));
+    const io = { lstat: inspect as unknown as typeof import('node:fs/promises').lstat, readdir: list };
+    const errors: string[] = [];
+    expect(await policyRoots(roots, '/home/test', errors, io)).toEqual([
+      { path: '/home/test/.workspaces/one/logs', classId: 'logs' },
+      { path: '/home/test/.workspaces/one/restore-old', classId: 'restores' },
+    ]);
+    expect(errors).toEqual([expect.stringContaining('permission denied'), expect.stringContaining('permission denied')]);
+    expect(inspect.mock.calls.filter(([path]) => path === '/home/test/.workspaces/one')).toHaveLength(1);
+    expect(list.mock.calls.filter(([path]) => path === '/home/test/.workspaces')).toHaveLength(1);
+    current = 'new';
+    expect(await policyRoots(roots, '/home/test', [], io)).toContainEqual({
+      path: '/home/test/.workspaces/one/restore-new', classId: 'restores',
+    });
+    expect(list.mock.calls.filter(([path]) => path === '/home/test/.workspaces')).toHaveLength(2);
+  });
+});
+
 describe('physical retention ownership', () => {
   const inspect = async () => ({ dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false });
   it('runs one enforcer for bind aliases, and refuses conflicting policies on the same bytes', async () => {
@@ -198,6 +305,18 @@ describe('physical retention ownership', () => {
   });
 });
 
+it('keeps a healthy data bind behind pressured root storage despite its /tmp alias', () => {
+  const data = { path: '/mnt/data/tmp', aliases: ['/mnt/data/tmp', '/tmp'] };
+  const root = { path: '/home/test/scratch', aliases: ['/home/test/scratch'] };
+  const later = { path: '/mnt/data/offload/copy', aliases: ['/mnt/data/offload/copy'] };
+  const roots = [data, root, later];
+  expect(prioritizeRetentionRoots(roots, [
+    { path: '/', freeBytes: 30 * 1024 ** 3 },
+    { path: '/mnt/data', freeBytes: 2000 * 1024 ** 3 },
+  ])).toEqual([root, data, later]);
+  expect(prioritizeRetentionRoots(roots, [])).toEqual(roots);
+});
+
 describe('scheduled retention selection', () => {
   it('expires only stale entries, oldest first, without a disk-pressure input', () => {
     const selected = selectRetentionEntries([entry('/scratch/new', 'scratch', 1), entry('/scratch/old', 'scratch', 25), entry('/scratch/older', 'scratch', 48)], compiled, now);
@@ -216,6 +335,27 @@ describe('scheduled retention selection', () => {
 
 describe('retention holder evidence', () => {
   afterEach(() => { delegateSpawn.mockReset(); });
+
+  it('transports exact environment predicates and mapped-file checks to the enrolled worker', async () => {
+    const environmentByPath = { '/work': 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact' };
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    let stdin = '';
+    child.stdin.on('data', data => { stdin += data.toString(); });
+    delegateSpawn.mockImplementationOnce(async (_command, args, _spec, options) => {
+      expect(args.join(' ')).toContain('includeMappedFiles: true');
+      expect(args.join(' ')).toContain('payload.environmentByPath');
+      options.onSpawn(child as unknown as ChildProcess, 'legacy-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[process.cwd(), [String(process.pid)]], ['/work', ['999']]] }));
+      child.emit('close', 0, null); return { child, taskId: 'legacy-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/work'], {
+      uid: () => 1000, readStatus: async () => 'NSpid:\t1\n', isolate: true,
+      includeProcessLinks: true, includeMappedFiles: true, environmentByPath,
+    });
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/work')).toEqual(['999']);
+    expect(JSON.parse(stdin)).toEqual({ paths: ['/work', process.cwd()], environmentByPath });
+  });
 
   it('passes a duration to the existing privileged scanner and requires the caller control', async () => {
     const scan = vi.fn().mockResolvedValue({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['123']]]) });

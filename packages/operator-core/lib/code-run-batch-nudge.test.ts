@@ -806,6 +806,7 @@ describe('maybeBatchNudge — isolation', () => {
     expect(source).toMatch(/maybeListFanoutPreempt\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
     expect(source).toMatch(/maybeOrientDedupNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
     expect(source).toMatch(/maybeStatePlaneNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
+    expect(source).toMatch(/maybeStatePlaneNudge\(\{\s*sessionKey:\s*nudgeSessionKey,\s*toolName,\s*args,/);
   });
 });
 

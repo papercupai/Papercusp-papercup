@@ -19,6 +19,28 @@ import { getServingHostIdentity } from './serving-host-identity';
 
 export type McpBuild = 'main' | 'staging';
 
+/** Explicit agent intent; equality is exact, never a prefix/nearest-build match. */
+export interface McpExecutionTarget {
+  environment: McpBuild;
+  buildSha: string;
+  installRoot: string;
+}
+
+export function normalizeMcpExecutionTarget(value: unknown): McpExecutionTarget | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const target = value as Record<string, unknown>;
+  if (Object.keys(target).some(key => !['environment', 'buildSha', 'installRoot'].includes(key)) ||
+      (target.environment !== 'main' && target.environment !== 'staging') ||
+      typeof target.buildSha !== 'string' || !/^[a-f0-9]{7,64}$/.test(target.buildSha) ||
+      typeof target.installRoot !== 'string' || !target.installRoot.startsWith('/') ||
+      target.installRoot.includes('/../') || target.installRoot.endsWith('/..')) return null;
+  return { environment: target.environment, buildSha: target.buildSha, installRoot: target.installRoot };
+}
+
+export function sameMcpExecutionTarget(a: McpExecutionTarget, b: McpExecutionTarget): boolean {
+  return a.environment === b.environment && a.buildSha === b.buildSha && a.installRoot === b.installRoot;
+}
+
 /** `_meta` key the proxy stamps on a build-routed call. */
 export const MCP_BUILD_META_KEY = 'papercusp/build';
 /** `_meta` key on a result naming the build that served it. */
@@ -42,7 +64,7 @@ export function resolveServingBuild(env: NodeJS.ProcessEnv = process.env): McpBu
   const declared = normalizeMcpBuild(env.PAPERCUSP_SERVING_BUILD);
   if (declared) return declared;
   const port = Number(env.PAPERCUSP_HONO_PORT ?? env.PORT);
-  return port === STAGING_OPERATOR_PORT ? 'staging' : 'main';
+  return port === STAGING_OPERATOR_PORT || port === 3271 ? 'staging' : 'main';
 }
 
 let cachedBuild: McpBuild | null = null;

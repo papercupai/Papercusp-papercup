@@ -26,7 +26,7 @@
  * unrelated commit must still dedupe to `unchanged`.
  */
 import { createHash } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { execFileResult, execFileResultShared, gitReadIsContentAddressed } from '../../sync-exec-replay';
@@ -93,6 +93,15 @@ const GIT_TIMEOUT_MS = 5_000;
  */
 export const defaultGitRunner: GitRunner = async (cwd, args) => {
   const argv = ['-C', cwd, ...args];
+  // WI-6554700010029986: `git -C <missing dir>` forks and execs a whole git process only to exit
+  // 128. About half of recorded test-run roots are deleted disposable clones, and on a large-heap
+  // host each fork costs main-thread time. Return that exact outcome without the child. Any other
+  // stat failure (permission, not a directory) still goes to git, so its own diagnosis is kept.
+  if (cwd && (await isMissingPath(cwd))) {
+    throw new Error(
+      `Command failed (exit 128): git ${argv.join(' ')}\nfatal: cannot change to '${cwd}': No such file or directory\n`,
+    );
+  }
   const exec = gitReadIsContentAddressed(argv) ? execFileResultShared : execFileResult;
   const result = await exec('git', argv, { timeout: GIT_TIMEOUT_MS });
   if (result.status === 0) return result.stdout;
@@ -107,6 +116,16 @@ export const defaultGitRunner: GitRunner = async (cwd, args) => {
 /** Git's sha1 blob id for `content`, identical to `git hash-object`. */
 export function gitBlobId(content: Buffer): string {
   return createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex');
+}
+
+/** True only when `path` positively does not exist (ENOENT); every other outcome is false. */
+async function isMissingPath(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT';
+  }
 }
 
 async function hasGitEntry(root: string, repo: string): Promise<boolean> {

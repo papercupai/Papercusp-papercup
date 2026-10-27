@@ -28,18 +28,25 @@
  * packages/operator-core/lib/__tests__/assert-workspace-links-guard.test.ts.
  */
 import { readFileSync, existsSync, globSync, lstatSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, matchesGlob } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Expand root `workspaces` globs to workspace dirs (only those that carry a package.json). */
-export function expandWorkspaces(patterns, root) {
+/** Expand root `workspaces` globs. `directories` is an immutable census of manifest dirs;
+ * omit it for the ordinary filesystem route. Both routes honor the same exclusions.
+ * @param {string[]} patterns
+ * @param {string} root
+ * @param {{directories?: string[]}} [options]
+ */
+export function expandWorkspaces(patterns, root, { directories } = {}) {
   const entries = (patterns ?? []).filter(p => typeof p === 'string');
   const exclude = entries.filter(p => p.startsWith('!')).map(p => p.slice(1));
   return [...new Set(entries.filter(p => !p.startsWith('!')).flatMap(p =>
-    globSync(p, { cwd: root, exclude }).filter(dir => existsSync(join(root, dir, 'package.json')))))];
+    directories
+      ? directories.filter(dir => matchesGlob(dir, p) && !exclude.some(pattern => matchesGlob(dir, pattern)))
+      : globSync(p, { cwd: root, exclude }).filter(dir => existsSync(join(root, dir, 'package.json')))))];
 }
 
 /**

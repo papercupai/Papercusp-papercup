@@ -156,6 +156,40 @@ describe('changed-path provenance: the banner', () => {
 });
 
 describe('changed-path provenance: through the real CLI', () => {
+  it('retains managed-carry regression files when merging enumerated promotion tasks', () => {
+    // Exercise the parent aggregation independently of subprocess loading.
+    // The next case separately checks the actual selector and config census.
+    // A contained aggregation mutant must fail this assertion rather than be
+    // rejected by the config child's committed-source boundary before testing.
+    const tasks = [
+      { dir: 'apps/operator', script: 'test' },
+      { dir: 'packages/operator-core', script: 'test:lane-pure' },
+      { dir: 'packages/operator-core', script: 'test:lane-stateful' },
+    ].map(({ dir, script }) => ({
+      ws: { ...JSON.parse(readFileSync(resolve(REPO_ROOT, dir, 'package.json'), 'utf8')), dir }, script,
+    }));
+    const populations = [
+      ['apps/operator/scripts/hooks/cc/__tests__/precompact-managed-carry.test.ts',
+        'apps/operator/lib/psu-pty-host.test.ts'],
+      ['packages/operator-core/lib/role-codex-home.test.ts',
+        'packages/operator-core/lib/carry-respawn-outcome.test.ts'],
+      ['packages/operator-core/lib/agent-tools/session/request-compaction.test.ts',
+        'packages/operator-core/lib/agent-tools/session/request-compaction-continuation-addressing.test.ts',
+        'packages/operator-core/lib/cold-boot-drill-live.test.ts'],
+    ];
+    const manifest = enumerateAffectedTaskSelection(tasks, { root: REPO_ROOT,
+      runResolver: (requests: Array<{ config?: unknown }>) => {
+        expect(requests).toHaveLength(populations.length);
+        return requests.map((request, index) => ({ ok: true, enumerated: true,
+          config: request.config, repositoryFiles: populations[index] }));
+      },
+    });
+    expect(manifest.coverage).toBe('complete');
+    expect(manifest.unenumerated).toEqual([]);
+    expect(manifest.overlaps).toEqual([]);
+    expect(manifest.files).toEqual(populations.flat().sort());
+  });
+
   it('keeps managed-carry regressions in the normal promotion task manifests', () => {
     const changedPaths = [
       'apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs',

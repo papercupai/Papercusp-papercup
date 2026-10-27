@@ -108,6 +108,13 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
     findLiveHost: (...a: unknown[]) => findLiveHost(...a),
     findLiveHostAsync: async (...a: unknown[]) => liveHost(...a),
     injectIntoHost: (...a: unknown[]) => injectIntoHost(...a),
+    // EI-27053660657887116: the handler reads the host's ack through the
+    // confirmation-returning form. Fixtures that resolve a bare boolean keep
+    // working; a fixture may resolve a full { ok, confirmation, reason } ack.
+    injectIntoHostWithConfirmation: async (...a: unknown[]) => {
+      const r = (await injectIntoHost(...a)) as unknown;
+      return r && typeof r === 'object' ? r : { ok: Boolean(r), confirmation: r ? 'acked' : 'error' };
+    },
     hostSupports,
     // The handler now reads its host gate through this shared predicate
     // (EI-20209826138488049). Composed here from the SAME two primitives the real
@@ -472,6 +479,62 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'wake_mode_unavailable' });
     expect(savePendingCarryRespawn).not.toHaveBeenCalled();
     expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  // EI-27053660657887116: every Claude psu host advertises pending-carry-fence-v1
+  // but has no native session id, so the host's fence refused every NONCE-BOUND
+  // carry as 'stale-carry-target' — and the tool reported that as an unreachable
+  // socket. Bind only when the host can match; surface a host refusal as one.
+  describe('pending-carry fence binding (EI-27053660657887116)', () => {
+    const fenceIdentity = {
+      advSessionId: '52768',
+      startedAt: 1_793_000_507_733,
+      childGeneration: 5,
+      hostCodeVersion: '0329058646',
+    };
+    const claudeFenceHost = { ...carryHost, caps: [...carryHost.caps, 'pending-carry-fence-v1'], ...fenceIdentity };
+    const codexFenceHost = { ...claudeFenceHost, nativeSessionId: '019a0000-0000-7000-8000-000000000001' };
+
+    it('sends an UNBOUND carry to a fence-capable host that has no native session id (every Claude host)', async () => {
+      findLiveHost.mockReturnValue(claudeFenceHost);
+      const b = body(await call({ focus: 'finish the fence fix' }));
+      expect(b.ok).toBe(true);
+      const msg = injected() as Envelope & Record<string, unknown>;
+      expect(msg.mode).toBe('carry-respawn');
+      expect(msg).not.toHaveProperty('carryNonce');
+      expect(msg).not.toHaveProperty('expectedNativeSessionId');
+    });
+
+    it('still binds the carry to its nonce when the host can match the fence identity', async () => {
+      findLiveHost.mockReturnValue(codexFenceHost);
+      await call({ focus: 'finish the fence fix' });
+      const msg = injected() as Envelope & Record<string, unknown>;
+      expect(msg.carryNonce).toBe('pending-carry-nonce');
+      expect(msg.expectedNativeSessionId).toBe(codexFenceHost.nativeSessionId);
+      expect(msg.expectedChildGeneration).toBe(5);
+    });
+
+    it('reports a host REFUSAL with its reason, never as an unreachable socket', async () => {
+      findLiveHost.mockReturnValue(carryHost);
+      injectIntoHost.mockResolvedValue({ ok: false, confirmation: 'acked', reason: 'stale-carry-target' });
+      const b = body(await call({ focus: 'finish the fence fix' }));
+      expect(b.ok).toBe(false);
+      expect(b.hostRefusalReason).toBe('stale-carry-target');
+      expect(b.hostConfirmation).toBe('acked');
+      expect(b.note).toContain('REFUSED');
+      expect(b.note).toContain('stale-carry-target');
+      expect(b.note).not.toContain('Failed to reach');
+    });
+
+    it('keeps the unreachable-socket report for a transport failure', async () => {
+      findLiveHost.mockReturnValue(carryHost);
+      injectIntoHost.mockResolvedValue({ ok: false, confirmation: 'timeout' });
+      const b = body(await call({ focus: 'finish the fence fix' }));
+      expect(b.ok).toBe(false);
+      expect(b).not.toHaveProperty('hostRefusalReason');
+      expect(b.hostConfirmation).toBe('timeout');
+      expect(b.note).toContain('Failed to reach the session TUI host socket');
+    });
   });
 
   it('keeps the transport budget beyond the legacy-host compatibility wait', () => {

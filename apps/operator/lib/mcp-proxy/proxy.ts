@@ -46,6 +46,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
+import { normalizeMcpExecutionTarget } from "@papercusp/operator-core/lib/serving-build";
+import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { papercuspPath } from "@papercusp/host-platform/home";
 import {
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
@@ -87,12 +89,17 @@ import {
   buildUnavailableBody,
   buildUnavailableError,
   selectTargetsForBuild,
+  applyMcpWorkerSelector,
+  selectWorkerForTarget,
+  type WorkerRoutableTarget,
   type McpBuild,
 } from "./build-routing";
 import {
   appendFileSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  lstatSync,
   renameSync,
   statSync,
 } from "node:fs";
@@ -746,6 +753,8 @@ export interface McpProxyOptions {
   resolveTarget?: () => McpProxyTarget;
   /** Resolve ordered upstream candidates per attempt. A later candidate is selected only after a pre-connect refusal. */
   resolveTargets?: () => McpProxyTarget[];
+  /** Same per-port discovery as native clients; no target may be inferred from a fallback. */
+  resolveWorkerTargets?: () => McpProxyTarget[];
   /**
    * WI-41045 — the superuser MCP client config contains a bearer captured at
    * session boot. When the token file rotates, refresh it at the proxy boundary
@@ -917,10 +926,37 @@ export interface McpProxyOptions {
   log?: (s: string) => void;
 }
 
-export interface McpProxyTarget {
+export interface McpProxyTarget extends WorkerRoutableTarget {
   host: string;
   port: number;
   source?: string;
+}
+
+/** Read only same-user private, live per-port discovery records. Legacy or
+ * identity-less workers are unavailable for an exact-target request.
+ */
+export function readMcpWorkerTargets(directory = papercuspPath('')): McpProxyTarget[] {
+  const targets: McpProxyTarget[] = [];
+  try {
+    for (const name of readdirSync(directory)) {
+      if (!/^endpoint-ipc\.\d+\.json$/.test(name)) continue;
+      try {
+        const file = join(directory, name);
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) continue;
+        const value = JSON.parse(readFileSync(file, 'utf8'));
+        if (value.processRole !== 'bg-host' || !Number.isSafeInteger(value.pid) || value.pid < 1 ||
+            !Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535 ||
+            name !== `endpoint-ipc.${value.port}.json` || !value.executionTarget) continue;
+        process.kill(value.pid, 0);
+        const executionTarget = normalizeMcpExecutionTarget(value.executionTarget);
+        if (!executionTarget || !value.executionProcessId || readProcessIdentity(value.pid) !== value.executionProcessId) continue;
+        targets.push({ host: '127.0.0.1', port: value.port, source: 'endpoint-ipc',
+          processRole: value.processRole, executionTarget });
+      } catch { /* Stale/unreadable discovery cannot authorize a mutation. */ }
+    }
+  } catch { /* Missing discovery is an explicit no-target outcome. */ }
+  return targets;
 }
 
 /** Keep the per-session affinity pool bounded even when clients churn. */
@@ -1103,6 +1139,21 @@ function resolveTargetCandidates(opts: McpProxyOptions): McpProxyTarget[] {
 
 function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
   return resolveTargetCandidates(opts)[0]!;
+}
+
+/**
+ * gate-repair-plane-on-current-build-2026-10-15 P-003: whether this proxy can serve a
+ * staging-routed call at all. The current-build default (build-routing.ts
+ * CURRENT_BUILD_DEFAULT_TOOLS) engages only when it can; a proxy without a staging target
+ * (the bg-host proxy fronts a current build already) keeps today's routing instead of
+ * refusing `staging_unavailable` for a call that named no build.
+ */
+export function proxyHasStagingTarget(opts: McpProxyOptions, stagingPort: number): boolean {
+  try {
+    return selectTargetsForBuild(resolveTargetCandidates(opts), "staging", stagingPort).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1405,6 +1456,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "docs:get",
   "docs:search",
   "docs:outline",
+  // PG-canonical artifact reads; replay safely recovers a lost body after a socket reset.
+  "artifacts:load",
   "search:fulltext",
   "search:semantic",
   // LSP compiler intelligence is read-only and safe to replay after a socket reset.
@@ -2689,7 +2742,14 @@ export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
   "/api/agent-mcp/console/bootstrap-su/session-resumed",
   "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
   "/api/agent-mcp/console/bootstrap-su/session-resume-released",
-  "/api/agent-mcp/console/bootstrap-su/session-respawned",
+  // NOT session-respawned (WI-6554700010029903). Its caller (the psu host's
+  // carry-respawn identity binding) gives each attempt ~2s and holds the
+  // successor's continuation prompt until one is accepted. On this FIFO it
+  // waited behind every in-flight continuation write fleet-wide, and those may
+  // hold the socket for 60s+ by design. Measured 2026-10-27: 38% of attempts
+  // timed out in 24h, and 35 continuations were dropped as
+  // successor-reanchor-unconfirmed. It still takes the reserved control-plane
+  // slot via RESERVED_CONTROL_PLANE_PATHS.
 ]);
 
 /** Match a REST control-plane path without letting query strings or a harmless
@@ -2716,7 +2776,7 @@ interface CriticalContinuationIdentity {
   /** Bounded, argument-free tool/path identities safe to expose in health + failure telemetry. */
   tools: string[];
   /**
-   * Work-item identities whose mutations must remain ordered. `null` is the conservative
+   * Resource identities whose mutations must remain ordered. `null` is the conservative
    * global key for continuation calls that cannot prove a narrower conflict domain.
    */
   conflictKeys: string[] | null;
@@ -2968,7 +3028,36 @@ function classifyCriticalContinuationCall(
 ): CriticalContinuationIdentity {
   if (isCriticalSessionLifecyclePath(requestPath)) {
     const path = requestPath?.split("?")[0]?.replace(/\/+$/, "") || "/";
-    return { critical: true, tools: [`rest:${path}`], conflictKeys: null };
+    let conflictKeys: string[] | null = null;
+    // Home preparation writes a per-ADV home and its owner's launch artifact. Blocking
+    // it behind an unrelated work-item mutation can consume the launcher's entire
+    // request deadline before the home handler runs (WI-6554700010017061).
+    // Both identities must be present: two owners naming the same ADV, or one owner
+    // naming two ADVs, still overlap. Other lifecycle writes and unknown inputs retain
+    // the global barrier; this does not increase the existing reserve's capacity.
+    if (path === "/api/adv/sessions/ensure-codex-home") {
+      try {
+        const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const input = parsed as { owner?: unknown; advSessionId?: unknown };
+          const owner = typeof input.owner === "string" ? input.owner.trim() : "";
+          // The native launcher carries its ADV id in an environment variable.
+          // Normalize its decimal string to the same conflict key as JSON numbers.
+          const advSessionId = typeof input.advSessionId === "string" && /^[1-9][0-9]*$/.test(input.advSessionId)
+            ? Number(input.advSessionId) : input.advSessionId;
+          if (owner.length <= 256 && /^[A-Za-z0-9._-]+$/.test(owner) &&
+              typeof advSessionId === "number" && Number.isSafeInteger(advSessionId) && advSessionId > 0) {
+            conflictKeys = [
+              "codex-home:owner:" + createHash("sha256").update(owner).digest("hex"),
+              "codex-home:adv:" + advSessionId,
+            ];
+          }
+        }
+      } catch {
+        // Parsing is classification only; the upstream still validates the request.
+      }
+    }
+    return { critical: true, tools: [`rest:${path}`], conflictKeys };
   }
   try {
     const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
@@ -5692,9 +5781,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // that serves it (`arguments.build` or `_meta["papercusp/build"]`). Strip the
           // argument, stamp `_meta`, and route ONLY to that build's targets below — a
           // build-routed call never falls back to the other build.
+          // gate-repair-plane-on-current-build-2026-10-15 P-003 (D-004): tools listed in
+          // CURRENT_BUILD_DEFAULT_TOOLS (release:repair-queue) default to staging when they
+          // name no build — but only where this proxy HAS a staging target.
           const buildRouting =
             req.method === "POST"
-              ? applyMcpBuildSelector(rawBody)
+              ? applyMcpBuildSelector(rawBody, {
+                  defaultToCurrentBuild: proxyHasStagingTarget(opts, stagingPort),
+                })
               : ({ kind: "none" } as const);
           if (buildRouting.kind === "conflict") {
             res.writeHead(400, { "content-type": "application/json" });
@@ -5710,8 +5804,26 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
           const requestedBuild: McpBuild | null =
             buildRouting.kind === "routed" ? buildRouting.build : null;
-          const routedBody =
+          const defaultedBuildTools: string[] | null =
+            buildRouting.kind === "routed" ? (buildRouting.defaultedTools ?? null) : null;
+          const buildBody =
             buildRouting.kind === "routed" ? buildRouting.body : rawBody;
+          const workerRouting = applyMcpWorkerSelector(buildBody);
+          if (workerRouting.kind === 'refused') {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'worker_target_refused', reason: workerRouting.reason,
+              forwardingResult: 'not_applied', traceId: requestTraceId }));
+            return;
+          }
+          const workerSelection = workerRouting.kind === 'worker'
+            ? selectWorkerForTarget((opts.resolveWorkerTargets ?? readMcpWorkerTargets)(), workerRouting.target) : null;
+          if (workerSelection?.kind === 'refused') {
+            res.writeHead(503, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'worker_target_unavailable', reason: workerSelection.reason,
+              forwardingResult: 'not_applied', traceId: requestTraceId }));
+            return;
+          }
+          const routedBody = workerRouting.kind === 'worker' ? workerRouting.body : buildBody;
           const routedHeaders: http.IncomingHttpHeaders =
             routedBody === rawBody
               ? req.headers
@@ -5746,6 +5858,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             traceId,
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
             ...(requestedBuild ? { build: requestedBuild } : {}),
+            ...(defaultedBuildTools ? { buildDefaultedFor: defaultedBuildTools } : {}),
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
           const isToolsList = fwd.rpcMethods.includes("tools/list");
@@ -5836,7 +5949,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             candidateCount = 0;
             // P-001: a build-routed call sees only its build's targets. None ⇒ this proxy
             // cannot serve that build; answer `<build>_unavailable` rather than use the other.
-            const buildCandidates = selectTargetsForBuild(
+            const buildCandidates = workerSelection?.kind === 'selected' ? [workerSelection.worker] : selectTargetsForBuild(
               resolveTargetCandidates(opts),
               requestedBuild,
               stagingPort,
@@ -5942,11 +6055,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // absorbing it would stall probes for the whole retry window and read as a
               // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
               const bootAbsorbable =
+                workerRouting.kind !== 'worker' &&
                 req.method === "POST" &&
                 BOOT_WINDOW_STATUSES.has(status) &&
                 absorbBoot;
               if (
-                ((isBackpressureStatus(status) && absorb429) ||
+                ((isBackpressureStatus(status) && absorb429 && workerRouting.kind !== 'worker') ||
                   bootAbsorbable) &&
                 backpressureRetryable(
                   backpressureRetries,
@@ -6352,6 +6466,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   detail: last?.err
                     ? String(last.err.message ?? last.err)
                     : undefined,
+                  defaultedTools: defaultedBuildTools ?? undefined,
                 }),
               ),
             );

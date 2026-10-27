@@ -43,7 +43,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationForTest, applyPlanItemAnchorMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   COORD_REF_HOLDERS_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -158,6 +158,7 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL).simple();
   await db.sql

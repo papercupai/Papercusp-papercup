@@ -465,6 +465,8 @@ export type AcceptanceGraderTerminalFailureCode =
   | 'startup_connection_stalled'
   | 'startup_first_turn_stalled'
   | 'inference_gateway_error'
+  /** The host observed a completed, non-retryable native error for this controlled mission. */
+  | 'native_turn_failed'
   /**
    * WI-10002155: the launcher's OWN structured receipt said the kickoff was
    * never submitted (`launch.tasks[].kickoffProof.persisted !== true`). This is
@@ -791,6 +793,27 @@ export function classifyAcceptanceGraderTerminalFailure(
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
+  // EI-26842595242600010: psu-pty-host's writeMeta emits this exact receipt
+  // after the native turn fails. PTY redraws can corrupt the provider screen
+  // and its footer while leaving this host-owned line intact. Restrict it to
+  // controlled audit briefs, and invalidate it when a later turn resumes.
+  // WI-6554700010030184: the host prints whatever sanitized failure code the
+  // native transcript carried (codex writes its codex_error_info variant, e.g.
+  // response_too_many_failed_attempts after a 429 retry budget), so match the
+  // host's own code alphabet. retryable=false is the host's terminal verdict;
+  // a retryable=true receipt stays non-terminal.
+  const nativeFailure = allowInferenceGatewayError
+    ? [...normalized.matchAll(/^[ \t]*\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+)[ \t]*$/gm)].at(-1)
+    : undefined;
+  if (nativeFailure) {
+    const before = normalized.slice(0, nativeFailure.index);
+    const after = normalized.slice(nativeFailure.index! + nativeFailure[0].length);
+    const quoted = (before.match(/^[ \t]*```/gm)?.length ?? 0) % 2 !== 0;
+    if (!quoted && !hasAcceptanceGraderFirstTurnProgress(after) &&
+        !/^[ \t]*(?:●|❯[ \t]*\S|>[ \t]*\S)/mu.test(after)) {
+      return { code: 'native_turn_failed', evidence: nativeFailure[0].trim() };
+    }
+  }
   const legacyQuota = normalized.match(
     /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
   );
@@ -2907,7 +2930,10 @@ export async function advanceGradingCascadeOnCard(input: {
     });
     const row = rows[0];
     if (!row) return { advanced: false, reason: 'no_open_grading_cascade' };
-    if (row.responder_id !== input.graderOwnerId) {
+    // responder_id names the source expert; a fork/conversion emits its card
+    // under the answering identity stamped on this exact cascade cursor.
+    if (row.responder_id !== input.graderOwnerId &&
+        answeringOwnerAtCursor(row.routing, row.cascade_cursor) !== input.graderOwnerId) {
       return { advanced: false, reason: 'not_current_grader' };
     }
     const nowIso = new Date().toISOString();
@@ -2966,7 +2992,7 @@ export async function advanceGradingCascadeOnCard(input: {
                )
          WHERE workspace_id = ${input.workspaceId}
            AND conversation_id = ${row.conversation_id}
-           AND (${walked !== null}::boolean OR responder_id = ${input.graderOwnerId})
+           AND (${walked !== null}::boolean OR responder_id = ${row.responder_id})
            AND cascade_cursor = ${walked?.cascadeCursor ?? row.cascade_cursor}
            AND state IN ('awaiting_responder', 'active')
            AND (${walked === null}::boolean OR state = ${walked?.state ?? null}::text)
@@ -3063,7 +3089,10 @@ export async function resolveAcceptanceGrader(
         // the same shape as the bug this guard exists to fix.
         () => ({ settled: false, reason: 'read_threw' }) as const,
       );
-      if (settlement?.settled) {
+      // A completed grade does not settle a newly required live re-observation
+      // (WI-6554700010022598). Keep the grading result, but let the existing
+      // request/reservation and lineage guards route the verification work.
+      if (settlement?.settled && !carriedIndependentVerificationBrief(ctx)) {
         return { state: 'settled', idempotencyKey: '', label: '', settlement };
       }
 
@@ -3294,6 +3323,8 @@ export async function launchAcceptanceGrader(
     staleAfterMs?: number;
     /** Durable typed assignment to quote in the fresh-judge brief. */
     reviewReservation?: AcceptanceReviewReservationRef;
+    /** Stable admitted sweep episode; pins launch identity across an effect-before-ack replay. */
+    dispatchEpisodeIdentity?: string;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
@@ -3363,7 +3394,8 @@ export async function launchAcceptanceGrader(
   const rubricRef = String(rubricRecord.rubricId);
   const identity = createHash('sha256')
     .update(
-      [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef, plan.row.version, plan.row.contentHash].join(
+      [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef,
+        ...(deps.dispatchEpisodeIdentity ? [deps.dispatchEpisodeIdentity] : [plan.row.version, plan.row.contentHash])].join(
         '\0',
       ),
     )

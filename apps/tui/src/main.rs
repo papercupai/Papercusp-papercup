@@ -3174,6 +3174,19 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::OpenCardLink { correlation_id } => {
+                    let result = async {
+                        let client = OperatorClient::from_discovery().await?;
+                        let url = client.card_link_url(&correlation_id)?;
+                        std::process::Command::new("xdg-open").arg(url)
+                            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null()).spawn()?;
+                        Ok::<(), anyhow::Error>(())
+                    }.await;
+                    if result.is_err() {
+                        let _ = tx.send(Event::Error("Could not open the private authentication link".into()));
+                    }
+                }
                 Action::CardRespond {
                     conversation_id,
                     correlation_id,
@@ -7257,6 +7270,21 @@ async fn send_su_turn_with_client(
             );
             return;
         }
+        let attachment_inputs = if pending.attachment_references.is_empty() {
+            Vec::new()
+        } else {
+            let Some(root) = snapshot.launch_cwd else {
+                fail("The attached session has no project root for file references. Draft retained.".into(), false);
+                return;
+            };
+            let references = pending.attachment_references.clone();
+            let workspace_id = identity.workspace_id.clone();
+            match tokio::task::spawn_blocking(move || crate::file_picker::typed_inputs(std::path::Path::new(&root), &references, &workspace_id)).await {
+                Ok(Ok(parts)) => parts,
+                Ok(Err(message)) => { fail(message, false); return; }
+                Err(_) => { fail("Could not prepare attachment references. Draft retained.".into(), false); return; }
+            }
+        };
         let mut command = serde_json::json!({
             "schema": crate::su_session::SU_SESSION_SCHEMA,
             "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
@@ -7267,6 +7295,7 @@ async fn send_su_turn_with_client(
             "turnId": format!("pui-turn-{}", pending.command_id),
             "content": pending.content,
         });
+        if !attachment_inputs.is_empty() { command["input"] = serde_json::Value::Array(attachment_inputs); }
         // pui-chat-first-ux P-026 / D-025: the /model pick rides on this turn;
         // omitted keeps the model the session already runs on.
         // D-026: the /approvals or Shift+Tab pick rides on this turn too.

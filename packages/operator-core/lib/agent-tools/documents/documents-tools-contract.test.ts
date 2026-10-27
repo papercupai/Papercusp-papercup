@@ -175,6 +175,28 @@ describe('documents:search', () => {
     });
   });
 
+  it('uses the verified GUI user rather than the ambient default for every search leg', async () => {
+    const principal = { kind: 'user', slug: 'employee-1', workspaceId: 'ws-1', trust: 'verified' };
+    await search({ query: 'release' }, { workspaceId: 'ws-1', tx: CTX_TX, principal } as never);
+    expect(mocks.authorize).toHaveBeenCalledWith(mocks.tx, expect.anything(), 'ws-1', 'employee-1', []);
+    for (const port of [mocks.searchOrganization, mocks.searchPot, mocks.searchLive]) {
+      expect(port).toHaveBeenCalledWith(mocks.tx, ...(port === mocks.searchPot ? [] : [expect.anything()]),
+        expect.objectContaining({ principalUserId: 'employee-1' }));
+    }
+    expect(mocks.searchPersonal).toHaveBeenCalledWith(mocks.tx, 'ws-1', 'employee-1', expect.anything());
+  });
+
+  it.each([
+    { kind: 'user', slug: 'employee-1', workspaceId: 'another-workspace', trust: 'verified' },
+    { kind: 'user', slug: 'employee-1', workspaceId: 'ws-1', trust: 'unverified' },
+    { kind: 'user', slug: '', workspaceId: 'ws-1', trust: 'verified' },
+  ])('refuses invalid GUI identity without falling back to default: %j', async (principal) => {
+    await expect(search({ query: 'release' }, { workspaceId: 'ws-1', tx: CTX_TX, principal } as never))
+      .rejects.toThrow('documents_search_user_principal_invalid');
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.searchOrganization).not.toHaveBeenCalled();
+  });
+
   it('reads the pot from presence and refuses the pot leg without one', async () => {
     mocks.resolveSubjects.mockResolvedValue({ potSlug: null, planSlug: null });
     const result = await search({ query: 'release', legs: ['pot'] }, CTX);

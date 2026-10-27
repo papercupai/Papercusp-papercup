@@ -7,7 +7,7 @@
 # Bindings:
 #   DB        → D1 papercusp-publish (run `wrangler d1 create papercusp-publish` once)
 #   COUNTERS  → KV namespace (run `wrangler kv:namespace create papercusp-publish-counters` once)
-#   ARCHIVE   → R2 bucket papercusp-marketplace-tarballs (existing; reused with prefix "publish/")
+#   ARCHIVE   → private GCS object port (injected by the Worker entrypoint)
 #
 # Secrets (install via scripts/install-secrets.sh):
 #   CF_MASTER_TOKEN   — Cloudflare API token (Pages:Edit minimum)
@@ -21,6 +21,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
+GCS_BUCKET = "pc-p317-host-bundle-20260917"
+# GCS_SERVICE_ACCOUNT_JSON is installed as a Worker secret.
 VANITY_HOST = "preview.papercuspai.com"
 PUBLISH_HOST = "publish.papercuspai.com"
 RATE_PER_TENANT_BURST = "5"
@@ -31,7 +33,7 @@ RATE_PER_IP_REGISTER_HOURLY = "10"
 DEPLOYMENT_BYTES_CAP = "1073741824"          # 1 GB
 DEPLOYMENT_FILES_CAP = "20000"
 PER_FILE_BYTES_CAP = "26214400"              # 25 MB
-R2_PREFIX = "publish/"
+ARCHIVE_PREFIX = "publish/"
 
 [[d1_databases]]
 binding = "DB"
@@ -42,9 +44,6 @@ database_id = "local-dev-stub-id"
 binding = "COUNTERS"
 id = "local-dev-stub-id"
 
-[[r2_buckets]]
-binding = "ARCHIVE"
-bucket_name = "papercusp-marketplace-tarballs"
 
 [[routes]]
 pattern = "publish.papercuspai.com/*"

@@ -323,6 +323,38 @@ describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
     expect(stampBarReadinessNowBlock(planBody(), { state: 'ready', codes: [], nextRepair: null }, 'item-dropped')).toBeNull();
   });
 
+  it('refreshes a generated repair Next after a rubric amendment but preserves authored Next text', () => {
+    const stale = planBody(
+      `${BAR_READINESS_NOW_MARK} (2026-10-24, after decision-added): bar_snapshot_cohort_incomplete. ` +
+        'Next repair: repair seed. (re-evaluated in the same write by the scope-write cascade, P-030/P-031)',
+      'repair seed',
+    );
+    const cleared = stampBarReadinessNowBlock(
+      stale,
+      { state: 'ready', codes: [], nextRepair: null },
+      'rubric-amended',
+      day,
+    );
+    expect(cleared).not.toBeNull();
+    expect(cleared!).toContain('**State:** —');
+    expect(cleared!).toContain('**Next:** —');
+    expect(cleared!).not.toContain('bar_snapshot_cohort_incomplete');
+
+    const authoredNext = planBody(
+      `${BAR_READINESS_NOW_MARK} (2026-10-24, after decision-added): bar_snapshot_mapping_missing. ` +
+        'Next repair: repair seed. (re-evaluated in the same write by the scope-write cascade, P-030/P-031)',
+      'Land the repair queue.',
+    );
+    const preserved = stampBarReadinessNowBlock(
+      authoredNext,
+      { state: 'ready', codes: [], nextRepair: null },
+      'rubric-amended',
+      day,
+    );
+    expect(preserved).not.toBeNull();
+    expect(preserved!).toContain('**Next:** Land the repair queue.');
+  });
+
   it('coexists with a moot-carrier banner in the same Now', () => {
     const moot = stampMootCarrierNowBlock(planBody(), {
       subjectSlug: SUBJECT,

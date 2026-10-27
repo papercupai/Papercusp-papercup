@@ -168,7 +168,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     expect(scrubConsoleErrors(consoleErrors)).toEqual([]);
   });
 
-  test('rail rows render with status badges; clicking a row writes the ?plans= nuqs filter', async ({ page }) => {
+  test('rail rows render with status badges; clicking a row opens its plan detail', async ({ page }) => {
     skipWithoutPlans();
     const plan = pickPlan()!;
     const mounted = await gotoPlans(page);
@@ -193,12 +193,12 @@ test.describe('/admin/plans — plan detail flow', () => {
     await expect(fixtureRow).toBeVisible({ timeout: 20_000 });
     await expect(fixtureRow.locator(`.pc-pill--${plan.status}`)).toHaveText(plan.status);
 
-    // Rail click = multi-select item filter (`?plans=`, nuqs array param) —
-    // NOT the detail opener (that is the ?plan= deep link, next test).
+    // The default Plans view opens detail. Queue/Sessions separately use
+    // the itemPlans multi-select filter (PlansClient.onSelectPlan).
     await fixtureRow.locator('.pc-plan-row').click();
     await expect
-      .poll(() => param(page, 'plans'), { timeout: 10_000 })
-      .toContain(plan.slug);
+      .poll(() => param(page, 'plan'), { timeout: 10_000 })
+      .toBe(plan.slug);
   });
 
   test('?plan= deep link opens the detail; Revisions opens; nuqs state round-trips a reload', async ({ page }) => {

@@ -10,6 +10,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 const activeSessionLookup = vi.hoisted(() => vi.fn());
+const recovery = vi.hoisted(() => ({ host: vi.fn(), inject: vi.fn() }));
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHostAsync: recovery.host,
+  hostSupports: (host: { caps?: string[] }, cap: string) => host.caps?.includes(cap) === true,
+  injectIntoHostWithConfirmation: recovery.inject,
+}));
 vi.mock('../../adv-sessions', () => ({
   getLatestActiveAdvSessionByOwner: activeSessionLookup,
 }));
@@ -61,6 +67,8 @@ beforeEach(() => {
   requests = 0;
   ownerPinPosts = 0;
   activeSessionLookup.mockReset().mockResolvedValue(null);
+  recovery.host.mockReset();
+  recovery.inject.mockReset().mockResolvedValue({ ok: true, confirmation: 'acked', reason: 'accepted' });
 });
 
 afterEach(async () => {
@@ -128,6 +136,67 @@ test('retains named Claude account acceptance from the accounts pool', async () 
   assert.equal(writes.length, 1);
   assert.equal(writes[0]!.account, 'claude-main');
 });
+
+function quotaHost() {
+  return { ownerId: 'su-default-owner', sock: '/managed/host.sock', caps: ['quota-recovery-reroute'],
+    startedAt: 123, childGeneration: 4, nativeSessionId: 'native-exact',
+    quotaBlocked: true, quotaBlockedSinceMs: Date.now() - 1000,
+    execution: { phase: 'settled', pendingTools: 0, observedAt: Date.now() } };
+}
+
+test('explicit default-to-auto recovery pins then requests same-host recovery without a prompt', async () => {
+  await startGateway({ codexAccounts: ['codex-main'] });
+  activeSessionLookup.mockResolvedValue({ agent: 'codex', launchArgv: ['psu', '--account=default'] });
+  const host = quotaHost();
+  recovery.host.mockResolvedValue(host);
+  recovery.inject.mockImplementation(async () => {
+    assert.equal(ownerPinPosts, 1, 'gateway auto pin is live before recycling');
+    return { ok: true, confirmation: 'acked', reason: 'accepted' };
+  });
+  const result = body(await accountsPinTool.handler({ agent: host.ownerId, account: 'auto', recoverQuota: true } as never,
+    { workspaceId: 'papercusp-workspace' } as never));
+  assert.equal(result.ok, true);
+  assert.equal(result.pickupVerified, false);
+  const [sock, msg] = recovery.inject.mock.calls[0]!;
+  assert.equal(sock, host.sock);
+  assert.equal(msg.data, '');
+  assert.equal(msg.mode, 'recycle');
+  assert.equal(msg.ownerId, host.ownerId);
+  assert.equal(msg.deliveryId, result.operationId);
+  assert.deepEqual(msg.quotaRecovery.defaultToAuto, { hostStartedAt: 123, childGeneration: 4,
+    nativeSessionId: host.nativeSessionId, quotaBlockedSinceMs: host.quotaBlockedSinceMs,
+    expiresAtMs: msg.quotaRecovery.startedAtMs + 30_000 });
+});
+
+test('ordinary pinning uses the recovered child route rather than its original default argv', async () => {
+  await startGateway({ codexAccounts: ['codex-main'] });
+  activeSessionLookup.mockResolvedValue({ agent: 'codex', launchArgv: ['psu', '--account=default'] });
+  recovery.host.mockResolvedValue({ ...quotaHost(), accountRoutingMode: 'auto', quotaBlocked: false });
+  const result = body(await accountsPinTool.handler({ agent: 'su-default-owner', account: 'codex-main' } as never,
+    { workspaceId: 'papercusp-workspace' } as never));
+  assert.equal(result.ok, true);
+  assert.equal(writes[0]?.account, 'codex-main');
+  assert.equal(recovery.inject.mock.calls.length, 0);
+});
+
+test.each(['legacy', 'healthy', 'stale', 'busy', 'input', 'wrong-owner', 'unknown-native'])(
+  'explicit recovery refuses %s evidence before gateway writes', async (failure) => {
+    activeSessionLookup.mockResolvedValue({ agent: 'codex', launchArgv: ['psu', '--account=default'] });
+    const host = quotaHost();
+    if (failure === 'legacy') host.caps = [];
+    if (failure === 'healthy') host.quotaBlocked = false;
+    if (failure === 'stale') host.execution.observedAt -= 60_000;
+    if (failure === 'busy') host.execution.pendingTools = 1;
+    if (failure === 'input') Object.assign(host.execution, { ownerInputPending: true });
+    if (failure === 'wrong-owner') host.ownerId = 'su-other';
+    if (failure === 'unknown-native') host.nativeSessionId = '';
+    recovery.host.mockResolvedValue(host);
+    const result = body(await accountsPinTool.handler({ agent: 'su-default-owner', account: 'auto', recoverQuota: true } as never,
+      { workspaceId: 'papercusp-workspace' } as never));
+    assert.equal(result.ok, false);
+    assert.deepEqual(writes, []);
+    assert.equal(recovery.inject.mock.calls.length, 0);
+  });
 
 test('rejects a named account absent from both gateway pools before durable write', async () => {
   await startGateway({ accounts: ['claude-main'], codexAccounts: ['codex-main'] });

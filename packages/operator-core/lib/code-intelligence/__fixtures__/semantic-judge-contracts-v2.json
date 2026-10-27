@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "registration": "P012-judge-contracts-v2-D018-20261023",
+  "governingDecision": "code-intel-reuse-signals-2026-10-21#D-018",
+  "status": "preregistered-awaiting-independent-review",
+  "qualificationInferenceAllowed": false,
+  "preserves": "semantic-calibration-v1.json and every failed edition remain unchanged. All20concept queries/relevance labels, topK10, retrieval cutoff.70, confidence.90 and minimum precision/hitrate.70 are unchanged.",
+  "historicalCounterexample": {
+    "manifest": "semantic-calibration-v1.json",
+    "pairId": "sum-positive",
+    "correctedDisposition": "rejection regression only in this new edition",
+    "evidence": "semantic-judge-replay-v1.json retains actual gpt-6.1-sol distinct/.99. Executing a two-slot array with only index1=1 yields NaN for for-of and1 for reduce. v1's expected duplicate remains stored and failed."
+  },
+  "positive": {
+    "id": "standard-array-iterator-sum",
+    "expectedVerdict": "duplicate",
+    "leftPath": "src/iterator-sum-a.ts",
+    "rightPath": "src/iterator-sum-b.ts",
+    "leftSource": "export function accumulate(xs: number[]) { let n = 0; for (const x of xs) n += x; return n; }",
+    "rightSource": "export function accumulateManually(xs: number[]) { let n = 0; const iterator = xs[Symbol.iterator](); for (;;) { const step = iterator.next(); if (step.done) return n; n = n + step.value; } }",
+    "behaviorDomainReview": {
+      "domain": "Ordinary native JavaScript arrays with standard unmodified array iterator/prototype methods and numeric data properties or holes. Numeric values include NaN, positive/negative zero and infinities. No proxies, accessor properties, custom iterators or non-number populated entries.",
+      "reason": "Both create exactly one standard array iterator, consume it in the same order, start the accumulator at positive zero, and perform the same ordered IEEE754 addition for each iterator value. Holes yield undefined in both and produce NaN. Both return after iterator completion and mutate no input. The domain excludes getter/iterator user code, so neither has an abrupt body completion requiring observable IteratorClose.",
+      "nonGoals": "No algebraic reassociation, sparse-hole elision, arbitrary user iterators, or purity assumption for unavailable dependencies.",
+      "requiredExecutableCases": ["empty", "sparse", "sparse-with-tail", "singleton", "NaN", "negative-zero", "positive-infinity", "negative-infinity", "mixed-infinities", "overflow", "rounding-order"]
+    }
+  }
+}

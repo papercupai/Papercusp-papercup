@@ -48,6 +48,7 @@ import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
 import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag,
   withRetentionPinProtection,
+  readRetentionPinsAsync, pinProtection,
   type RetentionLease } from '../../../scripts/lib/retention-pins.mjs';
 export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
@@ -56,7 +57,7 @@ import { retentionPolicyForWorkspaceRoot } from './storage/retention-policy';
 import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './storage/disk-reclaim';
 import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
-import { CENSUS_DU_TIMEOUT_MS } from './storage/disk-consumer-census';
+import { CENSUS_DU_TIMEOUT_MS, inspectRetentionTrees, RetentionAllocationCounter } from './storage/disk-consumer-census';
 import { DetachedWalkAbandoned, readWalkState, runDetachedDuUsage, walkAttemptFiles, walkProcessAlive,
   type DetachedWalkOptions } from './storage/disk-census-detached-walk';
 
@@ -1354,9 +1355,13 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
 async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>) {
   const remaining = () => notAfterMs - Date.now();
   if (!Number.isFinite(notAfterMs) || remaining() <= 0) throw new Error('release-cut usage run deadline exhausted');
+  let usageAdmission: { slot: string; waitedMs: number; timeoutMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
   return withFsMutex(`release-cut-usage:${path.resolve(opts.dir)}`, async () => {
     const state = await readWalkState(opts.dir);
-    const terminal = !!state && !walkProcessAlive(state) && fs.existsSync(walkAttemptFiles(opts.dir, state.attempt).exit);
+    // The wrapper may die before writing exit.<attempt>. Its verified process
+    // death permits retirement, never adoption of its incomplete allocation.
+    const terminal = !!state && !walkProcessAlive(state);
     const consumed = path.join(opts.dir, 'consumed');
     if (fs.existsSync(consumed)) {
       if (!terminal) throw new Error('release-cut usage previous measurement is still retiring');
@@ -1381,7 +1386,7 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
       }
       if (!result.complete || !result.bytes || result.finishedAt === null) {
         const ended = await readWalkState(opts.dir);
-        if (ended && fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit)) {
+        if (ended && (fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit) || !walkProcessAlive(ended))) {
           await fs.promises.writeFile(consumed, 'failed\n');
         }
         throw new Error(result.error ?? 'incomplete release-cut usage measurement');
@@ -1398,13 +1403,32 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
       if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
       throw e;
     } finally { clearTimeout(timer); }
-  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25 });
+  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25,
+    onTimedOut: (timing) => { usageAdmission = { slot: path.resolve(opts.dir), ...timing }; },
+  }).catch((error: unknown) => {
+    // Keep the exact slot and admission phases separate from the bounded human
+    // message, which can end halfway through a long slot path. A timeout alone
+    // cannot distinguish a held mutex from slow admission metadata operations.
+    if (usageAdmission && error instanceof Error) Object.assign(error, { usageAdmission });
+    throw error;
+  });
 }
 
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.
  * A cap never overrides the existing published/authored/lease/holder guards. All
  * expired eligible cuts are still collected, even when usage is already below cap. */
 export async function reclaimCutWorktrees(
+  plan: ReclaimPlan,
+  options: { dryRun?: boolean; maxBytes?: number; notAfterMs?: number } = {},
+  deps: ReclaimExecDeps = {},
+) {
+  if (deps.retentionMutexHeld) return reclaimCutWorktreesUnlocked(plan, options, deps);
+  return withFsMutex('papercusp-disk-retention', () =>
+    // notify-classification: {"classification":"durable","reason":"Mutex callback retains the reclaim owner's terminal alarm and notification obligations; wrapping the call does not exempt delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    reclaimCutWorktreesUnlocked(plan, options, { ...deps, retentionMutexHeld: true }));
+}
+
+async function reclaimCutWorktreesUnlocked(
   plan: ReclaimPlan,
   options: { dryRun?: boolean; maxBytes?: number; notAfterMs?: number } = {},
   deps: ReclaimExecDeps = {},
@@ -1416,7 +1440,24 @@ export async function reclaimCutWorktrees(
       const activity = (v: ReclaimVerdict) => Math.max(Date.parse(v.createdAt ?? '') || 0, Date.parse(v.lastHeadMoveAt ?? '') || 0);
       return activity(a) - activity(b) || a.path.localeCompare(b.path);
     }).map((v) => v.path);
-  const pinnedPaths = plan.verdicts.filter((v) => v.reasons.some((r) => r.startsWith('lease:agent-pin-'))).map((v) => v.path);
+  // Attribution must come from validated live records, never a verdict's label.
+  // Keep one snapshot time for both cap attribution and atomic-tree protection.
+  const pinNowMs = Date.now();
+  const pinRead = await readRetentionPinsAsync({ nowMs: pinNowMs });
+  const isPinned = pinProtection(pinRead.pins, pinNowMs);
+  const existingProtection = deps.pinProtection;
+  deps = { ...deps, pinProtection: p => isPinned(p) || !!existingProtection?.(p) };
+  const contains = (outer: string, inner: string) => outer === path.parse(outer).root ||
+    outer === inner || inner.startsWith(outer + path.sep);
+  const pinnedPaths = [...new Set(pinRead.pins.flatMap(pin => pin.paths).flatMap(p => {
+    p = path.resolve(p);
+    return plan.verdicts.flatMap(v => {
+      if (!v.realPath) return [];
+      if (contains(p, v.realPath) || contains(p, v.path)) return [v.realPath];
+      if (contains(v.realPath, p)) return [p];
+      return contains(v.path, p) ? [path.join(v.realPath, path.relative(v.path, p))] : [];
+    });
+  }))].sort((a, b) => a.length - b.length || a.localeCompare(b));
   const cap: Omit<RetentionCapReceipt, 'beforeBytes' | 'afterBytes' | 'overByBytes' | 'pinnedBytes' | 'pinnedOverageBytes'> & {
     beforeBytes: number | null; afterBytes: number | null; overByBytes: number | null;
     pinnedBytes: number | null; pinnedOverageBytes: number | null; retainedPaths: string[];
@@ -1426,6 +1467,7 @@ export async function reclaimCutWorktrees(
     pinnedOverageBytes: null, pinnedPaths, retainedPaths: [],
   };
   const errors = [...plan.failClosed];
+  if (pinRead.errors.length) errors.push(`retention pins unreadable: ${pinRead.errors.join('; ')}`);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) errors.push('invalid release-cut byte cap');
   if (plan.verdicts.some((v) => !v.realPath)) errors.push('release-cut population has unreadable paths');
   if (errors.length) return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
@@ -1448,23 +1490,89 @@ export async function reclaimCutWorktrees(
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     }
     const roots = existing.filter((p) => !existing.some((other) => other !== p && p.startsWith(`${other}/`)));
+    // Interrupted trash is discovered from the existing validated archive
+    // receipts, rather than ordinary worktree verdicts. Attribute its pins from
+    // the same fixed-time live snapshot without making it a deletion target.
+    for (const raw of pinRead.pins.flatMap(pin => pin.paths)) {
+      const logical = path.resolve(raw);
+      let physical = logical;
+      try { physical = await fs.promises.realpath(logical); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      for (const scope of new Set([logical, physical])) for (const root of roots) {
+        const covered = contains(scope, root) ? root : contains(root, scope) ? scope : null;
+        if (covered && !pinnedPaths.includes(covered)) pinnedPaths.push(covered);
+      }
+    }
+    pinnedPaths.sort((a, b) => a.length - b.length || a.localeCompare(b));
     // du deduplicates hardlinks across arguments. Charge pinned roots first so
     // their still-allocated blocks cannot disappear into an evictable sibling's
     // count. The total still counts each shared allocation only once.
-    const pinned = (p: string) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!));
+    const pinned = (p: string) => pinnedPaths.some(scope => pathsOverlap(p, scope));
     roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
     if (!roots.length) return new Map<string, number>();
+    // notify-classification: {"classification":"durable","reason":"Managed usage measurement can reach notification callbacks; preserve their terminal obligation until its owner proves the delivery path.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return deps.usageWalk ? measureDetachedCutUsage(roots, notAfterMs, deps.usageWalk) : measureCutUsage(roots, notAfterMs);
   };
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
   const usageFailure = (error: unknown): string => {
-    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress } | null;
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress;
+      usageAdmission?: { slot: string; waitedMs: number; timeoutMs: number; admissionSubphaseTimingsMs?: Record<string, number> } } | null;
     return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
       killed: detail?.killed === true,
-      stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress, message: errText(error) });
+      stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress,
+      usageAdmission: detail?.usageAdmission, message: errText(error) });
+  };
+  const pinnedAllocation = async (usage: Map<string, number>) => {
+    const allocation = new RetentionAllocationCounter();
+    const deadline = Math.min(notAfterMs, Date.now() + 5_000);
+    for (const [index, scope] of pinnedPaths.entries()) {
+      if (pinnedPaths.slice(0, index).some(parent => contains(parent, scope))) continue;
+      const root = [...usage.keys()].find(root => contains(root, scope));
+      if (!root) continue;
+      if (Date.now() >= deadline) throw new Error('release-cut pin census budget exhausted');
+      let stat: fs.Stats;
+      try { stat = await fs.promises.lstat(scope); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+      if (await fs.promises.realpath(scope) !== scope) throw new Error(`noncanonical release-cut pin scope: ${scope}`);
+      if (stat.dev !== (await fs.promises.lstat(root)).dev) throw new Error(`filesystem boundary: ${scope}`);
+      if (process.getuid && stat.uid !== process.getuid()) throw new Error(`foreign ownership boundary: ${scope}`);
+      allocation.add(scope, stat, stat.isFile());
+      if (stat.isDirectory()) {
+        const census = await inspectRetentionTrees(scope, { retainAfterMs: 0, includeRecent: true,
+          sudo: null, timeoutMs: Math.max(1, deadline - Date.now()) });
+        if (census.error) throw new Error(census.error);
+        const partial = census.retained.find(entry => !entry.entry ||
+          ['foreign ownership boundary', 'filesystem boundary'].includes(entry.reason));
+        if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
+        for (const entry of [...census.entries, ...census.retained.map(entry => entry.entry!)]) {
+          const shared = entry.hardlinks ?? [];
+          const exclusive = entry.bytes - shared.reduce((sum, link) => sum + link.bytes, 0);
+          if (!Number.isSafeInteger(exclusive) || exclusive < 0) throw new Error('invalid release-cut pin census');
+          allocation.bytes += exclusive;
+          for (const link of shared) allocation.add(link.paths[0]!, {
+            dev: link.dev, ino: link.ino, blocks: link.bytes / 512, nlink: 2,
+          }, true);
+        }
+      }
+      const confirm = await fs.promises.lstat(scope);
+      if (confirm.dev !== stat.dev || confirm.ino !== stat.ino || confirm.ctimeMs !== stat.ctimeMs) {
+        throw new Error(`release-cut pin allocation changed during census: ${scope}`);
+      }
+    }
+    const total = [...usage.values()].reduce((sum, bytes) => sum + bytes, 0);
+    if (!Number.isSafeInteger(allocation.bytes) || allocation.bytes > total) throw new Error('inconsistent release-cut pin census');
+    return allocation.bytes;
+  };
+  const recordCapExcess = () => {
+    if (cap.overByBytes !== null && cap.pinnedOverageBytes !== null && cap.overByBytes > cap.pinnedOverageBytes) {
+      // A named/published/otherwise protected cut stays protected. Its retained
+      // non-pin allocation still prevents this owner from claiming cap compliance.
+      errors.push(`release-cut allocated-byte cap retains non-pin excess:${cap.root}: ${cap.afterBytes} > ${maxBytes}`);
+    }
   };
   try {
+    // notify-classification: {"classification":"durable","reason":"Pre-reclaim measurement inherits the managed usage walk's notification obligation; no safe-to-lose proof exists.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const before = await measure();
     if (deps.refreshPlan) {
       const fresh = await deps.refreshPlan();
@@ -1475,28 +1583,35 @@ export async function reclaimCutWorktrees(
         throw new Error('release-cut protection or population changed; resume with a fresh plan');
       }
     }
+    const pinnedBytes = await pinnedAllocation(before);
     cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
-    cap.pinnedBytes = [...before].filter(([p]) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
-      .reduce((sum, [, n]) => sum + n, 0);
+    cap.pinnedBytes = pinnedBytes;
     cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
     if (options.dryRun || (deps.usageWalk && targets.length === 0)) {
       cap.afterBytes = cap.beforeBytes;
       cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
       cap.retainedPaths = [...before.keys()];
-      return { ok: true, dryRun: !!options.dryRun, targets, errors, cap };
+      if (!options.dryRun) recordCapExcess();
+      return { ok: errors.length === 0, dryRun: !!options.dryRun, targets, errors, cap };
     }
   } catch (e) {
     errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
     return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
+  // notify-classification: {"classification":"durable","reason":"Reclaim execution reaches lifecycle and alarm consequences; preserve their terminal delivery obligation through the owner wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   try { if (targets.length) execution = await executeCutReclaim(plan, targets, { ...deps, notAfterMs }); }
   catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
   try {
+    // notify-classification: {"classification":"durable","reason":"Post-reclaim measurement inherits the managed usage walk's notification obligation; no safe-to-lose proof exists.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const after = await measure();
+    const pinnedBytes = await pinnedAllocation(after);
     cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);
+    cap.pinnedBytes = pinnedBytes;
+    cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
     cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
     cap.retainedPaths = [...after.keys()];
+    recordCapExcess();
   } catch (e) { errors.push(`release-cut usage after reclaim: ${usageFailure(e)}`); }
   return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
 }

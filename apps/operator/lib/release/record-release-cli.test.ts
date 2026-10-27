@@ -1290,8 +1290,8 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     );
 
     // The publisher must ship and publicly verify the new detail-page directory;
-    // otherwise a locally-correct index advertises links that all 404 in R2.
-    expect(publish).toContain('aws s3 sync "$SITE_DIR/work-items"');
+    // otherwise a locally-correct index advertises links that all 404 publicly.
+    expect(publish).toContain('release_storage_tree "$SITE_DIR/work-items" "${KEY_PREFIX}/work-items"');
     expect(publish).toContain('linked work-item detail page served and byte-identical');
     expect(publish).toContain('"${BASE}/${DETAIL_PAGE}"');
 
@@ -1331,8 +1331,8 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
         'PAPERCUSP_UPDATE_BASE_URL=https://release.example/secret-path\n',
       );
       fs.writeFileSync(
-        path.join(home, '.papercusp', 'r2.env'),
-        'R2_ACCOUNT_ID=acct\nR2_BUCKET=bucket\nAWS_ACCESS_KEY_ID=key\nAWS_SECRET_ACCESS_KEY=secret\n',
+        path.join(home, '.papercusp', 'release-storage.env'),
+        'PAPERCUSP_RELEASE_GCS_BUCKET=fixture-release-bucket\n',
       );
 
       // The publisher's identity gate and authenticated upload are stubbed so this
@@ -1356,7 +1356,28 @@ process.exit(0);
 `,
         { mode: 0o755 },
       );
-      fs.writeFileSync(path.join(bin, 'aws'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'gcloud'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const args = process.argv.slice(2);
+const stateFile = process.env.PROBE_GCS_STATE;
+const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
+if (args[0] === 'storage' && args[1] === 'objects' && args[2] === 'describe') {
+  const object = state[args[3]];
+  if (!object) { process.stderr.write('HTTPError 404 Not found\\n'); process.exit(1); }
+  process.stdout.write(JSON.stringify(object));
+} else if (args[0] === 'storage' && args[1] === 'cp') {
+  const bytes = fs.readFileSync(args[2]);
+  state[args[3]] = {
+    generation: '1', size: String(bytes.length),
+    metadata: { sha256: createHash('sha256').update(bytes).digest('hex') },
+  };
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+} else {
+  process.stderr.write('Unexpected fixture storage command: ' + args.join(' ') + '\\n');
+  process.exit(99);
+}
+`, { mode: 0o755 });
       fs.writeFileSync(
         path.join(bin, 'curl'),
         `#!/usr/bin/env node
@@ -1380,9 +1401,11 @@ if (args.includes('-w')) process.stdout.write('200');
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
           HOME: home,
+          PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
           PAPERCUSP_RELEASE_SITE_DIR: site,
           PAPERCUSP_RELEASE_OWNER_NAME: 'Synthetic Owner',
           PROBE_SITE: site,
+          PROBE_GCS_STATE: path.join(root, 'gcloud-state.json'),
           DRY_RUN: '0',
         },
         encoding: 'utf8',
@@ -1393,7 +1416,7 @@ if (args.includes('-w')) process.stdout.write('200');
 
     // Positive control: matching public bytes still complete the publisher.
     const matching = runFixture('match');
-    expect(matching.status).toBe(0);
+    expect(matching.status, [matching.error?.message, matching.stdout, matching.stderr].filter(Boolean).join('\n')).toBe(0);
     expect(matching.stdout).toContain('history.json served and byte-identical');
 
     // Falsifier: before the fix this stale feed was never fetched and the same

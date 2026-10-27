@@ -8,11 +8,13 @@
  * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { deliverCommittedCardResponse } from '@papercusp/agent-mcp';
 import { askChoiceOptionIds } from '../../../ask-choice-options';
+import { findConverseCard } from '../../../agent-tools/operator/converse-card';
 import { canonicalToolName } from '../../../operator-mcp-tools';
 import { notifySyncInvalidate } from '../../../sync-sse';
-import { activeWorkspaceId } from '../../../workspace-registry';
 import { getConversationById } from '../../../operator-conversations';
+import { getSessionUserOrLocalDefaultAuthority } from '../../session-or-local';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface Body {
@@ -27,8 +29,11 @@ export default defineTool({
   path: '/operator/conversations/:id/turn-answer',
   auth: 'loopback',
   async handler(req, ctx) {
+    const responder = await getSessionUserOrLocalDefaultAuthority(req);
+    if (!responder) return Response.json({ error: 'unauthorized' }, { status: 401 });
     const conversationId = ctx.params.id as string;
-    if (!(await getConversationById(conversationId))) {
+    const workspaceId = responder.user.workspace_id;
+    if (!(await getConversationById(conversationId, workspaceId))) {
       return Response.json({ error: 'conversation not found' }, { status: 404 });
     }
     const body = (await req.json().catch(() => null)) as Body | null;
@@ -47,8 +52,9 @@ export default defineTool({
       );
     if (
       !body ||
-      typeof body.assistantSeq !== 'number' ||
-      typeof body.toolIndex !== 'number' ||
+      !Number.isSafeInteger(body.assistantSeq) ||
+      body.assistantSeq < 0 ||
+      !Number.isSafeInteger(body.toolIndex) ||
       body.toolIndex < 0 ||
       (declined ? picks.length !== 0 : !validPicks)
     ) {
@@ -72,12 +78,18 @@ export default defineTool({
 
     try {
       const result = await sql.begin(async (tx) => {
+        if (!await responder.authorize(tx)) throw new Error('unauthorized');
+        // Match the shared store's parent -> turn lock order. Legacy sequence
+        // allocation also serializes with durable card workflows in this chat.
+        const conversation = await tx.unsafe(`SELECT id FROM harness_shared.operator_conversations
+          WHERE id=$1 AND workspace_id=$2 FOR UPDATE`, [conversationId, workspaceId]);
+        if (conversation.length !== 1) return { kind: 'not_found' as const };
         const rows = (await tx.unsafe(
-          `SELECT id, tools FROM harness_shared.operator_turns
-            WHERE conversation_id = $1 AND seq = $2 AND role = 'assistant'
+          `SELECT id, tools, chat_state FROM harness_shared.operator_turns
+            WHERE conversation_id = $1 AND seq = $2 AND workspace_id = $3 AND role = 'assistant'
             FOR UPDATE`,
-          [conversationId, body.assistantSeq],
-        )) as Array<{ id: string; tools: unknown }>;
+          [conversationId, body.assistantSeq, workspaceId],
+        )) as Array<{ id: string; tools: unknown; chat_state: unknown }>;
 
         if (rows.length === 0) return { kind: 'not_found' as const };
         const tools = Array.isArray(rows[0].tools)
@@ -94,6 +106,21 @@ export default defineTool({
         const toolName = typeof tool.name === 'string' ? canonicalToolName(tool.name) : tool.name;
         if (toolName !== 'chat:ask_choice') {
           return { kind: 'wrong_tool' as const, name: toolName };
+        }
+        // Only null state is a legacy row. Unknown versions and incomplete
+        // bindings must never reach the historical direct mutation below.
+        const state = rows[0].chat_state;
+        if (state !== null) {
+          if (!state || typeof state !== 'object' || !('schemaVersion' in state)
+            || state.schemaVersion !== 1 || !('interactionBindings' in state)
+            || !state.interactionBindings || typeof state.interactionBindings !== 'object'
+            || Array.isArray(state.interactionBindings) || typeof tool.callId !== 'string'
+            || !tool.callId) throw new Error('needs-reconciliation');
+          const bindings = Object.entries(state.interactionBindings).filter(([, binding]) =>
+            binding && typeof binding === 'object'
+              && (binding.dispatchCallId === tool.callId || binding.nativeCallId === tool.callId));
+          if (bindings.length !== 1) throw new Error('needs-reconciliation');
+          return { kind: 'durable' as const, correlationId: bindings[0][0] };
         }
         if (tool.answered) {
           return { kind: 'already_answered' as const, answered: tool.answered };
@@ -124,15 +151,15 @@ export default defineTool({
                 $2::jsonb,
                 true
               )
-            WHERE conversation_id = $3 AND seq = $4`,
-          [String(body.toolIndex), answeredJson, conversationId, body.assistantSeq],
+            WHERE conversation_id = $3 AND seq = $4 AND workspace_id = $5`,
+          [String(body.toolIndex), answeredJson, conversationId, body.assistantSeq, workspaceId],
         );
 
         const nextSeq = (await tx.unsafe(
           `SELECT COALESCE(MAX(seq), -1) + 1 AS s
              FROM harness_shared.operator_turns
-            WHERE conversation_id = $1`,
-          [conversationId],
+            WHERE conversation_id = $1 AND workspace_id = $2`,
+          [conversationId, workspaceId],
         )) as Array<{ s: number }>;
         const userSeq = Number(nextSeq[0].s);
         const inserted = (await tx.unsafe(
@@ -140,12 +167,25 @@ export default defineTool({
              (conversation_id, seq, role, text, source, created_at, workspace_id)
            VALUES ($1, $2, 'user', $3, 'card_pick', $4, $5)
            RETURNING id, seq`,
-          [conversationId, userSeq, joinedLabels, now, activeWorkspaceId()],
+          [conversationId, userSeq, joinedLabels, now, workspaceId],
         )) as Array<{ id: string; seq: number }>;
 
         return { kind: 'ok' as const, userSeq, userId: inserted[0].id };
       });
 
+      if (result.kind === 'durable') {
+        // Re-read/re-authorize after releasing the lookup lock. Recovery does
+        // not require the original process, waiter or child mount to exist.
+        const card = await findConverseCard({ sql, workspaceId, conversationId,
+          correlationId: result.correlationId, authorizeAdditional: responder.authorize });
+        if (!card) throw new Error('needs-reconciliation');
+        const response = declined ? { action: 'decline' as const }
+          : { action: 'submit' as const, payload: { picks: picks.map(pick => pick.option_id) } };
+        const receipt = await card.commitResponse(response, card.info(), 'response');
+        deliverCommittedCardResponse({ ...card.info(), response: receipt.response });
+        return receipt.accepted ? Response.json({ ok: true })
+          : Response.json({ error: 'card already decided' }, { status: 409 });
+      }
       if (result.kind === 'not_found') {
         return Response.json({ error: 'assistant turn not found' }, { status: 404 });
       }
@@ -190,9 +230,12 @@ export default defineTool({
         answeredAt: now,
       });
     } catch (err) {
+      const code = err instanceof Error ? err.message : '';
+      const status = code === 'unauthorized' ? 403 : code === 'invalid-answer' ? 400
+        : ['already-decided', 'cancelled', 'expired'].includes(code) ? 409 : 503;
       return Response.json(
-        { error: `turn-answer failed: ${err instanceof Error ? err.message : String(err)}` },
-        { status: 500 },
+        { error: status === 503 ? 'card decision needs reconciliation' : code },
+        { status },
       );
     }
   },

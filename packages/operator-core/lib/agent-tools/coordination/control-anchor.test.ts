@@ -44,19 +44,21 @@ function inMemoryPersistSql() {
   let current: ControlAnchorState | null = null;
   let updatedAt = '2026-07-13T18:00:00.000Z';
   let tick = 0;
-  const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const fragment = narrowingFragment(strings, values);
+    if (fragment) return fragment;
     const next = JSON.parse(String(values[2])) as ControlAnchorState;
     if (current == null || JSON.stringify(current) !== JSON.stringify(next)) {
       generation += 1;
       current = next;
       updatedAt = `2026-07-13T18:00:0${tick++}.000Z`;
     }
-    return [{
+    return Promise.resolve([{
       control_generation: generation,
       control_state: current,
       control_updated_at: updatedAt,
       control_transition: null,
-    }];
+    }]);
   }) as unknown as Sql;
   return sql;
 }
@@ -71,6 +73,7 @@ function inMemoryPersistSql() {
  */
 function narrowingFragment(strings: readonly string[], values: unknown[]) {
   const text = strings.join(' ').trim();
+  if (text.startsWith('((EXCLUDED.control_state')) return { lifecycleFragment: true };
   if (text === 'n.launch_spec') return { narrowedLaunchSpecFragment: true, want: null };
   return text.startsWith('CASE') && text.includes('identityHistory')
     ? { narrowedLaunchSpecFragment: true, want: values[0] }
@@ -274,9 +277,13 @@ describe('compact durable CTRL anchor', () => {
       // The WI-10002021 decoy: the row the enforcement port reads holds an older activation
       // than the one this write intended. Same fake, but RETURNING serves the stale read path.
       const honest = inMemoryPersistSql();
-      const decoy = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
-        const [row] = (await (honest as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<Array<Record<string, unknown>>>)(strings, ...values));
-        return [{ ...row, control_state: { ...(row?.control_state as object), activation: activation('STALE') } }];
+      const decoy = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const fragment = narrowingFragment(strings, values);
+        if (fragment) return fragment;
+        return (async () => {
+          const [row] = await (honest as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<Array<Record<string, unknown>>>)(strings, ...values);
+          return [{ ...row, control_state: { ...(row?.control_state as object), activation: activation('STALE') } }];
+        })();
       }) as unknown as Sql;
       const persisted = await persistControlAnchor(
         { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state({ activation: activation('2') }) },

@@ -259,7 +259,7 @@ async function stagePsuResume(fx: Fixture, extra: string[], portFixture?: PortFi
         res.end(JSON.stringify({ portId: PORT_ID, token: `${PORT_ID}.fixture`, fidelity: "full", expiresAt: "2099-01-01T00:00:00Z" }));
       } else if (portFixture && path === "/api/agent-mcp/console/bootstrap-su") {
         res.end(JSON.stringify({
-          agent: portFixture.target, sessionId: 43, nativeSessionId: PORT_TARGET_NATIVE,
+          status: "ok", agent: portFixture.target, sessionId: 43, nativeSessionId: PORT_TARGET_NATIVE,
           cwd: fx.cwd, promptFile,
           envelopeEnv: { PAPERCUSP_SID: OWNER, PAPERCUSP_AGENT: portFixture.target, CLAUDE_CONFIG_DIR: targetConfig },
           sessionPortKickoffFile: seedFile,

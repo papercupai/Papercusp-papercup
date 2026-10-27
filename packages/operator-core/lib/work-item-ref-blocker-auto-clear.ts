@@ -51,6 +51,7 @@ import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { clearExternalBlockersOnLockedRow, type LockedExternalBlockerRow, type OrgSql } from './work-items';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 /** Actor stamped as `clearedBy` on every blocker this module clears. */
 export const BLOCKER_AUTO_CLEAR_ACTOR = 'system:blocker-auto-clear';
 
@@ -156,7 +157,7 @@ export interface AutoClearedBlockerItem extends SystemClearedBlockerItem {
 
 type LockedRowWithHolder = LockedExternalBlockerRow & { harness_slug: string | null; taken_by: string | null };
 
-const ISSUE_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * Clear, inside `tx`, every active blocker in `workspaceId` that is satisfied

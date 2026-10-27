@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectFrozenCandidateDrift, parseDriftCommits } from './frozen-candidate-drift-sweep';
+import { detectFrozenCandidateDrift, DRIFT_COMMIT_LOG_FORMAT, parseDriftCommits } from './frozen-candidate-drift-sweep';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 
 const marker: FrozenRepairEditMarker = {
@@ -122,5 +122,33 @@ describe('parseDriftCommits', () => {
   it('returns nothing for empty input', () => {
     expect(parseDriftCommits('')).toEqual([]);
     expect(parseDriftCommits('\x00\x00')).toEqual([]);
+  });
+
+  it('reads agents from the delimited message, legacy split paragraphs included (WI-6554700010029864)', () => {
+    // The shape git emits for DRIFT_COMMIT_LOG_FORMAT + --name-only. The legacy body has one
+    // trailer per paragraph, which `%(trailers:key=Papercusp-Agent)` could not read.
+    const legacy = 'sync(root): a\n\nPapercusp-Agent: su-legacy\n\nPapercusp-Plan: p\n';
+    const multi = 'sync(root): b\n\nPapercusp-Agent: su-1\nPapercusp-Agent: su-2\n';
+    const raw =
+      `\x00${'a'.repeat(40)}\n\x1e${legacy}\x1e\n\na/failing.test.ts\n` +
+      `\x00${'b'.repeat(40)}\n\x1e${multi}\x1e\n\nb/failing.test.ts\nc.ts\n` +
+      `\x00${'c'.repeat(40)}\n\x1echore(git-sync): auto-commit\n\x1e\n\nd.ts\n`;
+    expect(DRIFT_COMMIT_LOG_FORMAT).toBe('%x00%H%n%x1e%B%x1e');
+
+    expect(parseDriftCommits(raw)).toEqual([
+      { sha: 'a'.repeat(40), agent: 'su-legacy', paths: ['a/failing.test.ts'] },
+      { sha: 'b'.repeat(40), agent: 'su-1', agents: ['su-1', 'su-2'], paths: ['b/failing.test.ts', 'c.ts'] },
+      { sha: 'c'.repeat(40), agent: null, paths: ['d.ts'] },
+    ]);
+  });
+
+  it('attributes a multi-author commit to each of its authors', () => {
+    const f = detectFrozenCandidateDrift({
+      marker,
+      commitsAboveCandidate: [{ sha: 'b'.repeat(40), agent: 'su-1', agents: ['su-1', 'su-2'], paths: ['b/failing.test.ts'] }],
+    });
+    expect(f?.agents).toEqual(['su-1', 'su-2']);
+    expect(f?.unattributedCommits).toBe(0);
+    expect(f?.body).toContain(`${'b'.repeat(12)} (su-1, su-2)`);
   });
 });

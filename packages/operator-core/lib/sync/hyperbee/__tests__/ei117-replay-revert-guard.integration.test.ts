@@ -157,10 +157,11 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
       );
     `);
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '125-harness-plans-federation.sql'), 'utf8')));
-    // The writer re-derives the plan index (plan-index-rows.ts) in the same transaction, so
-    // plan_items/plan_decisions must exist: the REAL migrations, not a stub, so a later column
-    // cannot strand this fixture the way the harness_plans stub above was stranded.
+    // The writer re-derives both the legacy JSONB index and normalized rows in
+    // the same transaction. Apply their real migrations: missing items/decisions
+    // columns otherwise preempt the replay and revision rollback assertions.
     for (const mig of [
+      '128-harness-plans-normalize.sql',
       '675-normalize-plan-items-decisions.sql',
       '1071-restore-plan-items-owner-gate-marker-after-1059-collision.sql',
       '1142-plan-decision-affects-authority.sql',

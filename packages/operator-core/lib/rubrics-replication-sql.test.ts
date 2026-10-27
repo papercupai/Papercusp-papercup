@@ -14,7 +14,38 @@ import {
   extractReplicationSqlStatements,
   substituteBindPlaceholders,
   summarizeReplicationSqlCheck,
+  lintSqlCohortMethod,
+  validateRubricReplicationSql,
 } from './rubrics-replication-sql';
+
+describe('SQL cohort method consistency', () => {
+  const singleSql = "SELECT count(*) n FROM harness_shared.tool_invocations WHERE workspace_id='ws' AND tool_name='coord:orient' AND duration_ms>=0";
+  const criterion = (sql = singleSql, method = 'Both named cohorts must have at least20 calls.') => ({
+    key: 'wake-orient-latency', method, check: { kind: 'probe' as const, probe: { kind: 'sql' as const, sql } },
+  });
+
+  it('surfaces the live single-tool/two-cohort defect through the existing write validator', async () => {
+    const result = await validateRubricReplicationSql([criterion()]);
+    expect(result.ok).toBe(false);
+    expect(result.checked).toBe(1);
+    expect(result.findings).toMatchObject([{ criterionKey: 'wake-orient-latency', error: { code: 'METHOD_COHORT_MISMATCH' } }]);
+    expect(result.summary).toContain('1 real finding');
+  });
+
+  it('accepts corrected single-cohort wording and genuine paired-cohort procedures', () => {
+    expect(lintSqlCohortMethod(criterion(singleSql, 'Require at least20 calls in the single coord:orient cohort.'))).toEqual([]);
+    expect(lintSqlCohortMethod(criterion("SELECT tool_name,count(*) FROM calls WHERE tool_name IN ('coord:presence','coord:inbox') GROUP BY tool_name"))).toEqual([]);
+  });
+
+  it('ignores SQL noise and does not guess dynamic or compound populations', () => {
+    expect(lintSqlCohortMethod(criterion(singleSql + " /* tool_name IN ('other') */"))).toHaveLength(1);
+    expect(lintSqlCohortMethod(criterion("SELECT 'tool_name=''coord:orient''' FROM calls"))).toEqual([]);
+    expect(lintSqlCohortMethod(criterion('SELECT count(*) FROM calls WHERE tool_name=$1'))).toEqual([]);
+    expect(lintSqlCohortMethod(criterion(singleSql + " OR tool_name='coord:inbox'"))).toEqual([]);
+    expect(lintSqlCohortMethod({ ...criterion(), check: { kind: 'instrument', instrumentKey: 'none' } })).toEqual([]);
+    expect(lintSqlCohortMethod({ ...criterion(), check: { kind: 'probe', probe: 'not a descriptor' } })).toEqual([]);
+  });
+});
 
 describe('extractReplicationSqlStatements', () => {
   it('returns [] for undefined/null/empty text', () => {

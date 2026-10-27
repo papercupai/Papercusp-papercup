@@ -36,6 +36,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /**
  * A by-id lookup found more than one row for the id in one workspace and the caller did not
  * name a harness that picks exactly one. Thrown instead of choosing a row, so every caller
@@ -252,7 +253,7 @@ export async function resolveIssuePhysicalSlug(
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND feature_id = ${id}
-       AND item_kind IN ('bug', 'change', 'task')`;
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})`;
   return pickPhysicalSlug(
     rows.map((r) => r.harness_slug),
     harness,

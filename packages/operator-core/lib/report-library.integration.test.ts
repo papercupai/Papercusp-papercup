@@ -46,6 +46,7 @@ import {
   ReportBodyTooLargeError,
   ReportRequestConflictError,
   getReport,
+  reportExists,
   listReportLineage,
   listReports,
   publishReport,
@@ -143,23 +144,36 @@ describe('report_library store (real PG)', () => {
     oracleDb.sql = null;
   });
 
-  it('reuses one private report for concurrent retries and keeps original session provenance', async () => {
+  it('reuses one workspace-public report for concurrent retries and keeps original session provenance', async () => {
     const workspaceId = nextWs();
     const input = { workspaceId, title: 'Daily edition', bodyMd: 'exact findings', requestKey: 'run-2026-10-07' };
     const results = await Promise.all(Array.from({ length: 4 }, (_, i) =>
       publishReport(db.adminSql, input, { ...AGENT_1, authorSessionRef: `retry-${i}` })));
     expect(new Set(results.map(r => r.reportId)).size).toBe(1);
     expect(new Set(results.map(r => r.origin.authorSessionRef)).size).toBe(1);
-    expect(results[0].visibility).toBe('owner');
+    expect(results[0].visibility).toBe('workspace');
     expect(results[0].requestKey).toBe(input.requestKey);
-    expect(await getReport(db.adminSql, workspaceId, results[0].reportId, { ownerId: 'unrelated-agent' })).toBeNull();
+    expect(await getReport(db.adminSql, workspaceId, results[0].reportId, { ownerId: 'unrelated-agent' }))
+      .toMatchObject({ reportId: results[0].reportId, visibility: 'workspace' });
+  });
+
+  it('distinguishes inaccessible and absent exact ids without disclosing content across workspaces', async () => {
+    const workspaceId = nextWs();
+    const privateReport = await publishReport(db.adminSql,
+      { workspaceId, title: 'Explicitly private', bodyMd: 'private contents', visibility: 'owner' }, AGENT_1);
+    expect(await getReport(db.adminSql, workspaceId, privateReport.reportId, { ownerId: 'unrelated-agent' })).toBeNull();
+    expect(await reportExists(db.adminSql, workspaceId, privateReport.reportId)).toBe(true);
+    expect(await reportExists(db.adminSql, nextWs(), privateReport.reportId)).toBe(false);
+    expect(await reportExists(db.adminSql, workspaceId, 'rpt_missing')).toBe(false);
+    await retireReport(db.adminSql, workspaceId, privateReport.reportId);
+    expect(await reportExists(db.adminSql, workspaceId, privateReport.reportId)).toBe(true);
   });
 
   it('refuses changed content under one key without losing the saved edition', async () => {
     const workspaceId = nextWs();
     const input = { workspaceId, title: 'Audit', bodyMd: 'original', requestKey: 'run-1' };
     const original = await publishReport(db.adminSql, input, AGENT_1);
-    for (const change of [{ bodyMd: 'changed' }, { visibility: 'workspace' as const }, { title: 'Changed title' }]) {
+    for (const change of [{ bodyMd: 'changed' }, { visibility: 'owner' as const }, { title: 'Changed title' }]) {
       await expect(publishReport(db.adminSql, { ...input, ...change }, AGENT_1)).rejects.toBeInstanceOf(ReportRequestConflictError);
     }
     expect((await getReport(db.adminSql, workspaceId, original.reportId))?.bodyMd).toBe('original');
@@ -168,7 +182,7 @@ describe('report_library store (real PG)', () => {
 
   it('deduplicates concurrent operation retries across authors without changing provenance or ordinary key isolation', async () => {
     const workspaceId = nextWs();
-    const input = { workspaceId, title: 'Native edition', bodyMd: 'verified findings', requestKey: 'edition' };
+    const input = { workspaceId, title: 'Native edition', bodyMd: 'verified findings', visibility: 'owner' as const, requestKey: 'edition' };
     const first = await publishReport(db.adminSql, input, { ...AGENT_1, requestScope: 'operation:receipt-1' });
     const retries = await Promise.all(['retry-a', 'retry-b'].map(authorOwnerId =>
       publishReport(db.adminSql, input, { ...AGENT_1, authorOwnerId, authorSessionRef: authorOwnerId,

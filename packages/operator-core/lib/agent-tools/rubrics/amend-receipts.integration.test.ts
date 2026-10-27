@@ -64,6 +64,90 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(rows).toEqual([{ workspace_id: activeWorkspaceId(), state: 'committed' }]);
   });
 
+  it('shares timestamped preview progress across fresh modules and preserves exact terminal replay', async () => {
+    const key = 'preview-shared-progress-integration';
+    const rubric = 'acceptance-preview-progress-integration';
+    let release!: (value: Record<string, unknown>) => void;
+    const work = new Promise<Record<string, unknown>>(resolve => { release = resolve; });
+    let started!: () => void;
+    const startedWork = new Promise<void>(resolve => { started = resolve; });
+    let reportPhase!: (phase: string) => void;
+    const result = { ok: true, dryRun: true, review: { state: 'routed', conversationId: 'conv-pg-progress' } };
+    const first = trackAmendRun(key, rubric, onPhase => {
+      reportPhase = onPhase;
+      onPhase('review-route');
+      started();
+      return work;
+    }, { persistPreviewProgress: true });
+    try {
+      await startedWork;
+      vi.resetModules();
+      const otherWorker = await import('./amend-receipts');
+      await vi.waitFor(async () => expect(await otherWorker.getAmendReceipt(rubric, key)).toMatchObject({
+        state: 'running', progress: { phase: 'review-route', phaseStartedAt: expect.any(Number), observedAt: expect.any(Number) },
+      }));
+      const snapshot = (await otherWorker.getAmendReceipt(rubric, key))!.progress;
+      expect((await otherWorker.getAmendReceipt(rubric, key))!.progress).toEqual(snapshot);
+      reportPhase('review-launch');
+      await vi.waitFor(async () => expect(await otherWorker.getAmendReceipt(rubric, key)).toMatchObject({
+        progress: { phase: 'review-launch' },
+      }));
+      const duplicate = vi.fn(async () => ({ ok: false, duplicate: true }));
+      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPreviewProgress: true }))
+        .toMatchObject({ pending: true, receipt: { progress: { phase: 'review-launch' } } });
+      expect(duplicate).not.toHaveBeenCalled();
+      release(result);
+      expect(await first).toEqual(result);
+      expect(await otherWorker.getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed', result });
+      expect((await otherWorker.getAmendReceipt(rubric, key))!.progress).toBeUndefined();
+      expect(await otherWorker.trackAmendRun(key, rubric, duplicate, { persistPreviewProgress: true })).toEqual(result);
+      expect(duplicate).not.toHaveBeenCalled();
+    } finally {
+      release(result);
+      await first;
+    }
+  });
+
+  it.each(['success', 'failure'])('a superseded preview cannot publish its terminal %s over a newer attempt', async outcome => {
+    const key = `preview-superseded-${outcome}`;
+    const rubric = 'acceptance-preview-superseded';
+    let release!: (value: Record<string, unknown>) => void;
+    let fail!: (error: Error) => void;
+    const work = new Promise<Record<string, unknown>>((resolve, reject) => { release = resolve; fail = reject; });
+    let started!: () => void;
+    const startedWork = new Promise<void>(resolve => { started = resolve; });
+    const first = trackAmendRun(key, rubric, onPhase => {
+      onPhase('review-route');
+      started();
+      return work;
+    }, { persistPreviewProgress: true }).catch((error: unknown) => error);
+    try {
+      await startedWork;
+      await vi.waitFor(async () => expect(await getAmendReceipt(rubric, key))
+        .toMatchObject({ progress: { phase: 'review-route' } }));
+      const nextAttempt = { _progressRun: 'superseding-attempt',
+        progress: { phase: 'review-new-attempt', phaseStartedAt: 123, observedAt: 123 } };
+      await h.sql`UPDATE harness_shared.rubric_amend_receipts
+        SET result_json = ${JSON.stringify(nextAttempt)}::text::jsonb
+        WHERE workspace_id = ${activeWorkspaceId()} AND rubric_ref = ${rubric} AND idempotency_key = ${key}`;
+      if (outcome === 'failure') fail(new Error('old preview failed'));
+      else release({ ok: true, dryRun: true });
+      const settled = await first;
+      if (outcome === 'failure') expect(settled).toBeInstanceOf(Error);
+      else expect(settled).toEqual({ ok: true, dryRun: true });
+      expect(await getAmendReceipt(rubric, key)).toMatchObject({
+        state: 'running', progress: nextAttempt.progress,
+      });
+      const rows = await h.sql<{ result_json: Record<string, unknown> }[]>`
+        SELECT result_json FROM harness_shared.rubric_amend_receipts
+        WHERE workspace_id = ${activeWorkspaceId()} AND rubric_ref = ${rubric} AND idempotency_key = ${key}`;
+      expect(rows[0]!.result_json).toEqual(nextAttempt);
+    } finally {
+      release({ ok: true, dryRun: true });
+      await first;
+    }
+  });
+
   // EI-26711589178349168: a pending foreground response cannot hide a late failure.
   it('preserves the last phase and a durable failure signal after a pending response', async () => {
     const key = 'late-failure-phase-evidence';

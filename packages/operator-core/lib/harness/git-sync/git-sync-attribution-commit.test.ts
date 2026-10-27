@@ -1,13 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, type RunGit } from './run-git-sync';
+import { attributionTrailers, commitAttributedGroups, dirtyFiles, guardStagedIndexBeforeCommit, preserveVanishedStagedSources, SOURCE_CUSTODY_REF_PREFIX, type RunGit } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 
 type GitResult = { code: number; stdout: string; stderr: string };
+
+/** Every message line of a recorded commit-tree argv: the trailers travel as ONE `-m` paragraph. */
+const messageLines = (commit: string[]): string[] => commit.flatMap((a) => a.split('\n'));
 
 /**
  * A scripted git for the attributed-commit plumbing (WI-10006705: private index,
@@ -75,6 +78,239 @@ function fakeGit(opts: {
 }
 
 const MSG = 'chore(git-sync): auto-commit papercup [skip ci]';
+
+describe('source custody through real attributed commits', () => {
+  const source = 'source [literal]\twith\nnewline.ts';
+  const original = Buffer.from([0, 255, 128, 65, 10]);
+  const owner = new Map<string, FileAttribution>([[source, { agent: 'author', intent: 'preserve source' }]]);
+
+  async function vanished(mode = '100644', format = 'sha1'): Promise<string> {
+    const repo = await mkdtemp(join(tmpdir(), 'gs-source-custody-'));
+    tmpDirs.push(repo);
+    await git(repo, 'init', '-q', `--object-format=${format}`);
+    await writeFile(join(repo, 'base.ts'), 'base\n');
+    await git(repo, 'add', 'base.ts');
+    await git(repo, ...ID, 'commit', '-qm', 'base');
+    if (mode === '120000') await symlink('missing-target', join(repo, source));
+    else {
+      await writeFile(join(repo, source), original);
+      if (mode === '100755') await chmod(join(repo, source), 0o755);
+    }
+    await git(repo, 'add', '--', source);
+    await rm(join(repo, source));
+    return repo;
+  }
+
+  for (const format of ['sha1', 'sha256']) {
+    it.each(['100644', '100755', '120000'].flatMap((mode) => ['known', 'unknown'].map((ownership) => [mode, ownership])))(`roots exact bytes, mode, metadata and an idempotent GC-safe receipt (%s, %s owner, ${format})`, async (mode, ownership) => {
+      const repo = await vanished(mode, format);
+      const attribution = ownership === 'known' ? owner : new Map();
+      const before = await git(repo, 'rev-parse', 'HEAD');
+      const staged = await git(repo, 'ls-files', '--stage');
+      const result = await preserveVanishedStagedSources(realRunGit, repo, attribution);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      expect(result.protectedPaths).toEqual([source]);
+      expect(result.refs).toHaveLength(1);
+      const ref = result.refs[0];
+      expect(ref).toMatch(/^refs\/papercusp\/source-custody\/[a-f0-9]{64}$/);
+      const manifest = JSON.parse(await git(repo, 'show', `${ref}:manifest.json`));
+      expect(manifest).toMatchObject({ path: source, owner: ownership === 'known' ? 'author' : 'unknown', mode, base: before });
+      expect((await git(repo, 'ls-tree', ref)).split('\n')).toHaveLength(2);
+      const expected = mode === '120000' ? Buffer.from('missing-target') : original;
+      expect(execFileSync('git', ['cat-file', 'blob', `${ref}:payload`], { cwd: repo })).toEqual(expected);
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(before);
+      expect(await git(repo, 'ls-files', '--stage')).toBe(staged);
+      expect(await preserveVanishedStagedSources(realRunGit, repo, attribution)).toEqual(result);
+      expect((await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).split('\n')).toEqual([ref]);
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      await git(repo, 'reflog', 'expire', '--expire=now', '--all');
+      await git(repo, 'gc', '--prune=now');
+      expect(execFileSync('git', ['cat-file', 'blob', `${ref}:payload`], { cwd: repo })).toEqual(expected);
+      expect(JSON.parse(await git(repo, 'show', `${ref}:manifest.json`))).toEqual(manifest);
+    });
+  }
+
+  it('preserves unknown ownership while allowing an unrelated attribution group to commit', async () => {
+    const repo = await vanished();
+    await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+    const result = await commitAttributedGroups(realRunGit, repo, new Map([
+      ['other.ts', { agent: 'other', intent: 'unrelated' }],
+    ]), [], MSG);
+    expect(result.error).toBeUndefined();
+    expect(result.committedAny).toBe(true);
+    expect(await git(repo, 'show', 'HEAD:other.ts')).toBe('unrelated');
+    expect((await realRunGit(['cat-file', '-e', `HEAD:${source}`], repo)).code).not.toBe(0);
+    const ref = await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX);
+    expect(JSON.parse(await git(repo, 'show', `${ref}:manifest.json`)).owner).toBe('unknown');
+  });
+
+  it.each(['blob', 'empty', 'manifest', 'payload', 'tree', 'ref', 'readback', 'env', 'throw'])(
+    'refuses the whole attributed phase on %s failure without consuming the shared blob', async (failure) => {
+      const repo = await vanished();
+      await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+      const index = await git(repo, 'ls-files', '--stage');
+      const head = await git(repo, 'rev-parse', 'HEAD');
+      let hit = false;
+      const calls: string[][] = [];
+      const injected: RunGit = async (args, cwd, options) => {
+        calls.push(args);
+        const privateIndex = options?.env?.GIT_INDEX_FILE?.includes('source-custody');
+        const fail = failure === 'blob' && args[0] === 'cat-file' && args[1] === '-t'
+          || failure === 'empty' && privateIndex && args[0] === 'read-tree'
+          || failure === 'manifest' && args[0] === 'hash-object'
+          || failure === 'payload' && privateIndex && args[0] === 'update-index'
+          || failure === 'tree' && privateIndex && args[0] === 'write-tree'
+          || failure === 'ref' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)
+          || failure === 'readback' && args[0] === 'cat-file' && args[1] === 'blob'
+          || failure === 'throw' && args[0] === 'cat-file';
+        if (fail) {
+          hit = true;
+          if (failure === 'throw') throw new Error('RAW_SOURCE_MUST_NOT_LEAK');
+          return { code: 1, stdout: 'RAW_SOURCE_MUST_NOT_LEAK', stderr: 'RAW_SOURCE_MUST_NOT_LEAK' };
+        }
+        if (failure === 'env' && options?.env?.GIT_INDEX_FILE) {
+          hit = true;
+          return realRunGit(args, cwd);
+        }
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(injected, repo, owner, [], MSG);
+      expect(hit).toBe(true);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toMatch(/^source-custody-refused:/);
+      expect(Buffer.byteLength(result.error!)).toBeLessThanOrEqual(1024);
+      expect(result.error).not.toContain('RAW_SOURCE');
+      expect(calls.some((args) => args[0] === 'add' || args[0] === 'reset' || args.includes('commit-tree'))).toBe(false);
+      expect(await git(repo, 'ls-files', '--stage')).toBe(index);
+      expect(await git(repo, 'rev-parse', 'HEAD')).toBe(head);
+    },
+  );
+
+  it('refuses a mismatched existing recovery ref instead of overwriting it', async () => {
+    const repo = await vanished();
+    const result = await preserveVanishedStagedSources(realRunGit, repo, owner);
+    if (!result.ok) throw new Error(result.error);
+    const wrong = await git(repo, 'rev-parse', 'HEAD^{tree}');
+    await git(repo, 'update-ref', result.refs[0], wrong);
+    expect(await preserveVanishedStagedSources(realRunGit, repo, owner)).toEqual({ ok: false, error: 'source-custody-refused:existing-ref-mismatch' });
+    expect(await git(repo, 'rev-parse', result.refs[0])).toBe(wrong);
+  });
+
+  it('refuses a commit object masquerading as the exact custody tree', async () => {
+    const repo = await vanished();
+    const result = await preserveVanishedStagedSources(realRunGit, repo, owner);
+    if (!result.ok) throw new Error(result.error);
+    const tree = await git(repo, 'rev-parse', result.refs[0]);
+    const commit = await git(repo, ...ID, 'commit-tree', tree, '-p', 'HEAD', '-m', 'wrong object type');
+    await git(repo, 'update-ref', result.refs[0], commit);
+    expect(await preserveVanishedStagedSources(realRunGit, repo, owner)).toEqual({ ok: false, error: 'source-custody-refused:existing-ref-mismatch' });
+    expect(await git(repo, 'rev-parse', result.refs[0])).toBe(commit);
+  });
+
+  it.each(['known', 'unknown'].flatMap((ownership) => ['gitlink', 'unmerged'].map((mode) => [ownership, mode])))(
+    'refuses %s-owner %s entries before any consuming write', async (ownership, mode) => {
+      const repo = await vanished();
+      const blob = await git(repo, 'rev-parse', `:${source}`);
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      if (mode === 'gitlink') {
+        await git(repo, 'update-index', '--add', '--cacheinfo', '160000', await git(repo, 'rev-parse', 'HEAD'), source);
+      } else {
+        execFileSync('git', ['update-index', '-z', '--index-info'], {
+          cwd: repo, input: `100644 ${blob} 1\t${source}\0` + `100644 ${blob} 2\t${source}\0` + `100644 ${blob} 3\t${source}\0`,
+        });
+      }
+      const staged = await git(repo, 'ls-files', '--stage', '-z');
+      const calls: string[][] = [];
+      const runner: RunGit = async (args, cwd, options) => {
+        calls.push(args);
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(runner, repo, ownership === 'known' ? owner : new Map(), [], MSG);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toBe(`source-custody-refused:${mode === 'gitlink' ? 'unsupported-index-mode' : 'unmerged-index-entry'}`);
+      expect(calls.some((args) => ['add', 'reset', 'commit-tree'].includes(args[0]))).toBe(false);
+      expect(await git(repo, 'ls-files', '--stage', '-z')).toBe(staged);
+    },
+  );
+
+  it.each(['tracked-deletion', 'generated-phantom', 'no-index-entry'])(
+    'keeps the ordinary %s behavior without claiming custody', async (kind) => {
+      const repo = await vanished();
+      await git(repo, 'update-index', '--force-remove', '--', source);
+      const path = kind === 'tracked-deletion' ? 'base.ts'
+        : kind === 'generated-phantom' ? '.papercusp/dependency-exact-ref/example/.live-inputs' : source;
+      if (kind === 'tracked-deletion') await rm(join(repo, path));
+      if (kind === 'generated-phantom') {
+        await mkdir(join(repo, '.papercusp/dependency-exact-ref/example'), { recursive: true });
+        await writeFile(join(repo, path), 'generated\n');
+        await git(repo, 'add', '-f', '--', path);
+        await rm(join(repo, path));
+      }
+      const logs: string[] = [];
+      expect(await preserveVanishedStagedSources(realRunGit, repo, new Map([[path, { agent: 'author' }]]), (m) => logs.push(m)))
+        .toEqual({ ok: true, protectedPaths: [], refs: [] });
+      expect(logs).toEqual([]);
+      expect(await git(repo, 'for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
+      await writeFile(join(repo, 'other.ts'), 'export const other = true;\n');
+      const result = await commitAttributedGroups(realRunGit, repo, new Map([
+        [path, { agent: 'author' }], ['other.ts', { agent: 'other' }],
+      ]), [], MSG);
+      expect(result.error).toBeUndefined();
+      expect(result.committedAny).toBe(true);
+      expect(await git(repo, 'show', 'HEAD:other.ts')).toBe('export const other = true;');
+      if (kind === 'tracked-deletion') expect((await realRunGit(['cat-file', '-e', 'HEAD:base.ts'], repo)).code).not.toBe(0);
+    },
+  );
+
+  it.each(['wrong-payload', 'unrooted-manifest'])(
+    'detects the %s persistence mutation before consuming shared evidence', async (mutation) => {
+      const repo = await vanished();
+      const staged = await git(repo, 'ls-files', '--stage');
+      const wrong = await git(repo, 'rev-parse', 'HEAD:base.ts');
+      let hit = false;
+      const runner: RunGit = async (args, cwd, options) => {
+        if (options?.env?.GIT_INDEX_FILE?.includes('source-custody') && args[0] === 'update-index') {
+          hit = true;
+          const changed = [...args];
+          if (mutation === 'wrong-payload') changed[4] = wrong;
+          else changed.splice(6);
+          return realRunGit(changed, cwd, options);
+        }
+        return realRunGit(args, cwd, options);
+      };
+      const result = await commitAttributedGroups(runner, repo, owner, [], MSG);
+      expect(hit).toBe(true);
+      expect(result.custodyFatal).toBe(true);
+      expect(result.error).toBe('source-custody-refused:recovery-ref-readback');
+      expect(await git(repo, 'ls-files', '--stage')).toBe(staged);
+    },
+  );
+
+  it.each(['same', 'different'].flatMap((kind) => ['deleted-snapshot', 'after-capture'].map((point) => [kind, point])))('leaves a %s-byte %s restoration pending without writing the worktree', async (kind, point) => {
+    const repo = await vanished();
+    await writeFile(join(repo, 'other.ts'), 'unrelated\n');
+    const restored = kind === 'same' ? original : Buffer.from('a peer restored different bytes\n');
+    let hit = false;
+    const runner: RunGit = async (args, cwd, options) => {
+      const r = await realRunGit(args, cwd, options);
+      if (!hit && (point === 'after-capture' && args[0] === 'update-ref' && args[1].startsWith(SOURCE_CUSTODY_REF_PREFIX)
+        || point === 'deleted-snapshot' && args[0] === 'ls-files' && args.includes('--deleted'))) {
+        hit = true;
+        await writeFile(join(repo, source), restored);
+      }
+      return r;
+    };
+    const result = await commitAttributedGroups(runner, repo, new Map([
+      ...owner, ['other.ts', { agent: 'other', intent: 'unrelated' }],
+    ]), [], MSG);
+    expect(result.error).toBeUndefined();
+    expect(hit).toBe(true);
+    expect(await readFile(join(repo, source))).toEqual(restored);
+    expect(await git(repo, 'status', '--porcelain', '--', source)).not.toBe('');
+    expect((await realRunGit(['cat-file', '-e', `HEAD:${source}`], repo)).code).not.toBe(0);
+  });
+});
 
 const tmpDirs: string[] = [];
 afterEach(async () => {
@@ -147,12 +383,12 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     // first body paragraph, + a Co-Authored-By trailer, parented on the CAS base
     const commits = calls.filter((c) => c.includes('commit-tree'));
     expect(commits).toHaveLength(2);
-    expect(commits[0]!.some((a) => a.startsWith('Co-Authored-By:'))).toBe(false); // the residual is anonymous
+    expect(messageLines(commits[0]!).some((a) => a.startsWith('Co-Authored-By:'))).toBe(false); // the residual is anonymous
     const commit = commits[1]!;
     expect(commit).toEqual(expect.arrayContaining(['commit-tree', 'tree-new', '-p', 'base-commit']));
     expect(commit).toContain('sync(root): a.ts, b.ts (2 files, +15/-3) [skip ci]');
     expect(commit).toContain('fix a'); // demoted to the body, not lost
-    expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
+    expect(messageLines(commit)).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
     // WI-10006850: the shared index is refreshed for the committed paths (literally, on the
     // SHARED index) BEFORE the commit is published with a CAS on the base
     const casIdx = calls.findIndex((c) => c[0] === 'update-ref');
@@ -164,7 +400,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(resetIdx).toBeGreaterThan(-1);
     expect(resetIdx).toBeLessThan(casIdx);
     // exactly ONE attributed commit (the other is c.ts's anonymous residual)
-    expect(commits.filter((c) => c.includes('Co-Authored-By: ag1 <ag1@agents.papercusp>'))).toHaveLength(1);
+    expect(commits.filter((c) => messageLines(c).includes('Co-Authored-By: ag1 <ag1@agents.papercusp>'))).toHaveLength(1);
     // no `git commit` of the shared index at all
     expect(calls.some((c) => c.includes('commit'))).toBe(false);
   });
@@ -281,15 +517,20 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     ]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
     const commit = calls.find((c) => c.includes('commit-tree'))!;
-    expect(commit).toContain('Papercusp-Agent: ag1');
-    expect(commit).toContain('Papercusp-Work-Item: WI-1, WI-2');
-    expect(commit).toContain('Papercusp-Session: sess-9');
-    expect(commit).toContain('Papercusp-Plan: plan-x');
-    // still carries a subject (diff-derived; empty numstat → no ±counts), the intent
-    // body, + Co-Authored-By
+    // WI-6554700010029864: ONE final paragraph, so git's trailer parser (last paragraph only) sees all of them.
+    expect(commit[commit.length - 1]).toBe(
+      [
+        'Co-Authored-By: ag1 <ag1@agents.papercusp>',
+        'Papercusp-Agent: ag1',
+        'Papercusp-Work-Item: WI-1, WI-2',
+        'Papercusp-Session: sess-9',
+        'Papercusp-Plan: plan-x',
+      ].join('\n'),
+    );
+    expect(commit[commit.length - 2]).toBe('-m');
+    // still carries a subject (diff-derived; empty numstat → no ±counts) and the intent body
     expect(commit).toContain('sync(root): a.ts (1 file) [skip ci]');
     expect(commit).toContain('fix a');
-    expect(commit).toContain('Co-Authored-By: ag1 <ag1@agents.papercusp>');
   });
 
   it('emits Papercusp-Agent but NO Work-Item/Session/Plan trailers when the attribution lacks them', async () => {
@@ -297,10 +538,36 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);
     await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
     const commit = calls.find((c) => c.includes('commit-tree'))!;
-    expect(commit).toContain('Papercusp-Agent: ag1');
-    expect(commit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
-    expect(commit.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
-    expect(commit.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
+    const lines = messageLines(commit);
+    expect(lines).toContain('Papercusp-Agent: ag1');
+    expect(lines.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+    expect(lines.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
+    expect(lines.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
+  });
+
+  it('names every author of a multi-author group and the absorbed unattributed files (D-001)', () => {
+    const absorbed = Array.from({ length: 22 }, (_, i) => `gen/f${String(i).padStart(2, '0')}.d.mts`);
+    expect(
+      attributionTrailers({
+        agent: 'ag1',
+        agents: ['ag1', 'ag2'],
+        coAuthor: 'ag1 <ag1@agents.papercusp>',
+        coAuthors: ['ag1 <ag1@agents.papercusp>', 'Cup Two <ag2@agents.papercusp>'],
+        files: ['a.ts', 'b.ts', ...absorbed],
+        subject: 's',
+        workItems: ['WI-1', 'WI-2'],
+        absorbedUnattributed: absorbed,
+      }),
+    ).toEqual([
+      'Co-Authored-By: ag1 <ag1@agents.papercusp>',
+      'Co-Authored-By: Cup Two <ag2@agents.papercusp>',
+      'Papercusp-Agent: ag1',
+      'Papercusp-Agent: ag2',
+      'Papercusp-Work-Item: WI-1, WI-2',
+      `Papercusp-Unattributed-Files: ${absorbed.slice(0, 20).join(', ')} (+2 more)`,
+    ]);
+    // The anonymous residual carries no trailers at all.
+    expect(attributionTrailers({ agent: null, files: ['x'], subject: 's', coAuthor: null })).toEqual([]);
   });
 
   it('creates separate commits when one agent edited files under different work-items', async () => {
@@ -316,8 +583,8 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(commits).toHaveLength(2);
     const oldCommit = commits.find((c) => c.includes('old lane'))!;
     const newCommit = commits.find((c) => c.includes('new lane'))!;
-    expect(oldCommit).toContain('Papercusp-Work-Item: WI-40700');
-    expect(newCommit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+    expect(messageLines(oldCommit)).toContain('Papercusp-Work-Item: WI-40700');
+    expect(messageLines(newCommit).some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
   });
 });
 
@@ -379,6 +646,25 @@ describe('commitAttributedGroups private index (WI-10006705)', () => {
     // Both are clean in the shared index.
     expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('');
     expect(await git(repo, 'status', '--porcelain', '--', 'a.ts')).toBe('');
+  });
+
+  it('writes trailers git itself parses when Work-Item/Session/Plan follow the agent (real git, WI-6554700010029864)', async () => {
+    // Until 2026-10-27 each trailer was its own paragraph and git reads only the last one, so
+    // 323 of the last 400 attributed commits read `%(trailers:key=Papercusp-Agent)` as empty.
+    const repo = await seededRepo('gs-attr-trailers-');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const attribution = new Map<string, FileAttribution>([
+      ['a.ts', { agent: 'ag1', intent: 'add a', workItems: ['WI-1', 'WI-2'], sessionId: 'sess-9', planSlug: 'plan-x' }],
+    ]);
+
+    await commitAttributedGroups(realRunGit, repo, attribution, [], MSG);
+
+    const trailer = (key: string) => git(repo, 'log', '-1', `--format=%(trailers:key=${key},valueonly)`);
+    expect(await trailer('Papercusp-Agent')).toBe('ag1');
+    expect(await trailer('Papercusp-Work-Item')).toBe('WI-1, WI-2');
+    expect(await trailer('Papercusp-Session')).toBe('sess-9');
+    expect(await trailer('Papercusp-Plan')).toBe('plan-x');
+    expect(await trailer('Co-Authored-By')).toBe('ag1 <ag1@agents.papercusp>');
   });
 
   it('refuses to publish when HEAD moves between the guard and the commit (update-ref CAS, real git)', async () => {
@@ -477,6 +763,56 @@ describe('commitAttributedGroups failure isolation (WI-6554700010018197, real gi
     expect((await agentTrailersSince(repo, base)).filter(Boolean).sort()).toEqual(['ag1', 'ag2']);
     expect(await git(repo, 'ls-tree', '-r', '--name-only', 'HEAD')).toBe('a.ts\nb.ts\nbase.ts\nloose.ts');
     expect(logs.some((m) => m.includes('dropped 1 path(s)') && m.includes(phantom))).toBe(true);
+  });
+
+  it.each(['shared-index', 'ignore-after-census'] as const)(
+    'EI-26936210212113630: ignored positive residual path from %s preserves legitimate work',
+    async (origin) => {
+      const repo = await seededRepo('gs-attr-ignored-positive-');
+      const ignored = '.papercusp/private-desktop-candidates/probe/input.txt';
+      await mkdir(join(repo, '.papercusp/private-desktop-candidates/probe'), { recursive: true });
+      await writeFile(join(repo, ignored), 'private candidate\n');
+      await writeFile(join(repo, 'loose.ts'), 'export const loose = 1;\n');
+      await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+      const ignoreRule = '.papercusp/private-desktop-candidates/\n';
+      if (origin === 'shared-index') {
+        await git(repo, 'add', '--', ignored);
+        await writeFile(join(repo, '.gitignore'), ignoreRule);
+      }
+      let observedCensus = false;
+      const runner: RunGit = async (args, cwd, options) => {
+        const result = await realRunGit(args, cwd, options);
+        if (args[0] === 'status' && !observedCensus) {
+          observedCensus = true;
+          expect(result.stdout).toContain(ignored);
+          if (origin === 'ignore-after-census') await writeFile(join(repo, '.gitignore'), ignoreRule);
+        }
+        return result;
+      };
+      const result = await commitAttributedGroups(runner, repo, new Map([
+        ['a.ts', { agent: 'ag1', intent: 'add a' }],
+      ]), [], MSG);
+
+      expect(observedCensus).toBe(true);
+      expect(result.groupFailures).toBeUndefined();
+      expect(result.committedCount).toBe(2);
+      expect(await git(repo, 'show', 'HEAD:loose.ts')).toBe('export const loose = 1;');
+      expect((await realRunGit(['cat-file', '-e', `HEAD:${ignored}`], repo)).code).not.toBe(0);
+      expect(await git(repo, 'ls-files', '--', ignored)).toBe(origin === 'shared-index' ? ignored : '');
+      expect(await readFile(join(repo, ignored), 'utf8')).toBe('private candidate\n');
+    },
+  );
+
+  it('EI-26936210212113630: an ignored tracked residual update still commits', async () => {
+    const repo = await seededRepo('gs-attr-ignored-tracked-');
+    await writeFile(join(repo, '.gitignore'), 'base.ts\n');
+    await writeFile(join(repo, 'base.ts'), 'export const base = 2;\n');
+    await writeFile(join(repo, 'a.ts'), 'export const a = 1;\n');
+    const result = await commitAttributedGroups(realRunGit, repo, new Map([
+      ['a.ts', { agent: 'ag1', intent: 'add a' }],
+    ]), [], MSG);
+    expect(result.groupFailures).toBeUndefined();
+    expect(await git(repo, 'show', 'HEAD:base.ts')).toBe('export const base = 2;');
   });
 
   it('keeps a real deletion (gone from the tree, present in HEAD) in its group', async () => {

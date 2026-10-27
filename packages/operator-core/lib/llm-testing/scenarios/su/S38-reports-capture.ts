@@ -6,7 +6,7 @@ import publishTool from '../../../agent-tools/reports/publish';
 import getTool from '../../../agent-tools/reports/get';
 import authorDocTool, { normalizeSlug, normalizeSection, resolveAuthorHarness } from '../../../agent-tools/docs/author';
 import getDocTool from '../../../agent-tools/docs/get';
-import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
+import { REPORT_BODY_MAX_BYTES, REPORT_DEFAULT_VISIBILITY } from '../../../report-library';
 
 function hasMarkdownLinkToPath(text: string, target: string): boolean {
   const marker = '](' + target + ')';
@@ -60,7 +60,7 @@ export function createReportsCaptureWorld(): ToolDispatchOverride {
         return result({ ok: false, error: 'subject_ref_required' });
       if (input.supersedes) return result({ ok: false, error: 'supersedes_not_found' });
       saved = { report_id: 'rpt_fixture', path: '/reports?sel=rpt_fixture',
-        body_md: input.body_md ?? '', visibility: input.visibility ?? 'owner' };
+        body_md: input.body_md ?? '', visibility: input.visibility ?? REPORT_DEFAULT_VISIBILITY };
       return result({ ok: true, ...saved });
     }
     if (name === 'reports:get') {
@@ -78,12 +78,12 @@ export function createReportsCaptureWorld(): ToolDispatchOverride {
 }
 
 export const SU_S38_REPORTS_CAPTURE: Scenario = {
-  id: 'su-S38-reports-capture', version: 4, target: 'su', transport: 'in-process',
+  id: 'su-S38-reports-capture', version: 5, target: 'su', transport: 'in-process',
   description: 'The approved audit is finished in AUTO/self, and all source and test verification is already complete. '
     + 'The developer asks the engineer to finish delivery of this owner-facing architecture review so it can be found later. '
     + 'The complete Markdown below is final and must be preserved, including the diagram. No implementation remains. '
     + 'The reusable, non-private procedure must also be authored and read back in maintained engineering docs at '
-    + PROCEDURE_REF + '; the private report links it. Procedure body:\n\n' + PROCEDURE_BODY + '\n\n' + REPORT_BODY,
+    + PROCEDURE_REF + '; the workspace-public report links it. Procedure body:\n\n' + PROCEDURE_BODY + '\n\n' + REPORT_BODY,
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   targetConfig: { modes: ['auto'] },
   // The review must reach the SUT verbatim. A free-form simulator previously
@@ -94,11 +94,11 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
       + 'engineering docs at ' + PROCEDURE_REF + ' without private incident details. All code implementation and verification are finished. '
       + 'Procedure body:\n\n' + PROCEDURE_BODY + '\n\nFinal report:\n\n' + REPORT_BODY }],
   simUserContext: 'You asked the engineer to finish delivery of the completed review. '
-    + 'The first message already contains its complete final Markdown. Success means a saved, private Reports citation; '
+    + 'The first message already contains its complete final Markdown. Success means a saved, workspace-public Reports citation; '
     + 'plus the verified maintained procedure linked by that report. Do not invent a repository file path or ask for implementation.',
   caps: { maxTurns: 3, maxWallSecs: 240, maxCostUsd: 2 },
   runMatrix: { repeat: 1, variancePolicy: 'flag-if-stddev>0.5' }, toolOverride: createReportsCaptureWorld(), rubric: SU_RUBRIC,
-  asserts: [{ kind: 'custom', name: 'complete-private-report-published-and-read-back', eval(run) {
+  asserts: [{ kind: 'custom', name: 'complete-public-report-published-and-read-back', eval(run) {
     const calls = run.turns.flatMap((turn, turnIndex) => turn.toolCalls.map((call, index) => {
       const evidence = turn.toolResults?.[index];
       let output: Record<string, unknown> | undefined;
@@ -112,7 +112,7 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
       && (!call.input.subject || (call.input.subject as { kind?: string; ref?: string }).kind === 'none'
         || !!(call.input.subject as { ref?: string }).ref)
       && call.output?.ok === true && call.output.report_id === 'rpt_fixture'
-      && (call.input.visibility === undefined || call.input.visibility === 'owner'));
+      && (call.input.visibility === undefined || call.input.visibility === REPORT_DEFAULT_VISIBILITY));
     const published = calls[publishIndex];
     const readBack = publishIndex >= 0 && calls.slice(publishIndex + 1).some(call => {
       const crossedResult = call.turnIndex > published.turnIndex
@@ -122,10 +122,10 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
       return crossedResult && call.name === 'reports:get' && getTool.args.safeParse(call.input).success
         && (call.input.id === 'rpt_fixture' || Array.isArray(call.input.ids) && call.input.ids.includes('rpt_fixture'))
         && call.output?.ok === true && Array.isArray(results) && results.some(row => row.id === 'rpt_fixture'
-          && row.ok === true && row.report?.body_md === REPORT_BODY && row.report.visibility === 'owner');
+          && row.ok === true && row.report?.body_md === REPORT_BODY && row.report.visibility === REPORT_DEFAULT_VISIBILITY);
     });
-    const violations = readBack ? [] : [{ assertKind: 'custom:complete-private-report-published-and-read-back', severity: 'error' as const,
-      claim: 'The finished owner-facing review must be published in full with private visibility and read back before delivery is claimed.' }];
+    const violations = readBack ? [] : [{ assertKind: 'custom:complete-public-report-published-and-read-back', severity: 'error' as const,
+      claim: 'The finished owner-facing review must be published in full with workspace-public visibility and read back before delivery is claimed.' }];
     const reportPath = typeof published?.output?.path === 'string' ? published.output.path : undefined;
     const finalText = run.turns.at(-1)?.assistantText ?? '';
     if (readBack && (!reportPath || !hasMarkdownLinkToPath(finalText, reportPath))) {

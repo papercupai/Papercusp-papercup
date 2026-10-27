@@ -2,10 +2,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { Sql } from 'postgres';
 import type { ZodTypeAny } from 'zod';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { seedSupportWorkflowNativeFixture, supportWorkflowNativeLoginScript, setSupportWorkflowNativeReviewerAccess,
+import { prepareSupportWorkerAccountReferences, seedSupportWorkflowNativeFixture, supportWorkflowNativeLoginScript, setSupportWorkflowNativeReviewerAccess,
   type SupportWorkflowNativeFixture } from '../../../../apps/operator/e2e/_support-workflow-native-fixture';
 import { registerRoute, type RouteDefinition } from '../endpoint-route/define-route';
 import authLogin from '../endpoint-route/routes/auth/login';
@@ -22,6 +25,10 @@ import { readWorkflowAdministration } from './support-workflow-administration';
 import { loadExternalTriggerAdminSnapshot } from '../external-triggers/admin';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+const workerAccount = vi.hoisted(() => ({ resolve: vi.fn() }));
+const accountPool = vi.hoisted(() => ({ load: vi.fn(), update: vi.fn() }));
+vi.mock('../deployment/account-pool-store', () => ({ loadAccountPool: accountPool.load, updateAccountPool: accountPool.update }));
+vi.mock('../endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: workerAccount.resolve }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
@@ -37,6 +44,65 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup(), 120_000);
 
 describe('maintained native support seed and production cookie switching', () => {
+  it('transfers only explicit eligible account references into the disposable workspace', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'support-account-reference-'));
+    const path = join(directory, 'references.json');
+    const environmentKey = 'PAPERCUSP_NATIVE_REFERENCE_TEST';
+    const previous = process.env[environmentKey];
+    process.env[environmentKey] = 'synthetic-test-only-never-export';
+    const { registerAccount } = await import('../deployment/account-pool');
+    const pool = registerAccount({ accounts: [] }, { id: 'native-test', provider: 'codex',
+      credentialRef: `env:${environmentKey}` }, Date.now());
+    accountPool.load.mockResolvedValue(pool);
+    try {
+      await expect(prepareSupportWorkerAccountReferences('', path)).rejects.toThrow(/explicit source/);
+      await prepareSupportWorkerAccountReferences('source-test-workspace', path);
+      expect(accountPool.load).toHaveBeenCalledWith('source-test-workspace');
+      const content = await readFile(path, 'utf8');
+      expect(content).not.toContain(process.env[environmentKey]);
+      expect((await stat(path)).mode & 0o077).toBe(0);
+      workerAccount.resolve.mockResolvedValueOnce({ provider: 'codex', gatewayAuto: true });
+      await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, workerAccountReferenceFile: path,
+        requireWorkerAccount: true });
+      expect(accountPool.update).toHaveBeenLastCalledWith(expect.any(Function), workspaceId);
+      const imported = accountPool.update.mock.calls.at(-1)![0]({ accounts: [] });
+      expect(imported.accounts).toMatchObject([{ id: 'native-test', boundTo: [], softPin: [], credentialRef: `env:${environmentKey}` }]);
+      const subscription = { ...pool.accounts[0], credentialRef: 'codex-cli:/unread-subscription-home' };
+      accountPool.load.mockResolvedValueOnce({ accounts: [subscription] });
+      await expect(prepareSupportWorkerAccountReferences('source-test-workspace', join(directory, 'subscription.json')))
+        .rejects.toThrow(/Codex API-key account/);
+      await writeFile(path, JSON.stringify({ accounts: [subscription] }), { mode: 0o600 });
+      const updatesBefore = accountPool.update.mock.calls.length;
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, workerAccountReferenceFile: path,
+        requireWorkerAccount: true })).rejects.toThrow(/Codex API-key accounts/);
+      expect(accountPool.update).toHaveBeenCalledTimes(updatesBefore);
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+        workerAccountReferenceFile: 'relative.json' })).rejects.toThrow(/outside the checkout/);
+    } finally {
+      if (previous === undefined) delete process.env[environmentKey]; else process.env[environmentKey] = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses unavailable private worker routing before creating journey users', async () => {
+    const users = () => db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.users`;
+    const before = await users();
+    for (const route of [
+      { error: 'no allowed codex account', provider: null },
+      { provider: 'claude', gatewayAuto: true },
+      { provider: 'codex', gatewayAuto: false },
+    ]) {
+      workerAccount.resolve.mockResolvedValueOnce(route);
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, requireWorkerAccount: true }))
+        .rejects.toThrow(/worker account preflight refused/);
+    }
+    expect(workerAccount.resolve).toHaveBeenLastCalledWith(workspaceId, 'auto', 'codex', undefined, false, 'gpt-6.1-sol');
+    expect(await users()).toEqual(before);
+    workerAccount.resolve.mockResolvedValueOnce({ provider: 'codex', gatewayAuto: true });
+    const admitted = await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, requireWorkerAccount: true });
+    expect(admitted.workspaceId).toBe(workspaceId);
+  });
+
   it('refuses a shared workspace and a forged isolated label before any mutation', async () => {
     const forbidden = vi.fn();
     await expect(seedSupportWorkflowNativeFixture(forbidden as unknown as Sql,

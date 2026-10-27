@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { SpawnChildExit, SpawnConsoleResult } from '../console-spawn';
 import type { GoalLaunchResolution } from '../goal-launch-settings';
 import type { AdmissionContext, AdmissionMetadataValue, ResourceDemand } from './admission';
-import { beginGovernedExecution, governedExecutionRuntime, type GovernedExecution } from './execution';
+import { beginGovernedExecution, governedExecutionRuntime, settleGovernedExecutionInBackground, type GovernedExecution } from './execution';
 import { withAgentSpawnPacing } from './spawn-pacing';
 import { reserveHostedAgentSlot } from '../workspace-host/hosted-agent-admission-client';
 
@@ -104,8 +104,8 @@ function observeVisibleChild(child: ChildProcess): Promise<SpawnChildExit> {
 
 function settleOnExit(execution: GovernedExecution, exit: Promise<SpawnChildExit>): void {
   void exit.then(
-    () => execution.finish(),
-    () => execution.finish(),
+    () => settleGovernedExecutionInBackground(execution, { kind: 'release' }),
+    () => settleGovernedExecutionInBackground(execution, { kind: 'release' }),
   );
 }
 

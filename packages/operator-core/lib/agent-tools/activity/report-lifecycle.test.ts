@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   heal: vi.fn(),
   reanchor: vi.fn(),
   reanchorById: vi.fn(),
+  classify: vi.fn(),
+  bindTasks: vi.fn(),
 }));
 
 vi.mock('@papercusp/activity-bridge', () => ({ recordActivity: vi.fn(async () => ({ id: 42 })) }));
@@ -60,12 +62,17 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
 // validation production applies.
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
+  classifyOwnerNativeSession: h.classify,
   reanchorAdvSessionNativeId: h.reanchorById,
   reanchorAdvSessionNativeIdByOwner: h.reanchor,
 }));
+vi.mock('../../task-manager/store', async (orig) => ({
+  ...(await orig<typeof import('../../task-manager/store')>()),
+  bindLiveAgentSessionTasksToNativeSession: h.bindTasks,
+}));
 
 const tool = (await import('./report')).default;
-const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
+const ctx = { workspaceId: 'ws-report', principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
 const run = (args: Record<string, unknown>) =>
   tool.handler(args as Parameters<typeof tool.handler>[0], ctx);
 
@@ -75,6 +82,8 @@ beforeEach(() => {
   h.heal.mockReset().mockResolvedValue(false);
   h.reanchor.mockReset().mockResolvedValue({ reanchored: true, owner: 'su-abc' });
   h.reanchorById.mockReset().mockResolvedValue({ reanchored: true, owner: 'su-abc' });
+  h.classify.mockReset().mockResolvedValue({ binding: 'unbound', boundSessionId: null, advSessionId: 42 });
+  h.bindTasks.mockReset().mockResolvedValue([]);
 });
 
 describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
@@ -189,6 +198,57 @@ describe('activity:report SessionStart → adv_sessions reanchor (WI-37420)', ()
     });
     expect(h.reanchorById).toHaveBeenCalledWith(42, validId);
     expect(h.reanchor).not.toHaveBeenCalled();
+  });
+
+  it('late native SessionStart binds live tasks only after the exact adv row confirms the owner', async () => {
+    await run({
+      owner: 'su-abc',
+      kind: 'lifecycle',
+      summary: '▶ session started',
+      session_id: validId,
+      adv_session_id: 42,
+    });
+    expect(h.bindTasks).toHaveBeenCalledTimes(1);
+    expect(h.bindTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-report',
+      coordOwnerId: 'su-abc',
+      sessionId: validId,
+    });
+  });
+
+  it('does not bind tasks when the exact adv row cannot confirm the reporting owner', async () => {
+    h.reanchorById.mockResolvedValueOnce({ reanchored: false, owner: null });
+    await run({
+      owner: 'su-abc',
+      kind: 'lifecycle',
+      summary: '▶ session started',
+      session_id: validId,
+      adv_session_id: 42,
+    });
+    expect(h.bindTasks).not.toHaveBeenCalled();
+  });
+
+  it('binds the exact enrolled task row and still reconciles other live rows', async () => {
+    const taskId = '0123456789abcdefghj';
+    await run({
+      owner: 'su-abc',
+      kind: 'lifecycle',
+      summary: '▶ session started',
+      session_id: validId,
+      adv_session_id: 42,
+      agent_task_id: taskId,
+    });
+    expect(h.bindTasks).toHaveBeenNthCalledWith(1, {
+      workspaceId: 'ws-report',
+      coordOwnerId: 'su-abc',
+      sessionId: validId,
+      initialTaskId: taskId,
+    });
+    expect(h.bindTasks).toHaveBeenNthCalledWith(2, {
+      workspaceId: 'ws-report',
+      coordOwnerId: 'su-abc',
+      sessionId: validId,
+    });
   });
 
   it('SessionStart with a non-UUID session_id does NOT call the reanchor (no malformed write)', async () => {

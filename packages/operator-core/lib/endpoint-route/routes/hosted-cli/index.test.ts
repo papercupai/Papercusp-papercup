@@ -308,6 +308,9 @@ describe('hosted psu CLI routes', () => {
     const listed = await (await t.call('GET', '/hosted/cli/workspaces', { headers: auth })).json();
     expect(listed.workspaces.map((w: { id: string }) => w.id)).toEqual(['ws-a']);
     expect(listed.workspaces[0].reachable).toBe(true);
+    expect(listed.workspaces[0].connector).toMatchObject({
+      state: 'active', routeLabel: 'host-a', transport: 'websocket', generation: 3,
+    });
     expect(listed.organizationName).toBe('Avi Labs');
 
     const other = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {

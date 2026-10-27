@@ -103,7 +103,7 @@ function parseCookieHeader(header: string | null | undefined): Map<string, strin
  * build carries no static `next/headers` dependency, and is wrapped in
  * try/catch because `cookies()` throws outside a Next request scope.
  */
-async function resolveSessionToken(headers?: Headers): Promise<string | undefined> {
+export async function resolveSessionToken(headers?: Headers): Promise<string | undefined> {
   if (headers) {
     return parseCookieHeader(headers.get('cookie')).get(SESSION_COOKIE);
   }

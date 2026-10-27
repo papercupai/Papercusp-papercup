@@ -240,6 +240,8 @@ describe('the probe is actually wired in, not merely written', () => {
     expect(src).toContain(`'ephemeral'`);
     expect(src).toContain('interval_sec');
     expect(src).toContain(`const active = !process.argv.includes('--inactive')`);
-    expect(src).toContain('active intentionally NOT re-applied on conflict');
+    // The shared seeder preserves a runtime pause unless this CLI opts out.
+    expect(src).toContain('runRoutineSeed({');
+    expect(src).not.toMatch(/replaceActive\s*:\s*true/);
   });
 });

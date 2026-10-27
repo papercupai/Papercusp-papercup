@@ -41,6 +41,10 @@ interface Review {
   gaps?: Array<{ id: string; text: string }>;
   dispositions?: Array<{ reviewId: number; gapId: string; itemId?: string; acceptedRiskDecisionId?: string }>;
   created_by: string;
+  protocol_version?: unknown;
+  outcome?: unknown;
+  summary?: unknown;
+  created_at?: unknown;
 }
 
 function fakeSql(opts: {
@@ -60,7 +64,7 @@ function fakeSql(opts: {
       return opts.activationSeq ? [{ audit_seq: opts.activationSeq, activation: { mappings: [] } }] : [];
     }
     if (text.includes('plan_blind_reviews')) {
-      return (opts.reviews ?? []).map((r) => ({ gaps: [], dispositions: [], created_at: AFTER, ...r }));
+      return (opts.reviews ?? []).map((r) => ({ gaps: [], dispositions: [], created_at: AFTER, protocol_version: 1, outcome: null, summary: null, ...r }));
     }
     if (text.includes('tool_invocations')) {
       if (opts.throwOn === 'ledger') throw new Error('ledger timeout');
@@ -100,7 +104,7 @@ function recordingSql() {
     }
     if (text.includes('INSERT INTO harness_shared.plan_blind_reviews')) {
       inserts++;
-      const [workspaceId, harnessSlug, planSlug, activationAuditSeq, gaps, summary, createdBy, idempotencyKey] = values;
+      const [workspaceId, harnessSlug, planSlug, activationAuditSeq, gaps, summary, createdBy, idempotencyKey, outcome] = values;
       const existing = rows.find((row) => row.workspace_id === workspaceId && row.idempotency_key === idempotencyKey);
       if (existing) return [];
       const row = {
@@ -113,6 +117,8 @@ function recordingSql() {
         summary,
         created_by: createdBy,
         idempotency_key: idempotencyKey,
+        protocol_version: 2,
+        outcome,
       };
       rows.push(row);
       return [{ id: row.id }];
@@ -200,9 +206,48 @@ describe('evaluateBlindReviewGate', () => {
   it('a counted review with no gaps satisfies the door', async () => {
     expect(await evaluate(fakeSql({ activationSeq: 3, reviews: [review(1, 'su-blind')] }))).toMatchObject({ satisfied: true, acceptedReviewIds: [1] });
   });
+
+  it.each([
+    { protocol_version: 1, outcome: null },
+    { protocol_version: 2, outcome: 'conclusive' },
+  ])('preserves valid legacy and explicit conclusive empty-gap reviews: %j', async (completion) => {
+    const row = { ...review(1, 'su-blind'), ...completion };
+    expect(await evaluate(fakeSql({ activationSeq: 3, reviews: [row] }))).toMatchObject({ satisfied: true, acceptedReviewIds: [1] });
+    expect(await evaluate(fakeSql({ activationSeq: 3, reviews: [{ ...row, created_by: 'su-implementer' }] })))
+      .toMatchObject({ satisfied: false, code: 'blind_review_missing' });
+  });
+
+  it.each([
+    { protocol_version: 1, summary: 'INCONCLUSIVE: UI blocked', reason: 'inconclusive' },
+    { protocol_version: 2, outcome: 'inconclusive', reason: 'inconclusive' },
+    { protocol_version: 2, outcome: 'conclusive', summary: '**INCONCLUSIVE**: blocked', reason: 'invalid-completion' },
+    { protocol_version: 2, outcome: 'inconclusive', summary: 'CONCLUSIVE: completed', reason: 'invalid-completion' },
+    { protocol_version: 2, outcome: null, reason: 'invalid-completion' },
+    { protocol_version: 2, outcome: 'unknown', reason: 'invalid-completion' },
+    { protocol_version: 9, reason: 'invalid-completion' },
+    { protocol_version: undefined, reason: 'invalid-completion' },
+    { protocol_version: 1, outcome: 'conclusive', reason: 'invalid-completion' },
+    { protocol_version: 1, gaps: null, reason: 'invalid-completion' },
+    { protocol_version: 1, gaps: [{ id: 'G-1', text: '' }], reason: 'invalid-completion' },
+    { protocol_version: 1, created_at: null, reason: 'invalid-completion' },
+    { protocol_version: 1, created_at: 'not-a-date', reason: 'invalid-completion' },
+  ])('rejects incomplete or malformed completion: %j', async ({ reason, ...completion }) => {
+    const row = { ...review(1, 'su-blind'), ...completion } as Review;
+    const verdict = await evaluate(fakeSql({ activationSeq: 3, reviews: [row] }));
+    expect(verdict).toMatchObject({ satisfied: false, code: 'blind_review_missing', acceptedReviewIds: [],
+      rejectedReviews: [{ reviewId: 1, reason }] });
+  });
 });
 
 describe('recordBlindReview idempotency', () => {
+  it('serializes concurrent identical posts to one immutable receipt', async () => {
+    const fixture = recordingSql();
+    const input = { workspaceId: 'ws', planSlug: SLUG, createdBy: 'su-reviewer', gaps: [], outcome: 'inconclusive' as const };
+    const results = await Promise.all([recordBlindReview(input, { sql: fixture.sql }), recordBlindReview(input, { sql: fixture.sql })]);
+    expect(results[0]).toMatchObject({ ok: true, id: 1 });
+    expect(results[1]).toEqual(results[0]);
+    expect(fixture.rows).toHaveLength(1);
+  });
   it('returns the original review for identical retries and refuses a changed retry', async () => {
     const fixture = recordingSql();
     const input = {
@@ -212,6 +257,7 @@ describe('recordBlindReview idempotency', () => {
       createdBy: 'su-blind-reviewer',
       gaps: [{ text: 'CSV export omits the invoice currency.' }],
       activationAuditSeq: 3,
+      outcome: 'conclusive' as const,
     };
 
     const first = await recordBlindReview(input, { sql: fixture.sql });
@@ -223,5 +269,25 @@ describe('recordBlindReview idempotency', () => {
     const changed = await recordBlindReview({ ...input, gaps: [{ text: 'A different report.' }] }, { sql: fixture.sql });
     expect(changed).toMatchObject({ ok: false, code: 'idempotency_conflict' });
     expect(fixture.inserts).toBe(1);
+  });
+
+  it.each(['conclusive', 'inconclusive'] as const)('cannot relabel a stored %s receipt', async (outcome) => {
+    const fixture = recordingSql();
+    const input = { workspaceId: 'ws', planSlug: SLUG, createdBy: 'su-reviewer', gaps: [], outcome };
+    const first = await recordBlindReview(input, { sql: fixture.sql });
+    expect(await recordBlindReview(input, { sql: fixture.sql })).toEqual(first);
+    expect(await recordBlindReview({ ...input, outcome: outcome === 'conclusive' ? 'inconclusive' : 'conclusive' }, { sql: fixture.sql }))
+      .toMatchObject({ ok: false, code: 'idempotency_conflict' });
+    expect(fixture.rows[0]).toMatchObject({ outcome, protocol_version: 2 });
+    expect(fixture.inserts).toBe(1);
+  });
+
+  it.each([
+    ['conclusive', 'INCONCLUSIVE: blocked'], ['inconclusive', 'CONCLUSIVE: complete'],
+  ] as const)('refuses contradictory %s posts before writing', async (outcome, summary) => {
+    const fixture = recordingSql();
+    expect(await recordBlindReview({ workspaceId: 'ws', planSlug: SLUG, createdBy: 'su-reviewer', gaps: [], outcome, summary }, { sql: fixture.sql }))
+      .toMatchObject({ ok: false, code: 'outcome_conflict' });
+    expect(fixture.rows).toEqual([]);
   });
 });

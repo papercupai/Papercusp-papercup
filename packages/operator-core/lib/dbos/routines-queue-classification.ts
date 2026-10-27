@@ -125,11 +125,14 @@ export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
  * went overdue (plan work-queue-bulk-cleanup-remediation-2026-10-01 D-005). The
  * lane is serial, so a stage and a reindex can delay each other; both are
  * background work, which is the accepted trade-off.
+ * The periodic full-suite run includes bisection and permits six hours of work;
+ * it must not hold the ordinary admission/housekeeping lane for that duration.
  */
 export const HEAVY_ROUTINE_ACTIONS = new Set<string>([
   'gitnexus-reindex',
   'work-item-admission-bulk-dedup',
   'dream-cycle',
+  'periodic-full-run',
 ]);
 
 /**
@@ -214,4 +217,98 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
  */
 export function shouldFireUnderPoolShed(targetRole: string): boolean {
   return queueForRoutine(targetRole) === ROUTINES_CRITICAL_QUEUE;
+}
+
+/**
+ * EI-27084758447422793: the STARVATION BOUND on the pool-shed floor. The floor above skips every
+ * non-critical routine for as long as the pool probe stays critical, with no limit. Measured
+ * 2026-10-26: the probe classified critical on ~20 ticks per 15 min from 21:15Z to 22:45Z, and the
+ * pr-drill green-checkpoint (cron :37 hourly) went unclaimed from its 21:37Z slot until 23:18Z, so
+ * a frozen repair queue sat untested for ~100 min. Under a shed, a non-critical routine that has
+ * been overdue for at least `boundMs` may still fire, oldest first, at most `starvedPerTick` per tick.
+ * The shed stays real (one extra enqueue per tick at most) but no routine can be starved forever.
+ */
+export const POOL_SHED_STARVATION_BOUND_MS = 30 * 60_000;
+export const POOL_SHED_STARVED_FIRES_PER_TICK = 1;
+
+export interface PoolShedCandidate {
+  readonly targetRole: string;
+  readonly nextFireAt: Date | null;
+}
+
+/**
+ * Which due routines may fire this tick under a critical pool shed: every critical-floor routine,
+ * plus up to `starvedPerTick` non-critical routines overdue by at least `boundMs`. `dueByAge` must be
+ * ordered oldest-due first, so the budget goes to the longest-starved routine. A NULL or non-finite
+ * `nextFireAt` has no measurable overdue age and never counts as starved. Pure ⇒ unit-testable.
+ */
+export function admitUnderPoolShed<T extends PoolShedCandidate>(
+  dueByAge: readonly T[],
+  nowMs: number,
+  opts: { boundMs?: number; starvedPerTick?: number } = {},
+): Set<T> {
+  let starvedLeft = opts.starvedPerTick ?? POOL_SHED_STARVED_FIRES_PER_TICK;
+  const admitted = new Set<T>();
+  for (const routine of dueByAge) {
+    if (shouldFireUnderPoolShed(routine.targetRole)) {
+      admitted.add(routine);
+      continue;
+    }
+    if (starvedLeft <= 0) continue;
+    if (!isStarvedPastBound(routine, nowMs, opts.boundMs)) continue;
+    admitted.add(routine);
+    starvedLeft -= 1;
+  }
+  return admitted;
+}
+
+/**
+ * True when a NON-critical routine has been overdue for at least `boundMs`. A critical-floor
+ * routine is never "starved" in this sense (it has its own protected lane), and a NULL or
+ * non-finite `nextFireAt` has no measurable overdue age. Pure ⇒ unit-testable.
+ */
+export function isStarvedPastBound(
+  routine: PoolShedCandidate,
+  nowMs: number,
+  boundMs: number = POOL_SHED_STARVATION_BOUND_MS,
+): boolean {
+  if (shouldFireUnderPoolShed(routine.targetRole)) return false;
+  const dueAtMs = routine.nextFireAt?.getTime();
+  return dueAtMs !== undefined && Number.isFinite(dueAtMs) && nowMs - dueAtMs >= boundMs;
+}
+
+/** Per-tick budget for starved routines that may start despite zero queue credit. */
+export interface StarvedZeroCreditBudget {
+  left: number;
+}
+
+export function createStarvedZeroCreditBudget(
+  perTick: number = POOL_SHED_STARVED_FIRES_PER_TICK,
+): StarvedZeroCreditBudget {
+  return { left: Math.max(0, Math.floor(perTick)) };
+}
+
+/**
+ * WI-6554700010030059: the starvation bound must reach the queue's ZERO-CREDIT hold too, not only
+ * the pool-shed filter. Under a critical probe the dispatch epoch gives every non-critical queue
+ * zero starts, so a routine admitUnderPoolShed had just admitted was then HELD by the credit check
+ * and never fired. Measured 2026-10-27: precompute-derived-reads was logged "firing STARVED" on
+ * consecutive ticks while it stayed 50+ min overdue. Under ok/elevated pressure a full window
+ * (long fires holding every slot) starved gate-watcher-tick for 45 min the same way.
+ *
+ * Returns true, and spends one unit of `budget`, when `routine` may start although its queue has no
+ * credit left this tick. The leak is bounded: at most the budget per tick (default
+ * POOL_SHED_STARVED_FIRES_PER_TICK), and only for a routine overdue past the bound. Once it fires,
+ * its next_fire_at advances, so the same routine cannot monopolise the budget.
+ */
+export function admitStarvedZeroCreditStart(
+  routine: PoolShedCandidate,
+  nowMs: number,
+  budget: StarvedZeroCreditBudget,
+  boundMs: number = POOL_SHED_STARVATION_BOUND_MS,
+): boolean {
+  if (budget.left <= 0) return false;
+  if (!isStarvedPastBound(routine, nowMs, boundMs)) return false;
+  budget.left -= 1;
+  return true;
 }

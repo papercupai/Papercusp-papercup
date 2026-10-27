@@ -375,7 +375,7 @@ export function buildGuardFinding(input: {
       : 'New because: the guard passed at its previous measurement and now fails without naming a file.',
     `Window:    ${input.windowCommits} commit(s) since that measurement`,
     batch
-      ? `Batch that touched it: ${batch.sha} (Papercusp-Agent trailer: ${batch.agent ?? '(none)'})`
+      ? `Batch that touched it: ${batch.sha} (Papercusp-Agent trailer: ${batch.agents?.join(', ') ?? batch.agent ?? '(none)'})`
       : 'Batch that touched it: none in the window (the edit may still be uncommitted).',
     '',
     author.agent

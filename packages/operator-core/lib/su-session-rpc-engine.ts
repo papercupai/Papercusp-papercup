@@ -4,11 +4,12 @@
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { SuApprovalsMode, SuSessionJsonValue, SuSessionRefusal } from '@papercusp/chat-protocol';
+import type { SuApprovalsMode, SuSessionInputPart, SuSessionJsonValue, SuSessionRefusal } from '@papercusp/chat-protocol';
+import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
-  ompResponsesCompatibilityEnv, recordSessionOwner, resolveOmpInjectHookPath,
-  resolveOmpSessionModel, sanitizeInheritedEnv, suLaunchArgs, writeOmpSessionConfigDir,
+  ompResponsesCompatibilityEnv, recordSessionOwner,
+  prepareSuLaunch, resolveOmpSessionModel, suLaunchArgs, writeOmpSessionConfigDir,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { splitModelSpec } from './agent-config-constants';
 import { setAdvSessionOmpThreadId } from './adv-sessions';
@@ -27,7 +28,7 @@ import { codexAppServerTokenUsage, codexPlan, ompMessageUsage, type SuCodexTurnA
 export type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from './su-session-usage';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
-import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { startSuStdioPeer, SuStdioRequestRefusal, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 import { readSuperuserToken } from './superuser-token';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
@@ -86,10 +87,16 @@ function ompUserMcpJsonWithoutSu(home: string): string {
 /** OMP launch flags for its own identity: suLaunchArgs minus the SU system
  * prompt, and without the native-LSP strip (stock OMP keeps its LSP tool). */
 export function ompCodingAssistantArgs(promptFile: string): string[] {
-  const args = [...suLaunchArgs('omp', { promptFile, allowNativeLsp: true }).args];
+  const args = checkedNativeArgs(suLaunchArgs('omp', { promptFile, allowNativeLsp: true }).args);
   const at = args.indexOf('--system-prompt');
   if (at >= 0) args.splice(at, 2);
   return args;
+}
+function checkedNativeArgs(args: readonly unknown[]): string[] {
+  return args.map(arg => {
+    if (typeof arg !== 'string') throw new Error('Native launcher produced a non-string argument');
+    return arg;
+  });
 }
 export interface SuRpcEngine {
   adapter: CodexSuSessionAdapter | OmpSuSessionAdapter;
@@ -135,13 +142,18 @@ export function startSuRpcEngine(
     throw new Error('Structured engine bootstrap does not match the durable SU identity');
   }
   if (options.nativeSession && options.nativeSession.backend !== backend) throw new Error('Resume handle has a different backend');
+  if (Object.prototype.hasOwnProperty.call(options, 'forkFrom')) {
+    throw new Error('Native Codex forks require the tracked launcher; attach the registered child identity');
+  }
   const su = (options.identity ?? 'su') === 'su';
   if (su) assertLaunchPersona(boot.promptFile);
-  const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
-  delete env.PAPERCUSP_TTY;
+  const preparation = prepareSuLaunch(boot, {
+    model: options.model, executionKind: 'programmatic', accountRoute: options.accountRoute,
+  });
+  const env = preparation.env;
   // WI-6554700010008332: same routing as the Claude engine (see resolveChildSessionOperatorBaseUrl).
   env.PAPERCUSP_OPERATOR_URL = resolveChildSessionOperatorBaseUrl();
-  let selectedModel = options.model;
+  let selectedModel = preparation.model;
   // D-026: the prompted Codex launch below (on-request + workspace-write) is
   // `auto-edit`. An unprompted launch (never + full access) has no neutral mode.
   let selectedApprovals: SuApprovalsMode | undefined =
@@ -155,8 +167,8 @@ export function startSuRpcEngine(
     native =options.nativeSession ?? { backend, source: 'adv_sessions', ownerId: binding.ownerId,
       codexHome: env.CODEX_HOME, rolloutId: '', exactResumeSupported: false, missingReason: 'Codex is initializing' };
     // App-server accepts config overrides rather than the TUI's -m flag.
-    const modelArgs = modelArgsFor('codex', selectedModel) as string[];
-    args = [...suLaunchArgs('codex').args, 'app-server'];
+    const modelArgs = preparation.modelArgs;
+    args = [...checkedNativeArgs(preparation.args), 'app-server'];
     for (let index = 0; index < modelArgs.length; index++) {
       if (modelArgs[index] === '-m') args.push('-c', `model=${JSON.stringify(modelArgs[++index])}`);
       else args.push(modelArgs[index]);
@@ -182,8 +194,7 @@ export function startSuRpcEngine(
     Object.assign(env, ompResponsesCompatibilityEnv('omp', selectedModel, env));
     native = options.nativeSession ?? { backend, source: 'adv_sessions', ownerId: binding.ownerId,
       agentHome, ompThreadId: '', exactResumeSupported: false, missingReason: 'OMP is initializing' };
-    args = [...su ? suLaunchArgs('omp', { promptFile: boot.promptFile, coordExtPath: boot.coordExtPath,
-      injectHookPath: resolveOmpInjectHookPath('omp'), allowNativeLsp: env.PAPERCUSP_OMP_NATIVE_LSP === '1' }).args
+    args = [...su ? preparation.args
       : ompCodingAssistantArgs(boot.promptFile),
       // rpc-ui keeps structured stdio and installs OMP's native question
       // callbacks. Plain rpc deliberately omits that interactive capability.
@@ -219,6 +230,8 @@ export function startSuRpcEngine(
   const observedNativeToolCalls = new Set<string>();
   const completedNativeToolTurns = new Set<string>();
   let inputTail = Promise.resolve();
+  let turnEpoch = 0;
+  let interruptInFlight: Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> | undefined;
   const streams = new Map<string, string>();
   const tools = new Map<string, string>();
   const initializingFrames: RpcFrame[] = [];
@@ -255,13 +268,12 @@ export function startSuRpcEngine(
     },
   }) : undefined);
   const controls = {
-    async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }: { content: string; turnId: string; model?: string; approvals?: SuApprovalsMode }) {
+    async ownerTurn({ content, input: richInput, turnId, model: nextModel, approvals: nextApprovals }: { content: string; input?: readonly SuSessionInputPart[]; turnId: string; model?: string; approvals?: SuApprovalsMode }) {
       if (!ready || closed) return unavailable(`${backend} connection is not ready`);
       // D-026: Codex takes an approvals switch on this turn's turn/start. OMP has
       // no approval-mode RPC, so a switch refuses the turn instead of running it
       // in a mode the owner did not pick.
-      const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
-      if (approvalsTo && backend !== 'codex') {
+      if (nextApprovals && nextApprovals !== selectedApprovals && backend !== 'codex') {
         return { ok: false as const, code: 'approvals_switch_refused', retryable: false,
           liftsWhen: 'Send a new turn without an approvals override, or use a Claude or Codex session to select an approvals mode; OMP has no approvals-switch RPC.',
           message: `/approvals is not available for ${backend === 'omp' ? 'OMP' : backend}` };
@@ -269,14 +281,21 @@ export function startSuRpcEngine(
       // P-026: Codex takes the switch on this turn's turn/start; OMP takes it as
       // set_model (+ set_thinking_level) before the prompt. A refused OMP switch
       // refuses the turn rather than running it on the old model.
-      const switchTo = nextModel && nextModel !== selectedModel ? splitModelSpec(nextModel) : null;
-      if (switchTo && !switchTo.model) return { ok: false as const, code: 'model_switch_refused', retryable: false,
+      const requestedModel = nextModel !== undefined ? splitModelSpec(nextModel) : null;
+      if (requestedModel && !requestedModel.model) return { ok: false as const, code: 'model_switch_refused', retryable: false,
         liftsWhen: 'Send a new turn with a non-empty model name, or omit the model override.',
         message: `"${nextModel}" names no model` };
       let acknowledged!: (verdict: { ok: true } | ({ ok: false } & SuSessionRefusal)) => void;
       const receipt = new Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)>((resolve) => { acknowledged = resolve; });
       inputTail = inputTail.then(async () => {
+        // An interrupt's completion can release the current turn before its
+        // control receipt settles. Keep the next queued turn behind both.
+        await interruptInFlight;
         if (!ready || closed) { acknowledged(unavailable('The engine closed before this saved turn was sent')); return; }
+        // Evaluate switches at delivery: an earlier queued turn can change the
+        // selection after this command was accepted, including away and back.
+        const switchTo = nextModel !== undefined && nextModel !== selectedModel ? requestedModel : null;
+        const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
         if (switchTo && backend === 'omp') {
           // Switch before the turn is opened: a refusal then leaves no owner
           // turn waiting on a completion that will never come. The stdio peer
@@ -298,6 +317,7 @@ export function startSuRpcEngine(
           }
         }
         ownerTurnId = turnId;
+        turnEpoch++;
         turnCompletionSettled = false;
         nativeBindingFailed = false;
         nativeToolObservationTail = Promise.resolve();
@@ -309,6 +329,7 @@ export function startSuRpcEngine(
         let deliveryAttempted = false;
         let failurePhase: 'delivery' | 'binding' = 'delivery';
         try {
+          let prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
           if (su && !turnLifecycle) {
             if (!binding.workspaceId || !binding.ownerId) throw new Error('Native admission requires the authenticated workspace and owner');
             const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
@@ -326,15 +347,28 @@ export function startSuRpcEngine(
             turnAdmission = admission;
           }
           if (!ready || closed) throw new Error('The engine closed during turn admission');
+          if (interruptInFlight) {
+            await turnAdmission?.reconcile({ phase: 'delivery', message: 'Owner interrupted before native delivery' });
+            acknowledged({ ok: false, code: 'turn_interrupting', retryable: false,
+              message: 'The owner interrupted this turn before native delivery' });
+            return;
+          }
+          // Admission may wait. A project reference must still be authorized
+          // when these bytes cross the native boundary.
+          if (richInput?.some(part => part.type === 'file')) {
+            prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
+          }
+          if (!ready || closed) throw new Error('The engine closed during input preparation');
           // The command is durably accepted before native delivery. Persist its
           // visible prompt before RPC can stream a reply; restored sessions use
           // these owner events to place each reply under its original prompt.
+          host.transition('running', 'Saved owner input is being delivered');
           emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner',
             channel: 'text', content });
           if (backend === 'codex') {
             deliveryAttempted = true;
             nativeStart = peer!.request({ method: 'turn/start', params: {
-              threadId: nativeId(), input: [{ type: 'text', text: content }],
+              threadId: nativeId(), input: prepared.codex,
               ...(switchTo ? { model: switchTo.model, ...(switchTo.effort ? { effort: switchTo.effort } : {}) } : {}),
               ...(approvalsTo ? codexApprovalsPolicy(approvalsTo) : {}),
             } }, options.deliveryTimeoutMs ?? 30_000);
@@ -351,6 +385,11 @@ export function startSuRpcEngine(
           acknowledged({ ok: true });
           await finished;
         } catch (error) {
+          if (error instanceof SuInputRefusal && !deliveryAttempted) {
+            await turnAdmission?.reconcile({ phase: 'delivery', message: error.message });
+            acknowledged({ ok: false, code: error.code, message: error.message, retryable: false });
+            return;
+          }
           nativeBindingFailed = true;
           releaseNativeBinding?.();
           acknowledged(unavailable(String(error)));
@@ -366,6 +405,7 @@ export function startSuRpcEngine(
           adapter.reconcileRuntimeExit({ expected: false, reason: `Native delivery is unknown: ${String(error)}` });
           await close();
         } finally {
+          turnFinished?.();
           releaseNativeBinding?.();
           turnAdmission = undefined; nativeBinding = undefined; releaseNativeBinding = undefined;
           observedNativeToolCalls.clear();
@@ -375,14 +415,77 @@ export function startSuRpcEngine(
       });
       return receipt;
     },
-    async interrupt() {
+    async queue(input: { content: string; input?: readonly SuSessionInputPart[]; turnId: string; model?: string; approvals?: SuApprovalsMode }): Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> {
+      return controls.ownerTurn(input);
+    },
+    async steer({ content, input: richInput, turnId, activeTurnId, model, approvals }: {
+      content: string; input?: readonly SuSessionInputPart[]; turnId: string; activeTurnId: string; model?: string; approvals?: SuApprovalsMode;
+    }) {
+      if (!ready || closed || !peer) return unavailable('The engine is disconnected');
+      const refuse = (code: string, message: string) => ({ ok: false as const, code, message, retryable: false });
+      if (backend !== 'codex') return refuse('unsupported', 'This runtime has no native active-turn steer');
+      if (model !== undefined || approvals !== undefined) {
+        return refuse('steer_overrides_unsupported', 'Queue a new turn to change model or approvals; native steering accepts input only');
+      }
+      const owner = ownerTurnId, epoch = turnEpoch, bindingReady = nativeBinding;
+      if (!owner) return refuse('no_active_turn', 'There is no active turn to steer');
+      if (activeTurnId !== owner) return refuse('active_turn_mismatch', 'The steer targets a different owner turn');
+      const current = () => ready && !closed && epoch === turnEpoch && owner === ownerTurnId
+        && !interruptInFlight && !turnCompletionSettled && !nativeBindingFailed
+        && Boolean(nativeTurnId) && !completedNativeToolTurns.has(nativeTurnId);
+      if (interruptInFlight) return refuse('turn_interrupting', 'The expected turn is being interrupted');
+      // Admission and the correlated turn/start response must bind first. This
+      // never waits on inputTail (which lasts until the turn FINISHES).
+      await bindingReady;
+      if (!current()) return refuse('active_turn_finished', 'The expected turn finished or became unavailable before steering');
+      const expectedTurnId = nativeTurnId;
+      try {
+        const prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
+        if (!current()) return refuse('active_turn_finished', 'The expected turn finished while validating input');
+        const response = await peer.request({ method: 'turn/steer', params: {
+          threadId: nativeId(), expectedTurnId, input: prepared.codex,
+        } }, options.deliveryTimeoutMs ?? 30_000);
+        if (response.turnId !== expectedTurnId) throw new Error('Codex steer acknowledgement did not identify the expected native turn');
+        if (!current() || nativeTurnId !== expectedTurnId) {
+          return refuse('steer_outcome_unknown', 'The expected turn finished or was interrupted before its steer receipt settled; do not replay this input');
+        }
+        emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner', channel: 'text', content });
+        return { ok: true as const };
+      } catch (error) {
+        if (error instanceof SuInputRefusal) return refuse(error.code, error.message);
+        if (error instanceof SuStdioRequestRefusal) return refuse('native_steer_refused', error.message);
+        // A lost or uncorrelated acknowledgement cannot authorize retry or
+        // delivery to the next turn. Fence this executor like turn/start.
+        ready = false;
+        adapter.reconcileRuntimeExit({ expected: false, reason: `Native steer delivery is unknown: ${String(error)}` });
+        await close();
+        return unavailable(String(error));
+      }
+    },
+    interrupt(): Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> {
+      if (interruptInFlight) return interruptInFlight;
+      interruptInFlight = interruptNativeTurn().finally(() => { interruptInFlight = undefined; });
+      return interruptInFlight;
+    },
+    async resume() { return ready && !closed ? { ok: true as const } : unavailable('Reconnect the saved structured session before resuming'); },
+    async focus() { return { ok: true as const }; },
+    async end() { await close(); return { ok: true as const }; },
+  };
+  async function interruptNativeTurn() {
       if (!peer || closed) return unavailable('The engine is disconnected');
       cards.cancel();
       const completing = turnCompletion;
+      const owner = ownerTurnId, starting = nativeStart;
+      const bindingReady = nativeBinding;
+      let interruptedTurn = nativeTurnId;
       try {
         if (backend === 'codex') {
-          if (!nativeTurnId && nativeStart) nativeTurnId = string(object((await nativeStart).turn).id);
-          if (nativeTurnId) await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: nativeTurnId } });
+          if (!interruptedTurn && starting) interruptedTurn = string(object((await starting).turn).id);
+          await bindingReady;
+          if (owner && owner === ownerTurnId && interruptedTurn && !turnCompletionSettled
+            && !completedNativeToolTurns.has(interruptedTurn)) {
+            await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: interruptedTurn } });
+          }
         } else {
           await peer.request({ type: 'abort' }, options.deliveryTimeoutMs ?? 30_000);
           // OMP responds only after session.abort has cancelled setup and
@@ -405,20 +508,16 @@ export function startSuRpcEngine(
       }
       host.transition('interrupted', 'Owner interrupted the native turn');
       return { ok: true as const };
-    },
-    async resume() { return ready && !closed ? { ok: true as const } : unavailable('Reconnect the saved structured session before resuming'); },
-    async focus() { return { ok: true as const }; },
-    async end() { await close(); return { ok: true as const }; },
-  };
+  }
   const shared = {
-    ...options, controls, ready: false, runtimeReady: () => ready && !closed,
+    ...options, executionKind: 'programmatic' as const, controls, ready: false, runtimeReady: () => ready && !closed,
     // D-026: a prompted Codex launch is on-request + workspace-write, which is
     // `auto-edit`. OMP has no switchable mode, so its descriptor omits one.
     ...(backend === 'codex' && selectedApprovals ? { approvals: selectedApprovals } : {}),
     ownerTurnReceipts: options.ownerTurnReceipts ?? ((identity: SuOwnerTurn['target']) => loadSuOwnerTurnReceipts(identity)),
   };
   const adapter = backend === 'codex'
-    ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, { ...shared, host: options.host as SuSessionHost<'codex'> | undefined })
+    ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, { ...shared, typedInput: true, host: options.host as SuSessionHost<'codex'> | undefined })
     : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, { ...shared, host: options.host as SuSessionHost<'omp'> | undefined });
   const host = adapter.host as SuSessionHost<Backend>;
   function updateOmpContextWindow(model: unknown): void {
@@ -498,6 +597,7 @@ export function startSuRpcEngine(
     if (closed || nativeBindingFailed || owner !== ownerTurnId || turnCompletionSettled) return;
     if (backend === 'codex' && (!eventNativeTurnId || eventNativeTurnId !== nativeTurnId)) return;
     turnCompletionSettled = true;
+    cards.cancel();
     // A tool announcement may have preceded turn/start's acknowledgement.
     // Its host observation must settle before closing the monetary population.
     await nativeToolObservationTail;
@@ -550,7 +650,7 @@ export function startSuRpcEngine(
   }
   function onMessage(frame: RpcFrame): void {
     if (closed) return;
-    const frameThreadId = object(frame.params).threadId;
+    const frameThreadId = object(frame.params).threadId ?? object(frame.params).conversationId;
     if (backend === 'codex' && frameThreadId && !nativeId()) {
       // App-server can announce MCP startup before thread/start responds.
       // Defer these frames until that correlated response pins the identity;
@@ -563,6 +663,20 @@ export function startSuRpcEngine(
       return;
     }
     if (backend === 'codex' && frameThreadId && frameThreadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
+    const frameTurnId = string(object(frame.params).turnId);
+    if (backend === 'codex' && frame.id != null && typeof frame.method === 'string'
+        && ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval',
+          'item/tool/requestUserInput', 'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval'].includes(frame.method)
+        && (frameThreadId !== nativeId() || (frame.method !== 'mcpServer/elicitation/request'
+          && (!ownerTurnId || turnCompletionSettled || completedNativeToolTurns.has(nativeTurnId))))) {
+      peer?.send({ id: frame.id, error: { code: -32602, message: 'Native request has no matching live session or turn' } });
+      return;
+    }
+    if (backend === 'codex' && frame.id != null && frame.method && frameTurnId
+        && (!nativeTurnId || frameTurnId !== nativeTurnId || turnCompletionSettled)) {
+      peer?.send({ id: frame.id, error: { code: -32602, message: 'Native request does not belong to the active turn' } });
+      return;
+    }
     if (cards.handle(backend, frame, ownerTurnId || 'startup', (response) => { if (!closed) peer?.send(response); })) return;
     if (backend === 'codex') {
       const method = string(frame.method), params = object(frame.params);
@@ -645,6 +759,7 @@ export function startSuRpcEngine(
   }
   let done: Promise<void> = Promise.resolve();
   let starting: Promise<void>;
+  let nativeForkHistory = false;
   let closing: Promise<void> | undefined;
   function close(): Promise<void> {
     if (closing) return closing;
@@ -659,7 +774,7 @@ export function startSuRpcEngine(
       // (seconds, or never when startup fails). Best-effort: the replay once the
       // peer is up stays authoritative and adds only what it wrote since.
       await (backend === 'codex'
-        ? (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true })
+        ? (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true, deferForkHistory: true })
         : (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true })
       ).catch(() => undefined);
       if (closed) throw new Error('Structured connection closed during startup');
@@ -696,6 +811,7 @@ export function startSuRpcEngine(
       options.stage?.('rpc-native-thread');
       const result = await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
       const thread = object(result.thread), id = string(thread.id);
+      nativeForkHistory = thread.historyMode === 'paginated' && typeof thread.forkedFromId === 'string';
       if (!id || nativeId() && id !== nativeId()) throw new Error('Codex did not return the requested native identity');
       if (thread.cwd && resolve(string(thread.cwd)) !== resolve(boot.cwd)) throw new Error('Codex started in a different project');
       nativePath = string(thread.path) || null;
@@ -789,7 +905,10 @@ export function startSuRpcEngine(
       // Historical turn completion must not advertise current readiness.
       host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       options.stage?.('rpc-replay-history');
-      if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
+      if (backend === 'codex') {
+        if (nativeForkHistory) await (adapter as CodexSuSessionAdapter).consumeThreadHistory(frame => peer!.request(frame));
+        else await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
+      }
       else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed) throw new Error('Structured connection closed during startup');

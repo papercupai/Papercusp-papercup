@@ -72,7 +72,7 @@ import type { Sql } from 'postgres';
 import { goalPlanPlacementChangedKey } from '../agent-obligations';
 
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -2561,35 +2561,22 @@ async function publishGoalDrainChecks(
   }
 }
 
-let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Start the goal-drain-fleet watchdog: a recurring process-level sweep.
  * Idempotent. Runtime gate: FLAGS.GOAL_DRAIN_FLEET_WATCHDOG (checked per tick).
  */
-export function startGoalDrainFleetWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'goal-drain-fleet-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runGoalDrainFleetSweepOnce(sql)
-        .catch((e) => {
+const armGoalDrainFleetWatchdog = createManagedSweepStarter({
+  name: 'goal-drain-fleet-watchdog',
+  intervalMs: GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'timeout-reaper' },
+  onError: (e) => {
           console.warn(
             `[goal-drain-fleet-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // D-004: 'timeout-reaper'. The alarm condition is a goal held for a WINDOW without
-    // the fleet its contract requires — the absence of a fleet emits no event, so the
-    // passage of time in that state is the only trigger available.
-    { category: 'watchdog', classification: 'timeout-reaper' },
-  );
+        },
+});
+
+export function startGoalDrainFleetWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armGoalDrainFleetWatchdog(() => runGoalDrainFleetSweepOnce(sql), opts.intervalMs);
 }

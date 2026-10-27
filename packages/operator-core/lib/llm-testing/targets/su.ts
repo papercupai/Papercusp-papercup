@@ -931,6 +931,7 @@ class SuSession implements ChatSession {
             maxOutputTokens: 4096,
             signal: ctrl.signal,
             fetchImpl: this.state.codexFetch,
+            onDiagnostic: this.state.onDiagnostic,
           });
         } catch (err) {
           result.finishReason = 'error';

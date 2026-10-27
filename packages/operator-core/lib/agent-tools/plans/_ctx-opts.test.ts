@@ -12,6 +12,10 @@ import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 describe('resolveCtxHarnessSlug', () => {
+  it.each([null, undefined])('treats nullish context %j as absent', ctx => {
+    expect(resolveCtxHarnessSlug(ctx)).toBeUndefined();
+  });
+
   it('returns undefined for empty / missing / whitespace / wildcard scope', () => {
     expect(resolveCtxHarnessSlug({})).toBeUndefined();
     expect(resolveCtxHarnessSlug({ harnessSlug: '' })).toBeUndefined();
@@ -31,6 +35,10 @@ describe('resolveCtxHarnessSlug', () => {
 
 describe('ctxToPlanSourceOpts', () => {
   const HOME = operatorHomeHarnessSlug(); // 'papercusp' (post-migration default)
+  it.each([null, undefined])('defaults nullish context %j to the operator-home harness', async ctx => {
+    expect(await ctxToPlanSourceOpts(ctx)).toEqual({ harnessSlug: HOME });
+  });
+
   it('defaults to the operator-home harness for empty / wildcard / home scope', async () => {
     expect(await ctxToPlanSourceOpts({})).toEqual({ harnessSlug: HOME });
     expect(await ctxToPlanSourceOpts({ harnessSlug: '*' })).toEqual({ harnessSlug: HOME });

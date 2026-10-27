@@ -96,10 +96,15 @@ export function classifyClaimSkip(
  * Fail-soft and never awaited by the tick: this is an instrument on the fire hot path and must
  * never delay, or fail, routine dispatch — an observability write that can break firing would
  * be a worse bug than the one it reports.
+ *
+ * Fence the write to the observed schedule AND last claim. A losing tick can enqueue this
+ * stamp after the winner has claimed and cleared its alarm; matching only the id would then
+ * resurrect obsolete evidence. Use the same millisecond floor as claimDueRoutine because
+ * the snapshot has round-tripped through JS Date while PG may retain microseconds.
  */
 export async function recordUnclaimableRoutine(
   sql: any,
-  routineId: string,
+  routine: ClaimSkipInput,
   verdict: Extract<ClaimSkipVerdict, { state: 'unclaimable' }>,
 ): Promise<void> {
   try {
@@ -114,7 +119,12 @@ export async function recordUnclaimableRoutine(
     await sql`
       UPDATE harness_shared.routines
          SET metadata = COALESCE(metadata, '{}'::jsonb) || ${patch}::text::jsonb
-       WHERE id = ${routineId}
+       WHERE id = ${routine.id}
+         AND active = TRUE
+         AND date_trunc('milliseconds', next_fire_at)
+               IS NOT DISTINCT FROM ${routine.nextFireAt}::timestamptz
+         AND date_trunc('milliseconds', last_fired_at)
+               IS NOT DISTINCT FROM ${routine.lastFiredAt}::timestamptz
     `;
   } catch {
     // Intentionally swallowed — see the doc comment above.

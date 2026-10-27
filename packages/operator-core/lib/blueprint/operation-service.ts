@@ -62,6 +62,7 @@ import type { PersistedCompletionEvidence, StoredAssumptionDeclaration } from '.
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { assertSupportCaseInput, type SupportCaseInput } from './support-workflow-contract';
 import { supportWorkflowFromOperation } from './support-workflow-operation';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationHandleSchema = z.object({
@@ -566,7 +567,7 @@ export function terminalOperationWorkerProof(item: WorkItem) {
 }
 
 /** Issue-family kinds, exactly the `engineer_issues` view predicate. */
-const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 export interface AcceptedProgramRootGuard {
   terminal: boolean;

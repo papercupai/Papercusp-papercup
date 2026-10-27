@@ -16,7 +16,8 @@ const governedExecutionRuntimeMock = vi.fn((_workspaceId?: string, _namespace?: 
   driver: {},
 }));
 
-vi.mock('./execution', () => ({
+vi.mock('./execution', async (importOriginal) => ({
+  settleGovernedExecutionInBackground: (await importOriginal<typeof import('./execution')>()).settleGovernedExecutionInBackground,
   beginGovernedExecution: (...args: unknown[]) => beginGovernedExecutionMock(...args),
   governedExecutionRuntime: (workspaceId: string, namespace?: string) =>
     governedExecutionRuntimeMock(workspaceId, namespace),
@@ -115,6 +116,37 @@ describe('spawnGovernedAgentProcess', () => {
     child.emit('exit', 0, null);
     await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
     expect(release).not.toHaveBeenCalled();
+  });
+
+  it.each(['resolved', 'rejected'] as const)('recovers failed settlement after a %s child-exit observer', async (outcome) => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      finish.mockRejectedValueOnce(new Error('release unavailable'));
+      let resolveExit!: (value: { code: number; signal: null }) => void;
+      let rejectExit!: (error: Error) => void;
+      const childExit = new Promise<{ code: number; signal: null }>((resolve, reject) => {
+        resolveExit = resolve; rejectExit = reject;
+      });
+      await spawnGovernedAgentProcess(
+        { workspaceId: 'ws', idempotencyKey: 'recover-exit', owner: 'launcher' },
+        async () => ({ status: 'ok', pid: 43, terminal: 'headless', child: null, childExit,
+          display: null, desktopEnvResolvedVia: null }),
+      );
+      if (outcome === 'resolved') resolveExit({ code: 0, signal: null });
+      else rejectExit(new Error('exit observer failed'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(finish).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('retry pending'), expect.anything());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(finish).toHaveBeenCalledTimes(2);
+      expect(cancel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(finish).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      warning.mockRestore();
+    }
   });
 
   it('never starts a child without central quota and releases a reservation when local admission fails', async () => {

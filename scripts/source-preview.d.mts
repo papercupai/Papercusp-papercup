@@ -13,7 +13,7 @@ export function resolveTarget(name?: string): Target;
 export function assertRemoteMatchesTarget(target: Target, remote: string): void;
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
@@ -151,6 +151,22 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
+/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
+/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+ *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
+ * }} VerifierPhaseRunner */
+/** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
+ * must leave the last started phase readable without claiming it completed.
+ * Mirror exact records into the existing checkpoint-log store so temporary
+ * receipt cleanup cannot erase a later command's reviewed budget evidence.
+ * @param {string} path
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} childDiagnosticsPath
+ * @returns {VerifierPhaseRunner & { archivePath: string }}
+ */
+export function verifierPhaseRunner(path: string, env: NodeJS.ProcessEnv, childDiagnosticsPath: string): VerifierPhaseRunner & {
+    archivePath: string;
+};
 /** Run a bounded dependency preflight without abandoning writers in its owned tree.
  * The maintained helpers emit measured byte, lock and completed-tree counters;
  * only increases extend the watchdog. Join its process group before cleanup.
@@ -170,6 +186,1684 @@ export function runVerifierDependencyCommand(command: string, args: string[], { 
     cutoffEpochMs?: number | null;
     now?: () => number;
 }): Promise<string>;
+/** Prepare through the maintained Git exporter, with original parent authority
+ * resolved BEFORE it creates a destination. No build or activation is implied.
+ * @param {{ repo: string, ref: string, dest: string, inputs: string[],
+ *   acceptedManifest: BgAcceptedManifest }} options
+ * @returns {Promise<BgVerifierPreparation>}
+ */
+export function prepareBgVerifierSource({ repo, ref, dest, inputs, acceptedManifest }: {
+    repo: string;
+    ref: string;
+    dest: string;
+    inputs: string[];
+    acceptedManifest: BgAcceptedManifest;
+}): Promise<BgVerifierPreparation>;
+/** Reuse at both compiler boundaries. The original receipt is never regenerated
+ * from observed output; dependencies and compiler-consumed bytes require their
+ * separate custody checks before this source proof can qualify a build.
+ * @param {BgVerifierPreparation} prepared
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierSource(prepared: BgVerifierPreparation, boundary: "before-build" | "before-publication"): BgVerifierPreparation;
+/** Bind esbuild's actual onLoad result to the original source/dependency census.
+ * Endpoint fences alone miss an A-to-B-to-A rewrite. Hash the buffer returned
+ * to esbuild, and retain that same buffer as its contents; never reopen it after
+ * validation. Retain original file identities across the whole compile interval
+ * as well: resolver metadata can select different original-censused bytes while
+ * restoring its content before endpoint hashes run. Absent resolver inputs,
+ * invocation/toolchain identity and runtime external imports still require
+ * their separate qualification boundaries.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
+ */
+export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+}): {
+    plugin: import("esbuild").Plugin;
+    consumed: () => {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+    verifyBeforePublication(): {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+};
+/** A distinct, detached invocation record, never a restamped source receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocation: BgBuildInvocation }} options
+ */
+export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocation }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocation: BgBuildInvocation;
+}): {
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: string;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
+    invocation: {
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+        outputNamespace?: {
+            bank: BgDirectoryIdentity;
+            stage: BgDirectoryIdentity;
+        } | undefined;
+        builder: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        compiler: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        node: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        packageManager: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+    };
+};
+/** The same original command and physical identities fence both boundaries.
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ * @param {'before-build' | 'before-publication'} boundary
+ */
+export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation, boundary: "before-build" | "before-publication"): {
+    schemaVersion: string;
+    prepared: BgVerifierPreparation;
+    dependencies: {
+        schemaVersion: string;
+        scope: string;
+        root: string;
+        sourceCommit: string;
+        policy: {
+            path: string;
+            sha256: string;
+        };
+        sourceReceiptSha256: string;
+        trees: {
+            path: string;
+            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        }[];
+    };
+    originalSourceReceiptSha256: string;
+    invocation: {
+        argv: string[];
+        configuration: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        environment: {
+            [k: string]: string;
+        };
+        outputNamespace?: {
+            bank: BgDirectoryIdentity;
+            stage: BgDirectoryIdentity;
+        } | undefined;
+        builder: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        compiler: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        node: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        packageManager: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+    };
+};
+/** Keep the common source/dependency receipt once, with a separate original
+ * command for every maintained main/worker/spawner invocation. Commands are
+ * selected by their complete argv, never by entry basename or call order.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[] }} args
+ */
+export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocations }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocations: BgBuildInvocation[];
+}): {
+    schemaVersion: string;
+    record: {
+        schemaVersion: string;
+        prepared: BgVerifierPreparation;
+        dependencies: {
+            schemaVersion: string;
+            scope: string;
+            root: string;
+            sourceCommit: string;
+            policy: {
+                path: string;
+                sha256: string;
+            };
+            sourceReceiptSha256: string;
+            trees: {
+                path: string;
+                files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+            }[];
+        };
+        originalSourceReceiptSha256: string;
+        invocation: {
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+            outputNamespace?: {
+                bank: BgDirectoryIdentity;
+                stage: BgDirectoryIdentity;
+            } | undefined;
+            builder: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            compiler: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            packageManager: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+        };
+    };
+    invocations: {
+        invocation: BgBuildInvocation;
+        original: {
+            argv: string[];
+            configuration: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            }[];
+            environment: {
+                [k: string]: string;
+            };
+            outputNamespace?: {
+                bank: BgDirectoryIdentity;
+                stage: BgDirectoryIdentity;
+            } | undefined;
+            builder: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            compiler: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            node: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+            packageManager: {
+                path: string;
+                realpath: string;
+                sha256: string;
+            };
+        };
+    }[];
+};
+/** A caller nominates this namespace BEFORE the recipe knows its shell PID.
+ * Follow release-artifacts.sh's physical producer-bank/absent-output contract.
+ * The token may vary only in temporary output leaves; no observed compiler argv
+ * can nominate commands, source inputs, switches, or logical output membership.
+ * This is preparation for whole-recipe publication, not a publication receipt.
+ * @param {{ prepared: BgVerifierPreparation, dependencies: ReturnType<typeof captureVerifierDependencies>,
+ *   invocations: BgBuildInvocation[], bank: string, stageLeaf: string,
+ *   outputs: { temporary: string, final: string }[], publicationLeaf?: string,
+ *   assets?: { source: string, temporary: string, final: string }[],
+ *   recipe?: { entry: string, outfile: string, profile: 'development' | 'release' } }} args
+ */
+export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invocations, bank, stageLeaf, outputs, assets, recipe, publicationLeaf }: {
+    prepared: BgVerifierPreparation;
+    dependencies: ReturnType<typeof captureVerifierDependencies>;
+    invocations: BgBuildInvocation[];
+    bank: string;
+    stageLeaf: string;
+    outputs: {
+        temporary: string;
+        final: string;
+    }[];
+    publicationLeaf?: string;
+    assets?: {
+        source: string;
+        temporary: string;
+        final: string;
+    }[];
+    recipe?: {
+        entry: string;
+        outfile: string;
+        profile: "development" | "release";
+    };
+}): {
+    publicationLeaf?: string | undefined;
+    recipe?: {
+        entry: string;
+        outfile: string;
+        profile: "development" | "release";
+    } | undefined;
+    assets?: {
+        source: string;
+        temporary: string;
+        final: string;
+    }[] | undefined;
+    schemaVersion: string;
+    contexts: {
+        schemaVersion: string;
+        record: {
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: string;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
+            invocation: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        };
+        invocations: {
+            invocation: BgBuildInvocation;
+            original: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        }[];
+    };
+    bank: BgDirectoryIdentity;
+    stage: string;
+    outputs: {
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Bind a PID supplied by the recipe preflight, before its first compile.
+ * The original caller contract is preserved beside the resulting exact argv.
+ * Stage creation is exclusive: attach an existing attempt instead of replaying.
+ * @param {{ transaction: ReturnType<typeof prepareBgVerifierBuildTransaction>, ownerPid: number }} args
+ */
+export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
+    transaction: ReturnType<typeof prepareBgVerifierBuildTransaction>;
+    ownerPid: number;
+}): {
+    schemaVersion: string;
+    transaction: {
+        publicationLeaf?: string | undefined;
+        recipe?: {
+            entry: string;
+            outfile: string;
+            profile: "development" | "release";
+        } | undefined;
+        assets?: {
+            source: string;
+            temporary: string;
+            final: string;
+        }[] | undefined;
+        schemaVersion: string;
+        contexts: {
+            schemaVersion: string;
+            record: {
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: string;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
+                invocation: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            };
+            invocations: {
+                invocation: BgBuildInvocation;
+                original: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            }[];
+        };
+        bank: BgDirectoryIdentity;
+        stage: string;
+        outputs: {
+            temporary: string;
+            final: string;
+        }[];
+    };
+    transactionSha256: string;
+    ownerPid: number;
+    contexts: {
+        schemaVersion: string;
+        record: {
+            schemaVersion: string;
+            prepared: BgVerifierPreparation;
+            dependencies: {
+                schemaVersion: string;
+                scope: string;
+                root: string;
+                sourceCommit: string;
+                policy: {
+                    path: string;
+                    sha256: string;
+                };
+                sourceReceiptSha256: string;
+                trees: {
+                    path: string;
+                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                }[];
+            };
+            originalSourceReceiptSha256: string;
+            invocation: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        };
+        invocations: {
+            invocation: BgBuildInvocation;
+            original: {
+                argv: string[];
+                configuration: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                }[];
+                environment: {
+                    [k: string]: string;
+                };
+                outputNamespace?: {
+                    bank: BgDirectoryIdentity;
+                    stage: BgDirectoryIdentity;
+                } | undefined;
+                builder: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                compiler: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                node: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+                packageManager: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                };
+            };
+        }[];
+    };
+    outputs: {
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Expand directory copies from the retained source census, before a caller
+ * freezes its transaction. Never discover membership from a mutable directory
+ * walk. `sql` matches the maintained builder's immediate *.sql copy; recursive
+ * includes every censused descendant and refuses links instead of following them.
+ * @param {{ prepared: BgVerifierPreparation,
+ *   trees: { source: string, final: string, selection: 'recursive' | 'sql' }[] }} args
+ */
+export function expandBgVerifierAssetTrees({ prepared, trees }: {
+    prepared: BgVerifierPreparation;
+    trees: {
+        source: string;
+        final: string;
+        selection: "recursive" | "sql";
+    }[];
+}): {
+    source: string;
+    temporary: string;
+    final: string;
+}[];
+/** Copy only the original transaction's source-censused ancillary files. The
+ * very buffer checked against the original digest is written exclusively into
+ * the owned stage; no hardlink, ambient directory tree or later read supplies
+ * its bytes. Callers may expand retained directories with
+ * expandBgVerifierAssetTrees before preparing the original transaction.
+ * @param {ReturnType<typeof beginBgVerifierBuildTransaction>} binding
+ */
+export function stageBgVerifierAssetCopies(binding: ReturnType<typeof beginBgVerifierBuildTransaction>): void;
+/** Measure the COMPLETE temporary output population against the retained binding
+ * and each compiler's receipt. This is a detached pre-publication fence: it
+ * neither renames files nor authorizes service activation or runtime imports.
+ * The caller must retain the returned record and recheck it at publication.
+ * @param {{ binding: ReturnType<typeof beginBgVerifierBuildTransaction>,
+ *   receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[] }} args
+ */
+export function qualifyBgVerifierBuildOutputSet({ binding, receipts }: {
+    binding: ReturnType<typeof beginBgVerifierBuildTransaction>;
+    receipts: Awaited<ReturnType<typeof compileBgVerifierInvocation>>[];
+}): {
+    schemaVersion: string;
+    transactionSha256: string;
+    bindingSha256: string;
+    compilerReceiptsSha256: string;
+    originalSourceReceiptSha256: string;
+    files: {
+        identity: any;
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Re-measure without replacing the retained qualification record.
+ * @param {ReturnType<typeof qualifyBgVerifierBuildOutputSet>} output
+ * @param {Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function verifyBgVerifierBuildOutputSet(output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>, args: Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): {
+    schemaVersion: string;
+    transactionSha256: string;
+    bindingSha256: string;
+    compilerReceiptsSha256: string;
+    originalSourceReceiptSha256: string;
+    files: {
+        identity: any;
+        temporary: string;
+        final: string;
+    }[];
+};
+/** Convert only the qualified temporary files to their ORIGINAL logical names
+ * inside the private stage. Exclusive links preserve compiler-created inodes
+ * without overwriting another file; unlinking the temporary names restores
+ * independent-file custody. A failure leaves an unpublished attempt for diagnosis.
+ * The maintained artifact writer qualifies the original main entry in place.
+ * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
+ */
+export function qualifyBgVerifierLogicalOutputSet(args: {
+    output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>;
+} & Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): any;
+/** Recheck retained logical outputs without regenerating a manifest or receipt.
+ * @param {ReturnType<typeof qualifyBgVerifierLogicalOutputSet>} logical
+ * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
+/** Publish one COMPLETE receipt at the pre-nominated bank leaf. Linking a fully
+ * written private file is atomic and refuses an existing destination, including
+ * dangling links. Keep artifact paths physical: moving this directory would
+ * invalidate the maintained boot reader's manifest suffix check. This publishes
+ * evidence only; activation must independently recheck the receipt and cohort.
+ * @param {{ logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet> } &
+ *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
+ */
+export function publishBgVerifierLogicalOutputSet(args: {
+    logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet>;
+} & Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): {
+    identity: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+    schemaVersion: string;
+    logical: any;
+    binding: {
+        schemaVersion: string;
+        transaction: {
+            publicationLeaf?: string | undefined;
+            recipe?: {
+                entry: string;
+                outfile: string;
+                profile: "development" | "release";
+            } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
+            schemaVersion: string;
+            contexts: {
+                schemaVersion: string;
+                record: {
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: string;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
+                    invocation: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                };
+                invocations: {
+                    invocation: BgBuildInvocation;
+                    original: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                }[];
+            };
+            bank: BgDirectoryIdentity;
+            stage: string;
+            outputs: {
+                temporary: string;
+                final: string;
+            }[];
+        };
+        transactionSha256: string;
+        ownerPid: number;
+        contexts: {
+            schemaVersion: string;
+            record: {
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: string;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
+                invocation: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            };
+            invocations: {
+                invocation: BgBuildInvocation;
+                original: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            }[];
+        };
+        outputs: {
+            temporary: string;
+            final: string;
+        }[];
+    };
+    receipts: {
+        metafile?: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        } | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
+        binary: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        consumed: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        output: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+    }[];
+    output: {
+        schemaVersion: string;
+        transactionSha256: string;
+        bindingSha256: string;
+        compilerReceiptsSha256: string;
+        originalSourceReceiptSha256: string;
+        files: {
+            identity: any;
+            temporary: string;
+            final: string;
+        }[];
+    };
+};
+/** @param {ReturnType<typeof publishBgVerifierLogicalOutputSet>} publication
+ * @param {Parameters<typeof publishBgVerifierLogicalOutputSet>[0]} args */
+export function verifyBgVerifierPublication(publication: ReturnType<typeof publishBgVerifierLogicalOutputSet>, args: Parameters<typeof publishBgVerifierLogicalOutputSet>[0]): {
+    identity: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+    schemaVersion: string;
+    logical: any;
+    binding: {
+        schemaVersion: string;
+        transaction: {
+            publicationLeaf?: string | undefined;
+            recipe?: {
+                entry: string;
+                outfile: string;
+                profile: "development" | "release";
+            } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
+            schemaVersion: string;
+            contexts: {
+                schemaVersion: string;
+                record: {
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: string;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
+                    invocation: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                };
+                invocations: {
+                    invocation: BgBuildInvocation;
+                    original: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                }[];
+            };
+            bank: BgDirectoryIdentity;
+            stage: string;
+            outputs: {
+                temporary: string;
+                final: string;
+            }[];
+        };
+        transactionSha256: string;
+        ownerPid: number;
+        contexts: {
+            schemaVersion: string;
+            record: {
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: string;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
+                invocation: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            };
+            invocations: {
+                invocation: BgBuildInvocation;
+                original: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            }[];
+        };
+        outputs: {
+            temporary: string;
+            final: string;
+        }[];
+    };
+    receipts: {
+        metafile?: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        } | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
+        binary: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        consumed: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        output: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+    }[];
+    output: {
+        schemaVersion: string;
+        transactionSha256: string;
+        bindingSha256: string;
+        compilerReceiptsSha256: string;
+        originalSourceReceiptSha256: string;
+        files: {
+            identity: any;
+            temporary: string;
+            final: string;
+        }[];
+    };
+};
+/** Execute one retained recipe into an exclusively owned stage, then publish its
+ * complete evidence. Re-entry always refuses the existing stage, including an
+ * attempt whose compiler failed. There is no cache/fallback or service effect.
+ * This does not establish the production runtime closure or authorize activation.
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0]} args
+ */
+export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifierBuildTransaction>[0]): Promise<{
+    identity: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+    schemaVersion: string;
+    logical: any;
+    binding: {
+        schemaVersion: string;
+        transaction: {
+            publicationLeaf?: string | undefined;
+            recipe?: {
+                entry: string;
+                outfile: string;
+                profile: "development" | "release";
+            } | undefined;
+            assets?: {
+                source: string;
+                temporary: string;
+                final: string;
+            }[] | undefined;
+            schemaVersion: string;
+            contexts: {
+                schemaVersion: string;
+                record: {
+                    schemaVersion: string;
+                    prepared: BgVerifierPreparation;
+                    dependencies: {
+                        schemaVersion: string;
+                        scope: string;
+                        root: string;
+                        sourceCommit: string;
+                        policy: {
+                            path: string;
+                            sha256: string;
+                        };
+                        sourceReceiptSha256: string;
+                        trees: {
+                            path: string;
+                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        }[];
+                    };
+                    originalSourceReceiptSha256: string;
+                    invocation: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                };
+                invocations: {
+                    invocation: BgBuildInvocation;
+                    original: {
+                        argv: string[];
+                        configuration: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        }[];
+                        environment: {
+                            [k: string]: string;
+                        };
+                        outputNamespace?: {
+                            bank: BgDirectoryIdentity;
+                            stage: BgDirectoryIdentity;
+                        } | undefined;
+                        builder: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        compiler: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        node: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                        packageManager: {
+                            path: string;
+                            realpath: string;
+                            sha256: string;
+                        };
+                    };
+                }[];
+            };
+            bank: BgDirectoryIdentity;
+            stage: string;
+            outputs: {
+                temporary: string;
+                final: string;
+            }[];
+        };
+        transactionSha256: string;
+        ownerPid: number;
+        contexts: {
+            schemaVersion: string;
+            record: {
+                schemaVersion: string;
+                prepared: BgVerifierPreparation;
+                dependencies: {
+                    schemaVersion: string;
+                    scope: string;
+                    root: string;
+                    sourceCommit: string;
+                    policy: {
+                        path: string;
+                        sha256: string;
+                    };
+                    sourceReceiptSha256: string;
+                    trees: {
+                        path: string;
+                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    }[];
+                };
+                originalSourceReceiptSha256: string;
+                invocation: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            };
+            invocations: {
+                invocation: BgBuildInvocation;
+                original: {
+                    argv: string[];
+                    configuration: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    }[];
+                    environment: {
+                        [k: string]: string;
+                    };
+                    outputNamespace?: {
+                        bank: BgDirectoryIdentity;
+                        stage: BgDirectoryIdentity;
+                    } | undefined;
+                    builder: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    compiler: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    node: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                    packageManager: {
+                        path: string;
+                        realpath: string;
+                        sha256: string;
+                    };
+                };
+            }[];
+        };
+        outputs: {
+            temporary: string;
+            final: string;
+        }[];
+    };
+    receipts: {
+        metafile?: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        } | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
+        binary: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        };
+        consumed: {
+            path: string;
+            realpath: string;
+            sha256: string;
+        }[];
+        output: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+    }[];
+    output: {
+        schemaVersion: string;
+        transactionSha256: string;
+        bindingSha256: string;
+        compilerReceiptsSha256: string;
+        originalSourceReceiptSha256: string;
+        files: {
+            identity: any;
+            temporary: string;
+            final: string;
+        }[];
+    };
+}>;
+/** The shared shell recipe delegates one EXACT recorded compiler invocation
+ * here. Use its private API and binary, pass the digest-checked buffers to
+ * esbuild, then fence source/dependencies again before writing any output.
+ * This does not qualify resolver metadata, compiler self-consumption, runtime
+ * imports, a complete multi-entry host build, or service readiness.
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string }} args
+ */
+export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion }: {
+    record: ReturnType<typeof prepareBgVerifierBuildRecord>;
+    invocation: BgBuildInvocation;
+    argv: string[];
+    expectedVersion: string;
+}): Promise<{
+    metafile?: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    } | undefined;
+    schemaVersion: string;
+    argv: string[];
+    buildRecordSha256: string;
+    originalSourceReceiptSha256: string;
+    compilerVersion: string;
+    binary: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    };
+    consumed: {
+        path: string;
+        realpath: string;
+        sha256: string;
+    }[];
+    output: {
+        path: string;
+        realpath: string;
+        sha256: string;
+        dev: string;
+        ino: string;
+        size: string;
+        mtimeNs: string;
+        ctimeNs: string;
+    };
+}>;
+/** Bind the maintained artifact writer's measured output to the ORIGINAL build
+ * record. Builder exit status alone is never artifact qualification. This is a
+ * separate output fence, not proof of compiler consumption or service readiness.
+ * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
+ *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
+ *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
+ *     { status: 'measured' }> }} BgVerifierOutputRecord
+ * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
+ *   invocation: BgBuildInvocation, entry: string }} options
+ * @returns {BgVerifierOutputRecord}
+ */
+export function qualifyBgVerifierOutput({ record, invocation, entry }: {
+    record: ReturnType<typeof prepareBgVerifierBuildRecord>;
+    invocation: BgBuildInvocation;
+    entry: string;
+}): BgVerifierOutputRecord;
+/** Recheck the same detached output immediately before publication; never
+ * regenerate a source receipt, input record or manifest to bless replacement.
+ * @param {BgVerifierOutputRecord} output
+ * @param {ReturnType<typeof prepareBgVerifierBuildRecord>} record
+ * @param {BgBuildInvocation} invocation
+ */
+export function verifyBgVerifierOutputRecord(output: BgVerifierOutputRecord, record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation): BgVerifierOutputRecord;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
  * An explicit allowance is shared across phases and requires a finite caller
@@ -207,12 +1901,14 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
  * product-owned tree population and the source verifier's exact file census.
  * Workspace link targets still need source verification; this receipt does
  * not claim final transformed code or a complete runtime import closure.
- * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv }} options
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, env?: NodeJS.ProcessEnv,
+ *   onProgress?: (progress: VerifierDependencyProgress) => void }} options
  */
-export function captureVerifierDependencies({ dest, receipt, env }: {
+export function captureVerifierDependencies({ dest, receipt, env, onProgress }: {
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     env?: NodeJS.ProcessEnv;
+    onProgress?: (progress: VerifierDependencyProgress) => void;
 }): {
     schemaVersion: string;
     scope: string;
@@ -445,8 +2141,8 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     };
 }>;
 /**
- * The public target's LICENSE text. Refuses when missing or when it is not the Elastic
- * License 2.0: publishing source under no license, or the wrong one, is not recoverable
+ * The public target's LICENSE text. Refuses when missing or when it is not the canonical
+ * Sustainable Use License 1.0: publishing the wrong terms is not recoverable
  * once cloned.
  * @param {string} path
  */
@@ -675,8 +2371,9 @@ export const PUBLIC_REPO: "Papercusp/papercusp-app";
 export const SOURCE_REPO: "Papercusp/papercup";
 export const DEFAULT_REMOTE: "https://github.com/Papercusp/papercusp-preview.git";
 export const DEFAULT_REF: "main";
-/** The public target's license (Elastic License 2.0, plan open-source-release-2026-09-29 D-003). */
+/** The public application's license (owner-approved SUL transition, 2026-10-26). */
 export const PUBLIC_LICENSE_PATH: string;
+export const PUBLIC_LICENSE_ID: "LicenseRef-Sustainable-Use-1.0";
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one
@@ -735,7 +2432,7 @@ export const ALLOWLIST_PATH: string;
 export { main as runCli };
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  */
@@ -748,7 +2445,7 @@ export type PublicRepositoryLicense = {
 };
 /**
  * R13: inspect the current public population and actual default-branch license bytes.
- * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Reuses the public export's canonical SUL, existing components' ELv2, and Apache text.
  * Unknown text, an API failure, incomplete pagination or a changed population refuses.
  * GitHub's license metadata is supplementary; it is never the license oracle.
  */
@@ -760,7 +2457,71 @@ export type PublicRepositoryLicenseRow = {
     licenses: PublicRepositoryLicense[];
     errors: string[];
 };
-export type VerifierPhaseRunner = <T>(phase: string, operation: () => T | Promise<T>) => Promise<T>;
+export type VerifierDependencyProgress = {
+    completedTrees: number;
+    totalTrees: number;
+    currentTree: string;
+};
+export type VerifierPhaseRunner = (<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>) & {
+    reportProgress?: (phase: "deps.census" | "deps.postverify", progress: VerifierDependencyProgress) => void;
+};
+/**
+ * The expected population comes from the parent's accepted evidence, never
+ * the candidate or compiler metafile. `path` retains the original artifact
+ * bytes; `members` is the independently accepted literal source-blob map.
+ */
+export type BgAcceptedManifest = {
+    path: string;
+    evidenceRef: string;
+    sha256: string;
+    schemaVersion: 1;
+    members: Record<string, string>;
+};
+/**
+ * The expected population comes from the parent's accepted evidence, never
+ * the candidate or compiler metafile. `path` retains the original artifact
+ * bytes; `members` is the independently accepted literal source-blob map.
+ */
+export type BgVerifierPreparation = {
+    schemaVersion: "bg-verifier-source-v1";
+    root: string;
+    acceptedManifest: BgAcceptedManifest;
+    source: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    sourceReceiptSha256: string;
+};
+export type BgDirectoryIdentity = {
+    path: string;
+    dev: string;
+    ino: string;
+};
+export type BgBuildInvocation = {
+    builder: string;
+    argv: string[];
+    node: string;
+    compiler: string;
+    packageManager: string;
+    configuration: string[];
+    environment: Record<string, string>;
+    outputNamespace?: {
+        bank: BgDirectoryIdentity;
+        stage: BgDirectoryIdentity;
+    };
+};
+/**
+ * Bind the maintained artifact writer's measured output to the ORIGINAL build
+ * record. Builder exit status alone is never artifact qualification. This is a
+ * separate output fence, not proof of compiler consumption or service readiness.
+ */
+export type BgVerifierOutputRecord = {
+    schemaVersion: "bg-build-output-v1";
+    buildRecordSha256: string;
+    originalSourceReceiptSha256: string;
+    entry: ReturnType<typeof readBgFileIdentity>;
+    manifest: ReturnType<typeof readBgFileIdentity>;
+    artifact: Extract<import("@papercusp/operator-core/lib/release/operator-artifact").OperatorArtifactIdentity, {
+        status: "measured";
+    }>;
+};
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one
@@ -803,3 +2564,11 @@ export type Gate = (dir: string, opts: {
 export type Log = (message: string) => void;
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
+/** Read one physical file without reopening between validation and hashing.
+ * @param {string} path
+ */
+declare function readBgFileIdentity(path: string): {
+    path: string;
+    realpath: string;
+    sha256: string;
+};

@@ -1,0 +1,963 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-canonical-native-source-recovery",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "driverWorkItem": "WI-6554700010020777",
+  "capturedAt": "2026-10-25T19:04:05.041077+00:00",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "frozenBaselineUnchanged": true,
+  "purpose": "Recover original historical native bytes and exact owner/launch joins without relaunching subjects or substituting current tools for historical catalogs.",
+  "method": {
+    "archiveReader": "readCanonicalNativeArchive({backend:codex,sessionId},pgSessionArchiveStore())",
+    "archiveWorkspace": "default, selected by the maintained store",
+    "byteValidation": "Exact frozen manifest relpath, SHA256, bytes_raw, bounded decompression, embedded session_meta id and saved byte readback.",
+    "ownerJoin": "Exact frozen receipt ADV id + native id + owner equals selected nonsecret adv_sessions identity fields; non-null stamp owners must also match.",
+    "sourceValidation": "Maintained replayAgentSpecification/specificationPrompt and inspectIdopP001PromptArchive against the retained original native record; no normalization or render exclusions.",
+    "negativeControls": "For each retained launch artifact, independent owner, native-id and original-record substitutions must be rejected by the maintained verifier."
+  },
+  "sourceArtifacts": {
+    "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/manifest.json": {
+      "sha256": "b94c94f5624d6d430db14995451f21595cfc95f017e4843ddb3a5cb07150a1da",
+      "bytes": 23103
+    },
+    "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/adv-owner-launch.json": {
+      "sha256": "f8216bf235e25730b2bae2ee530a4b1d006f76859f23e91cd4b6237fc9be5e64",
+      "bytes": 14206644
+    },
+    "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/owner-native-source-joins.json": {
+      "sha256": "6a393cd87e42b5267da4af1dbeeadb3b83d9c8177b1c9b25e160187ae1798a4b",
+      "bytes": 25317
+    },
+    "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/maintained-prompt-validation.json": {
+      "sha256": "f8e472afc2248bc5a9858e0ac823fbd9cc737d55420c1ce1edba13e38bc546e7",
+      "bytes": 19143
+    }
+  },
+  "sourceHashes": {
+    "packages/operator-core/lib/session-port/source.ts": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+    "packages/operator-core/lib/session-archive.ts": "0dc782b35de2dae60e00b41cb8aaaa6927953d1ecc127bf6d9abfb9881d6203c",
+    "packages/operator-core/lib/agent-identities/idop-p001-baseline.ts": "dd94f52466517783359382d63d5ea9cf745af7e420079af2706b1a03b1d12263"
+  },
+  "controls": {
+    "requestedNativeSessions": 16,
+    "verifiedNativeSessions": 16,
+    "verifiedNativeBytes": 7632508,
+    "exactOwnerJoins": 16,
+    "launchArtifactNativePromptPass": 14,
+    "launchArtifactsUnavailableInSelectedAdvRows": [
+      "49805",
+      "49806"
+    ],
+    "verifiedPromptBundleFiles": 56,
+    "rejectedSubstitutions": 42
+  },
+  "rows": [
+    {
+      "advSessionId": "49608",
+      "nativeSessionId": "01a16461-be2d-70b1-b111-119b5ad7cebf",
+      "ownerId": "su-c3c0b1e6-c190-4abd-b543-801e26292824",
+      "stampOwner": "su-c3c0b1e6-c190-4abd-b543-801e26292824",
+      "nativeSha256": "5e5bf4cec0148a0ab95c2be8ad6d581f0136372155ae343bfdba87865fccf27b",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49608",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 534084,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be2d-70b1-b111-119b5ad7cebf.jsonl",
+      "sourceReplay": {
+        "replayRevision": "8d87b7a827b84512cf2fd415966088566502d2c1abc1e2484b6e6818474ca279",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "73d32d0b73e53d86e9915e991d3dd1d320ff9d745cf17f63af6c7a4ffd68d70e",
+        "renderedPromptBytes": 134234,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "60489b0e70c8e93cdf4ae3aba2f680feb882ad3d691c2b97731c33d47273bf0f"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp",
+          "judge-domain",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp",
+          "judge-domain",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "domain:judge-domain"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49608/manifest.json",
+        "sha256": "b21d0b7d8b19c65f30e5f1a81a9606b6093beca6b99b842fee30a2ff2357958b",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49609",
+      "nativeSessionId": "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+      "ownerId": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+      "stampOwner": null,
+      "nativeSha256": "bd618d905f876761841e8bba5d41d5a294bb49046ea8f4443aeacd80eae013f1",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49609",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 641034,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be99-7a71-a6b7-2c4e9c247c2d.jsonl",
+      "sourceReplay": {
+        "replayRevision": "2d9752665f50144cae52d312e9c34f6e3c27c31ac53793c42fd2a138fa690a38",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "6311e407299527a93a75452e215c507c3eb51c385bc0cdbfd09ceff880a1a83a",
+        "renderedPromptBytes": 144381,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "7356189c00ca528cdaa96f475486868aebd44d0f624c5dd4f014fcd0f66cf5cf"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-grading-integrity",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-grading-integrity",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "practice:judge-grading-integrity"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49609/manifest.json",
+        "sha256": "c847e32c7a234ab5429efd92a125b55cd0356c420f7a5578e602109d4def0153",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49610",
+      "nativeSessionId": "01a16461-bf1a-7622-b133-f81d3d8e3304",
+      "ownerId": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+      "stampOwner": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+      "nativeSha256": "4f15139a0d68175e5019697b342605284cf598159d926f450bed4ba4d40fd309",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49610",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 458709,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-bf1a-7622-b133-f81d3d8e3304.jsonl",
+      "sourceReplay": {
+        "replayRevision": "107dad72d6d29b8b71e1dae5132e5e3fa8a64a43e0e66daad33684da860f0686",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "39e2954a72a144f2ebfe1206a09d289a61d1cfcd686cf6432287d1ca114c0d1f",
+        "renderedPromptBytes": 134238,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "be8b4efe9029f6a5c16b831c5b736791befb2aee2abc2721f8a0a8a82f0a635f"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp",
+          "research-steward",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp",
+          "research-steward",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "domain:research-steward"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49610/manifest.json",
+        "sha256": "adb48522d884b92e2c30eff42b398a323b81235a7216ed81700fb31bea0b63bc",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49611",
+      "nativeSessionId": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+      "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+      "stampOwner": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+      "nativeSha256": "5c341fe128b589431c036fd7a22cf5f1e52a82fa5e384bc60ecb65860ac79220",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49611",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 475826,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be32-7870-ad38-42bd7cb2a49b.jsonl",
+      "sourceReplay": {
+        "replayRevision": "da4c514e0bf188592cfa4722d125b0e91d9792136ddd0548815c3671f2eb7019",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "564d56d76fb85dc0127eb097494de50da3a602ac5b932101401adeca9cee69a2",
+        "renderedPromptBytes": 145775,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "2503ea7f2933528207377b8181d579e5e5381d7025e39ef1d23332521f1481ef"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "papercup.audience-engineer",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "papercup.audience-engineer",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "audience:papercup.audience-engineer"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49611/manifest.json",
+        "sha256": "b3f56c7c018b8b785f53b67dbc9f22f767442828880c53107132ed3707a92c60",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49614",
+      "nativeSessionId": "01a16463-8479-7193-891e-a65deb499ea9",
+      "ownerId": "su-f9320b8d-e34e-4680-8c95-8c5fca7e15ce",
+      "stampOwner": null,
+      "nativeSha256": "b6fe659af97c269a319c2b237e543a52fe5c929389b71ef84b67c8bd18731f30",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49614",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 531497,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-13-26-01a16463-8479-7193-891e-a65deb499ea9.jsonl",
+      "sourceReplay": {
+        "replayRevision": "7b0fe48c9be0db9c1374b781f48efecb4d4568bf9a9f94f6983478d48fc17e28",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "0e36cfcb7e9751948977bb7ac6b6a2f94b66a8de3f70b5524a7995af993b1c87",
+        "renderedPromptBytes": 144366,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "047f4a23943e23575caaaf3aa292b08e56712acf4d686177ee76f156f5a82b30"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-acceptance",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-acceptance",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "practice:judge-acceptance"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49614/manifest.json",
+        "sha256": "0261746c13cb5f2266840b8ec0f25dca81048902c8b49f5a796c4f0030bc90bc",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49615",
+      "nativeSessionId": "01a16463-84c3-7d03-978e-7303d77fbb9c",
+      "ownerId": "su-8b79e88e-4682-4e23-81f0-f48e8c470473",
+      "stampOwner": null,
+      "nativeSha256": "e0d5b4228537e081d1637fd252b02f4f8e8d3fcbc9fb7d26b1970f44e7e05a0e",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49615",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 490725,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-13-26-01a16463-84c3-7d03-978e-7303d77fbb9c.jsonl",
+      "sourceReplay": {
+        "replayRevision": "3c61e8b29e3d45d4e689930bfb4841426f39b5fde56b6fd6a06ccda49055023f",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "3e0d30e4fb67d2ab9b352af304c532e9415f97855fb1a73075ead40d90c9acf6",
+        "renderedPromptBytes": 145614,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "a3e970f8dac19806a75b9707915d7afbca248a2c74d730b55d8897fc3decd760"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "operator.audience-engineer",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "operator.audience-engineer",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "audience:operator.audience-engineer"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49615/manifest.json",
+        "sha256": "991b09559f3c8287052e922a7530e437112a49d8079d8baa8861875955dabac6",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49616",
+      "nativeSessionId": "01a16463-8337-7521-ad8c-e5af96e5f09d",
+      "ownerId": "su-7403dff7-ecd1-4549-a0ad-f7ab2b882f83",
+      "stampOwner": null,
+      "nativeSha256": "a0e2ff9f26a9e6340f407ec5b3e81900d7ea1bd677e01b97964641c6d88ebae8",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49616",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 500033,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-13-25-01a16463-8337-7521-ad8c-e5af96e5f09d.jsonl",
+      "sourceReplay": {
+        "replayRevision": "6f8d8239aa2e0ef5810af97a10bdf38f3517a59565059112b266264e7f386496",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "5ecdd035f947af3e7181c7ad591bb0d411b7b835a5b2c9d6284f376dcdf277dc",
+        "renderedPromptBytes": 144058,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "0aebb863d77a9dae69d11d1df19d34008096b94392237f6a00f130f3d1366b91"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-gym",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-gym",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "practice:judge-gym"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49616/manifest.json",
+        "sha256": "d1787bff874fbd848a446cab11deb2f2d3e5726dfd1bcdf51b90f64330915388",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49625",
+      "nativeSessionId": "01a16464-8aef-7382-89de-9cda5ea357e5",
+      "ownerId": "su-c7e6e19c-c281-4e6f-b106-ea2f72a81255",
+      "stampOwner": null,
+      "nativeSha256": "17a9c7b031542981e924967e61563f4ac7c7681568df8757294a82878b8a1b0b",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49625",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 424525,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8aef-7382-89de-9cda5ea357e5.jsonl",
+      "sourceReplay": {
+        "replayRevision": "e1f19b497ab888d15a4697637ddc1bf37c33e021b560eb7b880215c4d70330eb",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "93ff2e7a699e3be8901bcf30d54418975a14b7ea157c6edba9bc39101e089b32",
+        "renderedPromptBytes": 144106,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "e98012db376776ae1ea915a6f71ae449cd5a28a6cff797bfe60cb4a97b080bde"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-ensemble",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "judge-ensemble",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "practice:judge-ensemble"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49625/manifest.json",
+        "sha256": "7cf6d2fd7fa5b85d7008a09a1a521dee61f5266cb42ed3e6ede736a37f638ec4",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49627",
+      "nativeSessionId": "01a16464-8e7c-7bb2-8ab3-f1ecf388cd86",
+      "ownerId": "su-10052bd8-7413-4fba-96e2-c7d78ffb5f57",
+      "stampOwner": null,
+      "nativeSha256": "f3c7dbb629aa0521daa386bda2537c321182f953424e490e24cbb1fcbeb72a3c",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49627",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 471032,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-34-01a16464-8e7c-7bb2-8ab3-f1ecf388cd86.jsonl",
+      "sourceReplay": {
+        "replayRevision": "5cb369932e8e50495f2a9b72d570107d600e47a420c9bc48569ad19ed3b8de1c",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "e06dcf1ec49218d8b1c847a0426d92d19d89d46e13895852e557e28ec0085aac",
+        "renderedPromptBytes": 146434,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "fa750ecc56d38b9bb2e7475ce93d02821cfdf3e8687d5d026c4f7e80a0282737"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "papercup.audience-novice",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "papercup.audience-novice",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "audience:papercup.audience-novice"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49627/manifest.json",
+        "sha256": "9fc84528fe532f5f12d3b4d7864976a355a7d1b491680fdf6854b61f4e37c584",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49629",
+      "nativeSessionId": "01a16464-8cb4-72b2-8ea7-aeaf0656cee8",
+      "ownerId": "su-97533b6c-b337-4f3f-a764-bb6879c9509c",
+      "stampOwner": null,
+      "nativeSha256": "d91290f18a4f4ffe1481f197ab0f640e488d40eac2e26a5eabf80abfb671015a",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49629",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 541995,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8cb4-72b2-8ea7-aeaf0656cee8.jsonl",
+      "sourceReplay": {
+        "replayRevision": "2f75b9d1732a8d67618869678afe60d5e71305af298f7bf9a6b5e51aec028f27",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "a1846d1c7b750ed23aebcffa754c74f049e2fd9a132727fc0f638f374ac3e0a6",
+        "renderedPromptBytes": 149491,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "991953a34274d9f27cd3b2e2cbb45a9d1a4afa414eb0974c3bb4b459a36cda64"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "objective:su.mode-drain"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49629/manifest.json",
+        "sha256": "560f7eab141917b1bd68670181cd14afbf0c3146f0b8e296d7fa3e74c4f57a20",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49631",
+      "nativeSessionId": "01a16464-a13f-7b03-9004-e069c62172a5",
+      "ownerId": "su-9b64fd17-7089-4b81-9302-d3539c800255",
+      "stampOwner": null,
+      "nativeSha256": "6d05344665eb79679873ebd416efa54ebfe84075d288a258ba220ebedd763650",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49631",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 477988,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-38-01a16464-a13f-7b03-9004-e069c62172a5.jsonl",
+      "sourceReplay": {
+        "replayRevision": "4e1031fa2e4a9bc74d2688a19fa1f7977936d09b8d9156876de8c9387c7cd3e0",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "462edf54ded4c71f7eb734b643789550e5285883867288d122f3ae2ba3e225a3",
+        "renderedPromptBytes": 148687,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "83d42da57c924000ecb3a8992cdcb2f505326952971aa25f24235c6fe45c1bf2"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "grade:su.mode-grade"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49631/manifest.json",
+        "sha256": "1fe68c921eb2e50e431ecb1a99cdcd24a358848efc1d74643e3405594b229115",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49632",
+      "nativeSessionId": "01a16464-8a9a-7ab2-89ac-89d9634e0705",
+      "ownerId": "su-d1800dfa-4da2-45b3-86fd-09f1e3120db9",
+      "stampOwner": null,
+      "nativeSha256": "011df09a4264b0eb80ea40604e6581e437167adaf86385e716edce63b7f382f8",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49632",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 567352,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8a9a-7ab2-89ac-89d9634e0705.jsonl",
+      "sourceReplay": {
+        "replayRevision": "2290fbd1e16a7a5bb8b31b929c60d587aaf845a522d408f8798763c1628b0618",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "04085240cecd3b6201b85b063a12ec3bb0dd951ffe4d630d0de52e37f19c5fd0",
+        "renderedPromptBytes": 177844,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "b5cd7d5da69511ed50e35311c2921275508e7a0bb805df3d26e041757692053e"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "goal:su.mode-goal"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49632/manifest.json",
+        "sha256": "e7dabe209ccf825b786074a45b9e59813e597c96eed815fb73bb17c312a9f6b3",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49633",
+      "nativeSessionId": "01a16464-d7b9-7e12-80e3-a996bcf668cd",
+      "ownerId": "su-d22cfeff-524c-4558-8aa1-de07236b4ff5",
+      "stampOwner": null,
+      "nativeSha256": "9e5a08ec25580c0ed74441b2ef261f3b36947b1b8083af58f6c693de939584d6",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49633",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 628989,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-14-52-01a16464-d7b9-7e12-80e3-a996bcf668cd.jsonl",
+      "sourceReplay": {
+        "replayRevision": "978570b306be946ab9a8379d98487a099f1f401abcd737d13e945618f086f1e8",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "caff8c8a59588fb62d7ac433a710c7069bee3e21227b48185929c17c3bd74840",
+        "renderedPromptBytes": 146201,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "988957cd26136cd51e039f43590027111dd9a7563021275919316521fba78d01"
+        ],
+        "inputCount": 15,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "operator.audience-novice",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "operator.audience-novice",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": [
+          "audience:operator.audience-novice"
+        ]
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49633/manifest.json",
+        "sha256": "1d3e351bc2810c8be605573db6da8b8643fe59d81dcd2d5d491296f24eae49ec",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49684",
+      "nativeSessionId": "01a16482-4946-7192-ae5e-ddfd93bcd549",
+      "ownerId": "su-e4e3f3ec-081e-418a-8476-90c04028b92d",
+      "stampOwner": null,
+      "nativeSha256": "962cb7d825655bc3f93472a063e7c1aeb150bc7db74be2621aea8ba82cf704ea",
+      "frozenReceipt": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49684",
+      "ownerJoin": true,
+      "role": null,
+      "principalId": "loopback",
+      "bytes": 355339,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T12-47-02-01a16482-4946-7192-ae5e-ddfd93bcd549.jsonl",
+      "sourceReplay": {
+        "replayRevision": "e3724948ecd9c6509751fb29e384f24618f33ebdf85b6cc933214abf6813593a",
+        "revisionMatches": true,
+        "renderedEffectiveMatches": true,
+        "renderedPromptSha256": "744634212b9f2e6ce5d498ec910aa133670d05ab514ccc9f036a1dea8e52e38d",
+        "renderedPromptBytes": 152623,
+        "nativePromptMatches": 1,
+        "nativeRecordLines": [
+          4
+        ],
+        "nativeTextSha256": [
+          "dd356024688063354a7fd3f7438cffb1f83131ecb4796884feb6817bc7415952"
+        ],
+        "inputCount": 13,
+        "inputRefs": [
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "base",
+          "papercusp-engineer",
+          "papercusp",
+          "su-collaborator",
+          "effective-launch-papercusp",
+          "inline:su#0",
+          "launch-state-v1",
+          "rendered:effective"
+        ],
+        "stack": []
+      },
+      "verifier": {
+        "manifest": "~/.papercusp/evidence/idop-p001-native-archive-recovery-20261025-v1/prompt-49684/manifest.json",
+        "sha256": "12e3097e1601cdabb1b33f4b4dcdf486225265b0ebfc0ddf94d660810fdccf5e",
+        "filesChecked": 4,
+        "corruptionsRejected": [
+          "owner-substitution",
+          "native-id-substitution",
+          "original-record-substitution"
+        ]
+      },
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement."
+    },
+    {
+      "advSessionId": "49805",
+      "nativeSessionId": "01a1651d-5ead-7112-80bc-ba24050302f2",
+      "ownerId": "su-aed3855d-6698-420c-8f67-98a46a62bfe2",
+      "stampOwner": null,
+      "nativeSha256": "ce21fb8defe03f6e006dc635fa96f369a27af685f0a4109f5500f8b330edb5cf",
+      "frozenReceipt": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/advSessionId=49805",
+      "ownerJoin": true,
+      "role": "security-reviewer",
+      "principalId": null,
+      "bytes": 244369,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T15-36-26-01a1651d-5ead-7112-80bc-ba24050302f2.jsonl",
+      "sourceReplay": null,
+      "verifier": null,
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement.",
+      "nativeRoleRefusals": [
+        {
+          "nativeLine": 35,
+          "callId": "call_0dd1eb35a9ee48dea4842e940c3fa53d",
+          "outputSha256": "8af12168ac0f66c8aeb3dfe4de398f2f0e02796f335c6e106541f605a1b89d7e",
+          "observedRefusals": [
+            "coord:whoami",
+            "agent_tools:list"
+          ]
+        },
+        {
+          "nativeLine": 42,
+          "callId": "call_b7d04eca82c740329143e33ede8b111e",
+          "outputSha256": "db696d11426edc1a242f0e3d6648a16c5be5373fb0c0f3061e613700589d89ab",
+          "observedRefusals": [
+            "coord:send"
+          ]
+        }
+      ]
+    },
+    {
+      "advSessionId": "49806",
+      "nativeSessionId": "01a1651d-5d92-7050-b64b-1dd4e5d60119",
+      "ownerId": "su-e5f36f51-c7d4-419a-8b9b-357d9e02e1ce",
+      "stampOwner": null,
+      "nativeSha256": "af6c4964d8fd704e9cbf8cff03baa0481b3e454f2413318249e32999325951c5",
+      "frozenReceipt": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/advSessionId=49806",
+      "ownerJoin": true,
+      "role": "infra-reviewer",
+      "principalId": null,
+      "bytes": 289011,
+      "archiveRelpath": "sessions/2026/10/22/rollout-2026-10-22T15-36-25-01a1651d-5d92-7050-b64b-1dd4e5d60119.jsonl",
+      "sourceReplay": null,
+      "verifier": null,
+      "catalogAndArguments": "OPEN: no complete source-bound native catalog/annotation partition or effective handler argument census is accepted by this supplement.",
+      "nativeRoleRefusals": [
+        {
+          "nativeLine": 40,
+          "callId": "call_ae372941088940bba43ec103b8271a90",
+          "outputSha256": "b06a83aea10f353e4a2fdf47ab4c862582c7971f5b6f3674762f0a8648e290a3",
+          "observedRefusals": [
+            "coord:whoami"
+          ]
+        },
+        {
+          "nativeLine": 49,
+          "callId": "call_1d0f81562a3d4277852e709e765d3b65",
+          "outputSha256": "d7af3a417995fe5ab8d8cde4ce3883cff55c9f3a8ce863f5115e87410024b0c8",
+          "observedRefusals": [
+            "agent_tools:list"
+          ]
+        },
+        {
+          "nativeLine": 56,
+          "callId": "call_f7a8df105eb146cd95516be05489738a",
+          "outputSha256": "05f2c97666d1426d4bafe883369f6709dd6fc3e9c01882c61e3b441e50066bb1",
+          "observedRefusals": [
+            "coord:send"
+          ]
+        }
+      ]
+    }
+  ],
+  "remaining": [
+    "Complete source-bound native tool-name/schema/annotation partitions and effective handler argument scopes for the frozen role/identity/stack population.",
+    "Independent enumeration and observations for applicable legal mode/fleet combinations beyond the six named retained variations.",
+    "The four historical vault setting observations remain UNKNOWN; current fixture passes do not recreate the historical arm.",
+    "Genuine-source question conv-mvjy4dsp-0000-a44413cc2aeb4f568e412f6d1f81d163 remains open with no accepted answer or posts as read this continuation; activation remains held by D-023.",
+    "P001 canonical independent acceptance, P024 dependency, current activation audit, ordered implementation milestones and verified shipment remain open."
+  ],
+  "limits": [
+    "Archive owner metadata may be null; this supplement joins original owners through exact frozen receipts and ADV ids rather than inferring an owner.",
+    "Launch replay/native prompt proof does not prove that a selected mode or fleet layer was applied when it is absent from launch inputs.",
+    "The reviewer native records authenticate bounded role refusals; they do not replace the missing launch artifacts or a complete native catalog.",
+    "Native raw transcripts and prompt/source bundles remain private evidence files; the repository supplement contains digests, identity joins and bounded results only.",
+    "No new observer, role impersonation, mode cycle, grant change, personal payload access, runtime deployment or live gate operation was used."
+  ]
+}

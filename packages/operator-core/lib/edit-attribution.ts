@@ -51,7 +51,7 @@ export interface RecordEditAttributionInput {
  */
 export async function recordEditAttribution(
   input: RecordEditAttributionInput,
-  opts: { strict?: boolean } = {},
+  opts: { strict?: boolean; awaitSymbols?: boolean } = {},
 ): Promise<void> {
   try {
     const files = (input.files ?? []).filter(Boolean);
@@ -134,7 +134,7 @@ export async function recordEditAttribution(
     const acquiredVia = lifecycleLabel ? rawIntent : null;
 
     // One row per file via unnest — a single round-trip on the hot path.
-    await sql`
+    const inserted = await sql<{ id: string; file: string }[]>`
       INSERT INTO harness_shared.edit_attribution_ledger
         (repo_root, file, agent_id, session_id, contributor, workspace_id,
          harness_slug, work_item_id, plan_slug, intent, acquired_via, dispatch_call_id)
@@ -144,7 +144,19 @@ export async function recordEditAttribution(
              ${input.dispatchCallId ?? null}
         FROM unnest(${files}::text[]) AS f
       ON CONFLICT DO NOTHING
+      RETURNING id::text, file
     `;
+
+    // P-007 (code-intel-delivery-and-outcomes-2026-10-26): stamp the enclosing
+    // function/class names of the edit on the rows just written. It runs off the
+    // lock path (git show + one compiler parse per file) unless a caller awaits
+    // it; a capture that cannot measure leaves `symbols` NULL (unknown).
+    if (Array.isArray(inserted) && inserted.length > 0) {
+      const capture = import('./code-intelligence/edited-symbols')
+        .then(({ fillEditedSymbols }) => fillEditedSymbols(inserted, input.repoRoot, sql))
+        .catch(() => 0);
+      if (opts.awaitSymbols) await capture;
+    }
   } catch (error) {
     // best-effort: edit attribution must NEVER break the lock path — except for the
     // one caller that needs the row to exist (strict, below).
@@ -273,7 +285,10 @@ export async function readEditAttributionRoster(opts: {
 
 /** The Papercusp provenance a git-sync per-agent commit carries in its trailers (P-004). */
 export interface ParsedCommitAttribution {
+  /** The first `Papercusp-Agent:` author. */
   agent?: string;
+  /** Every `Papercusp-Agent:` author, when a multi-author commit names more than one. */
+  agents?: string[];
   workItems: string[];
   sessionId?: string;
   planSlug?: string;
@@ -287,12 +302,17 @@ export interface ParsedCommitAttribution {
  */
 export function parsePapercuspTrailers(commitBody: string): ParsedCommitAttribution {
   const out: ParsedCommitAttribution = { workItems: [] };
+  const agents: string[] = [];
   for (const raw of (commitBody ?? '').split('\n')) {
     const m = /^(Papercusp-Agent|Papercusp-Work-Item|Papercusp-Session|Papercusp-Plan):\s*(.+)$/.exec(raw.trim());
     if (!m) continue;
     const val = m[2].trim();
-    if (m[1] === 'Papercusp-Agent') out.agent = val;
-    else if (m[1] === 'Papercusp-Work-Item') out.workItems = val.split(',').map((s) => s.trim()).filter(Boolean);
+    // A multi-author commit (WI-6554700010029864) names several agents; the first is primary.
+    if (m[1] === 'Papercusp-Agent') {
+      if (!agents.includes(val)) agents.push(val);
+      out.agent = agents[0];
+      if (agents.length > 1) out.agents = [...agents];
+    } else if (m[1] === 'Papercusp-Work-Item') out.workItems = val.split(',').map((s) => s.trim()).filter(Boolean);
     else if (m[1] === 'Papercusp-Session') out.sessionId = val;
     else if (m[1] === 'Papercusp-Plan') out.planSlug = val;
   }

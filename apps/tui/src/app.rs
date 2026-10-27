@@ -414,6 +414,7 @@ pub enum Action {
     /// Phase 2a) — the run loop POSTs `/card-response`. The card stays visible
     /// until its authoritative close so a failed request can be retried. `payload` is the
     /// submit body (`{picks:[…]}` / `{value:…}`), absent for decline/cancel.
+    OpenCardLink { correlation_id: String },
     CardRespond {
         conversation_id: String,
         correlation_id: String,
@@ -5770,6 +5771,9 @@ impl App {
             return Action::Render;
         };
         let allow_decline = card.allow_decline;
+        if code == KeyCode::Char('o') && card.secure_link.is_some() {
+            return Action::OpenCardLink { correlation_id: card.correlation_id.clone() };
+        }
         let is_choice = matches!(
             card.presentation,
             CardPresentation::Radio { .. } | CardPresentation::Checkbox { .. }

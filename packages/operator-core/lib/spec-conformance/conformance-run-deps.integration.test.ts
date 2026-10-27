@@ -41,6 +41,7 @@ describe('conformance test-ledger evidence population', () => {
       passed?: number;
       failed?: number;
       includeDetails?: boolean;
+      testLayer?: 'unit';
     } = {},
   ) {
     const finishedAt = new Date(Date.UTC(2026, 9, 15, 0, minute));
@@ -48,6 +49,7 @@ describe('conformance test-ledger evidence population', () => {
     const worktreeDirty = options.worktreeDirty ?? false;
     const executionDetails = options.includeDetails === false ? null : {
       schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+      ...(options.testLayer ? { testLayer: options.testLayer } : {}),
       root: '/repo',
       filePath: file,
       runGroupId: 'conformance-run',
@@ -86,6 +88,20 @@ describe('conformance test-ledger evidence population', () => {
     await record('local', 'fail', 1);
     await record('mutation-probe', 'pass', 2);
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'fail', value: 0 });
+  });
+
+  it('qualifies equivalent content before choosing per-file evidence and retains newer negative guards', async () => {
+    const contentEquivalence = async () => ({ equivalent: true, reason: 'same canonical dependency closure' });
+    await record('local', 'error', 1, input.workspaceId, { commitSha: null });
+    await record('ci', 'pass', 2, input.workspaceId, { commitSha: 'b'.repeat(40), testLayer: 'unit' });
+    expect(await judgeTestsFromLedger({ ...input, contentEquivalence }, db.sql)).toMatchObject({ verdict: 'pass', value: 1 });
+    await record('local', 'error', 3, input.workspaceId, { commitSha: null });
+    expect(await judgeTestsFromLedger({ ...input, contentEquivalence }, db.sql)).toMatchObject({ verdict: 'error' });
+    await record('local', 'fail', 4);
+    expect(await judgeTestsFromLedger({ ...input, contentEquivalence }, db.sql)).toMatchObject({ verdict: 'fail' });
+    await record('ci', 'pass', 5, input.workspaceId, { commitSha: 'b'.repeat(40), testLayer: 'unit', testNamePattern: 'only one' });
+    expect(await judgeTestsFromLedger({ ...input, contentEquivalence }, db.sql))
+      .toMatchObject({ verdict: 'error', detail: expect.stringContaining('name-filtered') });
   });
 
   it.each(['pass', 'fail'])('keeps current-build evidence after a newer foreign-build %s', async status => {

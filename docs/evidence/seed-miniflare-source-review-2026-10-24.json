@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "plan": "seed-miniflare-cache-census-2026-10-24",
+  "workItem": "WI-6554700010026184",
+  "requirement": "R-3",
+  "verification": "manual",
+  "verdict": "ACCEPT",
+  "verdictRef": "thread-post:1203881",
+  "reviewTask": "WI-6554700010027182",
+  "reviewer": "su-ba52ba2d-0989-4515-a560-2277739c6570",
+  "reviewerSelection": "Original platform-selected answering owner from conv-request-86d3891b20d374884a7d889e983e396ae103567b6543f78c4cd4690cf7b7256c; refreshed the review after the separate workspace-lock source change.",
+  "canonicalEligibility": {
+    "tool": "rubrics:check-approver",
+    "rubricRef": "acceptance-seed-miniflare-cache-census-2026-10-24",
+    "eligible": true,
+    "reason": "eligible",
+    "applier": "su-843e294a-e363-4b17-b899-52a3c0f75fb6"
+  },
+  "authorsExcluded": [
+    "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+    "su-449b148a-0f8b-4323-9824-70eb8a71ad59",
+    "su-501c9929-ca51-40f3-a17f-7f69304b0906"
+  ],
+  "subject": {
+    "commit": "695fd9aa05ff8f5e840d4d5654449b53a1e96fc4",
+    "sourcePath": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts",
+    "sourceSha256": "1bafea8546256071aecced77fa86260c37d4f14e45770cff486ed04a38c4f46c",
+    "testPath": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.test.ts",
+    "testSha256": "2eb59e83a68a7fc91ee3052be0b97a9d83b9d58a6e5a149ec2f5f58a4d888c00"
+  },
+  "reviewerRun": {
+    "id": 21878896,
+    "recoveryId": "cf490919-a715-44f7-a775-c634e8c8925e",
+    "reportedResult": "exit0/pass",
+    "reportedCommit": "695fd9aa05ff8f5e840d4d5654449b53a1e96fc4",
+    "reportedPreRunTestPath": "clean, uncommitted=0, unknown=0"
+  },
+  "completeVerdict": "IMMUTABLE REFRESHED R-3 VERDICT — ACCEPT\n\nSubject bytes:\n- seed-frozen-execution.ts SHA256 1bafea8546256071aecced77fa86260c37d4f14e45770cff486ed04a38c4f46c\n- seed-frozen-execution.test.ts SHA256 2eb59e83a68a7fc91ee3052be0b97a9d83b9d58a6e5a149ec2f5f58a4d888c00\n- HEAD 695fd9aa05ff8f5e840d4d5654449b53a1e96fc4; both HEAD blobs independently hash to the values above.\n\nSource review:\n- Miniflare allowance remains exact and narrow: root node_modules/.mf only, exactly one cf.json, regular singly-linked file, non-null non-array JSON object.\n- O_NOFOLLOW|O_NONBLOCK directory/member opens and parent/directory/member lstat↔fstat identity checks cover replacement before/after read. Missing/extra/symlink/FIFO/directory/hardlink/malformed/null/array/scalar cases refuse.\n- Errors remain generic and cache values are not disclosed. Exclusion propagates into binder; loaded .mf paths and descendants refuse.\n- Existing hidden-entry, package identity/link, generation/tree, security-file and loaded-security guards remain.\n- EI-26849701831136773 supplemental workspace-lock change is sound: root pins retain precedence; a supplemental local-lock pin can bind only an actually scanned installed path; absent supplemental graph entries are not install obligations; wrong version or removed binding still refuses. It does not broaden the Miniflare allowance.\n\nProof:\n- Saved maintained ledger 21878765 is pass but worktreeDirty:true and did not expose an executed-source map through the available receipt. I therefore treated saved proof as insufficient for exact-byte binding.\n- Fresh allowed focused run: recovery cf490919-a715-44f7-a775-c634e8c8925e, ledger 21878896, exit 0/pass at HEAD 695fd9aa. Pre-run provenance reports the named test path clean, uncommitted=0, unknown=0. The focused file exercises the unchanged Miniflare cases plus the new workspace-local lock case.\n- Canonical supplemental artifact runtime-migration/p006-workspace-lock-redgreen-501c.json was read completely; it binds the exact hashes, red 21878747, green 21878765, invariants and limits.\n\nIndependent lineage: answering owner su-ba52ba2d-0989-4515-a560-2277739c6570 is outside authors 843e294a, 449b148a and 501c9929. Review task WI-6554700010027182 is done. No repository/artifact edits or prohibited surfaces used.",
+  "limits": [
+    "Manual independent implementation review of these exact bytes; the stored run assertions are the reviewer's observation and require the canonical ledger/provenance read at acceptance.",
+    "Old ACCEPT1203778 and ACCEPT1203795 remain scoped to their older bytes.",
+    "P-002 and final plan acceptance remain open until all current evidence obligations pass.",
+    "Parent original-source admission, GO and shipment remain unresolved."
+  ]
+}

@@ -1,0 +1,463 @@
+{
+  "schemaVersion": 1,
+  "plan": "git-sync-authored-source-custody-2026-10-22",
+  "workItem": "WI-6554700010022170",
+  "purpose": "Stable verification prerequisite folded from R5 into R1-R4. This manifest is a case/run contract, not a passing receipt.",
+  "governingRefs": [
+    "D-005",
+    "D-008",
+    "thread-post:1199051"
+  ],
+  "canonicalCommand": "npm run test:file -- packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+  "cleanCommand": "npm run lint:as-committed -- test:file --any --keep --ref=<exact-committed-ref> -- packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+  "requiredCensus": {
+    "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts": 277,
+    "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts": 60
+  },
+  "matrixCases": [
+    {
+      "id": "C-001",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > detects the unrooted-manifest persistence mutation before consuming shared evidence"
+    },
+    {
+      "id": "C-002",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > detects the wrong-payload persistence mutation before consuming shared evidence"
+    },
+    {
+      "id": "C-003",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > keeps the ordinary generated-phantom behavior without claiming custody"
+    },
+    {
+      "id": "C-004",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > keeps the ordinary no-index-entry behavior without claiming custody"
+    },
+    {
+      "id": "C-005",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > keeps the ordinary tracked-deletion behavior without claiming custody"
+    },
+    {
+      "id": "C-006",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > leaves a different-byte after-capture restoration pending without writing the worktree"
+    },
+    {
+      "id": "C-007",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > leaves a different-byte deleted-snapshot restoration pending without writing the worktree"
+    },
+    {
+      "id": "C-008",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > leaves a same-byte after-capture restoration pending without writing the worktree"
+    },
+    {
+      "id": "C-009",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > leaves a same-byte deleted-snapshot restoration pending without writing the worktree"
+    },
+    {
+      "id": "C-010",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > preserves unknown ownership while allowing an unrelated attribution group to commit"
+    },
+    {
+      "id": "C-011",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses a commit object masquerading as the exact custody tree"
+    },
+    {
+      "id": "C-012",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses a mismatched existing recovery ref instead of overwriting it"
+    },
+    {
+      "id": "C-013",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses known-owner gitlink entries before any consuming write"
+    },
+    {
+      "id": "C-014",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses known-owner unmerged entries before any consuming write"
+    },
+    {
+      "id": "C-015",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on blob failure without consuming the shared blob"
+    },
+    {
+      "id": "C-016",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on empty failure without consuming the shared blob"
+    },
+    {
+      "id": "C-017",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on env failure without consuming the shared blob"
+    },
+    {
+      "id": "C-018",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on manifest failure without consuming the shared blob"
+    },
+    {
+      "id": "C-019",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on payload failure without consuming the shared blob"
+    },
+    {
+      "id": "C-020",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on readback failure without consuming the shared blob"
+    },
+    {
+      "id": "C-021",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on ref failure without consuming the shared blob"
+    },
+    {
+      "id": "C-022",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on throw failure without consuming the shared blob"
+    },
+    {
+      "id": "C-023",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses the whole attributed phase on tree failure without consuming the shared blob"
+    },
+    {
+      "id": "C-024",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses unknown-owner gitlink entries before any consuming write"
+    },
+    {
+      "id": "C-025",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > refuses unknown-owner unmerged entries before any consuming write"
+    },
+    {
+      "id": "C-026",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100644, known owner, sha1)"
+    },
+    {
+      "id": "C-027",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100644, known owner, sha256)"
+    },
+    {
+      "id": "C-028",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100644, unknown owner, sha1)"
+    },
+    {
+      "id": "C-029",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100644, unknown owner, sha256)"
+    },
+    {
+      "id": "C-030",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100755, known owner, sha1)"
+    },
+    {
+      "id": "C-031",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100755, known owner, sha256)"
+    },
+    {
+      "id": "C-032",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100755, unknown owner, sha1)"
+    },
+    {
+      "id": "C-033",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (100755, unknown owner, sha256)"
+    },
+    {
+      "id": "C-034",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (120000, known owner, sha1)"
+    },
+    {
+      "id": "C-035",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (120000, known owner, sha256)"
+    },
+    {
+      "id": "C-036",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (120000, unknown owner, sha1)"
+    },
+    {
+      "id": "C-037",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "title": "source custody through real attributed commits > roots exact bytes, mode, metadata and an idempotent GC-safe receipt (120000, unknown owner, sha256)"
+    },
+    {
+      "id": "C-038",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody blob failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-039",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody empty failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-040",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody env failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-041",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody handles a late staged disappearance before catch-all (refusal)"
+    },
+    {
+      "id": "C-042",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody handles a late staged disappearance before catch-all (success)"
+    },
+    {
+      "id": "C-043",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at after-capture (real outer pipeline)"
+    },
+    {
+      "id": "C-044",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at attributed-refresh (real outer pipeline)"
+    },
+    {
+      "id": "C-045",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at attributed-stage (real outer pipeline)"
+    },
+    {
+      "id": "C-046",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at catch-all-refresh (real outer pipeline)"
+    },
+    {
+      "id": "C-047",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at catch-all-stage (real outer pipeline)"
+    },
+    {
+      "id": "C-048",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps different-byte restoration pending at deleted-snapshot (real outer pipeline)"
+    },
+    {
+      "id": "C-049",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at after-capture (real outer pipeline)"
+    },
+    {
+      "id": "C-050",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at attributed-refresh (real outer pipeline)"
+    },
+    {
+      "id": "C-051",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at attributed-stage (real outer pipeline)"
+    },
+    {
+      "id": "C-052",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at catch-all-refresh (real outer pipeline)"
+    },
+    {
+      "id": "C-053",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at catch-all-stage (real outer pipeline)"
+    },
+    {
+      "id": "C-054",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody keeps same-byte restoration pending at deleted-snapshot (real outer pipeline)"
+    },
+    {
+      "id": "C-055",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody manifest failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-056",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody payload failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-057",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 100644 with known owner through normal branch publication"
+    },
+    {
+      "id": "C-058",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 100644 with unknown owner through normal branch publication"
+    },
+    {
+      "id": "C-059",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 100755 with known owner through normal branch publication"
+    },
+    {
+      "id": "C-060",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 100755 with unknown owner through normal branch publication"
+    },
+    {
+      "id": "C-061",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 120000 with known owner through normal branch publication"
+    },
+    {
+      "id": "C-062",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves 120000 with unknown owner through normal branch publication"
+    },
+    {
+      "id": "C-063",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody readback failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-064",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody ref failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-065",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody refuses known-owner gitlink in the outer pipeline"
+    },
+    {
+      "id": "C-066",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody refuses known-owner unmerged in the outer pipeline"
+    },
+    {
+      "id": "C-067",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody refuses unknown-owner gitlink in the outer pipeline"
+    },
+    {
+      "id": "C-068",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody refuses unknown-owner unmerged in the outer pipeline"
+    },
+    {
+      "id": "C-069",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody rejects the unrooted-manifest mutation in the outer pipeline"
+    },
+    {
+      "id": "C-070",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody rejects the wrong-payload mutation in the outer pipeline"
+    },
+    {
+      "id": "C-071",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody retains the ordinary generated-phantom control in the outer pipeline"
+    },
+    {
+      "id": "C-072",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody retains the ordinary no-index-entry control in the outer pipeline"
+    },
+    {
+      "id": "C-073",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody retains the ordinary tracked-deletion control in the outer pipeline"
+    },
+    {
+      "id": "C-074",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody tree failure aborts before attributed/catch-all consumers (real outer pipeline)"
+    },
+    {
+      "id": "C-075",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > STRANDING GUARD (2026-06-30 root cause): a nested embedded git repo with NO commit does NOT strand the tree — excludes it + retries + commits the real work"
+    },
+    {
+      "id": "C-076",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > STRANDING GUARD: a FAILED attributed add must fall through to the catch-all — the group and remainder still commit"
+    },
+    {
+      "id": "C-077",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > STRANDING GUARD (WI-1316 / 8186adfb5): a FAILED attributed commit (index.lock race) must NOT skip the catch-all — the remainder still commits"
+    },
+    {
+      "id": "C-078",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves an active peer file lease during success (real outer pipeline)"
+    },
+    {
+      "id": "C-079",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "title": "runGitSync (real git, no submodule) > source custody preserves an active peer file lease during refusal (real outer pipeline)"
+    }
+  ],
+  "acceptanceRules": [
+    "Run both files without a title filter. Every enumerated matrix case must be collected, executed and passed; the complete file census must equal requiredCensus, with zero skipped/todo and childSubstituted=0. File-level green alone is insufficient.",
+    "Compare all three exact source/test fingerprints before reuse and after execution; use canonical clean as-committed receipts for final proof.",
+    "A filtered fixture run proves only selected cases, never the other collected-but-skipped cases.",
+    "Each mutation needs same-invocation passing baseline and passing copy baseline, then a caught mutant. Compare subject and test identities and canonical binding refs. Never pipe the mutation test command.",
+    "Missing/unreadable/unresolved evidence is UNKNOWN; observed failure, omission, skipped required case or identity mismatch is BROKEN.",
+    "An approved amendment may retire scored R5 only after folding every run/case/source/mutation obligation into R1-R4 verification and explicitly disposing both historical R5 auto clauses. No verification obligation is waived."
+  ],
+  "fingerprints": {
+    "packages/operator-core/lib/harness/git-sync/run-git-sync.ts": "cedb18821db45bcb10ce860d1a29870fbf4aedde0db99acb41eac27052032f49",
+    "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts": "e2a7519bf7c8ec2d85de7d7fcbeaa7611aa68d2b111dace88bd46b07836d8d0e",
+    "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts": "79f9bae66f14ab7dc3aa15ec17ec1027dfae194f0de2c31956741fc9fc99bca0"
+  },
+  "priorEvidence": {
+    "suiteRunIds": [
+      21802636,
+      21802637
+    ],
+    "suiteResult": "335 passed, 0 skipped on prior test fingerprint d7af; the new two lease cases require current proof",
+    "mutationBindings": [
+      66102,
+      66104,
+      66106
+    ]
+  },
+  "mutationControls": [
+    {
+      "specId": "CUSTODY-RECOVER-P001",
+      "scenarioId": "joint-payload-manifest-root",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "selector": "roots exact bytes",
+      "log": "/tmp/byoc-custody-p001-clean-mutation-recover.log"
+    },
+    {
+      "specId": "CUSTODY-FAILURE-P001",
+      "scenarioId": "blob-read-failure",
+      "file": "packages/operator-core/lib/harness/git-sync/git-sync-attribution-commit.test.ts",
+      "selector": "refuses the whole attributed phase on blob failure",
+      "log": "/tmp/byoc-custody-p001-clean-mutation-failure.log"
+    },
+    {
+      "specId": "CUSTODY-ABORT-P001",
+      "scenarioId": "no-generic-catch-all-after-custody",
+      "file": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+      "selector": "source custody blob failure aborts",
+      "log": "/tmp/byoc-custody-p001-clean-mutation-abort.log",
+      "currentness": "Test file changed: reconcile current lineage before reuse."
+    }
+  ]
+}

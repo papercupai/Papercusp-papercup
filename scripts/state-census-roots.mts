@@ -4,7 +4,6 @@ import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/b
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration, peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, mergeNestedCensusRoots, virtualenvCacheDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
 import { readdir, lstat, readFile } from 'node:fs/promises';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
-import { createRequire } from 'node:module';
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
 import postgres from 'postgres';
@@ -24,6 +23,7 @@ import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type IndexedCensusWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
+import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 
 /** Reuse the setup writer's exact ownership rules across workspace homes. */
 export async function readWorkspaceSetupHomes(
@@ -122,7 +122,7 @@ const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
 const credentials = await accountCredentialCensusProducer(hostCatalogs
   ? await readWorkspaceCensusAccounts(readRegistry().workspaces) : []);
-const checkpointLogDir = options.checkpointLogDir ?? createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts').releaseConfig().checkpointLogDir;
+const checkpointLogDir = options.checkpointLogDir ?? checkpointLogDirFromEnv();
 const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
   { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',

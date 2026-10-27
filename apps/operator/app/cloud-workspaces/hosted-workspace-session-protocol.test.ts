@@ -11,12 +11,21 @@ import {
   readHostedWorkspaceConnector,
   readHostedWorkspaceId,
   readHostedWorkspaceTicket,
+  readHostedWorkspaceSocketOrigin,
   utf8ToBase64,
 } from "./hosted-workspace-session-protocol";
 
 const TICKET = `ht_${"a".repeat(43)}`;
 
 describe("hosted workspace browser protocol", () => {
+  it("uses the authenticated ticket's HTTPS socket origin and rejects unsafe origins", () => {
+    expect(readHostedWorkspaceSocketOrigin({}, "http://localhost:3170")).toBe("http://localhost:3170");
+    expect(readHostedWorkspaceSocketOrigin({ socketOrigin: "https://cloud.example" }, "http://localhost:3170"))
+      .toBe("https://cloud.example");
+    for (const socketOrigin of ["http://cloud.example", "https://cloud.example/path", "https://user@cloud.example", "file:///tmp/socket", null]) {
+      expect(() => readHostedWorkspaceSocketOrigin({ socketOrigin }, "http://localhost:3170")).toThrow();
+    }
+  });
   it("binds ticket exchange to the selected hosted workspace and same-origin socket", () => {
     expect(
       readHostedWorkspaceId({

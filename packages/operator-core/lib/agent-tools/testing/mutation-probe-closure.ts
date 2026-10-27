@@ -15,7 +15,9 @@ const externalPackages: Plugin = {
     const nested = Symbol('nested');
     pluginBuild.onResolve({ filter: /^[^./]/ }, async (args) => {
       if (args.pluginData === nested || isAbsolute(args.path)) return undefined;
-      if (isBuiltin(args.path)) return { path: args.path, external: true };
+      // The host chooses this builtin only on Bun; it is provided by that
+      // interpreter, never by a workspace file. Keep local source edges below.
+      if (isBuiltin(args.path) || args.path === 'bun:sqlite') return { path: args.path, external: true };
       const resolved = await pluginBuild.resolve(args.path, {
         kind: args.kind, resolveDir: args.resolveDir, importer: args.importer, pluginData: nested,
       });

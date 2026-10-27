@@ -8,7 +8,8 @@
  * top-k with the frozen, content-versioned search rubric, and scores each ranking
  * with `evaluateRelevance` from `@papercusp/search-core`.
  *
- * READ-ONLY against PG. It writes one JSON artifact to disk and nothing else.
+ * Reads the search corpus and persists paid judge grades in PostgreSQL.
+ * Writes the JSON report and a per-query journal to disk.
  *
  * ⚠ COSTS MONEY: ~1,500 judge calls at 150 queries x k=10 ≈ $12-15. Always
  * `--dry-run` first — it does the sampling and the retrieval, prints what would

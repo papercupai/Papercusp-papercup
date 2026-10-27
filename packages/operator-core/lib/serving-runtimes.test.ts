@@ -236,21 +236,33 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
       expect(e.unknownReason?.detail).toMatch(/runtime-vintage boot sha and process start cannot prove/);
     });
 
-    it.each([
-      ['contains the source change', true, true],
-      ['does not contain the source change even when the process started later', false, false],
-    ])('uses the healthy bundle health SHA when it %s', (_label, blobContains, expected) => {
+    it('accepts a healthy bundle whose health SHA contains the source change', () => {
       const e = evaluateServingRuntime(
         probe({
           runtime: 'bg-host',
           buildShaSource: 'health',
-          blobContains,
+          blobContains: true,
           startedAtMs: START,
           fileMtimeMs: EDIT,
           bundle: { stale: false, servingBuiltAtMs: null },
         }),
       );
-      expect(e).toMatchObject({ containsChange: expected, method: 'blob', unknownReason: null });
+      expect(e).toMatchObject({ containsChange: true, method: 'blob', unknownReason: null });
+    });
+
+    it('does not infer absence from an older baked commit in a dirty canonical bundle', () => {
+      const e = evaluateServingRuntime(
+        probe({
+          runtime: 'bg-host',
+          buildShaSource: 'health',
+          blobContains: false,
+          startedAtMs: START,
+          fileMtimeMs: EDIT,
+          bundle: { stale: false, servingBuiltAtMs: null },
+        }),
+      );
+      expect(e).toMatchObject({ containsChange: null, method: null, unknownReason: { code: 'insufficient-data' } });
+      expect(e.unknownReason?.detail).toMatch(/uncommitted source/);
     });
 
     it('a bundled canonical-tree host with no health bundle identity is unknown', () => {

@@ -27,6 +27,8 @@
 // Usage:
 //   node scripts/sync-template-kit-vendored.mjs           # apply
 //   node scripts/sync-template-kit-vendored.mjs --check   # report drift, exit 1 if any
+//   node scripts/sync-template-kit-vendored.mjs --target=apps/example --check
+// Explicit targets derive a materialized app's kit too; omitted targets are untouched.
 //
 // The byte-equality GUARD stays template-bundle-integrity.test.ts (operator-core);
 // this script is the matching WRITER. Both import isVendorDevOnly and
@@ -34,7 +36,7 @@
 // verifies exactly what this derives (no lockstep copies to keep in sync).
 
 import { promises as fs } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isVendorDevOnly, vendoredManifestOf } from './lib/vendored-manifest.mjs';
 
@@ -43,6 +45,7 @@ const CANONICAL = join(ROOT, 'libs', 'generic', 'template-kit');
 const TEMPLATES = join(ROOT, 'templates');
 const KIT_PKG = '@papercusp/template-kit';
 const CHECK_MODE = process.argv.includes('--check');
+const EXTRA_TARGETS = process.argv.slice(2).filter(arg => arg.startsWith('--target=')).map(arg => arg.slice('--target='.length));
 
 const exists = (p) => fs.stat(p).then(() => true, () => false);
 
@@ -94,6 +97,21 @@ async function templateNeedsKit(templateDir) {
   return false;
 }
 
+async function hasPayloadSymlink(directory) {
+  const entry = await fs.lstat(directory).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!entry) return false;
+  if (entry.isSymbolicLink()) return true;
+  if (!entry.isDirectory()) return false;
+  for (const child of await fs.readdir(directory)) {
+    if (child === 'node_modules' || child.startsWith('.')) continue;
+    if (await hasPayloadSymlink(join(directory, child))) return true;
+  }
+  return false;
+}
+
 async function main() {
   if (!(await exists(CANONICAL))) {
     console.error(`canonical kit not found at ${CANONICAL}`);
@@ -107,19 +125,42 @@ async function main() {
 
   const drift = [];
   let synced = 0;
-  for (const ref of (await fs.readdir(TEMPLATES, { withFileTypes: true }))
+  const targets = (await fs.readdir(TEMPLATES, { withFileTypes: true }))
     .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
     .map((e) => e.name)
-    .sort()) {
-    const templateDir = join(TEMPLATES, ref);
+    .sort().map(ref => ({ directory: join(TEMPLATES, ref), label: `templates/${ref}`, explicit: false }));
+  // Resolve and validate every explicit target before any writer runs. Symlinks
+  // cannot turn a repo-relative target into a write outside this source tree.
+  for (const target of EXTRA_TARGETS) {
+    if (!target || isAbsolute(target) || target.includes('\\') || target.split('/').some(part => !part || part === '.' || part === '..')) {
+      console.error(`invalid template-kit target: ${target}`);
+      process.exit(2);
+    }
+    const directory = await fs.realpath(resolve(ROOT, target));
+    const rel = relative(await fs.realpath(ROOT), directory);
+    if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) || !(await fs.stat(directory)).isDirectory()) {
+      console.error(`template-kit target is outside the source tree: ${target}`);
+      process.exit(2);
+    }
+    const existing = targets.find(row => row.directory === directory);
+    if (existing) existing.explicit = true;
+    else targets.push({ directory, label: target, explicit: true });
+  }
+  for (const { directory, label } of targets) {
+    if (await hasPayloadSymlink(join(directory, 'template-kit'))) {
+      console.error(`template-kit payload contains a symlink: ${label}/template-kit`);
+      process.exit(2);
+    }
+  }
+  for (const { directory: templateDir, label, explicit } of targets) {
     const vendored = join(templateDir, 'template-kit');
     const hasVendored = await exists(vendored);
-    const needsKit = await templateNeedsKit(templateDir);
+    const needsKit = explicit || await templateNeedsKit(templateDir);
     if (!hasVendored && !needsKit) continue;
     // A vendored copy in a template whose checks do not import the kit is
     // itself drift (dead weight in every materialized app) — remove it whole.
     if (hasVendored && !needsKit) {
-      drift.push(`templates/${ref}/template-kit exists but no check imports ${KIT_PKG}`);
+      drift.push(`${label}/template-kit exists but no check imports ${KIT_PKG}`);
       if (!CHECK_MODE) {
         await fs.rm(vendored, { recursive: true });
         synced++;
@@ -138,7 +179,7 @@ async function main() {
           : await fs.readFile(srcPath);
       const have = (await exists(dstPath)) ? await fs.readFile(dstPath) : null;
       if (have === null || !want.equals(have)) {
-        drift.push(`templates/${ref}/template-kit/${rel} ${have === null ? 'missing' : 'differs'}`);
+        drift.push(`${label}/template-kit/${rel} ${have === null ? 'missing' : 'differs'}`);
         if (!CHECK_MODE) {
           await fs.mkdir(dirname(dstPath), { recursive: true });
           await fs.writeFile(dstPath, want);
@@ -151,7 +192,7 @@ async function main() {
       const keep = new Set(canonicalFiles);
       for (const rel of await filesUnder(vendored)) {
         if (keep.has(rel)) continue;
-        drift.push(`templates/${ref}/template-kit/${rel} has no canonical counterpart`);
+        drift.push(`${label}/template-kit/${rel} has no canonical counterpart`);
         if (!CHECK_MODE) {
           await fs.rm(join(vendored, rel));
           synced++;

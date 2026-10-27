@@ -338,6 +338,78 @@ function managedHooks(owner: string, includeLifecycle = true) {
   };
 }
 
+describe('Codex managed child preserves its recorded role authority', () => {
+  const routes = ['default', 'auto', 'pin'] as const;
+  const cases = ['scoper', 'judge'].flatMap(role => routes.map(mode => ({ role, mode })));
+
+  function roleHome(role: string, owner: string) {
+    const profile = REAL_CONFIG.replace(
+      '[mcp_servers.papercusp-su]\ncommand = "npx"',
+      `[mcp_servers.papercusp]\nurl = "http://operator/api/mcp?role=${role}&client=${owner}&sig=fixture-signature"`,
+    );
+    writeFileSync(join(dir, 'config.toml'), profile);
+    writeFileSync(join(dir, 'papercusp-diagnostics.json'), JSON.stringify({ lockOwnerSid: owner }));
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify(managedHooks(owner)));
+    expect(codexHomeLaunchReadiness(dir, owner, role)).toBeNull();
+    return profile;
+  }
+
+  it.each(cases)('starts a valid $role child on the $mode account route', ({ role, mode }) => {
+    const owner = 'su-role-carry';
+    roleHome(role, owner);
+    const args = ['resume', 'native-fixture'];
+    const prepared = prepareCodexGatewayLaunch({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_AGENT_ROLE: role, PAPERCUSP_SID: owner,
+      CODEX_HOME: dir, PAPERCUSP_ACCOUNT_ROUTING_MODE: mode,
+      ...(mode === 'pin' ? { PAPERCUSP_ACCOUNT_ID: 'fixture-account' } : {}),
+    }, args);
+    expect(prepared.slice(-args.length)).toEqual(args);
+    expect(codexHomeLaunchReadiness(dir, owner, role)).toBeNull();
+  });
+
+  it.each(cases)('refuses a $role child after an SU home repair on the $mode route', ({ role, mode }) => {
+    const owner = 'su-role-carry';
+    roleHome(role, owner);
+    // A legacy server repairs only MCP authority; the prompt, owner and hooks
+    // remain usable. Refusal must come from the role boundary itself.
+    const privileged = REAL_CONFIG.replace('command = "npx"',
+      `url = "http://operator/api/mcp?superuser=1&client=${owner}"`);
+    writeFileSync(join(dir, 'config.toml'), privileged);
+    expect(codexHomeLaunchReadiness(dir, owner, 'su')).toBeNull();
+    expect(() => prepareCodexGatewayLaunch({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_AGENT_ROLE: role, PAPERCUSP_SID: owner,
+      CODEX_HOME: dir, PAPERCUSP_ACCOUNT_ROUTING_MODE: mode,
+      ...(mode === 'pin' ? { PAPERCUSP_ACCOUNT_ID: 'fixture-account' } : {}),
+    }, ['resume', 'native-fixture'])).toThrow(/restricted role MCP profile/);
+    expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toBe(privileged);
+  });
+
+  it.each(cases.flatMap(row => [false, true].map(fork => ({ ...row, fork }))))(
+    'guards the recorded $role across resume construction on $mode (fork=$fork)',
+    ({ role, mode, fork }) => {
+      const owner = 'su-role-resume';
+      const session = { agent: 'codex', role, coordOwnerId: owner, id: 7 };
+      const env = {
+        ...launcher.buildResumeEnv(session, {
+          fork, ownerId: owner,
+          accountEnv: { mode, id: mode === 'pin' ? 'fixture-account' : null, env: {} },
+        }),
+        CODEX_HOME: dir,
+      };
+      const args = ['resume', 'native-fixture'];
+      roleHome(role, owner);
+      expect(prepareCodexGatewayLaunch(env, args).slice(-args.length)).toEqual(args);
+      const privileged = REAL_CONFIG.replace('command = "npx"',
+        `url = "http://operator/api/mcp?superuser=1&client=${owner}"`);
+      writeFileSync(join(dir, 'config.toml'), privileged);
+      expect(codexHomeLaunchReadiness(dir, owner, 'su')).toBeNull();
+      expect(() => prepareCodexGatewayLaunch(env, args)).toThrow(/restricted role MCP profile/);
+      expect(env.PAPERCUSP_AGENT_ROLE).toBe(role);
+      expect(readFileSync(join(dir, 'config.toml'), 'utf8')).toBe(privileged);
+    },
+  );
+});
+
 describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usable home', () => {
   it('true for a real papercusp home (has the coordination MCP block)', () => {
     writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
@@ -562,6 +634,89 @@ describe('Codex resume reconciles project MCP servers', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Codex explicit preserved artifact request', () => {
+  const owner = 'su-preserved-launcher';
+  const revision = 'a'.repeat(64);
+  it('binds owner, ADV, revision and account without rewriting the repaired home', async () => {
+    const home = join(dir, 'session-7');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'UNCHANGED CONFIG BYTES\n');
+    const fetchImpl = vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body)).toEqual({ owner, advSessionId: 7, requireGatewayProvider: false,
+        sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision,
+        model: 'gpt-6.1-sol:xhigh', expectedAccountRoute: { mode: 'pin', accountId: 'fixture-pool' } });
+      return { ok: true, status: 200, json: async () => ({ ok: true, owner, advSessionId: 7,
+        reason: 'preserved-artifact', preservedSpecificationRevision: revision,
+        preservedModel: 'gpt-6.1-sol:xhigh', preservedAccountRoute: { mode: 'pin', accountId: 'fixture-pool' } }) };
+    });
+    expect(await launcher.ensureCodexHomeViaOperator(owner, home, 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator', fetchImpl,
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision,
+      model: 'gpt-6.1-sol:xhigh', routeMode: 'pin', accountId: 'fixture-pool',
+    })).toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('UNCHANGED CONFIG BYTES\n');
+  });
+  it.each(['revision', 'owner', 'adv', 'route', 'rebuilt'])('rejects a %s response with sanitized diagnostic linkage', async defect => {
+    const failures: any[] = [];
+    const receipt = { ok: true, owner, advSessionId: 7, reason: 'preserved-artifact',
+      preservedSpecificationRevision: revision, preservedAccountRoute: { mode: 'default', accountId: null } };
+    if (defect === 'revision') receipt.preservedSpecificationRevision = 'b'.repeat(64);
+    if (defect === 'owner') receipt.owner = 'su-other';
+    if (defect === 'adv') receipt.advSessionId = 8;
+    if (defect === 'route') receipt.preservedAccountRoute.mode = 'auto';
+    if (defect === 'rebuilt') receipt.reason = 'freshly-rendered';
+    const result = await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator',
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, routeMode: 'default',
+      onFailure: failure => failures.push(failure),
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => receipt }),
+    });
+    expect(result).toBeNull();
+    expect(failures).toMatchObject([{ stage: 'response', reason: 'preserved-receipt-mismatch', status: 200,
+      diagnostic: { attemptId: expect.any(String) } }]);
+    expect(JSON.stringify(failures)).not.toContain(owner);
+  });
+  it.each([null, 'bad-revision'])('refuses incomplete pins (%s) before requesting or touching home', async revision => {
+    const fetchImpl = vi.fn();
+    expect(await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, sourcePolicy: 'preserved-artifact',
+      expectedSpecificationRevision: revision, fetchImpl,
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it('refuses an unqualified container ownership return before any subprocess or request', async () => {
+    const fetchImpl = vi.fn();
+    const failures: any[] = [];
+    expect(await launcher.ensureCodexHomeViaOperator(owner, join(dir, 'session-7'), 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir, PAPERCUSP_NATIVE_CONTAINER_EXEC: 'invalid-boundary-must-not-be-parsed' },
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, fetchImpl,
+      onFailure: failure => failures.push(failure),
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(failures).toMatchObject([{ stage: 'scope', reason: 'preserved-ownership-route-unavailable' }]);
+  });
+  it('retains the home bytes on funding refusal and correlates the request safely', async () => {
+    const home = join(dir, 'session-7');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'ORIGINAL BYTES\n');
+    const failures: any[] = [];
+    let attempt: string | null = null;
+    expect(await launcher.ensureCodexHomeViaOperator(owner, home, 7, {
+      env: { PAPERCUSP_SU_CODEX_HOMES_DIR: dir }, operatorUrl: 'http://operator',
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision, routeMode: 'auto',
+      onFailure: failure => failures.push(failure),
+      fetchImpl: async (_url, init) => {
+        attempt = new Headers(init.headers).get('x-papercusp-repair-attempt');
+        return { ok: false, status: 402 };
+      },
+    })).toBeNull();
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('ORIGINAL BYTES\n');
+    expect(failures).toMatchObject([{ stage: 'response', reason: 'http-error', status: 402,
+      diagnostic: { attemptId: attempt } }]);
   });
 });
 

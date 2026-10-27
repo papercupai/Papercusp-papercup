@@ -8,7 +8,7 @@
  * install's node_modules (measured false positive: libs/generic/resumable-download).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -77,6 +77,48 @@ function sharpRoot(): string {
 }
 
 describe('auditTree', () => {
+  it.each([
+    ['node_modules/better-sqlite3', 'Could not locate the bindings file'],
+    ['packages/private/node_modules/better-sqlite3', 'NODE_MODULE_VERSION mismatch'],
+  ])('rejects lazy native failure in the exact installed copy %s', (rel, message) => {
+    const root = makeRoot();
+    writeJson(join(root, 'package-lock.json'), lock({ [rel]: { version: '12.0.0' } }));
+    mkdirSync(join(root, 'node_modules'), { recursive: true });
+    install(root, rel, '12.0.0');
+    const entry = join(root, rel, 'index.js');
+    writeFileSync(entry, `module.exports = class Database { constructor() { throw new Error(${JSON.stringify(message)}); } };`);
+    // Requiring the JS wrapper alone succeeds, reproducing the admission hole.
+    expect(spawnSync(process.execPath, ['--eval', 'require(process.argv[1])', entry]).status).toBe(0);
+    expect(mod.auditTree({ treeRoot: root, lockRoot: root, lockfiles: ['package-lock.json'] }).defects).toEqual([
+      { kind: 'native-runtime-unusable', path: rel, detail: message },
+    ]);
+  });
+
+  it.each(['healthy', 'query-failure', 'wrong-result'])('executes SQLite and closes its database (%s)', (mode) => {
+    const root = makeRoot();
+    const rel = 'node_modules/better-sqlite3';
+    const closed = join(root, 'closed');
+    writeJson(join(root, 'package-lock.json'), lock({ [rel]: { version: '12.0.0' } }));
+    install(root, rel, '12.0.0');
+    writeFileSync(join(root, rel, 'index.js'), `module.exports = class Database {
+      constructor(filename) { if (filename !== ':memory:') throw new Error('unexpected database'); }
+      prepare(sql) {
+        if (sql !== 'SELECT 1 AS ok') throw new Error('unexpected query');
+        return { get() {
+          if (${JSON.stringify(mode)} === 'query-failure') throw new Error('native query failed');
+          return { ok: ${mode === 'wrong-result' ? 0 : 1} };
+        } };
+      }
+      close() { require('node:fs').writeFileSync(${JSON.stringify(closed)}, 'closed'); }
+    };`);
+    const summary = mod.auditTree({ treeRoot: root, lockRoot: root, lockfiles: ['package-lock.json'] });
+    expect(summary.defects).toEqual(mode === 'healthy' ? [] : [
+      { kind: 'native-runtime-unusable', path: rel,
+        detail: mode === 'query-failure' ? 'native query failed' : 'SQLite query returned an unexpected result' },
+    ]);
+    expect(readFileSync(closed, 'utf8')).toBe('closed');
+  });
+
   it('passes a tree that realises every installed lock entry (optional platform package absent)', () => {
     const root = sharpRoot();
     const summary = mod.auditTree({ treeRoot: root, lockRoot: root, lockfiles: ['package-lock.json'] });

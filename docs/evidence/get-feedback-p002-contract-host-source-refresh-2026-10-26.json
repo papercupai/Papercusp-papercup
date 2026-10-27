@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "scope": "Controlled source and fixture proof only; physical native execution, actor identity, lease ABA, custody, cohort, independent acceptance and shipment remain open.",
+  "commitSha": "40dd20595f8798b76ee7b35e61aac5ec525078b5",
+  "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=40dd20595f8798b76ee7b35e61aac5ec525078b5 -- packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts apps/operator/lib/psu-pty-host.integration.test.ts",
+  "runGroup": "gf-p002-contract-host-refresh-20261026-1792979693857",
+  "state": "/tmp/gf-p002-contract-host-refresh-20261026-1792979693857.state.json",
+  "log": "/tmp/gf-p002-contract-host-refresh-20261026-1792979693857.log",
+  "execution": { "exit": 0, "startedAt": "2026-10-26T01:54:53.857Z", "finishedAt": "2026-10-26T02:00:35.091Z" },
+  "reporter": "Explicit PAPERCUSP_TEST_RUNS_DB_URL from resolveScriptPgUrl().url outside private test PG; credentials omitted.",
+  "proof": [
+    {
+      "oldBinding": 70682, "replacement": 70842, "testRunId": 22091425,
+      "path": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+      "passed": 9, "failed": 0, "skipped": 0, "worktreeDirty": false, "isScratchConfig": false, "collectionFailed": false,
+      "caseTriplesEqual": true, "declaredCases": 9, "missingDeclaredCases": [],
+      "recipeEqual": true, "adequacyEqual": true, "scopeEqual": true,
+      "independentCurrentness": "current", "staleReasons": [], "unknownReasons": [],
+      "namedDrift": ["packages/operator-core/lib/agent-tools/index.ts", "scripts/test-files.mjs"],
+      "driftReview": "Two added tool registrations and an unrelated desktop-native test route; same nine contract case identities and unchanged declared assertions."
+    },
+    {
+      "oldBinding": 70362, "replacement": 70843, "testRunId": 22092186,
+      "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "passed": 137, "failed": 0, "skipped": 0, "worktreeDirty": false, "isScratchConfig": false, "collectionFailed": false,
+      "caseTriplesEqual": true, "declaredCases": 11, "missingDeclaredCases": [],
+      "recipeEqual": true, "adequacyEqual": true, "scopeEqual": true,
+      "independentCurrentness": "current", "staleReasons": [], "unknownReasons": [],
+      "namedDrift": ["apps/operator/scripts/psu-launcher.mjs", "apps/operator/scripts/psu-pty-host.mjs"],
+      "driftReview": "Named launcher/host source moved; test and fixture dimensions remained current. Refreshed the maintained 137-case integration file, retaining all eleven declared cases. No host-unit 632-case replay."
+    }
+  ],
+  "ordering": "Verified clean canonical runs and complete old/new case-key/occurrence/status populations; bound replacements; independently measured currentness and exact recipe/adequacy/scope equality; then retracted exact stale predecessors 70682 and 70362.",
+  "governingAssessments": {
+    "r2": { "verdict": "pass", "evaluationMode": "mechanical", "wouldBlock": [] },
+    "gf": { "verdict": "fail", "wouldBlock": ["traceability", "execution-integrity", "freshness", "disclosed-gap"] },
+    "sequencing": "Assessed R2 and GF separately. First GF orchestration completed its read but its formatter incorrectly treated ratings as an array; the subsequent direct read supplied the recorded verdict. No claim is derived from the failed formatter."
+  },
+  "previousArtifactPersistence": {
+    "path": "docs/evidence/get-feedback-p002-launcher-source-refresh-2026-10-26.json",
+    "sha256": "9cc45851fc2411d7fe8cbcd890907c7dd26334b836e9f78e352abfb0fd81347b",
+    "commitSha": "09710b858e0a3abcc8b56fdc50bbbd0a000fd327",
+    "verification": "Path git log and HEAD blob SHA match; no git-sync refire."
+  },
+  "loopDiagnosis": {
+    "workItemId": "EI-26984631684161013", "deliveryId": 986274,
+    "createdAt": "2026-10-26T01:13:07.342352Z", "deliveredAt": "2026-10-26T01:20:21.496165Z",
+    "status": "delivered", "channel": "inbox", "attempts": 10, "turnProof": null, "turnStartedAt": null,
+    "journal": "2026-10-26T01:20:21.643Z papercusp-dev-api.service: exhausted 8 parked attempts -> degraded to inbox; last park begins psu-host pending-delivery-id (journal tool clips remainder).",
+    "limitation": "Executor/fallback measured; latest executing bundle and typed-loop payload not measured. Prior delivery982752 root remains historical evidence, not proof all deliveries share its cause. Existing EI-26993056565800915 owns typed-loop propagation; evidence sent once. No rearm, cold retune, manual turn stamp, parallel watcher or LIVE_GATE_OPS."
+  },
+  "preserved": ["launcher22089779/70735/70736 complete", "original native28326/28545", "retained69704/69782", "completed backend/identity/history/source-attribution mutation proof", "reporter EI-26900834772734276 root unknown", "version-timeout EI-27000661576726894 root unknown"],
+  "next": "P002 remains open. Read current GF criterion evidence and governing source/native obligations before selecting the next bounded unit; preserve native/actor/ABA/custody/cohort/independent acceptance/shipment gaps."
+}

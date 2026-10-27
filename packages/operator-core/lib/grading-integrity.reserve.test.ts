@@ -29,9 +29,15 @@ function transactionHarness(options: {
     // Postgres.js's SQL tag can compose a nested empty fragment. Keep that
     // fragment out of the mocked query log instead of treating it as a query.
     if (strings.length === 1 && strings[0] === '' && values.length === 0) return emptySqlFragment;
+    if (strings.length === 1 && strings[0]?.startsWith("'{observation,gradingAudit,")) {
+      return { sqlFragment: strings[0] };
+    }
+    const fragmentText = (value: unknown): string | undefined =>
+      value && typeof value === 'object' && 'sqlFragment' in value ? String(value.sqlFragment) : undefined;
     const text = strings.reduce((acc, part, index) =>
-      acc + part + (index < values.length && values[index] !== emptySqlFragment ? '?' : ''), '');
-    const queryValues = values.filter((value) => value !== emptySqlFragment);
+      acc + part + (index < values.length && values[index] !== emptySqlFragment
+        ? fragmentText(values[index]) ?? '?' : ''), '');
+    const queryValues = values.filter((value) => value !== emptySqlFragment && fragmentText(value) === undefined);
     statements.push({ text, values: queryValues });
     if (text.includes('AS prior_reservation')) {
       return Promise.resolve([
@@ -96,6 +102,8 @@ describe('reservePendingGradingAudit', () => {
       'ws-test',
       'EI-reserved',
       'grading-audit:reserved',
+      null,
+      null,
       '2026-09-08T00:00:00.000Z',
       '2026-09-08T00:00:00.000Z',
       false,

@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-a",
+  "status": "partial-contributing-evidence",
+  "scope": "Isolated actual documents:search dispatch, pot stored reader and structured result projection",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57",
+    "frozenSourcePinsMatched": 10,
+    "capturedSourcePins": 13,
+    "sourcePinsStableAcrossRun": true
+  },
+  "test": {
+    "path": "packages/operator-core/lib/agent-tools/documents/search-pot-freshness.integration.test.ts",
+    "sha256": "780d85cf05579ad5fff1fb4739573849bf0380d216960bd0de2a79f92870dd35",
+    "taskId": "0mvo19y2tsd9n4n1rh9",
+    "exitCode": 0,
+    "testRunId": "22035587",
+    "ledgerOutcome": "inserted",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "databaseCleanup": "dropped",
+    "provenance": "Local shared-tree run; tested file untracked at execution and native worktreeDirty=true. Subsequent commit does not change the run provenance.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/documents/search-pot-freshness.integration.test.ts",
+      "taskId": "0mvo1a0ch1drwl6p1y2",
+      "exitCode": 0,
+      "scope": "Named file and resolved importers; whole project and full runtime closure unmeasured"
+    }
+  },
+  "population": {
+    "observedFieldIds": [
+      "papercusp/documents:search/pot/title",
+      "papercusp/documents:search/pot/snippet",
+      "papercusp/documents:search/pot/occurredAt",
+      "papercusp/documents:search/pot/privacy"
+    ],
+    "declaredCases": ["projected-fields", "content-update", "presence-transition", "privacy-transition"],
+    "executedCases": ["projected-fields", "content-update", "presence-transition", "privacy-transition"],
+    "unexecutedCases": [],
+    "nativeDispatchCaptures": 8,
+    "nonemptyFieldObservations": 28,
+    "unknownFieldOracleResults": 28,
+    "qualifiedFieldClaims": 0
+  },
+  "findings": [
+    "Actual dispatch and pot projection match separate canonical SQL values and exclude a competing foreign pot from result rows and the result count.",
+    "An in-place stored content update appears through the next actual request with stable entity id and changed tuple revision.",
+    "A retained old title replay is detected as stale by the oracle; this is an oracle-input mutation only.",
+    "Changing server-owned presence switches the returned pot; removing presence refuses the leg with no rows, without changing the original stored content revision.",
+    "A privacy rule changes the projected privacy and restricted result count while stored content revision stays unchanged."
+  ],
+  "limits": [
+    "Candidate source/index revision is absent, so every field oracle remains unknown/degrade and qualified claims remain zero.",
+    "Rows are seeded directly for the fixture; production ingestion and provider currentness are unmeasured.",
+    "Canonical xmin identifies a stored tuple, not a provider revision.",
+    "The authority snapshot covers fixture presence, principal and privacy rules, not complete production authority closure.",
+    "Admin SQL is injected into the in-process dispatcher; transport host authentication, RLS, native lexical engine tracing and full runtime closure remain unmeasured.",
+    "Personal, live and sealed paths, alternative paths and the complete 77-field population remain open.",
+    "No production enforcement bypass/fix-revert, qualified quality labels, cost/budget populations, spec discharge, independent acceptance or shipment is established."
+  ],
+  "artifacts": [
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-pot-dispatch-20261025-a/witness.json",
+      "sha256": "407e757e8fe94046e94e3e85f06d487dde5822a2a691fd8f4a3e2b32e1b39e4d",
+      "bytes": 71885,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-pot-dispatch-20261025-a/native-ledger-receipt.json",
+      "sha256": "5a47dc7b6b957b408d799e36a124bee8b2de0d937566c12484fedfbdb26ac24e",
+      "bytes": 3453,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-pot-dispatch-20261025-a/native-test.log",
+      "sha256": "4f0cd19fb27999782711f40e982ce865dd7e48d89636041edee11dc49d58f6ed",
+      "bytes": 13656,
+      "completeReadbackEqual": true
+    }
+  ],
+  "qualifiedBaseline": false,
+  "rankingTreatmentAllowed": false,
+  "shipped": false
+}

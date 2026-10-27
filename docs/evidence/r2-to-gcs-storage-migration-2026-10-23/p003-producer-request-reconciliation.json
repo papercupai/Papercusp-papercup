@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-26",
+  "workItemId": "WI-6554700010025562",
+  "session": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
+  "scope": "Original retained producer requests only; no new build, publication, provider action, deploy or live-gate operation",
+  "method": {
+    "identityChecks": [
+      "Read original task through task-manager/store.getTask",
+      "Verify original work-item assignment on each execution row",
+      "Match root-scoped STARTED marker task and operation to immutable release journal",
+      "Read DONE:1 and correlate retained release-local harness failure log",
+      "Verify retained inputIdentity hashes to original inputHash",
+      "Append unknown receipt through appendTaskReleaseReceipt with original request, operation and input identity",
+      "Recover observed exit through closeTask(state=exited, exitCode=1)",
+      "Read back exited/1 plus cursor=2, currentState=unknown and unchanged original request identity"
+    ],
+    "guardedStoreMutationReceipt": "native-exec:b4e6a5",
+    "retainedProbe": ".papercusp/scratch/bash-6c319234-d49.log",
+    "systemdObservation": "Original transient service units were collected (LoadState=not-found); default Result=success from an absent unit was not used as exit evidence"
+  },
+  "requests": [
+    {
+      "taskId": "0mvn19xc37swj7y4efe",
+      "operationId": "64fc1a20-142d-4d38-82a0-c362ef6ec2da",
+      "requestIdentity": "67720fd6-f797-49cf-83bd-4f59430e0f42",
+      "sourceSha": "7c94135ecad7e2ce5e1c936a5c0f060cc125469a",
+      "markerPrefix": "/tmp/papercup-release-cut-linux-def26cc8c2e063d030eaf5f3",
+      "logSha256": "f3e53a4d05cb4ba45543ede4cca4fb0edf636c1cbf591b77c76142639c4705f9",
+      "observedFailure": "Release gates rejected tracked owner-name / box-identity literals",
+      "harnessRun": "20261024T233257Z-2520627",
+      "executionReadback": { "state": "exited", "exitCode": 1 },
+      "releaseReadback": { "cursor": 2, "stage": "release.build.linux", "state": "unknown" }
+    },
+    {
+      "taskId": "0mvnggdyt1uff753h8u",
+      "operationId": "082463ba-baaa-42cd-8582-915448322e51",
+      "requestIdentity": "f7a1f22c-3528-4c9f-a4a3-051c6ff6fb75",
+      "sourceSha": "bf337a337a85c1872fa4978c9b7de8280d189f4a",
+      "markerPrefix": "/tmp/papercup-release-cut-0a9bbfc545c2b7194a331ade",
+      "logSha256": "6dadf343c73aa98f3248199f6d7f78ba463b5085b972e993f83237b4e624b933",
+      "observedFailure": "Release gates rejected an unallowlisted credential pattern in assembled bundle; no credential value reproduced",
+      "harnessRun": "20261025T063807Z-1376445",
+      "executionReadback": { "state": "exited", "exitCode": 1 },
+      "releaseReadback": { "cursor": 2, "stage": "release.build.linux", "state": "unknown" }
+    },
+    {
+      "taskId": "0mvnmc0lsaozrj7rb6l",
+      "operationId": "5c303fde-7cf2-4b32-b790-f482687cc6aa",
+      "requestIdentity": "96aefc51-2994-4888-ac4a-350436473c52",
+      "sourceSha": "50ced1ab37e19e1e802d3c225f52fdfe0709980c",
+      "markerPrefix": "/tmp/papercup-release-cut-1ea19a48d053b76fe9bf73cb",
+      "logSha256": "f5b92987121b06b981e95e5f1740035d24d7899e84091331e81e8a7227f1e33e",
+      "observedFailure": "Linux collector expected two role Debian packages but counted three including optional papercusp-server-seed companion",
+      "harnessRun": "20261025T092214Z-806431",
+      "executionReadback": { "state": "exited", "exitCode": 1 },
+      "releaseReadback": { "cursor": 2, "stage": "release.build.linux", "state": "unknown" },
+      "retainedArtifactObservation": {
+        "bundlePath": "/mnt/data/cargo-target/.papercusp-target-slots/dev3/release/bundle",
+        "version": "0.0.26",
+        "files": [
+          { "name": "Papercusp_GUI_0.0.26_amd64.AppImage", "bytes": 155490808, "signatureFilePresent": true },
+          { "name": "Papercusp GUI_0.0.26_amd64.deb", "bytes": 51331572, "signatureFilePresent": true },
+          { "name": "Papercusp Server_0.0.26_amd64.deb", "bytes": 3254146054, "signatureFilePresent": true },
+          { "name": "papercusp-server-seed_0.0.26_all.deb", "bytes": 1384, "signatureFilePresent": true }
+        ],
+        "buildProvenancePresent": false,
+        "signatureCryptographyVerifiedThisReconciliation": false,
+        "qualified": false,
+        "probeTaskId": "0mvoq6o2ewml2gn1u0l"
+      }
+    }
+  ],
+  "interpretation": {
+    "executionOutcome": "All three original cuts have observed exit 1",
+    "artifactOutcome": "No successful artifact-stage receipt established; unknown preserves unqualified partial-byte custody",
+    "retryAuthorization": false,
+    "successfulBuildClaim": false,
+    "shipped": false,
+    "sourcePolicyWaived": false,
+    "durableFixStatus": "One-off ledger reconciliation only; automatic terminal-evidence ingestion remains tracked separately",
+    "durableFixIssue": "EI-27012912988975360",
+    "remaining": "Qualified signed migration GUI/Server pair with original provenance and eligible release source, retained-byte production delivery, independent migration acceptance, then D090/D086 trial sequence"
+  }
+}

@@ -29,7 +29,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
-import { reconcileTick } from '../../task-manager/reconcile-tick';
+import { createReconcileStageReporter, reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
 import { archiveReapTail } from '../../task-manager/reap-archive';
@@ -187,153 +187,161 @@ const REAPER_FLOOR_RENOTIFY_MS = 60 * 60_000;
 let lastReaperFloorNotifyAtMs = 0;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
-  // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
-  // flag-OFF. Gating here rather than at seed time means a flip takes effect on
-  // the next 30s tick instead of requiring an operator restart to re-seed.
-  if (!(await isTaskManagerEnabled('routine:task-reconcile'))) return;
+  const progress = createReconcileStageReporter({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug });
+  try {
+    // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
+    // flag-OFF. Gating here rather than at seed time means a flip takes effect on
+    // the next 30s tick instead of requiring an operator restart to re-seed.
+    progress.stage('task-reconcile-enabled-check');
+    if (!(await isTaskManagerEnabled('routine:task-reconcile'))) return;
 
-  const tick = await reconcileTick({
-    scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
-    notify: async ({ summary, kind }) =>
-      void (await sendMessage(TASK_MANAGER_IDENTITY, {
-        to: ['*'],
-        summary,
-        category: kind === 'escalation' ? undefined : 'task-manager',
-        kind: kind === 'escalation' ? 'escalation' : 'message',
-        harnessSlug: ctx.installSlug,
-      })),
-  });
+    const tick = await reconcileTick({
+      stage: progress.stage,
+      scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
+      notify: async ({ summary, kind }) =>
+        void (await sendMessage(TASK_MANAGER_IDENTITY, {
+          to: ['*'],
+          summary,
+          category: kind === 'escalation' ? undefined : 'task-manager',
+          kind: kind === 'escalation' ? 'escalation' : 'message',
+          harnessSlug: ctx.installSlug,
+        })),
+    });
 
-  const nowMs = Date.now();
+    progress.stage('task-reconcile-maintenance');
+    const nowMs = Date.now();
 
-  if (isMaintDue({ lastAtMs: lastFailedUnitSweepAtMs, nowMs, intervalMs: FAILED_UNIT_SWEEP_INTERVAL_MS })) {
-    // Stamp before awaiting so overlapping ticks cannot race evidence persistence
-    // against reset-failed. The collector itself contains per-unit failures and
-    // refuses reset unless terminal provenance is already durable.
-    lastFailedUnitSweepAtMs = nowMs;
-    try {
-      const collected = await collectStaleFailedTaskUnits({
-        workspaceId: ctx.workspaceId,
-        harnessSlug: ctx.installSlug,
-        cursor: failedUnitSweepCursor,
-      });
-      failedUnitSweepCursor = collected.nextCursor;
-      if (collected.candidates > 0 || collected.errors > 0 || collected.refused > 0) {
-        const summary =
-          `[failed-task-unit-collector] listed=${collected.listed} inspected=${collected.inspected} ` +
-          `old=${collected.candidates} evidence=${collected.evidenceDurable} reset=${collected.reset} ` +
-          `refused=${collected.refused} reset_failed=${collected.resetFailed} errors=${collected.errors}` +
-          (collected.truncated ? ' (bounded pass; more remain)' : '');
-        if (collected.errors > 0 || collected.refused > 0 || collected.resetFailed > 0) console.warn(summary);
-        else console.info(summary);
+    if (isMaintDue({ lastAtMs: lastFailedUnitSweepAtMs, nowMs, intervalMs: FAILED_UNIT_SWEEP_INTERVAL_MS })) {
+      // Stamp before awaiting so overlapping ticks cannot race evidence persistence
+      // against reset-failed. The collector itself contains per-unit failures and
+      // refuses reset unless terminal provenance is already durable.
+      lastFailedUnitSweepAtMs = nowMs;
+      try {
+        const collected = await collectStaleFailedTaskUnits({
+          workspaceId: ctx.workspaceId,
+          harnessSlug: ctx.installSlug,
+          cursor: failedUnitSweepCursor,
+        });
+        failedUnitSweepCursor = collected.nextCursor;
+        if (collected.candidates > 0 || collected.errors > 0 || collected.refused > 0) {
+          const summary =
+            `[failed-task-unit-collector] listed=${collected.listed} inspected=${collected.inspected} ` +
+            `old=${collected.candidates} evidence=${collected.evidenceDurable} reset=${collected.reset} ` +
+            `refused=${collected.refused} reset_failed=${collected.resetFailed} errors=${collected.errors}` +
+            (collected.truncated ? ' (bounded pass; more remain)' : '');
+          if (collected.errors > 0 || collected.refused > 0 || collected.resetFailed > 0) console.warn(summary);
+          else console.info(summary);
+        }
+        subPassHealth.record('failed-task-unit-collector', null);
+      } catch (err) {
+        // This maintenance pass may preserve a failed unit for the next attempt;
+        // it must never suppress the kernel/ledger reconcile that carries it.
+        console.warn('[failed-task-unit-collector] sweep failed', err);
+        subPassHealth.record('failed-task-unit-collector', err);
       }
-      subPassHealth.record('failed-task-unit-collector', null);
-    } catch (err) {
-      // This maintenance pass may preserve a failed unit for the next attempt;
-      // it must never suppress the kernel/ledger reconcile that carries it.
-      console.warn('[failed-task-unit-collector] sweep failed', err);
-      subPassHealth.record('failed-task-unit-collector', err);
     }
-  }
 
-  if (isMaintDue({ lastAtMs: lastLifecycleSweepAtMs, nowMs, intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS })) {
-    // Stamp before awaiting so overlapping/replayed routine ticks cannot fan out
-    // filings. A process restart may run this early; the durable hourly spawn
-    // idempotency key still prevents a second judge.
-    lastLifecycleSweepAtMs = nowMs;
-    try {
-      const confirmedResidueTaskIds = [
-        ...new Set(
-          tick.confirmedUnaccounted.map(
-            (group) => (group.scopeUnit && taskIdFromScopeUnit(group.scopeUnit)) || residueTaskId(group.cgroupPath),
+    if (isMaintDue({ lastAtMs: lastLifecycleSweepAtMs, nowMs, intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS })) {
+      // Stamp before awaiting so overlapping/replayed routine ticks cannot fan out
+      // filings. A process restart may run this early; the durable hourly spawn
+      // idempotency key still prevents a second judge.
+      lastLifecycleSweepAtMs = nowMs;
+      try {
+        const confirmedResidueTaskIds = [
+          ...new Set(
+            tick.confirmedUnaccounted.map(
+              (group) => (group.scopeUnit && taskIdFromScopeUnit(group.scopeUnit)) || residueTaskId(group.cgroupPath),
+            ),
           ),
-        ),
-      ];
-      const lifecycle = await runLifecycleJudgementSweep({
-        workspaceId: ctx.workspaceId,
-        harnessSlug: ctx.installSlug,
-        confirmedResidueTaskIds,
-        nowMs,
-      });
-      console.info(
-        `[task-lifecycle] pass: ${lifecycle.rowsInspected} ledger row(s), ` +
-          `${lifecycle.candidates} candidate(s), ${lifecycle.candidateItems.length} filed/refreshed, ` +
-          `${lifecycle.suppressedByKeep} keep-suppressed, ` +
-          `${lifecycle.suppressedByVerdict} verdict-suppressed, ${lifecycle.openItems.length} open; ` +
-          (lifecycle.judge.attempted
-            ? `judge ${lifecycle.judge.ok ? 'admitted' : 'not admitted'}${lifecycle.judge.deduped ? ' (interval dedupe)' : ''}`
-            : 'no judge needed'),
-      );
-      for (const outcome of lifecycle.enforcement) {
+        ];
+        const lifecycle = await runLifecycleJudgementSweep({
+          workspaceId: ctx.workspaceId,
+          harnessSlug: ctx.installSlug,
+          confirmedResidueTaskIds,
+          nowMs,
+        });
         console.info(
-          `[task-lifecycle] verdict ${outcome.taskId}=${outcome.decision}: ` +
-            `${outcome.settled ? 'settled' : 'not settled'} via ${outcome.target}` +
-            `${outcome.targetId ? ` ${outcome.targetId}` : ''}` +
-            `${outcome.error ? ` (${outcome.error})` : ''}` +
-            `${outcome.detail ? ` — ${outcome.detail}` : ''}`,
+          `[task-lifecycle] pass: ${lifecycle.rowsInspected} ledger row(s), ` +
+            `${lifecycle.candidates} candidate(s), ${lifecycle.candidateItems.length} filed/refreshed, ` +
+            `${lifecycle.suppressedByKeep} keep-suppressed, ` +
+            `${lifecycle.suppressedByVerdict} verdict-suppressed, ${lifecycle.openItems.length} open; ` +
+            (lifecycle.judge.attempted
+              ? `judge ${lifecycle.judge.ok ? 'admitted' : 'not admitted'}${lifecycle.judge.deduped ? ' (interval dedupe)' : ''}`
+              : 'no judge needed'),
         );
+        for (const outcome of lifecycle.enforcement) {
+          console.info(
+            `[task-lifecycle] verdict ${outcome.taskId}=${outcome.decision}: ` +
+              `${outcome.settled ? 'settled' : 'not settled'} via ${outcome.target}` +
+              `${outcome.targetId ? ` ${outcome.targetId}` : ''}` +
+              `${outcome.error ? ` (${outcome.error})` : ''}` +
+              `${outcome.detail ? ` — ${outcome.detail}` : ''}`,
+          );
+        }
+        subPassHealth.record('task-lifecycle', null);
+      } catch (err) {
+        // This judgement layer must never break the kernel reconcile/reaper pass.
+        console.warn('[task-lifecycle] sweep failed', err);
+        subPassHealth.record('task-lifecycle', err);
       }
-      subPassHealth.record('task-lifecycle', null);
-    } catch (err) {
-      // This judgement layer must never break the kernel reconcile/reaper pass.
-      console.warn('[task-lifecycle] sweep failed', err);
-      subPassHealth.record('task-lifecycle', err);
     }
-  }
 
-  if (isMaintDue({ lastAtMs: lastGcAtMs, nowMs, intervalMs: GC_INTERVAL_MS })) {
-    // Stamp BEFORE awaiting: a failed GC must not re-fire every 30s, and the stamp
-    // also keeps two overlapping ticks from both entering.
-    lastGcAtMs = nowMs;
-    await gcTerminalTasks(TERMINAL_RETENTION_HOURS).catch(() => 0);
-  }
-
-  const target = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
-  if (!residueWatermarkHydrated) {
-    // Once per process. A read failure yields null, which reads as DUE — the census
-    // erring toward one extra sample beats it going quiet on an unreadable store.
-    residueWatermarkHydrated = true;
-    lastResidueAtMs = await readLastCensusAtMs(target);
-  }
-  if (isMaintDue({ lastAtMs: lastResidueAtMs, nowMs, intervalMs: RESIDUE_INTERVAL_MS })) {
-    lastResidueAtMs = nowMs;
-    // EI-20369673282334981: hand the census the pids this very tick just CONFIRMED
-    // alive against the task ledger. `nodeResidueLivenessProbe`'s own contract asks
-    // for exactly this ("a caller that already holds the enrolled-task pids (the
-    // reconcile tick does) should pass them"), and until now the sole production
-    // call site passed nothing — so `knownLive` was `undefined` and listening
-    // sockets were the only liveness evidence the census ever had.
-    await sampleResidue(ctx, tick.scan.userManagerRoot, aliveEnrolledPids(tick));
-  }
-
-  if (isMaintDue({ lastAtMs: lastProgressAtMs, nowMs, intervalMs: PROGRESS_INTERVAL_MS })) {
-    lastProgressAtMs = nowMs;
-    await reportAgentSessionProgress(ctx);
-  }
-
-  if (isMaintDue({ lastAtMs: lastReaperAtMs, nowMs, intervalMs: REAPER_INTERVAL_MS })) {
-    lastReaperAtMs = nowMs;
-    await reapAgentSessionResidue(ctx, tick.scan.userManagerRoot, tick.confirmedUnaccounted);
-  }
-
-  if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
-    lastA11ySweepAtMs = nowMs;
-    // Unlike the two censuses above, this one TERMINATES processes. It is
-    // narrowly targeted by construction: only a `dbus-daemon` whose
-    // `--config-file` names one of OUR `pc-a11y-*` dirs, only when the X display
-    // it was pinned to is gone, and only after a 6h margin. It can therefore
-    // never reach an agent session, a fleet member, or the owner's desktop.
-    try {
-      sweepHost((io) => sweepA11yBuses(io));
-      subPassHealth.record('a11y-bus-sweep', null);
-    } catch (err) {
-      // A sweep failure must never fail the reconcile tick that carries it.
-      console.warn('[a11y-bus-sweep] sweep failed', err);
-      subPassHealth.record('a11y-bus-sweep', err);
+    if (isMaintDue({ lastAtMs: lastGcAtMs, nowMs, intervalMs: GC_INTERVAL_MS })) {
+      // Stamp BEFORE awaiting: a failed GC must not re-fire every 30s, and the stamp
+      // also keeps two overlapping ticks from both entering.
+      lastGcAtMs = nowMs;
+      await gcTerminalTasks(TERMINAL_RETENTION_HOURS).catch(() => 0);
     }
-  }
 
-  return subPassHealth.result();
+    const target = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
+    if (!residueWatermarkHydrated) {
+      // Once per process. A read failure yields null, which reads as DUE — the census
+      // erring toward one extra sample beats it going quiet on an unreadable store.
+      residueWatermarkHydrated = true;
+      lastResidueAtMs = await readLastCensusAtMs(target);
+    }
+    if (isMaintDue({ lastAtMs: lastResidueAtMs, nowMs, intervalMs: RESIDUE_INTERVAL_MS })) {
+      lastResidueAtMs = nowMs;
+      // EI-20369673282334981: hand the census the pids this very tick just CONFIRMED
+      // alive against the task ledger. `nodeResidueLivenessProbe`'s own contract asks
+      // for exactly this ("a caller that already holds the enrolled-task pids (the
+      // reconcile tick does) should pass them"), and until now the sole production
+      // call site passed nothing — so `knownLive` was `undefined` and listening
+      // sockets were the only liveness evidence the census ever had.
+      await sampleResidue(ctx, tick.scan.userManagerRoot, aliveEnrolledPids(tick));
+    }
+
+    if (isMaintDue({ lastAtMs: lastProgressAtMs, nowMs, intervalMs: PROGRESS_INTERVAL_MS })) {
+      lastProgressAtMs = nowMs;
+      await reportAgentSessionProgress(ctx);
+    }
+
+    if (isMaintDue({ lastAtMs: lastReaperAtMs, nowMs, intervalMs: REAPER_INTERVAL_MS })) {
+      lastReaperAtMs = nowMs;
+      await reapAgentSessionResidue(ctx, tick.scan.userManagerRoot, tick.confirmedUnaccounted);
+    }
+
+    if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
+      lastA11ySweepAtMs = nowMs;
+      // Unlike the two censuses above, this one TERMINATES processes. It is
+      // narrowly targeted by construction: only a `dbus-daemon` whose
+      // `--config-file` names one of OUR `pc-a11y-*` dirs, only when the X display
+      // it was pinned to is gone, and only after a 6h margin. It can therefore
+      // never reach an agent session, a fleet member, or the owner's desktop.
+      try {
+        sweepHost((io) => sweepA11yBuses(io));
+        subPassHealth.record('a11y-bus-sweep', null);
+      } catch (err) {
+        // A sweep failure must never fail the reconcile tick that carries it.
+        console.warn('[a11y-bus-sweep] sweep failed', err);
+        subPassHealth.record('a11y-bus-sweep', err);
+      }
+    }
+
+    return subPassHealth.result();
+  } finally {
+    progress.stop();
+  }
 });
 
 /**

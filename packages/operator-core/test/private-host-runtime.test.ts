@@ -1,20 +1,449 @@
-import { spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
+import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
+import { readProcessIdentity } from '../lib/process-identity';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+
+it('censuses full private artifact bytes and modes with same-descriptor large-file advice', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-census-'));
+  dirs.push(root);
+  mkdirSync(join(root, 'nested'));
+  const large = Buffer.alloc(16 * 1024 ** 2 + 17, 0xa7);
+  const entries: Array<[string, Buffer, number]> = [
+    ['empty', Buffer.alloc(0), 0o600], ['nested/model', large, 0o640],
+    ['serve.mjs', Buffer.from('real small runtime bytes'), 0o755],
+  ];
+  const digest = createHash('sha256');
+  for (const [path, data, mode] of entries) {
+    writeFileSync(join(root, path), data); chmodSync(join(root, path), mode);
+    digest.update(JSON.stringify([path, mode, createHash('sha256').update(data).digest('hex')]));
+  }
+  const before = statSync(join(root, 'nested/model'), { bigint: true });
+  const observed: unknown[] = [];
+  const result = censusPrivateRuntimeArtifact(root, { onReadAdvice: record => observed.push(record) });
+  expect(result.sha256).toBe(digest.digest('hex'));
+  expect(result.files).toBe(3);
+  expect(result.bytes).toBe(entries.reduce((total, [, data]) => total + data.length, 0));
+  expect(result.inventory.map(row => row.path)).toEqual(['', 'empty', 'nested', 'nested/model', 'serve.mjs']);
+  expect(result.readAdvice).toEqual(observed);
+  if (process.platform === 'linux') {
+    expect(result.readAdvice).toEqual([expect.objectContaining({ path: 'nested/model',
+      dev: String(before.dev), ino: String(before.ino), size: String(before.size),
+      advice: 'POSIX_FADV_RANDOM', executable: expect.any(String), version: expect.any(String),
+      helperSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      dependencySha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+    const inputs = result.readAdvice[0].dependencies;
+    expect(inputs.scope).toBe('isolated-python-imports-and-native-maps');
+    expect(inputs.files.map(file => file.path)).toContain(inputs.resolvedExecutable);
+    expect(inputs.modules.some(module => module.name === 'json' && module.files.length)).toBe(true);
+    expect(inputs.limitations).toEqual(['startup-file-opens-unobserved', 'mapped-memory-bytes-unobserved']);
+    for (const input of inputs.files) {
+      expect(createHash('sha256').update(readFileSync(input.path)).digest('hex')).toBe(input.sha256);
+      expect(statSync(input.path).size).toBe(input.size);
+      expect(statSync(input.path).mode & 0o7777).toBe(input.mode);
+    }
+    expect(censusPrivateRuntimeArtifact(root, {
+      expectedReadAdviceDependencySha256: result.readAdvice[0].dependencySha256,
+    }).sha256).toBe(result.sha256);
+  } else {
+    expect(result.advicePlatform).toBe('not-applicable');
+    expect(observed).toEqual([]);
+  }
+  const after = statSync(join(root, 'nested/model'), { bigint: true });
+  for (const key of ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const)
+    expect(after[key]).toBe(before[key]);
+});
+
+it.skipIf(process.platform !== 'linux')('rejects private artifact advice from a different Python dependency closure', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-python-pin-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'model'), Buffer.alloc(16 * 1024 ** 2));
+  expect(() => censusPrivateRuntimeArtifact(root, {
+    expectedReadAdviceDependencySha256: '0'.repeat(64),
+  })).toThrow(/Python advice dependencies differ from fixture pin/);
+  expect(() => censusPrivateRuntimeArtifact(root, {
+    expectedReadAdviceDependencySha256: 'invalid',
+  })).toThrow(/Invalid Python dependency pin/);
+});
+
+it.skipIf(process.platform !== 'linux')('rejects changed, replaced, or unenumerated artifact content after advice', () => {
+  for (const mutation of ['truncate', 'replace', 'add'] as const) {
+    const root = mkdtempSync(join(tmpdir(), 'private-artifact-mutation-'));
+    dirs.push(root);
+    const file = join(root, 'model');
+    writeFileSync(file, Buffer.alloc(16 * 1024 ** 2));
+    expect(() => censusPrivateRuntimeArtifact(root, { onReadAdvice: () => {
+      if (mutation === 'truncate') truncateSync(file, 8);
+      if (mutation === 'replace') { renameSync(file, join(root, 'old')); writeFileSync(file, 'replacement'); }
+      if (mutation === 'add') writeFileSync(join(root, 'new-unenumerated'), 'added');
+    } })).toThrow(/Artifact changed during census/);
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('fails private artifact qualification when the Linux advice prerequisite is missing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-no-python-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'model'), Buffer.alloc(16 * 1024 ** 2));
+  vi.stubEnv('PATH', root);
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/python3.*ENOENT/);
+});
+
+it.skipIf(process.platform === 'win32')('rejects artifact links and refuses byte/time overflow before reading', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-bounds-'));
+  dirs.push(root);
+  writeFileSync(join(root, 'real'), 'bytes');
+  symlinkSync('real', join(root, 'link'));
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/link or special object/);
+  rmSync(join(root, 'link'));
+  writeFileSync(join(root, 'oversized'), '');
+  truncateSync(join(root, 'oversized'), 8 * 1024 ** 3 + 1);
+  expect(() => censusPrivateRuntimeArtifact(root)).toThrow(/Artifact byte ceiling/);
+  expect(() => censusPrivateRuntimeArtifact(root, { deadlineMs: Date.now() - 1 })).toThrow(/time ceiling/);
+});
+
+it.skipIf(process.platform !== 'linux')('runs the private artifact census in plain Node and retains its actual preparation inputs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-artifact-plain-node-'));
+  dirs.push(root);
+  const artifact = join(root, 'artifact');
+  mkdirSync(artifact);
+  writeFileSync(join(artifact, 'model'), Buffer.alloc(16 * 1024 ** 2, 0xa7));
+  const reader = resolve(import.meta.dirname, 'private-runtime-artifact-census.mts');
+  const trace = resolve(import.meta.dirname, '../../../scripts/lib/vitest-startup-trace.mjs');
+  const out = join(root, 'source.json');
+  const source = [
+    "import { censusPrivateRuntimeArtifact } from " + JSON.stringify(pathToFileURL(reader).href) + ";",
+    "const result = censusPrivateRuntimeArtifact(process.argv[1]);",
+    "console.log(JSON.stringify({ pid: process.pid, executable: process.execPath,",
+    "  versions: process.versions, execArgv: process.execArgv, result }));",
+  ].join('\n');
+  const result = JSON.parse(execFileSync(process.execPath,
+    ['--import', pathToFileURL(trace).href, '--input-type=module', '-e', source, artifact], {
+      env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '', PC_EXECUTED_SOURCE_MAP_OUT: out },
+      encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
+    }));
+  expect(result.versions.node).toBe(process.versions.node);
+  expect(result.execArgv).not.toContain('tsx');
+  expect(result.result.files).toBe(1);
+  expect(result.result.readAdvice[0].dependencies.scope).toBe('isolated-python-imports-and-native-maps');
+  const records = readdirSync(out + '.native-processes').filter(name => name.endsWith('.json'))
+    .map(name => JSON.parse(readFileSync(join(out + '.native-processes', name), 'utf8')));
+  const own = records.filter(row => row.pid === result.pid);
+  expect(own.find(row => row.event === 'node-entry').executable).toBe(process.execPath);
+  expect(own.find(row => row.event === 'node-exit')).toMatchObject({ code: 0, exitListenersComplete: true });
+  const loads = own.filter(row => row.event === 'module-load-return');
+  expect(loads.map(row => row.url)).toEqual([pathToFileURL(reader).href]);
+  expect(loads[0].source).toMatchObject({ status: 'hashed',
+    sha256: createHash('sha256').update(readFileSync(reader)).digest('hex') });
+  expect(own.filter(row => ['module-load-error', 'module-load-limit', 'module-load-unavailable'].includes(row.event))).toEqual([]);
+});
+
+it('retains teardown signal evidence on a forced-exit timeout and removes its listeners', async () => {
+  vi.useFakeTimers();
+  const directory = mkdtempSync(join(tmpdir(), 'private-stop-evidence-'));
+  dirs.push(directory);
+  const trace = join(directory, 'host-stop.jsonl');
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => false),
+  }) as unknown as import('node:child_process').ChildProcess;
+  const observations: unknown[] = [];
+  const stopped = stopPrivateOperatorHost(child, undefined, 10, observation => {
+    observations.push(observation);
+    appendFileSync(trace, JSON.stringify(observation) + '\n');
+  });
+  const rejected = expect(stopped).rejects.toMatchObject({
+    message: 'Private host forced exit did not settle',
+    privateHostStop: { pid: 12345, phase: 'forced exit', sigtermAccepted: false,
+      sigkillAccepted: false, exitObserved: false, closeObserved: false },
+  });
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
+  expect(observations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: false }),
+    expect.objectContaining({ phase: 'signal', signal: 'SIGKILL', accepted: false }),
+  ]));
+  expect(readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line))).toEqual(observations);
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+});
+
+it.skipIf(process.platform !== 'linux')('retains missing kernel-process evidence without treating it as an exit', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: Number.MAX_SAFE_INTEGER, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => true),
+  }) as unknown as import('node:child_process').ChildProcess;
+  const stopped = stopPrivateOperatorHost(child, undefined, 10);
+  const rejected = expect(stopped).rejects.toMatchObject({
+    message: 'Private host forced exit did not settle',
+    privateHostStop: {
+      phase: 'forced exit', exitObserved: false, closeObserved: false,
+      kernelProcess: { status: 'absent', state: null, startTicks: null, waitChannel: null },
+      observations: expect.arrayContaining([
+        expect.objectContaining({ phase: 'signal', signal: 'SIGKILL',
+          kernelProcess: expect.objectContaining({ status: 'absent' }) }),
+      ]),
+    },
+  });
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(21)]);
+});
+
+it('observes real private-host exit before dependent cleanup and ignores diagnostic callback failures', async () => {
+  const child = spawn(process.execPath, ['-e',
+    "process.on('SIGTERM',()=>process.exit(0));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  try {
+    await once(child.stdout!, 'data');
+    let afterExit = false;
+    const observations: Array<{ phase: string; kernelProcess?: {
+      status: string; state: string | null; startTicks: string | null;
+    } }> = [];
+    await stopPrivateOperatorHost(child, async () => {
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      afterExit = true;
+    }, 2000, (observation) => {
+      observations.push(observation);
+      if (observation.phase === 'signal') throw new Error('diagnostic sink unavailable');
+    });
+    expect(afterExit).toBe(true);
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'exit', exitObserved: true }),
+      expect.objectContaining({ phase: 'complete', closeObserved: true }),
+    ]));
+    expect(child.exitCode).toBe(0);
+    if (process.platform === 'linux') {
+      expect(observations.find(o => o.phase === 'start')?.kernelProcess).toEqual(
+        expect.objectContaining({ status: 'present', state: expect.stringMatching(/^[A-Za-z]$/),
+          startTicks: expect.stringMatching(/^\d+$/) }),
+      );
+      expect(observations.find(o => o.phase === 'complete')?.kernelProcess?.status).toBe('absent');
+    }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('rejects a real native crash after dependent cleanup and retains its exit evidence', async () => {
+  const child = spawn('bash', ['-c', 'ulimit -c 0; exec "$@"', 'private-native-crash', process.execPath, '-e',
+    "process.on('SIGTERM',()=>process.kill(process.pid,'SIGSEGV'));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  let dependentCleaned = false;
+  try {
+    await once(child.stdout!, 'data');
+    await expect(stopPrivateOperatorHost(child, async () => { dependentCleaned = true; }, 2000))
+      .rejects.toMatchObject({
+        message: 'Private host crashed during teardown: SIGSEGV',
+        privateHostStop: {
+          phase: 'native process termination', signalCode: 'SIGSEGV',
+          exitObserved: true, closeObserved: true,
+          kernelProcess: { status: 'absent' },
+          observations: expect.arrayContaining([
+            expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: true }),
+            expect.objectContaining({ phase: 'exit', signalCode: 'SIGSEGV' }),
+            expect.objectContaining({ phase: 'failed', signalCode: 'SIGSEGV' }),
+          ]),
+        },
+      });
+    expect(dependentCleaned).toBe(true);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('close')).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+});
+
+it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGDATA'])(
+  'waits for owned PostgreSQL descendants after a primary exits with redirected output (%s)', async mode => {
+  const forced = mode === 'forced';
+  const directory = mkdtempSync(join(tmpdir(), 'private-pg-stop-'));
+  dirs.push(directory);
+  // A native process tree models the lifecycle independently of SQL/startup:
+  // the postmaster accepts SIGINT, finishes later than its parent, and owns a
+  // worker whose descriptors do not hold the parent's pipes open.
+  const binary = join(directory, 'postgres');
+  copyFileSync(process.execPath, binary);
+  const child = spawn(process.execPath, ['-e', `
+    const {spawn}=require('node:child_process'),fs=require('node:fs');
+    const pg=spawn(${JSON.stringify(binary)},['-e',
+      ${JSON.stringify("const {spawn}=require('node:child_process');const worker=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});process.on('SIGINT',()=>{" + (forced ? '' : "setTimeout(()=>{worker.kill('SIGTERM');worker.once('exit',()=>process.exit(0));},200)") + "});process.stdout.write(JSON.stringify({workerPid:worker.pid}));setInterval(()=>{},1000)")},
+      '--','-D',${JSON.stringify(directory)}],{stdio:['ignore','pipe','ignore']});
+    pg.stdout.once('data',chunk=>{
+      fs.writeFileSync(${JSON.stringify(join(directory, 'postmaster.pid'))},pg.pid+'\\n'+${JSON.stringify(directory)}+'\\n');
+      process.stdout.write(JSON.stringify({pid:pg.pid,...JSON.parse(String(chunk))})+'\\n');
+    });
+    process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);
+  `], { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  let pgPid: number | undefined;
+  const fixturePins: Array<{pid:number;identity:string|null}> = [];
+  try {
+    const ready = JSON.parse(String((await once(child.stdout!, 'data'))[0]));
+    pgPid = ready.pid;
+    for (const pid of [ready.pid, ready.workerPid]) fixturePins.push({pid,identity:readProcessIdentity(pid)});
+    expect(fixturePins.every(pin => pin.identity)).toBe(true);
+    if (mode === 'foreign PGDATA') writeFileSync(join(directory,'postmaster.pid'), pgPid+'\n'+tmpdir()+'\n');
+    const observations: PrivateHostStopObservation[] = [];
+    const cleanup = vi.fn(async () => {
+      try {
+        const stat = readFileSync(`/proc/${pgPid}/stat`, 'utf8');
+        expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toMatch(/^[ZX]$/);
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    });
+    const stopped = stopPrivateOperatorHost(child, cleanup, forced ? 100 : 2000,
+      observation => observations.push(observation));
+    if (mode === 'foreign PGDATA') {
+      await expect(stopped).rejects.toThrow('private postmaster PGDATA mismatch');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(fixturePins.every(pin => readProcessIdentity(pin.pid) === pin.identity)).toBe(true);
+      expect(observations.some(o => o.phase === 'complete')).toBe(false);
+      return;
+    } else if (forced) {
+      await expect(stopped).rejects.toThrow('Private PostgreSQL required forced cleanup');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(observations.at(-1)).toMatchObject({ phase: 'failed', exitObserved: true });
+      expect(observations.some(o => o.phase === 'complete')).toBe(false);
+    } else {
+      await stopped;
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(observations.findIndex(o => o.phase === 'postgres stopped')).toBeLessThan(
+        observations.findIndex(o => o.phase === 'complete'));
+    }
+    const pins = observations.find(o => o.phase === 'postgres captured')?.postgres;
+    expect(pins).toHaveLength(2);
+    expect(pins?.filter(p => p.postmaster)).toHaveLength(1);
+    expect(observations.at(-1)?.postgres?.every(p => p.state === null || p.state === 'Z' || p.state === 'X')).toBe(true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    // Both negative controls and historical mutants can leave the fixture
+    // alive. Only stop the exact native processes this test measured at birth.
+    for (const pin of fixturePins) if (pin.identity && readProcessIdentity(pin.pid) === pin.identity) {
+      try { process.kill(pin.pid,'SIGKILL'); } catch { /* stopped */ }
+    }
+    await vi.waitFor(() => {
+      for (const pin of fixturePins) if (readProcessIdentity(pin.pid) === pin.identity) {
+        const stat = readFileSync(`/proc/${pin.pid}/stat`,'utf8');
+        expect(stat.slice(stat.lastIndexOf(')')+1).trim().split(/\s+/)[0]).toMatch(/^[ZX]$/);
+      }
+    });
+    await closed;
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and observes forced exit before declaring cleanup complete', async () => {
+  const child = spawn(process.execPath, ['-e',
+    "process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  try {
+    await once(child.stdout!, 'data');
+    expect(child.kill('SIGSTOP')).toBe(true);
+    await vi.waitFor(() => {
+      const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+      expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toBe('T');
+    });
+    const observations: PrivateHostStopObservation[] = [];
+    await stopPrivateOperatorHost(child, undefined, 200, observation => observations.push(observation));
+    const start = observations.find(o => o.phase === 'start');
+    expect(start?.kernelProcess).toMatchObject({ status: 'present', state: 'T', startTicks: expect.stringMatching(/^\d+$/) });
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: true }),
+      expect.objectContaining({ phase: 'signal', signal: 'SIGKILL', accepted: true }),
+      expect.objectContaining({ phase: 'exit', exitObserved: true, signalCode: 'SIGKILL' }),
+      expect.objectContaining({ phase: 'complete', exitObserved: true, closeObserved: true,
+        kernelProcess: expect.objectContaining({ status: 'absent' }) }),
+    ]));
+    for (const observation of observations.filter(o => o.kernelProcess?.status === 'present')) {
+      expect(observation.kernelProcess?.startTicks).toBe(start?.kernelProcess?.startTicks);
+    }
+    expect(child.signalCode).toBe('SIGKILL');
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('close')).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  }
+}, 10_000);
+
+it('waits for delayed exit before cleanup and separately waits for pipe closure', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null as number | null, signalCode: null,
+    stdout: { destroyed: false, readableEnded: false }, stderr: null,
+    kill: vi.fn(() => true),
+  });
+  const cleanup = vi.fn(async () => { expect(child.exitCode).toBe(0); });
+  let settled = false;
+  const stopped = stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    cleanup, 10).then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(9);
+  expect(cleanup).not.toHaveBeenCalled();
+  child.exitCode = 0;
+  child.emit('exit', 0, null);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(cleanup).toHaveBeenCalledOnce();
+  expect(settled).toBe(false);
+  child.emit('close', 0, null);
+  await stopped;
+  expect(child.kill.mock.calls).toEqual([['SIGTERM']]);
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+});
+
+it('retains a stdio timeout after process exit and safely stops an already closed host again', async () => {
+  vi.useFakeTimers();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: 0, signalCode: null,
+    stdout: { destroyed: false, readableEnded: false }, stderr: null,
+    kill: vi.fn(() => true),
+  });
+  const stopped = stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    undefined, 10);
+  const rejected = expect(stopped).rejects.toMatchObject({
+    privateHostStop: { phase: 'stdio drainage', exitObserved: true, closeObserved: false,
+      sigtermAccepted: null, sigkillAccepted: null },
+  });
+  await Promise.all([rejected, vi.advanceTimersByTimeAsync(11)]);
+  expect(child.listenerCount('close')).toBe(0);
+  child.stdout.destroyed = true;
+  await stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess, undefined, 10);
+  expect(child.kill).not.toHaveBeenCalled();
+});
+
+it('retains a signal exception without running dependent cleanup', async () => {
+  const denied = Object.assign(new Error('signal denied'), { code: 'EPERM' });
+  const child = Object.assign(new EventEmitter(), {
+    pid: 12345, exitCode: null, signalCode: null, stdout: null, stderr: null,
+    kill: vi.fn(() => { throw denied; }),
+  });
+  const cleanup = vi.fn();
+  await expect(stopPrivateOperatorHost(child as unknown as import('node:child_process').ChildProcess,
+    cleanup)).rejects.toMatchObject({
+      code: 'EPERM', privateHostStop: { phase: 'signal', sigtermAccepted: false,
+        exitObserved: false, closeObserved: false },
+    });
+  expect(cleanup).not.toHaveBeenCalled();
+  expect(child.listenerCount('exit')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
 });
 
 function privateBudgetEnvironment() {
@@ -146,7 +575,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
   const nativeProof = '../lib/external-bench/current-su-native.integration.test.ts';
-  const preparationProofs = [routingProof, nativeProof];
+  const preparationProofs = [routingProof, nativeProof, 'grading-audit-runtime-fixture.ts'];
   for (const file of [...readdirSync(import.meta.dirname).filter(name =>
     name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), ...preparationProofs]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
@@ -173,6 +602,10 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
               ? [[property.name.getText(source), Number(property.initializer.text)]] : []));
           expect(values.timeoutMs, `${file} must retain the existing stall checkpoint`).toBe(240_000);
           expect(values.maxMs, `${file} must retain the existing absolute ceiling`).toBe(420_000);
+          if (file === 'grading-audit-runtime-fixture.ts')
+            expect(policy.properties.some(property => ts.isPropertyAssignment(property)
+              && property.name.getText(source) === 'retainedEvidenceDir'),
+            'initial and recovery grading builds must retain diagnostics outside disposable source').toBe(true);
         }
       }
       ts.forEachChild(node, visit);
@@ -180,7 +613,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     visit(source);
   }
   expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
-    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
@@ -312,6 +745,60 @@ it('stops builder descendants on timeout and retains the original diagnostics', 
   }
 });
 
+it.each(['synchronous', 'progress'] as const)('retains original %s builder failure evidence after disposable output cleanup', async mode => {
+  const output = mkdtempSync(join(tmpdir(), 'private-builder-output-')); dirs.push(output);
+  const retained = mkdtempSync(join(tmpdir(), 'private-builder-retained-')); dirs.push(retained);
+  const journal = join(output, 'hono-host.mjs.build-steps.jsonl');
+  const builder = { command: 'bash',
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step source-guard bash -c "echo ORIGINAL_BUILD_REFUSAL >&2; exit 78"',
+      '_', common, journal], timeoutMs: 2000, retainedEvidenceDir: retained,
+    ...(mode === 'progress' ? { maxMs: 3000, pollMs: 20 } : {}) };
+  await expect(Promise.resolve().then(() => buildPrivateOperatorApiBundle(output, output, builder)))
+    .rejects.toThrow(/exited 78/);
+  const names = ['operator-api-build.log', 'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl'];
+  const originals = names.map(name => readFileSync(join(output, name)));
+  rmSync(output, { recursive: true, force: true });
+  names.forEach((name, index) => expect(readFileSync(join(retained, name))).toEqual(originals[index]));
+  expect(readFileSync(join(retained, names[0]), 'utf8')).toContain('ORIGINAL_BUILD_REFUSAL');
+  expect(JSON.parse(readFileSync(join(retained, names[1]), 'utf8')))
+    .toMatchObject({ status: 78, steps: { last: { step: 'source-guard', event: 'end', status: 78 } } });
+});
+
+it('admits the grading lifecycle diagnostic manifest through the real retention harness', async () => {
+  const path = resolve(import.meta.dirname, '../lib/release/grading-audit-runtime.integration.test.ts');
+  const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+  const artifacts: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'retainedArtifacts') {
+      expect(ts.isArrayLiteralExpression(node.initializer)).toBe(true);
+      if (ts.isArrayLiteralExpression(node.initializer))
+        for (const element of node.initializer.elements) {
+          expect(ts.isStringLiteral(element)).toBe(true);
+          if (ts.isStringLiteral(element)) artifacts.push(element.text);
+        }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(artifacts).toHaveLength(8);
+  const root = mkdtempSync(join(tmpdir(), 'grading-retention-manifest-')); dirs.push(root);
+  const result = await runHarness({
+    contract: { name: 'grading-retention-admission', phases: [{ id: 'execute' }] },
+    evidenceRoot: root, retainedArtifacts: artifacts,
+    runPhase: async ({ evidenceDir }) => {
+      for (const artifact of artifacts) {
+        expect(artifact.startsWith('phases/execute/')).toBe(true);
+        const file = join(evidenceDir, artifact.slice('phases/execute/'.length));
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, `original:${artifact}`);
+      }
+      return { ok: true };
+    },
+  });
+  for (const artifact of artifacts)
+    expect(readFileSync(join(result.evidenceDir, artifact), 'utf8')).toBe(`original:${artifact}`);
+});
+
 it('retains completed step timing and the failing command status', () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
@@ -364,6 +851,36 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
   expect(build.elapsedMs).toBeGreaterThan(2000);
   expect(build.progress.extensions).toBeGreaterThan(0);
   expect(build.status).toBe(0);
+});
+
+it('rebuilds relocated source with a fresh journal while preserving the first build evidence', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-relocated-build-')); dirs.push(directory);
+  const source = join(directory, 'source');
+  let output = join(source, 'dist-host');
+  mkdirSync(output, { recursive: true });
+  const build = (value: string) => preparePrivateOperatorApiBundle(directory, output, { builder: {
+    command: 'bash', args: ['-c',
+      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step compile true; printf "%s" "$4" > "$3"',
+      '_', common, join(output, 'hono-host.mjs.build-steps.jsonl'), join(output, 'hono-host.mjs'), value],
+    timeoutMs: 2000, maxMs: 6000, pollMs: 20,
+  } });
+  await build('initial');
+  const names = ['hono-host.mjs', 'operator-api-preflight.json', 'operator-api-build.log',
+    'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl'];
+  const original = names.map(name => readFileSync(join(output, name)));
+  const relocated = join(directory, 'relocated');
+  renameSync(source, relocated);
+  output = join(relocated, 'dist-host');
+  await expect(Promise.resolve().then(() => build('unarchived')))
+    .rejects.toThrow('Progress build requires a fresh retained step journal');
+  const archive = archivePrivateOperatorApiBuild(output, join(directory, 'initial-build'));
+  const rebuilt = await build('recovered');
+  expect(readFileSync(rebuilt.path, 'utf8')).toBe('recovered');
+  expect(JSON.parse(readFileSync(join(output, 'operator-api-build-result.json'), 'utf8')).status).toBe(0);
+  expect(readFileSync(join(output, 'hono-host.mjs.build-steps.jsonl'), 'utf8')).toContain('compile');
+  names.forEach((name, index) => expect(readFileSync(join(archive, name))).toEqual(original[index]));
+  expect(() => archivePrivateOperatorApiBuild(output, archive)).toThrow('must not be overwritten');
+  expect(readFileSync(rebuilt.path, 'utf8')).toBe('recovered');
 });
 
 it('reports only distinct completed build steps to the enclosing watchdog', async () => {
@@ -452,6 +969,32 @@ it('retains and rejects an async builder launch failure without waiting for the 
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt.error).toMatchObject({ code: 'ENOENT' });
   expect(receipt.progress).toEqual({ extensions: 0, completedSteps: 0 });
+});
+
+it('hands a verified Git clone to the real source guard without its donor archive identity', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-clone-source-')); dirs.push(root);
+  const git = (args: string[]) => execFileSync('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: 10_000 }).trim();
+  git(['init', '--quiet']);
+  git(['-c', 'user.name=Private fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--quiet', '--allow-empty', '-m', 'selected source']);
+  const selectedCommit = git(['rev-parse', 'HEAD']);
+  const env = { VERIFY_TAURI_SOURCE_RECEIPT: '/donor/source.json', VERIFY_TAURI_SOURCE_REF: selectedCommit,
+    NODE_OPTIONS: '--import=/selected/scripts/lib/committed-source-loader.mjs', OTHER: 'keep' };
+  const run = (environment: NodeJS.ProcessEnv) => spawnSync('bash', ['-c',
+    'source "$COMMON"; bundle_host_source_sha "$REPO_ROOT"'],
+    { env: { PATH: process.env.PATH, COMMON: common, REPO_ROOT: root, ...environment }, encoding: 'utf8', timeout: 10_000 });
+  expect(run(env)).toMatchObject({ status: 78,
+    stderr: 'bundle-host.sh: pinned source receipt requires its archive marker\n' });
+  const environment = privateGitCloneBundleEnv(root, selectedCommit, env);
+  expect(environment).toEqual({ NODE_OPTIONS: env.NODE_OPTIONS, OTHER: 'keep' });
+  expect(run(environment)).toMatchObject({ status: 0, stdout: git(['rev-parse', '--short', 'HEAD']) + '\n' });
+  expect(env.VERIFY_TAURI_SOURCE_RECEIPT).toBe('/donor/source.json');
+  expect(() => privateGitCloneBundleEnv(root, '0'.repeat(40), env)).toThrow('differs from the selected commit');
+  mkdirSync(join(root, 'nested'));
+  expect(() => privateGitCloneBundleEnv(join(root, 'nested'), selectedCommit, env)).toThrow('own its Git source root');
+  writeFileSync(join(root, '.verifier-source.json'), '{}');
+  expect(() => privateGitCloneBundleEnv(root, selectedCommit, env)).toThrow('not an archive');
 });
 
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',

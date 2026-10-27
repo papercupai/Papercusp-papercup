@@ -231,9 +231,9 @@ export function AgentRoster({
   };
 
   const sendBulkMessage = async () => {
-    const text = msgText.trim();
+    const text = msgText;
     const send = bulk?.message;
-    if (!text || selectedIds.length === 0 || !send) return;
+    if (!text.trim() || selectedIds.length === 0 || !send) return;
     const sent = await runBulk('message', 'Message failed', () => send(selectedIds, text));
     // Clear the composer only on a send that did not throw — a failure keeps the
     // text so the user does not lose what they typed.

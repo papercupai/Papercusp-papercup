@@ -177,6 +177,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-drain-sweep', seedScript: 'seed-plan-drain-sweep-routine.ts' },
+  { name: 'plan-anchor-freshness', seedScript: 'seed-plan-anchor-freshness-routine.ts' },
   { name: 'plan-item-orphan-reconcile', seedScript: 'seed-plan-item-orphan-reconcile-routine.ts' },
   {
     name: 'plan-item-reflect-orphan-reconcile',

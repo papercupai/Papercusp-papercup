@@ -420,6 +420,49 @@ describe('container exec target against a live container', () => {
     }
   });
 
+  it('stock Claude admission rejects inherited controls and retains declared overrides in real Docker', async () => {
+    const cid = await startContainer(['-e', 'CLAUDE_CODE_EXTRA_BODY=IMAGE_SECRET_SENTINEL',
+      '-e', 'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0', '-e', 'VIRTUAL_ENV=/task/venv']);
+    try {
+      const probe = { kind: 'docker-exec' as const, containerId: cid, workdir: '/tmp', binPath: '/bin/sh' };
+      const denied = materializeDockerExecWrapper(probe, { dir: mkdtempSync(join(root, 'claude-denied-')),
+        guardClaudeEnv: true, forwardEnvPatterns: ['^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$'] });
+      const env = { PATH: process.env.PATH, CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' };
+      const rejected = await command(denied.wrapperPath, ['-c', 'echo CLI_STARTED'], env);
+      expect(rejected.status, rejected.stderr).toBe(126);
+      expect(rejected.stdout).toBe('');
+      expect(rejected.stderr).toContain('CLAUDE_CODE_EXTRA_BODY');
+      expect(rejected.stderr).not.toContain('IMAGE_SECRET_SENTINEL');
+      const admitted = materializeDockerExecWrapper(probe, { dir: mkdtempSync(join(root, 'claude-admitted-')),
+        guardClaudeEnv: true, forwardEnvPatterns: ['^CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS$', '^CLAUDE_CODE_EXTRA_BODY$'] });
+      const accepted = await command(admitted.wrapperPath,
+        ['-c', 'printf "%s|%s|%s" "$CLAUDE_CODE_EXTRA_BODY" "$CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" "$VIRTUAL_ENV"'],
+        { ...env, CLAUDE_CODE_EXTRA_BODY: 'declared-body' });
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stdout).toBe('declared-body|1|/task/venv');
+    } finally { await removeContainer(cid); }
+  });
+
+  it.each([
+    { label: 'managed settings file', setup: `mkdir -p /etc/claude-code && printf '%s' '{"env":{"CLAUDE_CODE_EXTRA_BODY":"POLICY_SECRET_SENTINEL"}}' > /etc/claude-code/managed-settings.json`, user: '0' },
+    { label: 'dangling policy symlink', setup: 'ln -s /missing-managed-policy /etc/claude-code', user: '0' },
+    { label: 'inaccessible policy parent', setup: 'chmod 000 /etc', user: '65534:65534' },
+  ])('stock Claude admission rejects managed policy before the CLI starts ($label)', async ({ setup, user }) => {
+    const cid = await startContainer(['--user', user]);
+    try {
+      const prepared = await command('docker', ['exec', '-u', '0', cid, '/bin/sh', '-c', setup]);
+      expect(prepared.status, prepared.stderr).toBe(0);
+      const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
+        workdir: '/tmp', binPath: '/bin/sh' }, { dir: mkdtempSync(join(root, 'claude-policy-')), guardClaudeEnv: true });
+      const result = await command(wrapperPath, ['-c', 'printf "%s" "$1"', 'sentinel', 'CLI_STARTED'],
+        { PATH: process.env.PATH });
+      expect(result.status, result.stderr).toBe(126);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('stock Claude managed policy');
+      expect(result.stderr).not.toContain('POLICY_SECRET_SENTINEL');
+    } finally { await removeContainer(cid); }
+  });
+
   it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', async () => {
     const base = mkdtempSync(join(root, 'reloc-'));
     const homes = join(base, 'su-codex-homes'), perHomes = join(base, 'task-homes');

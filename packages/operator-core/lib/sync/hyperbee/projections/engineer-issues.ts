@@ -44,6 +44,7 @@ import {
 } from './work-items-replay-identity-indexes';
 import { isDistinctEntityCollision } from './distinct-entity-collision';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '../../../work-nature/agent-work-predicate';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -441,7 +442,7 @@ async function findKeylessTitleIdentityWinner(
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND feature_id <> ${incomingIssueId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND (status IS NULL OR status <> ALL (
          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
        ))
@@ -564,7 +565,7 @@ async function findWatchdogIdentityWinner(
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
        AND feature_id <> ${incomingIssueId}
-       AND item_kind IN ('bug', 'change', 'task')
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
        AND (status IS NULL OR status <> ALL (
          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
        ))
@@ -863,7 +864,7 @@ async function distinctEntityCollisions(sql: postgres.Sql, harnessSlug: string, 
   return refused;
 }
 
-const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #1): a work-item id names ONE row
@@ -1291,7 +1292,7 @@ async function deleteFromPg(
         )
       )
       AND feature_id = ${issueId}
-      AND item_kind IN ('bug', 'change', 'task')
+      AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       -- Remote tombstones may delete only the row materialised from that same
       -- source log.  This makes every pre-829 bare-key replay fail closed instead
       -- of erasing a same-id local/sibling row (the migration-826 incident).

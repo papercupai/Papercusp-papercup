@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 current-build native consult matrix and deterministic eight-thread usefulness review (2026-10-26)",
+  "framework": "operational",
+  "command": [
+    "testing:run nativeConsult x4 on :3170 (request keys gf-r6-20261026-claudeended-claude-v1, gf-r6-20261026-claudeended-codex-v1, gf-r6-20261026-codexlive-codex-v1, gf-r6-20261026-codexlive-codex-v2)",
+    "conversations:get on the four matrix conversations",
+    "dev:pg_query harness_shared.session_ports for the four port ids",
+    "psql -f docs/evidence/get-feedback-p006-eight-thread-selection-v1.sql (sha256 1b5b2a3609c86909c4557bba5027b8916fae136c4df47115b7c4896761193e58)",
+    "dev:pg_query coord_thread_posts for the eight requester review posts and answer posts"
+  ],
+  "startedAt": "2026-10-26T18:46:22.708Z",
+  "finishedAt": "2026-10-26T19:44:53.000Z",
+  "exitCode": 0,
+  "summary": "All three defined matrix cells (Claude ended source to Claude fork, Claude ended source to Codex conversion, Codex live source to Codex session port) delivered a native seed with a persistence proof and received a substantive answer from a distinct answering session. The first Codex-source attempt left its delivery receipt pending because of a launcher ack defect; that attempt is retained, the defect was fixed and mutation-probed under WI-6554700010029583, and the cell was re-measured on the fixed launcher. The eight-thread review re-derives its eight threads from a fixed SQL rule at a fixed asOf and classifies each from the requester's own post: 5 useful, 3 partial, 0 contradictory; decisions 6 adopted, 1 modified, 1 deferred.",
+  "assertions": [
+    {
+      "id": "matrix-claude-ended-to-claude-fork-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-bcc8534b3580a544d9d30a6a1922d7134b1dbf3545606d7669e04a63e2f0deb5: source su-17790318 (claude, ended, adv 52635); dispatch rank1 claude/fable convert to su-dfe64c2f at 2026-10-26T18:48:22.492Z. Port 9c1fbcc4-0313-45a9-a4a2-8ff3acad8cd9 delivered 18:48:04.860Z, persistenceVerifiedAt 18:48:04.844Z, target adv 52917, rendered d5226266a668. Answer post 1206947 (7456 chars) by su-dfe64c2f."
+    },
+    {
+      "id": "matrix-claude-ended-to-codex-conversion-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-40c64055786abeeceef8e3103ad69aeb50f9087fcf51bd326b54ce9ea3b5f90b: source su-17790318 (claude, ended, adv 52635); dispatch rank3 codex/sol convert to su-cc2a0985 at 18:48:18.667Z. Port cb414e7d-d488-4f30-aa85-cb2991149407 delivered 18:47:58.125Z, persistenceVerifiedAt 18:47:58.047Z, target adv 52918, rendered da80fe9f888a. Answer post 1206938 (2797 chars) by su-cc2a0985."
+    },
+    {
+      "id": "matrix-codex-live-to-codex-session-port-delivered-and-answered",
+      "passed": true,
+      "evidence": "conv-request-226ebb1d194d87a2ce94f89fdf04efca906b367b8baf1b336b4e6209ec4c2705 (re-measurement v2): source su-637d70bf (codex, live, adv 51658); dispatch rank3 codex/sol convert to su-79aa8765 at 19:28:57.260Z. Port bef67b5a-7d09-49ba-8adb-f33dd6c4c249 delivered 19:28:38.429Z, persistenceVerifiedAt 19:28:38.403Z, target adv 52929, rendered b5ae3e96fa65. Answer post 1206995 (3821 chars) by su-79aa8765."
+    },
+    {
+      "id": "matrix-answering-actor-distinct-from-source-and-requester",
+      "passed": true,
+      "evidence": "Answering owners su-dfe64c2f, su-cc2a0985, su-79aa8765 each differ from their source owner (su-17790318, su-17790318, su-637d70bf) and from the requester su-2fde89b1; each port's target adv session is a new session (52917, 52918, 52929)."
+    },
+    {
+      "id": "matrix-first-codex-source-attempt-retained-root-caused-and-remeasured",
+      "passed": true,
+      "evidence": "conv-request-1095e42d5983596c2bc4d8aaaf6124fbad3c9721262c26e51dc7d638a9a1afc1: port 466edbde-fb70-419e-ac7d-93f34a837b66 stays pending (bootstrapReceiptCommitted=true, no persistenceProof) although the target rollout for adv 52916 contains rendered hash 38966d7047102e1f and answer post 1206934 (2857 chars) arrived. Cause: the launcher made one ack attempt after a timed-out delivery POST. Fixed in WI-6554700010029583 (bounded re-POST; 5 unit cases; mutation probe test_runs 22252917/22252923/22252930 verdict caught). Not credited as a passing cell; the v2 re-measurement is the credited cell."
+    },
+    {
+      "id": "matrix-post-fix-zero-avoidable-delivery-failures",
+      "passed": true,
+      "evidence": "On the fixed launcher (psu-pty-host serving the canonical tree that contains the WI-6554700010029583 change), every defined cell delivered with a persistence proof and an answer. The only avoidable failure observed in this window is the retained first attempt above."
+    },
+    {
+      "id": "matrix-cells-outside-definition-listed",
+      "passed": true,
+      "evidence": "The matrix uses the three cells defined by the 2026-10-09/10-23 editions. Codex-source to Claude conversion is not a defined cell and was not attempted. OMP-source native conversion is covered by the dated 2026-10-25 record docs/evidence/get-feedback-p002-ended-omp-native-2026-10-25.json (test run 21981614), not re-measured here."
+    },
+    {
+      "id": "eight-thread-selection-rederived-by-fixed-sql",
+      "passed": true,
+      "evidence": "docs/evidence/get-feedback-p006-eight-thread-selection-v1.sql (sha256 1b5b2a3609c86909c4557bba5027b8916fae136c4df47115b7c4896761193e58, asOf 2026-10-26T19:32:28.176Z) returned exactly the eight conversation ids in reviewedThreads, in order, at 2026-10-26T19:44:53Z."
+    },
+    {
+      "id": "eight-thread-population-partition-sums",
+      "passed": true,
+      "evidence": "closed_answered consults at asOf: 1317 = 390 not dispatched + 82 dispatched without an answer post + 468 answered without a requester post-answer review + 377 answered with a requester review (6 of them P-006 trials, excluded); 0 same-actor rows. Eligible: 371."
+    },
+    {
+      "id": "eight-thread-every-label-cites-requester-post-in-thread",
+      "passed": true,
+      "evidence": "Each reviewedThreads row cites its requester review post (1206925, 1206924, 1206922, 1206818, 1206810, 1206802, 1206619, 1206766); each post belongs to that thread, is authored by the thread's requester and post-dates the thread's answer post."
+    },
+    {
+      "id": "eight-thread-shortfall-and-enum-rules",
+      "passed": true,
+      "evidence": "usefulness in {useful, partial, contradictory}; decision in {adopted, modified, rejected, deferred, unknown}; the 3 partial rows carry a non-empty shortfall; the 5 useful rows carry shortfall 'none'; no row has decision unknown."
+    }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-10005891",
+  "requesterId": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+  "runtime": {
+    "consultRoute": "staging operator :3170",
+    "servingBuildV1Rows": "82c8e15b19",
+    "servingBuildV2Row": "e3d8713b02",
+    "launcher": "psu-launcher on psu-pty-host, canonical staging tree; carries WI-6554700010029583 for the v2 row"
+  },
+  "matrix": {
+    "definition": "Three cells: Claude ended source to Claude fork; Claude ended source to Codex conversion; non-Claude (Codex) live source to Codex session port.",
+    "cells": [
+      {
+        "cell": "claude-source-claude-fork",
+        "requestKey": "gf-r6-20261026-claudeended-claude-v1",
+        "conversationId": "conv-request-bcc8534b3580a544d9d30a6a1922d7134b1dbf3545606d7669e04a63e2f0deb5",
+        "sourceOwnerId": "su-17790318-c65d-4944-af8a-e8813a9c03f5",
+        "answeringOwnerId": "su-dfe64c2f-bdbb-44a9-a407-86a32ae01efa",
+        "dispatch": "rank1 claude/fable convert",
+        "port": { "id": "9c1fbcc4-0313-45a9-a4a2-8ff3acad8cd9", "status": "delivered", "deliveredAt": "2026-10-26T18:48:04.860Z", "persistenceVerifiedAt": "2026-10-26T18:48:04.844Z", "targetAdvSessionId": 52917, "renderedHash": "d5226266a66851a44a3b3041fa39d79a15750304101ebbac71b478ba934586f6" },
+        "answerPostId": 1206947,
+        "requesterReviewPostId": 1206984,
+        "requesterDecision": "adopted with one correction",
+        "result": "credited"
+      },
+      {
+        "cell": "claude-source-codex-conversion",
+        "requestKey": "gf-r6-20261026-claudeended-codex-v1",
+        "conversationId": "conv-request-40c64055786abeeceef8e3103ad69aeb50f9087fcf51bd326b54ce9ea3b5f90b",
+        "sourceOwnerId": "su-17790318-c65d-4944-af8a-e8813a9c03f5",
+        "answeringOwnerId": "su-cc2a0985-3faa-4c02-bbf7-64f0eb93c255",
+        "dispatch": "rank3 codex/sol convert",
+        "port": { "id": "cb414e7d-d488-4f30-aa85-cb2991149407", "status": "delivered", "deliveredAt": "2026-10-26T18:47:58.125Z", "persistenceVerifiedAt": "2026-10-26T18:47:58.047Z", "targetAdvSessionId": 52918, "renderedHash": "da80fe9f888a6a3424daa71655d22e1a4b7c256d845e2592dc3305b6ba3da538" },
+        "answerPostId": 1206938,
+        "requesterReviewPostId": 1206983,
+        "requesterDecision": "adopted",
+        "result": "credited"
+      },
+      {
+        "cell": "non-claude-source-session-port",
+        "requestKey": "gf-r6-20261026-codexlive-codex-v2",
+        "conversationId": "conv-request-226ebb1d194d87a2ce94f89fdf04efca906b367b8baf1b336b4e6209ec4c2705",
+        "sourceOwnerId": "su-637d70bf-567e-4ee9-ab87-88d69ca99dc9",
+        "answeringOwnerId": "su-79aa8765-b379-455e-86bd-eefe4bc5904a",
+        "dispatch": "rank3 codex/sol convert",
+        "port": { "id": "bef67b5a-7d09-49ba-8adb-f33dd6c4c249", "status": "delivered", "deliveredAt": "2026-10-26T19:28:38.429Z", "persistenceVerifiedAt": "2026-10-26T19:28:38.403Z", "targetAdvSessionId": 52929, "renderedHash": "b5ae3e96fa65b6e3265015043c4f05bf09f03bbffab7cb3583a34019aaa5b1d5" },
+        "answerPostId": 1206995,
+        "requesterReviewPostId": null,
+        "requesterDecision": "adopted with one modification (recorded here: the answerer closed the consult first, after which the thread accepts no requester post; see EI-27072230863216700)",
+        "result": "credited"
+      },
+      {
+        "cell": "non-claude-source-session-port",
+        "requestKey": "gf-r6-20261026-codexlive-codex-v1",
+        "conversationId": "conv-request-1095e42d5983596c2bc4d8aaaf6124fbad3c9721262c26e51dc7d638a9a1afc1",
+        "sourceOwnerId": "su-48ad7866-4ca5-48f1-90e7-5c5c4572e6d6",
+        "answeringOwnerId": "su-5c38e631-644c-43a5-a50e-d64000d1132e",
+        "dispatch": "rank3 codex/sol convert",
+        "port": { "id": "466edbde-fb70-419e-ac7d-93f34a837b66", "status": "pending", "deliveredAt": null, "persistenceVerifiedAt": null, "targetAdvSessionId": 52916, "renderedHash": "38966d7047102e1f1731b1935af2f02f508ca527f8d9ccc7c32f70717dc309e1" },
+        "answerPostId": 1206934,
+        "requesterReviewPostId": 1206982,
+        "requesterDecision": "adopted",
+        "result": "superseded by the v2 re-measurement; receipt defect fixed under WI-6554700010029583; not credited"
+      }
+    ]
+  },
+  "eightThreadReview": {
+    "method": "conv-request-226ebb1d194d87a2ce94f89fdf04efca906b367b8baf1b336b4e6209ec4c2705 answer post 1206995",
+    "selectionRuleVersion": 1,
+    "selectionSql": "docs/evidence/get-feedback-p006-eight-thread-selection-v1.sql",
+    "selectionSqlSha256": "1b5b2a3609c86909c4557bba5027b8916fae136c4df47115b7c4896761193e58",
+    "asOf": "2026-10-26T19:32:28.176Z",
+    "population": { "closedAnsweredAtAsOf": 1317, "notDispatched": 390, "dispatchedWithoutAnswerPost": 82, "answeredWithoutRequesterReview": 468, "answeredWithRequesterReview": 377, "p006TrialsExcluded": 6, "eligible": 371 },
+    "definitions": {
+      "useful": "The requester's post shows the answer materially informed the decision without a material correction.",
+      "partial": "Some contribution, but the requester modified or deferred it, or names a material omission.",
+      "contradictory": "The requester's post rejects or corrects the answer, or following it would oppose the recorded decision."
+    },
+    "reviewedThreads": [
+      { "rank": 1, "conversationId": "conv-request-4ccf02aa962109cf8dd158b722386a5cb392e0ba5770ddbab6a235671dea7548", "closedAt": "2026-10-26T18:46:58.684Z", "requesterId": "su-10a8099c-9335-4122-ac03-1cf065a4df38", "answeringOwnerId": "su-911e668e-b558-4b29-baac-ef171161a9d8", "answerPostIds": [1206868], "requesterReviewPostId": 1206925, "decisionSought": "Second distinct-lineage critique of the plan-shipping-friction-repair acceptance contract before proof binding", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206925], "usefulness": "useful", "usefulnessRationale": "Requester accepted the critique's corrections (fix live-gate-holder prose, supersede four duplicate clauses after successor coverage, refresh stale Now) into decision D007.", "shortfall": "none" },
+      { "rank": 2, "conversationId": "conv-request-c851c69473b27f0a8ca340f44bdadae1f78536019bbe32b2c18f9607f1acf4c6", "closedAt": "2026-10-26T18:46:47.971Z", "requesterId": "su-10a8099c-9335-4122-ac03-1cf065a4df38", "answeringOwnerId": "su-57966f52-8e6a-434c-8279-b34a53250771", "answerPostIds": [1206864], "requesterReviewPostId": 1206924, "decisionSought": "Critique of the complete plan-shipping-friction-repair acceptance contract before proof binding", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206924], "usefulness": "useful", "usefulnessRationale": "Requester accepted the R6 exception correction, the R1 strict-reader detector, manual-plane validation and the R11 method into D007; two detector additions under verification.", "shortfall": "none" },
+      { "rank": 3, "conversationId": "conv-request-cea838e59773b06fbff3f928253424fbadcfbba7c7508aa0d2c9f977e3d55ee4", "closedAt": "2026-10-26T18:46:38.851Z", "requesterId": "su-10a8099c-9335-4122-ac03-1cf065a4df38", "answeringOwnerId": "su-e84a3579-7df4-40f8-b9ae-b142096aa748", "answerPostIds": [1206879], "requesterReviewPostId": 1206922, "decisionSought": "Pre-start bar critique of rubric revision 6 covering all mandatory BARs and current clauses", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206922], "usefulness": "partial", "usefulnessRationale": "Requester accepted the OBJECT findings (R4 live evidence, ended executor detector, R12 census, R10 succession) as additive corrections.", "shortfall": "Requester records that the clause inventory was not fully exposed to the reviewer, so the critique gives no universal coverage." },
+      { "rank": 4, "conversationId": "conv-request-a1855360e2d2d92285da506bca44b344c475410de9cf00dffedafde9c89c8b50", "closedAt": "2026-10-26T17:36:54.749Z", "requesterId": "su-f2a2c3c4-d636-4ac2-b7ad-f74beaa0cc7e", "answeringOwnerId": "su-fe7f2f7c-6898-425a-b0f9-4a7f74fad3dd", "answerPostIds": [1206731], "requesterReviewPostId": 1206818, "decisionSought": "Critique of the acceptance bars of code-cleanup-campaigns-2026-10-26", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206818], "usefulness": "useful", "usefulnessRationale": "Requester takes critique #2 as BLOCKING: it confirms critique #1, adds N1-N6, and is applied with critique #1 in one rubrics:amend.", "shortfall": "none" },
+      { "rank": 5, "conversationId": "conv-request-046da7c9beabd389962c9a44b42b43d3fc4d8c6e9358999266bbce349e062dcf", "closedAt": "2026-10-26T17:32:13.092Z", "requesterId": "su-10a8099c-9335-4122-ac03-1cf065a4df38", "answeringOwnerId": "su-26b0d156-f842-4997-beeb-a8e208e4d2ff", "answerPostIds": [1206797], "requesterReviewPostId": 1206810, "decisionSought": "Critique of the plan15/rubric5 acceptance contract of plan-shipping-friction-repair", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206810], "usefulness": "useful", "usefulnessRationale": "Requester accepted the actionable corrections (bindings, executable regression evidence, six-path footprint, runtime probes, Conformance refs) for a canonical amendment.", "shortfall": "none" },
+      { "rank": 6, "conversationId": "conv-request-99bd8d0fe25d5bc8641e0b8cf1879be918fbda525a5bf0902a89f17c29815232", "closedAt": "2026-10-26T17:17:50.079Z", "requesterId": "su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f", "answeringOwnerId": "su-b9f599e7-cbd3-43de-a7a1-386f8340545e", "answerPostIds": [1206770], "requesterReviewPostId": 1206802, "decisionSought": "Full pre-start bar critique of code-intel-delivery-and-outcomes-2026-10-26", "actualRequesterDecision": "deferred", "decisionEvidencePostIds": [1206802], "usefulness": "partial", "usefulnessRationale": "Requester accepted the R-8 blocker but recorded it as plan decision D-021 and deferred the wording repair to completion.", "shortfall": "The finding repeats an earlier critique (thread-post 1206765); no new blocker beyond it." },
+      { "rank": 7, "conversationId": "conv-mvp6b1zz-0000-b6679daa601341dfa50f327b356f8466", "closedAt": "2026-10-26T16:43:34.639Z", "requesterId": "su-10a8099c-9335-4122-ac03-1cf065a4df38", "answeringOwnerId": "su-7c3373e4-5ad2-4341-b564-be4709b0a56d", "answerPostIds": [1206611, 1206613], "requesterReviewPostId": 1206619, "decisionSought": "Vet acceptance rubric revision 3 of plan-shipping-friction-repair", "actualRequesterDecision": "modified", "decisionEvidencePostIds": [1206619], "usefulness": "partial", "usefulnessRationale": "Requester accepted the runtime-plane and exact-case/method distinctions and is preparing one amendment.", "shortfall": "Answer 1206611 recommended declaring manual-provenance layers on R-4/R-5/R-11/R-12; the requester corrected that manual-provenance is not a recorded test layer and used instrument:none with planes instead." },
+      { "rank": 8, "conversationId": "conv-request-ae2c29a827ea4fc6077326696f58013a6f4e57f9c237818bddcbc9c6428ea863", "closedAt": "2026-10-26T16:20:23.208Z", "requesterId": "su-fc263bb4-f17b-422d-b2ad-e21ff0e1332f", "answeringOwnerId": "su-4031c919-fa97-454e-b8d6-c8429b8f9764", "answerPostIds": [1206765], "requesterReviewPostId": 1206766, "decisionSought": "Full pre-start bar critique of code-intel-delivery-and-outcomes-2026-10-26", "actualRequesterDecision": "adopted", "decisionEvidencePostIds": [1206766], "usefulness": "useful", "usefulnessRationale": "Requester accepted the R-8 contradiction (verified 12 tracked files under docs/evidence with git ls-files) and set the repair.", "shortfall": "none" }
+    ],
+    "aggregate": { "useful": 5, "partial": 3, "contradictory": 0, "adopted": 6, "modified": 1, "rejected": 0, "deferred": 1, "unknown": 0 },
+    "cohortNotes": [
+      "All eight threads are acceptance-rubric critique or vetting consults; 5 of 8 come from requester su-10a8099c.",
+      "468 answered threads lack a requester post-answer review and cannot enter the selection; part of that population is threads the answerer closed first (EI-27072230863216700)."
+    ]
+  },
+  "details": {
+    "residue": [
+      { "ref": "EI-27072230863216700", "topic": "requester cannot post a review after an answerer-side consult:close" },
+      { "ref": "EI-27071602483857604", "topic": "port cleanup labels a receipt-committed pending port preparation-expired" },
+      { "ref": "EI-27071279276035331", "topic": "mutation-probe descriptor reader gate has no retry" }
+    ]
+  }
+}

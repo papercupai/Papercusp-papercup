@@ -47,6 +47,23 @@ describe('PendingCardsBar', () => {
     vi.mocked(postCardResponse).mockResolvedValue({ ok: true, status: 200 });
   });
 
+  it('answers a recovered card in its owning conversation after a pane switch', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({ cards: [makeCard({ conversationId: 'original', workspaceId: 'w1' })],
+      connected: true, byRun: new Map() });
+    render(<PendingCardsBar conversationId="different-pane" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
+    await waitFor(() => expect(postCardResponse).toHaveBeenCalledWith('original',
+      expect.objectContaining({ correlationId: 'cid-1', workspaceId: 'w1' })));
+  });
+
+  it('does not render cards from an obsolete workspace baseline', () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({ cards: [makeCard({ conversationId: 'original', workspaceId: 'foreign' })],
+      connected: true, byRun: new Map() });
+    const { container } = render(<PendingCardsBar conversationId="current" workspaceId="w1" />);
+    expect(container.firstChild).toBeNull();
+    expect(postCardResponse).not.toHaveBeenCalled();
+  });
+
   it('audit: optimistic-dismiss — card hides immediately after a successful submit, even if SSE never sends snapshot update', async () => {
     // Pre-fix: if the SSE stream dropped right after a successful POST,
     // the card stayed visible indefinitely because the snapshot-update

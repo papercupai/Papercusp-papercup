@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "r2gcs-p002-custody-retention-v1",
+  "workItem": "WI-6554700010025561",
+  "custodyIssue": "EI-26875969820074880",
+  "observedAt": "2026-10-24T18:43:00.689075+00:00",
+  "retainedEvidence": {
+    "root": ".papercusp/release-artifacts/p544-7a9e83f6-restore20261024",
+    "pathBase": "Operating account home directory"
+  },
+  "custodyReceipt": "custody.json",
+  "priorDeliveryReceipt": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-maintained-delivery-live.json",
+  "originalJournal": {
+    "schemaVersion": 1,
+    "taskId": "0mvkl22i0febmllzn1h",
+    "operationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+    "sourceSha": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "version": "0.0.21-p544q20261023r2"
+  },
+  "files": [
+    { "name": "manifest.json", "sizeBytes": 12555, "sha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8" },
+    { "name": "server.tgz.minisig", "sizeBytes": 295, "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54" },
+    { "name": "sbom.cdx.json", "sizeBytes": 800554, "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d" },
+    { "name": "server.tgz", "sizeBytes": 2118168717, "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948" }
+  ],
+  "verification": {
+    "currentSizesMatch": true,
+    "currentManifestHashMatches": true,
+    "fullFileDigestsPreviouslyVerified": "0mvmku2wa1v36si1v0n",
+    "manualPinId": "672e54f0-b3bf-4b14-ac2e-d9c3832865a7",
+    "guardTestRunId": 21912427,
+    "guardTestResult": "20 passed, 0 failed, 0 skipped",
+    "guardSourceHash": "7037d2f6c23508b208c3cb0a629ce06b4082815f92d253958d6be3d241986e01",
+    "guardTestHash": "9f83c26cafb5bcdf958aa8f01eb1348c022387d0b16f38fd3ea4e8b62b0d0d04"
+  },
+  "limitations": [
+    "Supporting custody evidence only; this receipt does not certify production delivery, independent acceptance or shipment.",
+    "The cause of the original temporary-directory disappearance remains unknown; recovery is a mitigation.",
+    "The original artifact bytes, manifest, signature, SBOM and release journal were not modified."
+  ]
+}

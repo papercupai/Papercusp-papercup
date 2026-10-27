@@ -27,6 +27,7 @@ import { activeExternalBlockers } from './external-blockers';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import type { SystemClearedBlockerItem } from './work-item-ref-blocker-auto-clear';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 /**
  * This producer's own admission_runs.run_kind.
@@ -670,7 +671,7 @@ export async function reconcileEventDurableParks(
       workspaceId: row.workspace_id,
       featureId: row.feature_id,
       harnessSlug: row.harness_slug ?? null,
-      family: ['bug', 'change', 'task'].includes(String(row.item_kind)) ? 'issue' : 'feature',
+      family: (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(String(row.item_kind)) ? 'issue' : 'feature',
       status: row.state,
       // The row is unclaimed (the SELECT requires it), so the agent that parked it is told.
       holder: normalizeTakenBy(textOrNull(priorPayload.claim_hold_by)),

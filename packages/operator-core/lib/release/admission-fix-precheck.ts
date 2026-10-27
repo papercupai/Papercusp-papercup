@@ -15,7 +15,9 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  *                                 "fixes nothing", so only imports-red applies.
  *
  * Unmeasured files (route error, matched=0, runner crash) refuse as unavailable; they never
- * establish a failed assertion or prove that an admission fixes nothing.
+ * establish a failed assertion or prove that an admission fixes nothing. A guarded radius file
+ * that fails is attributed only against its MEASURED previous-head verdict — the paired baseline
+ * (measured-wide-repair-admission-2026-10-24#D-004); without one it refuses as unavailable too.
  *
  * The pre-check uses its own checkout beside the gate's checkpoint tree. A gate run that is
  * already active still reports `checkpoint-tree-busy` and the door ACCEPTS the admission with a
@@ -35,7 +37,7 @@ import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-lock';
 import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
-import { evaluateAdmissionRatchet, impliedPreviousHead, type RatchetNewFailure } from './admission-ratchet';
+import { evaluateAdmissionRatchet, previousHeadVerdicts, type RatchetNewFailure } from './admission-ratchet';
 export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
   type DependencyGenerationInfraCode } from './checkpoint-log-tags';
 // Reuse the focused runner's maintained assertion-summary parser.
@@ -59,23 +61,24 @@ export type SignatureLike = Pick<RepairSignatureEntry, 'kind' | 'id'> & Partial<
 
 /**
  * P-007 (green-main-cycle-time-2026-10-08#D-036): an ordinary admission's related-test radius,
- * selected at the BUILT commit. `measured` = the radius files are in the population; `skipped`
- * = the radius was too wide or could not be computed, so the next targeted round (P-005)
- * measures it instead — a loud marker, never a silent omission; `not-applicable` = the
+ * selected at the BUILT commit. `measured` = the complete radius files are in the population;
+ * wide populations require bounded execution groups. `skipped` = discovery could not establish
+ * a supported population, a loud refusal marker; `not-applicable` = the
  * admission named no source path a test could import.
  */
 export type AdmissionRadiusStatus = 'measured' | 'skipped' | 'not-applicable';
 
 export interface AdmissionRadius {
   status: AdmissionRadiusStatus;
-  /** `ok` when measured; otherwise why: `over-cap(n/cap)`, `selection-full:<reason>`, `radius-unavailable`, `no-source-paths`. */
+  /** `ok` when measured; otherwise why: `selection-full:<reason>`, `radius-unavailable`, `no-source-paths`. */
   reason: string;
   detail?: string;
   /** Previously green radius test files: one failing at the built commit refuses `admission-imports-red`. */
   guarded: string[];
   /**
-   * Radius files inside a workspace whose `workspace-task` leg the signature already names red:
-   * measured and reported (`reportOnlyRed`), but they cannot refuse — that leg was not green.
+   * Radius files inside a workspace whose `workspace-task` leg the signature already names red.
+   * They cannot refuse — that leg was not green — so the pre-check does not execute them
+   * (WI-6554700010029981); the verdict reports them as `reportOnlyDeferred`.
    */
   reportOnly: string[];
   /** Test file (radius or admitted) → its leg: the owning npm workspace name, when known. */
@@ -93,7 +96,7 @@ export interface FixPrecheckPopulation {
   canProveDoesNotFix: boolean;
   /** P-007: the admitted paths' related-test radius; absent when none was computed (gitlink or legacy). */
   radius?: AdmissionRadius;
-  /** Every file to run, in run order: signature, admitted, guarded radius, report-only radius. */
+  /** Every file to run, in run order: signature, admitted, guarded radius. Report-only radius files are never run. */
   files: string[];
 }
 
@@ -169,7 +172,12 @@ export function precheckPopulation(input: {
     nonTestKinds: [...nonTestKinds],
     canProveDoesNotFix: signatureTestFiles.length > 0 && nonTestKinds.size === 0,
     ...(radius ? { radius } : {}),
-    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? []), ...(radius?.reportOnly ?? [])],
+    // WI-6554700010029981: report-only radius files are NOT executed. They can never refuse
+    // (green-main-cycle-time-2026-10-08#D-036 point 3), so measuring them buys no admission decision,
+    // and on a red workspace-task leg they are the whole workspace (measured: 6,602 files, days of
+    // serial runs). The queue's verify round on the new repairHead measures them. They stay on
+    // `radius.reportOnly` and the verdict reports them as `reportOnlyDeferred`.
+    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? [])],
   };
 }
 
@@ -188,6 +196,76 @@ export interface FixPrecheckFileResult {
   detail?: string;
   exitCode?: number | null;
   durationMs?: number;
+}
+
+/**
+ * measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the PAIRED BASELINE — guarded radius
+ * files that failed at the built commit, re-measured at the previous repair head by the same
+ * per-file runner and env (in a second tree). `detail` records why a baseline could not run.
+ */
+export interface FixPrecheckPreviousHead {
+  commit: string;
+  results: readonly FixPrecheckFileResult[];
+  detail?: string;
+}
+
+/**
+ * The guarded radius files the paired baseline must measure: exactly those that FAIL at the built
+ * commit. A guarded file that passes after the admission needs no previous-head verdict (the
+ * ratchet cannot blame it on anyone), and an admitted file outside the radius is a new test.
+ */
+export function previousHeadBaselineFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+): string[] {
+  const failing = new Set(results.filter((r) => r.status === 'fail').map((r) => normalize(r.path)));
+  return (population.radius?.guarded ?? []).filter((p) => failing.has(p));
+}
+
+/**
+ * EI-27083585698781986: the CONFIRMATION RE-RUN. Each guarded file that failed at the built
+ * commit but PASSED (measured) at the previous head is re-run ONCE at the SAME built commit
+ * before the ratchet may attribute it to the admission. One timing flake (measured: psu-launcher
+ * `--help` spawnSync ETIMEDOUT under load, then 3/3 green at the same commit) otherwise costs a
+ * whole multi-hour pre-check cycle or forces a skipPrecheck override. `detail` records why the
+ * re-run could not complete; files it did not measure keep their measured red.
+ */
+export interface FixPrecheckConfirmation {
+  commit: string;
+  results: readonly FixPrecheckFileResult[];
+  detail?: string;
+}
+
+/**
+ * The guarded files that need a confirmation re-run: red at the built commit, MEASURED green at
+ * the previous head, and not signature files (those were red at the previous head by definition).
+ * Without a paired baseline nothing is attributable, so nothing needs confirming.
+ */
+export function confirmationRerunFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+  previousHead: FixPrecheckPreviousHead | undefined,
+): string[] {
+  if (!previousHead) return [];
+  const passedBefore = new Set(previousHead.results.filter((r) => r.status === 'pass').map((r) => normalize(r.path)));
+  const signature = new Set(population.signatureTestFiles);
+  return previousHeadBaselineFiles(population, results).filter((p) => passedBefore.has(p) && !signature.has(p));
+}
+
+/**
+ * The confirmed-flaky subset: candidates whose confirmation re-run at the SAME built commit
+ * PASSED. A re-run that failed again, or went unmeasured, leaves the measured red standing.
+ */
+export function flakyAtBuiltCommitFiles(
+  population: FixPrecheckPopulation,
+  results: readonly FixPrecheckFileResult[],
+  previousHead: FixPrecheckPreviousHead | undefined,
+  confirmation: FixPrecheckConfirmation | undefined,
+  builtCommit: string,
+): string[] {
+  if (!confirmation || confirmation.commit !== builtCommit) return [];
+  const passedOnRerun = new Set(confirmation.results.filter((r) => r.status === 'pass').map((r) => normalize(r.path)));
+  return confirmationRerunFiles(population, results, previousHead).filter((p) => passedOnRerun.has(p));
 }
 
 export type FixPrecheckBusyReason = 'checkpoint-tree-busy';
@@ -219,9 +297,28 @@ export type FixPrecheckProgressCallback = (progress: FixPrecheckProgress) => Pro
 /** The seam the admit door injects: measure `files` at `commit` (a real, unpublished object in the root's store). */
 export type FixPrecheckRunner = (input: {
   commit: string;
+  /** Required for resumable groups: verify the materialized tree before measuring files. */
+  expectedTree?: string;
   files: readonly string[];
   onProgress?: FixPrecheckProgressCallback;
+  /** Proof persistence, unlike progress, must succeed before the next file starts. */
+  onFileResult?: (result: FixPrecheckFileResult) => Promise<void> | void;
 }) => Promise<FixPrecheckRunResult>;
+
+/** Cap on the paths `reportOnlyDeferred.sample` carries; `count` is always the full number. */
+export const REPORT_ONLY_DEFERRED_SAMPLE_CAP = 20;
+
+/**
+ * WI-6554700010029981: report-only radius files the pre-check did not execute. A report-only file
+ * cannot refuse even when measured red (green-main-cycle-time-2026-10-08#D-036 point 3), so its
+ * measurement cannot change the verdict; the queue's verify round on the new repairHead measures it.
+ */
+export interface FixPrecheckReportOnlyDeferred {
+  count: number;
+  reason: 'deferred-to-verify-run';
+  /** At most REPORT_ONLY_DEFERRED_SAMPLE_CAP paths, in radius order. */
+  sample: string[];
+}
 
 export type FixPrecheckVerdict =
   | {
@@ -237,6 +334,20 @@ export type FixPrecheckVerdict =
       fixes: string[];
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
+      /** WI-6554700010029981: report-only radius files the pre-check did not execute. */
+      reportOnlyDeferred?: FixPrecheckReportOnlyDeferred;
+      /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
+      carriedRed?: string[];
+      /** D-004: the paired baseline this verdict was judged against, when one was measured. */
+      previousHead?: FixPrecheckPreviousHead;
+      /**
+       * EI-27083585698781986: guarded files that failed once at the built commit, passed at the
+       * previous head AND passed their confirmation re-run at the built commit. Advisory: a flake,
+       * never attributed to the admission (they stay listed in `failing` as raw evidence).
+       */
+      flakyAtBuiltCommit?: string[];
+      /** EI-27083585698781986: the confirmation re-run this verdict was judged against. */
+      confirmation?: FixPrecheckConfirmation;
     }
   | { ok: true; ran: false; reason: 'nothing-to-run'; population: FixPrecheckPopulation }
   | {
@@ -272,6 +383,8 @@ export type FixPrecheckVerdict =
       alsoImportsRed: boolean;
       /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
       reportOnlyRed?: string[];
+      /** WI-6554700010029981: report-only radius files the pre-check did not execute. */
+      reportOnlyDeferred?: FixPrecheckReportOnlyDeferred;
       /** P-007: the previously green legs the imported reds belong to, when known. */
       newlyRedLegs?: string[];
       /**
@@ -279,6 +392,19 @@ export type FixPrecheckVerdict =
        * each imported red with what it was at the previous head, and the actor the refusal is for.
        */
       ratchet?: { newFailures: RatchetNewFailure[]; routeTo: { actor: string | null; unattributed: boolean } };
+      /**
+       * D-004 ruling 1: guarded files that fail at the built commit but have no MEASURED
+       * previous-head verdict. The admission is never blamed for them, and never published past them.
+       */
+      baselineMissing?: string[];
+      /** D-004: guarded files red at BOTH heads (measured) — carried by the lineage, never attributed. */
+      carriedRed?: string[];
+      /** D-004: the paired baseline this verdict was judged against, when one was measured. */
+      previousHead?: FixPrecheckPreviousHead;
+      /** EI-27083585698781986: confirmed flakes at the built commit — advisory, never attributed. */
+      flakyAtBuiltCommit?: string[];
+      /** EI-27083585698781986: the confirmation re-run this verdict was judged against. */
+      confirmation?: FixPrecheckConfirmation;
     };
 
 /**
@@ -288,8 +414,14 @@ export type FixPrecheckVerdict =
 export function evaluateFixPrecheck(
   population: FixPrecheckPopulation,
   run: FixPrecheckRunResult,
-  /** The admitting actor: an `admission-imports-red` refusal is routed to it (P-006). */
-  opts: { actor?: string | null } = {},
+  opts: {
+    /** The admitting actor: an `admission-imports-red` refusal is routed to it (P-006). */
+    actor?: string | null;
+    /** D-004 ruling 1: the measured paired baseline for guarded files red at the built commit. */
+    previousHead?: FixPrecheckPreviousHead;
+    /** EI-27083585698781986: the confirmation re-run of would-be-attributed guarded reds. */
+    confirmation?: FixPrecheckConfirmation;
+  } = {},
 ): FixPrecheckVerdict {
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
   if (!run.ran) {
@@ -314,26 +446,63 @@ export function evaluateFixPrecheck(
   const failing = results.filter((r) => r.status === 'fail').map((r) => r.path);
   const unmeasured = results.filter((r) => r.status === 'unmeasured').map((r) => r.path);
   const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
-  // P-007: guarded radius files are previously green, so a failure there imports a red exactly like
-  // an admitted test file. Report-only radius files sit in a leg the signature already names red.
-  // green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION RATCHET owns that decision —
-  // a test that passed (guarded) or was absent (admitted) at the previous head and fails now.
+  // P-007: a guarded radius file that fails imports a red exactly like an admitted test file —
+  // but only when it was green at the previous head. Report-only radius files sit in a leg the
+  // signature already names red. green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION
+  // RATCHET owns that decision — a test that passed (guarded) or was absent (admitted) at the
+  // previous head and fails now. measured-wide-repair-admission-2026-10-24#D-004 ruling 1: a guarded
+  // file's previous-head verdict is the MEASURED paired baseline, never an assumed pass.
+  const guarded = population.radius?.guarded ?? [];
+  const previous = opts.previousHead;
+  const before = previousHeadVerdicts({
+    signatureTestFiles: population.signatureTestFiles,
+    guardedRadius: guarded,
+    ...(previous ? { measured: Object.fromEntries(previous.results.map((r) => [r.path, r.status] as const)) } : {}),
+  });
+  // EI-27083585698781986: a guarded red that passed at the previous head and passed its confirmation
+  // re-run at the SAME built commit is a flake there — the ratchet reads it as passing, and it is
+  // reported as advisory `flakyAtBuiltCommit`. Its first failing reading stays in `failing`.
+  const confirmation = opts.confirmation;
+  const flakyAtBuiltCommit = flakyAtBuiltCommitFiles(population, results, previous, confirmation, run.commit);
+  const flaky = new Set(flakyAtBuiltCommit);
   const ratchet = evaluateAdmissionRatchet({
     admission: { actor: opts.actor ?? null, commit: run.commit },
-    radius: [...population.admittedTestFiles, ...(population.radius?.guarded ?? [])],
-    previousHead: impliedPreviousHead({
-      signatureTestFiles: population.signatureTestFiles,
-      guardedRadius: population.radius?.guarded ?? [],
-    }),
-    postAdmission: Object.fromEntries(results.map((r) => [r.path, r.status] as const)),
+    radius: [...population.admittedTestFiles, ...guarded],
+    previousHead: before,
+    postAdmission: Object.fromEntries(results.map((r) => [r.path, flaky.has(r.path) ? 'pass' : r.status] as const)),
   });
   const importedRed = ratchet.verdict === 'reject' ? ratchet.newFailures.map((f) => f.test) : [];
+  const guardedFailing = guarded.filter((p) => failing.includes(p) && !flaky.has(p));
+  const carriedRed = guardedFailing.filter((p) => before[p] === 'fail');
+  const baselineMissing = guardedFailing.filter((p) => before[p] === 'unmeasured');
+  const confirmationFindings = {
+    ...(flakyAtBuiltCommit.length ? { flakyAtBuiltCommit } : {}),
+    ...(confirmation ? { confirmation } : {}),
+  };
+  const baselineFindings = {
+    ...(baselineMissing.length ? { baselineMissing } : {}),
+    ...(carriedRed.length ? { carriedRed } : {}),
+    ...(previous ? { previousHead: previous } : {}),
+    ...confirmationFindings,
+  };
   const ratchetFinding = ratchet.verdict === 'reject'
     ? { ratchet: { newFailures: ratchet.newFailures, routeTo: ratchet.routeTo } }
     : {};
-  const reportOnlyRed = (population.radius?.reportOnly ?? []).filter((p) => failing.includes(p));
+  // A report-only radius file cannot refuse even when measured red (green-main-cycle-time-2026-10-08
+  // #D-036 point 3), so the pre-check never executes it (WI-6554700010029981). A result a runner
+  // returned for one anyway is still reported; the rest are deferred to the queue's verify round.
+  // Only signature, admitted and guarded files that went unmeasured make the pre-check unavailable.
+  const reportOnly = population.radius?.reportOnly ?? [];
+  const reportOnlyRed = reportOnly.filter((p) => byPath.get(p)?.status === 'fail');
+  const deferred = reportOnly.filter((p) => { const s = byPath.get(p)?.status; return s !== 'pass' && s !== 'fail'; });
+  const reportOnlyDeferred: FixPrecheckReportOnlyDeferred | null = deferred.length
+    ? { count: deferred.length, reason: 'deferred-to-verify-run', sample: deferred.slice(0, REPORT_ONLY_DEFERRED_SAMPLE_CAP) }
+    : null;
+  const blockingUnmeasured = unmeasured;
   const newlyRedLegs = [...new Set(importedRed.map((p) => population.radius?.legs[p]).filter((leg): leg is string => !!leg))].sort();
-  const radiusFindings = population.radius ? { reportOnlyRed, newlyRedLegs } : {};
+  const radiusFindings = population.radius
+    ? { reportOnlyRed, newlyRedLegs, ...(reportOnlyDeferred ? { reportOnlyDeferred } : {}) }
+    : {};
   const importedList = importedRed.map((p) => withLeg(population, p)).join(', ');
   const legNote = newlyRedLegs.length ? `; previously green leg(s) turned red: ${newlyRedLegs.join(', ')}` : '';
   const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
@@ -353,18 +522,20 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: false,
       ...radiusFindings,
+      ...baselineFindings,
     };
   }
-  if (unmeasured.length > 0) {
+  if (blockingUnmeasured.length > 0) {
     return {
       ok: false,
       ...base,
       code: 'admission-precheck-unavailable',
-      detail: `${unmeasured.length} admission pre-check file(s) were not measured: ${unmeasured.join(', ')}; ` +
+      detail: `${blockingUnmeasured.length} admission pre-check file(s) were not measured: ${blockingUnmeasured.join(', ')}; ` +
         'missing assertion evidence cannot establish that an admission fixes nothing or has no imported reds',
       importedRed,
       alsoImportsRed: importsRed,
       ...radiusFindings,
+      ...baselineFindings,
     };
   }
   if (doesNotFix) {
@@ -382,6 +553,7 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: importsRed,
       ...radiusFindings,
+      ...baselineFindings,
       ...ratchetFinding,
     };
   }
@@ -397,10 +569,41 @@ export function evaluateFixPrecheck(
       importedRed,
       alsoImportsRed: false,
       ...radiusFindings,
+      ...baselineFindings,
       ...ratchetFinding,
     };
   }
-  return { ok: true, ...base, fixes, ...(population.radius ? { reportOnlyRed } : {}) };
+  // D-004 ruling 1: a guarded red with no measured previous-head verdict is neither blamed on
+  // this admission nor published past. The paired baseline (or the gate's re-test) decides it.
+  if (baselineMissing.length > 0) {
+    const baselineNote = previous
+      ? ` (paired baseline at ${previous.commit.slice(0, 12)}${previous.detail ? `: ${previous.detail}` : ' left them unmeasured'})`
+      : ' (no paired baseline was run)';
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-precheck-unavailable',
+      detail:
+        `${baselineMissing.length} guarded radius test file(s) fail at the built admission commit ${run.commit.slice(0, 12)} ` +
+        `but have no measured previous-head verdict${baselineNote}: ${baselineMissing.map((p) => withLeg(population, p)).join(', ')}; ` +
+        'a red is never blamed on an admission without a measured previous-head verdict, and nothing publishes past one ' +
+        '(measured-wide-repair-admission-2026-10-24#D-004)',
+      importedRed,
+      alsoImportsRed: false,
+      ...radiusFindings,
+      ...baselineFindings,
+    };
+  }
+  return {
+    ok: true,
+    ...base,
+    fixes,
+    ...(population.radius ? { reportOnlyRed } : {}),
+    ...(reportOnlyDeferred ? { reportOnlyDeferred } : {}),
+    ...(carriedRed.length ? { carriedRed } : {}),
+    ...(previous ? { previousHead: previous } : {}),
+    ...confirmationFindings,
+  };
 }
 
 // ─── the real runner ─────────────────────────────────────────────────────────────────────────
@@ -457,12 +660,22 @@ export interface CheckpointTreeRunnerOptions {
   testCommand?: string[];
   /** Foreign routing removes operator credentials from the app's test environment. */
   clearEnv?: string[];
+  /** Allocate once per managed operation, after exact candidate materialization. */
+  prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
+  /** Reject results as soon as an operation-owned fixture loses its lifetime. */
+  assertTestEnvironment?: () => void;
   /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
   checkpointRoot: string;
   /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
   testRunHarness?: string;
   /** Per-file wall-clock budget (default 10 min). */
   perFileTimeoutMs?: number;
+  /**
+   * WI-6554700010030140: files measured at once (default 1 = strictly serial). Above 1, no new
+   * file starts after a failure, every running child is awaited before the error surfaces, and
+   * progress and `onFileResult` writes stay serialized in completion order.
+   */
+  fileConcurrency?: number;
   /** Setup budget (default 20 min — dependency materialization can take minutes). */
   setupTimeoutMs?: number;
   /** Injectable for tests: is a gate run holding the checkpoint tree right now? */
@@ -480,6 +693,12 @@ export interface CheckpointTreeRunnerOptions {
    * keeps the tree on the dependency-generation store's filesystem (WI-10006789).
    */
   precheckRoot?: string;
+  /**
+   * measured-wide-repair-admission-2026-10-24#D-004: a SECOND tree for the paired previous-head
+   * baseline — this suffix is appended to the (derived or explicit) pre-check root, so measuring
+   * the previous head never re-pins the admission's own tree. A literal like `-previous-head`.
+   */
+  precheckRootSuffix?: string;
   /**
    * Injectable for tests: the dependency-generation store for `integrationRoot`.
    * Default {@link resolveDependencyGenerationRoot} (env, recorded root, tree-local).
@@ -527,17 +746,35 @@ export const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 40 * 60_000;
 export const ADMISSION_PRECHECK_SETUP_IDLE_MS = 15 * 60_000;
 export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
 /**
- * WI-6554700010019443: the largest population the admit door will launch a managed pre-check
- * for. An admitted gitlink expands to every test file under its submodule (measured 2026-10-21:
- * 6614 files), and the runner measures one file at a time, so such a run cannot finish before
- * several queue verify ticks (two of them measured 0 files before being abandoned). Above this
- * bound the door refuses BEFORE launch and names the reasoned skipPrecheck opt-out.
- * The value is a judgment, not a measurement: an ordinary admission is already held near this
- * size (signature tests + admitted tests + an ADMISSION_RADIUS_CAP related-test radius).
+ * Maximum files accepted by one checkpoint-tree runner execution group. The managed worker
+ * runs the COMPLETE population in resumable groups of at most
+ * min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES), persisting each file's result.
+ * This is a per-group bound, not a total-population ceiling: wide radii and admitted gitlinks
+ * may select more files. Never truncate that population or treat this constant as permission
+ * to skip its remaining files.
  */
 export const ADMISSION_PRECHECK_MAX_FILES = 200;
 /** Bound queue writes from chatty children; silent children never manufacture a heartbeat. */
 export const ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS = 5_000;
+/**
+ * WI-6554700010030140: test files the managed pre-check measures at once inside one execution
+ * group. Measured 2026-10-27: a single-file child spends 15-35s transforming and importing the
+ * operator-core graph and milliseconds in its tests, so a serial 151-file population held the
+ * frozen repair queue ~5-6h. Each child is still an ordinary `test:file` run (pc-heavy admitted,
+ * isolated, its own exit code), exactly as the gate's own legs run files in parallel against the
+ * same private test PG. The runner's built-in default stays 1 (strictly serial); the managed
+ * worker opts in through {@link admissionPrecheckFileConcurrency}.
+ */
+export const ADMISSION_PRECHECK_FILE_CONCURRENCY = 4;
+/** Upper bound on the operator override, so a typo cannot fork-bomb the host. */
+export const ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX = 16;
+/** The managed pre-check's file concurrency: `PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY`, else the default. */
+export function admissionPrecheckFileConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCUSP_ADMISSION_PRECHECK_FILE_CONCURRENCY?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return ADMISSION_PRECHECK_FILE_CONCURRENCY;
+  const value = Number(raw);
+  return value >= 1 ? Math.min(value, ADMISSION_PRECHECK_FILE_CONCURRENCY_MAX) : ADMISSION_PRECHECK_FILE_CONCURRENCY;
+}
 /** Output kept in memory: the first HEAD bytes plus the LAST TAIL bytes. */
 export const EXEC_OUTPUT_HEAD_CHARS = 32_000;
 export const EXEC_OUTPUT_TAIL_CHARS = 224_000;
@@ -872,7 +1109,9 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
   const setupTimeoutMs = opts.setupTimeoutMs ?? ADMISSION_PRECHECK_SETUP_BUDGET_MS;
   const log = opts.log ?? (() => {});
   const logDir = opts.logDir ?? papercuspPath('checkpoint-logs');
-  return async ({ commit, files, onProgress }) => {
+  return async ({ commit, expectedTree, files, onProgress, onFileResult }) => {
+    if (files.length > ADMISSION_PRECHECK_MAX_FILES)
+      return { ran: false, reason: 'runner-failed', detail: `execution group exceeds ${ADMISSION_PRECHECK_MAX_FILES}-file bound` };
     // WI-10006014: one durable log per pre-check (setup + every file), named in every
     // runner-failed detail, so a failure is attributable after the in-memory output is gone.
     const logFile = path.join(
@@ -918,7 +1157,10 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           checkpointRoot: opts.checkpointRoot,
           generationRoot: (opts.resolveGenerationRoot ?? resolveDependencyGenerationRoot)(opts.integrationRoot),
         });
-    const precheckRoot = placement.root;
+    if (opts.precheckRootSuffix !== undefined && !/^-[a-z0-9][a-z0-9-]*$/.test(opts.precheckRootSuffix)) {
+      return { ran: false, reason: 'runner-failed', detail: `invalid pre-check root suffix ${JSON.stringify(opts.precheckRootSuffix)}` };
+    }
+    const precheckRoot = `${placement.root}${opts.precheckRootSuffix ?? ''}`;
     log(`[admission-precheck] tree ${precheckRoot} (${placement.placement}: ${placement.reason})`);
     if (placement.displaced && existsSync(placement.displaced)) {
       log(
@@ -943,41 +1185,57 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       }
     }
     const setupScript = path.join(toolingRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
-    const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
+    // WI-6554700010030140: with concurrent files, every queue write (progress AND per-file
+    // result) runs on ONE chain, so the queue's CAS writes never interleave and a snapshot is
+    // built when it is written — its completedCount can never fall behind a recorded result.
+    let writeChain: Promise<unknown> = Promise.resolve();
+    let writesInFlight = 0;
+    const serializedWrite = <T>(write: () => Promise<T> | T): Promise<T> => {
+      // An idle chain starts the write at once (the unserialized timing); a busy one queues it.
+      const run: Promise<T> = writesInFlight === 0
+        ? (async () => write())()
+        : writeChain.catch(() => undefined).then(write);
+      writesInFlight += 1;
+      writeChain = run;
+      void run.then(() => { writesInFlight -= 1; }, () => { writesInFlight -= 1; });
+      return run;
+    };
+    const reportProgress = (progress: () => FixPrecheckProgress): Promise<void> => serializedWrite(async () => {
       if (!onProgress) return;
+      const snapshot = progress();
       try {
-        await onProgress(progress);
+        await onProgress(snapshot);
       } catch (err) {
         // Progress is a liveness aid, never a substitute for the measured verdict. A transient
         // queue/DB write failure must not convert a real test result into runner-failed.
         log(
-          `[admission-precheck] progress callback failed for ${progress.currentFile}: ` +
+          `[admission-precheck] progress callback failed for ${snapshot.currentFile}: ` +
             `${err instanceof Error ? err.message : String(err)}`,
         );
       }
-    };
+    });
     const execWithProgress = async (
       argv: readonly string[],
       execOpts: ExecOptions,
-      fileProgress: Omit<FixPrecheckProgress, 'heartbeatAtMs'>,
+      fileProgress: () => Omit<FixPrecheckProgress, 'heartbeatAtMs'>,
     ): Promise<ExecResult> => {
       let lastHeartbeatAtMs = -Infinity;
-      let pendingProgress: FixPrecheckProgress | null = null;
+      let pendingHeartbeatAtMs: number | null = null;
       let reporting: Promise<void> | null = null;
       const onOutput = () => {
         if (!onProgress) return;
         const heartbeatAtMs = Date.now();
         if (heartbeatAtMs - lastHeartbeatAtMs < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
         lastHeartbeatAtMs = heartbeatAtMs;
-        pendingProgress = { ...fileProgress, heartbeatAtMs };
+        pendingHeartbeatAtMs = heartbeatAtMs;
         if (reporting) return;
         // Keep at most one pending snapshot while a CAS write is in flight. Await the last
         // write before advancing phases so delayed setup progress cannot overwrite a file.
         reporting = (async () => {
-          while (pendingProgress) {
-            const progress = pendingProgress;
-            pendingProgress = null;
-            await reportProgress(progress);
+          while (pendingHeartbeatAtMs !== null) {
+            const at = pendingHeartbeatAtMs;
+            pendingHeartbeatAtMs = null;
+            await reportProgress(() => ({ ...fileProgress(), heartbeatAtMs: at }));
           }
         })().finally(() => { reporting = null; });
       };
@@ -1020,7 +1278,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         env: { ...admissionPrecheckSetupEnv(), ...clearedEnv },
         logFile,
       },
-      { currentFile: files[0] as string, completedCount: 0, totalCount: files.length },
+      () => ({ currentFile: files[0] as string, completedCount: 0, totalCount: files.length }),
     );
     if (setup.exitCode !== 0) {
       const infra = dependencyGenerationInfraCode(setup.exitCode, setup.output);
@@ -1034,6 +1292,11 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         reason: 'runner-failed',
         detail: `${infra ? `infra=${infra} ` : ''}setup-release-checkout exited ${setup.exitCode ?? setup.signal} for ${commit.slice(0, 12)}${timeoutNote}; log=${logFile}: ${setup.output.slice(-600)}`,
       };
+    }
+    if (expectedTree) {
+      const tree = await exec(['git', 'rev-parse', 'HEAD^{tree}'], { cwd: precheckRoot, timeoutMs: 10_000, logFile });
+      if (tree.exitCode !== 0 || tree.output.trim() !== expectedTree)
+        return { ran: false, reason: 'runner-failed', detail: `materialized tree differs from immutable pre-check identity; log=${logFile}` };
     }
     // A foreign Papercusp fork registers the aggregate gate command, which
     // deliberately rejects exact filenames. Resolve its existing file script
@@ -1059,33 +1322,73 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       }
       fileTestCommand = [fileTestCommand[0] as string, 'run', 'test:file'];
     }
-    const results: FixPrecheckFileResult[] = [];
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index] as string;
-      await reportProgress({
-        currentFile: file,
-        completedCount: index,
-        totalCount: files.length,
-        heartbeatAtMs: Date.now(),
-      });
-      log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
-      const argv = fileTestCommand?.length
-        ? [...fileTestCommand, '--', file]
-        : ['node', 'scripts/test-files.mjs', file];
-      const r = await execWithProgress(argv, {
-        cwd: precheckRoot,
-        timeoutMs: perFileTimeoutMs,
-        env: {
-          PAPERCUSP_ADMISSION_PRECHECK: '1',
-          PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
-          ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
-          ...clearedEnv,
-        },
-        logFile,
-      }, { currentFile: file, completedCount: index, totalCount: files.length });
-      const c = classifyTestFileRun(r);
-      results.push({ path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs });
-    }
-    return { ran: true, commit, results, setup: { durationMs: setup.durationMs } };
+    let environmentProgress: Promise<void> | undefined;
+    let lastEnvironmentHeartbeat = -Infinity;
+    const testEnvironment = await opts.prepareTestEnvironment?.(precheckRoot, () => {
+      const heartbeatAtMs = Date.now();
+      if (environmentProgress || heartbeatAtMs - lastEnvironmentHeartbeat < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
+      lastEnvironmentHeartbeat = heartbeatAtMs;
+      environmentProgress = reportProgress(() => ({ currentFile: files[0] as string, completedCount: 0,
+        totalCount: files.length, heartbeatAtMs })).finally(() => { environmentProgress = undefined; });
+    }) ?? {};
+    await environmentProgress;
+    // WI-6554700010030140: up to `concurrency` files run at once; 1 is the historical strict
+    // serial order. `completed` counts DURABLY recorded results only (it advances inside the
+    // write chain, after onFileResult), so no progress snapshot ever claims an unrecorded file.
+    const concurrency = Math.max(1, Math.min(Math.floor(opts.fileConcurrency ?? 1), files.length));
+    const results: (FixPrecheckFileResult | undefined)[] = new Array(files.length);
+    let nextIndex = 0;
+    let completed = 0;
+    let stopped = false;
+    const progressFor = (file: string) => (): Omit<FixPrecheckProgress, 'heartbeatAtMs'> =>
+      ({ currentFile: file, completedCount: completed, totalCount: files.length });
+    const measureFiles = async (): Promise<void> => {
+      try {
+        while (!stopped && nextIndex < files.length) {
+          opts.assertTestEnvironment?.();
+          const index = nextIndex;
+          nextIndex += 1;
+          const file = files[index] as string;
+          await reportProgress(() => ({ ...progressFor(file)(), heartbeatAtMs: Date.now() }));
+          log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
+          const argv = fileTestCommand?.length
+            ? [...fileTestCommand, '--', file]
+            : ['node', 'scripts/test-files.mjs', file];
+          const r = await execWithProgress(argv, {
+            cwd: precheckRoot,
+            timeoutMs: perFileTimeoutMs,
+            env: {
+              PAPERCUSP_ADMISSION_PRECHECK: '1',
+              PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
+              ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
+              ...clearedEnv,
+              ...testEnvironment,
+              // Frozen candidates can predate the exact-file router's test-mode
+              // boundary. Never inherit the operator's production Vite/React mode.
+              NODE_ENV: 'test',
+            },
+            logFile,
+          }, progressFor(file));
+          opts.assertTestEnvironment?.();
+          const c = classifyTestFileRun(r);
+          const result: FixPrecheckFileResult = { path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs };
+          results[index] = result;
+          await serializedWrite(async () => {
+            await onFileResult?.(result);
+            completed += 1;
+          });
+        }
+      } catch (err) {
+        // Set synchronously in the failing continuation: no sibling may START another file.
+        stopped = true;
+        throw err;
+      }
+    };
+    // allSettled, not all: a failure must not return while a sibling's child is still running
+    // against the operation-owned fixture. Siblings finish their current file, then stop.
+    const settled = await Promise.allSettled(Array.from({ length: concurrency }, measureFiles));
+    const failure = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
+    if (failure) throw failure.reason;
+    return { ran: true, commit, results: results as FixPrecheckFileResult[], setup: { durationMs: setup.durationMs } };
   };
 }

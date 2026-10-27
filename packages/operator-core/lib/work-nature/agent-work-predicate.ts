@@ -26,9 +26,17 @@ import type postgres from 'postgres';
  * The issue-family kinds — the single routing list. `work-items.ts` re-exports it as
  * `ISSUE_FAMILY_KINDS`. It is a ROUTE, not a gate: the predicate below decides
  * claimability.
+ *
+ * `cleanup` (code-cleanup-campaigns-2026-10-26 P-003, D-003) is the low-priority code-cleanup
+ * kind: issue-family for routing, claimed only when no feature/bug/change item is claimable
+ * (`CLEANUP_ITEM_KIND` in code-cleanup/cleanup-item-kind.ts). The database spells this same
+ * list in triggers, views and partial indexes; migration 1590 extended every copy, and
+ * cleanup-item-kind.test.ts fails when a hand-maintained copy omits a kind listed here.
  */
-export const ISSUE_FAMILY_ROUTE_KINDS = ['bug', 'change', 'task'] as const;
-export type IssueFamilyRouteKind = (typeof ISSUE_FAMILY_ROUTE_KINDS)[number];
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from '@papercusp/harness/work-item-kinds';
+
+export { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS };
+export type { IssueFamilyRouteKind } from '@papercusp/harness/work-item-kinds';
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
@@ -45,8 +53,7 @@ function columnPrefix(alias: string | null): string {
  * predicate, and the planner can prove implication only from a literal list.
  */
 export function issueFamilyRouteSql(sql: postgres.Sql, alias: string | null = 'wi') {
-  const list = ISSUE_FAMILY_ROUTE_KINDS.map((k) => `'${k}'`).join(', ');
-  return sql.unsafe(`${columnPrefix(alias)}item_kind IN (${list})`);
+  return sql.unsafe(`${columnPrefix(alias)}item_kind IN (${ISSUE_FAMILY_KINDS_SQL_LIST})`);
 }
 
 /**

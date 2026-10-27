@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { buildRubricCheckLedgerRow, type RubricCheckResult } from '../check-results-ledger';
 import {
   conformanceLedgerRef,
@@ -181,6 +182,48 @@ function world(
 
 const R1_FALSIFIER = falsifierCheckId('R-1', 'duplicate-alarm');
 const R1_DONE = doneWhenCheckId('R-1');
+
+describe('conformance inner phase diagnostics', () => {
+  it.each(['readLatestVerdicts', 'listOpenDriftAlarms', 'approvedDeviations', 'recordResults'] as const)(
+    'identifies a pending %s and clears it on rejection without retrying', async (operation) => {
+      const w = world();
+      const phases = createPhaseTracker();
+      let reject!: (reason: Error) => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      let calls = 0;
+      const wait = () => { calls++; entered(); return new Promise<never>((_resolve, fail) => { reject = fail; }); };
+      const pending = runPlanConformance({ planSlug: SLUG, harnessSlug: HARNESS, planContent: fixturePlan() }, {
+        ...w.deps, phases, [operation]: wait,
+      });
+      await started;
+      expect(phases.snapshot().activePhase).toBe(`conformance:${operation}`);
+      const failure = new Error('dependency rejected');
+      const caught = pending.catch((error) => error);
+      reject(failure);
+      expect(await caught).toBe(failure);
+      expect(phases.snapshot().activePhases).toEqual([]);
+      expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toContain(`conformance:${operation}`);
+      expect(calls).toBe(1);
+    },
+  );
+
+  it('retains check and drift write phases while preserving alarm open and close behavior', async () => {
+    const w = world({ mapped: { 'R-1': [{ id: 'WI-dependent', terminal: false }] } });
+    const phases = createPhaseTracker();
+    w.deps.phases = phases;
+    w.verdicts.set(R1_FALSIFIER, 'fail');
+    expect((await w.run()).alarmsOpened).toHaveLength(1);
+    expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toEqual(expect.arrayContaining([
+      `conformance:check:${R1_FALSIFIER}`, 'conformance:recordResults', 'conformance:openDriftAlarm:R-1',
+      'conformance:listMappedWorkItems:R-1', 'conformance:linkBlocks:R-1:WI-dependent', 'conformance:emitDriftAlarm:R-1',
+    ]));
+    w.verdicts.set(R1_FALSIFIER, 'pass');
+    expect((await w.run()).alarmsClosed).toHaveLength(1);
+    expect(phases.toMetadata()?.phases.map((phase) => phase.phase)).toContain('conformance:closeDriftAlarm:R-1');
+    expect(phases.snapshot().activePhases).toEqual([]);
+  });
+});
 
 describe('runPlanConformance — falsifiers raise one deduplicated drift alarm (R-2)', () => {
   it('opens exactly one alarm for a firing violated-when check and emits plan:drift-alarm once', async () => {

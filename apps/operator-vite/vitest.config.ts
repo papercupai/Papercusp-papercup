@@ -30,6 +30,7 @@ export default mergeConfig(defineVitestConfig({ layer: 'unit' }), {
   },
   resolve: {
     alias: [
+      { find: 'virtual:desktop-portal-entry', replacement: resolve(import.meta.dirname, 'src/shims/desktop-portal-disabled.tsx') },
       { find: '@', replacement: operatorRoot },
       // Shim next/* the same way vite.config.ts does so operator components
       // can be imported in tests without a real Next.js runtime.

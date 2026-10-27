@@ -36,6 +36,7 @@
 import { registerReactionRule } from '../events';
 import { PLAN_DRAIN_TRANSITION_ACTION } from '../events/builtin-actions';
 import type { ToolInvocationEvent } from '../events/types';
+import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
 
 /**
  * One fanned per-item `plans:add-item` / `plans:set-status` result, or a
@@ -102,12 +103,28 @@ export function planWhoseDrainStateMayHaveChanged(
   return null;
 }
 
+function planDrainActionArgs(e: ToolInvocationEvent) {
+  const plan = planWhoseDrainStateMayHaveChanged(e);
+  if (!plan) return { plans: [] };
+  // Resolve the trigger context, never a caller-supplied assignment in args.
+  // System/anonymous reactions still file claimable work through the backstop.
+  let accountableOwnerId: string | undefined;
+  try {
+    const identity = resolveAgentIdentity(e.ctx);
+    if (!identity.ownerId.startsWith('system:') && !identity.ownerId.startsWith('harness:') &&
+        !isTransportOnlyIdentity(identity.ownerId)) accountableOwnerId = identity.ownerId;
+  } catch {
+    // A context with no attributable session cannot own an execution lease.
+  }
+  return { plans: [{ ...plan, ...(accountableOwnerId ? { accountableOwnerId } : {}) }] };
+}
+
 registerReactionRule({
   id: 'plan-drain:terminality-changed',
   on: 'plans:set-status',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -117,7 +134,7 @@ registerReactionRule({
   on: 'plans:add-item',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -127,7 +144,7 @@ registerReactionRule({
   on: 'plans:new',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -137,7 +154,7 @@ registerReactionRule({
   on: 'plans:set-frontmatter',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -147,7 +164,7 @@ registerReactionRule({
   on: 'plans:set-plan-status',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -157,7 +174,7 @@ registerReactionRule({
   on: 'plans:set-content',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -167,7 +184,7 @@ registerReactionRule({
   on: 'plans:edit',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });
@@ -177,7 +194,7 @@ registerReactionRule({
   on: 'plans:set-content-chunk',
   when: (e) => planWhoseDrainStateMayHaveChanged(e) !== null,
   fire: PLAN_DRAIN_TRANSITION_ACTION,
-  args: (e) => ({ plans: [planWhoseDrainStateMayHaveChanged(e)!] }),
+  args: planDrainActionArgs,
   onlyOnSuccess: true,
   source: 'plan-drain',
 });

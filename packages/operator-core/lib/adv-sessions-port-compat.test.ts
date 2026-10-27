@@ -8,7 +8,7 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
   });
 
   function installSql(result: unknown[] = []) {
-    const sql = vi.fn(async () => result);
+    const sql = vi.fn(async (..._args: unknown[]) => result);
     // `getAdvSession` runs its read inside `boundedOrgTxn`, which calls
     // `sql.begin(fn)`. A bare tag function has no `.begin`, so without this the
     // read throws "sql.begin is not a function", the surface swallows it via
@@ -35,14 +35,14 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     return sql;
   }
 
-  /** Recorded query texts, EXCLUDING the `set_config` statements boundedOrgTxn
-   *  issues to arm SET LOCAL statement_timeout/lock_timeout. Those are txn
+  /** Recorded query texts, EXCLUDING the transaction setup statements boundedOrgTxn
+   *  issues to arm read-only mode and SET LOCAL statement_timeout/lock_timeout. Those are txn
    *  plumbing, not read surfaces under test — counting them would shift every
    *  positional assertion below by two the moment a surface adopts the txn. */
   const queriesOf = (sql: ReturnType<typeof vi.fn>): string[] =>
     sql.mock.calls
       .map((c) => (c?.[0] as TemplateStringsArray | undefined)?.join('?') ?? '')
-      .filter((q) => !q.includes('set_config'));
+      .filter((q) => !q.includes('set_config') && !q.includes('SET TRANSACTION READ ONLY'));
 
   const textOf = (sql: ReturnType<typeof vi.fn>, call = 0) => queriesOf(sql)[call] ?? '';
 
@@ -92,6 +92,77 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     expect(row?.launchArgv).toEqual(launchArgv);
     expect(textOf(sql)).toContain("to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug");
     expect(textOf(sql)).toContain("to_jsonb(a)->'launch_argv' AS launch_argv");
+  });
+
+  it('cancels an in-flight port source lookup when its caller aborts', async () => {
+    const sql = installSql();
+    const controller = new AbortController();
+    const reason = new Error('port request abandoned');
+    let started!: () => void;
+    let finish!: (rows: unknown[]) => void;
+    let rejectQuery!: (error: unknown) => void;
+    const queryStarted = new Promise<void>((resolve) => { started = resolve; });
+    const query = Object.assign(new Promise<unknown[]>((resolve, reject) => {
+      finish = resolve;
+      rejectQuery = reject;
+    }), {
+      executed: true,
+      active: true,
+      cancel: vi.fn(() => { rejectQuery(reason); }),
+    });
+    sql.mockImplementation((strings) => {
+      if (Array.isArray(strings) && strings.join('').includes('FROM harness_shared.adv_sessions a')) {
+        started();
+        return query;
+      }
+      return Promise.resolve([]);
+    });
+    const mod = await import('./adv-sessions');
+    const outcome = mod.getAdvSessionInWorkspace(42, 'ws-test', { signal: controller.signal }).then(
+      () => ({ kind: 'resolved' }),
+      (error: unknown) => ({ kind: 'rejected', error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await queryStarted;
+      controller.abort(reason);
+      const observed = await Promise.race([
+        outcome,
+        new Promise((resolve) => { timer = setTimeout(() => resolve({ kind: 'still-running' }), 500); }),
+      ]);
+      expect(observed).toEqual({ kind: 'rejected', error: reason });
+      expect(query.cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      if (timer) clearTimeout(timer);
+      finish([]);
+      await outcome;
+    }
+  });
+
+  it('refuses a pre-aborted port source lookup without starting SQL', async () => {
+    const sql = installSql();
+    const mod = await import('./adv-sessions');
+    const controller = new AbortController();
+    const reason = new Error('port request already abandoned');
+    controller.abort(reason);
+
+    await expect(mod.getAdvSessionInWorkspace(42, 'ws-test', { signal: controller.signal })).rejects.toBe(reason);
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('reports a bounded source-read timeout instead of a missing session', async () => {
+    const sql = installSql();
+    sql.mockImplementation((strings) => {
+      if (Array.isArray(strings) && strings.join('').includes('FROM harness_shared.adv_sessions a')) {
+        return Promise.reject(Object.assign(new Error('statement timeout'), { code: '57014' }));
+      }
+      return Promise.resolve([]);
+    });
+    const mod = await import('./adv-sessions');
+
+    await expect(mod.getAdvSessionInWorkspace(42, 'ws-test')).rejects.toMatchObject({
+      name: 'OrgTxnTimeoutError', pgCode: '57014', timeoutSource: 'pg',
+    });
   });
 
   it.each([false, true])('resumable filtering probes port-column availability (present=%s) without whole-row JSON scans', async (present) => {

@@ -13,14 +13,36 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { listDueCronRoutines } from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { claimDueRoutine } from './claim';
-import { materializeLoop } from './loop';
+import { getLoopStatus, materializeLoop } from './loop';
+import { insertTurns } from '../../search/session-ingest';
+import { createPgTelemetryStore } from '../../activity-pg-store';
+import { recordLoopTurnStart } from './loop-turn-start-stamp';
+import { ledgerPathForSid, readLedgerRows, tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { persistMonitorNoDeltaBudget } from './monitor-standdown';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
+import { activeWorkspaceId } from '../../workspace-registry';
+
+const privateDb = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  // Legacy loop helpers also resolve alarm state through this seam. Keep those
+  // calls inside this owned cluster; the rollback test detects a producer that
+  // escapes its caller's transaction through this pool instead.
+  getOrgPg: () => ({ sql: privateDb.sql }),
+}));
 
 let org: OrgTestDb;
+let privatePg: DedicatedNativePg;
+let provenanceDir: string;
+const savedAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+const savedProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
 /** HERMETIC wrapper — do NOT call reconcileLoopRoutines bare in this file. The DEFAULT
  *  recordFire/readFireState bind getOrgPg() — the LIVE dev database, not the testcontainer
  *  `sql` — so every historical full-file run silently wrote fire-state 'error' rows for
@@ -39,11 +61,24 @@ const T0 = 1_780_000_000_000;
 let rtSeq = 0;
 
 beforeAll(async () => {
+  privatePg = await startDedicatedNativePg();
+  process.env.PAPERCUSP_TEST_PG_ADMIN_URL = privatePg.getConnectionUri();
   org = await createOrgTestDb();
   sql = org.adminSql;
-});
+  privateDb.sql = sql;
+  provenanceDir = await mkdtemp(join(tmpdir(), 'indexed-loop-start-'));
+  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provenanceDir;
+}, 180_000);
 afterAll(async () => {
-  await org?.cleanup();
+  try { await org?.cleanup(); } finally {
+    try { await privatePg?.stop(); } finally {
+      if (provenanceDir) await rm(provenanceDir, { recursive: true, force: true });
+      if (savedAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = savedAdminUrl;
+      if (savedProvenanceDir === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = savedProvenanceDir;
+    }
+  }
 });
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
@@ -52,6 +87,179 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.session_turn_journal WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${WS}`;
+});
+
+describe('indexed native producer integration', () => {
+  async function nativeCase(source = 'codex', wakeCount = 10) {
+    const now = Date.now(), owner = `su-indexed-${++rtSeq}`;
+    const loop = await seedLoop({ ownerId: owner, intervalSec: 60, lastFiredAtMs: now - 4000, parked: true });
+    await sql`UPDATE harness_shared.routines SET metadata =
+      ${JSON.stringify({ fire_count: 10, armed_at: new Date(now - 6000).toISOString() })}::jsonb WHERE id = ${loop.id}`;
+    const tagged = await tagTurnForInjection({ sid: owner, origin: 'loop-fire', text: 'A native loop turn.',
+      dir: provenanceDir, nowMs: now - 3000, loopFire: { routineId: loop.id, wakeCount } });
+    expect(tagged.ledgerWritten).toBe(true);
+    const user = { workspace_id: 'default', source_kind: source, session_id: `native-${owner}`, turn_idx: 0,
+      ts: new Date(now - 2000).toISOString(), owner, harness_slug: null, cwd: null, speaker: 'user', text: tagged.taggedText };
+    // The indexed producer now requires the exact launch-selected namespace.
+    const workspace = activeWorkspaceId();
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, agent, mode, coord_owner_id, session_id, omp_thread_id, launch_spec)
+      VALUES (${workspace}, ${source}, 'omp', ${owner},
+              ${source === 'omp' ? null : user.session_id}, ${source === 'omp' ? user.session_id : null},
+              ${JSON.stringify({ workspaceId: workspace, turnProvenanceDir: provenanceDir })}::text::jsonb)`;
+    const reply = { ...user, turn_idx: 1, ts: new Date(now - 1000).toISOString(), speaker: 'assistant', text: 'Finished this exact fire.' };
+    const awaits = await sql<Array<{ id: number }>>`INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${owner}, ${'test:' + loop.id}) RETURNING id`;
+    const delivered = new Date(now - 3500);
+    await sql`INSERT INTO harness_shared.event_wake_deliveries
+      (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at, turn_proof, turn_started_at)
+      VALUES (${WS}, ${awaits[0]!.id}, ${owner}, ${'test:' + loop.id}, ${'loop:' + loop.id},
+              'delivered', 'inbox', ${delivered}, ${delivered}, 'observed', ${delivered})`;
+    return { now, owner, loop, user, reply };
+  }
+
+  async function assertReaders(c: Awaited<ReturnType<typeof nativeCase>>, recognized: boolean) {
+    expect((await getLoopStatus(c.owner, { sql }))!.lastLoopTurnAt).toBe(recognized ? c.reply.ts : null);
+    const result = await reconcile({ sql, nowMs: c.now + 10_000, countAgentToolCallsInWindow: async () => null });
+    const own = result.loops.find(loop => loop.id === c.loop.id);
+    if (recognized) expect(own).toMatchObject({ via: 'loop-turn', completedAt: Date.parse(c.reply.ts) });
+    else expect(own).toBeUndefined();
+  }
+
+  it.each(['claude', 'codex', 'omp'])('persists newly inserted %s rows with full attribution and real write time, once', async source => {
+    const c = await nativeCase(source);
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(2);
+    const stamps = await sql<Array<{ created_at: Date; workspace_id: string; owner_id: string; session_id: string; detail: any }>>`
+      SELECT created_at, workspace_id, owner_id, session_id, detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+    expect(stamps).toHaveLength(1);
+    expect(stamps[0]).toMatchObject({ workspace_id: 'default', owner_id: c.owner, session_id: c.user.session_id,
+      detail: { source: 'session-ingest', loopFire: { routineId: c.loop.id, wakeCount: 10 },
+        indexedTurn: { workspaceId: 'default', sourceKind: source, sessionId: c.user.session_id, turnIdx: 0 } } });
+    expect(new Date(stamps[0]!.created_at).getTime()).toBeGreaterThan(Date.parse(c.user.ts));
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(0);
+    expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(1);
+    await assertReaders(c, true);
+  });
+
+  it('uses the caller connection: native and activity rows roll back together', async () => {
+    const c = await nativeCase();
+    await expect(sql.begin(async tx => {
+      await insertTurns(tx as unknown as Sql, [c.user, c.reply]);
+      expect(await tx`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(1);
+      throw new Error('rollback both writes');
+    })).rejects.toThrow('rollback both writes');
+    expect(await sql`SELECT turn_idx FROM harness_shared.session_turns WHERE owner = ${c.owner}`).toHaveLength(0);
+    expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(0);
+  });
+
+  it('rolls back a failed activity write so the same native rows can retry successfully', async () => {
+    const c = await nativeCase();
+    await sql.unsafe(`CREATE FUNCTION harness_shared.reject_indexed_start() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'private activity failure'; END $$`);
+    await sql.unsafe(`CREATE TRIGGER reject_indexed_start BEFORE INSERT ON harness_shared.agent_activity
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_indexed_start()`);
+    try {
+      await expect(insertTurns(sql, [c.user, c.reply])).rejects.toThrow('private activity failure');
+    } finally {
+      await sql.unsafe('DROP TRIGGER reject_indexed_start ON harness_shared.agent_activity');
+      await sql.unsafe('DROP FUNCTION harness_shared.reject_indexed_start()');
+    }
+    expect(await sql`SELECT turn_idx FROM harness_shared.session_turns WHERE owner = ${c.owner}`).toHaveLength(0);
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(2);
+    expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(1);
+    await assertReaders(c, true);
+  });
+
+  it('admits original enrollment after delayed ingest and payload mangling', async () => {
+    const c = await nativeCase(), original = Date.now() - 20 * 60_000;
+    const ledger = readLedgerRows(c.owner, { includeExpired: true })[0]!;
+    await writeFile(ledgerPathForSid(c.owner), JSON.stringify({ ...ledger, ts: original - 1000 }) + '\n');
+    c.user.ts = new Date(original).toISOString(); c.reply.ts = new Date(original + 1000).toISOString();
+    c.user.text += '\nPTY transit changed this payload.';
+    await sql`UPDATE harness_shared.routines SET last_fired_at = ${new Date(original - 3000)},
+      metadata = ${JSON.stringify({ fire_count: 10, armed_at: new Date(original - 4000).toISOString() })}::jsonb WHERE id = ${c.loop.id}`;
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = ${new Date(original - 2000)},
+      delivered_at = ${new Date(original - 2000)} WHERE subscriber_id = ${c.owner}`;
+    await insertTurns(sql, [c.user, c.reply]); await assertReaders(c, true);
+  });
+
+  it.each(['missing', 'foreign-owner', 'foreign-origin', 'wrong-nonce', 'future', 'expired', 'malformed', 'assistant', 'non-native', 'non-loop'])(
+    'keeps %s enrollment unknown through normal ingest', async control => {
+      const c = await nativeCase(), ledger = readLedgerRows(c.owner, { includeExpired: true })[0]!;
+      const change: Record<string, unknown> = {};
+      if (control === 'missing') await rm(ledgerPathForSid(c.owner));
+      if (control === 'foreign-owner') change.sid = 'foreign';
+      if (control === 'foreign-origin') change.origin = 'wake-pump';
+      if (control === 'future') change.ts = Date.parse(c.user.ts) + 1;
+      if (control === 'expired') change.ts = Date.parse(c.user.ts) - 600_001;
+      if (control === 'malformed') change.loopFire = { routineId: '', wakeCount: 10 };
+      if (Object.keys(change).length) await writeFile(ledgerPathForSid(c.owner), JSON.stringify({ ...ledger, ...change }) + '\n');
+      if (control === 'wrong-nonce') c.user.text = c.user.text.replace(ledger.nonce, 'aaaaaaaaaaaaaaaa');
+      if (control === 'assistant') c.user.speaker = 'assistant';
+      if (control === 'non-native') c.user.source_kind = c.reply.source_kind = 'agent_chat';
+      if (control === 'non-loop') c.user.text = c.user.text.replace('turn-origin:loop-fire', 'turn-origin:wake-pump');
+      await insertTurns(sql, [c.user, c.reply]);
+      expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(0);
+      await assertReaders(c, false);
+    },
+  );
+
+  it('does not recover pre-existing/conflicted rows', async () => {
+    const c = await nativeCase();
+    await sql`INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, turn_origin)
+      VALUES (${c.user.workspace_id}, ${c.user.source_kind}, ${c.user.session_id}, 0, ${c.user.ts}, ${c.owner}, 'user', ${c.user.text}, 'loop-fire')`;
+    expect(await insertTurns(sql, [c.user, c.reply])).toBe(1);
+    expect(await sql`SELECT id FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`).toHaveLength(0);
+    await assertReaders(c, false);
+  });
+
+  describe('indexed native producer completion', () => {
+    it.each(['workspace', 'activity-workspace', 'source', 'session', 'turn-index', 'routine', 'stale9'])(
+      'rejects wrong %s in both actual SQL readers', async control => {
+        const c = await nativeCase('codex', control === 'stale9' ? 9 : 10);
+        await insertTurns(sql, [c.user, c.reply]);
+        const paths: Record<string, [string[], string]> = {
+          workspace: [['indexedTurn', 'workspaceId'], 'foreign-workspace'], source: [['indexedTurn', 'sourceKind'], 'claude'],
+          session: [['indexedTurn', 'sessionId'], 'foreign-session'], 'turn-index': [['indexedTurn', 'turnIdx'], '1'],
+          routine: [['loopFire', 'routineId'], 'foreign-routine'],
+        };
+        if (control === 'activity-workspace') {
+          await sql`UPDATE harness_shared.agent_activity SET workspace_id = 'foreign-workspace' WHERE owner_id = ${c.owner}`;
+        } else if (control !== 'stale9') {
+          const [path, value] = paths[control]!;
+          await sql`UPDATE harness_shared.agent_activity SET detail = jsonb_set(detail, ${sql.array(path)}::text[], ${JSON.stringify(value)}::text::jsonb)
+            WHERE owner_id = ${c.owner}`;
+        }
+        await assertReaders(c, false);
+      },
+    );
+
+    it('preserves the original hook-before-user path', async () => {
+      const c = await nativeCase();
+      // nativeCase persists the launch in the active namespace; WS is only the
+      // separate routine fixture namespace and cannot select that launch ledger.
+      expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: activeWorkspaceId(), prompt: c.user.text }, createPgTelemetryStore(sql))).toBe(true);
+      const stamp = await sql<Array<{ created_at: Date; detail: { loopFire?: unknown } }>>`SELECT created_at, detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+      expect(stamp[0]!.detail.loopFire).toEqual({ routineId: c.loop.id, wakeCount: 10 });
+      c.user.ts = new Date(new Date(stamp[0]!.created_at).getTime() + 1).toISOString();
+      c.reply.ts = new Date(Date.parse(c.user.ts) + 1).toISOString();
+      await insertTurns(sql, [c.user, c.reply]);
+      await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${c.owner} AND detail->>'source' = 'session-ingest'`;
+      await assertReaders(c, true);
+    });
+
+    it('keeps a hook outside its persisted launch workspace unknown', async () => {
+      const c = await nativeCase();
+      expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, prompt: c.user.text }, createPgTelemetryStore(sql))).toBe(true);
+      const stamp = await sql<Array<{ created_at: Date; detail: { loopFire?: unknown } }>>`SELECT created_at, detail FROM harness_shared.agent_activity WHERE owner_id = ${c.owner}`;
+      expect(stamp[0]!.detail).not.toHaveProperty('loopFire');
+      c.user.ts = new Date(new Date(stamp[0]!.created_at).getTime() + 1).toISOString();
+      c.reply.ts = new Date(Date.parse(c.user.ts) + 1).toISOString();
+      await insertTurns(sql, [c.user, c.reply]);
+      await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${c.owner} AND detail->>'source' = 'session-ingest'`;
+      await assertReaders(c, false);
+    });
+  });
 });
 
 /**

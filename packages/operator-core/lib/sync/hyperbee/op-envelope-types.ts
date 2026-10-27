@@ -15,6 +15,12 @@
  * it.
  */
 
+/** Receiver-created coordinates; never decoded from a raw peer operation. */
+export interface SnapshotReplay {
+  readonly logIndex: number;
+  readonly rowIndex: number;
+}
+
 export interface OpEnvelope {
   type: 'put' | 'del' | 'addWriter';
   // For addWriter (retired Autobase admission op — no live Model B emitter):
@@ -49,6 +55,7 @@ export interface OpEnvelope {
    * that are built outside the merge path.
    */
   sourceLogKeyHex?: string;
+  snapshotReplay?: Readonly<SnapshotReplay>;
   /**
    * Hive epoch RE-KEY (C-001 read-plane revocation, shared-hive-rekey-2026-06-19,
    * gated on `papercusp-hive-rekey`): the epoch the op's `value` payload was encrypted

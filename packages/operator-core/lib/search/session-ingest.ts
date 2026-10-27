@@ -49,12 +49,14 @@ import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { recordIndexedLoopTurnStarts, type IndexedNativeLoopTurn } from '../harness/routines/loop-turn-start-stamp';
 import { listAllProjectedTools } from '@papercusp/tooldef';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
+import { mapWithConcurrency } from '../gym/concurrency';
 import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES, dialogAnswerText, claudeDialogProvenanceAttachment } from '../transcript-wire';
 import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
 import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
@@ -1227,33 +1229,40 @@ export const FILE_ADAPTERS: FileAdapter[] = [
 /** Collect *.jsonl exactly `dirDepth` directory levels under `root` (BFS,
  * never descending past the known layout — see RootSpec). Exported for the
  * walker's own tests (P-005 descend-filter contract). */
+// Discovery covers the complete known layout, including old sessions that
+// still append. Bound filesystem fanout instead of serializing every read or
+// dropping older date directories to make a sweep finish.
+const TRANSCRIPT_DISCOVERY_IO_CONCURRENCY = 16;
+
 export async function jsonlAtDepth(
   root: string,
   dirDepth: number,
   descend?: (dirName: string, level: number) => boolean,
 ): Promise<string[]> {
+  const readDirectory = async (dir: string) => {
+    try { return { dir, entries: await readdir(dir, { withFileTypes: true }) }; }
+    catch { return { dir, entries: [] }; } // absent / raced — skip
+  };
   let dirs = [root];
   for (let d = 0; d < dirDepth; d += 1) {
     const next: string[] = [];
-    for (const dir of dirs) {
-      try {
-        for (const e of await readdir(dir, { withFileTypes: true })) {
-          if (!e.isDirectory()) continue;
-          if (descend && !descend(e.name, d + 1)) continue;
-          next.push(join(dir, e.name));
-        }
-      } catch { /* absent / raced — skip */ }
+    const listings = await mapWithConcurrency(dirs, TRANSCRIPT_DISCOVERY_IO_CONCURRENCY, readDirectory);
+    for (const { dir, entries } of listings) {
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (descend && !descend(e.name, d + 1)) continue;
+        next.push(join(dir, e.name));
+      }
     }
     dirs = next;
     if (!dirs.length) return [];
   }
   const files: string[] = [];
-  for (const dir of dirs) {
-    try {
-      for (const e of await readdir(dir, { withFileTypes: true })) {
-        if (e.isFile() && e.name.endsWith('.jsonl')) files.push(join(dir, e.name));
-      }
-    } catch { /* skip */ }
+  const listings = await mapWithConcurrency(dirs, TRANSCRIPT_DISCOVERY_IO_CONCURRENCY, readDirectory);
+  for (const { dir, entries } of listings) {
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.jsonl')) files.push(join(dir, e.name));
+    }
   }
   return files;
 }
@@ -1502,15 +1511,16 @@ async function listCandidateFiles(
   const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
   for (const spec of adapter.roots()) {
     const paths = await jsonlAtDepth(spec.root, spec.dirDepth, spec.descend);
-    for (const p of paths) {
+    const candidates = await mapWithConcurrency(paths, TRANSCRIPT_DISCOVERY_IO_CONCURRENCY, async (p) => {
       try {
         const s = await stat(p);
-        if (!s.isFile() || s.mtimeMs < sinceMs || s.size === 0) continue;
-        out.push({ path: p, size: s.size, mtimeMs: s.mtimeMs });
+        if (!s.isFile() || s.mtimeMs < sinceMs || s.size === 0) return null;
+        return { path: p, size: s.size, mtimeMs: s.mtimeMs };
       } catch {
-        /* raced deletion — skip */
+        return null; // raced deletion — skip
       }
-    }
+    });
+    for (const candidate of candidates) if (candidate) out.push(candidate);
   }
   return out;
 }
@@ -1854,16 +1864,28 @@ export async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   }
   // ON CONFLICT DO NOTHING: idempotent re-ingest (e.g. a reset offset) can
   // never duplicate — the PK is (workspace_id, source_kind, session_id, turn_idx).
-  const r = await sql`
-    INSERT INTO harness_shared.session_turns ${sql(
-      rows as unknown as Record<string, unknown>[],
-      'workspace_id', 'source_kind', 'session_id', 'turn_idx', 'ts',
-      'owner', 'harness_slug', 'cwd', 'speaker', 'text',
-      'turn_origin', 'turn_origin_verdict', 'turn_origin_classifier_version',
-    )}
-    ON CONFLICT DO NOTHING
-  `;
-  return r.count ?? rows.length;
+  const persist = async (client: Sql): Promise<number> => {
+    const inserted = await client<IndexedNativeLoopTurn[]>`
+      INSERT INTO harness_shared.session_turns ${client(
+        rows as unknown as Record<string, unknown>[],
+        'workspace_id', 'source_kind', 'session_id', 'turn_idx', 'ts',
+        'owner', 'harness_slug', 'cwd', 'speaker', 'text',
+        'turn_origin', 'turn_origin_verdict', 'turn_origin_classifier_version',
+      )}
+      ON CONFLICT DO NOTHING
+      RETURNING workspace_id, source_kind, session_id, turn_idx, ts,
+                owner, harness_slug, cwd, speaker, text, turn_origin
+    `;
+    await recordIndexedLoopTurnStarts(client, inserted);
+    return inserted.count ?? inserted.length;
+  };
+  // A failed activity write must not commit the native row and make its retry
+  // look like an old/conflicted row. Reserve one connection for both writes;
+  // callers already in a transaction keep their exact connection/savepoint.
+  const hasLoopCandidate = rows.some(row => row.speaker === 'user' && row.turn_origin === 'loop-fire');
+  return hasLoopCandidate && typeof sql.begin === 'function'
+    ? sql.begin(tx => persist(tx as unknown as Sql))
+    : persist(sql);
 }
 
 interface PartRow {

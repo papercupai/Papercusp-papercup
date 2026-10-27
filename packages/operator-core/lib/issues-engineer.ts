@@ -113,7 +113,7 @@ import {
   isLegacyFleetScopeDowngradeAdmission,
   type LegacyFleetScopeDowngradeAdmission,
 } from './work-item-fleet-scope-recovery';
-import { audienceWhereSql, ISSUE_FAMILY_ROUTE_KINDS, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS, audienceWhereSql, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
 
 /**
  * EI-217141: a fleet leader's explicit assignment is the one narrow exception to
@@ -300,8 +300,10 @@ export type IssueState = 'open' | 'wip' | 'blocked' | 'needs-human' | 'done' | '
 export type IssueKind = 'bug' | 'change';
 /** Every kind physically stored in engineer_issues (collapse-delegate D-001):
  *  the issue-surface kinds PLUS `task` — a delegated unit of work (retired delegate
- *  durable record). `task` is a work_item kind only; the issues:* surface excludes it. */
-export type IssueStoreKind = IssueKind | 'task';
+ *  durable record). `task` is a work_item kind only; the issues:* surface excludes it.
+ *  `cleanup` is the low-priority code-cleanup kind (code-cleanup-campaigns-2026-10-26
+ *  P-003): stored with the issue family, excluded from bug/change backlog totals. */
+export type IssueStoreKind = IssueKind | 'task' | 'cleanup';
 
 export const ISSUE_KIND = 'issue';
 export const ISSUE_SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
@@ -318,7 +320,7 @@ export const ISSUE_STATES: readonly IssueState[] = [
 export const ISSUE_KINDS: readonly IssueKind[] = ['bug', 'change'];
 /** Storage kinds (incl. `task`). The default listIssues filter restricts to
  *  ISSUE_KINDS so delegated tasks never leak into the issues:* surface. */
-export const ISSUE_STORE_KINDS: readonly IssueStoreKind[] = ['bug', 'change', 'task'];
+export const ISSUE_STORE_KINDS: readonly IssueStoreKind[] = ISSUE_FAMILY_ROUTE_KINDS;
 
 export interface EngineerIssue {
   id: string;
@@ -1175,7 +1177,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // emitter calling createIssue with no session, work_items:create) gets the
   // same derivation here, so no filing is left without reporter provenance.
   if (
-    (['bug', 'change', 'task'] as const).includes(storageKind as 'bug' | 'change' | 'task') &&
+    (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(storageKind) &&
     inputPayload.reporter == null
   ) {
     const reporter = deriveReporterProvenance({
@@ -1194,7 +1196,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   if (
     // Issue-family membership test (not a freshness check), written as a set
     // lookup so the freshness kind-gate's no-bare-literal guard stays exact.
-    (['bug', 'change', 'task'] as const).includes(storageKind as 'bug' | 'change' | 'task') &&
+    (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(storageKind) &&
     inputPayload.lane !== 'observation' &&
     !Object.prototype.hasOwnProperty.call(inputPayload, 'implementationReadiness')
   ) {
@@ -1782,10 +1784,16 @@ function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: NonNullable<ListIs
     return aliased ? sql`ei.issue_id = ANY(${ids as string[]}::text[])` : sql`issue_id = ANY(${ids as string[]}::text[])`;
   }
   // Internal complete readers can compose a one-column identity query without
-  // sending tens of thousands of IDs to the client and back. List/count/state
-  // companions share this fragment, retaining their existing visibility rules.
+  // sending tens of thousands of IDs to the client and back. Keep that selection
+  // behind a planner fence: when it reads work_items and the outer engineer_issues
+  // view also resolves to work_items, flattening IN can turn the identity filter
+  // into a correlated primary-key probe for every outer row. On a 64k-row fleet
+  // cohort that re-ran the claim-spec word predicates 76k times (11s measured).
+  // OFFSET 0 preserves the one-column set while making PostgreSQL evaluate it once.
+  // List/count/state companions share this fragment and its visibility rules.
   const source = ids as ReturnType<OrgSql>;
-  return aliased ? sql`ei.issue_id IN (${source})` : sql`issue_id IN (${source})`;
+  const selectedIds = sql`SELECT * FROM (${source}) identity_source OFFSET 0`;
+  return aliased ? sql`ei.issue_id IN (${selectedIds})` : sql`issue_id IN (${selectedIds})`;
 }
 
 /**
@@ -3259,7 +3267,7 @@ export async function claimIssue(
       FROM harness_shared.work_items
      WHERE workspace_id = ${ws}
        AND feature_id = ${id}
-       AND item_kind IN ('bug', 'change', 'task')`;
+       AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})`;
   const priorAssignee = priorRows[0]?.taken_by ?? null;
   const operationClaims = await import('./blueprint/operation-worker-binding');
   const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
@@ -3349,7 +3357,9 @@ export async function claimIssue(
     UPDATE harness_shared.engineer_issues AS target SET
       payload = ${claimPayloadWithReviewRevision},
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
-      assigned_at = now(), origin = 'local', updated_at = now()
+      assigned_at = CASE
+        WHEN assignee = ${assignee} THEN COALESCE(assigned_at, now()) ELSE now() END,
+      origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND ${selection.where}
        -- EI-26547411992035448: direct-by-id claims must preserve attribution on
@@ -3516,7 +3526,7 @@ export async function markIssueProgress(id: string): Promise<boolean> {
       UPDATE harness_shared.work_items
          SET last_progress_at = now()
        WHERE workspace_id = ${issuesScopeWorkspace()} AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
          AND taken_by IS NOT NULL AND taken_by <> ''`;
     return res.count > 0;
   } catch {
@@ -3586,7 +3596,7 @@ export async function releaseIssue(
         FROM harness_shared.work_items
        WHERE workspace_id = ${ws}
          AND feature_id = ${id}
-         AND item_kind IN ('bug', 'change', 'task')`;
+         AND item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})`;
     const formerAssignee = prev[0]?.taken_by ?? null;
     const formerHarnessSlug = prev[0]?.harness_slug ?? null;
     // EI-7588: when `expectedAssignee` is given (the work_items:release TOOL's holder guard),
@@ -3875,7 +3885,7 @@ export async function setIssueState(
                terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
-           AND item_kind IN ('bug', 'change', 'task')
+           AND item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND origin <> 'remote'
            ${onBaseRow()}
         FOR UPDATE`;
@@ -4027,7 +4037,7 @@ export async function setIssueState(
              SET payload = COALESCE(payload, '{}'::jsonb) || ${mergedAttestations}::text::jsonb,
                  updated_ts = (extract(epoch FROM now()) * 1000)::bigint
            WHERE workspace_id = ${ws} AND feature_id = ${id}
-             AND item_kind IN ('bug', 'change', 'task')
+             AND item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
              AND origin <> 'remote'
              ${onBaseRow()}`;
         if (!upgrade) {
@@ -4142,7 +4152,7 @@ export async function setIssueState(
                              - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
                          END
          WHERE workspace_id = ${ws} AND feature_id = ${id}
-           AND item_kind IN ('bug', 'change', 'task')
+           AND item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND origin <> 'remote'
            ${onBaseRow()}
            AND ${currentEffect}
@@ -4369,7 +4379,7 @@ export async function mergeIssuePayload(
      WHERE workspace_id = ${ws}
        AND harness_slug = ${physicalSlug}
        AND feature_id = ${id}
-       AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND item_kind = ANY (ARRAY[${db.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
        AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
        -- The federation stamp treats ANY payload change as a local content
@@ -4401,7 +4411,7 @@ export async function mergeIssuePayload(
          WHERE workspace_id = ${ws}
            AND harness_slug = ${physicalSlug}
            AND feature_id = ${id}
-           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          FOR UPDATE`;
       if (!prior[0]) return [];
 
@@ -4762,7 +4772,7 @@ async function bm25IssueSearch(
         SELECT w.workspace_id AS ranked_ws, w.feature_id AS ranked_id, ${leg.score} AS ranked_score
           FROM harness_shared.work_items w
          WHERE w.workspace_id = ANY(${workspaces}::text[])
-           AND w.item_kind IN ('bug', 'change', 'task')
+           AND w.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND ${leg.match}
          ORDER BY ${leg.order}
          LIMIT ${limit})
@@ -4842,7 +4852,7 @@ export async function searchIssuesForDedup(
           columns: tx`w.feature_id AS ranked_id, w.workspace_id AS ranked_ws`,
           from: tx`harness_shared.work_items w`,
           where: tx`w.workspace_id = ANY(${workspaces}::text[])
-                    AND w.item_kind IN ('bug', 'change', 'task')`,
+                    AND w.item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})`,
           tsv: tx`w._search`,
           query,
           limit: n,

@@ -302,11 +302,12 @@ export interface PlanVerificationSummary {
   profile: VerificationProfile;
   /** How the stamped profile was set; `unstamped` = no stamp yet, so the profile is inferred. */
   profileSource: 'declared' | 'harness-default' | 'backfill' | 'unstamped';
-  defaultDeliverable: DeliverableKind;
+  /** Built-in kind, or the namespaced item type a custom plan type defaults to. */
+  defaultDeliverable: string;
   /** Modules every item without an override is held to. */
   defaultModules: readonly VerificationModule[];
-  /** Items that declare their own deliverable kind. */
-  overrides: Array<{ id: string; deliverable: DeliverableKind; modules: readonly VerificationModule[] }>;
+  /** Items that declare their own deliverable kind or namespaced item type. */
+  overrides: Array<{ id: string; deliverable: string; modules: readonly VerificationModule[] }>;
   /**
    * Items whose registry item type asks for completion fields, criteria or a rubric, at the
    * plan's pinned revisions (plan-item-types-registry-cupboard P-004). Null when it could not be
@@ -325,27 +326,30 @@ export interface PlanVerificationSummary {
 const PROFILE_SOURCES = ['declared', 'harness-default', 'backfill'] as const;
 
 export function summarizePlanVerification(
-  plan: { verificationProfile?: string | null; verificationProfileSource?: string | null },
+  plan: VerificationPlanInput & { verificationProfileSource?: string | null },
   items: ReadonlyArray<{ id: string; deliverable?: string | null }>,
 ): PlanVerificationSummary {
   const stamped = isVerificationProfile(plan.verificationProfile);
-  const profile = stamped ? (plan.verificationProfile as VerificationProfile) : INFERRED_PLAN_PROFILE;
+  const defaultResolution = resolveVerification(plan, {});
+  const profile = defaultResolution.profile;
   const source = plan.verificationProfileSource;
   const profileSource =
     stamped && (PROFILE_SOURCES as readonly string[]).includes(source ?? '')
       ? (source as PlanVerificationSummary['profileSource'])
       : 'unstamped';
-  const defaultDeliverable = PROFILE_DEFAULT_DELIVERABLE[profile];
+  const defaultDeliverable = defaultResolution.deliverable ?? defaultResolution.itemType ?? PROFILE_DEFAULT_DELIVERABLE[profile];
   const overrides: PlanVerificationSummary['overrides'] = [];
   for (const item of items) {
-    if (!isDeliverableKind(item.deliverable)) continue;
-    overrides.push({ id: item.id, deliverable: item.deliverable, modules: modulesFor(item.deliverable === 'code') });
+    if (typeof item.deliverable !== 'string') continue;
+    const resolution = resolveVerification(plan, item);
+    if (resolution.deliverableSource !== 'declared') continue;
+    overrides.push({ id: item.id, deliverable: item.deliverable, modules: resolution.modules });
   }
   return {
     profile,
     profileSource,
     defaultDeliverable,
-    defaultModules: modulesFor(defaultDeliverable === 'code'),
+    defaultModules: defaultResolution.modules,
     overrides,
   };
 }

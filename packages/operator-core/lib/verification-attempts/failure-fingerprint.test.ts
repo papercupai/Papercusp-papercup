@@ -179,6 +179,8 @@ describe('failureFingerprint never fingerprints the capability:bash runner marke
 describe('failureFingerprint never fingerprints passing test lines', () => {
   it.each([
     '✔ the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
+    '✓ Every operator-core file is at or under its type-error baseline.',
+    '\u001b[32m✓\u001b[39m a passing test whose name mentions a timeout (Nms)',
     'ok 17 - the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
   ])('falls through when a passing line contains failure-shaped text: %s', (line) => {
     const result = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: line });
@@ -193,5 +195,82 @@ describe('failureFingerprint never fingerprints passing test lines', () => {
     });
     expect(result.source).toBe('log');
     expect(result.label).toContain('upload refused');
+  });
+
+  it('distinguishes test failures followed by the same successful typecheck footer', () => {
+    const footer = '✓ Every operator-core file is at or under its type-error baseline.\n' +
+      'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean';
+    const fingerprint = (failure: string, passingFooter = footer) => failureFingerprint({
+      exitCode: 1, logTail: `${failure}\n${passingFooter}`,
+    });
+    const connection = fingerprint('Error: write CONNECT_TIMEOUT localhost:32769');
+    const terminal = fingerprint('Error: fresh worker terminal persistence deadline; isolated files retained');
+    expect(connection.label).toContain('CONNECT_TIMEOUT');
+    expect(terminal.label).toContain('terminal persistence deadline');
+    expect(connection.fingerprint).not.toBe(terminal.fingerprint);
+    expect(fingerprint('Error: write CONNECT_TIMEOUT localhost:32769',
+      '✓ another passing test handles failures and timeout errors').fingerprint).toBe(connection.fingerprint);
+    expect(fingerprint('✗ failing test: cannot persist terminal receipt').source).toBe('log');
+  });
+});
+
+describe('failureFingerprint binds typecheck aggregates to their verdict', () => {
+  const summary = 'TSC operator-core: 107 type errors across 78 file(s) (baseline total 224) [--files]';
+  const start = 'LINT_TSC_RUN_STAMP label=operator-core at=2026-10-23T04:51:18Z head=db6e2a889b scope=files files=3';
+  const receipt = 'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean';
+  const fingerprint = (logTail: string) => failureFingerprint({ exitCode: 1, logTail });
+
+  it('finds the setup error in the actual routed-test and passing-lint log shape', () => {
+    const actualTail = [
+      'Error: baseline-schema-global-setup: TEST SUBSTRATE STORAGE LOW',
+      'TEST_FILE_GROUP_RESULT cwd=packages/operator-core executed=1 status=failed',
+      'TEST_FILE_RESULT requested=3 executed=3 matched=3 status=failed head=db6e2a889b skippedTests=0',
+      start,
+      summary,
+      'LINT_TSC_CROSS_LEG checked=3 clean=lint:tsc:operator red=-',
+      'ⓘ cross-leg: lint:tsc:scripts compiles none of the named files; nothing was checked there (it cannot red on them).',
+      '✓ Every operator-core file is at or under its type-error baseline.',
+      receipt,
+      '[capability:bash] JOB END: status=failed exit=1',
+    ].join('\n');
+    expect(fingerprint(actualTail).label).toContain('TEST SUBSTRATE STORAGE LOW');
+    expect(fingerprint(actualTail.replace('TEST SUBSTRATE STORAGE LOW', 'write CONNECT_TIMEOUT')).label)
+      .toContain('CONNECT_TIMEOUT');
+    expect(fingerprint(actualTail).fingerprint).not.toBe(
+      fingerprint(actualTail.replace('TEST SUBSTRATE STORAGE LOW', 'write CONNECT_TIMEOUT')).fingerprint);
+  });
+
+  it('retains distinct setup failures ahead of a successful scoped typecheck', () => {
+    const footer = `${start}\n${summary}\n✓ Every operator-core file is at or under its type-error baseline.\n${receipt}`;
+    const storage = fingerprint(`Error: TEST SUBSTRATE STORAGE LOW\n${footer}`);
+    const connection = fingerprint(`Error: write CONNECT_TIMEOUT localhost:32769\n${footer}`);
+    expect(storage.label).toContain('TEST SUBSTRATE STORAGE LOW');
+    expect(connection.label).toContain('CONNECT_TIMEOUT');
+    expect(storage.fingerprint).not.toBe(connection.fingerprint);
+    expect(fingerprint(`Error: TEST SUBSTRATE STORAGE LOW\n${summary}\n${receipt}`).fingerprint)
+      .toBe(storage.fingerprint); // A bounded tail may begin after the start receipt.
+  });
+
+  it.each([
+    '',
+    'LINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed',
+    'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial',
+    'LINT_TSC_RESULT label=operator-vite scope=files exit=0 status=clean',
+  ])('keeps a typecheck aggregate without a matching clean verdict: %s', result => {
+    expect(fingerprint(`Error: earlier test failure\n${start}\n${summary}\n${result}`).label)
+      .toContain('TSC operator-core:');
+  });
+
+  it('does not hide an actual diagnostic inside a successful typecheck interval', () => {
+    expect(fingerprint(`${start}\n${summary}\nError: terminal persistence failed\n${receipt}`).label)
+      .toContain('terminal persistence failed');
+  });
+
+  it('does not apply a later clean result to an earlier failed invocation', () => {
+    const failed = `${start}\n${summary}\nLINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed`;
+    expect(fingerprint(`${failed}\n${start}\n${summary}\n${receipt}`).label)
+      .toContain('TSC operator-core:');
+    expect(fingerprint(`${failed}\n${start}\n${receipt}`).label)
+      .toContain('TSC operator-core:');
   });
 });

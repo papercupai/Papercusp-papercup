@@ -221,6 +221,8 @@ class LegacyWorkItemAdmissionAdapter implements AdmissionLedgerLegacyAdapter {
 
 export interface PgAdmissionCutoverQueueStoreOptions {
   readonly sql?: SqlClient;
+  /** Acquisition attribution for an injected SQL client with a registered pool label. */
+  readonly acquirePool?: string;
   readonly workspaceId?: string;
   readonly abandonAfterMs?: number;
   readonly resolveSessionStatesFn?: ResolveSessionStates;
@@ -266,10 +268,11 @@ export class PgAdmissionCutoverQueueStore implements DurableAdmissionQueueStore 
 
   constructor(options: PgAdmissionCutoverQueueStoreOptions = {}) {
     this.sql = options.sql ?? getOrgPg().sql;
-    this.acquirePool = options.sql ? undefined : 'org-admin';
+    this.acquirePool = options.acquirePool ?? (options.sql ? undefined : 'org-admin');
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     const shared = {
       ...(options.sql ? { sql: options.sql } : {}),
+      acquirePool: this.acquirePool,
       workspaceId: this.workspaceId,
       ...(options.abandonAfterMs ? { abandonAfterMs: options.abandonAfterMs } : {}),
       ...(options.resolveSessionStatesFn ? { resolveSessionStatesFn: options.resolveSessionStatesFn } : {}),

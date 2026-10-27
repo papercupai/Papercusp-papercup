@@ -21,7 +21,8 @@ import type postgres from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
-import { observeRemoteHlc } from './hlc-stamp';
+import { observeRemoteHlc, isValidOpHlc } from './hlc-stamp';
+import { mergeRuleFor, type MergeRule } from './merge-rules';
 import { encodeHlc, type HlcClock } from '@papercusp/locks-core';
 
 /**
@@ -78,9 +79,13 @@ export interface ProvenanceContext {
    * `undefined` for a synthetic/local op built without a source log.
    */
   sourceLogKeyHex?: string;
+  hbKey?: string;
+  snapshotReplay?: OpEnvelope['snapshotReplay'];
 }
 
 export interface TableProjection<Row> {
+  /** Mandatory at registration; production tables have an explicit catalog entry. */
+  mergeRule?: MergeRule;
   /** Table tag, matching `hyperbee-key-types.HYPERBEE_TABLE_TAGS`. */
   tableTag: string;
   /**
@@ -386,7 +391,9 @@ export function buildStoredOrderPrefetch(lookup: ProjectionLookup): StoredOrderP
     }
     const out = new Map<string, StoredFedOrder>();
     for (const [table, keys] of byTable) {
-      const lookupFn = lookup(table)?.storedOrderForKeys;
+      const projection = lookup(table);
+      if (!projection || mergeRuleFor(table, projection.mergeRule) !== 'lww') continue;
+      const lookupFn = projection.storedOrderForKeys;
       if (!lookupFn) continue;
       const found = await lookupFn(keys);
       for (const [key, order] of found) out.set(`${table}::${key}`, order);
@@ -404,12 +411,18 @@ export type SupersedablePut = (table: string, key: string) => boolean;
 
 /** Build a {@link SupersedablePut} over a projection lookup. */
 export function buildSupersedablePut(lookup: ProjectionLookup): SupersedablePut {
-  return (table, key) => lookup(table)?.supersedableKey?.(key) === true;
+  return (table, key) => {
+    const projection = lookup(table);
+    return !!projection && mergeRuleFor(table, projection.mergeRule) === 'lww'
+      && projection.supersedableKey?.(key) === true;
+  };
 }
 
 const registry = new Map<string, TableProjection<unknown>>();
 
 export function registerProjection<Row>(p: TableProjection<Row>): void {
+  const mergeRule = mergeRuleFor(p.tableTag, p.mergeRule);
+  if (!mergeRule) throw new Error(`Missing merge rule for replicated table ${p.tableTag}`);
   registry.set(p.tableTag, p as TableProjection<unknown>);
 }
 
@@ -484,7 +497,12 @@ function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): Provenanc
   // context; per-table writers never infer local from a missing argument.
   const authorPubkey =
     origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-  return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc, sourceLogKeyHex: op.sourceLogKeyHex };
+  const snapshot = op.snapshotReplay;
+  const snapshotReplay = snapshot && Number.isSafeInteger(snapshot.logIndex) && snapshot.logIndex >= 0
+    && Number.isSafeInteger(snapshot.rowIndex) && snapshot.rowIndex >= 0
+    ? Object.freeze({ logIndex: snapshot.logIndex, rowIndex: snapshot.rowIndex }) : undefined;
+  return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc, sourceLogKeyHex: op.sourceLogKeyHex,
+    hbKey: op.hbKey, ...(snapshotReplay ? { snapshotReplay } : {}) };
 }
 
 /**
@@ -571,6 +589,11 @@ export async function applyOpVia(
   if (!op.table) return false;
   const p = lookup(op.table);
   if (!p) return false;
+  const mergeRule = mergeRuleFor(p.tableTag, p.mergeRule);
+  if (!mergeRule) return false;
+  if (mergeRule === 'append-only' && op.type === 'del') return false;
+  if (applyOpts?.ownLogKeyHex !== undefined && op.sourceLogKeyHex !== applyOpts.ownLogKeyHex
+    && !isValidOpHlc(op.hlc)) return false;
   // EI-117 echo breaker: skip log-source-VERIFIED own ops on CDC-captured
   // tables (see `TableProjection.skipOwnOps`). WI-1684: narrowed to PUTS ONLY.
   // An own PUT re-apply is an UPSERT that re-fires the capture trigger as
@@ -674,7 +697,7 @@ export async function applyOpVia(
   // a writerPubkey + the tracker has a recent local write for the
   // same key from a *different* pubkey within the 60s window.
   // No-op when writerPubkey is absent (legacy / un-threaded write).
-  if (op.writerPubkey && op.hbKey && typeof op.ts === 'number') {
+  if (mergeRule === 'lww' && op.writerPubkey && op.hbKey && typeof op.ts === 'number') {
     observeMergedOp({
       table: op.table,
       hbKey: op.hbKey,

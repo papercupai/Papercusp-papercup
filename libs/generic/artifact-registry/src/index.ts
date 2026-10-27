@@ -22,6 +22,10 @@
  * the Papercusp "Cupboard" worker (D1 + R2 + GitHub mapped onto these seams).
  */
 
+export * from './object-store.js';
+export { gcsObjectStore, GcsStorageError } from './gcs-object-store.js';
+export { gcsServiceAccountToken, configuredGcsObjectStore, type GcsServiceAccount, type GcsStorageBindings } from './gcs-credentials.js';
+
 // Content addressing
 export {
   HEX_SHA256_RE,

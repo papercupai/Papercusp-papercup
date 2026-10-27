@@ -71,7 +71,9 @@ describe('capability:bash — repository search scope guidance', () => {
   });
 
   it('documents when bash jobs need explicit work-item attribution', () => {
-    const description = (bashTool as unknown as GuidanceTool).args?.shape?.work_item_id?.description ?? '';
+    // WI-6554700010029664: args is a preprocess pipe (cmd → command fold); `out` is the object.
+    const args = (bashTool as unknown as { args?: { out?: GuidanceTool['args'] } }).args;
+    const description = args?.out?.shape?.work_item_id?.description ?? '';
 
     expect(description).toContain('Required when you hold multiple work-items');
     expect(description).toContain('held-item attribution cannot be measured');

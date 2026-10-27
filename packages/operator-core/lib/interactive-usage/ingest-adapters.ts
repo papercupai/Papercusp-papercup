@@ -222,6 +222,74 @@ export function closedCodexSessionPopulation(input: CodexPopulationInput): Close
   return { ok: true, usageEventKeys: keys.sort(), nativeTurnIds: [...turns], events: keyed, closedByteOffset };
 }
 
+export type ClosedClaudeSessionPopulation = {
+  readonly ok: true;
+  readonly usageEventKeys: readonly string[];
+  readonly nativeMessageIds: readonly string[];
+  readonly events: readonly (TranscriptUsageEvent & { usageEventKey: string })[];
+  readonly closedByteOffset: number;
+} | { readonly ok: false; readonly detail: string };
+
+/** Strict full-source companion to permissive live Claude ingestion. Reuses
+ * its message deduplication and persisted event keys, while requiring exact
+ * session ownership, complete tokens and a final provider stop per message.
+ * The host must separately prove process termination and reconcile every
+ * gateway attempt. Native message closure alone grants no billing authority. */
+export function closedClaudeSessionPopulation(input: CodexPopulationInput): ClosedClaudeSessionPopulation {
+  const fail = (detail: string): ClosedClaudeSessionPopulation => ({ ok: false, detail });
+  const bytes = Buffer.byteLength(input.transcript);
+  if (!input.file || !input.nativeSessionId || !Number.isSafeInteger(input.fileGeneration) || input.fileGeneration < 0 ||
+      !input.transcript.endsWith('\n') || bytes > 16 * 1024 * 1024) {
+    return fail('a bounded complete native source and exact file generation are required');
+  }
+  const messages = new Map<string, { model: string; counts: number[]; stop: string | null }>();
+  const integer = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  const stops = new Set(['end_turn', 'tool_use', 'max_tokens', 'stop_sequence', 'pause_turn', 'refusal', 'model_context_window_exceeded']);
+  for (const line of input.transcript.slice(0, -1).split('\n')) {
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { return fail('the native source contains an unreadable record'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('the native source contains an invalid record');
+    const r = value as Record<string, unknown>;
+    if (typeof r.type !== 'string' || !r.type || r.sessionId !== undefined && r.sessionId !== input.nativeSessionId ||
+        r.isSidechain === true || r.isApiErrorMessage === true) return fail('native source records must belong to the exact primary session');
+    if (r.type !== 'assistant') continue;
+    if (r.sessionId !== input.nativeSessionId || !r.message || typeof r.message !== 'object' || Array.isArray(r.message)) {
+      return fail('every native assistant request must identify its session and message');
+    }
+    const message = r.message as Record<string, unknown>, u = message.usage as Record<string, unknown> | undefined;
+    if (typeof message.id !== 'string' || !message.id.trim() || typeof message.model !== 'string' || !message.model.trim() ||
+        message.model.startsWith('<') || !u || typeof u !== 'object' || Array.isArray(u)) return fail('native message identity and model are incomplete');
+    const fields = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+    if (!fields.every(key => integer(u[key]))) return fail('native message tokens and cache counters must be explicitly measured');
+    const counts = fields.map(key => u[key] as number);
+    if (!integer(counts[0] + counts[2] + counts[3])) return fail('inclusive native input exceeds its exact integer bound');
+    const stop = message.stop_reason == null ? null : message.stop_reason;
+    if (stop !== null && (typeof stop !== 'string' || !stops.has(stop))) return fail('native message closure is unknown');
+    const previous = messages.get(message.id);
+    if (previous && (previous.model !== message.model || counts.some((n, i) => n < previous.counts[i]) ||
+        previous.stop !== null && (previous.stop !== stop || counts.some((n, i) => n !== previous.counts[i])))) {
+      return fail('repeat native message observations changed model or closed usage');
+    }
+    messages.set(message.id, { model: message.model, counts, stop: stop as string | null });
+  }
+  if (!messages.size || messages.size > 1000 || [...messages.values()].some(message => message.stop === null)) {
+    return fail('the complete native source includes an unclosed or unbounded message population');
+  }
+  const parsed = parseTranscriptChunk(input.transcript), events = parsed.events ?? [];
+  if (parsed.consumedBytes !== bytes || events.length !== messages.size) return fail('the canonical native message population is incomplete');
+  const keyed = events.map(event => {
+    const id = event.sourceId.slice('message:'.length);
+    return { ...event, providerResponseId: id, inputTotalTokens: event.usage.inputTokens +
+      event.usage.cacheReadTokens + event.usage.cacheCreationTokens, uncachedInputKnown: true, cacheReadKnown: true,
+      usageEventKey: transcriptUsageEventKey({ file: input.file, fileGeneration: input.fileGeneration,
+        model: event.model, sourceId: event.sourceId }) };
+  });
+  if (keyed.some(event => !event.sourceId.startsWith('message:') || !messages.has(event.providerResponseId)) ||
+      new Set(keyed.map(event => event.usageEventKey)).size !== keyed.length) return fail('native message identities are ambiguous');
+  return { ok: true, usageEventKeys: keyed.map(event => event.usageEventKey).sort(),
+    nativeMessageIds: [...messages.keys()], events: keyed, closedByteOffset: bytes };
+}
+
 /** Consume complete lines only; return [consumedText, consumedBytes]. */
 function completeLines(chunk: string): { text: string; bytes: number } {
   const lastNewline = chunk.lastIndexOf('\n');

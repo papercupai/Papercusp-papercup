@@ -23,8 +23,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import { closeSync, openSync } from 'node:fs';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { closeSync, constants, openSync } from 'node:fs';
+import { open, readFile, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
@@ -1020,12 +1020,25 @@ async function reconcilePersistedOrphan(
     ? { state: taskState, exit_code: row.task_exit_code ?? null }
     : null;
 
-  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
-  if (fromReport !== snapshot) return fromReport;
-  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, task, taskLinked, sql);
-  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
+  // File-backed sinks can outlive the worker without a completed report or
+  // per-file verdict. Recover diagnostics independently of verdict recovery.
+  // Work on a copy: a lost lifecycle CAS must not expose unpersisted changes.
+  const observed = { ...snapshot };
+  if (taskTerminal || deadlineExpired) {
+    const artifact = detachedArtifactsFromRow(snapshot, row)
+      .find(candidate => candidate.stdoutPath || candidate.stderrPath);
+    await appendDetachedOutput(observed, artifact ?? null);
+  }
+  const fromReport = await reconcilePersistedReportArtifact(observed, row, sql);
+  if (fromReport !== observed) return fromReport;
+  const fromTestRunLedger = await reconcilePersistedTestRun(observed, task, taskLinked, sql);
+  if (fromTestRunLedger !== observed) return fromTestRunLedger;
 
   if (snapshot.status !== 'running' || (!taskTerminal && !deadlineExpired)) {
+    if (snapshot.finishedAt !== null && (observed.output !== snapshot.output
+      || observed.truncated !== snapshot.truncated)) {
+      return persistReconciledSnapshot(snapshot, observed, sql);
+    }
     return snapshot;
   }
 
@@ -1036,15 +1049,15 @@ async function reconcilePersistedOrphan(
     : `\n[detached-recovery] linked task ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
       `passed its durable runtime deadline${taskDeadlineAt === null ? '' : ` at ${new Date(taskDeadlineAt).toISOString()}`}; ` +
       'no test verdict was observed.\n';
-  const combinedOutput = snapshot.output + note;
+  const combinedOutput = observed.output + note;
   const output = combinedOutput.length > OUTPUT_CAP_BYTES ? combinedOutput.slice(-OUTPUT_CAP_BYTES) : combinedOutput;
   const reconciled: RunSnapshot = {
-    ...snapshot,
+    ...observed,
     status: 'error',
     exitCode: null,
     finishedAt,
     output,
-    truncated: snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES,
+    truncated: observed.truncated || combinedOutput.length > OUTPUT_CAP_BYTES,
   };
 
   return persistReconciledSnapshot(snapshot, reconciled, sql);
@@ -1276,12 +1289,7 @@ async function reconcilePersistedReportArtifact(
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   const outputArtifact = artifacts.find(artifact => artifact.stdoutPath || artifact.stderrPath);
-  await appendDetachedOutput(
-    snapshot,
-    outputArtifact?.stdoutPath && outputArtifact.stderrPath
-      ? { stdoutPath: outputArtifact.stdoutPath, stderrPath: outputArtifact.stderrPath }
-      : null,
-  );
+  await appendDetachedOutput(snapshot, outputArtifact ?? null);
   try {
     const expanded = await expandDetachedReportArtifacts(artifacts);
     const reports = await Promise.all(expanded.map(async artifact => ({
@@ -1628,21 +1636,48 @@ async function persistDetachedReportArtifacts(
 }
 
 const DETACHED_OUTPUT_MARKER = '\n[detached-recovery] persisted child output\n';
+// Keep both stream tails plus their marker and the orphan disposition within
+// the rolling snapshot cap, so repeated status reads retain the once marker.
+const DETACHED_STREAM_TAIL_BYTES = (OUTPUT_CAP_BYTES - 1024) / 2;
+
+async function readDetachedOutputTail(path: string | undefined): Promise<{ text: string; truncated: boolean }> {
+  if (typeof path !== 'string' || !isAbsolute(path)) return { text: '', truncated: false };
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await file.stat();
+    if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size < 0) return { text: '', truncated: false };
+    const buffer = Buffer.alloc(Math.min(stat.size, DETACHED_STREAM_TAIL_BYTES));
+    const start = Math.max(0, stat.size - buffer.length);
+    let length = 0;
+    while (length < buffer.length) {
+      const result = await file.read(buffer, length, buffer.length - length, start + length);
+      if (!result.bytesRead) break;
+      length += result.bytesRead;
+    }
+    return { text: buffer.subarray(0, length).toString('utf8'),
+      truncated: start > 0 || length < buffer.length };
+  } catch {
+    // Missing or redirected diagnostics cannot alter a lifecycle/test verdict.
+    return { text: '', truncated: false };
+  } finally { await file?.close().catch(() => undefined); }
+}
 
 /** Read file-backed detached output once, so a successor can retain diagnostics after restart. */
 async function appendDetachedOutput(
   snapshot: RunSnapshot,
-  paths: { stdoutPath: string; stderrPath: string } | null,
+  paths: { stdoutPath?: string; stderrPath?: string } | null,
 ): Promise<void> {
   if (!paths || snapshot.output.includes(DETACHED_OUTPUT_MARKER)) return;
   const [stdout, stderr] = await Promise.all([
-    readFile(paths.stdoutPath, 'utf8').catch(() => ''),
-    readFile(paths.stderrPath, 'utf8').catch(() => ''),
+    readDetachedOutputTail(paths.stdoutPath),
+    readDetachedOutputTail(paths.stderrPath),
   ]);
-  if (!stdout && !stderr) return;
+  if (!stdout.text && !stderr.text) return;
   appendSnapshotOutput(snapshot, DETACHED_OUTPUT_MARKER);
-  if (stdout) appendSnapshotOutput(snapshot, `stdout:\n${stdout}`);
-  if (stderr) appendSnapshotOutput(snapshot, `\nstderr:\n${stderr}`);
+  if (stdout.text) appendSnapshotOutput(snapshot, `stdout${stdout.truncated ? ' (tail)' : ''}:\n${stdout.text}`);
+  if (stderr.text) appendSnapshotOutput(snapshot, `\nstderr${stderr.truncated ? ' (tail)' : ''}:\n${stderr.text}`);
+  snapshot.truncated ||= stdout.truncated || stderr.truncated;
 }
 
 function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean; snapshotSql?: SqlLike }): RunSnapshot {

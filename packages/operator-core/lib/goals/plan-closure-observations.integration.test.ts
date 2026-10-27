@@ -8,12 +8,16 @@ const HARNESS = 'papercusp';
 const PLAN = 'closure-subject-plan';
 const RUBRIC = 'acceptance-closure-subject-plan';
 
-const state = vi.hoisted(() => ({ sql: null as unknown }));
+const state = vi.hoisted(() => ({ sql: null as unknown, buildSha: 'abc1234' as string | null }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: state.sql }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => WORKSPACE }));
+vi.mock('../build-info', async (orig) => ({
+  ...(await orig<typeof import('../build-info')>()),
+  getBuildInfo: () => ({ sha: state.buildSha, version: 'test' }),
+}));
 
 const { beginPlanClosureObservation, readPlanClosureObservations } = await import('./plan-closure-observations');
 const { resolvePlanClosure } = await import('./plan-closure');
@@ -78,6 +82,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  state.buildSha = 'abc1234';
   await db.sql.unsafe(`
     TRUNCATE harness_shared.harness_plans, harness_shared.plan_items, harness_shared.plan_audits,
              harness_shared.engineer_issues, harness_shared.spec_evidence_bindings,
@@ -102,6 +107,28 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it.each([false, true])('rejects another evaluator with unchanged inputs (satisfied=%s)', async (satisfied) => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      ...VERDICT, satisfied, buildProvenance: { sha: 'd740fc3802' },
+    });
+    expect(await read()).toMatchObject({ status: 'stale', detail: expect.stringContaining('evaluator') });
+
+    // A canonical evaluation by this reader's build restores freshness without
+    // amending the rubric, re-vetting it, or changing any plan inputs.
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, { ...VERDICT, satisfied });
+    expect(await read()).toMatchObject({ status: 'fresh', gate: { satisfied } });
+  });
+
+  it('rejects unknown evaluator identity on either side', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      ...VERDICT, buildProvenance: { sha: null },
+    });
+    expect((await read()).status).toBe('stale');
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    state.buildSha = null;
+    expect((await read()).status).toBe('stale');
+  });
+
   it('reads each plan input once when returning and comparing its fingerprint', async () => {
     await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
     let statement: { text: string; params: Parameters<typeof db.sql.unsafe>[1] } | undefined;
@@ -147,7 +174,7 @@ describe('plan closure observations (D-032)', () => {
       (workspace_id, harness_slug, plan_slug, version, acceptance_bar_epoch)
       VALUES (${WORKSPACE}, ${secondHarness}, ${PLAN}, 2, 1)`;
     const recording = await beginPlanClosureObservation(PLAN);
-    await recording.record(HARNESS, { satisfied: true });
+    await recording.record(HARNESS, { ...VERDICT, satisfied: true });
     await recording.record(secondHarness, VERDICT);
     const observations = await readPlanClosureObservations({ workspaceId: WORKSPACE,
       planSlugs: [PLAN], planRefs: [{ planSlug: PLAN, harnessSlug: HARNESS },

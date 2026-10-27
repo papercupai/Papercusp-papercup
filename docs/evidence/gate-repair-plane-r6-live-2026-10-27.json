@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "gate-repair-plane R-6 live reading: a bg-host repair pass record carries a marker main does not yet contain (AUTO-BAR-R-6-P-006, D-014)",
+  "framework": "operational",
+  "command": ["sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-v", "ON_ERROR_STOP=1", "-f", "docs/evidence/gate-repair-plane-r6-r7-live-2026-10-27.sql"],
+  "exitCode": 0,
+  "startedAt": "2026-10-27T12:44:31Z",
+  "finishedAt": "2026-10-27T12:44:31Z",
+  "summary": "Read-only SQL over the live papercusp database plus git containment checks (output: docs/evidence/gate-repair-plane-r6-r7-live-2026-10-27.out.txt). Subject record: pipeline_events 845672 (green_checkpoint_repair_latency, 2026-10-27T12:02:06.943Z), the first pass record carrying the current IDLE_ACTUATOR_PASS_MARKER value 'gate-repair-plane-r6-proof-2026-10-27-stamped' whose own executor stamp names a build that contains that value: executor hostId port-3271 (bg-host), executingBuild 3faacb0a3b (source baked); git grep finds the marker in idle-repair-queue-actuator.ts at 3faacb0a3b (rc 0) and not at main d740fc3802 (rc 1). Main is red at the subject: the record's own snapshot shows an open frozen repair queue (phase ready-to-test, candidate 0199f22e2c41, no verdict yet). Residue per D-011: 56 earlier marker records stamped f579aa4d8b, a build that lacks the marker (rc 1), are dirty-bundle executions, not the subject. Not recorded on the plan by design: the minutes from the marker's staging commit to the subject record. What advanced bg-host onto 3faacb0a3b (the stale-routine-executor 2h auto-restart, 12:00:17Z) is in the journal and on WI-6554700010030110 post 1208196, not in this record.",
+  "assertions": [
+    {
+      "id": "r6-subject-carries-current-marker",
+      "passed": true,
+      "evidence": "pipeline_events 845672 detail.idleActuator.marker = gate-repair-plane-r6-proof-2026-10-27-stamped; it is the first of 21 marker records stamped 3faacb0a3b (first_at 12:02:06.943Z, last_at 12:32:06.683Z)."
+    },
+    {
+      "id": "r6-subject-stamped-build-contains-marker",
+      "passed": true,
+      "evidence": "executor.executingBuild.sha = 3faacb0a3b (source baked); git grep -c <marker> 3faacb0a3b -- packages/operator-core/lib/release/idle-repair-queue-actuator.ts exits 0."
+    },
+    {
+      "id": "r6-subject-executor-is-bg-host",
+      "passed": true,
+      "evidence": "executor.hostId = port-3271 (bg-host), processId linux:80a97db5-1b86-4b37-b3a1-50bc5df46287:25362470."
+    },
+    {
+      "id": "r6-main-lacks-marker",
+      "passed": true,
+      "evidence": "git grep -c <marker> main -- packages/operator-core/lib/release/idle-repair-queue-actuator.ts exits 1 at main d740fc3802."
+    },
+    {
+      "id": "r6-main-red-at-subject",
+      "passed": true,
+      "evidence": "The subject record's snapshot shows an open frozen repair queue: phase ready-to-test, candidate 0199f22e2c41a1bddd3593220cdde14579aef005, lastVerdictAtMs null. The reading is applicable, not not-applicable."
+    },
+    {
+      "id": "r6-residue-recorded",
+      "passed": true,
+      "evidence": "56 marker records stamped f579aa4d8b (06:00:45Z-07:46:00Z local -04:00 -> 10:00:45Z-11:46:00Z UTC); git grep finds no marker at f579aa4d8b (rc 1), so per gate-repair-plane#D-011 they are dirty-bundle executions recorded as residue, never the subject."
+    }
+  ],
+  "plan": "gate-repair-plane-on-current-build-2026-10-15",
+  "clauses": ["AUTO-BAR-R-6-P-006@5"],
+  "workItems": ["WI-6554700010030110"],
+  "evidencePlane": "live",
+  "takenAt": "2026-10-27T12:44:31Z",
+  "measuredBy": "su-64f21cce-a614-47e8-8d99-c2cda3469c78"
+}

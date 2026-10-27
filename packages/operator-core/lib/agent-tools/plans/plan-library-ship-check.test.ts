@@ -5,13 +5,14 @@
  * the pattern list itself is pinned against the real grammar.
  */
 import { execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildAstGrepArgs, parseAstGrepMatches, resolveAstGrepBin } from '../../code-intelligence/ast-grep-facade';
 import type { LibrariesDeclaration, ReuseDeclaration } from './plan-declarations';
+import { indexDeclaredPackages, readWorkspaceManifests } from '../../workspace-manifests';
 import {
   classifySpecifier,
   dependencyBaselineFrom,
@@ -73,6 +74,21 @@ const libraries = (packages: string[]): LibrariesDeclaration => ({
 }) as LibrariesDeclaration;
 
 const baseline = (packages: string[]) => ({ packages, manifests: 1, capturedAt: '2026-10-20T00:00:00.000Z' });
+
+describe('R-3 native library evidence', () => {
+  it('never executes dependency workloads', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'native-library-readonly-'));
+    try {
+      writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'fixture', dependencies: { 'fixture-dep': '1' },
+        scripts: { prepare: 'node -e "require(\'fs\').writeFileSync(\'native-workload-started\',\'bad\')"' } }));
+      writeFileSync(join(fixture, 'gradlew'), '#!/bin/sh\n: > native-workload-started\n', { mode: 0o755 });
+      writeFileSync(join(fixture, 'build.rs'), 'fn main() { std::fs::write("native-workload-started", b"bad").unwrap(); }');
+      const manifests = await readWorkspaceManifests(fixture);
+      expect(indexDeclaredPackages(manifests).isDependency('fixture-dep')).toBe(true);
+      expect(existsSync(join(fixture, 'native-workload-started'))).toBe(false);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
 
 describe('ship check — import parsing (R-6)', () => {
   it('extracts the specifier from every JS/TS import form and ignores non-literal calls', () => {

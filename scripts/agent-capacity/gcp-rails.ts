@@ -22,8 +22,9 @@
  * 4. WORST-CASE ADMISSION — a create is refused when its worst-case cost (list price x max
  *    run hours, disk included) plus the worst case already committed by live VMs would exceed
  *    the concurrent ceiling. Budget alerts only email; this is the rail that actually refuses.
- * 5. VERIFIED TEARDOWN — teardown deletes by run label and then re-reads the project. A run
- *    is only "torn down" when that census shows no instance of the run and no orphaned disk.
+ * 5. VERIFIED TEARDOWN — teardown deletes instances by run label and re-reads all supported
+ *    billable resource kinds. A run verifies only with no run-labelled residue and no orphaned
+ *    disk. Shared plan resources are reported separately; this is not programme settlement.
  *
  * Prices come from the Cloud Billing Catalog API (service 6F81-5844-456A, us-central1,
  * OnDemand, read 2026-09-30). They are list prices, not a quote; the budget alert is the
@@ -402,6 +403,14 @@ export interface CensusInstance {
   status: string;
   runId: string | null;
   maxCostCents: number;
+  planSlug?: string | null;
+}
+const RESOURCE_KINDS = ['disks', 'snapshots', 'addresses', 'buckets'] as const;
+export interface CensusResource {
+  kind: typeof RESOURCE_KINDS[number];
+  name: string;
+  runId: string | null;
+  planSlug: string | null;
 }
 export interface Census {
   instances: CensusInstance[];
@@ -410,10 +419,12 @@ export interface Census {
   staticAddresses: string[];
   /**
    * Storage buckets (e.g. the artifact bucket the Server .deb is staged in). Shared across
-   * runs, so they never block a run's teardown; listed so a leak census still sees them.
-   * Objects there carry a 14-day delete lifecycle rule.
+   * runs. Only buckets labelled for this run block its teardown. Shared plan buckets are
+   * reported separately; their objects/lifecycle and costs still need programme settlement.
    */
   buckets: string[];
+  /** Preserve ownership for run-scoped verification, including attached disks. */
+  resources: CensusResource[];
 }
 
 export interface ExecResult {
@@ -438,8 +449,12 @@ const basename = (url: string | undefined): string => (url ?? '').split('/').pop
 async function listJson(exec: Exec, argv: string[]): Promise<Array<Record<string, unknown>>> {
   const r = await exec([...argv, `--project=${TEST_PROJECT}`, '--format=json']);
   if (r.code !== 0) throw new Error(`gcloud ${argv.join(' ')} failed (${r.code}): ${r.stderr.trim()}`);
-  const parsed: unknown = JSON.parse(r.stdout || '[]');
+  const parsed: unknown = JSON.parse(r.stdout);
   if (!Array.isArray(parsed)) throw new Error(`gcloud ${argv.join(' ')} returned non-array JSON`);
+  if (parsed.some(row => row === null || typeof row !== 'object'
+    || typeof row.name !== 'string' || !row.name.trim())) {
+    throw new Error(`gcloud ${argv.join(' ')} returned an invalid resource record`);
+  }
   return parsed as Array<Record<string, unknown>>;
 }
 
@@ -449,8 +464,10 @@ export async function readCensus(exec: Exec = gcloudExec): Promise<Census> {
   // contend with itself; each command must finish before the next starts.
   const instances = await listJson(exec, ['compute', 'instances', 'list']);
   const disks = await listJson(exec, ['compute', 'disks', 'list']);
+  const snapshots = await listJson(exec, ['compute', 'snapshots', 'list']);
   const addresses = await listJson(exec, ['compute', 'addresses', 'list']);
   const buckets = await listJson(exec, ['storage', 'buckets', 'list']);
+  const inventories = { disks, snapshots, addresses, buckets };
   return {
     instances: instances.map((i) => {
       const labels = (i.labels ?? {}) as Record<string, string>;
@@ -460,6 +477,7 @@ export async function readCensus(exec: Exec = gcloudExec): Promise<Census> {
         status: String(i.status),
         runId: labels[LABEL_RUN] ?? null,
         maxCostCents: Number(labels[LABEL_MAXCOST] ?? 0),
+        planSlug: labels[LABEL_PLAN] ?? null,
       };
     }),
     orphanDisks: disks
@@ -467,6 +485,11 @@ export async function readCensus(exec: Exec = gcloudExec): Promise<Census> {
       .map((d) => ({ name: String(d.name), zone: basename(d.zone as string) })),
     staticAddresses: addresses.map((a) => String(a.name)),
     buckets: buckets.map((b) => String(b.name)),
+    resources: RESOURCE_KINDS.flatMap(kind => inventories[kind].map(resource => {
+      const labels = (resource.labels ?? {}) as Record<string, string>;
+      return { kind, name: String(resource.name), runId: labels[LABEL_RUN] ?? null,
+        planSlug: labels[LABEL_PLAN] ?? null };
+    })),
   };
 }
 
@@ -520,6 +543,10 @@ export interface TeardownResult {
   deleted: string[];
   remainingInstances: string[];
   orphanDisks: string[];
+  remainingResources: CensusResource[];
+  sharedResources: CensusResource[];
+  checkedResourceKinds: readonly string[];
+  verificationScope: 'run-labelled-resources-and-project-orphan-disks';
   verified: boolean;
 }
 
@@ -534,15 +561,19 @@ const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * Delete every instance of a run, then re-read the project until it converges. `verified` is
- * true only when a census shows no instance of that run and no orphaned disk anywhere in the
- * test project. The re-read repeats because GCP lists a deleted VM as STOPPING for a while
+ * true only when a complete census shows no instance or supported billable resource of that
+ * run and no orphaned disk anywhere in the test project. Other resource kinds are reported,
+ * never automatically deleted. Shared resources are not proof of programme settlement.
+ * The re-read repeats because GCP lists a deleted VM as STOPPING for a while
  * after its delete operation reports DONE (measured 2026-09-30 on cap-rails-smoke-1): one read
  * straight after the delete would report a false leak.
  */
 export async function teardownRun(runId: string, exec: Exec = gcloudExec, converge: ConvergeOptions = {}): Promise<TeardownResult> {
   assertLabelValue(LABEL_RUN, runId);
   const before = await readCensus(exec);
-  const targets = before.instances.filter((i) => i.runId === runId);
+  const belongsToRun = (i: CensusInstance) => i.runId === runId
+    && (i.planSlug == null || i.planSlug === PLAN_SLUG);
+  const targets = before.instances.filter(belongsToRun);
   const byZone = new Map<string, string[]>();
   for (const t of targets) byZone.set(t.zone, [...(byZone.get(t.zone) ?? []), t.name]);
   for (const [zone, names] of byZone) {
@@ -555,11 +586,18 @@ export async function teardownRun(runId: string, exec: Exec = gcloudExec, conver
   let waitedMs = 0;
   let remainingInstances: string[];
   let orphanDisks: string[];
+  let remainingResources: CensusResource[];
+  let sharedResources: CensusResource[];
   for (;;) {
     const after = await readCensus(exec);
-    remainingInstances = after.instances.filter((i) => i.runId === runId).map((i) => i.name);
+    remainingInstances = after.instances.filter(belongsToRun).map((i) => i.name);
     orphanDisks = after.orphanDisks.map((d) => d.name);
-    if ((remainingInstances.length === 0 && orphanDisks.length === 0) || waitedMs >= deadlineMs) break;
+    remainingResources = after.resources.filter(resource => resource.runId === runId
+      && (resource.planSlug === PLAN_SLUG || resource.planSlug === null));
+    sharedResources = after.resources.filter(resource => resource.runId === null
+      && resource.planSlug === PLAN_SLUG);
+    if ((remainingInstances.length === 0 && orphanDisks.length === 0 && remainingResources.length === 0)
+      || waitedMs >= deadlineMs) break;
     await sleep(intervalMs);
     waitedMs += intervalMs;
   }
@@ -568,7 +606,11 @@ export async function teardownRun(runId: string, exec: Exec = gcloudExec, conver
     deleted: targets.map((t) => t.name),
     remainingInstances,
     orphanDisks,
-    verified: remainingInstances.length === 0 && orphanDisks.length === 0,
+    remainingResources,
+    sharedResources,
+    checkedResourceKinds: ['instances', ...RESOURCE_KINDS],
+    verificationScope: 'run-labelled-resources-and-project-orphan-disks',
+    verified: remainingInstances.length === 0 && orphanDisks.length === 0 && remainingResources.length === 0,
   };
 }
 

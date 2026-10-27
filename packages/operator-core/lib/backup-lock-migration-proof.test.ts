@@ -171,6 +171,17 @@ describe('findBackupLockConflicts', () => {
       .toContain('EXECUTE (dynamic SQL)');
   });
 
+  it('proves migration 1546’s static NOT LIKE trigger predicate without hiding its target', () => {
+    const sql = `CREATE OR REPLACE TRIGGER emit_event_await_change_notify_write_trg
+      AFTER INSERT OR UPDATE ON harness_shared.event_awaits
+      FOR EACH ROW WHEN (NEW.event_key NOT LIKE 'coord:inbox-wake:%')
+      EXECUTE FUNCTION harness_shared.emit_event_await_change_notify();`;
+    expect(findBackupLockConflicts(pending(sql), ['session_turns', 'tool_invocations'])).toEqual([]);
+    expect(findBackupLockConflicts(pending(sql), ['event_awaits'])).toEqual([
+      { file: '1228-x.sql', subject: 'event_awaits', reason: 'names-locked-relation' },
+    ]);
+  });
+
   it.each(['data_sources', 'admission_rules', 'work_admissions'])('still blocks a static trigger on backup-held %s', (table) => {
     expect(findBackupLockConflicts(pending(ticketTriggers()), [table])).toEqual([
       { file: '1228-x.sql', subject: table, reason: 'names-locked-relation' },

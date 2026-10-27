@@ -199,6 +199,7 @@ describe('immutable capture receipt in checkpoint artifacts', () => {
 describe('runPostVerdictPureProofCapture', () => {
   const namedResult = () => ({ state: 'done', reason: null, sha: 'a'.repeat(40), slices: 1,
     files: 1, rows: 1, retired: 0, failed: 0, isolatedFail: 0, remaining: 0, stoppedBy: 'complete',
+    timedOutSlices: 0, hung: [] as string[],
     evidence: { version: 1, runGroupId: 'run-1:pure-proof-capture', startedAtMs: 100, completedAtMs: 200,
       clean: true, proofs: [{ file: 'packages/operator-core/lib/a.test.ts', testRunId: '1',
         recordedAtMs: 150, runnerIdentity: 'runner', runContext: 'green-checkpoint',

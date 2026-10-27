@@ -50,6 +50,12 @@ describe('P-004 durable SU-session persistence', () => {
       lifecycle: 'ready', runtimeGeneration: 1, role: 'su', backendExtension: { backend: 'codex' },
     };
     expect(isPersistedSuSessionDescriptor(valid)).toBe(true);
+    for (const executionKind of ['pty', 'programmatic']) {
+      expect(isPersistedSuSessionDescriptor({ ...valid, executionKind })).toBe(true);
+    }
+    for (const executionKind of ['', 'sdk', null, 1]) {
+      expect(isPersistedSuSessionDescriptor({ ...valid, executionKind })).toBe(false);
+    }
     expect(isPersistedSuSessionDescriptor({ ...valid, role: 'worker' })).toBe(false);
     expect(isPersistedSuSessionDescriptor({ ...valid, identity: { ...valid.identity, advSessionId: 0 } })).toBe(false);
   });

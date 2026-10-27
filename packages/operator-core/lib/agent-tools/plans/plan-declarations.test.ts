@@ -1,4 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { repoCitationDeps } from '../../plan-audits';
+import { defaultReuseReferenceResolvers } from './plan-declaration-resolvers';
+
+const nativeBackends = vi.hoisted(() => ({ lsp: vi.fn(), syntax: vi.fn() }));
+vi.mock('../../code-intelligence/lsp-facade', async (original) => ({
+  ...await original<typeof import('../../code-intelligence/lsp-facade')>(), lspFacade: nativeBackends.lsp,
+}));
+vi.mock('../../code-intelligence/ast-grep-facade', async (original) => ({
+  ...await original<typeof import('../../code-intelligence/ast-grep-facade')>(), astGrepFacade: nativeBackends.syntax,
+}));
 import {
   LIBRARIES_SECTION_DESCRIPTION,
   LIBRARIES_SECTION_HEADING,
@@ -34,6 +47,111 @@ const validReuse = {
   newSurfaces: [{ name: 'plan-declarations.ts', kind: 'module', nearestExisting: 'product-shaping.ts', whyNotReused: 'keeps that file focused' }],
   notApplicable: null,
 };
+
+describe('R-1 native declarations', () => {
+  let workspace: string;
+  let root: string;
+  beforeEach(async () => {
+    workspace = await mkdtemp(path.join(tmpdir(), 'native-declaration-'));
+    root = path.join(workspace, 'parent');
+    await mkdir(path.join(root, '.git'), { recursive: true });
+    await mkdir(path.join(workspace, 'mobile', '.git'), { recursive: true });
+    await writeFile(path.join(root, 'local.ts'), 'export function local() {}');
+    await writeFile(path.join(workspace, 'mobile', 'app.rs'), 'fn native() {}');
+    nativeBackends.lsp.mockReset().mockResolvedValue({ error: 'offline', sites: [] });
+    nativeBackends.syntax.mockReset().mockResolvedValue({ error: null, sites: [], truncation: { truncated: false } });
+  });
+  afterEach(async () => { await rm(workspace, { recursive: true, force: true }); });
+  const parsed = (kind: 'file' | 'symbol', ref: string) => {
+    const result = parseReuseRef(kind, ref);
+    if (!result.ok) throw new Error(result.detail);
+    return result.parsed;
+  };
+  const resolvers = () => defaultReuseReferenceResolvers({ repoRoot: root, citationDeps: repoCitationDeps(root) });
+
+  it('accepts a parent reference', async () => {
+    expect(await resolvers().file!(parsed('file', 'local.ts'))).toMatchObject({ outcome: 'found' });
+  });
+  it('accepts an admitted sibling reference', async () => {
+    expect(await resolvers().file!(parsed('file', 'mobile/app.rs'))).toMatchObject({ outcome: 'found' });
+  });
+  it('certifies a unique supported symbol', async () => {
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [
+      { path: 'app.rs', line1: 1, kind: 'declaration', detail: 'fn native() {}' },
+    ], truncation: { truncated: false } });
+    expect(await resolvers().symbol!(parsed('symbol', 'mobile/app.rs#native'))).toMatchObject({ outcome: 'found' });
+    expect(nativeBackends.syntax).toHaveBeenCalledWith('syntax_index', expect.objectContaining({
+      rootPath: path.join(workspace, 'mobile'), paths: ['app.rs'],
+    }));
+  });
+  it('keeps ambiguous symbols unverified', async () => {
+    nativeBackends.lsp.mockResolvedValue({ error: null, sites: [
+      { path: 'local.ts', name: 'local', kind: 'function', line1: 1 },
+      { path: 'local.ts', name: 'local', kind: 'function', line1: 2 },
+    ], truncation: { truncated: false } });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
+  });
+  it('distinguishes missing from unavailable', async () => {
+    expect(await resolvers().file!(parsed('file', 'missing.ts'))).toMatchObject({ outcome: 'not-found' });
+    const offline = defaultReuseReferenceResolvers({ repoRoot: root, citationDeps: {
+      locate: () => { throw new Error('backend offline'); },
+    } });
+    expect(await offline.file!(parsed('file', 'local.ts'))).toMatchObject({ outcome: 'unavailable' });
+  });
+  it('refuses identifier occurrences, fuzzy names and qualified names as declaration proof', async () => {
+    nativeBackends.lsp.mockResolvedValue({ error: null, sites: [
+      { path: 'local.ts', name: 'localHelper', kind: 'function', line1: 1 },
+    ], truncation: { truncated: false } });
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [
+      { path: 'local.ts', kind: 'match', detail: 'local()' },
+      { path: 'local.ts', kind: 'declaration', detail: 'function localHelper() { local(); }' },
+    ], truncation: { truncated: false }, evidence: { sourceScope: { supportingFiles: [{ path: 'local.ts' }] } } });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#Class.local'))).toMatchObject({ outcome: 'unavailable' });
+  });
+  it('keeps incomplete symbol evidence unverified', async () => {
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [
+      { path: 'local.ts', kind: 'declaration', detail: 'function local() {}' },
+    ], truncation: { truncated: true } });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [], truncation: { truncated: false } });
+    expect(await resolvers().symbol!(parsed('symbol', 'local.ts#local'))).toMatchObject({ outcome: 'unavailable' });
+  });
+  it('keeps unsupported declaration forms unverified instead of certifying absence', async () => {
+    await writeFile(path.join(root, 'constant.ts'), 'export const value = 1;');
+    nativeBackends.syntax.mockResolvedValue({ error: null, sites: [], truncation: { truncated: false },
+      evidence: { sourceScope: { supportingFiles: [{ path: 'constant.ts' }] } } });
+    expect(await resolvers().symbol!(parsed('symbol', 'constant.ts#value'))).toMatchObject({ outcome: 'unavailable' });
+  });
+});
+
+describe('R-3 declaration confinement', () => {
+  it('refuses absolute paths', () => {
+    expect(parseReuseRef('file', '/etc/passwd').ok).toBe(false);
+    expect(parseReuseRef('symbol', '/etc/passwd#root').ok).toBe(false);
+  });
+  it('refuses traversal', () => {
+    for (const ref of ['../mobile/app.rs', 'mobile/../app.rs']) expect(parseReuseRef('file', ref).ok).toBe(false);
+  });
+  it('keeps escaping symlinks unverified', async () => {
+    const fixture = await mkdtemp(path.join(tmpdir(), 'native-symlink-'));
+    try {
+      const root = path.join(fixture, 'parent');
+      await mkdir(path.join(root, '.git'), { recursive: true });
+      await writeFile(path.join(fixture, 'outside.rs'), 'fn outside() {}');
+      await symlink(path.join(fixture, 'outside.rs'), path.join(root, 'escape.rs'));
+      const ref = parseReuseRef('file', 'escape.rs');
+      if (!ref.ok) throw new Error(ref.detail);
+      expect(await defaultReuseReferenceResolvers({ repoRoot: root, citationDeps: repoCitationDeps(root) }).file!(ref.parsed))
+        .toMatchObject({ outcome: 'unavailable', reason: expect.stringContaining('escapes') });
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  });
+  it('keeps backend failure unverified', async () => {
+    const ref = parseReuseRef('file', 'app.rs');
+    if (!ref.ok) throw new Error(ref.detail);
+    expect(await defaultReuseReferenceResolvers({ repoRoot: null }).file!(ref.parsed)).toMatchObject({ outcome: 'unavailable' });
+  });
+});
 const validLibraries = {
   needs: [
     { need: 'schema validation', decision: 'already-in-project', package: 'zod', reason: '', existingUse: 'product-shaping.ts' },

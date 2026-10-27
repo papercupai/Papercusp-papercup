@@ -126,7 +126,8 @@ describe('existing graph and advisory command consumers', () => {
   }, 30_000);
 
   it('runs the real advisory command and preserves warn-only process success', () => {
-    const output = execFileSync(process.execPath, ['--import', 'tsx', 'scripts/check-code-health.ts',
+    // Native Node TypeScript keeps the committed-source guard's byte comparison intact.
+    const output = execFileSync(process.execPath, ['scripts/check-code-health.ts',
       '--base=HEAD', '--paths=packages/operator-core/lib/code-intelligence/code-health.ts', '--json'],
     { cwd: fileURLToPath(new URL('../../../../', import.meta.url)), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
     expect(JSON.parse(output)).toMatchObject({ mode: 'warn-only', compilerVersion: ts.version });

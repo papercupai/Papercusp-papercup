@@ -15,6 +15,7 @@ import type { SuSessionBackend } from '@papercusp/chat-protocol';
 import type { LaunchOpts } from './native-console';
 import type { NativeSessionHandle } from './native-session-handles';
 import type { SuAgent, SuContextSize } from './su-agents';
+import { getBrowserMachineId } from './browser-workspace';
 
 /**
  * The two OWNER-FACING "start something new" surfaces launch with NO window.
@@ -284,6 +285,11 @@ function launchSuEndpoints(): string[] {
   const env = typeof process !== 'undefined' ? process.env : undefined;
   const pinned = env?.PAPERCUSP_OPERATOR_BASE?.trim();
   if (pinned) out.push(`${pinned.replace(/\/+$/, '')}/api/adv/sessions/launch-su`);
+  // A selected machine is a destination, including when it is offline or
+  // refuses a launch. Trying another local operator could create the agent
+  // there instead. The existing fetch/IPC transport carries the machine hint
+  // to the authenticated routing boundary; no alternate origin is authorized.
+  if (getBrowserMachineId()) return out.length ? out : ['/api/adv/sessions/launch-su'];
   if (typeof window !== 'undefined') {
     const p = window.location.protocol;
     if (p === 'http:' || p === 'https:') out.push('/api/adv/sessions/launch-su');

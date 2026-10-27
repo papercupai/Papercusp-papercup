@@ -421,6 +421,14 @@ describe("repair-round convergence over a real git lineage (R-1..R-5 integration
     }
     const workspaces = new Map([["@fixture/clean", { dir: "packages/clean", deps: [] as string[] }]]);
     const task = { key: "@fixture/clean :: test", script: "test", workspace: "@fixture/clean" };
+    // Controlled runtime input for the cache-on-disk fixture; no test process
+    // is launched by this case. Production runtime capture has separate guards.
+    const runtimeIdentity = {
+      name: "node", version: "25.9.0", executable: "/fixture/node",
+      binarySha256: "a".repeat(64), platform: "linux", arch: "x64",
+      nativeDependencyGeneration: "b".repeat(64), lockfileSha256: "c".repeat(64),
+      configurationSha256: "d".repeat(64),
+    };
     const gateConfig = { retryFailed: true, scheduler: { workers: 2, memoryMb: 4096 } };
     const launch = {
       PATH: "/usr/local/bin:/usr/bin",
@@ -453,6 +461,7 @@ describe("repair-round convergence over a real git lineage (R-1..R-5 integration
         environment,
         gateConfig: config,
         dependencyHash: provenance.hash,
+        runtimeIdentity,
       });
     };
 

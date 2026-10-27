@@ -145,6 +145,23 @@ interface GitPipelineSnapshot {
       judgedSha: string;
       headline: string;
       alarms: { ws: string; file: string; proof: string }[];
+      // WI-6554700010026699: why candidates were not reused. Absent/null = not measured (a runner
+      // predating the records); total 0 = nothing excluded. Full records live in `journals`.
+      exclusions?: {
+        total: number;
+        omitted: number;
+        malformed: number;
+        journals: string[];
+        runGroupIds: string[];
+        examples: {
+          ws: string;
+          file: string;
+          reason: string;
+          recordedSha: string | null;
+          judgedSha: string;
+          evidence: string | null;
+        }[];
+      } | null;
     } | null;
     // P-013: where the latest round's time went. Null/absent = not measured this round.
     roundPhases?: { breakdown: string } | null;
@@ -889,6 +906,37 @@ export default function GitClient() {
                         <span className="pc-git__muted mono">
                           {st.gate.testPassReuse.judgedSha.slice(0, 8)}
                         </span>
+                      </>
+                    ) : (
+                      <span className="pc-git__muted">not measured</span>
+                    )}
+                  </span>
+                  <span className="pc-git__k">reuse exclusions</span>
+                  <span className="pc-git__v" data-testid="gate-test-pass-reuse-exclusions">
+                    {st.gate.testPassReuse?.exclusions ? (
+                      <>
+                        {`${st.gate.testPassReuse.exclusions.total} excluded, ` +
+                          `${st.gate.testPassReuse.exclusions.omitted} omitted`}
+                        {st.gate.testPassReuse.exclusions.malformed > 0 &&
+                          ` (${st.gate.testPassReuse.exclusions.malformed} malformed)`}
+                        {st.gate.testPassReuse.exclusions.examples.length > 0 && (
+                          <ul className="pc-git__muted" data-testid="gate-test-pass-reuse-exclusion-examples">
+                            {st.gate.testPassReuse.exclusions.examples.map((e, i) => (
+                              <li key={`${i}:${e.ws}:${e.file}`} className="mono">
+                                {`${e.ws} ${e.file}: ${e.reason}`}
+                                {` (${e.recordedSha ? e.recordedSha.slice(0, 8) : 'no proof'} → ${e.judgedSha.slice(0, 8)})`}
+                                {e.evidence ? ` ${e.evidence}` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {st.gate.testPassReuse.exclusions.journals.length > 0 && (
+                          <span className="pc-git__muted mono" data-testid="gate-test-pass-reuse-exclusion-artifact">
+                            {` full records: ${st.gate.testPassReuse.exclusions.journals.join(', ')}`}
+                            {st.gate.testPassReuse.exclusions.runGroupIds.length > 0 &&
+                              ` · run group ${st.gate.testPassReuse.exclusions.runGroupIds.join(', ')}`}
+                          </span>
+                        )}
                       </>
                     ) : (
                       <span className="pc-git__muted">not measured</span>

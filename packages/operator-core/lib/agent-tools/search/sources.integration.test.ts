@@ -25,12 +25,46 @@
  * so `body_tsv @@ plainto_tsquery(...)` behaves identically.
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
+import { PROSE_SOURCE_BASELINES, PROSE_FIELD_FRESHNESS_BOUNDARIES } from '../../search/surface-registry';
+import { assertSearchFieldFreshness } from '@papercusp/search-core';
+
+describe('baseline inventory reconciles the actual registered prose adapters', () => {
+  it('covers each runtime source exactly once, including non-vector sources', () => {
+    const registered = DEFAULT_SEARCH_SOURCES.map(s => s.name).sort();
+    const inventoried = PROSE_SOURCE_BASELINES.map(s => s.source).sort();
+    expect(inventoried).toEqual(registered);
+    expect(new Set(inventoried).size).toBe(inventoried.length);
+    for (const source of DEFAULT_SEARCH_SOURCES) {
+      const baseline = PROSE_SOURCE_BASELINES.find(b => b.source === source.name)!;
+      expect(baseline.lexical, source.name).toBe(typeof source.lexical === 'function');
+      expect(baseline.vector, source.name).toBe(typeof source.embedding === 'function');
+    }
+  });
+
+  it('refuses currentness from a fresh envelope when canonical field or scope-epoch proof is absent', () => {
+    for (const source of DEFAULT_SEARCH_SOURCES) {
+      const boundaries = PROSE_FIELD_FRESHNESS_BOUNDARIES.filter(b => b.source === source.name);
+      expect(boundaries.some(b => b.policy.fieldPath === 'excerpt'), source.name).toBe(true);
+      for (const boundary of boundaries) {
+        expect(boundary.evidenceStatus).toBe('unmeasured');
+        expect(boundary.scopeEpochSource).toContain('trusted server');
+        const result = assertSearchFieldFreshness(boundary.policy, {
+          returned: { entityRef: `${source.name}:fixture`, fieldPath: boundary.policy.fieldPath, valueFingerprint: 'fresh-envelope-stale-value' },
+          requestStartedAtMs: 1000, responseAtMs: 1000, canonical: null, indexed: null });
+        expect(result.status, `${source.name}/${boundary.policy.fieldPath}`).not.toBe('current');
+      }
+    }
+  });
+
+});
 
 // Reuse the semantic-parity suite's copy-out mutation seam for lexical guards.
 // Unset, every assertion exercises the registered production sources.
@@ -749,6 +783,164 @@ describe('P-010 — turns.embedding reads operator-turn chunks (D-017)', () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+/** P001: real registered SQL, independently read stored fields and scope changes.
+ * This is a stored-row fixture, not ingestion, live authorization or index proof.
+ */
+describe('P001 — actual prose stored-field freshness witness', () => {
+  const names = ['escalations', 'brainstorm', 'turns', 'decisions'] as const;
+  type Name = typeof names[number];
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const receipts: unknown[] = [];
+  const completed: string[] = [];
+  const query = 'zephyrfreshness';
+  const fields = ['excerpt', 'highlight'] as const;
+  const unmark = (value: string) => value.replace(/<\/?mark>/g, '');
+
+  async function fixture(name: Name, workspace: string, key: string, version: string) {
+    const text = `${query} ${version} canonical body`;
+    if (name === 'turns') {
+      const [conversation] = await sql`INSERT INTO harness_shared.operator_conversations (workspace_id)
+        VALUES (${workspace}) RETURNING id`;
+      const [turn] = await sql`INSERT INTO harness_shared.operator_turns
+        (conversation_id, role, text, text_embedding) VALUES (${conversation.id}, 'user', ${text}, ${QVEC}::vector) RETURNING id`;
+      return { key: String(turn.id), conversation: String(conversation.id) };
+    }
+    if (name === 'escalations') await sql`INSERT INTO harness_shared.harness_escalations
+      (workspace_id, harness_slug, escalation, supervisor_notes, body_embedding)
+      VALUES (${workspace}, ${key}, ${text}, ${`${version} canonical notes`}, ${QVEC}::vector)`;
+    if (name === 'brainstorm') await sql`INSERT INTO harness_shared.harness_brainstorm
+      (workspace_id, harness_slug, content, content_embedding) VALUES (${workspace}, ${key}, ${text}, ${QVEC}::vector)`;
+    if (name === 'decisions') await sql`INSERT INTO harness_shared.harness_decisions
+      (workspace_id, harness_slug, line_hash, iso, verb, args, body_embedding)
+      VALUES (${workspace}, ${key}, 'freshness', '2026-10-25', 'ADOPT', ${text}, ${QVEC}::vector)`;
+    return { key, conversation: null };
+  }
+
+  async function canonical(name: Name, key: string) {
+    // This oracle reads the base relations, never the source's returned fields.
+    const rows = name === 'escalations' ? await sql`SELECT workspace_id, xmin::text AS revision,
+        harness_slug || ':' || phase AS id, escalation || E'\n' || supervisor_notes AS excerpt,
+        escalation || E'\n' || supervisor_notes AS highlight FROM harness_shared.harness_escalations WHERE harness_slug = ${key}`
+      : name === 'brainstorm' ? await sql`SELECT workspace_id, xmin::text AS revision,
+        harness_slug || ':' || phase AS id, content AS excerpt, content AS highlight
+        FROM harness_shared.harness_brainstorm WHERE harness_slug = ${key}`
+      : name === 'decisions' ? await sql`SELECT workspace_id, xmin::text AS revision,
+        harness_slug || ':' || line_hash AS id, '[' || iso || '] ' || verb || ' ' || args AS excerpt,
+        verb || ' ' || args AS highlight FROM harness_shared.harness_decisions WHERE harness_slug = ${key}`
+      : await sql`SELECT c.workspace_id, t.xmin::text || ':' || c.xmin::text AS revision, t.id::text AS id,
+        '[' || t.role || '] ' || t.text AS excerpt, '[' || t.role || '] ' || t.text AS highlight
+        FROM harness_shared.operator_turns t JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id
+        WHERE t.id = ${key}::uuid`;
+    expect(rows).toHaveLength(1);
+    return { ...rows[0], readAtMs: Date.now() };
+  }
+
+  async function mutate(name: Name, key: string) {
+    const text = `${query} newwitness canonical body`;
+    if (name === 'escalations') await sql`UPDATE harness_shared.harness_escalations
+      SET escalation = ${text}, supervisor_notes = 'newwitness canonical notes' WHERE harness_slug = ${key}`;
+    if (name === 'brainstorm') await sql`UPDATE harness_shared.harness_brainstorm SET content = ${text} WHERE harness_slug = ${key}`;
+    if (name === 'decisions') await sql`UPDATE harness_shared.harness_decisions
+      SET iso = '2026-10-26', verb = 'RETAIN', args = ${text} WHERE harness_slug = ${key}`;
+    if (name === 'turns') await sql`UPDATE harness_shared.operator_turns SET role = 'assistant', text = ${text} WHERE id = ${key}::uuid`;
+  }
+
+  async function remove(name: Name, key: string) {
+    if (name === 'escalations') await sql`DELETE FROM harness_shared.harness_escalations WHERE harness_slug = ${key}`;
+    if (name === 'brainstorm') await sql`DELETE FROM harness_shared.harness_brainstorm WHERE harness_slug = ${key}`;
+    if (name === 'decisions') await sql`DELETE FROM harness_shared.harness_decisions WHERE harness_slug = ${key}`;
+    if (name === 'turns') await sql`DELETE FROM harness_shared.operator_turns WHERE id = ${key}::uuid`;
+  }
+
+  async function move(name: Name, key: string, workspace: string, conversation: string | null) {
+    if (name === 'escalations') await sql`UPDATE harness_shared.harness_escalations SET workspace_id = ${workspace} WHERE harness_slug = ${key}`;
+    if (name === 'brainstorm') await sql`UPDATE harness_shared.harness_brainstorm SET workspace_id = ${workspace} WHERE harness_slug = ${key}`;
+    if (name === 'decisions') await sql`UPDATE harness_shared.harness_decisions SET workspace_id = ${workspace} WHERE harness_slug = ${key}`;
+    if (name === 'turns') await sql`UPDATE harness_shared.operator_conversations SET workspace_id = ${workspace} WHERE id = ${conversation}::uuid`;
+  }
+
+  for (const name of names) for (const leg of ['lexical', 'embedding'] as const) {
+    it(`${name}.${leg}: canonical values, update, candidate changes and workspace epoch`, async () => {
+      const caseId = `${name}/${leg}`;
+      const workspaceId = `p001-freshness-${name}-${leg}`;
+      const target = await fixture(name, workspaceId, `${workspaceId}-target`, 'oldwitness');
+      const foreign = await fixture(name, `${workspaceId}-foreign`, `${workspaceId}-decoy`, 'foreignwitness');
+      const run = (workspace = workspaceId) => leg === 'lexical'
+        ? byName(name).lexical(params({ workspaceId: workspace, query }))
+        : embeddingOf(name)({ ...params({ workspaceId: workspace, query }), qVec: QVEC });
+      const foreignId = (await canonical(name, foreign.key)).id;
+
+      async function capture(phase: string, expectedKeys: string[]) {
+        const requestStartedAtMs = Date.now();
+        const before = await canonical(name, target.key);
+        const results = await run();
+        const responseAtMs = Date.now();
+        const after = await canonical(name, target.key);
+        expect(results.map(r => r.row.source_id).sort()).toEqual([...expectedKeys].sort());
+        expect(results.map(r => r.row.source_id)).not.toContain(foreignId);
+        expect(after.revision).toBe(before.revision);
+        const returned = results.find(r => r.row.source_id === after.id)?.row;
+        if (returned) for (const fieldPath of fields) {
+          expect(unmark(String(returned[fieldPath]))).toBe(after[fieldPath]);
+          const canonicalValue = fieldPath === 'highlight'
+            ? String(after.highlight).replaceAll(query, `<mark>${query}</mark>`)
+            : after.excerpt;
+          expect(returned[fieldPath]).toBe(canonicalValue);
+          const boundary = PROSE_FIELD_FRESHNESS_BOUNDARIES.find(b => b.source === name && b.policy.fieldPath === fieldPath)!;
+          const input = { returned: { entityRef: `${name}:${after.id}`, fieldPath,
+            valueFingerprint: digest(returned[fieldPath]) }, indexed: null,
+            canonical: { entityRef: `${name}:${after.id}`, fieldPath, valueFingerprint: digest(canonicalValue),
+              authority: boundary.policy.authority, authorityEpoch: digest({ workspaceId: after.workspace_id }),
+              sourceRevision: String(after.revision), readAtMs: after.readAtMs }, requestStartedAtMs, responseAtMs };
+          const oracle = assertSearchFieldFreshness(boundary.policy, input);
+          expect(oracle).toMatchObject({ status: 'unknown', action: 'degrade' });
+          expect(oracle.reasons).toContain('index witness unavailable');
+          receipts.push({ caseId, phase, fieldPath, canonicalBefore: before, canonicalAfter: after,
+            returned, input, oracle, expectedIds: expectedKeys, observedIds: results.map(r => r.row.source_id) });
+        }
+        if (!returned) receipts.push({ caseId, phase, canonicalBefore: before, canonicalAfter: after,
+          expectedIds: expectedKeys, observedIds: results.map(r => r.row.source_id) });
+        return after;
+      }
+
+      const initial = await canonical(name, target.key);
+      await capture('stored-fields', [initial.id]);
+      await mutate(name, target.key);
+      const updated = await capture('content-update', [initial.id]);
+      expect(updated.revision).not.toBe(initial.revision);
+      expect(updated.excerpt).toContain('newwitness');
+      expect(updated.excerpt).not.toContain('oldwitness');
+      const added = await fixture(name, workspaceId, `${workspaceId}-added`, 'addedwitness');
+      const addedId = (await canonical(name, added.key)).id;
+      await capture('candidate-added', [initial.id, addedId]);
+      await remove(name, added.key);
+      await capture('candidate-removed', [initial.id]);
+      await move(name, target.key, `${workspaceId}-revoked`, target.conversation);
+      const moved = await capture('workspace-revoked', []);
+      expect(moved.workspace_id).toBe(`${workspaceId}-revoked`);
+      expect(moved.revision).not.toBe(updated.revision);
+      expect((await run(`${workspaceId}-revoked`)).map(r => r.row.source_id)).toEqual([initial.id]);
+      completed.push(caseId);
+    });
+  }
+
+  afterAll(() => {
+    if (!process.env.PAPERCUSP_PROSE_FRESHNESS_WITNESS_FILE) return;
+    const expected = names.flatMap(name => ['lexical', 'embedding'].map(leg => `${name}/${leg}`));
+    expect([...completed].sort()).toEqual(expected.sort());
+    const paths = ['packages/operator-core/lib/agent-tools/search/sources.ts',
+      'packages/operator-core/lib/agent-tools/search/sources.integration.test.ts',
+      'packages/operator-core/lib/search/surface-registry.ts'];
+    const pins = paths.map(path => ({ path, sha256: createHash('sha256')
+      .update(readFileSync(new URL(`../../../../../${path}`, import.meta.url))).digest('hex') }));
+    writeFileSync(process.env.PAPERCUSP_PROSE_FRESHNESS_WITNESS_FILE, JSON.stringify({ schemaVersion: 1,
+      population: expected, completed, pins, receipts,
+      limits: ['Stored-row fixture; production ingestion and current server authorization are unmeasured.',
+        'No index witness: field currentness remains unknown.',
+        'Covers four prose sources, not work_item/session_turn/coord_message/report/plan/doc.'] }, null, 2));
+  });
 });
 
 /**

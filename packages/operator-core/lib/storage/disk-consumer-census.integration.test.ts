@@ -372,6 +372,29 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(view.consumers!.find(c => c.consumer === '/test-dev/data')!.growth24hBytes).toBeNull();
   });
 
+  it.each([
+    { label: '0', exitCode: 0, expectedComplete: true, note: null, stderrSample: [] },
+    { label: '1', exitCode: 1, expectedComplete: false, note: 'du exited with status 1; sizes are lower bounds',
+      stderrSample: ['du: cannot access path-gone: No such file or directory'] },
+    { label: 'null', exitCode: null, expectedComplete: false,
+      note: 'du exited without an exit status; sizes are lower bounds', stderrSample: [] },
+  ] as const)('persists completeness for du exitCode $label', async ({ label, exitCode, expectedComplete, note, stderrSample }) => {
+    const at = new Date('2026-10-13T18:00:00Z'); const host = `du-exit-status-${label}-host`;
+    const result = await runDiskConsumerCensusOnce({ sql, host, devices: [device()], now: () => at,
+      statDevice: null, resolveSudo: async () => null,
+      measurePostgres: async () => null, measureDocker: async () => null,
+      runDu: async () => ({ summary: { rootBytes: 50 * G, consumers: [dir('/test-dev/data', 50 * G)], ownFiles: [], records: 2 },
+        deniedCount: 0, deniedSample: [], timedOut: false, exitCode,
+        ...(stderrSample.length ? { stderrSample: [...stderrSample] } : {}) }),
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.runs[0]!.complete).toBe(expectedComplete);
+    const persisted = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(persisted.complete).toBe(expectedComplete);
+    if (note) expect(persisted.note).toContain(note);
+    if (stderrSample.length) expect(persisted.note).toContain('du stderr: ' + stderrSample.join(' | '));
+  });
+
   it('distinguishes unreadable baseline candidates from an absent qualified baseline', async () => {
     const at = new Date('2026-10-13T17:00:00Z'); const host = 'unreadable-baseline-host';
     await writeCensusRun(sql, { runId: randomUUID(), host, device: device(), startedAt: new Date(at.getTime() - 24 * HOUR),

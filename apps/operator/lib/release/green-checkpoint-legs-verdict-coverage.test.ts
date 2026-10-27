@@ -88,6 +88,19 @@ function legEntries(legs: Awaited<ReturnType<typeof runLegs>>['legs']) {
 }
 
 describe('green-checkpoint post-suite legs — verdict coverage', () => {
+  it('freezes the same complete post-suite population before passing or failed outcomes', async () => {
+    const { postSuiteContinuationPopulation } = await import('./green-checkpoint');
+    const population = postSuiteContinuationPopulation();
+    const pass = await runLegs(null);
+    const fail = await runLegs('lint:mock-cast-escape');
+    expect(population.coverage).toBe('complete');
+    expect(population.units.map(unit => unit.id)).toEqual(pass.legs.records.map(leg => `post:${leg.id}`));
+    expect(population.units.map(unit => unit.id)).toEqual(fail.legs.records.map(leg => `post:${leg.id}`));
+    expect(population.units.length).toBeGreaterThan(5);
+    population.units.pop();
+    expect(postSuiteContinuationPopulation().units).toHaveLength(pass.legs.records.length);
+    expect(fail.legs.ok).toBe(false);
+  });
   it('P036: a seeded real lint violation survives output truncation into manifest, admission and named per-leg evidence', async () => {
     const file = 'packages/operator-core/lib/seeded-violation.test.ts';
     const { findMockCastEscapesInText } = await import(pathToFileURL(join(ROOT, 'scripts/check-mock-cast-escape.mjs')).href);

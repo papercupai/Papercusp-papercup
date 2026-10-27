@@ -150,10 +150,10 @@ describe('resolveToolDelivery — floors (D-004)', () => {
     expect(r.budgetOverrun).toBe(0);
   });
 
-  it('seats a ZERO-DEMAND floor at COMPACT — the mandate is its justification, not the measurement', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('seats a ZERO-DEMAND floor at COMPACT for %s — the mandate is its justification, not the measurement', (agentKind) => {
     const catalog = [tool('session:request-compaction', 400, 60)];
     const r = explainToolDelivery({
-      agentKind: 'claude',
+      agentKind,
       catalog,
       demand: [],
       floors: ['session:request-compaction'],
@@ -164,12 +164,12 @@ describe('resolveToolDelivery — floors (D-004)', () => {
     expect(r.unmeasured).toEqual(['session:request-compaction']);
   });
 
-  it('admits every floor even when the floors alone overrun the budget, and SAYS so', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('admits every floor for %s even when the floors alone overrun the budget, and SAYS so', (agentKind) => {
     // A silently-dropped mandate is the one outcome D-004 forbids; an honest
     // overrun is recoverable because it is visible.
     const catalog = [tool('f:one', 900, 300), tool('f:two', 900, 300)];
     const r = explainToolDelivery({
-      agentKind: 'claude',
+      agentKind,
       catalog,
       demand: [],
       floors: ['f:one', 'f:two'],

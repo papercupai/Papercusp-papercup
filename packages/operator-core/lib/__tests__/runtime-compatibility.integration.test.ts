@@ -37,6 +37,7 @@ describe('native interpreter semantic completion', () => {
   });
   it('refuses an absent probe rather than treating an identity-only operation as capability proof', async () => {
     const runtime = await measureRuntime(process.execPath);
+    // @ts-expect-error Negative control deliberately omits the required semantic probe.
     await expect(runCapability({ capabilityId: 'not-an-operation', runtime, candidate, expected: null }))
       .rejects.toThrow(/semantic probe/);
   });

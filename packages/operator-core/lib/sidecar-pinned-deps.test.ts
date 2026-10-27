@@ -357,6 +357,27 @@ process.exit(result.status ?? 1);`);
       expect(statSync(join(snapshot, 'node_modules/dep/index.js')).ino).toBe(statSync(source).ino);
     });
 
+    it('refuses an actual hardlink failure before copying even when device numbers agree', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      write(join(snapshot, '.papercusp-pinned-deps'), 'stale success');
+      expect(statSync(donor).dev).toBe(statSync(snapshot).dev);
+      const bin = join(t, 'bin'); const copied = join(t, 'rsync-called');
+      // Reproduce link(2)'s same-device, different-mount refusal without a
+      // privileged mount or a dependency on this host's /tmp layout.
+      write(join(bin, 'ln'), '#!/usr/bin/env bash\necho "Invalid cross-device link" >&2\nexit 1\n');
+      write(join(bin, 'rsync'), '#!/usr/bin/env bash\ntouch "$PINNED_DEPS_TEST_RSYNC_CALLED"\nexit 0\n');
+      chmodSync(join(bin, 'ln'), 0o755); chmodSync(join(bin, 'rsync'), 0o755);
+      const r = runLib(['snapshot', donor, snapshot], { PATH: `${bin}:${process.env.PATH}`,
+        PINNED_DEPS_TEST_RSYNC_CALLED: copied });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('hardlink admission failed');
+      expect(r.err).toContain('Invalid cross-device link');
+      expect(existsSync(copied)).toBe(false);
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(readFileSync(join(donor, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+    });
+
     it.each(['completed', 'staging'])('removes disposable caches from a retained %s copy', retained => {
       const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
       write(join(donor, 'node_modules/dep/index.js'), 'package');
@@ -368,7 +389,7 @@ process.exit(result.status ?? 1);`);
       }
       const directories = [retainedTree, join(retainedTree, 'dep')];
       const originalTimes = directories.map(path => statSync(path));
-      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+      for (const cache of ['.cache', '.bun-cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
         write(join(retainedTree, cache, 'stale.js'), 'stale cache');
         write(join(retainedTree, 'dep', cache, 'stale.js'), 'stale cache');
       }
@@ -377,7 +398,7 @@ process.exit(result.status ?? 1);`);
       directories.forEach((path, index) => utimesSync(path, originalTimes[index].atime, originalTimes[index].mtime));
       const r = runLib(['snapshot', donor, snapshot, 'copy']);
       expect(r.code, r.err).toBe(0);
-      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+      for (const cache of ['.cache', '.bun-cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
         expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
         expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
       }
@@ -390,7 +411,7 @@ process.exit(result.status ?? 1);`);
       const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
       write(join(donor, 'node_modules/dep/index.js'), 'package');
       write(join(donor, 'node_modules/vite/index.js'), 'real package');
-      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      const caches = ['.cache', '.bun-cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
       for (const cache of caches) {
         write(join(donor, 'node_modules', cache, 'changing.js'), 'temporary');
         write(join(donor, 'node_modules/dep', cache, 'changing.js'), 'temporary');
@@ -410,7 +431,7 @@ process.exit(result.status ?? 1);`);
       const external = join(t, 'external-cache');
       write(join(external, 'changing.js'), 'external cache');
       write(join(donor, 'node_modules/dep/index.js'), 'package');
-      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      const caches = ['.cache', '.bun-cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
       for (const cache of caches) {
         symlinkSync(external, join(donor, 'node_modules', cache));
         symlinkSync(join(t, 'absent-cache'), join(donor, 'node_modules/dep', cache));
@@ -423,6 +444,54 @@ process.exit(result.status ?? 1);`);
         expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
       }
       expect(readFileSync(join(external, 'changing.js'), 'utf8')).toBe('external cache');
+    });
+
+    it.each(['hardlink', 'copy'])('excludes Bun cache index links from %s snapshots without changing installed packages', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const modules = join(donor, 'node_modules');
+      const cachedPackage = join(modules, '.bun-cache/@emnapi/runtime@1.11.3@@@1');
+      const cacheIndex = join(modules, '.bun-cache/@emnapi/runtime/1.11.3@@@1');
+      write(join(cachedPackage, 'index.js'), 'cached package');
+      mkdirSync(dirname(cacheIndex), { recursive: true });
+      symlinkSync(cachedPackage, cacheIndex);
+      write(join(modules, '@emnapi/runtime/index.js'), 'installed package');
+      const r = runLib(['snapshot', donor, snapshot, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(lstatSync(join(snapshot, 'node_modules/.bun-cache'), { throwIfNoEntry: false })).toBeUndefined();
+      expect(readFileSync(join(snapshot, 'node_modules/@emnapi/runtime/index.js'), 'utf8')).toBe('installed package');
+      expect(readFileSync(join(cachedPackage, 'index.js'), 'utf8')).toBe('cached package');
+      expect(lstatSync(cacheIndex).isSymbolicLink()).toBe(true);
+    });
+
+    it.each(['0', '1'])('keeps Bun cache churn outside dependency generation identity (portable=%s)', portable => {
+      const t = fixture(); const modules = join(t, 'node_modules');
+      write(join(modules, '@emnapi/runtime/index.js'), 'installed package');
+      const cachedPackage = join(modules, '.bun-cache/@emnapi/runtime@1.11.3@@@1');
+      const cacheIndex = join(modules, '.bun-cache/@emnapi/runtime/1.11.3@@@1');
+      write(join(cachedPackage, 'index.js'), 'cached package');
+      mkdirSync(dirname(cacheIndex), { recursive: true });
+      symlinkSync(cachedPackage, cacheIndex);
+      const result = spawnSync('bash', ['-c', `
+set -e
+source "$1/apps/operator/bin/release/dependency-generation.sh"
+before=$(dependency_generation_tree_fingerprint "$2")
+dependency_generation_source_records "$2" "$3/before"
+printf 'cache churn' > "$2/.bun-cache/@emnapi/runtime@1.11.3@@@1/index.js"
+after=$(dependency_generation_tree_fingerprint "$2")
+test "$before" = "$after"
+dependency_generation_source_records "$2" "$3/after"
+cmp "$3/before" "$3/after"
+dependency_generation_prune_ephemeral "$2"
+test ! -e "$2/.bun-cache"
+test -f "$2/@emnapi/runtime/index.js"
+printf 'real package change' > "$2/@emnapi/runtime/index.js"
+changed=$(dependency_generation_tree_fingerprint "$2")
+test "$after" != "$changed"
+`, 'bun-cache-policy', ROOT, modules, t], {
+        encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL',
+        env: { ...process.env, DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: portable },
+      });
+      expect(result.status, result.stderr).toBe(0);
     });
 
     it('does not validate disposable cache links as package dependencies', () => {
@@ -783,6 +852,65 @@ process.exit(result.status ?? 1);`);
   });
 
   describe('papercusp_pinned_deps_snapshot_locked — prevention, not detection', () => {
+    it.runIf(process.platform === 'linux')('queues for physical copy capacity before entering the donor install reader', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snap = join(t, 'snap');
+      const lock = join(t, 'copy.lock'); const entered = join(t, 'reader-entered');
+      write(join(donor, 'node_modules/p/index.js'), 'original');
+      write(join(donor, 'scripts/npm-install-safe.mjs'), `import { writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+writeFileSync(${JSON.stringify(entered)}, 'entered');
+// A reader can queue behind an install writer. Holding copy capacity here
+// would cycle with a generation publisher already holding an install reader.
+if (spawnSync('flock', ['-n', process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status !== 0) process.exit(91);
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1);`);
+      const env = { ...process.env, DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0' };
+      const queued = spawnSync('flock', [lock, 'bash', HELPER_PATH, 'snapshot-locked', donor, snap, 'copy'], {
+        encoding: 'utf8', timeout: 10_000, env,
+      });
+      expect(queued.status, queued.stderr).toBe(76);
+      expect(existsSync(entered), 'a queued physical copy must not retain an install reader').toBe(false);
+      expect(existsSync(snap)).toBe(false);
+      const copied = runLib(['snapshot-locked', donor, snap, 'copy'], env);
+      expect(copied.code, copied.err).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('original');
+      expect(existsSync(entered)).toBe(true);
+      expect(spawnSync('flock', ['-n', lock, 'true']).status, 'copy slot must release on completion').toBe(0);
+    });
+
+    it.runIf(process.platform === 'linux')('rejects an invalid copy admission mode without publishing a snapshot', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snap = join(t, 'snap');
+      write(join(donor, 'node_modules/p/index.js'), 'original');
+      const result = runLib(['snapshot', donor, snap, 'copy', '', 'invalid-holder'], {
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(t, 'copy.lock'),
+      });
+      expect(result.code, result.err).toBe(76);
+      expect(result.err).toContain('invalid copy admission mode');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
+    it.runIf(process.platform === 'linux')('drops the reader and bounds retries when a copy wins the admission race', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snap = join(t, 'snap');
+      const lock = join(t, 'copy.lock'); const entries = join(t, 'reader-entries');
+      write(join(donor, 'node_modules/p/index.js'), 'original');
+      write(join(donor, 'scripts/npm-install-safe.mjs'), `import { appendFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+appendFileSync(${JSON.stringify(entries)}, 'entered\\n');
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+// Another physical copy takes the slot after the outer capacity probe.
+process.exit(spawnSync('flock', [process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, ...args], { stdio: 'inherit' }).status ?? 1);`);
+      const result = runLib(['snapshot-locked', donor, snap, 'copy'], {
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0',
+      });
+      expect(result.code, result.err).toBe(76);
+      expect(readFileSync(entries, 'utf8').trim().split('\n')).toHaveLength(3);
+      expect(result.err).toContain('donor reader released (attempt 3 of 3)');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+    });
+
     it('REFUSES when the donor install mutex is unreachable; never snapshots unlocked', () => {
       const t = fixture();
       mkdirSync(join(t, 'donor', 'node_modules'), { recursive: true });

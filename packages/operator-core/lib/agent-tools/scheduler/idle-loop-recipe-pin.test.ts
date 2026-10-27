@@ -100,6 +100,7 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 
 import getNext, { IDLE_PULL_MISS_ADVICE } from './get_next';
 import { DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE } from '../../harness/routines/loop';
+import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '../../../../../');
@@ -115,9 +116,37 @@ const RECIPE_MARKERS = [
 ];
 
 describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () => {
+  it.each(['codex', 'claude'])('delivers the Luna capacity and subscribe/recheck rules in a fresh %s member render', async (agent) => {
+    const baseSource = join(REPO, 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md');
+    const rendered = await renderSuPlaybook({
+      agent,
+      profile: 'engineer',
+      tier: 'fleet',
+      baseSource,
+      overlayDir: PROMPTS_DIR,
+      projectGuideSource: '',
+      renderWireSchemas: () => '',
+    });
+    expect(rendered.baseSource).toBe(baseSource);
+    const member = rendered.text.split('## Working as a fleet MEMBER')[1]?.split('## Git')[0];
+    expect(member).toBeDefined();
+    expect(member).toContain('eligible work beside an available member requires action or a verified, accountable');
+    expect(member).toContain('effective claim limits and counted ids, typed blockers, member-specific');
+    expect(member).toContain('a fleet-wide count is not proof');
+    expect(member).toContain('Preserve owner-only/held-item-only fences');
+    expect(member).toContain('Keep the effective claim cap');
+    expect(member).toContain('an event wait alone is not exempt');
+    expect(member).toMatch(/then re-run `scheduler:get_next` BEFORE\s+`loop:end`/);
+    expect(member).toContain('only a verified miss');
+    expect(member).toContain('authoritative claim');
+    for (const marker of RECIPE_MARKERS) expect(member).toContain(marker);
+  });
+
   it('IDLE_PULL_MISS_ADVICE carries the full recipe: claimable key, standing watch, hint-not-claim, no timer poll', () => {
     for (const m of RECIPE_MARKERS) expect(IDLE_PULL_MISS_ADVICE).toContain(m);
     expect(IDLE_PULL_MISS_ADVICE).not.toContain('events:await');
+    expect(IDLE_PULL_MISS_ADVICE).toContain('re-run scheduler:get_next BEFORE sleeping');
+    expect(IDLE_PULL_MISS_ADVICE).toContain('only a verified miss');
     expect(IDLE_PULL_MISS_ADVICE).toContain('AUTHORITATIVE');
     expect(IDLE_PULL_MISS_ADVICE).toContain('remains armed');
     expect(IDLE_PULL_MISS_ADVICE).toContain('goal');

@@ -17,6 +17,7 @@
  * `invalid`, never `pass`.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { MeasurementPin } from '../../agent-tools/plans/evidence-measurement-pin';
 
@@ -47,6 +48,8 @@ export const sourceQualificationManifestSchema = z.object({
   sourceHashes: z.record(repoPath, z.string().regex(/^[0-9a-f]{64}$/)),
   repos: z.record(z.string(), commitId),
   embeddingProfile: z.object({ mode: z.string().min(1), profileId: z.string().min(1) }).strict(),
+  /** Optional prospective binding for exact saved inputs, keyed by declared seed. */
+  queryInputs: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)).optional(),
   runs: z.array(z.object({ seed: z.string().min(1), artifactPath: repoPath })).length(3),
 }).passthrough().superRefine((m, ctx) => {
   // Passthrough metadata is persisted with the manifest too. Reject leaks
@@ -451,6 +454,98 @@ export interface PairResult {
   arms: Partial<Record<Arm, ArmObservation>>;
 }
 
+/** A source-derived sampling stratum, not a claim about all user queries. */
+export const BM25_PROBE_SAMPLING_POLICY = {
+  population: 'identity-safe derived known-item probes',
+  eligibility: 'nonempty derivable query unchanged by the shared identity scrubber',
+  exclusions: ['not-derivable', 'identity-bearing'] as const,
+  selection: 'seeded candidate order; disjoint target/query samples; requested sample size is never lowered',
+};
+
+/** Freeze eligibility before search and retain every candidate without leaking its text. */
+export function selectBm25ProbeInputs(source: string,
+  candidates: readonly { targetId: string; style: QueryStyle; query: string | null }[], n: number) {
+  const eligible = candidates.flatMap(p => p.query?.trim() && redactIdentityLeaks(p.query) === p.query
+    ? [{ source, targetId: p.targetId, style: p.style, query: p.query, arms: {} } satisfies PairResult] : []);
+  const split = splitDisjointSamples(eligible, n);
+  const selected = new Map<string, string>();
+  for (const pass of ['paired', 'warmup', 'steady'] as const)
+    for (const p of split[pass]) selected.set(JSON.stringify([p.targetId, p.style, p.query]), pass);
+  return { ...split, candidates: candidates.map((p, index) => ({ source, index, targetId: p.targetId, style: p.style,
+    queryFingerprint: p.query === null ? null : createHash('sha256').update(p.query).digest('hex'),
+    disposition: !p.query?.trim() ? 'not-derivable' : redactIdentityLeaks(p.query) !== p.query ? 'identity-bearing' :
+      selected.get(JSON.stringify([p.targetId, p.style, p.query])) ?? 'not-selected',
+  })) };
+}
+
+const queryInputPairSchema = z.object({
+  source: z.enum(['work_item', 'session_turn']), targetId: z.string().min(1).refine(s => !!s.trim()),
+  style: z.enum(['fragment', 'keyword']), query: z.string().min(1).refine(q => !!q.trim()),
+}).strict();
+
+/** Exact pre-execution requests, separate from observations and the retrieval corpus. */
+export const bm25QueryInputsSchema = z.object({
+  schemaVersion: z.literal(1), kind: z.literal('bm25-hybrid-query-inputs'),
+  preparedAt: z.string().refine(s => Number.isFinite(Date.parse(s))),
+  seed: z.string().min(1), workspaceId: z.string().min(1),
+  sources: z.array(z.enum(['work_item', 'session_turn'])).min(1), pairsPerSource: z.number().int().positive(),
+  configuration: z.record(z.string(), z.unknown()),
+  // Sampling known items does not freeze the corpus searched by either arm.
+  corpus: z.null(),
+  paired: z.array(queryInputPairSchema), warmup: z.array(queryInputPairSchema), steady: z.array(queryInputPairSchema),
+}).strict().superRefine((m, ctx) => {
+  if (new Set(m.sources).size !== m.sources.length)
+    ctx.addIssue({ code: 'custom', message: 'duplicate input source' });
+  const ids = new Set<string>(), queries = new Set<string>();
+  for (const pass of ['paired', 'warmup', 'steady'] as const) {
+    for (const source of m.sources) if (m[pass].filter(p => p.source === source).length > m.pairsPerSource)
+      ctx.addIssue({ code: 'custom', message: 'input population exceeds requested sample' });
+    for (const p of m[pass]) {
+      if (!m.sources.includes(p.source)) ctx.addIssue({ code: 'custom', message: 'input outside declared sources' });
+      const id = JSON.stringify([p.source, p.targetId]), query = JSON.stringify([p.source, p.query]);
+      if (ids.has(id) || queries.has(query)) ctx.addIssue({ code: 'custom', message: 'input samples are not disjoint' });
+      ids.add(id); queries.add(query);
+    }
+  }
+  // Tracked evidence must never silently redact and thereby change a frozen request.
+  if (redactIdentityLeaks(JSON.stringify(m)) !== JSON.stringify(m))
+    ctx.addIssue({ code: 'custom', message: 'query inputs contain identity leaks; exact inputs cannot be redacted' });
+});
+export type Bm25QueryInputs = z.infer<typeof bm25QueryInputsSchema>;
+
+export function freezeBm25QueryInputs(options: Omit<Bm25QueryInputs, 'schemaVersion' | 'kind' | 'corpus' | 'paired' | 'warmup' | 'steady'> & {
+  paired: readonly PairResult[]; warmup: readonly PairResult[]; steady: readonly PairResult[];
+}): Bm25QueryInputs {
+  const strip = (rows: readonly PairResult[]) => rows.map(({ source, targetId, style, query }) => ({ source, targetId, style, query }));
+  return bm25QueryInputsSchema.parse({ ...options, schemaVersion: 1, kind: 'bm25-hybrid-query-inputs', corpus: null,
+    paired: strip(options.paired), warmup: strip(options.warmup), steady: strip(options.steady) });
+}
+
+/** Database names and ports locate an execution; they do not identify its corpus.
+ * Keep them in the saved receipt, but compare the server's settings instead so
+ * requests survive disposal of the private runtime that prepared them. Corpus
+ * qualification remains separate: query inputs deliberately carry corpus:null. */
+function queryConfigurationIdentity(configuration: Record<string, unknown>) {
+  const server = configuration.server;
+  if (!server || typeof server !== 'object' || Array.isArray(server)) return configuration;
+  return { ...configuration, server: Object.fromEntries(Object.entries(server)
+    .filter(([key]) => key !== 'db' && key !== 'port')) };
+}
+
+/** Admit saved bytes only for the exact requested population/configuration; never import results. */
+export function restoreBm25QueryInputs(bytes: string, expected: Pick<Bm25QueryInputs,
+  'seed' | 'workspaceId' | 'sources' | 'pairsPerSource' | 'configuration'>, expectedSha256?: string) {
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (expectedSha256 !== undefined && sha256 !== expectedSha256) throw new Error('query input bytes differ from manifest');
+  const inputs = bm25QueryInputsSchema.parse(JSON.parse(bytes));
+  for (const key of ['seed', 'workspaceId', 'sources', 'pairsPerSource'] as const)
+    if (!isDeepStrictEqual(inputs[key], expected[key])) throw new Error(`saved query input ${key} differs`);
+  if (!isDeepStrictEqual(queryConfigurationIdentity(inputs.configuration), queryConfigurationIdentity(expected.configuration)))
+    throw new Error('saved query input configuration differs');
+  const pairs = (rows: Bm25QueryInputs['paired']): PairResult[] => rows.map(p => ({ ...p, arms: {} }));
+  return { inputs, sha256, paired: pairs(inputs.paired), warmup: pairs(inputs.warmup), steady: pairs(inputs.steady) };
+}
+
 export interface ArmSummary {
   scored: number;
   /** Sum of measured vector contributions, or null when any observation lacks the measurement. */
@@ -500,6 +595,95 @@ export const COLD_LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
   work_item: 1000,
   session_turn: 1200,
 };
+
+export type Bm25Pass = 'paired' | 'repeat-warmup' | 'warm-repeat' | 'steady-warmup' | 'steady';
+export interface Bm25AttemptIdentity {
+  id: string;
+  cellId: string;
+  source: string;
+  queryClass: QueryStyle;
+  pass: Bm25Pass;
+  arm: Arm;
+  queryFingerprint: string;
+}
+
+/** The declaration is written before embedding or executing ANY selected query. */
+export function declareBm25Attempts(options: {
+  declaredAt: string;
+  sources: readonly string[];
+  pairsPerSource: number;
+  paired: readonly PairResult[];
+  warmup: readonly PairResult[];
+  steady: readonly PairResult[];
+  pins: { source: string; corpus: string | null; queries: string; configuration: string };
+}) {
+  if (!Number.isInteger(options.pairsPerSource) || options.pairsPerSource < 1 ||
+      !Number.isFinite(Date.parse(options.declaredAt)) || new Set(options.sources).size !== options.sources.length || !options.sources.length)
+    throw new Error('invalid benchmark declaration');
+  for (const p of [...options.paired, ...options.warmup, ...options.steady]) {
+    if (!options.sources.includes(p.source) || !['fragment', 'keyword'].includes(p.style) || !p.query.trim() || !p.targetId.trim())
+      throw new Error('sample outside declared benchmark population');
+  }
+  const attempts: Bm25AttemptIdentity[] = [];
+  const cells = options.sources.flatMap(source => (['fragment', 'keyword'] as const).flatMap(queryClass =>
+    (['paired', 'repeat-warmup', 'warm-repeat', 'steady-warmup', 'steady'] as const).flatMap(pass =>
+      (pass === 'paired' ? ARMS : ['bm25'] as const).map(arm => {
+        const cellId = [source, queryClass, pass, arm].join('/');
+        const selected = (pass === 'steady' ? options.steady : pass === 'steady-warmup' ? options.warmup : options.paired)
+          .filter(p => p.source === source && p.style === queryClass);
+        const identities = selected.map(p => ({ id: bm25AttemptId(pass, p, arm), cellId, source, queryClass, pass, arm,
+          queryFingerprint: createHash('sha256').update(p.query).digest('hex') }));
+        attempts.push(...identities);
+        return { id: cellId, product: 'papercusp', adapter: 'in-process/runHybridSearch', source, queryClass, pass, arm,
+          temperature: pass === 'paired' ? 'cold' : 'warm',
+          // Warm-ups are an explicit role, never censored measurement failures.
+          role: pass.endsWith('warmup') ? 'warmup' : 'measurement',
+          requestedPerSource: options.pairsPerSource, minExecuted: MIN_PAIRS_PER_SOURCE,
+          coverageSource: 'bm25-hybrid-recall.ts#MIN_PAIRS_PER_SOURCE; applied prospectively to each query class',
+          attemptIds: identities.map(a => a.id),
+          maxP95LatencyMs: arm !== 'bm25' ? null : pass === 'paired' ? COLD_LATENCY_P95_CEILING_MS[source] ?? null :
+            pass === 'warm-repeat' ? LATENCY_P95_CEILING_MS[source] ?? null : null,
+          budgetSource: 'bm25-lexical-search-evoke-adoption-2026-10-10#D-020,D-028,D-029',
+          quality: pass === 'paired' ? 'R-13 paired known-item recall nonregression; class-specific quality target unmeasured' : 'reported-only',
+          maxPerAttemptCostUsd: null, maxErrorRate: 0, maxDegradedRate: 0, censoring: [] };
+      }))));
+  if (new Set(attempts.map(a => a.id)).size !== attempts.length) throw new Error('duplicate declared benchmark attempt');
+  return { schemaVersion: 1 as const, declaredAt: options.declaredAt, pins: options.pins, cells, attempts };
+}
+
+export function bm25AttemptId(pass: Bm25Pass, pair: Pick<PairResult, 'source' | 'style' | 'targetId' | 'query'>, arm: Arm): string {
+  return createHash('sha256').update(JSON.stringify([pass, pair.source, pair.style, pair.targetId, pair.query, arm])).digest('hex');
+}
+
+export interface Bm25AttemptReceipt {
+  id: string;
+  outcome: 'success' | 'timeout' | 'error' | 'unknown';
+  executed: boolean;
+  latencyMs: number | null;
+  costUsd: number | null;
+  observation: ArmObservation | null;
+}
+
+/** Keep one placeholder for every request, including work not reached after a failure. */
+export function reconcileBm25Attempts(declaration: ReturnType<typeof declareBm25Attempts>, receipts: readonly Bm25AttemptReceipt[]) {
+  const ids = new Set(declaration.attempts.map(a => a.id));
+  if (new Set(receipts.map(r => r.id)).size !== receipts.length || receipts.some(r => !ids.has(r.id)))
+    throw new Error('duplicate or undeclared benchmark receipt');
+  const byId = new Map(receipts.map(r => [r.id, r]));
+  const attempts = declaration.attempts.map(a => ({ ...a, ...(byId.get(a.id) ?? {
+    outcome: 'unknown' as const, executed: false, latencyMs: null, costUsd: null, observation: null }) }));
+  return { attempts, cells: declaration.cells.map(cell => {
+    const mine = attempts.filter(a => a.cellId === cell.id);
+    return { id: cell.id, attempted: mine.length, executed: mine.filter(a => a.executed).length,
+      observed: mine.filter(a => a.outcome === 'success' && a.observation !== null).length,
+      // Per-query relevance labels are not collected by this known-item latency instrument.
+      judged: 0,
+      errors: mine.filter(a => a.outcome === 'error').length, timeouts: mine.filter(a => a.outcome === 'timeout').length,
+      unknown: mine.filter(a => a.outcome === 'unknown').length,
+      populationStatus: mine.length < cell.minExecuted || mine.some(a => a.outcome === 'unknown' || !a.executed) ? 'unknown' : 'complete' };
+  }), qualification: 'unknown' as const,
+  unknowns: ['corpus and cost require independent measurement; this ledger alone is not a qualified search baseline'] };
+}
 
 /**
  * R-18's judgment, separate from R-13's recall verdict. Both bounds time the whole

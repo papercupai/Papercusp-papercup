@@ -159,6 +159,12 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   if (EXPLICIT_EMPTY_STATUS_RE.test(afterMatch)) return true;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
+  // Reading an existing answer before acting does not ask for a new one.
+  // Bound both sides of this noun phrase so a real wait or later question
+  // on the same line is still evaluated normally.
+  if (/^owner\s+answer$/i.test(match[0])
+    && /\b(?:read|review)\s+(?:(?:any|the|new|existing|recorded|latest)\s+){0,4}$/i.test(clauseBefore)
+    && /^\s+before\s+(?:acting|proceeding|taking\s+action)\b/i.test(afterMatch)) return true;
   // Include the matched phrase: the `owner` in "peer owner to confirm" is
   // itself the start of the trigger match, so looking only before matchIndex
   // would miss the peer-owner subject.

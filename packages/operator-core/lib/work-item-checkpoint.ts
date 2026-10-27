@@ -53,6 +53,7 @@ import { stampDeclaredDeps } from './freshness/stamp';
 import { parseCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
 import type { DepStamp } from './freshness/index';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 export interface WorkItemCheckpointRef {
   /**
    * The harness the item lives under. May be `null` for a harness-null item — an
@@ -127,7 +128,7 @@ async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: stri
            AND taken_by IS NOT NULL
            AND taken_by <> ''
            AND (
-             item_kind IN ('bug', 'change', 'task')
+             item_kind IN (${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
              OR (
                ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
                AND harness_slug = ${ref.harness}

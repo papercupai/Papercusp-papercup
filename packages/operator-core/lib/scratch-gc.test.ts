@@ -27,9 +27,10 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat) };
+  return { ...actual, access: vi.fn(actual.access), readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm), stat: vi.fn(actual.stat), writeFile: vi.fn(actual.writeFile) };
 });
 import {
+  constants as fsConstants,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -45,7 +46,7 @@ import {
   realpathSync,
   truncateSync,
 } from 'node:fs';
-import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
+import { access as accessAsync, mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
@@ -63,6 +64,7 @@ import {
   scratchUsageBytes,
   _setScratchUsageForTests,
   _resetScratchUsageForTests,
+  _settleScratchMaintenanceForTests,
   WORKSPACE_QUOTA_BYTES,
   SCRATCH_GC_CRONTAB,
   SCRATCH_GC_SWEEP_PERIOD_MS,
@@ -106,7 +108,10 @@ beforeEach(() => {
   _resetScratchUsageForTests();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Drain chained fire-and-forget refreshes while this test's env still points at its sandbox;
+  // a straggler that outlives the reset would otherwise evict runs in the next test's sandbox.
+  await _settleScratchMaintenanceForTests();
   _resetScratchUsageForTests();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
@@ -493,7 +498,8 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
   beforeEach(() => {
     _resetScratchUsageForTests();
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await _settleScratchMaintenanceForTests();
     _resetScratchUsageForTests();
   });
 
@@ -657,6 +663,74 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
       releaseScan();
       readdirMock.mockImplementation(originalRead);
       await Promise.allSettled([...(write ? [write] : []), ...(probe ? [probe] : [])]);
+    }
+  });
+
+  it('remeasures cached over-target usage outside the data lease and reuses that scan for eviction', async () => {
+    const workspaceId = 'ws-cached-over-target-refresh';
+    const oldest = makeSparseRun(workspaceId, UUID(30), 2 * 1024 ** 3, 10_000);
+    await refreshScratchUsage(workspaceId);
+    const newest = makeSparseRun(workspaceId, UUID(31), 3 * 1024 ** 3);
+    _setScratchUsageForTests(
+      workspaceId,
+      WORKSPACE_QUOTA_BYTES + 100,
+      Date.now(),
+      true,
+    );
+
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const mutexDigest = createHash('sha256')
+      .update(resolve(workspaceRoot))
+      .digest('hex')
+      .slice(0, 40);
+    const dataMutexName = 'papercusp-scratch-data-' + mutexDigest;
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let rootReads = 0;
+    readdirMock.mockClear();
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === workspaceRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    let refresh: Promise<void> | undefined;
+    let probe: Promise<void> | undefined;
+    try {
+      refresh = refreshScratchUsage(workspaceId);
+      await atRoot;
+
+      let probeEntered = false;
+      probe = withFsMutex(dataMutexName, async () => { probeEntered = true; }, {
+        timeoutMs: 500,
+        retryMs: 5,
+      });
+      const enteredDuringScan = await probe.then(() => true, () => false);
+      expect(enteredDuringScan).toBe(true);
+      expect(probeEntered).toBe(true);
+
+      releaseScan();
+      await refresh;
+      await probe;
+
+      expect(existsSync(oldest)).toBe(false);
+      expect(existsSync(newest)).toBe(true);
+      expect(scratchUsageBytes(workspaceId)).toBeLessThanOrEqual(
+        WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+      );
+      expect(readdirMock.mock.calls.filter(([path]) => String(path) === newest)).toHaveLength(1);
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([...(refresh ? [refresh] : []), ...(probe ? [probe] : [])]);
     }
   });
 
@@ -925,6 +999,69 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
 
     expect(r.truncated).toBe(true);
     expect(r.retentionEvictions).toBe(0);
+  });
+
+  it.each([false, true])('processes registered retention before a dead-tree walk exhausts the budget (dryRun=%s)', async (dryRun) => {
+    const expired = makeRunDir('ws-A', 'tool', UUID(71), 64, RETENTION_MS + 60_000);
+    const pinned = makeRunDir('ws-A', 'tool', UUID(72), 32, RETENTION_MS + 60_000);
+    const fresh = makeRunDir('ws-A', 'tool', UUID(73), 16);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'retain evidence',
+      expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    makeRunDir('ws-DEAD', 'tool', UUID(74), 128);
+    const deadRoot = scratchRootForWorkspace('ws-DEAD');
+    ageTree(deadRoot, DEAD_WORKSPACE_QUIET_MS + 60_000);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalReaddir = readdirMock.getMockImplementation()!;
+    let clock = Date.now();
+    const deadline = clock + 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    readdirMock.mockImplementation(async (...args) => {
+      const result = await originalReaddir(...args);
+      if (String(args[0]) === deadRoot) clock = deadline;
+      return result;
+    });
+    try {
+      const r = await runScratchGc({ workspaceRegistry: ['ws-A'], dryRun,
+        enforceQuota: false, maxDurationMs: 1_000, scanOpenPaths: noHolders });
+
+      expect(clock).toBe(deadline);
+      expect(r.truncated).toBe(true);
+      expect(r.retentionEvictions).toBe(1);
+      expect(r.retentionEvictedBytes).toBe(64);
+      expect(existsSync(expired)).toBe(dryRun);
+      expect(existsSync(pinned)).toBe(true);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(deadRoot)).toBe(true);
+    } finally {
+      readdirMock.mockImplementation(originalReaddir);
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('processes registered retention before marker backfill exhausts the budget', async () => {
+    const expired = makeRunDir('ws-A', 'tool', UUID(75), 64, RETENTION_MS + 60_000);
+    const marker = join(scratchRootForWorkspace('ws-A'), WORKSPACE_SCRATCH_MARKER);
+    const writeMock = vi.mocked(writeFile);
+    const originalWrite = writeMock.getMockImplementation()!;
+    let clock = Date.now();
+    const deadline = clock + 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    writeMock.mockImplementation(async (...args) => {
+      if (String(args[0]) === marker) clock = deadline;
+      return originalWrite(...args);
+    });
+    try {
+      const r = await runScratchGc({ workspaceRegistry: ['ws-A'],
+        enforceQuota: false, maxDurationMs: 1_000 });
+
+      expect(clock).toBe(deadline);
+      expect(r.truncated).toBe(true);
+      expect(r.retentionEvictions).toBe(1);
+      expect(existsSync(expired)).toBe(false);
+    } finally {
+      writeMock.mockImplementation(originalWrite);
+      nowSpy.mockRestore();
+    }
   });
 });
 
@@ -1447,8 +1584,10 @@ describe('deferred scratch quota recovery', () => {
       expect(JSON.stringify(result.content)).toContain(spillPath);
       expect(scansAtWrite).toEqual([1, 1, 1]);
       expect(rootReads).toBe(1);
-      expect(phaseRows[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
-      expect(phaseRows.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
+      const completedPhases = phaseRows.filter((row) => !row.progress);
+      expect(completedPhases).toHaveLength(3);
+      expect(completedPhases[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
+      expect(completedPhases.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
       expect(doorPhases.filter((row) => !row.progress)).toMatchObject([
         { quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 },
       ]);
@@ -1633,6 +1772,93 @@ describe('deferred scratch quota recovery', () => {
       readdirMock.mockImplementation(originalRead);
       vi.useRealTimers();
       await Promise.allSettled([write]);
+    }
+  });
+
+  it('reports the filesystem owner while quota recovery waits for the exclusive data mutex', async () => {
+    const workspaceId = 'ws-Q';
+    makeSparseRun(workspaceId, UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
+    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 1024);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const dataMutexName = 'papercusp-scratch-data-' +
+      createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const holderTraceId = '5d2254a2-7052-4ee2-a52f-14a29fe81834';
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(dataMutexName, async () => {
+      startedHolder();
+      await holderGate;
+    }, {
+      mode: 'read',
+      intent: {
+        subsystem: 'scratch-quota',
+        operation: 'test-payload-holder',
+        workspaceId,
+        requestTraceId: holderTraceId,
+      },
+      waitingNoticeIntervalMs: 5_000,
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let ownerObserved = false;
+    let signalOwnerObserved!: () => void;
+    const ownerObservation = new Promise<void>((resolveObservation) => {
+      signalOwnerObserved = resolveObservation;
+    });
+    let ownerObservationTimeout: ReturnType<typeof setTimeout> | undefined;
+    let write: Promise<void> | undefined;
+    try {
+      await holderStarted;
+      write = writeWithScratchQuota({
+        workspaceId,
+        filePath: join(workspaceRoot, 'quota', UUID(2), 'progress.bin'),
+        bytes: 16,
+        captureSubphaseTimings: true,
+        onTiming: (row) => {
+          timings.push(row);
+          if (
+            row.progress?.phase === 'quota-recovery' &&
+            row.progress.mutexWaitOwner?.requestTraceId === holderTraceId
+          ) {
+            ownerObserved = true;
+            signalOwnerObserved();
+          }
+        },
+      }, async () => {});
+
+      await Promise.race([
+        ownerObservation,
+        new Promise<void>((_resolve, reject) => {
+          ownerObservationTimeout = setTimeout(() => {
+            reject(new Error('Timed out waiting for quota-recovery owner progress'));
+          }, 5_000);
+        }),
+      ]);
+      if (ownerObservationTimeout) clearTimeout(ownerObservationTimeout);
+      expect(ownerObserved).toBe(true);
+      expect(timings.find((row) => row.progress?.mutexWaitOwner)?.progress?.mutexWaitOwner).toMatchObject({
+        layer: 'filesystem',
+        operation: 'test-payload-holder',
+        subsystem: 'scratch-quota',
+        requestTraceId: holderTraceId,
+        pid: expect.any(Number),
+      });
+
+      releaseHolder();
+      await holder;
+      await write;
+      const settled = timings.find((row) => !row.progress);
+      expect(settled?.quotaRecoveryDataMutexWaitMs).toEqual(expect.any(Number));
+      expect(settled?.quotaRecoveryDataMutexAdmissionMs).toEqual(expect.any(Number));
+      expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'quota-recovery-data-admission.lock-root.ensure': expect.any(Number),
+      }));
+    } finally {
+      if (ownerObservationTimeout) clearTimeout(ownerObservationTimeout);
+      releaseHolder();
+      await Promise.allSettled([holder, ...(write ? [write] : [])]);
     }
   });
 
@@ -2003,12 +2229,371 @@ describe('deferred scratch quota recovery', () => {
     const dataFileStats = vi.mocked(statAsync).mock.calls
       .map(([path]) => String(path))
       .filter((path) => path.endsWith('/data.bin') || path.endsWith('/recovery.bin'));
-    expect(dataFileStats).toEqual([join(oldest, 'data.bin')]);
+    expect(dataFileStats).toEqual([]);
+    const sizedRunReads = vi.mocked(readdirAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => [oldest, ...otherRuns].includes(path));
+    expect(sizedRunReads).toEqual([]);
+    await refreshScratchUsage('ws-Q');
+  });
+
+  it('remeasures a FIFO candidate after its run directory mtime changes', async () => {
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 2048, Date.now(), true);
+
+    const changedFile = join(oldest, 'cross-process-growth.bin');
+    writeFileSync(changedFile, Buffer.alloc(256));
+    const changedMtime = Date.now() + 5_000;
+    utimesSync(oldest, changedMtime / 1000, changedMtime / 1000);
+    const laterRunMtime = (changedMtime + 25_000) / 1000;
+    for (const run of otherRuns.slice(1)) utimesSync(run, laterRunMtime, laterRunMtime);
+    vi.mocked(readdirAsync).mockClear();
+    vi.mocked(statAsync).mockClear();
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(writePath, Buffer.alloc(64));
+      expect(existsSync(oldest)).toBe(false);
+      expect(otherRuns.every((run) => existsSync(run))).toBe(true);
+    });
+
+    const recovery = timings[0]?.quotaRecoveryDiagnostics;
+    expect(recovery).toMatchObject({ sizeWalkMs: 0, deleteAttempts: 1 });
+    const remeasuredFiles = vi.mocked(statAsync).mock.calls
+      .map(([path]) => String(path))
+      .filter((path) => path === join(oldest, 'data.bin') || path === changedFile)
+      .sort();
+    expect(remeasuredFiles).toEqual([changedFile, join(oldest, 'data.bin')].sort());
     const sizedRunReads = vi.mocked(readdirAsync).mock.calls
       .map(([path]) => String(path))
       .filter((path) => [oldest, ...otherRuns].includes(path));
     expect(sizedRunReads).toEqual([oldest]);
     await refreshScratchUsage('ws-Q');
+  });
+
+  it('fails closed when cached quota recovery cannot list run directories', async () => {
+    const workspaceId = 'ws-Q';
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage(workspaceId);
+    _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES + 2048, Date.now(), true);
+
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    const failure = Object.assign(new Error('controlled scratch directory read failure'), { code: 'EACCES' });
+    readdirMock.mockImplementation((async (path: unknown, options?: unknown) => {
+      if (String(path) === workspaceRoot) throw failure;
+      return read(path, options);
+    }) as typeof readdirAsync);
+
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    try {
+      await expect(writeWithScratchQuota({
+        workspaceId,
+        filePath: writePath,
+        bytes: 64,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        await writeFile(writePath, Buffer.alloc(64));
+      })).rejects.toMatchObject({ code: 'EACCES' });
+
+      expect(existsSync(writePath)).toBe(false);
+      expect(existsSync(oldest)).toBe(true);
+      expect(scratchUsageBytes(workspaceId)).toBe(WORKSPACE_QUOTA_BYTES + 2048);
+      const recovery = timings.find((row) => row.quotaRecoveryDiagnostics)?.quotaRecoveryDiagnostics;
+      expect(recovery?.directoryReadErrors).toBeGreaterThan(0);
+    } finally {
+      readdirMock.mockImplementation(originalRead);
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])('recovers a fresh write past an undeletable FIFO candidate (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const failure = Object.assign(new Error('legacy scratch is read-only'), { code });
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw failure;
+      return originalRemove(...args);
+    });
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(blocked)).toBe(true);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(4 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deleteAttempts: 2, deleteErrors: 1, lastDeleteErrorCode: code, runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])('preflights a read-only FIFO candidate before retention-lock admission and reclaims a later run (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    access.mockClear();
+    const failure = Object.assign(new Error('legacy scratch is read-only'), { code });
+    let releaseRetentionLock: () => void = () => {};
+    let signalRetentionLockAcquired: () => void = () => {};
+    const retentionLockAcquired = new Promise<void>((resolve) => { signalRetentionLockAcquired = resolve; });
+    const retentionLockHold = new Promise<void>((resolve) => { releaseRetentionLock = resolve; });
+    const heldRetentionLock = withFsMutex('papercusp-disk-retention', async () => {
+      signalRetentionLockAcquired();
+      await retentionLockHold;
+    });
+    await retentionLockAcquired;
+
+    let signalLaterCandidatePreflight: () => void = () => {};
+    const laterCandidatePreflight = new Promise<void>((resolve) => { signalLaterCandidatePreflight = resolve; });
+    access.mockImplementation(async (...args) => {
+      const path = String(args[0]);
+      if (path === blocked) throw failure;
+      if (path === reclaimable) signalLaterCandidatePreflight();
+      return originalAccess(...args);
+    });
+
+    const remove = vi.mocked(rmAsync);
+    remove.mockClear();
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    let writer: Promise<void> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      writer = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath,
+        bytes: 64,
+        onTiming: (row) => timings.push(row),
+      }, () => writeFile(filePath, Buffer.alloc(64)));
+      await Promise.race([
+        laterCandidatePreflight,
+        new Promise<void>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('read-only candidate waited for retention-lock admission')), 5000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(access).toHaveBeenCalledWith(dirname(blocked), fsConstants.W_OK | fsConstants.X_OK);
+      expect(access).toHaveBeenCalledWith(blocked, fsConstants.W_OK | fsConstants.X_OK);
+
+      releaseRetentionLock();
+      await heldRetentionLock;
+      await writer;
+
+      expect(existsSync(blocked)).toBe(true);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      const recovery = timings.at(-1)?.quotaRecoveryDiagnostics;
+      expect(recovery).toMatchObject({
+        deleteAttempts: 2,
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: code,
+        deleteErrors: 1,
+        lastDeleteErrorCode: code,
+        runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+        deletePreflightMs: expect.any(Number),
+        pinProtectionMs: expect.any(Number),
+        rmAsyncMs: expect.any(Number),
+      });
+      expect(remove.mock.calls.some(([path]) => String(path) === blocked)).toBe(false);
+      expect(remove.mock.calls.some(([path]) => String(path) === reclaimable)).toBe(true);
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseRetentionLock();
+      await Promise.allSettled([heldRetentionLock, ...(writer ? [writer] : [])]);
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('accounts for a quota candidate that disappears before retention-lock admission', async () => {
+    // The vanished candidate's 2 GiB is credited, but 7 GiB - 2 GiB is still over target, so
+    // recovery must continue to the next FIFO candidate. (With a 2 GiB target run, crediting the
+    // vanished run alone restores quota — that stop-at-target case is the next test.)
+    const missing = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 3 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 7 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const missingPath = Object.assign(new Error('quota candidate disappeared'), { code: 'ENOENT' });
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === missing) {
+        await originalRemove(missing, { recursive: true, force: true });
+        throw missingPath;
+      }
+      return originalAccess(...args);
+    });
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(missing)).toBe(false);
+      expect(existsSync(reclaimable)).toBe(false);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(3 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: 'ENOENT',
+        deleteErrors: 0,
+        runsDeleted: 1,
+        deletedBytes: 2 * 1024 ** 3,
+        deletePreflightMs: expect.any(Number),
+        pinProtectionMs: expect.any(Number),
+        rmAsyncMs: expect.any(Number),
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('stops after crediting a vanished quota candidate when that alone restores quota', async () => {
+    // FIFO recovery evicts only down to target: once the vanished run's stale bytes are credited
+    // (6 GiB - 2 GiB is under target) a later reclaimable run must NOT be deleted as well.
+    const missing = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
+    const reclaimable = makeSparseRun('ws-Q', UUID(2), 2 * 1024 ** 3, 10_000);
+    const target = makeSparseRun('ws-Q', UUID(3), 2 * 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', 6 * 1024 ** 3 + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(target, 'fresh-result');
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === missing) {
+        await originalRemove(missing, { recursive: true, force: true });
+        throw Object.assign(new Error('quota candidate disappeared'), { code: 'ENOENT' });
+      }
+      return originalAccess(...args);
+    });
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 64,
+        onTiming: (row) => timings.push(row) }, () => writeFile(filePath, Buffer.alloc(64)));
+      expect(existsSync(missing)).toBe(false);
+      expect(existsSync(reclaimable)).toBe(true);
+      expect(readFileSync(filePath)).toHaveLength(64);
+      expect(scratchUsageBytes('ws-Q')).toBe(4 * 1024 ** 3 + markerBytes('ws-Q') + 64);
+      expect(timings.at(-1)?.quotaRecoveryDiagnostics).toMatchObject({
+        deleteAttempts: 1,
+        deletePreflightSkips: 1,
+        lastDeletePreflightErrorCode: 'ENOENT',
+        deleteErrors: 0,
+        runsDeleted: 0,
+        deletedBytes: 0,
+      });
+      await refreshScratchUsage('ws-Q');
+    } finally {
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it('propagates unexpected quota-candidate preflight errors before invoking the writer', async () => {
+    const candidate = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+
+    const access = vi.mocked(accessAsync);
+    const originalAccess = access.getMockImplementation()!;
+    const failure = Object.assign(new Error('scratch access check failed'), { code: 'EIO' });
+    access.mockImplementation(async (...args) => {
+      if (String(args[0]) === candidate) throw failure;
+      return originalAccess(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      await expect(writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath: join(target, 'fresh-result'),
+        bytes: 64,
+      }, write)).rejects.toBe(failure);
+      expect(write).not.toHaveBeenCalled();
+      expect(existsSync(candidate)).toBe(true);
+    } finally {
+      access.mockImplementation(originalAccess);
+    }
+  });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])('keeps unreclaimed bytes charged and refuses a write (%s)', async (code) => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw Object.assign(new Error('read-only scratch'), { code });
+      return originalRemove(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      // The refusal must NAME the run eviction could not reclaim (WI-6554700010029261): a bare
+      // "used N > quota" left a 16 GB read-only run blocking every spill with "cause unknown".
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toMatchObject({
+        code: 'SCRATCH_QUOTA_EXCEEDED',
+        message: expect.stringContaining(`largest unreclaimable run: ${blocked} (`),
+      });
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toMatchObject({ message: expect.stringContaining(`bytes, ${code})`) });
+      expect(write).not.toHaveBeenCalled();
+      expect(existsSync(blocked)).toBe(true);
+      expect(scratchUsageBytes('ws-Q')).toBe(WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
+  });
+
+  it('propagates an unexpected eviction I/O failure before invoking a fresh writer', async () => {
+    const blocked = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const target = makeRunDir('ws-Q', 'quota', UUID(2), 0);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + markerBytes('ws-Q'));
+    const remove = vi.mocked(rmAsync);
+    const originalRemove = remove.getMockImplementation()!;
+    const failure = Object.assign(new Error('storage I/O failure'), { code: 'EIO' });
+    remove.mockImplementation(async (...args) => {
+      if (String(args[0]) === blocked) throw failure;
+      return originalRemove(...args);
+    });
+    const write = vi.fn(async () => {});
+    try {
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'fresh-result'),
+        bytes: 64 }, write)).rejects.toBe(failure);
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      remove.mockImplementation(originalRemove);
+    }
   });
 
   it('invalidates the local run index when another process advances the shared quota revision', async () => {
@@ -2197,6 +2782,47 @@ describe('deferred scratch quota recovery', () => {
     expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
       'scratch-data-read-admission.lock-root.mkdir': expect.any(Number),
     }));
+  });
+
+  it('records failed data read-lease admission before a scratch payload runs', async () => {
+    const workspaceId = 'ws-Q';
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const digest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const mutexName = `papercusp-scratch-data-${digest}`;
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(mutexName, async () => {
+      startedHolder();
+      await holderGate;
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let payloadRan = false;
+    try {
+      await holderStarted;
+      await expect(writeWithScratchQuota({
+        workspaceId,
+        filePath: join(workspaceRoot, 'data-timeout', 'spill'),
+        bytes: 1,
+        mutexTimeoutMs: 40,
+        captureSubphaseTimings: true,
+        onTiming: (row) => timings.push(row),
+      }, async () => { payloadRan = true; })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      const settled = timings.filter((row) => !row.progress);
+      expect(settled).toHaveLength(1);
+      expect(settled[0].dataLeaseWaitMs).toBeGreaterThanOrEqual(40);
+      expect(settled[0].awaitSubphaseTimingsMs).toMatchObject({
+        'scratch-data-read-admission.lock-root.ensure': expect.any(Number),
+        'scratch-data-read-admission.writer-check': expect.any(Number),
+        'scratch-data-read-admission.retry-wait': expect.any(Number),
+      });
+      expect(settled[0].quotaWaitMs).toBe(0);
+      expect(payloadRan).toBe(false);
+    } finally {
+      releaseHolder();
+      await Promise.allSettled([holder]);
+    }
   });
 
   it('reports the request trace ID from a filesystem scratch mutex owner', async () => {

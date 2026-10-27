@@ -70,12 +70,21 @@ const h = vi.hoisted(() => ({
   postgres: vi.fn(),
   backupRendezvousBusy: false,
   backupLockedRelations: [] as string[],
+  admissionGate: undefined as Promise<void> | undefined,
 }));
 
 vi.mock('postgres', () => ({ default: h.postgres }));
 vi.mock('node:child_process', () => ({ execFile: h.execFile, spawnSync: h.spawnSync }));
 vi.mock('../../resource-governor/execution', () => ({
-  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+  runGovernedOperation: async (
+    input: { onAdmissionPhase?: (event: { phase: string; state: string; elapsedMs: number }) => void },
+    run: (context: unknown) => Promise<unknown>,
+  ) => {
+    input.onAdmissionPhase?.({ phase: 'enqueue', state: 'pending', elapsedMs: 0 });
+    if (h.admissionGate) await h.admissionGate;
+    input.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 1 });
+    return run({});
+  },
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
@@ -147,6 +156,7 @@ const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
 const ORIGINAL_CANONICAL_TREE = process.env.PAPERCUSP_CANONICAL_TREE;
 
 beforeEach(() => {
+  h.admissionGate = undefined;
   h.backupRendezvousBusy = false;
   h.backupLockedRelations = [];
   h.postgres.mockReset().mockImplementation(() => {
@@ -661,6 +671,28 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(h.recordResourceAction).not.toHaveBeenCalled();
   });
 
+  it('reports admission before spawning psql and stops its pre-child heartbeat after settlement', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    h.admissionGate = new Promise<void>((resolve) => { release = resolve; });
+    const onHeartbeat = vi.fn();
+    const onPhase = vi.fn();
+    const pending = runPsql('psql', ['postgres://admin-url/db'], {
+      encoding: 'utf8', input: 'SELECT 1;', onHeartbeat, onPhase,
+    });
+    expect(h.execFile).not.toHaveBeenCalled();
+    expect(onPhase).toHaveBeenCalledWith(expect.objectContaining({ phase: 'admission:enqueue', state: 'pending' }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onHeartbeat).toHaveBeenCalledWith(30);
+    release();
+    const result = await pending;
+    expect(result.status).toBe(0);
+    expect(result.diagnostics?.phases).toContainEqual(expect.objectContaining({ phase: 'child', state: 'fulfilled' }));
+    const calls = onHeartbeat.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onHeartbeat).toHaveBeenCalledTimes(calls);
+  });
+
   it('preserves the child error and terminating signal when psql is killed with empty stderr', async () => {
     const error = Object.assign(new Error('psql process failed'), { signal: 'SIGTERM' });
     h.execFile.mockImplementationOnce(
@@ -743,7 +775,7 @@ describe('db:migrate — lease loss after SQL guards (WI-10008141)', () => {
     });
     const assertCurrent = vi.fn(async () => ({ current: true as const }));
 
-    const pending = runPsql('psql', [], {
+    const pending = runPsql('psql', ['postgres://admin-url/db'], {
       encoding: 'utf8',
       input: `SELECT 1;\n\\echo ${marker}\nSELECT 2;\n`,
       fence: { marker, assertCurrent },

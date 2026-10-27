@@ -87,10 +87,22 @@ import {
   type RepairSignatureEntry,
 } from './release/frozen-candidate-repair-queue';
 
-/** Hard cap on rendered failing files — the result is read in-prompt. */
+/**
+ * Hard cap on RENDERED failing files — the row list is read in-prompt. It bounds the LIST
+ * only: every count in the result is taken over the whole failing population
+ * (WI-6554700010029506 — the counts used to be taken over this capped slice, so the headline
+ * read `stillBrokenCount: 9` beside `failingFileCount: 1050`).
+ */
 const MAX_FAILING_FILES = 60;
-/** Blob comparison is one `git rev-parse` per file per ref; cap the fan-out. */
-const MAX_BLOB_COMPARES = 40;
+/**
+ * Per-read budget for comparisons that need their OWN git spawn: a per-ref fallback after a
+ * failed batch read, or a submodule-relative lookup. Ordinary paths are answered from the
+ * batched `ls-tree` reads and never touch it. A row past the budget is UNMEASURED, and is
+ * counted in `unmeasuredCount` — never silently dropped from the totals.
+ */
+const MAX_SPAWN_COMPARES = 40;
+/** Paths per batched `git ls-tree` call — bounds the argv and the 1 MiB stdout buffer. */
+const LS_TREE_CHUNK = 400;
 const GIT_TIMEOUT_MS = 5_000;
 
 export interface GateCandidateFailingFile {
@@ -129,8 +141,19 @@ export interface GateCandidateFailures {
    * not the full suite. Read `scope` before quoting this anywhere.
    */
   filesJudged: number;
-  /** Files whose LATEST attempt on the candidate is fail/error. */
+  /**
+   * Files whose LATEST attempt on the candidate is fail/error — a RENDERED list, capped at
+   * MAX_FAILING_FILES (`truncated` says when). When it is capped, the most actionable rows
+   * come first: failing at repairHead, then presumed broken, then unmeasured, then already
+   * fixed, then passed at repairHead. Never count this list; the counts below already cover
+   * the whole population.
+   */
   distinctFailingFiles: GateCandidateFailingFile[];
+  /**
+   * The WHOLE failing population. The five buckets below partition it exactly:
+   * `passedAtRepairHeadCount + alreadyFixedCount + stillBrokenCount + unmeasuredCount ===
+   * failingFileCount` (`stillBrokenNeedsRunCount` is a subset of `stillBrokenCount`).
+   */
   failingFileCount: number;
   /**
    * Of the failing files NOT yet run at repairHead, how many already have their fix there
@@ -155,6 +178,13 @@ export interface GateCandidateFailures {
    * counts as work. When this equals `stillBrokenCount`, NOTHING here is confirmed work yet.
    */
   stillBrokenNeedsRunCount: number;
+  /**
+   * Of the failing files, how many have NO answer: not run at repairHead, and the blob
+   * comparison could not be made (unresolvable on a side, an unreadable gitlink, or the
+   * per-read spawn budget was spent). Neither fixed nor broken — the remainder that makes
+   * the buckets sum to `failingFileCount`, so an aggregate is never quietly a sample.
+   */
+  unmeasuredCount: number;
   /**
    * What moved between candidate and repairHead — the evidence behind the hedge above.
    * `null` when it could not be read (which is itself why a row may hedge).
@@ -336,8 +366,41 @@ async function blobIdsAtRef(
   paths: readonly string[],
 ): Promise<Map<string, string> | null> {
   if (paths.length === 0) return new Map();
-  const raw = await git(root, ['ls-tree', '-z', ref, '--', ...paths]);
-  return raw === null ? null : parseGitLsTreeObjectIds(raw);
+  // Chunked so a population of thousands of failing files neither overflows the argv nor the
+  // 1 MiB stdout buffer. One failed chunk makes the whole ref unreadable — the same fail-soft
+  // answer an unreadable single call gave, which falls back to the budgeted per-path reads.
+  const out = new Map<string, string>();
+  for (let i = 0; i < paths.length; i += LS_TREE_CHUNK) {
+    const raw = await git(root, ['ls-tree', '-z', ref, '--', ...paths.slice(i, i + LS_TREE_CHUNK)]);
+    if (raw === null) return null;
+    for (const [path, objectId] of parseGitLsTreeObjectIds(raw)) out.set(path, objectId);
+  }
+  return out;
+}
+
+/**
+ * The per-read budget for comparisons that need their own git spawn, plus a memo of the
+ * gitlink diff per submodule (every path in one submodule asks the same question of the
+ * same two refs, so it is read once).
+ */
+interface SpawnBudget {
+  left: number;
+  gitlinkDiffs: Map<string, Promise<string | null>>;
+}
+
+function spawnBudgetSpent(path: string): Pick<
+  GateCandidateFailingFile,
+  'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'
+> {
+  return {
+    fixInRepairHead: null,
+    comparison: `not compared — this row needed its own git read and the ${MAX_SPAWN_COMPARES}-read budget for this measurement was spent`,
+    candidateBlob: null,
+    repairHeadBlob: null,
+    reading:
+      `UNMEASURABLE — '${path}' could not be answered from the batched read and the per-read spawn budget ` +
+      'was spent. It is counted in unmeasuredCount, never as fixed or as broken. Compare it by hand or run it at repairHead.',
+  };
 }
 
 export interface ReadGateCandidateFailuresOpts {
@@ -411,6 +474,7 @@ function unavailable(
     passedAtRepairHeadCount: 0,
     stillBrokenCount: 0,
     stillBrokenNeedsRunCount: 0,
+    unmeasuredCount: 0,
     changedBetweenRefs: null,
     nonTestLegsMeasured,
     nonTestLegs,
@@ -832,6 +896,7 @@ async function compareOne(
     candidate: Map<string, string> | null;
     repairHead: Map<string, string> | null;
   },
+  budget?: SpawnBudget,
 ): Promise<Pick<GateCandidateFailingFile, 'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'>> {
   // EI-22131981911313887: `repairHead` starts EQUAL to the candidate and stays there until a
   // fixer commits (see frozen-candidate-repair-queue.ts — "starts equal to `candidate` and stays
@@ -868,7 +933,13 @@ async function compareOne(
     // Compare the GITLINK, not the file. `git diff --raw` emits mode 160000 rows for
     // submodule pointers; a non-empty result means the submodule moved between the two
     // refs, which is the only thing the superproject can honestly say about this path.
-    const raw = await git(root, ['diff', '--raw', candidateSha, repairHeadSha, '--', sub]);
+    const readGitlink = () => git(root, ['diff', '--raw', candidateSha, repairHeadSha, '--', sub]);
+    let pending = budget?.gitlinkDiffs.get(sub);
+    if (!pending) {
+      pending = readGitlink();
+      budget?.gitlinkDiffs.set(sub, pending);
+    }
+    const raw = await pending;
     const moved = raw === null ? null : /^:160000/m.test(raw);
     return {
       fixInRepairHead: moved,
@@ -889,6 +960,11 @@ async function compareOne(
   // calls (one per ref); retain the old per-path rev-parse only as a fail-soft fallback when a
   // whole batch read itself failed. A successful batch that omits a path means that path is
   // absent at the ref, exactly like the old null result — do not spawn again for an omission.
+  const needsSpawn = !batchedBlobs || batchedBlobs.candidate === null || batchedBlobs.repairHead === null;
+  if (needsSpawn && budget) {
+    if (budget.left <= 0) return spawnBudgetSpent(path);
+    budget.left -= 1;
+  }
   const [a, b] = await Promise.all([
     batchedBlobs && batchedBlobs.candidate !== null
       ? Promise.resolve(batchedBlobs.candidate.get(path) ?? null)
@@ -904,7 +980,11 @@ async function compareOne(
   // recorded submodule-relative, so this is asked here and nowhere earlier — a resolvable path
   // never reaches it, and the ordinary case pays nothing. Returning `null` from the helper means
   // "not a submodule path at all", which leaves the UNMEASURABLE answer below exactly as it was.
-  if (fixInRepairHead === null) {
+  if (fixInRepairHead === null && submoduleRelativeCandidates(root, path, subs).length > 0) {
+    // Only a path that could be submodule-relative spends budget — the candidate test is a
+    // pure filesystem check, the lookup behind it is the spawn.
+    if (budget && budget.left <= 0) return spawnBudgetSpent(path);
+    if (budget) budget.left -= 1;
     const viaSubmodule = await submoduleRelativeComparison(git, root, path, subs, candidateSha, repairHeadSha);
     if (viaSubmodule) return viaSubmodule;
   }
@@ -959,6 +1039,17 @@ async function runsAtRepairHead(
      ORDER BY file_path, finished_at DESC NULLS LAST, id DESC`;
   for (const r of rows) out.set(r.file_path, { status: r.status, runId: Number(r.id) });
   return out;
+}
+
+/**
+ * Display priority for the capped row list — lower is shown first. Real work leads (measured
+ * failing at repairHead, then presumed broken), unanswered rows next, resolved rows last.
+ */
+function renderRank(f: GateCandidateFailingFile): number {
+  if (f.atRepairHead) return f.atRepairHead.status === 'pass' ? 4 : 0;
+  if (f.fixInRepairHead === false) return 1;
+  if (f.fixInRepairHead === null) return 2;
+  return 3;
 }
 
 function atRepairHeadReading(
@@ -1076,8 +1167,13 @@ export async function readGateCandidateFailures(
   }
 
   const filesJudged = Number(judged[0]?.files_judged ?? 0);
+  // WI-6554700010029506: every COUNT below is taken over the WHOLE failing population; only the
+  // rendered `distinctFailingFiles` list is capped. The counts used to be taken over the first
+  // MAX_FAILING_FILES rows in path order (blob-compared only for the first 40 of those), so the
+  // headline read `stillBrokenCount: 9` while 1,050 files were failing on the candidate and
+  // ~108 were still failing at repairHead. A capped fetch must never feed an aggregate.
   const truncated = failing.length > MAX_FAILING_FILES;
-  const rows = failing.slice(0, MAX_FAILING_FILES);
+  const rows = failing;
 
   // A repairHead that has not advanced IS the candidate, so its rows are the ones above.
   // Fail-soft: an unreadable read leaves every row on the blob reading it had before, which
@@ -1103,10 +1199,7 @@ export async function readGateCandidateFailures(
   // One `ls-tree` per ref replaces the former two-child-processes-per-file fan-out. Submodule
   // rows stay on their deliberately different gitlink comparison path below.
   const blobPaths = repairHeadSha
-    ? rows
-        .slice(0, MAX_BLOB_COMPARES)
-        .map((row) => row.file_path)
-        .filter((path) => !submoduleFor(path, subs))
+    ? rows.map((row) => row.file_path).filter((path) => !submoduleFor(path, subs))
     : [];
   const batchedBlobs =
     repairHeadSha && candidateSha !== repairHeadSha && blobPaths.length > 0
@@ -1116,8 +1209,9 @@ export async function readGateCandidateFailures(
         ]).then(([candidate, repairHead]) => ({ candidate, repairHead }))
       : undefined;
 
+  const budget: SpawnBudget = { left: MAX_SPAWN_COMPARES, gitlinkDiffs: new Map() };
   const compared: Array<Omit<GateCandidateFailingFile, 'atRepairHead'>> = [];
-  for (const [i, r] of rows.entries()) {
+  for (const r of rows) {
     const base = {
       path: r.file_path,
       attempts: Number(r.attempts ?? 1),
@@ -1134,20 +1228,9 @@ export async function readGateCandidateFailures(
       });
       continue;
     }
-    if (i >= MAX_BLOB_COMPARES) {
-      compared.push({
-        ...base,
-        fixInRepairHead: null,
-        comparison: `not compared — past the ${MAX_BLOB_COMPARES}-file blob-compare cap`,
-        candidateBlob: null,
-        repairHeadBlob: null,
-        reading: 'UNMEASURABLE — comparison capped; re-run the comparison by hand for this path.',
-      });
-      continue;
-    }
     compared.push({
       ...base,
-      ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs, moves, batchedBlobs)),
+      ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs, moves, batchedBlobs, budget)),
     });
   }
 
@@ -1171,17 +1254,28 @@ export async function readGateCandidateFailures(
   const stillBrokenNeedsRunCount = notRunAtHead.filter(
     (f) => f.fixInRepairHead === false && moves.kind !== 'none' && !(moves.kind === 'some' && moves.paths.filter((p) => p !== f.path).length === 0),
   ).length;
+  // The remainder that makes the buckets PARTITION the population: no run at repairHead and no
+  // comparison either. Stated, so a reader can see what the counts did not cover.
+  const unmeasuredCount = notRunAtHead.filter((f) => f.fixInRepairHead === null).length;
+
+  // The rendered list. When it must be cut, cut the least actionable rows: what is still failing
+  // at repairHead first, already-resolved rows last. `sort` is stable, so path order holds
+  // within a rank — and an uncut list keeps exactly the order it always had.
+  const rendered = truncated
+    ? [...files].sort((a, b) => renderRank(a) - renderRank(b)).slice(0, MAX_FAILING_FILES)
+    : files;
 
   return {
     candidateSha,
     repairHeadSha,
     filesJudged,
-    distinctFailingFiles: files,
+    distinctFailingFiles: rendered,
     failingFileCount: failing.length,
     alreadyFixedCount,
     passedAtRepairHeadCount,
     stillBrokenCount,
     stillBrokenNeedsRunCount,
+    unmeasuredCount,
     changedBetweenRefs:
       moves.kind === 'unknown'
         ? null

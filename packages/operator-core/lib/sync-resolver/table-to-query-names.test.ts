@@ -44,6 +44,18 @@ describe('queryNamesForTriggerEvent', () => {
     expect(queryNamesForTriggerEvent('')).toEqual([]);
   });
 
+  it('refreshes the attention list and projections when coord-message state changes (EI-25579142918093536)', () => {
+    const names = queryNamesForTriggerEvent('harness_shared.coord_event_log.changed');
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'plans.attention',
+        'plans.attentionItem',
+        'plans.attentionCounts',
+        'plans.attentionRefs',
+      ]),
+    );
+  });
+
   // WI-6796 — "the accounts tab stopped updating". The Accounts tab (and the /adv
   // Overview Spend tile) subscribe to `accounts.pool`, which resolves off
   // operator_account_pool. The table's dominant writer is the inference GATEWAY, a

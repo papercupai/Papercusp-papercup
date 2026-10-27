@@ -813,6 +813,9 @@ export default function PlansPane({
           <div
             style={{
               height: rowVirtualizer.getTotalSize(),
+              // The list is flex: its spacer must retain the virtual extent,
+              // otherwise the scrollbar reaches only the currently mounted rows.
+              flexShrink: 0,
               position: "relative",
               width: "100%",
             }}

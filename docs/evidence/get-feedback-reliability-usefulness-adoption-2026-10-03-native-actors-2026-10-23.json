@@ -1,0 +1,931 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Current native consultation action and actor census, 2026-10-23",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10005891",
+  "evidencePlane": "retained-native-and-serving-ledger",
+  "matrixRef": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-23.json",
+  "scope": "Finite recorded native action events and exact typed-receipt joins; not universal source immutability or an exhaustive database/system/filesystem mutation history.",
+  "nativeSnapshots": {
+    "source44024": {
+      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-44024/sessions/2026/10/15/rollout-2026-10-15T00-49-11-01a13de4-8aa4-7602-a68a-e5169d0fa42a.jsonl",
+      "capturedCompleteBytes": 4189328,
+      "capturedSha256": "88b01275741bcb0bc91206996572f63e6f693e240ef878bbd751b9866664ce0f",
+      "population": {
+        "from": "2026-10-23T00:29:05.638Z",
+        "through": "2026-10-23T00:38:31.607Z"
+      },
+      "itemTypeCounts": {
+        "UserMessage": 1,
+        "AgentMessage": 3,
+        "McpToolCall": 5,
+        "CommandExecution": 2,
+        "Reasoning": 3
+      },
+      "actions": [
+        {
+          "line": 1066,
+          "timestamp": "2026-10-23T00:33:34.901Z",
+          "lineSha256": "2e3634c3aae68facc6ff478f5b6a28eed75d0ec2b9161e3d9712298aa02fc90f",
+          "itemType": "McpToolCall",
+          "itemId": "exec-8829f2ce-c2cc-4bcc-b1a1-a0e72a0a9b5e",
+          "itemIdSha256": "40b217b84729abd58227354afb0ef7c668c0131a34d30d2a7b213d0da77c1695",
+          "itemSha256": "7e5761093d8b645b72d36900b267c80e319f47850b62d38c61cf25600a616798",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715614105,
+          "completedAtMs": 1792715614900,
+          "status": "completed",
+          "server": "papercusp-su",
+          "tool": "tools:invoke",
+          "innerTool": "events:status",
+          "argumentsSha256": "29a738073ead9c742e679d23c4049db9d3ddcbf9a42eb68537c0fab88f687f2c"
+        },
+        {
+          "line": 1068,
+          "timestamp": "2026-10-23T00:33:37.283Z",
+          "lineSha256": "de6dce3bfe059a290abaa027bbf97689fe9b3407173dc0d52edf3f342651166d",
+          "itemType": "McpToolCall",
+          "itemId": "exec-cc68c5cc-37ac-40ed-8bd8-c2ea61df5396",
+          "itemIdSha256": "d55629811a68f0484434c29e993637a5003b33b3f669eeab5bcad1de997dc178",
+          "itemSha256": "a010277382bb78fd9a3a4f95371ae0abd6215ab7e6177ddc74f81e79aa30f0ba",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715617060,
+          "completedAtMs": 1792715617283,
+          "status": "completed",
+          "server": "papercusp-su",
+          "tool": "tools:invoke",
+          "innerTool": "capability:bash_output",
+          "argumentsSha256": "d100e2a346ec4a198d21cc0e3cf4cb537c9740fb2fb08ae1c921752f8fa50b27"
+        },
+        {
+          "line": 1069,
+          "timestamp": "2026-10-23T00:33:38.389Z",
+          "lineSha256": "4b70c832ee674ee04f25068ce8365b156bfff9bf60e6da9c595ce5e81a8195e5",
+          "itemType": "CommandExecution",
+          "itemId": "exec-e5a31832-3548-49cf-acbe-cfa9d432c889",
+          "itemIdSha256": "91e7157b01e72822eca6f9fd915b60ad440dd91e1a17be7781456587c686a2d5",
+          "itemSha256": "9e7d28a2e36abe75237876d74e1c8b578c1843352578f21f3f499955a357cda4",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715618387,
+          "completedAtMs": 1792715618389,
+          "status": "completed",
+          "commandSha256": "a909041ece473e402526628e556147ffd1ea9e3dd1e0e118e8757f5b9ff9883c",
+          "program": "python3",
+          "receiptPostIds": []
+        },
+        {
+          "line": 1084,
+          "timestamp": "2026-10-23T00:34:41.750Z",
+          "lineSha256": "ea4febe67f53cdaaa6e03ba8f9c4409fe2130197d504fd2382b44f7feb7615c1",
+          "itemType": "McpToolCall",
+          "itemId": "exec-a9efc5f3-8a9a-4312-bfc9-f5a743054577",
+          "itemIdSha256": "d3d6c2e92749ad2859755613ce66db86815f63132432bf80cc5cc18d7b59d489",
+          "itemSha256": "4f56ba5aa49966efbb1e88eb9e99d29f8ab36dbb2f72017f2192b1ce43900181",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715673816,
+          "completedAtMs": 1792715681750,
+          "status": "completed",
+          "server": "papercusp-su",
+          "tool": "tools:invoke",
+          "innerTool": "coord:orient",
+          "argumentsSha256": "98448d96c4364891b6e9f84fab79568ea0a81aa095e39b50ea3b7fbf0e2199d6"
+        },
+        {
+          "line": 1092,
+          "timestamp": "2026-10-23T00:34:56.001Z",
+          "lineSha256": "c6d14792b9da5bd9b4e828648d07e05c9488bb7e9d003ab8d418e77ad778a3d5",
+          "itemType": "CommandExecution",
+          "itemId": "exec-f594b68f-e31c-4df3-ae06-593f8debd32e",
+          "itemIdSha256": "a42d862ca701ecfe2489f634bc2753027db54fb49c0734f6a23be64d08ffaced",
+          "itemSha256": "0c14e55e1443a3384daa20b9bc3c96d8aa159e3f1a981f2da4e28c58ad9ea04c",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715643164,
+          "completedAtMs": 1792715696001,
+          "status": "completed",
+          "commandSha256": "2b6c99dfbdd10b83b2dcd98cb40901e2fcf6dc274c80b2fd763c3ea5415397b3",
+          "program": "node",
+          "receiptPostIds": []
+        },
+        {
+          "line": 1096,
+          "timestamp": "2026-10-23T00:35:09.396Z",
+          "lineSha256": "7b089e49c13c7a5ed8d157dde7b7ac889316eaad1000254adcdd9123690d7789",
+          "itemType": "McpToolCall",
+          "itemId": "exec-8cfc82aa-282d-46fe-9249-510a55e04e92",
+          "itemIdSha256": "54e4e88db67c269485786474bae5fb1e9fd35cf0192be4c3a4416187224419ab",
+          "itemSha256": "6f292ac29b39489280c44372e57f709b7595dcd85bccf3bd74375e30af93f7ea",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715699442,
+          "completedAtMs": 1792715709396,
+          "status": "completed",
+          "server": "papercusp-su",
+          "tool": "tools:invoke",
+          "innerTool": "events:await",
+          "argumentsSha256": "566c72721ee584fb634b40ee85bd2c5f67b5ddb9b8d16ba348c2b684148eda93"
+        },
+        {
+          "line": 1104,
+          "timestamp": "2026-10-23T00:35:36.624Z",
+          "lineSha256": "fcd49557558f35338d503332a6c71ed7db1c9f92defccdca532298cfd7bbe04e",
+          "itemType": "McpToolCall",
+          "itemId": "exec-157d4839-4ba4-4489-bb6a-16269d820c6c",
+          "itemIdSha256": "a2201f967629ad907a28bef3c97278b02230a0db1acbfcaa64909b757e41869f",
+          "itemSha256": "eb293cb1c0971f1e090d403bab923966e41e7d7366dbdab243f24ba94c9acea6",
+          "threadId": "01a13de4-8aa4-7602-a68a-e5169d0fa42a",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "startedAtMs": 1792715735401,
+          "completedAtMs": 1792715736623,
+          "status": "completed",
+          "server": "papercusp-su",
+          "tool": "work_items:checkpoint",
+          "innerTool": null,
+          "argumentsSha256": "3d620a6b3817a2762a0675309eac87acf58554547b5f89c33fc4f1710e92e67b"
+        }
+      ],
+      "taskCompletions": [
+        {
+          "line": 1112,
+          "timestamp": "2026-10-23T00:35:46.587Z",
+          "turnId": "01a1662d-055c-7fc3-8cf7-b3fc45f03c04",
+          "lineSha256": "b5e6d976e0f11f966908fcd6d65f2a40a271071bc037b658f110eb0900688f50"
+        }
+      ]
+    },
+    "target50125": {
+      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-50125/sessions/2026/10/22/rollout-2026-10-22T20-29-38-01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf.jsonl",
+      "capturedCompleteBytes": 520119,
+      "capturedSha256": "6254451033c9df1a42cec21d80f27052547672846574134fd1c7cf55bc044f6c",
+      "population": "Saved native stream through its recorded task_complete; action inventory covers only item_completed McpToolCall and CommandExecution records.",
+      "itemTypeCounts": {
+        "UserMessage": 1,
+        "AgentMessage": 2,
+        "Reasoning": 8,
+        "CommandExecution": 6
+      },
+      "actions": [
+        {
+          "line": 21,
+          "timestamp": "2026-10-23T00:30:01.283Z",
+          "lineSha256": "47065863a72515e895229aa3bb8990002b7bbe175bc0a9598fc1074766bb53c7",
+          "itemType": "CommandExecution",
+          "itemId": "exec-c5ecf973-b6d6-4da0-9bf7-52b20c1f787e",
+          "itemIdSha256": "7d7c2242e4be06427ff592f393c09636b9ffa88382e08a47669801e739eb0f5e",
+          "itemSha256": "b5b596abc9a6e2f3adb73cdcd506eea5c63129342c661cad23543a0defb897b8",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715396026,
+          "completedAtMs": 1792715401283,
+          "status": "completed",
+          "commandSha256": "324edbe9af62809fb8331dfd8b46c7dabc29d8ca84f62ffb27e03572e301dbf5",
+          "program": "tools:find",
+          "receiptPostIds": []
+        },
+        {
+          "line": 28,
+          "timestamp": "2026-10-23T00:30:17.819Z",
+          "lineSha256": "1006f987f94f9e6c832cd429eae57df733118c12e0c2ed7747ae96b0a87c5190",
+          "itemType": "CommandExecution",
+          "itemId": "exec-6247f4ae-950d-4844-b3d4-7950e1dd71b1",
+          "itemIdSha256": "418c7d56fd8498c0aff60baf8ee8a9135a7ed5c1567a15943f148fa4c50e2f9b",
+          "itemSha256": "35af0d448139231dac56a949c1729e45ed876e52cda8359be1bf30a18210bec4",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715409697,
+          "completedAtMs": 1792715417806,
+          "status": "completed",
+          "commandSha256": "d69ef3ed2b0d1221cac288f79dbed324ccca50154389a726a223b51c9657bc11",
+          "program": "conversations:get",
+          "receiptPostIds": []
+        },
+        {
+          "line": 35,
+          "timestamp": "2026-10-23T00:30:34.452Z",
+          "lineSha256": "888c69bbe522bd62fd4193e2b26c0980f0cae95e89199e0e00320f64f2705114",
+          "itemType": "CommandExecution",
+          "itemId": "exec-b7ce740c-d08d-4cad-a859-4b229668aaf2",
+          "itemIdSha256": "602010cf797cf663800193c80d736be0e8615d39082d1bd5b2e4866ac66530d7",
+          "itemSha256": "f232240e315d9c69a3a348196420165a1bc4caf78b1f4a1f09bf0eb4538f82c7",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715429358,
+          "completedAtMs": 1792715434452,
+          "status": "failed",
+          "commandSha256": "d85dea36d3d57a15af4fb546875676a55b4d11c44f566e9b6ff2b3e017313dd8",
+          "program": "capability:read",
+          "receiptPostIds": []
+        },
+        {
+          "line": 42,
+          "timestamp": "2026-10-23T00:30:46.852Z",
+          "lineSha256": "672c24f8495d583be950b6b4b931b9087ed4a8d4cf31d171128837ffd5e8e3c5",
+          "itemType": "CommandExecution",
+          "itemId": "exec-acb06943-e2fd-41a2-98c4-f11a8cd9dfa2",
+          "itemIdSha256": "d4d4c47b93506de1bc2a6c78dac26610fcdd92cf54cba63e84ce6fcd4568004a",
+          "itemSha256": "7f46ccb4d533b9d2670b34c69445eb02a43b17cb526c72062ba5d07a4d8aed88",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715446851,
+          "completedAtMs": 1792715446852,
+          "status": "completed",
+          "commandSha256": "d5da9035d857637fcfbcfaff5f8d1514f61c82bfdaaa34c4411f40e4ef9d9196",
+          "program": "rg",
+          "receiptPostIds": []
+        },
+        {
+          "line": 47,
+          "timestamp": "2026-10-23T00:31:04.410Z",
+          "lineSha256": "a775644aff59be21f4bd90f36f42dd8d30e4b6329f538f22398460ccf84e9ede",
+          "itemType": "CommandExecution",
+          "itemId": "exec-e302f78f-00af-4f66-8fb4-6a495b5044a7",
+          "itemIdSha256": "c82387d01b2e110a858ba650a5506c739d95cafdfcd0d763cf2e085414f2c62a",
+          "itemSha256": "6ba56d3865daae1592a03b82a01f71a66f3c5370531431a3a3e77e5c84857c86",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715464410,
+          "completedAtMs": 1792715464410,
+          "status": "completed",
+          "commandSha256": "8f7714ef6d87f3a774c6405d360b8a6f595bcadcd53210ab1c66b30ad1594c06",
+          "program": "rg",
+          "receiptPostIds": []
+        },
+        {
+          "line": 70,
+          "timestamp": "2026-10-23T00:32:56.764Z",
+          "lineSha256": "e9b3203bd917d9f4f7334ca51ae39bb2f7e26c14da956641f014b8d8741963cd",
+          "itemType": "CommandExecution",
+          "itemId": "exec-548f7e10-9ebc-44f8-aafd-5a76fc13d287",
+          "itemIdSha256": "fd38d88e10d16f0e1e9f57fb6cf380faaffd06a1338470f7f0eecb20f9fae97d",
+          "itemSha256": "71cc77caa947186c749947a1d62a28cea3ffcc39891792942849455818e07830",
+          "threadId": "01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "startedAtMs": 1792715489035,
+          "completedAtMs": 1792715576759,
+          "status": "completed",
+          "commandSha256": "6c717b8b9fd5ee2813490e7ff54e4951cb8153f49c2826582b4f6e26effeaa0b",
+          "program": "consult:reply",
+          "receiptPostIds": [
+            1197725
+          ]
+        }
+      ],
+      "taskCompletions": [
+        {
+          "line": 80,
+          "timestamp": "2026-10-23T00:33:11.031Z",
+          "turnId": "01a16629-d42f-7682-b608-c20e2643ecd9",
+          "lineSha256": "3c66e9d207426a0d07abe9e1b7b24b658a962d3c1b45edb0feb8df8afe28c50b"
+        }
+      ]
+    },
+    "target50137": {
+      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-50137/sessions/2026/10/22/rollout-2026-10-22T20-45-19-01a16638-22c5-7891-98ae-864ac76f19f4.jsonl",
+      "capturedCompleteBytes": 480580,
+      "capturedSha256": "9ce6b852811a7c4bd8239dcff8dba1bb6b6e1ace44ffae6a5f13a881a05e4c72",
+      "population": "Saved native stream through its recorded task_complete; action inventory covers only item_completed McpToolCall and CommandExecution records.",
+      "itemTypeCounts": {
+        "UserMessage": 1,
+        "AgentMessage": 3,
+        "Reasoning": 7,
+        "CommandExecution": 9
+      },
+      "actions": [
+        {
+          "line": 21,
+          "timestamp": "2026-10-23T00:45:47.501Z",
+          "lineSha256": "16b25cd6e6b8cdb2b80c3a5709c14473eb74abdbcccc2d830dcd13a3adde4bd3",
+          "itemType": "CommandExecution",
+          "itemId": "exec-bc4ea84c-a41d-4a2a-9730-92513d96ea67",
+          "itemIdSha256": "48e7db4a93659de818c534a0047d6cfa48832d5f2c85079e2ad5f4356d6a41fd",
+          "itemSha256": "55109e1b7991878b80faec1ba8a99fe6e9cb8fcb58e2c10f90958705b76a0395",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716339301,
+          "completedAtMs": 1792716347501,
+          "status": "completed",
+          "commandSha256": "7f5a7b714276c51a175d5cb6e7fd1ec732daa8e94054ba7c65a725373c856440",
+          "program": "tools:find",
+          "receiptPostIds": []
+        },
+        {
+          "line": 28,
+          "timestamp": "2026-10-23T00:46:08.453Z",
+          "lineSha256": "e4598b7f11ab0f5479109b97d3e4f9ab7b2c784ab73b5d62643335b18bf96d7f",
+          "itemType": "CommandExecution",
+          "itemId": "exec-49ae47e9-45ef-4d2c-b937-987d9ff4e64a",
+          "itemIdSha256": "c9e2e4c40261ca5815e9615af23f0cb5f5284440a2d03a5b9353785843622890",
+          "itemSha256": "d46771aa31d2799054299a1df31c7db04e7ba5afd41f76b7b3f73f99d0f16487",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716356477,
+          "completedAtMs": 1792716368451,
+          "status": "completed",
+          "commandSha256": "031484a64eddc0cdc0b579e75c3c126c3e99e26ce5b2cef1eb82a330c22fbe54",
+          "program": "coord:orient",
+          "receiptPostIds": []
+        },
+        {
+          "line": 29,
+          "timestamp": "2026-10-23T00:46:21.360Z",
+          "lineSha256": "ca1f5cb0870dcfc5cb90411c6c73bf72ea1de88bf148f9227a14835be7c48e64",
+          "itemType": "CommandExecution",
+          "itemId": "exec-1102d98f-123f-4d26-8f66-8581836c99a7",
+          "itemIdSha256": "86c030a95a795d5934459c8649e293df1db50f2ba10291035f2ee1c39cefe377",
+          "itemSha256": "d1c335ac2a3a5ac8766f23102d803d354f273aca8edee0aba06be07af88a9fb1",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716372959,
+          "completedAtMs": 1792716381360,
+          "status": "completed",
+          "commandSha256": "cf4902aec254e67e2faa8aa2e1f6ca610c069018b82c1fd73e9ecb5a3f267396",
+          "program": "conversations:get",
+          "receiptPostIds": []
+        },
+        {
+          "line": 36,
+          "timestamp": "2026-10-23T00:46:35.502Z",
+          "lineSha256": "7f4ef25fbfefdf72595c19e021d98023bde44c2f0261f1cd3741f20dab629686",
+          "itemType": "CommandExecution",
+          "itemId": "exec-bfbdd5b9-d3d5-409b-91a4-e53c65f29aba",
+          "itemIdSha256": "0df988a9629e30629e49abb4c95ecbaf4c3ed9fb097f0ac397651534e9a3f8aa",
+          "itemSha256": "6fdef203332db8100d2fc2d2cfa08723aa0f25c4aa682d6e16512f8f2507f496",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716390821,
+          "completedAtMs": 1792716395488,
+          "status": "completed",
+          "commandSha256": "2e6c3792299e6712c69a774f8cec87fd5929e902d3f2d7f4aad103044b553114",
+          "program": "tools:find",
+          "receiptPostIds": []
+        },
+        {
+          "line": 43,
+          "timestamp": "2026-10-23T00:46:50.142Z",
+          "lineSha256": "f366b87713d3473f282e91767898a9502c57d04ffd5a2d97303242126e95e893",
+          "itemType": "CommandExecution",
+          "itemId": "exec-b86d14fe-406b-4385-914c-7f02bc8500ff",
+          "itemIdSha256": "737e764bfa88c40ac35f34055795d99e5c89ee772799e2adb0f36593c9083a87",
+          "itemSha256": "1b847d8a169afd53ff88000796b2bf2bbb5734fc456cc66373347ee7fa5627af",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716405559,
+          "completedAtMs": 1792716410141,
+          "status": "completed",
+          "commandSha256": "6b6bf1c9b1ec91b34f487fe4f3755939e8d62e53acfa3b5015998c8c5468c0a9",
+          "program": "sessions:read",
+          "receiptPostIds": []
+        },
+        {
+          "line": 44,
+          "timestamp": "2026-10-23T00:46:57.573Z",
+          "lineSha256": "323e04a5085502652d26d137d84de930c13401508bfdde3ad41a04f95e36a2b5",
+          "itemType": "CommandExecution",
+          "itemId": "exec-189819f2-8c97-4e86-a9aa-df2cd4830397",
+          "itemIdSha256": "102e4a8dcb356c8ee87a724e09adeb775804b447cea5898fe08973feefc780ee",
+          "itemSha256": "e2852ab91b3fc3fea42af9a1cebce26b96951513dee69f8700d05b0ee9ce3822",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716412612,
+          "completedAtMs": 1792716417573,
+          "status": "completed",
+          "commandSha256": "7d32fb1e8381d845d9c36de8ca66a95d08d2958dc19e933f2f7a652268a58404",
+          "program": "capability:read",
+          "receiptPostIds": []
+        },
+        {
+          "line": 53,
+          "timestamp": "2026-10-23T00:47:14.905Z",
+          "lineSha256": "fbb760bee01ebab3797ddb36675831e645d3b7f735c1b0ae03db0e5d6a1a370e",
+          "itemType": "CommandExecution",
+          "itemId": "exec-29595070-e97b-42a0-93f4-ae4a6b0363b2",
+          "itemIdSha256": "46f04eaad0a84be70e8b4683d9a9108a8fbafe11980d8da86db4468d3553bfdb",
+          "itemSha256": "9f7613ee8e46125d272c7b259ef758fea25270cc93fe968fa69a67fef6a8d563",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716429713,
+          "completedAtMs": 1792716434899,
+          "status": "completed",
+          "commandSha256": "da60ebfe70e674dabc142ae7f2431486ef14ad20bfc13ef215339d5d8810b20d",
+          "program": "tools:find",
+          "receiptPostIds": []
+        },
+        {
+          "line": 60,
+          "timestamp": "2026-10-23T00:47:35.722Z",
+          "lineSha256": "18c7abd27d587d8f37feab91c58f6f94dcb7db07c948603ed14a02468a031587",
+          "itemType": "CommandExecution",
+          "itemId": "exec-1209a129-3b55-4255-abd0-feb7f5f6db6b",
+          "itemIdSha256": "5cecbb11b4fd37376cc641b19e8e9b9f02df1877148227e7873e9e2ee9830d43",
+          "itemSha256": "c1685e9b8348b91a6583abc669272dfe0080429d6287bcd702776e6f0297b86b",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716450707,
+          "completedAtMs": 1792716455722,
+          "status": "completed",
+          "commandSha256": "0edb67494a1b3d1d02a60712e16799c0ac6cb6e6a86997777a16b5df9f39084b",
+          "program": "consult:reply",
+          "receiptPostIds": [
+            1197793
+          ]
+        },
+        {
+          "line": 67,
+          "timestamp": "2026-10-23T00:47:57.768Z",
+          "lineSha256": "ea6f30f751238fc21d022a128696cb2424c1d45957103ad66e446ea4572ceb2d",
+          "itemType": "CommandExecution",
+          "itemId": "exec-15780eba-5eda-4507-964a-469a783b6a57",
+          "itemIdSha256": "c8b09ea7c1942bd8ad37e6c2ba9d6e986092ae4a58c9ea8dd579ed5ed3da65b3",
+          "itemSha256": "e421bcdd3fabd48e362d431a02e09a1d14f4e0a9f5c558c54f26023bb125f9bf",
+          "threadId": "01a16638-22c5-7891-98ae-864ac76f19f4",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "startedAtMs": 1792716467349,
+          "completedAtMs": 1792716477768,
+          "status": "completed",
+          "commandSha256": "ecc45e378741b9be38d4e8bed900ec85708ef8900d25438ff0297b9015511beb",
+          "program": "consult:close",
+          "receiptPostIds": [
+            1197794
+          ]
+        }
+      ],
+      "taskCompletions": [
+        {
+          "line": 74,
+          "timestamp": "2026-10-23T00:48:05.462Z",
+          "turnId": "01a16638-2d26-78b0-9a2a-02274516e0ee",
+          "lineSha256": "23b50c86ed3a6e10de9c18549894c5bc6dc52e2670d0afc02e5b9ef35505eeef"
+        }
+      ]
+    }
+  },
+  "sourceOwnWake": {
+    "line": 1059,
+    "timestamp": "2026-10-23T00:33:19.150Z",
+    "lineSha256": "d61062100c5b3ae6b0ba1fcb4d42565012dc6666740bc9dee55d7119c3cd1479",
+    "originMarkers": [
+      "⟦turn-origin:wake-pump nonce:bb32e7f098311e73⟧"
+    ],
+    "event": "task:terminal:0mvk6ugja17zqri4ptg",
+    "awaitId": 351635,
+    "deliveryId": 948784,
+    "timeout": true,
+    "scope": "This retained source turn was woken by its existing task timeout. No claim is made about every source wake or every system action."
+  },
+  "sourcePrefix": {
+    "completeBytes": 3586542,
+    "expectedSha256": "a9581cd7f7258a37cca02470781b2b23e7412787ab7f2546998155cec3de9a3e",
+    "observedSha256": "a9581cd7f7258a37cca02470781b2b23e7412787ab7f2546998155cec3de9a3e",
+    "matches": true,
+    "scope": "The previously captured complete byte prefix remains intact; later source-owned appends are allowed and not evidence of a frozen source."
+  },
+  "sourceEndpointObservation": {
+    "before": {
+      "checked": [
+        {
+          "workspaceId": "papercusp-workspace",
+          "harnessSlug": "papercusp",
+          "planSlug": "desktop-portal-interface-adoption-2026-10-11",
+          "itemId": "P-001",
+          "claimId": "440e49d9-e397-4db3-8173-de045b1e3531",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "acquiredTs": "2026-10-22T23:37:53.579Z",
+          "expiresTs": "2026-10-23T00:43:14.710Z",
+          "lastActivityTs": "2026-10-23T00:23:14.710Z",
+          "expired": false
+        },
+        {
+          "workspaceId": "papercusp-workspace",
+          "harnessSlug": "papercusp",
+          "planSlug": "desktop-portal-interface-adoption-2026-10-11",
+          "itemId": "P-005",
+          "claimId": "b102af3e-b9e6-4af9-8907-ab72223718de",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "acquiredTs": "2026-10-22T23:37:53.868Z",
+          "expiresTs": "2026-10-23T00:43:14.710Z",
+          "lastActivityTs": "2026-10-23T00:23:14.710Z",
+          "expired": false
+        }
+      ],
+      "truncated": false,
+      "scope": "Exact-workspace source-owner plan-claim endpoints across harnesses, including lapsed leases. These recorded leases were nonexpired at the completed observation."
+    },
+    "after": {
+      "observedAt": "2026-10-23T00:38:31.607Z",
+      "scope": "Only the same two previously observed source plan-claim endpoints; not a complete source-owner census or a mutation history.",
+      "checked": [
+        {
+          "itemId": "P-001",
+          "claimId": "440e49d9-e397-4db3-8173-de045b1e3531",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "expired": false,
+          "expiresTs": "2026-10-23T00:54:49.105596Z",
+          "lastActivityTs": "2026-10-23T00:34:49.105597Z"
+        },
+        {
+          "itemId": "P-005",
+          "claimId": "b102af3e-b9e6-4af9-8907-ab72223718de",
+          "owner": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+          "livenessMode": "availability",
+          "ttlSec": 1200,
+          "expired": false,
+          "expiresTs": "2026-10-23T00:54:49.105713Z",
+          "lastActivityTs": "2026-10-23T00:34:49.105713Z"
+        }
+      ],
+      "comparison": {
+        "claimIdsAndOwnersPreserved": true,
+        "changedFields": [
+          "expiresTs",
+          "lastActivityTs"
+        ],
+        "attribution": "Unmeasured: these endpoint observations do not identify the actor that advanced timestamps or exclude intermediate mutation."
+      }
+    }
+  },
+  "matrixInputSha256": "9807468371fd4c09229ff7b0cfa51f8698c97cbc44bd9b337352fa5dd400df4e",
+  "matrixInputMeaning": "Hash of the input matrix edition used to derive this supplement; the matrix may subsequently gain a back-reference to this supplement.",
+  "exitCode": 0,
+  "status": "partial-evidence; not an acceptance or shipment pass",
+  "ownedGap": "EI-26733731037199530",
+  "sourceLedgerWindow": [
+    {
+      "id": "43259005",
+      "tool_name": "events:status",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:33:34.881+00",
+      "native_session": null
+    },
+    {
+      "id": "43259007",
+      "tool_name": "tools:invoke",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:33:34.883+00",
+      "native_session": null
+    },
+    {
+      "id": "43259022",
+      "tool_name": "activity:report",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:33:36.514+00",
+      "native_session": null
+    },
+    {
+      "id": "43259029",
+      "tool_name": "capability:bash_output",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:33:37.279+00",
+      "native_session": null
+    },
+    {
+      "id": "43259030",
+      "tool_name": "tools:invoke",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:33:37.28+00",
+      "native_session": null
+    },
+    {
+      "id": "43259517",
+      "tool_name": "coord:inbox",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:35.887+00",
+      "native_session": null
+    },
+    {
+      "id": "43259556",
+      "tool_name": "fleet:assignments",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:40.39+00",
+      "native_session": null
+    },
+    {
+      "id": "43259560",
+      "tool_name": "coord:orient",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:41.589+00",
+      "native_session": null
+    },
+    {
+      "id": "43259561",
+      "tool_name": "tools:invoke",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:41.593+00",
+      "native_session": null
+    },
+    {
+      "id": "43259569",
+      "tool_name": "activity:report",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:43.084+00",
+      "native_session": null
+    },
+    {
+      "id": "43259707",
+      "tool_name": "activity:report",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:34:57.974+00",
+      "native_session": null
+    },
+    {
+      "id": "43259829",
+      "tool_name": "activity:report",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:35:10.02+00",
+      "native_session": null
+    },
+    {
+      "id": "43259833",
+      "tool_name": "events:await",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:35:08.726+00",
+      "native_session": null
+    },
+    {
+      "id": "43259834",
+      "tool_name": "tools:invoke",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:35:08.727+00",
+      "native_session": null
+    },
+    {
+      "id": "43260061",
+      "tool_name": "work_items:checkpoint",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:35:36.607+00",
+      "native_session": null
+    },
+    {
+      "id": "43260069",
+      "tool_name": "activity:report",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "invoked_at": "2026-10-23 00:35:37.248+00",
+      "native_session": null
+    }
+  ],
+  "sourceLegacyAuditRows": [
+    {
+      "id": "43259005",
+      "tool_name": "events:status",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "serving_build_sha": "d740fc3802",
+      "native_session": null
+    },
+    {
+      "id": "43259029",
+      "tool_name": "capability:bash_output",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "serving_build_sha": "d740fc3802",
+      "native_session": null
+    },
+    {
+      "id": "43259560",
+      "tool_name": "coord:orient",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "serving_build_sha": "d740fc3802",
+      "native_session": null
+    },
+    {
+      "id": "43259833",
+      "tool_name": "events:await",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "serving_build_sha": "d740fc3802",
+      "native_session": null
+    },
+    {
+      "id": "43260061",
+      "tool_name": "work_items:checkpoint",
+      "status": "ok",
+      "coord_owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "serving_build_sha": "d740fc3802",
+      "native_session": null
+    }
+  ],
+  "sourceActivityNearLeaseRenewal": [
+    {
+      "id": "9022595",
+      "owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "kind": "tool",
+      "created_at": "2026-10-23 00:34:42.921313+00"
+    },
+    {
+      "id": "9022628",
+      "owner_id": "su-1f154d0e-e873-4ace-8ac3-8e3c637b3f0e",
+      "kind": "tool",
+      "created_at": "2026-10-23 00:34:57.616751+00"
+    }
+  ],
+  "targetReceiptLedger": [
+    {
+      "id": "43258685",
+      "tool_name": "consult:reply",
+      "status": "ok",
+      "coord_owner_id": "su-44a492fb-b5a0-47ca-b5c9-cf24eb321439",
+      "invoked_at": "2026-10-23 00:32:56.23+00",
+      "serving_build_sha": "e6412a947a",
+      "native_binding": "bound",
+      "native_adv": "50125",
+      "native_carrier": "query:native_session",
+      "call_fp": null,
+      "launch_record": {
+        "xmin": "1004628346",
+        "selection": "caller-row",
+        "advSessionId": "50125"
+      }
+    },
+    {
+      "id": "43264526",
+      "tool_name": "consult:reply",
+      "status": "ok",
+      "coord_owner_id": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33",
+      "invoked_at": "2026-10-23 00:47:35.553+00",
+      "serving_build_sha": "e6412a947a",
+      "native_binding": "bound",
+      "native_adv": "50137",
+      "native_carrier": "query:native_session",
+      "call_fp": null,
+      "launch_record": {
+        "xmin": "1004751104",
+        "selection": "caller-row",
+        "advSessionId": "50137"
+      }
+    },
+    {
+      "id": "43264702",
+      "tool_name": "consult:close",
+      "status": "ok",
+      "coord_owner_id": "su-c481e0f9-dec5-4ba3-8d9b-1e5d92d2df33",
+      "invoked_at": "2026-10-23 00:47:57.631+00",
+      "serving_build_sha": "e6412a947a",
+      "native_binding": "bound",
+      "native_adv": "50137",
+      "native_carrier": "query:native_session",
+      "call_fp": null,
+      "launch_record": {
+        "xmin": "1004751104",
+        "selection": "caller-row",
+        "advSessionId": "50137"
+      }
+    }
+  ],
+  "targetReceiptJoins": [
+    {
+      "nativeSnapshot": "target50125",
+      "nativeLine": 70,
+      "nativeItemId": "exec-548f7e10-9ebc-44f8-aafd-5a76fc13d287",
+      "nativeItemIdSha256": "fd38d88e10d16f0e1e9f57fb6cf380faaffd06a1338470f7f0eecb20f9fae97d",
+      "postId": 1197725,
+      "invocationId": "43258685",
+      "tool": "consult:reply",
+      "serverNativeBinding": "bound",
+      "callerRow": {
+        "xmin": "1004628346",
+        "selection": "caller-row",
+        "advSessionId": "50125"
+      },
+      "joinStrength": "Native terminal command result contains this exact typed post receipt; server verifies the native session and selects the answering caller row. This is a CLI receipt join, not an MCP call-id-fingerprint match."
+    },
+    {
+      "nativeSnapshot": "target50137",
+      "nativeLine": 60,
+      "nativeItemId": "exec-1209a129-3b55-4255-abd0-feb7f5f6db6b",
+      "nativeItemIdSha256": "5cecbb11b4fd37376cc641b19e8e9b9f02df1877148227e7873e9e2ee9830d43",
+      "postId": 1197793,
+      "invocationId": "43264526",
+      "tool": "consult:reply",
+      "serverNativeBinding": "bound",
+      "callerRow": {
+        "xmin": "1004751104",
+        "selection": "caller-row",
+        "advSessionId": "50137"
+      },
+      "joinStrength": "Native terminal command result contains this exact typed post receipt; server verifies the native session and selects the answering caller row. This is a CLI receipt join, not an MCP call-id-fingerprint match."
+    },
+    {
+      "nativeSnapshot": "target50137",
+      "nativeLine": 67,
+      "nativeItemId": "exec-15780eba-5eda-4507-964a-469a783b6a57",
+      "nativeItemIdSha256": "c8b09ea7c1942bd8ad37e6c2ba9d6e986092ae4a58c9ea8dd579ed5ed3da65b3",
+      "postId": 1197794,
+      "invocationId": "43264702",
+      "tool": "consult:close",
+      "serverNativeBinding": "bound",
+      "callerRow": {
+        "xmin": "1004751104",
+        "selection": "caller-row",
+        "advSessionId": "50137"
+      },
+      "joinStrength": "Native terminal command result contains this exact typed post receipt; server verifies the native session and selects the answering caller row. This is a CLI receipt join, not an MCP call-id-fingerprint match."
+    }
+  ],
+  "sourceWriterEvidence": {
+    "legacyServingBuild": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "legacyMcpHostBlob": "c9c86e2d427b2c47575ee341446a938921d9e719",
+    "legacyBehavior": "The serving handler reads x-papercusp-native-session or the native_session query for binding; it does not read _meta.threadId/callId and does not stamp the current nativeSession audit object.",
+    "currentMcpHostPath": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts",
+    "currentMcpHostSha256": "fbe34345e470a984e75b15c0af012aea560d263c54cced95d9bcad9e56721b9c",
+    "currentBehavior": "The current handler verifies _meta.threadId and stamps callIdFingerprint only for a bound native thread with a valid _meta.callId.",
+    "renewalPaths": [
+      "packages/operator-core/lib/plan-items/activity-claim-renewal.ts",
+      "packages/operator-core/lib/plan-items/claims.ts"
+    ],
+    "renewalBehavior": "The activity bus receives workspace::owner, applies a per-owner throttle, and renewOwnerActivityClaims updates that owner's nonexpired claims. The two source activity rows are compatible with this path; they do not identify the exact actor/statement responsible for the historical endpoint timestamp change.",
+    "sourceCallJoinStrength": "Candidate source-owned tool/time matches are retained as corroboration; the legacy runtime's missing native-session audit prevents an exact native MCP call-id join."
+  },
+  "verification": {
+    "coverage": {
+      "population": [
+        "retained complete source prefix",
+        "recorded source timeout wake",
+        "finite recorded native action inventory",
+        "three exact CLI post/caller-row joins",
+        "source legacy serving-writer diagnosis",
+        "exact source lease transition/actor history",
+        "exhaustive system/filesystem/wake effects",
+        "native MCP per-call witness for these answering trials",
+        "original eight-thread quality cohort",
+        "independent acceptance and shipment"
+      ],
+      "checked": [
+        "retained complete source prefix",
+        "recorded source timeout wake",
+        "finite recorded native action inventory",
+        "three exact CLI post/caller-row joins",
+        "source legacy serving-writer diagnosis"
+      ],
+      "notChecked": [
+        "exact source lease transition/actor history",
+        "exhaustive system/filesystem/wake effects",
+        "native MCP per-call witness for these answering trials",
+        "original eight-thread quality cohort",
+        "independent acceptance and shipment"
+      ],
+      "notApplicable": [],
+      "residue": [
+        "EI-26733731037199530",
+        "WI-10005889",
+        "WI-10005891"
+      ]
+    }
+  },
+  "assertions": [
+    {
+      "name": "source prefix retained",
+      "ok": true
+    },
+    {
+      "name": "source turn triggered by its own task timeout",
+      "ok": true
+    },
+    {
+      "name": "native receipt joins select answering caller rows",
+      "ok": true
+    },
+    {
+      "name": "answering streams contain their task-complete boundary",
+      "ok": true
+    }
+  ],
+  "publication": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs --serialize-json",
+    "locatorValues": "redacted-display-only",
+    "resolution": "Native paths are redacted display references, not local filesystem paths. Resolve retained transcripts by their native session IDs and source-byte SHA256 witnesses; original locator strings are pinned below.",
+    "sourceDocumentSha256": "b00e369e8d0b8fd90bd00313057f313edae60e318b52295305f6e0a224eed192",
+    "originalLocatorSha256": {
+      "/nativeSnapshots/source44024/nativePath": "f2ff679f2345e87a65cbcc908c706ddca482cd29c94d10b648b770bf0a73fced",
+      "/nativeSnapshots/target50125/nativePath": "8e1412a7adc70a25e295d86e60a7a43fdac224b2e8568e96265cf4794d94cbf0",
+      "/nativeSnapshots/target50137/nativePath": "3f554a813dd356b7461f4747484a6b5017377eeade887c33245a93c13c73b45a"
+    }
+  }
+}

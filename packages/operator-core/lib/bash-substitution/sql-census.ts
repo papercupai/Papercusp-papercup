@@ -361,6 +361,63 @@ export function evaluateVerdictDrift(
 
 // ── (c) no fall after ship ───────────────────────────────────────────────────
 
+/** Fixed covered-shape cohort, scoped identically in both half-open windows. */
+export interface SqlRepairWindow {
+  scopeRef: string;
+  shapesRef: string;
+  since: string;
+  until: string;
+  rawAgents: number;
+  activeAgents: number;
+  toolAgents: number;
+  complete: boolean;
+}
+export interface SqlRepairMeasurement {
+  baseline: SqlRepairWindow;
+  observation: SqlRepairWindow;
+  exposure: { build: string; observedAt: string; evidenceRef: string } | null;
+  coverage: 'pass' | 'fail' | 'unknown';
+  requiredFallPct?: number;
+}
+export interface SqlRepairOutcome {
+  status: 'healthy' | 'failed' | 'unknown';
+  disposition: 'adopted' | 'no-fall' | 'coverage-failed' | 'insufficient-evidence';
+  baselineRate: number | null;
+  observedRate: number | null;
+  normalizedFall: number | null;
+  adoptionRate: number | null;
+}
+
+/** Calls alone never prove adoption: compare raw-agent shares of active agents. */
+export function evaluateSqlRepairOutcome(input: SqlRepairMeasurement, measuredAt = Date.now()): SqlRepairOutcome {
+  const unknown: SqlRepairOutcome = { status: 'unknown', disposition: 'insufficient-evidence',
+    baselineRate: null, observedRate: null, normalizedFall: null, adoptionRate: null };
+  const valid = (w: SqlRepairWindow) => Boolean(w?.scopeRef?.trim() && w.shapesRef?.trim() && w.complete === true)
+    && Number.isFinite(Date.parse(w.since)) && Number.isFinite(Date.parse(w.until))
+    && Date.parse(w.until) > Date.parse(w.since)
+    && [w.rawAgents, w.activeAgents, w.toolAgents].every(n => Number.isSafeInteger(n) && n >= 0)
+    && w.rawAgents <= w.activeAgents && w.toolAgents <= w.activeAgents;
+  const b = input.baseline, o = input.observation, e = input.exposure;
+  const requiredFall = input.requiredFallPct ?? .3;
+  if (!Number.isFinite(measuredAt) || !valid(b) || !valid(o)
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(e?.build ?? '')
+    || !e?.evidenceRef?.trim() || !Number.isFinite(Date.parse(e.observedAt))
+    || Date.parse(e.observedAt) > measuredAt || Date.parse(o.until) > measuredAt
+    || b.scopeRef !== o.scopeRef || b.shapesRef !== o.shapesRef
+    || Date.parse(b.until) > Date.parse(e.observedAt) || Date.parse(o.since) < Date.parse(e.observedAt)
+    || Date.parse(b.until) - Date.parse(b.since) !== Date.parse(o.until) - Date.parse(o.since)
+    || !Number.isFinite(requiredFall) || requiredFall <= 0 || requiredFall > 1
+    || b.activeAgents < 3 || o.activeAgents < 3 || b.rawAgents < 3
+    || !['pass', 'fail'].includes(input.coverage)) return unknown;
+  const baselineRate = b.rawAgents / b.activeAgents, observedRate = o.rawAgents / o.activeAgents;
+  const normalizedFall = (baselineRate - observedRate) / baselineRate;
+  const adoptionRate = o.toolAgents / o.activeAgents;
+  const passed = input.coverage === 'pass' && normalizedFall >= requiredFall && o.toolAgents > 0;
+  return { status: passed ? 'healthy' : 'failed',
+    disposition: passed ? 'adopted' : input.coverage === 'fail' ? 'coverage-failed' : 'no-fall',
+    baselineRate, observedRate, normalizedFall, adoptionRate };
+}
+
 export interface NoFallCrossing {
   relation: string;
   /** The night the covering tool first appeared for this relation, per the census's own history. */

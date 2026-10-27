@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { toolDeliveryDriftVerdict } from '../../../../scripts/gen-tool-delivery';
+import { dryTasks, HOST_WORKSPACE } from '../__tests__/affected-tests-repo-wide-invariant-guards.shared';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ARTIFACT = 'apps/operator/scripts/tool-delivery.generated.mjs';
@@ -89,12 +90,23 @@ describe('the drift guard is wired into the build, not merely runnable locally',
     expect(script).toContain('--check');
   });
 
-  it('is attached as a repo-wide guard by the affected-tests router', () => {
-    const router = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
-    expect(
-      router.includes('gen:tool-delivery:check'),
-      'affected-tests.mjs no longer attaches gen:tool-delivery:check, so drift would stop failing the build',
-    ).toBe(true);
+  it.each([
+    'libs/generic/tooldef/src/compact-schema.ts',
+    'apps/operator/scripts/tool-delivery.generated.mjs',
+    'packages/operator-core/lib/agent-tools/tool-demand-snapshot.json',
+  ])('the actual affected-tests router attaches the guard for %s', (changedPath) => {
+    expect(dryTasks(changedPath)).toContain(`${HOST_WORKSPACE} :: gen:tool-delivery:check`);
+  });
+
+  it('CALIBRATION: the router excludes test-only edits from this generated-input guard', () => {
+    expect(dryTasks('libs/generic/tooldef/src/compact-schema.test.ts'))
+      .not.toContain(`${HOST_WORKSPACE} :: gen:tool-delivery:check`);
+  });
+
+  it('resolves the guard through its actual workspace script', () => {
+    const workspace = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'));
+    expect(workspace.scripts?.['gen:tool-delivery:check'])
+      .toBe('tsx ../../scripts/gen-tool-delivery.ts --check');
   });
 
   it('the committed artifact exists and is not a stub', () => {

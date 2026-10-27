@@ -556,6 +556,15 @@ describe('WI-10005697: standing pattern watch dedupe', () => {
     expect(second.deduped).toMatchObject({ joined_watch_id: first.watch.id });
     expect(second.watch.id).toBe(first.watch.id);
     expect(second.watch.payload_filter).toMatchObject({ id: 'WI-1' });
+    // An already existing supply event was never observed by this late watch.
+    // Registration must require a fresh authoritative pull even on the join
+    // path; telling the member to sleep here strands that supply indefinitely.
+    for (const registration of [first, second]) {
+      expect(registration.beforeSleep).toMatchObject({ tool: 'scheduler:get_next', required: true });
+      expect(registration.beforeSleep.afterMiss).toEqual({ tool: 'loop:end', required: true });
+      expect(registration.advice).toContain('BEFORE sleeping');
+      expect(registration.advice).toContain('only a verified miss');
+    }
   });
 
   it('CALIBRATION: a DIFFERING payload_filter is a different watch and still gets its own row', async () => {

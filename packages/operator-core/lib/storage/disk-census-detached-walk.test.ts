@@ -190,6 +190,17 @@ describe('runDetachedDuWalk', () => {
     expect(run.deniedSample).toEqual(['/srv/census-root/locked']);
   });
 
+  it('returns a bounded sample of non-permission stderr diagnostics', async () => {
+    writeState();
+    const longLine = 'du: error ' + 'x'.repeat(500);
+    const remaining = Array.from({ length: 8 }, (_value, index) => 'du: missing path-' + index);
+    finishAttempt(1, 1, 5 * GiB, [longLine, ...remaining].join('\n'));
+    const run = await runDetachedDuWalk(ROOT, { dir, launch: fakeLauncher().launch, isAlive: () => false });
+    expect(run.stderrSample).toHaveLength(5);
+    expect(run.stderrSample?.[0]).toHaveLength(400);
+    expect(run.stderrSample?.[1]).toBe(remaining[0]);
+  });
+
   it('stops waiting on abort without touching the walk', async () => {
     writeState();
     const ctl = new AbortController();
@@ -239,6 +250,5 @@ describe('census walk directories', () => {
 
   it('returns 0 when the walk root does not exist yet', async () => {
     expect(await pruneCensusWalks({ root: join(dir, 'absent') })).toBe(0);
-    expect(readFileSync.length).toBeGreaterThan(0);
   });
 });

@@ -572,6 +572,8 @@ export interface WorkspaceHostProviderContext {
   durableStorageAllocation?: { dbGiB: number; workspaceGiB: number };
   /** Validated controller admission: absolute canary expiry, never renewed by replay. */
   canaryTeardownDeadlineAt?: string;
+  /** Original validated run identity, paired with the absolute expiry; never desired.provider. */
+  canaryRunId?: string;
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

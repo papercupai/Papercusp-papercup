@@ -160,9 +160,9 @@ function toLaneResyncItems(value: unknown): LaneResyncItem[] {
  *  rather than a joined string so no separator can collide with a slug. */
 function toDrainTransitionPlans(
   value: unknown,
-): Array<{ planSlug: string; harnessSlug: string | null }> {
+): Array<{ planSlug: string; harnessSlug: string | null; accountableOwnerId?: string }> {
   if (!Array.isArray(value)) return [];
-  const out: Array<{ planSlug: string; harnessSlug: string | null }> = [];
+  const out: Array<{ planSlug: string; harnessSlug: string | null; accountableOwnerId?: string }> = [];
   const seen = new Set<string>();
   for (const v of value) {
     if (v && typeof v === "object" && typeof (v as { planSlug?: unknown }).planSlug === "string") {
@@ -174,7 +174,9 @@ function toDrainTransitionPlans(
       const key = JSON.stringify([harnessSlug, planSlug]);
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ planSlug, harnessSlug });
+      const accountableOwnerId = typeof (v as { accountableOwnerId?: unknown }).accountableOwnerId === 'string'
+        ? (v as { accountableOwnerId: string }).accountableOwnerId : undefined;
+      out.push({ planSlug, harnessSlug, ...(accountableOwnerId ? { accountableOwnerId } : {}) });
     }
   }
   return out;
@@ -277,7 +279,10 @@ export async function fireBuiltinReactionAction(
         "../agent-tools/plans/plan-drain-transition"
       );
       for (const p of plans) {
-        await applyPlanDrainTransition(p.planSlug, p.harnessSlug).catch(() => null);
+        await applyPlanDrainTransition(p.planSlug, p.harnessSlug, {
+          workspaceId,
+          ...(p.accountableOwnerId ? { accountableOwnerId: p.accountableOwnerId } : {}),
+        }).catch(() => null);
       }
       return { ok: true };
     }

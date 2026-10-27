@@ -10,11 +10,19 @@ const {
   dedicatedSessionBeginMock,
   dedicatedSessionEndMock,
   dedicatedPoolCalls,
+  samplePgBouncerPoolsMock,
   workspaceCalls,
+  workspaceAcquisitionErrors,
   acquireTimeouts,
   acquireRetries,
+  nativeRuntimeEndMock,
+  stopNativeLaunchMock,
+  releaseLeaseMock,
+  archiveSessionMock,
 } = vi.hoisted(() => {
-  const sql = vi.fn(async () => [] as unknown[]);
+  const sql = vi.fn<(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>>(
+    async () => [],
+  );
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
   const appSql = vi.fn(async () => [] as unknown[]);
   const dedicatedSql = vi.fn(async () => [] as unknown[]);
@@ -28,6 +36,8 @@ const {
     dedicatedSessionBeginMock: dedicatedBegin,
     dedicatedSessionEndMock: dedicatedEnd,
     dedicatedPoolCalls: [] as Array<{ label: string; options?: { max?: number; sessionAffinity?: boolean } }>,
+    samplePgBouncerPoolsMock: vi.fn(async () => ({ ok: true })),
+    workspaceAcquisitionErrors: [] as unknown[],
     workspaceCalls: [] as Array<{
       workspaceId: string;
       options?: {
@@ -40,6 +50,10 @@ const {
     }>,
     acquireTimeouts: [] as Array<number | undefined>,
     acquireRetries: [] as Array<number | undefined>,
+    nativeRuntimeEndMock: vi.fn(async () => undefined),
+    stopNativeLaunchMock: vi.fn(async () => undefined),
+    releaseLeaseMock: vi.fn(async () => undefined),
+    archiveSessionMock: vi.fn(async () => undefined),
   };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -69,6 +83,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
       },
     ) => {
       workspaceCalls.push({ workspaceId, options });
+      const acquisitionError = workspaceAcquisitionErrors.shift();
+      if (acquisitionError !== undefined) throw acquisitionError;
       return fn(appSessionRowsMock);
     }) as typeof actual.withWorkspace,
     retryOnRetryableDbDeadline: ((...args: Parameters<typeof actual.retryOnRetryableDbDeadline>) => {
@@ -81,6 +97,21 @@ vi.mock('@papercusp/db-org', async (orig) => {
     }) as typeof actual.withAcquisitionDeadline,
   };
 });
+vi.mock('./endpoint-route/routes/transport/pgbouncer-pool-sample.mjs', () => ({
+  samplePgBouncerPools: samplePgBouncerPoolsMock,
+}));
+vi.mock('./blind-review-runtime-recovery', () => ({
+  retireRuntimeNamespacesForNativeEnd: nativeRuntimeEndMock,
+}));
+vi.mock('./blueprint/support-workflow-native-launch', () => ({
+  stopSupportOperationNativeLaunch: stopNativeLaunchMock,
+}));
+vi.mock('./session-end-lease-release-hook', () => ({
+  scheduleSessionEndLeaseRelease: releaseLeaseMock,
+}));
+vi.mock('./session-archive-hook', () => ({
+  scheduleArchiveForAdvSession: archiveSessionMock,
+}));
 
 import {
   isDeadTerminalLaunch,
@@ -94,14 +125,17 @@ import {
   advSessionLivenessEvidenceCoversAgent,
   ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
   getLatestActiveAdvSessionByOwner,
+  latestAdvSessionByCoordOwner,
   readAdvSessionLaunchRecordByOwner,
   readSuLaunchSpecByOwner,
   listResumableSessions,
   markAdvSessionShutdownAcceptedByOwner,
+  markAdvSessionEnded,
   reactivateAdvSessionByOwner,
   repairStaleAdvSessionTerminalMarkers,
   shutdownAcceptedOwnerIds,
   toIsoTimestamp,
+  type AdvSessionResumePin,
   type AdvSessionRow,
 } from './adv-sessions';
 
@@ -113,6 +147,7 @@ beforeEach(() => {
   appSessionRowsMock.mockReset();
   appSessionRowsMock.mockResolvedValue([]);
   workspaceCalls.length = 0;
+  workspaceAcquisitionErrors.length = 0;
   dedicatedSessionRowsMock.mockReset();
   dedicatedSessionRowsMock.mockResolvedValue([]);
   dedicatedSessionBeginMock.mockReset();
@@ -120,10 +155,127 @@ beforeEach(() => {
   dedicatedSessionEndMock.mockReset();
   dedicatedSessionEndMock.mockResolvedValue(undefined);
   dedicatedPoolCalls.length = 0;
+  samplePgBouncerPoolsMock.mockReset();
+  samplePgBouncerPoolsMock.mockResolvedValue({ ok: true });
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
   acquireRetries.length = 0;
+  nativeRuntimeEndMock.mockClear();
+  stopNativeLaunchMock.mockClear();
+  releaseLeaseMock.mockClear();
+  archiveSessionMock.mockClear();
+});
+
+describe('native end runtime cutoff', () => {
+  const expectedBinding = { coordOwnerId: 'reviewer-original', sessionId: 'native-original',
+    startedAt: '2026-10-26 18:00:00.123456+00', workspaceId: 'runtime-workspace' };
+
+  it('does not retire runtime resources when the terminal CAS rejects a stale observation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([]);
+    await expect(markAdvSessionEnded(71, 0, 'self', { expectedBinding })).resolves.toBe(false);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(nativeRuntimeEndMock).not.toHaveBeenCalled();
+    expect(stopNativeLaunchMock).not.toHaveBeenCalled();
+    expect(releaseLeaseMock).not.toHaveBeenCalled();
+    expect(archiveSessionMock).not.toHaveBeenCalled();
+    const [strings, ...values] = advSessionRowsMock.mock.calls[0]!;
+    expect(strings.join('?')).toContain('AND ended_at IS NULL');
+    expect(strings.join('?')).toContain('AND started_at =');
+    expect(values).toContain(expectedBinding.sessionId);
+    expect(values).toContain(expectedBinding.startedAt);
+  });
+
+  it('cuts off only the exact native identity returned by the winning terminal write', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 71, workspace_id: 'runtime-workspace',
+      session_id: 'native-original' }]);
+    await expect(markAdvSessionEnded(71, 0, 'self', { expectedBinding })).resolves.toBe(true);
+    await vi.waitFor(() => expect(nativeRuntimeEndMock).toHaveBeenCalledTimes(1));
+    expect(nativeRuntimeEndMock).toHaveBeenCalledWith({ workspaceId: 'runtime-workspace',
+      advSessionId: 71, nativeSessionId: 'native-original' });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    expect(stopNativeLaunchMock).toHaveBeenCalledWith(71);
+  });
+
+  it('never fabricates a runtime native identity for an unregistered ended session', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 71, workspace_id: 'runtime-workspace', session_id: null }]);
+    await expect(markAdvSessionEnded(71, 1, 'self')).resolves.toBe(true);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(nativeRuntimeEndMock).not.toHaveBeenCalled();
+    expect(stopNativeLaunchMock).toHaveBeenCalledWith(71);
+  });
+});
+
+describe('exact binding reservation pin', () => {
+  const pin: AdvSessionResumePin = { workspaceId: 'workspace-a',
+    binding: { coordOwnerId: 'su-task-target', sessionId: 'native-task-target', startedAt: '2026-10-23 20:00:00.123456-04' } };
+  const row = () => ({ agent: 'codex', ended_at: null, ended_by: null, retired_at: null,
+    started_at: new Date(0), binding_started_at: pin.binding.startedAt,
+    workspace_id: pin.workspaceId, coord_owner_id: pin.binding.coordOwnerId, session_id: pin.binding.sessionId,
+    omp_thread_id: null, resume_claim_key: null, resume_claimed_at: null });
+
+  it('reserves the matching stale task incarnation without inventing terminal evidence', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([row()]).mockResolvedValueOnce([{ lease_expires_at: new Date(Date.now() + 120_000) }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 1, undefined, false, pin))
+      .toMatchObject({ status: 'acquired', acquired: true, replayed: false });
+    const update = (advSessionRowsMock.mock.calls[1][0] as readonly string[]).join(' ');
+    expect(update).not.toMatch(/ended_at\s*=/);
+  });
+
+  it('still refuses a recent unended incarnation without liveness evidence', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), started_at: new Date() }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 300, undefined, false, pin))
+      .toEqual({ status: 'live', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a changed binding before reserving a task incarnation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), session_id: 'later-native' }]);
+    expect(await acquireAdvSessionResume(42, 'task-key', 120, 1, undefined, false, pin))
+      .toEqual({ status: 'binding-changed', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ended-only takeover reservation pin', () => {
+  const pin = { workspaceId: 'workspace-a', requireTerminal: true as const,
+    binding: { coordOwnerId: 'su-target', sessionId: 'native-target', startedAt: '2026-10-23 20:00:00.123456-04' } };
+  const row = () => ({ agent: 'codex', ended_at: new Date(), ended_by: 'self', retired_at: null,
+    started_at: new Date(0), binding_started_at: pin.binding.startedAt,
+    workspace_id: pin.workspaceId, coord_owner_id: pin.binding.coordOwnerId, session_id: pin.binding.sessionId,
+    omp_thread_id: null, resume_claim_key: null, resume_claimed_at: null });
+
+  it.each(['workspace_id', 'coord_owner_id', 'session_id', 'binding_started_at'] as const)(
+    'compares %s while holding the same row lock that grants custody', async field => {
+      const changed = { ...row(), [field]: 'changed' };
+      advSessionRowsMock.mockResolvedValueOnce([changed]);
+      expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined, undefined, false, pin))
+        .toEqual({ status: 'binding-changed', acquired: false });
+      expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+      const statement = (advSessionRowsMock.mock.calls[0][0] as readonly string[]).join(' ');
+      expect(statement).toContain('FOR UPDATE');
+      expect(statement).toContain('started_at::text AS binding_started_at');
+    },
+  );
+
+  it('refuses an ended-to-live change even for a replay key and an expired reservation', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ ...row(), ended_at: null, ended_by: null,
+      resume_claim_key: 'takeover-key', resume_claimed_at: new Date(0) }]);
+    expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined,
+      { version: 1, kind: 'no-live-codex-writer' }, false, pin))
+      .toEqual({ status: 'live', acquired: false });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('grants only the matching ended incarnation without clearing its terminal marker', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([row()])
+      .mockResolvedValueOnce([{ lease_expires_at: new Date(Date.now() + 120_000) }]);
+    expect(await acquireAdvSessionResume(42, 'takeover-key', 120, undefined, undefined, false, pin))
+      .toMatchObject({ status: 'acquired', acquired: true, replayed: false });
+    const update = (advSessionRowsMock.mock.calls[1][0] as readonly string[]).join(' ');
+    expect(update).toContain('resume_claim_key =');
+    expect(update).not.toContain('ended_at =');
+  });
 });
 
 describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
@@ -251,6 +403,55 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     });
     expect(appAdvSessionTableReads()).toHaveLength(1);
     expect(advSessionTableReads()).toHaveLength(0);
+  });
+
+  it('uses the isolated direct pool after a measured workspace app-pool acquisition deadline', async () => {
+    const timeout = new DbCallDeadlineError('withWorkspace:acquire(app)', 7_500, 7_500, 'org-app');
+    Object.defineProperty(timeout, 'retryable', { value: true });
+    workspaceAcquisitionErrors.push(timeout);
+    dedicatedSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    await expect(classifyOwnerNativeSession({
+      ownerId,
+      sessionId: nativeId,
+      workspaceId: 'ws-app-acquire-fallback',
+    })).resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+
+    expect(workspaceCalls).toHaveLength(1);
+    expect(workspaceCalls[0]).toMatchObject({
+      workspaceId: 'ws-app-acquire-fallback',
+      options: { readOnly: true, acquireTimeoutMs: 7_500, acquireRetries: 0 },
+    });
+    expect(appAdvSessionTableReads()).toHaveLength(0);
+    expect(advSessionTableReads()).toHaveLength(0);
+    expect(dedicatedSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(dedicatedPoolCalls).toEqual([{
+      label: 'native-session-verifier-fallback',
+      options: { max: 1, sessionAffinity: true },
+    }]);
+    expect(dedicatedSessionEndMock).toHaveBeenCalledWith({ timeout: 5 });
+  });
+
+  it('keeps workspace query failures fail-closed without using the isolated pool', async () => {
+    const queryFailure = new DbCallDeadlineError('withWorkspace:query(app)', 7_500, 7_500, 'org-app');
+    appSessionRowsMock.mockRejectedValue(queryFailure);
+
+    await expect(classifyOwnerNativeSession({
+      ownerId,
+      sessionId: nativeId,
+      workspaceId: 'ws-app-query-failure',
+    })).rejects.toBe(queryFailure);
+
+    expect(dedicatedPoolCalls).toHaveLength(0);
+    expect(dedicatedSessionBeginMock).not.toHaveBeenCalled();
+    expect((queryFailure as DbCallDeadlineError & { nativeSessionVerificationPhase?: string })
+      .nativeSessionVerificationPhase).toBe('owner_candidate_rows_lookup');
   });
 
   it('captures relative verifier transaction and lookup timings without changing its acquire budget', async () => {
@@ -574,6 +775,96 @@ describe('getLatestActiveAdvSessionByOwner', () => {
   it('does not query for a blank owner id', async () => {
     await expect(getLatestActiveAdvSessionByOwner('   ')).resolves.toBeNull();
     expect(advSessionRowsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('latestAdvSessionByCoordOwner acquisition fallback', () => {
+  const row = {
+    id: 541,
+    workspace_id: 'workspace-a',
+    plan_slug: null,
+    agent: 'codex',
+    role: null,
+    feature: null,
+    mode: 'console' as const,
+    terminal_bin: null,
+    pid: null,
+    window_id: null,
+    omp_thread_id: null,
+    label: null,
+    cwd: null,
+    coord_owner_id: 'su-owner-lookup',
+    session_id: 'native-session',
+    started_at: '2026-10-24T08:00:00.000Z',
+    ended_at: null,
+    exit_code: null,
+    ended_by: null,
+    ended_signal: null,
+  };
+
+  it.each([
+    'boundedOrgTxn:begin(admin)',
+    'boundedOrgTxn:setup-read-only(admin)',
+    'boundedOrgTxn:setup-timeouts(admin)',
+  ])('uses the dedicated direct-session lookup after %s', async (label) => {
+    const timeout = new DbCallDeadlineError(label, 1_500, 1_606, 'org-admin');
+    advSessionBeginMock.mockRejectedValueOnce(timeout);
+    dedicatedSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const query = Array.isArray(args[0]) ? args[0].join(' ') : String(args[0] ?? '');
+      return query.includes('FROM harness_shared.adv_sessions') ? [row] : [];
+    });
+
+    await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toMatchObject({
+      id: 541,
+      coordOwnerId: 'su-owner-lookup',
+      sessionId: 'native-session',
+    });
+    await vi.waitFor(() => expect(samplePgBouncerPoolsMock).toHaveBeenCalledTimes(1));
+
+    expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(dedicatedPoolCalls).toEqual([{
+      label: 'latest-adv-session-owner-fallback',
+      options: { max: 1, sessionAffinity: true },
+    }]);
+    expect(dedicatedSessionEndMock).toHaveBeenCalledWith({ timeout: 5 });
+    expect(samplePgBouncerPoolsMock).toHaveBeenCalledWith(
+      'latest-adv-session-owner-acquire-deadline',
+      expect.objectContaining({ pid: process.pid, requestFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/) }),
+    );
+  });
+
+  it('does not use the dedicated path for a query error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const query = Array.isArray(args[0]) ? args[0].join(' ') : String(args[0] ?? '');
+      if (query.includes('FROM harness_shared.adv_sessions')) {
+        throw Object.assign(new Error('permission denied'), { code: '42501' });
+      }
+      return [];
+    });
+
+    try {
+      await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toBeNull();
+      expect(dedicatedPoolCalls).toHaveLength(0);
+      expect(samplePgBouncerPoolsMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not use the dedicated path for an acquisition deadline from another pool', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    advSessionBeginMock.mockRejectedValueOnce(
+      new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 1_500, 1_606, 'org-app'),
+    );
+
+    try {
+      await expect(latestAdvSessionByCoordOwner('su-owner-lookup')).resolves.toBeNull();
+      expect(dedicatedPoolCalls).toHaveLength(0);
+      expect(samplePgBouncerPoolsMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

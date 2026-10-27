@@ -10,12 +10,13 @@
  * fc14943c-6984-4791-905b-194e0d8665d4) is covered directly here instead.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook } from '@testing-library/react';
 
-let captured: { onOpen?: () => void; onError?: () => void } | null = null;
+type StreamOptions = { onOpen?: () => void; onError?: () => void; handlers: Record<string, (raw: string) => void> };
+let captured: StreamOptions | null = null;
 vi.mock('@papercusp/sse', () => ({
-  createResilientEventSource: (opts: { onOpen?: () => void; onError?: () => void }) => {
-    captured = { onOpen: opts.onOpen, onError: opts.onError };
+  createResilientEventSource: (opts: StreamOptions) => {
+    captured = opts;
     return { close: vi.fn() };
   },
 }));
@@ -28,7 +29,7 @@ vi.mock('@papercusp/sync', () => ({
   reportSyncUnreachable: () => reportUnreachable(),
 }));
 
-import { selectToolStates, useStateSnapshots, type SnapshotEnvelope } from './use-state-snapshots';
+import { _resetSnapshotStore, selectToolStates, useStateSnapshots, type SnapshotEnvelope } from './use-state-snapshots';
 
 function env(runId: string, toolState?: unknown): SnapshotEnvelope {
   return {
@@ -64,11 +65,26 @@ describe('selectToolStates', () => {
 
 describe('useStateSnapshots — shared connectivity wiring', () => {
   beforeEach(() => {
+    _resetSnapshotStore();
     captured = null;
     reportReachable.mockReset();
     reportUnreachable.mockReset();
   });
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); _resetSnapshotStore(); });
+
+  it('clears obsolete runs on reconnect and adopts lower versions with their workspace and conversation', () => {
+    const hook = renderHook(() => useStateSnapshots());
+    const snapshot = (version: number, workspaceId: string, conversationId: string) => JSON.stringify({
+      ...env('same-run'), version, workspaceId, snapshot: { openCards: [{ correlationId: 'card',
+        prompt: 'Choose', createdAt: 1, dataSchemaJson: {}, conversationId }] },
+    });
+    act(() => captured!.handlers.snapshot(snapshot(90, 'previous', 'old-conversation')));
+    expect(hook.result.current.cards).toHaveLength(1);
+    act(() => captured!.handlers.reset(JSON.stringify({ workspaceId: 'current' })));
+    expect(hook.result.current.cards).toEqual([]);
+    act(() => captured!.handlers.snapshot(snapshot(1, 'current', 'owning-conversation')));
+    expect(hook.result.current.cards[0]).toMatchObject({ workspaceId: 'current', conversationId: 'owning-conversation' });
+  });
 
   it('feeds the shared sync connectivity store: onOpen → reachable, onError → unreachable', () => {
     renderHook(() => useStateSnapshots());

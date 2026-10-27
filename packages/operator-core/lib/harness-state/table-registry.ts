@@ -355,6 +355,9 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // not-federatable / rate-capped). LOCAL-ONLY — each receiver counts what IT
   // refused; federating them would let a peer skew another machine's metrics.
   'federation_refused_op_counters',
+  // P-003/R-1: local physical DBOS routineFire INSERT counts; GC-independent
+  // hourly telemetry. A peer's counts must never influence this host's census.
+  'routine_fire_start_counts',
   // p2p-work-distribution-2026-07-02 (P-205 / WI-1938, mig 483): the durable
   // metering + contribution ledger. LOCAL-ONLY, never federated (PRIVACY — raw
   // account totals + per-user breakdowns must not leave the machine; peers see

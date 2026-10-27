@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Retained get-feedback source-frame, port and typed-reply re-observation",
+  "framework": "operational",
+  "command": [
+    "code:run",
+    "Reobserve retained P002 native frame, port and reply identities v2"
+  ],
+  "startedAt": "2026-10-23T22:31:35.132Z",
+  "finishedAt": "2026-10-23T22:31:35.974Z",
+  "exitCode": 0,
+  "summary": "Eighteen retained-history assertions passed for two exact source/target/port/reply chains. This executed a new re-observation of retained records and checksum controls. It did not rerun historical native sessions, restore unavailable invocation rows, or establish present-day native isolation or shipment.",
+  "assertions": [
+    {
+      "id": "retained-28326-frame-identity",
+      "passed": true,
+      "evidence": "Exact indexed user turn, source native identity, port and target owner agree."
+    },
+    {
+      "id": "retained-28326-frame-bytes",
+      "passed": true,
+      "evidence": "Indexed frame SHA-256 matches the pinned complete retained frame."
+    },
+    {
+      "id": "retained-28326-port-identity",
+      "passed": true,
+      "evidence": "Retained canonical session-port row has exact source/target/backend identities and delivered status."
+    },
+    {
+      "id": "retained-28326-port-source-hash",
+      "passed": true,
+      "evidence": "Retained source and rendered hashes match original pinned port identities."
+    },
+    {
+      "id": "retained-28326-seed-checksum",
+      "passed": true,
+      "evidence": "Maintained verifySessionPortSeed recomputes the actual retained payload checksum after removing only its separate turn-origin preamble."
+    },
+    {
+      "id": "retained-28326-semantic-tamper-control",
+      "passed": true,
+      "evidence": "A changed port-id byte in a private verification string must fail checksum verification."
+    },
+    {
+      "id": "retained-28326-receipt-removal-control",
+      "passed": true,
+      "evidence": "Removing the complete terminal checksum receipt in a private verification string must fail verification."
+    },
+    {
+      "id": "retained-28326-typed-post",
+      "passed": true,
+      "evidence": "Canonical original typed reply remains under its exact answering author, thread, source identity and body hash."
+    },
+    {
+      "id": "retained-28326-target-endpoint",
+      "passed": true,
+      "evidence": "Retained answering endpoint is the distinct exact native session and records self-end with exit zero."
+    },
+    {
+      "id": "retained-28545-frame-identity",
+      "passed": true,
+      "evidence": "Exact indexed user turn, source native identity, port and target owner agree."
+    },
+    {
+      "id": "retained-28545-frame-bytes",
+      "passed": true,
+      "evidence": "Indexed frame SHA-256 matches the pinned complete retained frame."
+    },
+    {
+      "id": "retained-28545-port-identity",
+      "passed": true,
+      "evidence": "Retained canonical session-port row has exact source/target/backend identities and delivered status."
+    },
+    {
+      "id": "retained-28545-port-source-hash",
+      "passed": true,
+      "evidence": "Retained source and rendered hashes match original pinned port identities."
+    },
+    {
+      "id": "retained-28545-seed-checksum",
+      "passed": true,
+      "evidence": "Maintained verifySessionPortSeed recomputes the actual retained payload checksum after removing only its separate turn-origin preamble."
+    },
+    {
+      "id": "retained-28545-semantic-tamper-control",
+      "passed": true,
+      "evidence": "A changed port-id byte in a private verification string must fail checksum verification."
+    },
+    {
+      "id": "retained-28545-receipt-removal-control",
+      "passed": true,
+      "evidence": "Removing the complete terminal checksum receipt in a private verification string must fail verification."
+    },
+    {
+      "id": "retained-28545-typed-post",
+      "passed": true,
+      "evidence": "Canonical original typed reply remains under its exact answering author, thread, source identity and body hash."
+    },
+    {
+      "id": "retained-28545-target-endpoint",
+      "passed": true,
+      "evidence": "Retained answering endpoint is the distinct exact native session and records self-end with exit zero."
+    }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "sourceBindingsReobserved": [
+    28326,
+    28545
+  ],
+  "sourceBindingsReplaced": [],
+  "execution": {
+    "toolInvocation": {
+      "id": "43764591",
+      "tool_name": "code:run",
+      "status": "ok",
+      "coord_owner_id": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+      "serving_host": "port-3070",
+      "serving_build_sha": "d740fc3802",
+      "invoked_at": "2026-10-23 22:31:36.275+00"
+    },
+    "localVerifierExitCode": 0,
+    "localVerifierStatus": "completed",
+    "localReaderCommit": "8cb3f7bdf30a45f5ba7e3a5933d612899aea5dcc",
+    "localReaderFiles": [
+      {
+        "path": "packages/operator-core/lib/session-port/render.ts",
+        "sha256": "c9ecfcd72d8b829d5192b4ebb662040d55b4ce206474642e0e7605f6e0a3c52a",
+        "matchesCommittedHead": true
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/security.ts",
+        "sha256": "76ca2a7549487996e081cc5fb66e8d55a6f12cbe8d8e2eb2ea50fe42e4f51c4c",
+        "matchesCommittedHead": true
+      }
+    ],
+    "toolRuntimeRole": "Read-only canonical record access through the named existing operator, plus the maintained local checksum verifier. No claim that the historical native runtime was relaunched."
+  },
+  "observations": [
+    {
+      "bindingId": 28326,
+      "portId": "1cb6a2e8-0ad2-4a77-8bc6-74c9db4ee844",
+      "source": {
+        "id": 34993,
+        "backend": "omp",
+        "nativeSessionId": "01a1108f-8f57-72ec-9ab1-b151b0ffee47",
+        "ownerId": "su-8db09869-4458-4ee9-9af9-2e3685093f8b",
+        "sourceHash": "0f9a17693e769f45fb451e93fbda1b268b6c9737202237cf0d3c929b2cbbc6e5"
+      },
+      "target": {
+        "id": 36434,
+        "nativeSessionId": "01a114d8-8237-7252-a8ea-159148925c14",
+        "ownerId": "su-gfomp144-muxo4ij1",
+        "endedAt": "2026-10-07 05:33:18.081421+00"
+      },
+      "indexedFrame": {
+        "ref": "session_turn:codex:01a114d8-8237-7252-a8ea-159148925c14:1",
+        "chars": 2826,
+        "sha256": "6707904e69c3c03044e4cae651e8f04aa9839dc8406bf5f72b134fe93fb3adee",
+        "seedSha256": "10420c8e74e66438b6107a4ca35421e817d7b39b9301df54798dd25d41720faa",
+        "rawNativeTranscriptBytesReobserved": false
+      },
+      "post": {
+        "id": 1161438,
+        "authorId": "su-gfomp144-muxo4ij1",
+        "createdAt": "2026-10-07 05:32:54.984+00",
+        "chars": 705,
+        "sha256": "d22cdf3f0e0c23c64a285041af98c402c23c943c0fbd7699fb4a78c58fc87500"
+      },
+      "renderedHash": "feea490f2b3f659590e7c0b5421d684ec32de928e9a2336e66229a60d1b5ff92"
+    },
+    {
+      "bindingId": 28545,
+      "portId": "849dd7cc-a3e7-4b99-83a5-eed56ef27fa8",
+      "source": {
+        "id": 33570,
+        "backend": "codex",
+        "nativeSessionId": "01a0fd7d-4bc6-7ab1-8d66-b018b196b6f2",
+        "ownerId": "su-19073653-c04b-4ca4-a0fc-d8db63a2db0b",
+        "sourceHash": "eb81a48b963224f0f8087905cc30371a2524dbdaf47b8406156c85d8afc2b612"
+      },
+      "target": {
+        "id": 36488,
+        "nativeSessionId": "01a1154e-07f6-7450-a631-8b89b496cfa7",
+        "ownerId": "su-b1022d2c-9e15-4db0-aecf-938d8e52c196",
+        "endedAt": "2026-10-07 07:41:18.039574+00"
+      },
+      "indexedFrame": {
+        "ref": "session_turn:codex:01a1154e-07f6-7450-a631-8b89b496cfa7:1",
+        "chars": 3412,
+        "sha256": "5394825c37baaff9d1c79458f7d5fcb124e65f36a0dcf72f577f1923c070d2fe",
+        "seedSha256": "4f608c89ed4520ee16962e6c89ccb0d2a3daad5e677cab01a57a908954f92601",
+        "rawNativeTranscriptBytesReobserved": false
+      },
+      "post": {
+        "id": 1161656,
+        "authorId": "su-b1022d2c-9e15-4db0-aecf-938d8e52c196",
+        "createdAt": "2026-10-07 07:40:46.895+00",
+        "chars": 1171,
+        "sha256": "a61f7aa35ea20623cdc2a6ebd949f60b43bd0589988058ef9be9a5c827bc896a"
+      },
+      "renderedHash": "60293f6fe422e9f622c40bc6ec8a7a5647804a4c6e0815743bf25209e31bafde"
+    }
+  ],
+  "historicalCapturedEvidence": {
+    "capturedInvocation": {
+      "id": 32698816,
+      "tool": "work_items:comment",
+      "status": "ok",
+      "workspaceId": "papercusp-workspace",
+      "ownerId": "su-gfomp144-muxo4ij1",
+      "servingHost": "port-3170",
+      "servingBuild": "256a4151bc",
+      "identityLaunchRecord": {
+        "xmin": "802687845",
+        "selection": "caller-row",
+        "advSessionId": "36434"
+      },
+      "sourceReceiptSha256": "dc9b074fdc48fef99572ee8236a70f9b04b3a20931b6ee66b04f20094b40c981",
+      "scope": "Contemporaneously captured JSON receipt, re-read today. Its old live invocation row is unavailable today; the capture is not a fresh canonical join."
+    },
+    "ompSourceBeforeAfter": {
+      "scope": "Equality of the selected scalar rows in two captured historical endpoint receipts, not a transition/actor/claim census.",
+      "beforeReceiptSha256": "eb09079b567693cf0e303eebec29ace96e7f310a6c5919af7ab3c0b5d359a984",
+      "afterReceiptSha256": "f64afaa27a4eeb5356b9ce8a30b0c481780c5ce1f630f7762bb2a5c040d78b86",
+      "selectedRowsEqual": true
+    }
+  },
+  "retentionObservation": {
+    "queriedOriginalInvocationIds": [
+      32698816,
+      32780852,
+      32780450,
+      32780693
+    ],
+    "scope": "Exact IDs in workspace papercusp-workspace; no harness predicate hid a legacy differently attributed row.",
+    "currentRows": 0,
+    "queryTruncated": false,
+    "positiveControl": {
+      "id": 43762359,
+      "workspaceId": "papercusp-workspace",
+      "status": "passed"
+    },
+    "finding": "The exact original invocation rows were unavailable in this current live table read. Cause and archive availability are undetermined. Earlier captured usable evidence is preserved as historical evidence.",
+    "rawNativeFile": "The previously recorded local native transcript path for target36434 is absent at re-observation. Indexed complete user frame and assistant turn are retained; they are distinct from raw file bytes or an exact physical tool-call trace."
+  },
+  "calibration": {
+    "positive": "Both pinned complete indexed frames pass the maintained verifySessionPortSeed against the original canonical session-port rendered hash.",
+    "negative": [
+      "Changing port-id semantic bytes in a private string rejects the checksum.",
+      "Removing the complete terminal checksum receipt in a private string rejects verification."
+    ],
+    "expectedData": "Pinned original source/target owners, native IDs, port IDs, source hashes, rendered hashes and typed-post body hashes are embedded in the runnable verification request. No live native source or product state is mutated.",
+    "intermediateObservation": "The first exploratory removal control removed only a terminal character because its newline search was escaped incorrectly. The corrected observation explicitly finds the two newline bytes and removes the complete receipt; it was executed again and is the sole source of the eighteen assertions recorded here."
+  },
+  "scopeLimits": [
+    "Historical transcript/port/reply identity and current retained-record re-observation only.",
+    "No new native subprocess, consultation, requester quality cohort, or adoption evidence was generated.",
+    "The original CLI and MCP-refused classifications remain; a current physical native MCP per-call witness is not manufactured from indexed text.",
+    "Source claim/lease transition actor attribution, mutate-then-revert exclusion, non-MCP/system/filesystem effects, original shortfalls, independent plan acceptance and exact shipment remain open.",
+    "Any future test-run recorded from this artifact is the present re-observation, not a new run or retroactive ledger identity for either historical native session."
+  ],
+  "bindingPolicy": "Do not retract or shadow original28326/28545 with this new observation unless a governed comparison establishes equivalent scope and preserves every historical native/runtime and disclosed-gap limitation.",
+  "recording": {
+    "mechanism": "testing:record-run",
+    "state": "pending committed artifact readback; numeric test-run ID is not yet claimed",
+    "reason": "Reuse the maintained operational recorder; no new tool, table, runtime or launcher was introduced."
+  },
+  "verificationRequest": {
+    "title": "Reobserve retained P002 native frame, port and reply identities v2",
+    "timeoutSec": 45,
+    "script": "const expected=[{\"bindingId\":28326,\"portId\":\"1cb6a2e8-0ad2-4a77-8bc6-74c9db4ee844\",\"sourceId\":34993,\"targetId\":36434,\"sourceBackend\":\"omp\",\"sourceNativeId\":\"01a1108f-8f57-72ec-9ab1-b151b0ffee47\",\"sourceOwner\":\"su-8db09869-4458-4ee9-9af9-2e3685093f8b\",\"targetNativeId\":\"01a114d8-8237-7252-a8ea-159148925c14\",\"targetOwner\":\"su-gfomp144-muxo4ij1\",\"postId\":1161438,\"sourceHash\":\"0f9a17693e769f45fb451e93fbda1b268b6c9737202237cf0d3c929b2cbbc6e5\",\"renderedHash\":\"feea490f2b3f659590e7c0b5421d684ec32de928e9a2336e66229a60d1b5ff92\",\"frameHash\":\"6707904e69c3c03044e4cae651e8f04aa9839dc8406bf5f72b134fe93fb3adee\",\"postHash\":\"d22cdf3f0e0c23c64a285041af98c402c23c943c0fbd7699fb4a78c58fc87500\"},{\"bindingId\":28545,\"portId\":\"849dd7cc-a3e7-4b99-83a5-eed56ef27fa8\",\"sourceId\":33570,\"targetId\":36488,\"sourceBackend\":\"codex\",\"sourceNativeId\":\"01a0fd7d-4bc6-7ab1-8d66-b018b196b6f2\",\"sourceOwner\":\"su-19073653-c04b-4ca4-a0fc-d8db63a2db0b\",\"targetNativeId\":\"01a1154e-07f6-7450-a631-8b89b496cfa7\",\"targetOwner\":\"su-b1022d2c-9e15-4db0-aecf-938d8e52c196\",\"postId\":1161656,\"sourceHash\":\"eb81a48b963224f0f8087905cc30371a2524dbdaf47b8406156c85d8afc2b612\",\"renderedHash\":\"60293f6fe422e9f622c40bc6ec8a7a5647804a4c6e0815743bf25209e31bafde\",\"frameHash\":\"5394825c37baaff9d1c79458f7d5fcb124e65f36a0dcf72f577f1923c070d2fe\",\"postHash\":\"a61f7aa35ea20623cdc2a6ebd949f60b43bd0589988058ef9be9a5c827bc896a\"}];const startedAt=new Date().toISOString();const frames=await Promise.all(expected.map(e=>tools.sessions.read({session:e.targetNativeId,source_kind:'codex',from_idx:1,to_idx:1,limit:1,order:'asc',text_limit:4000})));const queries=[{\"sql\":\"SELECT id,source_adv_session_id,target_adv_session_id,source_backend,target_backend,status,source_hash,rendered_hash FROM harness_shared.session_ports WHERE workspace_id='papercusp-workspace' AND id IN ('1cb6a2e8-0ad2-4a77-8bc6-74c9db4ee844','849dd7cc-a3e7-4b99-83a5-eed56ef27fa8') ORDER BY id\",\"allowUnscoped\":false,\"maxRows\":2},{\"sql\":\"SELECT id,thread_id,author_id,body,created_at FROM harness_shared.coord_thread_posts WHERE workspace_id='papercusp-workspace' AND id IN (1161438,1161656) ORDER BY id\",\"allowUnscoped\":false,\"maxRows\":2},{\"sql\":\"SELECT id,coord_owner_id,session_id,ended_at,ended_by,exit_code FROM harness_shared.adv_sessions WHERE workspace_id='papercusp-workspace' AND id IN (36434,36488) ORDER BY id\",\"allowUnscoped\":false,\"maxRows\":2}];const rs=await Promise.all(queries.map(q=>tools.dev.pg_query(q)));const input={expected,frames,ports:rs[0].rows,posts:rs[1].rows,targets:rs[2].rows};const program=\"import { createHash } from 'node:crypto';\\nimport { verifySessionPortSeed } from './packages/operator-core/lib/session-port/render.ts';\\nconst hash=s=>createHash('sha256').update(s).digest('hex');\\nconst assertions=[]; const observations=[];\\nfor(const e of input.expected){const turns=input.frames.find(x=>x.session_id===e.targetNativeId)?.turns??[];const frame=turns.find(t=>t.turn_idx===1);const port=input.ports.find(p=>p.id===e.portId);const post=input.posts.find(p=>Number(p.id)===e.postId);const target=input.targets.find(t=>Number(t.id)===e.targetId);const add=(suffix,passed,evidence)=>assertions.push({id:'retained-'+e.bindingId+'-'+suffix,passed:Boolean(passed),evidence});const text=frame?.text??'';const at=text.indexOf('[PAPERCUSP SESSION PORT — UNTRUSTED HISTORICAL DATA]');const seed=at>=0?text.slice(at):'';\\nadd('frame-identity',frame?.owner===e.targetOwner&&text.includes('port-id: '+e.portId)&&text.includes(e.sourceNativeId)&&text.includes(e.targetOwner), 'Exact indexed user turn, source native identity, port and target owner agree.');\\nadd('frame-bytes',hash(text)===e.frameHash,'Indexed frame SHA-256 matches the pinned complete retained frame.');\\nadd('port-identity',port&&Number(port.source_adv_session_id)===e.sourceId&&Number(port.target_adv_session_id)===e.targetId&&port.source_backend===e.sourceBackend&&port.target_backend==='codex'&&port.status==='delivered','Retained canonical session-port row has exact source/target/backend identities and delivered status.');\\nadd('port-source-hash',port?.source_hash===e.sourceHash&&port?.rendered_hash===e.renderedHash,'Retained source and rendered hashes match original pinned port identities.');\\nadd('seed-checksum',verifySessionPortSeed(seed,e.renderedHash),'Maintained verifySessionPortSeed recomputes the actual retained payload checksum after removing only its separate turn-origin preamble.');\\nadd('semantic-tamper-control',!verifySessionPortSeed(seed.replace('port-id: '+e.portId,'port-id: changed-'+e.portId),e.renderedHash),'A changed port-id byte in a private verification string must fail checksum verification.');\\nconst receiptAt=seed.indexOf(String.fromCharCode(10,10)+'[PAPERCUSP SESSION PORT CHECKSUM');\\nadd('receipt-removal-control',receiptAt>=0&&!verifySessionPortSeed(seed.slice(0,receiptAt),e.renderedHash),'Removing the complete terminal checksum receipt in a private verification string must fail verification.');\\nadd('typed-post',post&&post.author_id===e.targetOwner&&post.thread_id==='work-item-thread-WI-10005889'&&post.body.includes(e.sourceNativeId)&&hash(post.body)===e.postHash,'Canonical original typed reply remains under its exact answering author, thread, source identity and body hash.');\\nadd('target-endpoint',target&&target.coord_owner_id===e.targetOwner&&target.session_id===e.targetNativeId&&target.ended_by==='self'&&Number(target.exit_code)===0&&e.targetOwner!==e.sourceOwner,'Retained answering endpoint is the distinct exact native session and records self-end with exit zero.');\\nobservations.push({bindingId:e.bindingId,portId:e.portId,source:{id:e.sourceId,backend:e.sourceBackend,nativeSessionId:e.sourceNativeId,ownerId:e.sourceOwner,sourceHash:e.sourceHash},target:{id:e.targetId,nativeSessionId:e.targetNativeId,ownerId:e.targetOwner,endedAt:target?.ended_at},indexedFrame:{ref:frame?.ref,chars:text.length,sha256:hash(text),seedSha256:hash(seed),rawNativeTranscriptBytesReobserved:false},post:{id:e.postId,authorId:post?.author_id,createdAt:post?.created_at,chars:post?.body.length,sha256:post?hash(post.body):null},renderedHash:e.renderedHash});}\\nconst failed=assertions.filter(a=>!a.passed);process.stdout.write(JSON.stringify({assertions,observations,exitCode:failed.length?1:0,failed:failed.map(a=>a.id),reader:{path:'packages/operator-core/lib/session-port/render.ts'}}));process.exitCode=failed.length?1:0;\";const command=\"node --import tsx --input-type=module - <<'GF_VERIFY_RETAINED'\\nconst input=\"+JSON.stringify(input)+\";\\n\"+program+\"\\nGF_VERIFY_RETAINED\";const result=await tools.capability.bash({work_item_id:'WI-10005889',command});const finishedAt=new Date().toISOString();let verified;try{verified=JSON.parse(result.output);}catch{return {error:'verification-output-unreadable',result};}return {startedAt,finishedAt,exitCode:verified.exitCode,assertions:verified.assertions.map(a=>({id:a.id,passed:a.passed})),observations:verified.observations.map(o=>({bindingId:o.bindingId,frameSha256:o.indexedFrame.sha256,postSha256:o.post.sha256})),execution:{exitCode:result.exit_code,status:result.status}};"
+  }
+}

@@ -175,6 +175,9 @@ export function resumeSmokeChildEnv(parent: NodeJS.ProcessEnv, home: string, ove
 
 /** A different rollout growing is never evidence that this exact session resumed. */
 export function verifyResumeSmokeContinuation(before: string, after: string, wakeText: string): boolean {
+  // JSONL separators are still saved transcript bytes. Comparing only filtered
+  // records would accept a rewritten prefix (for example, removed blank lines).
+  if (!after.startsWith(before)) return false;
   const prior = before.split('\n').filter((line) => line.trim());
   const current = after.split('\n').filter((line) => line.trim());
   if (!prior.length || current.length <= prior.length ||

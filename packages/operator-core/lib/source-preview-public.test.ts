@@ -3,7 +3,7 @@
  * P-002 / P-003 (and the LICENSE half of P-007).
  *
  * The public target publishes the same gated public-safe cut as the private preview,
- * but (a) under the Elastic License 2.0, with LICENSE + a license NOTICE at the root,
+ * but (a) under the Sustainable Use License, with LICENSE + a license NOTICE at the root,
  * (b) APPEND-ONLY: each push is one new commit whose parent is the current public
  * main, pushed without --force, so forks and pull requests keep a shared history,
  * and (c) never to the preview repository (and the preview never to the public one).
@@ -101,11 +101,18 @@ describe('public target — the two repositories never cross', () => {
 });
 
 describe('public target — licensed export', () => {
-  it('ships the Elastic License 2.0 text verbatim plus a license NOTICE, and names the target in MANIFEST.json', async () => {
+  it('ships the Sustainable Use License text verbatim plus a license NOTICE, and names the target in MANIFEST.json', async () => {
     const out = join(tmp, 'public-export');
     const { manifest } = await exportSnapshot({ repoRoot: fx.repo, ref: 'main', out, target: 'public', env: childEnv(), thirdPartyNotices });
     expect(manifest).toMatchObject({ target: 'public', source: { commit: fx.commit } });
     expect(readFileSync(join(out, 'LICENSE'), 'utf8')).toBe(readFileSync(PUBLIC_LICENSE_PATH, 'utf8'));
+    const license = readFileSync(join(out, 'LICENSE'), 'utf8');
+    expect(license).toMatch(/^## Sustainable Use License\n\nVersion 1\.0/);
+    expect(license).toMatch(/only for your own internal business purposes or for non-commercial or\s+personal use/);
+    expect(license).toMatch(/only if you do so free of charge for\s+non-commercial purposes/);
+    expect(license).not.toContain('license key');
+    expect(readFileSync(join(out, 'papercusp-desktop/src-tauri/Cargo.toml'), 'utf8'))
+      .toContain('license = "LicenseRef-Sustainable-Use-1.0"');
     expect(readFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe(NOTICES_STUB);
     for (const [path, body] of Object.entries(INTERNAL_DOC_CONTENTS)) {
       expect(readFileSync(join(out, path), 'utf8'), path).toBe(body);
@@ -113,10 +120,14 @@ describe('public target — licensed export', () => {
     expect(readFileSync(join(out, 'libs/papercusp/plugins/markdown-preview/papercusp.json'), 'utf8'))
       .toBe(readFileSync(join(fx.repo, 'libs/papercusp/plugins/markdown-preview/papercusp.json'), 'utf8'));
     const notice = readFileSync(join(out, 'NOTICE'), 'utf8');
-    expect(notice).toContain('Elastic License 2.0');
+    expect(notice).toContain('Sustainable Use License 1.0');
+    expect(notice).toContain('Third-party components keep their own licenses.');
     expect(notice).not.toMatch(/EVALUATION ONLY/);
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
-    expect(readme).toContain('Elastic License 2.0');
+    expect(readme).toContain('Sustainable Use License 1.0');
+    expect(readme).toContain('only free of charge for non-commercial');
+    expect(readme).toContain('requires a separate license');
+    expect(readme).not.toContain('but not offer it to others as a hosted or managed service');
     expect(readme).toContain('Papercusp is source-available');
     expect(readme).not.toMatch(/\b(?:OSI[ -]approved|open[ -]source)\b/i);
     expect(readme).not.toMatch(/replaced wholesale/);
@@ -149,6 +160,11 @@ describe('public target — licensed export', () => {
     // P-009/P-011: the public repo's own CI and CLA bot ship; the README's tree listing
     // describes the development tree, so it never lists the added .github directory.
     expect(readFileSync(join(out, 'CLA.md'), 'utf8')).toMatch(/Contributor License Agreement/);
+    for (const name of ['CONTRIBUTING.md', 'CLA.md']) {
+      const community = readFileSync(join(out, name), 'utf8');
+      expect(community).toContain('Sustainable Use License');
+      expect(community).not.toContain('Elastic License 2.0');
+    }
     expect(existsSync(join(out, '.github/workflows/ci.yml'))).toBe(true);
     expect(existsSync(join(out, '.github/workflows/cla.yml'))).toBe(true);
     expect(readme).not.toContain('.github/');
@@ -205,8 +221,21 @@ describe('public target — licensed export', () => {
     expect(() => readLicense(join(tmp, 'nope'))).toThrow(/needs its LICENSE/);
     const mit = join(tmp, 'MIT');
     writeFileSync(mit, 'MIT License\n\nPermission is hereby granted…\n');
-    expect(() => readLicense(mit)).toThrow(/not the Elastic License 2.0/);
-    expect(readLicense(PUBLIC_LICENSE_PATH)).toMatch(/^Elastic License 2\.0/);
+    expect(() => readLicense(mit)).toThrow(/not the canonical Sustainable Use License 1\.0/);
+    expect(readLicense(PUBLIC_LICENSE_PATH)).toMatch(/^## Sustainable Use License/);
+  });
+
+  it('rejects ELv2 and modified SUL text, while accepting an exact copy of the approved SUL', () => {
+    const candidate = join(tmp, 'candidate-LICENSE');
+    writeFileSync(candidate, 'Elastic License 2.0\n');
+    expect(() => readLicense(candidate)).toThrow(/not the canonical Sustainable Use License/);
+    const canonical = readFileSync(PUBLIC_LICENSE_PATH, 'utf8');
+    writeFileSync(candidate, canonical + '\nAdditional restrictions apply.\n');
+    expect(() => readLicense(candidate)).toThrow(/not the canonical Sustainable Use License/);
+    writeFileSync(candidate, '## Sustainable Use License\n\nVersion 1.0\n');
+    expect(() => readLicense(candidate)).toThrow(/not the canonical Sustainable Use License/);
+    writeFileSync(candidate, canonical);
+    expect(readLicense(candidate)).toBe(canonical);
   });
 });
 
@@ -216,7 +245,7 @@ describe('public target — append-only history', () => {
     expect(r).toMatchObject({ pushed: true, parent: null, commit: fx.commit });
     expect(remoteGit(['rev-list', '--count', 'main'])).toBe('1');
     expect(remoteGit(['log', '-1', '--format=%an <%ae>', 'main'])).toBe('Papercusp <public-export@papercusp.invalid>');
-    expect(remoteGit(['show', 'main:LICENSE'])).toMatch(/^Elastic License 2\.0/);
+    expect(remoteGit(['show', 'main:LICENSE'])).toMatch(/^## Sustainable Use License/);
     expect(await checkDrift(opts())).toMatchObject({ inSync: true });
   }, 120_000);
 

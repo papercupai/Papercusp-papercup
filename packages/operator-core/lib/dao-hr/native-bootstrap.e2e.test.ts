@@ -1,5 +1,5 @@
 /** Configures external fixtures BEFORE the owned native host boots. Run with the maintained Documenso sandbox. */
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, closeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -10,7 +10,7 @@ import { startDaoHrTestChain } from '../../../../scripts/fixtures/dao-hr-test-ch
 import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
 import { register, authenticatedAccount, accountToken } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
-import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
+import { verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
 import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeBootstrapBudgets,
   assertNativeMutationProof, NATIVE_BOOTSTRAP_TEARDOWN_MS } from './native-bootstrap-runtime';
@@ -48,14 +48,13 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
     expect(Boolean(process.env.DOCUMENSO_TEST_RUNTIME)).toBe(true);
     const runtime = JSON.parse(process.env.DOCUMENSO_TEST_RUNTIME!);
     expect(runtime).toMatchObject({ isolatedDatabase: true, externalMail: false, testCertificate: true });
-    const root = resolve(import.meta.dirname, '../../../..');
+    const root = resolve(process.env.PAPERCUSP_REPO_DIR || resolve(import.meta.dirname, '../../../..'));
     const env = nativeBootstrapEnvironment(process.env,
       process.env.PAPERCUSP_TEST_RUNS_DB_URL || resolveExecutedMapPgUrl().url);
     env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
-    env.PAPERCUSP_REPO_DIR = process.env.PAPERCUSP_REPO_DIR || root;
+    env.PAPERCUSP_REPO_DIR = root;
     checkNativeLedger(root, env);
     const directory = mkdtempSync(join(tmpdir(), 'dao-hr-native-'));
-    let sourceDirectory: string | undefined;
     const evidenceRoot = '/tmp/pcv/dao-hr-native'; mkdirSync(evidenceRoot, { recursive: true });
     const logPath = process.env.DAO_HR_NATIVE_BOOT_LOG || join(evidenceRoot, 'native-boot-' + Date.now() + '.log');
     const priorIsolation = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
@@ -65,35 +64,18 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     try {
       // Freeze the invoked wrapper and acceptance helpers before any external
-      // allocation. A preflight of the mutable donor alone leaves a boot-time race.
-      // The maintained dependency snapshot uses hardlinks. Provider TMPDIR can
-      // be on another device, so own this source tree on the donor filesystem.
+      // allocation. The Documenso wrapper must provide this receipt before it
+      // starts any provider, leaving this test to verify and reuse that frozen root.
       const sourceRef = process.env.VERIFY_TAURI_SOURCE_REF?.trim();
       expect(Boolean(sourceRef), 'Explicit committed VERIFY_TAURI_SOURCE_REF is required').toBe(true);
-      let sourceRoot: string;
-      let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
-      let receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
-      if (receiptPath) {
-        // The outer verifier freezes the provider wrapper too; reuse its root.
-        sourceRoot = root;
-        Object.assign(env, verifierSourceChildEnv({ root, receiptPath, env }));
-        receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-        expect(receipt.sourceCommit).toBe(sourceRef);
-        for (const input of NATIVE_SOURCE_INPUTS)
-          expect(receipt.testedInputs.some(row => row.path === input), 'Missing invoked input: ' + input).toBe(true);
-      } else {
-        const sourceScratch = join(root, '.papercusp', 'scratch');
-        mkdirSync(sourceScratch, { recursive: true });
-        sourceDirectory = mkdtempSync(join(sourceScratch, 'dao-hr-native-source-'));
-        expect(statSync(sourceDirectory).dev, 'Invoked source must share the dependency donor filesystem').toBe(statSync(root).dev);
-        sourceRoot = join(sourceDirectory, 'invoked-source');
-        receipt = await prepareVerifierSource({ repo: root, ref: sourceRef!, dest: sourceRoot,
-          inputs: NATIVE_SOURCE_INPUTS, tauriInputs: true, gitCheckout: true });
-        receiptPath = logPath + '.invoked-source-receipt.json';
-        writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
-        await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
-        Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath, env }));
-      }
+      const sourceRoot = root;
+      const receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT?.trim();
+      expect(Boolean(receiptPath), 'Documenso wrapper must pass its frozen source receipt before provider allocation').toBe(true);
+      const receipt = JSON.parse(readFileSync(receiptPath!, 'utf8'));
+      Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath: receiptPath!, env }));
+      expect(receipt.sourceCommit).toBe(sourceRef);
+      for (const input of NATIVE_SOURCE_INPUTS)
+        expect(receipt.testedInputs.some(row => row.path === input), 'Missing invoked input: ' + input).toBe(true);
       cancellation.signal.throwIfAborted();
       writeFileSync(logPath + '.invoked-source-receipt.json', JSON.stringify(receipt), { mode: 0o600 });
       env.PAPERCUSP_REPO_DIR = sourceRoot;
@@ -154,7 +136,6 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       await browser?.close(); await wallet?.stop(); await chain?.stop(); restoreIdentity?.();
       if (priorIsolation === undefined) delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
       else process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = priorIsolation;
-      if (sourceDirectory) rmSync(sourceDirectory, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
   }, nativeBootstrapBudgets(process.env).timeoutMs);

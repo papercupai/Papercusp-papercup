@@ -8,7 +8,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createInteractionParticipantSink, reportParticipantChainError } from './participants';
 
 const INPUT = { workspaceId: 'ws-1', sourceId: 'src-1', datatype: 'email-message' };
-const sql = {} as Sql;
+// createParticipantChain first reads the source row (isPersonalAccountSource) through `sql` as a
+// tagged template. No row means "not a personal account", so the chain goes on to build the person
+// sinks these cases exercise.
+const sql = (async () => []) as unknown as Sql;
 
 describe('createInteractionParticipantSink', () => {
   it('returns null and reports, instead of throwing, when the person record sink cannot be built', async () => {

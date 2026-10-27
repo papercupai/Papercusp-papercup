@@ -3,19 +3,22 @@
  * task container. Grading remains owned by the FrontierSWE seam, never this adapter.
  */
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { createCurrentSuBenchHarness, CURRENT_STOCK_CODEX_BLUEPRINT, requireCurrentBenchNativeRunCost, type CurrentSuBenchObservations,
+import { createCurrentSuBenchHarness, CURRENT_STOCK_CODEX_BLUEPRINT, CURRENT_STOCK_CLAUDE_BLUEPRINT,
+  requireCurrentBenchHostBinding, requireCurrentBenchNativeRunCost, type CurrentSuBenchObservations,
   type CurrentSuBenchOptions, type CurrentBenchNativeRunCost, type CurrentBenchSessionBudget } from './current-su';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { startBenchEgress, sweepBenchEgress, type BenchEgress, type BenchEgressConfig } from './bench-egress';
 import { startCodexHookBridge, type CodexHookBridge } from './codex-hook-bridge';
-import { validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
+import { CONTAINER_CLAUDE_BIN_PATH, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle, type FrontierSweSeamConfig } from './frontier-swe-seam';
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { generationStatusForStopReason, type GenerationBudget, type TaskCheckout } from './types';
 import type { AgentRunOutput, RunAgentInput } from './run-topology';
-import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './run-launcher';
+import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './current-su';
 import { runRepeatedSessions } from './repeated-session';
 import { assertBenchWorkspace } from './bench-workspace';
+import { requireProximusHostConfinement, readProximusTurns,
+  type ProximusAttemptPopulation, type ProximusBilling, type ProximusPricing, type runProximusHost } from './proximus-runtime';
 
 export interface FrontierSweNativeAssignment {
   options: CurrentSuBenchOptions;
@@ -36,21 +39,54 @@ export interface FrontierSweNativeAssignment {
   stop(): Promise<void>;
 }
 
-export interface FrontierSweLaunchAdapterConfig {
+interface FrontierSweLaunchIdentity {
   runId: string;
   /** Protocol identity can span multiple separately owned arm/seed runtime runs. */
   protocolRunId?: string;
   signal?: AbortSignal;
   context: PapercuspUnifiedToolContext;
+  seam?: Omit<FrontierSweSeamConfig, 'egress' | 'inContainerCodex' | 'inContainerClaude'>;
+}
+
+export interface FrontierSweNativeLaunchAdapterConfig extends FrontierSweLaunchIdentity {
+  execution?: 'codex-native' | 'claude-native';
+  /** Claude startup is explicit and uses the seam's existing frozen binary input.
+   * This does not enable protocol/paid-run selection in run-launcher. */
+  seam?: Omit<FrontierSweSeamConfig, 'egress' | 'inContainerCodex'>;
   /** The exact origin psu writes into Codex config; the relay reaches this loopback service. */
   mcpOrigin: string;
   /** Trusted hook records, outside every container mount. */
   hookRecordDir: string;
   /** Reuses currentBenchGatewayController and the frozen assignment/accounting/context planes. */
   startAssignment(input: RunAgentInput<FrontierSweEnvHandle>): Promise<FrontierSweNativeAssignment>;
-  seam?: Omit<FrontierSweSeamConfig, 'egress' | 'inContainerCodex'>;
   egress?: Pick<BenchEgressConfig, 'exec' | 'sidecarImage' | 'workRoot' | 'readyTimeoutMs' | 'readyPollMs'>;
 }
+
+/** Host evidence has no Codex session, turn, home or native observation. These
+ * are independent measurements; a completed process is not an accepted trial. */
+export interface FrontierSweProximusAssignment {
+  agent: 'proximus';
+  runId: string;
+  armId: 'baseline';
+  workspaceId: string;
+  taskId: string;
+  containerId: string;
+  image: string;
+  execute(): Promise<{
+    process: Awaited<ReturnType<typeof runProximusHost>>;
+    attempts: ProximusAttemptPopulation;
+    billing: ProximusBilling;
+    pricing: ProximusPricing;
+  }>;
+  stop(): Promise<void>;
+}
+
+export interface FrontierSweProximusLaunchAdapterConfig extends FrontierSweLaunchIdentity {
+  execution: 'proximus-host';
+  startAssignment(input: RunAgentInput<FrontierSweEnvHandle>): Promise<FrontierSweProximusAssignment>;
+}
+
+export type FrontierSweLaunchAdapterConfig = FrontierSweNativeLaunchAdapterConfig | FrontierSweProximusLaunchAdapterConfig;
 
 export interface FrontierSweLaunchAdapterPorts {
   startBridge: typeof startCodexHookBridge;
@@ -85,12 +121,20 @@ function loopbackOrigins(value: string): string[] {
 
 /** Exported so fail-closed wrapper wiring is tested independently of model spend. */
 export function frontierSweDockerTarget(handle: FrontierSweEnvHandle, bridge: CodexHookBridge,
-  egress: BenchEgress, gatewayOrigin: string, mcpOrigin: string, stockNative = false): DockerExecTarget {
-  const mounts = handle.inContainerCodex;
-  if (!mounts || !handle.taskNetwork) throw new Error('FrontierSWE native assignment requires its Codex mounts and task network.');
+  egress: BenchEgress, gatewayOrigin: string, mcpOrigin: string, stockNative = false,
+  agent: 'codex' | 'claude' = 'codex'): DockerExecTarget {
+  if (handle.inContainerClaude && handle.inContainerCodex) throw new Error('FrontierSWE native assignment refuses mixed CLI mounts.');
+  if (agent === 'claude' && (!stockNative || !handle.inContainerClaude ||
+      handle.inContainerClaude.binPath !== CONTAINER_CLAUDE_BIN_PATH || handle.inContainerClaude.roots.length !== 1 ||
+      !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(handle.inContainerClaude.version) ||
+      !/^[a-f0-9]{64}$/.test(handle.inContainerClaude.sha256))) {
+    throw new Error('FrontierSWE Claude target requires frozen stock-native mounts.');
+  }
+  const mounts = agent === 'claude' ? handle.inContainerClaude : handle.inContainerCodex;
+  if (!mounts || !handle.taskNetwork) throw new Error('FrontierSWE native assignment requires its CLI mounts and task network.');
   const target: DockerExecTarget = {
     kind: 'docker-exec', containerId: handle.containerId, workdir: '/app', binPath: mounts.binPath,
-    sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: mounts.roots },
+    sessionRelocation: { sessionEnv: agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME', roots: mounts.roots },
     ...(stockNative ? {} : { hookBridge: { url: egress.originFor('hooks'), recordDir: bridge.recordDir } }),
     originRewrites: [
       ...loopbackOrigins(gatewayOrigin).map(from => ({ from, to: egress.originFor('gw') })),
@@ -101,20 +145,50 @@ export function frontierSweDockerTarget(handle: FrontierSweEnvHandle, bridge: Co
   return target;
 }
 
-/** One bridge/egress per run; one gateway binding at a time, on the seam's per-task network. */
+export type FrontierSweNativeLaunchAdapter = Awaited<ReturnType<typeof startFrontierSweNativeAdapter>>;
+type FrontierSweProximusLaunchAdapter = ReturnType<typeof startFrontierSweProximusAdapter>;
+
+/** Preserve native callers' concrete egress type while supporting the explicit
+ * host mode. A caller holding either config must narrow before using egress. */
+export function startFrontierSweLaunchAdapter(config: FrontierSweNativeLaunchAdapterConfig,
+  ports?: FrontierSweLaunchAdapterPorts): Promise<FrontierSweNativeLaunchAdapter>;
+export function startFrontierSweLaunchAdapter(config: FrontierSweProximusLaunchAdapterConfig,
+  ports?: FrontierSweLaunchAdapterPorts): Promise<FrontierSweProximusLaunchAdapter>;
+export function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAdapterConfig,
+  ports?: FrontierSweLaunchAdapterPorts): Promise<FrontierSweNativeLaunchAdapter | FrontierSweProximusLaunchAdapter>;
 export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAdapterConfig,
   ports: FrontierSweLaunchAdapterPorts = livePorts) {
-  const mcp = localOrigin(config.mcpOrigin);
   if (!config.context.workspaceId?.trim()) throw new Error('FrontierSWE adapter needs its concrete benchmark workspace.');
   assertBenchWorkspace(config.context.workspaceId);
   if (!config.runId.trim()) throw new Error('FrontierSWE adapter needs a stable run id.');
+  if (config.execution === 'proximus-host') return startFrontierSweProximusAdapter(config);
+  return startFrontierSweNativeAdapter(config, ports);
+}
+
+/** One native bridge/egress per run; one gateway binding at a time. */
+async function startFrontierSweNativeAdapter(config: FrontierSweNativeLaunchAdapterConfig,
+  ports: FrontierSweLaunchAdapterPorts) {
+  const agent = config.execution === 'claude-native' ? 'claude' : 'codex';
+  const configuredClaude = config.seam?.inContainerClaude;
+  if (agent === 'claude' ? !configuredClaude ||
+      !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(configuredClaude.version) ||
+      !/^[a-f0-9]{64}$/.test(configuredClaude.sha256) : !!configuredClaude) {
+    throw new Error('FrontierSWE native startup requires its explicitly selected frozen CLI.');
+  }
+  // Keep startup pins independent of later caller mutation, including the seam's
+  // copy of the configuration. The seam verifies the actual binary and version.
+  const claude = configuredClaude && { ...configuredClaude,
+    ...(configuredClaude.hostOwner ? { hostOwner: { ...configuredClaude.hostOwner } } : {}) };
+  const mcp = localOrigin(config.mcpOrigin);
   const bridge = await ports.startBridge({ recordDir: config.hookRecordDir });
   let egress: BenchEgress;
   try {
     egress = await ports.startEgress({ ...config.egress, runId: config.runId, endpoints: [
       { name: 'gw', listenPort: 8788, perTask: true },
-      { name: 'mcp', listenPort: 9071, targetPort: mcp.port, transport: 'http' },
-      { name: 'hooks', listenPort: 9081, targetPort: bridge.port },
+      ...(agent === 'claude' ? [] : [
+        { name: 'mcp', listenPort: 9071, targetPort: mcp.port, transport: 'http' as const },
+        { name: 'hooks', listenPort: 9081, targetPort: bridge.port },
+      ]),
     ] });
   } catch (error) {
     try { await ports.sweep(config.runId, config.egress?.exec); } finally { await bridge.stop(); }
@@ -122,7 +196,9 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
   }
   let seam: ReturnType<typeof makeFrontierSweCloneGradeSeam>;
   try {
-    seam = makeFrontierSweCloneGradeSeam({ ...config.seam, egress, inContainerCodex: true });
+    seam = makeFrontierSweCloneGradeSeam({ ...config.seam, egress,
+      ...(claude ? { inContainerClaude: { ...claude, ...(claude.hostOwner ? { hostOwner: { ...claude.hostOwner } } : {}) } }
+        : { inContainerCodex: true }) });
   } catch (error) {
     try { await egress.stop(); } finally {
       try { await ports.sweep(config.runId, config.egress?.exec); } finally { await bridge.stop(); }
@@ -139,7 +215,8 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
       if (!['worker', 'solver'].includes(input.role) || input.candidates?.length) {
         throw new Error('Current FrontierSWE native adapter runs a single solver; judge/leader/pair roles are not supported.');
       }
-      if (!input.handle.inContainerCodex || !input.handle.taskNetwork) {
+      if (!(agent === 'claude' ? input.handle.inContainerClaude && !input.handle.inContainerCodex
+        : input.handle.inContainerCodex && !input.handle.inContainerClaude) || !input.handle.taskNetwork) {
         throw new Error('FrontierSWE adapter refuses a host-only task handle.');
       }
       let assignment: FrontierSweNativeAssignment | undefined;
@@ -148,14 +225,24 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
         assignment = await config.startAssignment(input);
         const { options, observations } = assignment;
         if (options.runId !== (config.protocolRunId ?? config.runId) || options.armId !== input.arm ||
-          !['papercusp', 'baseline'].includes(options.armId) || options.agent !== 'codex' ||
+          !['papercusp', 'baseline'].includes(options.armId) || options.agent !== agent ||
           options.workspaceId !== config.context.workspaceId || !observations.nativeGateway) {
           throw new Error('FrontierSWE assignment differs from its run/arm/workspace or lacks its native gateway.');
+        }
+        if (claude) {
+          const host = requireCurrentBenchHostBinding(observations, options);
+          const mounts = input.handle.inContainerClaude!;
+          if (options.armId !== 'baseline' || host.taskId !== input.task.instanceId || host.arm.agent !== 'claude' ||
+              host.arm.model !== options.model || host.arm.effort !== options.effort || host.arm.account !== options.account ||
+              host.arm.runtime.clientVersion !== `claude/${claude.version}` ||
+              mounts.version !== claude.version || mounts.sha256 !== claude.sha256 || !assignment.readRequestCensus) {
+            throw new Error('FrontierSWE Claude assignment requires its frozen stock identity and complete host request census.');
+          }
         }
         const gateway = localOrigin(observations.nativeGateway.baseURL);
         unbind = egress.bindTaskEndpoint(input.handle.taskNetwork, 'gw', gateway.port);
         const stockNative = options.armId === 'baseline';
-        const target = frontierSweDockerTarget(input.handle, bridge, egress, gateway.origin, mcp.origin, stockNative);
+        const target = frontierSweDockerTarget(input.handle, bridge, egress, gateway.origin, mcp.origin, stockNative, agent);
         let before: CurrentBenchTaskRequestCensus | undefined, beforeCost: CurrentBenchNativeRunCost | null = null;
         const repeated = assignment.repeatedSession;
         if (repeated) {
@@ -169,7 +256,8 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
           grant.budget.maxWallClockMs ?? Infinity) } : options;
         const driver = ports.createDriver(sessionOptions, config.context, { ...observations, containerExec: target,
           ...(grant ? { sessionBudget: grant } : {}) });
-        const result = await driver.spinRunAndCost({ blueprintId: stockNative ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
+        const result = await driver.spinRunAndCost({ blueprintId: stockNative
+          ? agent === 'claude' ? CURRENT_STOCK_CLAUDE_BLUEPRINT : CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
           task: repeated ? { ...input.task, problemStatement: `${input.task.problemStatement}\n\n${sessionInput.directive}` } : input.task,
           checkout: assignment!.checkout, budget: grant?.budget ?? assignment!.generationBudget ?? {
             ...(input.attemptBudget.maxCostUsd !== undefined ? { maxUsd: input.attemptBudget.maxCostUsd } : {}),
@@ -273,4 +361,98 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
       return stopping;
     },
   };
+}
+
+/** Compose the same task/grade/cleanup seam for the official host reference.
+ * Only original parent-issued process evidence plus complete frozen accounting
+ * can reach the grader. Incomplete trials retain their measured subtotals. */
+function startFrontierSweProximusAdapter(config: FrontierSweProximusLaunchAdapterConfig) {
+  // Preserve the maintained grader/resource overrides, stripping native-only
+  // options even when a JavaScript caller supplies extra keys.
+  const { egress: _egress, inContainerCodex: _native, inContainerClaude: _claude, ...plainSeam } = (config.seam ?? {}) as FrontierSweSeamConfig;
+  const seam = makeFrontierSweCloneGradeSeam(plainSeam);
+  let closed = false, inFlight: Promise<AgentRunOutput> | undefined;
+  let stopping: Promise<{ errors: string[] }> | undefined;
+  const cleanupErrors: string[] = [];
+  const runAgent = (input: RunAgentInput<FrontierSweEnvHandle>): Promise<AgentRunOutput> => {
+    if (closed || config.signal?.aborted) return Promise.reject(new Error('FrontierSWE adapter is stopped or cancelled.'));
+    if (inFlight) return Promise.reject(new Error('FrontierSWE adapter permits one metered assignment at a time.'));
+    const run = async (): Promise<AgentRunOutput> => {
+      if (input.arm !== 'baseline' || input.task.benchmark !== 'frontier-swe' ||
+          !['worker', 'solver'].includes(input.role) || input.candidates?.length ||
+          input.handle.instanceId !== input.task.instanceId || input.handle.inContainerCodex || input.handle.inContainerClaude || input.handle.taskNetwork)
+        throw new Error('FrontierSWE Proximus requires a single stock solver and a plain task handle.');
+      // Preparation receives its own task/handle snapshot; a caller mutation
+      // across the await cannot redirect the host execution or its submission.
+      const trial = structuredClone(input);
+      const identity = { runId: config.protocolRunId ?? config.runId, armId: trial.arm,
+        workspaceId: config.context.workspaceId, taskId: trial.task.instanceId,
+        containerId: trial.handle.containerId, image: trial.handle.image };
+      let assignment: FrontierSweProximusAssignment | undefined;
+      try {
+        assignment = await config.startAssignment(trial);
+        if (assignment.agent !== 'proximus' || Object.entries(identity).some(([key, value]) =>
+            assignment![key as keyof typeof identity] !== value))
+          throw new Error('FrontierSWE Proximus assignment differs from its run/arm/workspace/task container.');
+        if (closed || config.signal?.aborted) throw new Error('FrontierSWE adapter is stopped or cancelled.');
+        const original = await assignment.execute();
+        let confinementError: string | undefined;
+        try {
+          const receipt = requireProximusHostConfinement(original.process);
+          if (receipt.task.containerId !== identity.containerId || receipt.task.image !== identity.image)
+            throw new Error('Proximus confinement receipt belongs to another task container.');
+        } catch (error) { confinementError = error instanceof Error ? error.message : String(error); }
+        // WeakMap issuance must be checked BEFORE copying evidence for storage.
+        const evidence = structuredClone(original);
+        const population = evidence.attempts.status === 'terminal' ? evidence.attempts : undefined;
+        const bill = evidence.billing.status !== 'unavailable' && population &&
+          evidence.billing.populationSha256 === population.populationSha256 ? evidence.billing : undefined;
+        const micros = bill && /^\d+$/.test(bill.knownSubtotalMicros) ? Number(bill.knownSubtotalMicros) : NaN;
+        const knownBill = Number.isSafeInteger(micros) && micros >= 0;
+        const billComplete = knownBill && bill?.status === 'complete' && !bill.missingAttemptIds.length &&
+          bill.billedInferenceMicros === bill.knownSubtotalMicros;
+        const pricing = evidence.pricing.status !== 'unavailable' && population &&
+          evidence.pricing.populationSha256 === population.populationSha256 ? evidence.pricing : undefined;
+        const knownPrice = !!pricing && Number.isFinite(pricing.knownSubtotalUsd) && pricing.knownSubtotalUsd >= 0;
+        const priceComplete = knownPrice && pricing.status === 'complete' && !pricing.missingAttemptIds.length &&
+          pricing.normalizedCostUsd === pricing.knownSubtotalUsd;
+        const turns = !confinementError ? readProximusTurns(evidence.process.diagnosticContext) : null;
+        const accepted = !confinementError && population?.usageComplete && priceComplete && billComplete && turns !== null;
+        if (config.signal?.aborted) throw new Error('FrontierSWE adapter is cancelled.');
+        return {
+          submission: { containerId: identity.containerId, instanceId: identity.taskId },
+          status: accepted ? 'completed' : 'error',
+          error: accepted ? null : confinementError ?? 'Proximus host accounting or official turn count is incomplete.',
+          // Retain measured subtotals even when acceptance is incomplete. Native
+          // identities and agent-reported context cost never supply accounting.
+          ...(population?.knownUsage ?? { modelCalls: 0, tokensIn: 0, tokensOut: 0 }),
+          costUsd: knownPrice ? pricing.knownSubtotalUsd : 0, turns: turns ?? 0,
+          executionPath: 'stock-native-reference',
+          armMeta: { hostReference: { agent: 'proximus', processStatus: evidence.process.status,
+            runtime: evidence.process.runtime, confinement: evidence.process.confinement,
+            attempts: evidence.attempts, billing: evidence.billing, pricing: evidence.pricing,
+            billedKnownSubtotalUsd: knownBill ? micros / 1_000_000 : null,
+            billedInferenceUsd: billComplete ? micros / 1_000_000 : null },
+            requestConfinementMeasurementMissing: !!confinementError, modelCallsMeasurementMissing: !population,
+            tokenUsageMeasurementMissing: !population?.usageComplete, turnsMeasurementMissing: turns === null,
+            costUsdMeasurementMissing: !priceComplete || !billComplete },
+        };
+      } finally {
+        try { await assignment?.stop(); }
+        catch (error) { cleanupErrors.push(String(error)); throw error; }
+      }
+    };
+    const promise = run();
+    inFlight = promise;
+    void promise.then(() => { inFlight = undefined; }, () => { inFlight = undefined; });
+    return promise;
+  };
+  return { seam, runAgent,
+    stop(): Promise<{ errors: string[] }> {
+      closed = true;
+      return stopping ??= (async () => {
+        try { await inFlight; } catch { /* assignment finally owns its cleanup; the caller receives the error */ }
+        return { errors: [...cleanupErrors] };
+      })();
+    } };
 }

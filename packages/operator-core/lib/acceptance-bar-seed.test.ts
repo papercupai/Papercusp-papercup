@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAcceptanceBarSeed,
+  acceptanceBarTestCitationProblems,
   canSeedAcceptanceBarSuccessor,
   parseBarMappings,
   acceptanceBarProjectedBehavior,
@@ -57,6 +58,19 @@ const input = {
   rubricSlug: 'acceptance-seed-target',
   rubricRevision: 1,
 };
+
+describe('activation named-case preflight (EI-26971745324820138)', () => {
+  const file = 'packages/operator-core/lib/acceptance-bar-seed.test.ts';
+  const testName = 'rejects embedded tags before the direct activation write R5-CONTRACT';
+  it('rejects embedded tags before the direct activation write R5-CONTRACT', () => {
+    const criterion = (name: string) => [{ key: 'R-5', check: { kind: 'tests' as const, files: [file], testName: name } }];
+    expect(acceptanceBarTestCitationProblems(criterion('R5-CONTRACT'))).toEqual([
+      expect.objectContaining({ code: 'bar_contract_check_invalid', barKey: 'R-5', detail: expect.stringContaining('matches no maintained case title') }),
+    ]);
+    expect(acceptanceBarTestCitationProblems(criterion(testName))).toEqual([]);
+    expect(acceptanceBarTestCitationProblems(criterion(`activation named-case preflight (EI-26971745324820138) > ${testName}`))).toEqual([]);
+  });
+});
 
 describe('reopened draft successor adoption', () => {
   function authoredSuccessor() {

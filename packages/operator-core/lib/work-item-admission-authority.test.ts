@@ -29,7 +29,7 @@ vi.mock('@papercusp/flags/server', async (original) => ({
 
 import {
   AdmissionAuthorityRefused, AdmissionAuthorityUnavailable,
-  admissionCredentialDigest, admissionReplayContext, authorizeAdmissionReplay, bindAdmissionAuthority,
+  admissionCredentialDigest, admissionReplayContext, authorizeAdmissionReplay, authorizeAdmissionReviewReplay, bindAdmissionAuthority,
 } from './work-item-admission-authority';
 import { installControlAnchorKernelResolver, readControlAnchorKernelState, setKernelEnforcementResolver } from './projected-tool-deps';
 import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
@@ -118,6 +118,33 @@ afterEach(async () => {
 });
 
 describe('admission replay policy fidelity', () => {
+  it('renews the registered review WRITE operation with exact request, item and purpose', async () => {
+    const authority = bound()!;
+    const review = () => authorizeAdmissionReviewReplay(h.sql as unknown as Sql, scope, {
+      caller: 'su-policy', requestId: '11111111-1111-4111-8111-111111111111',
+      purpose: 'admission-review', authority,
+    });
+    // A dispatch/claim confinement is irrelevant to the review operation.
+    setSessionConfinementResolver(() => ({ denyTools: ['coord:dispatch', 'work_items:claim'],
+      reason: 'no execution', imposedBy: 'director' }));
+    await expect(review()).resolves.toBe(JSON.stringify(revision));
+    setSessionConfinementResolver(() => ({ denyTools: ['work_items:review-admission'],
+      reason: 'no admission mutation', imposedBy: 'director' }));
+    await expect(review()).rejects.toThrow('no admission mutation');
+    setSessionConfinementResolver(() => null);
+    h.state = { lifecycle: { released: { at: 'after-registration' } } };
+    await expect(review()).rejects.toThrow('revoked');
+  });
+
+  it('refuses an allowed review with no current applied revision', async () => {
+    const authority = bound()!;
+    setKernelEnforcementResolver(() => ({ decision: 'allow' }));
+    await expect(authorizeAdmissionReviewReplay(h.sql as unknown as Sql, scope, {
+      caller: 'su-policy', requestId: '11111111-1111-4111-8111-111111111111',
+      purpose: 'admission-review', authority,
+    })).rejects.toThrow('current applied policy revision unavailable');
+  });
+
   it.each(['preflight', 'enforce'] as const)('keeps a %s authority-reader failure retryable without authorizing it', async (phase) => {
     setKernelEnforcementResolver(request => request.phase === phase
       ? { decision: 'deny', code: 'policy-unavailable', reason: 'policy reader unavailable' }
@@ -134,6 +161,26 @@ describe('admission replay policy fidelity', () => {
       decision: 'deny', code: 'revoked', reason: 'current session authority could not be read',
     }));
     await expect(authorize()).rejects.toBeInstanceOf(AdmissionAuthorityRefused);
+  });
+
+  it('retains bounded safe reader diagnostics in retryable policy errors', async () => {
+    setKernelEnforcementResolver(() => ({
+      decision: 'deny', code: 'policy-unavailable', reason: 'policy reader unavailable',
+      serverAudit: {
+        authorityUnavailableSources: ['control-anchor-query-failed'],
+        authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: '57014',
+          elapsedMs: 2500, servingPid: 42, sql: 'PRIVATE_SQL', parameters: ['PRIVATE_VALUE'] }],
+        credential: 'PRIVATE_CREDENTIAL',
+      },
+    }));
+    const error = await authorize().catch(error => error);
+    expect(error).toBeInstanceOf(AdmissionAuthorityUnavailable);
+    expect(error.message).toContain('control-anchor-query-failed');
+    expect(error.message).toContain('57014');
+    expect(error.message).toContain('2500');
+    expect(error.message).toContain('42');
+    expect(error.message).not.toContain('PRIVATE_');
+    expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'deny' }));
   });
 
   it('does not persist the workspace-wide harness sentinel as a replay identity', () => {

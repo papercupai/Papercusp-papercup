@@ -58,6 +58,15 @@ export function deriveActiveAwaitSuppression(
   };
 }
 
+/** WI-6554700010029664: fold the `owner` synonym into `ownerId` before parse (ownerId wins). */
+export function foldLoopStatusOwnerAlias(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (r.owner === undefined) return raw;
+  const { owner, ...rest } = r;
+  return rest.ownerId === undefined ? { ...rest, ownerId: owner } : rest;
+}
+
 export default defineTool({
   name: 'loop:status',
   profile: 'engineer',
@@ -106,7 +115,7 @@ export default defineTool({
   // aggregate-output-budget-exceeded spill reference.
   skipResultDoor: 'oversize-by-design',
   agentRoles: [...COORD_ROLES],
-  args: z.object({
+  args: z.preprocess(foldLoopStatusOwnerAlias, z.object({
     // EI-21137205137669557 (repeatCount 9, plus 4 duplicate filings): this arg
     // used to be REJECTED, and the rejection was the single most-repeated
     // caller error on this tool. `loop:end` had already settled the same
@@ -122,23 +131,22 @@ export default defineTool({
       .describe(
         'Accepted for compatibility and IGNORED — loops are keyed by owner, not by harness, so this has no effect. Present only because nearly every other tool in this catalog takes a `harness` arg and callers reasonably reach for it out of habit; omit it, or pass anything.',
       ),
-    ownerId: z
-      .string()
-      .max(120)
-      .optional()
-      .describe("Inspect the loop for this owner id, or 'self' for the caller (default: yourself). Mirrors loop:arm/end/checkpoint."),
     // tool-contract-repair-2026-09-05 P-005 / EI-21206535634211412. `owner` is an
     // unambiguous synonym here: this tool has exactly one selector, so there is no
     // second meaning `owner` could collide with (the ALIAS-vs-BETTER-ERROR test the
     // plan sets — contrast work_items:get's `limit`, where the caller's word plausibly
     // means a DIFFERENT count than the declared arg and aliasing would answer the
-    // wrong question). Explicit `ownerId` wins when both are supplied.
-    owner: z
+    // wrong question). WI-6554700010029664: it is folded into ownerId BEFORE parse
+    // (foldLoopStatusOwnerAlias) instead of being a declared field, so the seed does
+    // not pay ~45 B for it on every turn. Explicit `ownerId` wins when both are supplied.
+    ownerId: z
       .string()
       .max(120)
       .optional()
-      .describe('Compatibility alias for `ownerId`; explicit `ownerId` wins when both are supplied.'),
-  }),
+      .describe(
+        "Inspect the loop for this owner id, or 'self' for the caller (default: yourself). Mirrors loop:arm/end/checkpoint. `owner` is also accepted (folded into ownerId before parse; ownerId wins).",
+      ),
+  })),
   result: z
     .object({
       ok: z.unknown().optional(),
@@ -176,7 +184,7 @@ export default defineTool({
     // through would read a plausible but unrelated row whose ownerId is "self"
     // instead of this caller's loop (EI-22564327654701627).
     const ownerId =
-      resolveSelfLiteral(args.ownerId ?? args.owner, identity.ownerId) ?? identity.ownerId;
+      resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
 
     // EI-21869094231635430: these four probes are each independent of the OTHERS

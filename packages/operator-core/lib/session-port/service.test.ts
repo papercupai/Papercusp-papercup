@@ -735,6 +735,12 @@ describe('session-port preparation service', () => {
       currentInstruction: 'x'.repeat(1_000),
     });
     expect(oversized.requiresSummary).toBe(true);
+    expect(oversized.fit).toMatchObject({
+      feasible: false,
+      fidelity: 'summary-tail',
+      reason: expect.stringMatching(/latest required atomic|bounded summary output/),
+    });
+    expect(oversized.fit.minimumRequiredTokens).toBeGreaterThan(tinyTarget.availableInputTokens);
     await expect(prepareInspectedSessionPort({
       inspection: oversized,
       expectedSourceHash: oversized.source.sha256,

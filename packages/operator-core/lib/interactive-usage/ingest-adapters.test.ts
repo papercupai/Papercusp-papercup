@@ -8,14 +8,80 @@ import {
   codexSessionRoots,
   closedCodexTurnPopulation,
   closedCodexSessionPopulation,
+  closedClaudeSessionPopulation,
   defaultAdapters,
   parseCodexChunk,
   parseOmpChunk,
   providerForModel,
   UNKNOWN_CODEX_MODEL,
 } from './ingest-adapters';
+import { parseTranscriptChunk, transcriptUsageEventKey } from './ingest-claude-transcripts';
 
 const codexLine = (o: unknown) => JSON.stringify(o) + '\n';
+
+describe('closed Claude session accounting population', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  const file = `/host/projects/-task/${session}.jsonl`;
+  const record = (id = 'msg-one', changes: Record<string, unknown> = {}) => ({
+    type: 'assistant', sessionId: session, isSidechain: false,
+    message: { id, model: 'claude-sonnet-4-6', stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 20, cache_creation_input_tokens: 5 } },
+    ...changes,
+  });
+  const read = (transcript: string, fileGeneration = 0) => closedClaudeSessionPopulation({
+    transcript, file, fileGeneration, nativeSessionId: session,
+  });
+
+  it('joins complete repeated message observations to canonical ingest keys without inventing native turns', () => {
+    const first = record(), streaming = structuredClone(first);
+    streaming.message.stop_reason = null as unknown as string;
+    streaming.message.usage.output_tokens = 2;
+    const transcript = codexLine({ type: 'user', sessionId: session, message: { role: 'user' } }) +
+      codexLine(streaming) + codexLine(first) + codexLine(first) + codexLine(record('msg-two'));
+    const result = read(transcript);
+    expect(result).toMatchObject({ ok: true, nativeMessageIds: ['msg-one', 'msg-two'],
+      closedByteOffset: Buffer.byteLength(transcript) });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.events).toHaveLength(2);
+    expect(result.events[0]).toMatchObject({ sourceId: 'message:msg-one', providerResponseId: 'msg-one',
+      inputTotalTokens: 35, uncachedInputKnown: true, cacheReadKnown: true,
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheCreationTokens: 5 } });
+    expect(result.events.every(event => event.turnId === undefined)).toBe(true);
+    expect(result.usageEventKeys).toEqual(parseTranscriptChunk(transcript).events!.map(event =>
+      transcriptUsageEventKey({ file, fileGeneration: 0, model: event.model, sourceId: event.sourceId })).sort());
+    expect(read(transcript, 1)).toEqual(result);
+  });
+
+  it.each(['idless', 'foreign-session', 'sidechain', 'api-error', 'unclosed', 'missing-cache-read',
+    'missing-cache-write', 'negative', 'fractional', 'synthetic', 'model-drift', 'closed-usage-drift',
+    'malformed', 'partial', 'blank', 'array-record', 'untyped-record'] as const)
+  ('keeps %s incomplete even when permissive live ingestion could skip it', changed => {
+    const value = record() as any;
+    let suffix = '';
+    if (changed === 'idless') delete value.message.id;
+    if (changed === 'foreign-session') value.sessionId = 'other-native';
+    if (changed === 'sidechain') value.isSidechain = true;
+    if (changed === 'api-error') value.isApiErrorMessage = true;
+    if (changed === 'unclosed') value.message.stop_reason = null;
+    if (changed === 'missing-cache-read') delete value.message.usage.cache_read_input_tokens;
+    if (changed === 'missing-cache-write') delete value.message.usage.cache_creation_input_tokens;
+    if (changed === 'negative') value.message.usage.output_tokens = -1;
+    if (changed === 'fractional') value.message.usage.input_tokens = 1.5;
+    if (changed === 'synthetic') value.message.model = '<synthetic>';
+    if (changed === 'model-drift') {
+      const next = record(); next.message.model = 'claude-opus-4-6'; suffix = codexLine(next);
+    }
+    if (changed === 'closed-usage-drift') {
+      const next = record(); next.message.usage.output_tokens = 6; suffix = codexLine(next);
+    }
+    if (changed === 'malformed') suffix = 'unreadable\n';
+    if (changed === 'partial') suffix = '{"type":"assistant"';
+    if (changed === 'blank') suffix = '\n';
+    if (changed === 'array-record') suffix = '[]\n';
+    if (changed === 'untyped-record') suffix = '{}\n';
+    expect(read(codexLine(value) + suffix)).toMatchObject({ ok: false });
+  });
+});
 
 describe('closed Codex session accounting population', () => {
   const header = codexLine({ type: 'session_meta', payload: { id: 'native-1' } });

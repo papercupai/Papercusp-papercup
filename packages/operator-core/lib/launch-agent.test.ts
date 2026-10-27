@@ -18,13 +18,37 @@ beforeEach(() => {
   fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 }));
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
-afterEach(() => { globalThis.fetch = origFetch; });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  globalThis.fetch = origFetch;
+});
 
 function firstBody(): Record<string, unknown> {
   return JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
 }
 
 describe('launchAgent', () => {
+  it.each(['refused', 'offline'])('does not launch on another operator when the selected machine is %s', async (failure) => {
+    vi.stubEnv('PAPERCUSP_OPERATOR_BASE', '');
+    vi.stubEnv('PAPERCUSP_HONO_PORT', '');
+    vi.stubGlobal('window', {
+      location: { protocol: 'https:', href: 'https://portal.test/desktops?desktopHost=machine-b&ws=own' },
+    });
+    // The fallback is healthy: reaching it would create an agent on the wrong machine.
+    if (failure === 'refused') fetchMock.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'selected_machine_unavailable' }), { status: 403 },
+    ));
+    else fetchMock.mockRejectedValueOnce(new Error('selected machine offline'));
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ status: 'ok', ownerId: 'wrong-machine' })));
+
+    const result = await launchAgent({ agent: 'codex', slug: 'research' });
+
+    expect(result).toEqual({ ok: false, error: failure === 'refused'
+      ? 'selected_machine_unavailable' : 'selected machine offline' });
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual(['/api/adv/sessions/launch-su']);
+  });
+
   it('agent-less launch sends agent:null — launch-su resolves the CONFIGURED backend', async () => {
     const r = await launchAgent({ slug: 'papercup', planSlug: 'p' });
     expect(r.ok).toBe(true);

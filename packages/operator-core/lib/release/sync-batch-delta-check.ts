@@ -112,6 +112,7 @@
 import type { KnownGoodPoint } from './known-good-freeze';
 import { isAdmissionSyntheticCommitDate } from './admission-commit-date';
 import { SCOPE_LAUNCH_FAILURE_RE, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
+import { COMMIT_MESSAGE_FORMAT, readCommitAgents } from '../harness/git-sync/git-sync-attribution';
 
 // ── tunables (every default fails toward doing less work) ────────────────────
 
@@ -306,8 +307,11 @@ export interface SyncBatch {
   /** Commit time, epoch ms (`%ct` * 1000), or null when unparseable. */
   committedAtMs: number | null;
   /** The `Papercusp-Agent:` trailer — the ONLY trustworthy attribution in this repo
-   *  (blame and the subject both name the sweeping agent, not the author). */
+   *  (blame and the subject both name the sweeping agent, not the author). The first
+   *  author when a multi-author commit names several. */
   agent: string | null;
+  /** Every `Papercusp-Agent:` author, when the commit names more than one. */
+  agents?: string[];
   /** Repo-relative paths the commit touched. */
   paths: string[];
 }
@@ -317,39 +321,40 @@ export interface SyncBatch {
  *  green-checkpoint leg, and one raw byte here reds the fleet gate). */
 const NUL = String.fromCharCode(0);
 
+/** The `--format` for {@link parseSyncBatches}: header line, then the delimited message. */
+export const SYNC_BATCH_LOG_FORMAT = `%x00%H %ct%n${COMMIT_MESSAGE_FORMAT}`;
+
 /**
  * Parse `git log <since>..<branch> --first-parent --diff-merges=first-parent --name-only
- *        --format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)`.
+ *        --format=${SYNC_BATCH_LOG_FORMAT}`.
  *
- * NUL separates commits; within a block the first line is `<sha> <epoch-seconds>`,
- * an optional `Papercusp-Agent: <id>` trailer follows, and every remaining
- * non-blank line is a changed path. Output order is git's: NEWEST FIRST.
+ * NUL separates commits; within a block the first line is `<sha> <epoch-seconds>`, the
+ * delimited commit message follows (its `Papercusp-Agent:` lines are the authors), and every
+ * remaining non-blank line is a changed path. A block without the delimiters is read in the
+ * older `%(trailers:key=Papercusp-Agent)` shape (WI-6554700010029864: that shape lost the
+ * agent on 81% of git-sync commits, whose trailers were split across paragraphs). Output
+ * order is git's: NEWEST FIRST.
  */
 export function parseSyncBatches(raw: string): SyncBatch[] {
   const out: SyncBatch[] = [];
   for (const block of raw.split(NUL)) {
-    const lines = block.split('\n').map((l) => l.trim());
-    while (lines.length > 0 && lines[0] === '') lines.shift();
-    const header = lines.shift();
+    const body = block.replace(/^(?:[^\S\n]*\n)+/, '');
+    const nl = body.indexOf('\n');
+    const header = (nl === -1 ? body : body.slice(0, nl)).trim();
     if (!header) continue;
     const [sha, ct] = header.split(/\s+/, 2);
     if (!sha || !/^[0-9a-f]{7,64}$/.test(sha)) continue;
     const seconds = Number(ct);
-    const paths: string[] = [];
-    let agent: string | null = null;
-    for (const line of lines) {
-      if (!line) continue;
-      const trailer = /^Papercusp-Agent:\s*(\S+)/.exec(line);
-      if (trailer) {
-        agent = trailer[1] ?? null;
-        continue;
-      }
-      paths.push(line);
-    }
+    const { agents, rest } = readCommitAgents(nl === -1 ? '' : body.slice(nl + 1));
+    const paths = rest
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
     out.push({
       sha,
       committedAtMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null,
-      agent,
+      agent: agents[0] ?? null,
+      ...(agents.length > 1 ? { agents } : {}),
       paths,
     });
   }
@@ -1359,7 +1364,7 @@ export function buildRedFinding(input: {
             ? 'the batch touched this exact file'
             : "the batch's changed paths select this file's workspace"
         }`,
-        `  Papercusp-Agent trailer: ${batch.agent ?? '(none)'}`,
+        `  Papercusp-Agent trailer: ${batch.agents?.join(', ') ?? batch.agent ?? '(none)'}`,
         `  changed paths (${batch.paths.length}): ${batch.paths.slice(0, 25).join(', ')}${
           batch.paths.length > 25 ? ', ...' : ''
         }`,

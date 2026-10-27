@@ -63,10 +63,47 @@ status() { echo "RUN_IN_ISOLATED_NETNS isolated=$1 mode=$MODE reason=$2" >&2; }
 work=""
 bwrap_pid=""
 child_pid=""
+child_start=""
 pasta_pid=""
 native_observer_pid=""
 
+process_start() {
+  local stat fields
+  IFS= read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+  stat="${stat##*) }"
+  read -r -a fields <<< "$stat"
+  printf '%s' "${fields[19]:-}"
+}
+
+helper_alive() {
+  [ -n "$child_pid" ] && [ -n "$child_start" ] || return 1
+  local stat fields
+  IFS= read -r stat 2>/dev/null <"/proc/$child_pid/stat" || return 1
+  stat="${stat##*) }"
+  read -r -a fields <<< "$stat"
+  [ "${fields[19]:-}" = "$child_start" ] && [ "${fields[0]:-}" != Z ]
+}
+
 teardown() {
+  # A launcher can exit before releasing its eventfd-blocked helper. That
+  # orphan still owns stdout and can keep a surrounding tee alive indefinitely.
+  # Pin the start time so cleanup never signals a reused process id.
+  if helper_alive; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+    local waited=0
+    while helper_alive && [ "$waited" -lt 20 ]; do
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    if helper_alive; then kill -KILL "$child_pid" 2>/dev/null || true; fi
+  fi
+  child_pid=""
+  child_start=""
+  if [ -n "$bwrap_pid" ]; then
+    kill -KILL "$bwrap_pid" 2>/dev/null || true
+    wait "$bwrap_pid" 2>/dev/null || true
+    bwrap_pid=""
+  fi
   if [ -n "$native_observer_pid" ]; then
     kill "$native_observer_pid" 2>/dev/null || true
     wait "$native_observer_pid" 2>/dev/null || true
@@ -78,6 +115,7 @@ teardown() {
   if [ -n "$work" ]; then rm -rf -- "$work"; fi
   work=""
 }
+trap teardown EXIT
 
 # Isolation could not be built: run unisolated (auto) or refuse (required).
 fallback() {
@@ -188,15 +226,20 @@ exec 7<&-
 exec 5<"$work/info"
 exec 6>"$work/block"
 
-while IFS= read -r -t 15 line <&5; do
+info_read_rc=0
+# --info-fd is a complete JSON record, not a one-line pid notification. Closing
+# its reader after child-pid can SIGPIPE the launcher during its remaining
+# writes and strand the helper before the command ever starts.
+while IFS= read -r -t 15 line <&5 || { info_read_rc=$?; false; }; do
   case "$line" in
     *'"child-pid"'*)
       child_pid="${line//[!0-9]/}"
-      break
+      child_start="$(process_start "$child_pid" || true)"
       ;;
   esac
 done
 exec 5<&-
+[ "$info_read_rc" -eq 1 ] || fallback bwrap-info-incomplete
 [ -n "$child_pid" ] || fallback bwrap-namespace-failed
 
 # 6>&-: pasta daemonizes; an inherited write end of the block fifo would keep bwrap
@@ -219,7 +262,10 @@ trap 'forward HUP' HUP
 
 status 1 namespace
 # Release the command: bwrap proceeds on data or EOF at its block fd.
-printf 'go' >&6
+# A supervisor may already have closed the read end. Keep SIGPIPE confined to
+# the writer so this shell still reaps the launcher and cleans its helper.
+release_rc=0
+( trap - EXIT; printf 'go' >&6 ) || release_rc=$?
 exec 6>&-
 while :; do
   wait "$bwrap_pid"
@@ -227,5 +273,11 @@ while :; do
   # A trapped signal interrupts wait with a status > 128; keep waiting for the real exit.
   kill -0 "$bwrap_pid" 2>/dev/null || break
 done
-teardown
+bwrap_pid=""
+if helper_alive; then
+  echo 'run-in-isolated-netns: supervisor exited with its sandbox helper still alive' >&2
+  # A successful launcher exit cannot attest an unexecuted command.
+  if [ "$rc" -eq 0 ]; then rc=97; fi
+fi
+if [ "$rc" -eq 0 ] && [ "$release_rc" -ne 0 ]; then rc=97; fi
 exit "$rc"

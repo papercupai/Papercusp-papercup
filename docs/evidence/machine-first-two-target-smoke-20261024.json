@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "machine-first-two-target-smoke-v1",
+  "workItem": "WI-6554700010016648",
+  "result": "pass",
+  "startedAt": "2026-10-24T05:21:47.435Z",
+  "stoppedAt": "2026-10-24T05:25:27.303Z",
+  "scope": "Production hosted control plane, two source operator processes, two saved authorized organizations, and one local API process on one OS host.",
+  "command": "MACHINE_FIRST_RUNTIME_EVIDENCE=/tmp/machine-first-two-target-runtime-v9 node scripts/with-test-pg.mjs --isolated-runtime=operator-api -- node --import tsx packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts --smoke",
+  "exitCode": 0,
+  "source": {
+    "head": "4fd59cac27fe34de4e73fd2bc937f8bd0380f68e",
+    "sha256ByPath": {
+      "apps/operator/bin/host-app.ts": "88e883103ca017e39f7a6045fd593179501565281d9c29b8f950de5c8f6809cd",
+      "apps/operator/bin/hosted-handler.ts": "4280a7899febdcfac54dc447527671bcbd17c3fbd1c25a4c731ef35a5c55496d",
+      "packages/operator-core/lib/workspace-host/local-machine-operator-transport.ts": "dba505d5c30a25286d7792a83efbfa076f8dc6fbc192098053bd7027b3ac9749",
+      "packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts": "feee70d21f1b3afb9f5f4cb6984183908fc1c3634457e532b275260b89caf7e4",
+      "packages/operator-core/lib/workspace-host/hosted-session-host.ts": "f6eb17aa03dd0dc11e313f4dd9844eb6c30d3abd065794eb884b2183b374bbdd",
+      "packages/operator-core/lib/workspace-host/hosted-operator-http.ts": "8fc3785445f7ece174fdc084a1d18c769103dc59409044a74d67bf63e419d9b4",
+      "packages/operator-core/lib/workspace-host/operator-relay-client.ts": "8ef6b427d9e43456ff44395452ed22374d725f7a61303ce51aa638a0706d2ef9",
+      "packages/operator-core/lib/endpoint-route/routes/hosted-cli/index.ts": "9cb602590405819f08463ec7efc4bb81bbdf9e45441b20026a7205e82ec0faad",
+      "packages/operator-core/lib/endpoint-route/routes/hosted-cli/store.ts": "f8bff2eb115a5c45316629f29f357b3b8484b6abca71ef91e261db49f94ebba6",
+      "packages/operator-core/lib/workspace-context-middleware.ts": "fe97211d2fef0e27d2c5e3963223deb65b53b295b05fef22a9598d56938d66c9",
+      "packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts": "dc281ae3c6eb1fe4741669f9692f1f448d07aed4af3a456cd8f4aa3cda07050f"
+    }
+  },
+  "origins": {
+    "control": "https://127.0.0.1:39859",
+    "local": "http://127.0.0.1:45609"
+  },
+  "identity": {
+    "userId": "17c9f994-e31a-4649-9acc-f9fb2bac5550",
+    "organizationIds": [
+      "52083061-fef7-4de9-89bd-863d70a824d6",
+      "2e00a36a-3618-4bee-be03-6e06b1f89644"
+    ]
+  },
+  "connectors": [
+    {
+      "id": "test-runtime-c7ce0391-5da-a",
+      "hostId": "r1-host-a",
+      "generation": 1,
+      "heartbeatAt": "2026-10-24T05:25:21.723Z"
+    },
+    {
+      "id": "test-runtime-c7ce0391-5da-b",
+      "hostId": "r1-host-b",
+      "generation": 1,
+      "heartbeatAt": "2026-10-24T05:25:21.902Z"
+    }
+  ],
+  "savedTargetInventory": {
+    "status": 200,
+    "hostIds": [
+      "r1-host-b",
+      "r1-host-a"
+    ]
+  },
+  "selectedDestinations": [
+    {
+      "hostId": "r1-host-a",
+      "workspaceId": "test-runtime-c7ce0391-5da-a",
+      "status": 200,
+      "displayName": "R1 destination a"
+    },
+    {
+      "hostId": "r1-host-b",
+      "workspaceId": "test-runtime-c7ce0391-5da-b",
+      "status": 200,
+      "displayName": "R1 destination b"
+    }
+  ],
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts",
+    "exitCode": 0,
+    "log": "/tmp/machine-first-two-target-runtime-typecheck-v9-20261024.log"
+  },
+  "cleanup": {
+    "processes": [
+      {
+        "name": "target-a",
+        "pid": 2276063,
+        "alive": false
+      },
+      {
+        "name": "target-b",
+        "pid": 2276135,
+        "alive": false
+      },
+      {
+        "name": "local",
+        "pid": 2276228,
+        "alive": false
+      }
+    ],
+    "privateRuntimeRoot": "/tmp/pcv/papercusp-test-runtime-6sg4xU",
+    "runtimeRemoved": true,
+    "authFileRemoved": true
+  },
+  "rawReceipt": {
+    "path": "/tmp/machine-first-two-target-runtime-v9.json",
+    "sha256": "ff63f9b7b227f14812feb935257da6dfecfc1c27a3c1b6db84ddf49e4f282602",
+    "runnerLog": "/tmp/machine-first-two-target-runtime-v9.runner.log",
+    "cleanupVerification": "/tmp/machine-first-v9-cleanup-verification-v2-20261024.json"
+  },
+  "limitations": [
+    "This is transport smoke evidence, not complete R-1 GUI acceptance.",
+    "The targets are processes on one OS host, not two physical machines.",
+    "Identity is seeded in private production-schema stores; this is not an AuthKit signup receipt.",
+    "Both-GUI two-window selection, desktop rendering, new-agent launch, existing-agent continuity, unavailable/reconnect behavior, independent grading and final shipment remain unverified by this receipt."
+  ]
+}

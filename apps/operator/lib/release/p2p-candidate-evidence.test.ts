@@ -16,7 +16,7 @@ import {
   type LegProvenanceInput,
   type ReleaseLedgerRecord,
 } from './p2p-candidate-evidence';
-import { buildP2pCandidateManifest } from './p2p-candidate-manifest';
+import { buildP2pCandidateManifest, candidateArtifactDigest } from './p2p-candidate-manifest';
 import {
   computeCandidateManifestFromRecords,
   redactHome,
@@ -448,15 +448,28 @@ describe('evidenceVerdict', () => {
 
 describe('deriveJourneyEvidence → manifest', () => {
   const candidate = () => deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger() });
+  const prerequisite = (journey: string, c: ReturnType<typeof candidate>) => ({
+    startedAt: '2026-09-29T00:00:02.000Z',
+    precheckSubject: { artifactDigest: candidateArtifactDigest(c.artifacts) },
+    localPrechecks: [{
+      journey, check: 'p521-local-precheck:' + journey, verdict: 'pass',
+      startedAt: '2026-09-29T00:00:00.000Z', finishedAt: '2026-09-29T00:00:01.000Z',
+      subject: { artifactDigest: candidateArtifactDigest(c.artifacts) },
+      command: ['local-fixture'], evidence: [{ ref: 'local-fixture', kind: 'local-precheck' }],
+    }],
+  });
 
   it('a declared journey measured on a candidate member reads passed-on-this-artifact', async () => {
     const c = candidate();
     const derived = deriveJourneyEvidence({
       candidate: c,
-      evidence: [{ path: 'docs/evidence/f3.json', sha256: h('doc'), doc: evidenceDoc({ p521Journey: 'serving-identity-restart' }) }],
+      evidence: [{ path: 'docs/evidence/f3.json', sha256: h('doc'), doc: evidenceDoc({
+        p521Journey: 'serving-identity-restart', ...prerequisite('serving-identity-restart', c),
+      }) }],
     });
     expect(Object.keys(derived.journeys)).toEqual(['serving-identity-restart']);
-    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys, now: Date.parse('2026-09-30T00:00:00Z') });
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys,
+      localPrechecks: derived.localPrechecks, now: Date.parse('2026-09-30T00:00:00Z') });
     const row = manifest.current.rows.find((r) => r.capability === 'serving-identity-restart');
     expect(row?.state).toBe('passed-on-this-artifact');
     expect(row?.evidence.refs[0]?.ref).toBe('docs/evidence/f3.json');
@@ -492,11 +505,13 @@ describe('deriveJourneyEvidence → manifest', () => {
         {
           path: 'docs/evidence/one-host.json',
           sha256: h('one'),
-          doc: evidenceDoc({ p521Journey: 'discovery-join', subject: { debSha256: h('server-deb'), topology: { hosts: [{ id: 'tower' }] } } }),
+          doc: evidenceDoc({ p521Journey: 'discovery-join', ...prerequisite('discovery-join', c),
+            subject: { debSha256: h('server-deb'), topology: { hosts: [{ id: 'tower' }] } } }),
         },
       ],
     });
-    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys });
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys,
+      localPrechecks: derived.localPrechecks });
     const row = manifest.current.rows.find((r) => r.capability === 'discovery-join');
     expect(row?.state).toBe('advancing');
     expect(row?.missingPeers).toEqual(['mac-vm']);
@@ -593,7 +608,8 @@ describe('deriveJourneyEvidence with sha-pinned journey mappings', () => {
       ['docs/evidence/run34.p521-journeys.json', 'p521-journey-mapping'],
     ]);
     const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys });
-    expect(manifest.current.rows.find((r) => r.capability === 'discovery-join')?.state).toBe('passed-on-this-artifact');
+    // A journey mapping cannot invent the missing local prerequisite.
+    expect(manifest.current.rows.find((r) => r.capability === 'discovery-join')?.state).toBe('failed-on-this-artifact');
     // a mapping cannot count an unmapped journey: github-bridge stays unmeasured
     expect(manifest.current.rows.find((r) => r.capability === 'github-bridge')?.state).toBe('unmeasured');
   });
@@ -683,13 +699,28 @@ describe('computeCandidateManifestFromRecords (CLI core)', () => {
     for (const d of [linuxDir, join(linuxDir, 'deb'), winDir, evDir]) mkdirSync(d, { recursive: true });
     const debBytes = Buffer.from('server deb bytes');
     const zipBytes = Buffer.from('windows zip bytes');
+    const precheckSubject = {
+      artifactDigest: digestOracle([
+        ['Server.deb', sha256Bytes(debBytes)], ['Setup.exe', h('setup')], ['Server.zip', sha256Bytes(zipBytes)],
+      ]),
+      installerSha256: sha256Bytes(debBytes),
+    };
     writeFileSync(join(linuxDir, 'deb', 'Server.deb'), debBytes);
     writeFileSync(join(winDir, 'Server.zip'), zipBytes);
     writeFileSync(join(linuxDir, 'build-provenance.json'), JSON.stringify(leg([['deb/Server.deb', sha256Bytes(debBytes)]])));
     writeFileSync(join(winDir, 'build-provenance.json'), JSON.stringify(leg([['Setup.exe', h('setup')]])));
     writeFileSync(
       join(evDir, 'f4.json'),
-      JSON.stringify(evidenceDoc({ p521Journey: 'replicated-write-outage-replay', subject: { debSha256: sha256Bytes(debBytes), topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } } })),
+      JSON.stringify(evidenceDoc({
+        p521Journey: 'replicated-write-outage-replay',
+        startedAt: '2026-09-29T00:00:02.000Z', precheckSubject,
+        localPrechecks: [{
+          journey: 'replicated-write-outage-replay', check: 'p521-local-precheck:replicated-write-outage-replay',
+          verdict: 'pass', startedAt: '2026-09-29T00:00:00.000Z', finishedAt: '2026-09-29T00:00:01.000Z',
+          subject: precheckSubject, command: ['local-fixture'], evidence: [{ ref: 'local-fixture' }],
+        }],
+        subject: { debSha256: sha256Bytes(debBytes), topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } },
+      })),
     );
     const hashed: string[] = [];
     const deps: ComputeDeps = {

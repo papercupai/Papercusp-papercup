@@ -70,10 +70,20 @@ export interface ArmResourceSample {
   readonly sampledAt: string;
   readonly memoryCurrentBytes: number | null;
   readonly memoryPeakBytes: number | null;
+  readonly memoryPeakBasis?: 'sum-of-scope-peaks-upper-bound';
+  readonly scopeCosts?: readonly ({ readonly taskId: string | null; readonly cgroupPath: string } &
+    import('../task-manager/cgroup-read').CgroupSample)[];
   /** Measured descendant-process high-water mark through this stage, including
    * separately managed child scopes. Threads are not processes. Omitted/null
    * means no complete process census; never infer zero from worker-only metrics. */
   readonly peakChildProcesses?: number | null;
+  /** Kernel lineage/counter proof and separately enrolled observer overhead. */
+  readonly processObservation?: {
+    readonly witness: import('./fair-process-observer').FairProcessWitness | null;
+    readonly unknown: readonly string[];
+    readonly overhead: ({ readonly taskId: string; readonly cgroupPath: string } &
+      import('../task-manager/cgroup-read').CgroupSample) | null;
+  };
   /** Race-checked process population at this instant; never a lifetime peak. */
   readonly processCensus?: {
     readonly taskId: string;

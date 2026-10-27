@@ -1436,6 +1436,39 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     else expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
   });
 
+  it('returns 504 when two Codex OAuth attempts exhaust the per-request TTFB cap', async () => {
+    const cliAccounts = [
+      { accountId: 'oauth-a', home: await makeCodexHome('oauth-a') },
+      { accountId: 'oauth-b', home: await makeCodexHome('oauth-b') },
+    ];
+    let upstreamAttempts = 0;
+    let abortedAttempts = 0;
+    const fetchImpl = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+      upstreamAttempts++;
+      init?.signal?.addEventListener('abort', () => { abortedAttempts++; }, { once: true });
+      return new Promise<Response>(() => undefined);
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async () => ({ text: 'unused', inputTokens: 1, outputTokens: 1 }),
+      codexOAuthProxy: true,
+      fetchImpl,
+      upstreamStreamHeadersTimeoutMs: 100,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true });
+
+    expect(res.status).toBe(504);
+    expect(upstreamAttempts).toBe(2);
+    expect(abortedAttempts).toBe(2);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('oauth-b');
+  });
+
   it('a terminal out-of-usage (weekly-wall) codex 429 leaves the codex window unchanged (WI-6554700010011426)', async () => {
     await bootCodex(
       (_req, res) => {

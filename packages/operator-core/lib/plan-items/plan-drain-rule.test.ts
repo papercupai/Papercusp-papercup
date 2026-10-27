@@ -13,14 +13,20 @@
  * differing in one status field where it must NOT fire, so a matcher stuck at
  * `true` fails a control and one stuck at `false` fails a positive.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import './plan-drain-rule'; // registers plan-drain:terminality-changed
 import { planWhoseDrainStateMayHaveChanged } from './plan-drain-rule';
 import { matchReactions, reactionRulesFor } from '../events/registry';
 import { fanOutBulkEvent } from '../events/engine';
-import { PLAN_DRAIN_TRANSITION_ACTION } from '../events/builtin-actions';
+import { PLAN_DRAIN_TRANSITION_ACTION, fireBuiltinReactionAction } from '../events/builtin-actions';
 import type { ToolInvocationEvent } from '../events/types';
+
+const transition = vi.hoisted(() => vi.fn().mockResolvedValue({ applied: true }));
+vi.mock('../agent-tools/plans/plan-drain-transition', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/plans/plan-drain-transition')>()),
+  applyPlanDrainTransition: transition,
+}));
 
 const RULE_ID = 'plan-drain:terminality-changed';
 const ADD_RULE_ID = 'plan-drain:item-added';
@@ -132,6 +138,44 @@ const flip = (
   newStatus: string,
   ok = true,
 ) => ({ ok, slug, itemId, oldStatus, newStatus });
+
+describe('automatic acceptance carry accountability', () => {
+  it('carries the authenticated finishing actor through the reaction action', async () => {
+    transition.mockClear();
+    const event = contentWriteEvent('plans:edit');
+    event.ctx = { ...ctx, isSuperuser: true, uiClientId: 'su-finishing-agent' };
+    // A payload field cannot choose the next accountable actor.
+    event.args = { slug: 'p-content', accountableOwnerId: 'su-unrelated-agent' };
+    const action = matchReactions(event).find((a) => a.ruleId === CONTENT_RULE_IDS['plans:edit'])!;
+    await fireBuiltinReactionAction(action.fire, action.args, 'papercusp-workspace');
+    expect(transition).toHaveBeenCalledWith('p-content', 'papercusp', {
+      workspaceId: 'papercusp-workspace',
+      accountableOwnerId: 'su-finishing-agent',
+    });
+  });
+
+  it.each(['system:plan-drain', 'mcp-call-123', 'harness:papercusp'])('does not assign a carry to %s', async (ownerId) => {
+    transition.mockClear();
+    const event = contentWriteEvent('plans:edit');
+    event.ctx = { ...ctx, isSuperuser: true, uiClientId: ownerId };
+    const action = matchReactions(event).find((a) => a.ruleId === CONTENT_RULE_IDS['plans:edit'])!;
+    await fireBuiltinReactionAction(action.fire, action.args, 'papercusp-workspace');
+    expect(transition).toHaveBeenCalledWith('p-content', 'papercusp', {
+      workspaceId: 'papercusp-workspace',
+    });
+  });
+
+  it('keeps a clientless superuser carry claimable', async () => {
+    transition.mockClear();
+    const event = contentWriteEvent('plans:edit');
+    event.ctx = { ...ctx, isSuperuser: true, uiClientId: undefined };
+    const action = matchReactions(event).find((a) => a.ruleId === CONTENT_RULE_IDS['plans:edit'])!;
+    await fireBuiltinReactionAction(action.fire, action.args, 'papercusp-workspace');
+    expect(transition).toHaveBeenCalledWith('p-content', 'papercusp', {
+      workspaceId: 'papercusp-workspace',
+    });
+  });
+});
 
 describe('planWhoseDrainStateMayHaveChanged — relevant lifecycle writes', () => {
   it('matches an item going todo -> done (a plan can newly drain)', () => {

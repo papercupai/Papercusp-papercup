@@ -215,7 +215,10 @@ describe('posttoolbatch-midturn-context.sh', () => {
   });
 
   it('operator down → fail-open silent, exit 0 (never exit 2 — that stops the loop)', async () => {
-    const out = await runHook(BATCH, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY_PORT: '1' });
+    const env = { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY_PORT: '1' };
+    const { operatorBases } = await import('../../inject/core.mjs');
+    expect(operatorBases(env)).toEqual([env.PAPERCUSP_OPERATOR_URL]);
+    const out = await runHook(BATCH, env);
     expect(out.status).toBe(0);
     expect(out.stdout.trim()).toBe('');
   });

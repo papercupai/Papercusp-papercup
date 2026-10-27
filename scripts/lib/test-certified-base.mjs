@@ -55,7 +55,7 @@ export const DISABLE_ENV = "AFFECTED_TEST_CERTIFIED_BASE";
  * a hand-copied list is exactly the drift this repo's derived-truth ladder warns
  * about, and here a stale copy silently re-opens the false-certification hole.
  */
-export const SCOPE_FLAGS = Object.freeze(["--changed-paths", "--range-from", "--range-to"]);
+export const SCOPE_FLAGS = Object.freeze(["--changed-paths", "--range-from", "--range-to", "--qualification-work"]);
 
 /**
  * Did the caller scope this run?

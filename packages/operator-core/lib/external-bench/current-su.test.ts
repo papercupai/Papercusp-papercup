@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
+import { claudeAttemptHeaders, makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession,
@@ -11,13 +11,14 @@ import {
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
+  currentBenchAnthropicInputContract, currentBenchAnthropicInputReader,
   currentBenchCodexSubscriptionContract, currentBenchCodexSubscriptionInputReader, currentBenchCodexSubscriptionTarget,
   currentBenchNativeCostReader, currentBenchNativeSessionCostDelta, type CurrentBenchNativeCostReaderPorts,
   currentBenchAttemptPopulationMatches,
   type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
-import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
+import { closedClaudeSessionPopulation, closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { BenchmarkContextReceipt } from './reproducibility/context';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
@@ -283,6 +284,104 @@ describe('source-bound current benchmark cost', () => {
   it('joins provider request evidence to host-native turn/model/inclusive cache usage without releasing unknown billing headroom', () => {
     const f = attemptFixture(); expect(f.matches()).toBe(true);
     expect(f.row.status).toBe('open'); expect(f.row.usedUsd).toBe(0);
+  });
+  function claudeAttemptFixture() {
+    const f = attemptFixture();
+    const nativeSessionId = 'claude-native-cost-1', messageId = 'msg_exact_native_1';
+    const transcript = JSON.stringify({ type: 'assistant', sessionId: nativeSessionId,
+      message: { id: messageId, model: 'configured-alias', stop_reason: 'end_turn', usage: {
+        input_tokens: 75, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 5,
+      } } }) + '\n';
+    const parsed = closedClaudeSessionPopulation({ transcript, file: '/private/claude.jsonl', fileGeneration: 0, nativeSessionId });
+    if (!parsed.ok) throw new Error(parsed.detail);
+    const usage = { ...parsed, file: '/private/claude.jsonl', sourceSha256: createHash('sha256').update(transcript).digest('hex') };
+    const participant = { taskId: f.participant.taskId, ownerId: f.participant.ownerId, agent: 'claude' as const,
+      claudeConfigDir: '/private/claude-home', terminal: true };
+    const { nativeSessionId: _session, nativeTurnId: _turn, ...request } = f.identity;
+    const identity = { ...request, transport: 'anthropic-http' as const,
+      target: 'https://api.anthropic.com/v1/messages', credentialHeader: 'x-api-key' as const };
+    const result = { ...identity, reservationRef: identity.attemptId, outcome: 'response-completed', responseStatus: 200,
+      costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
+      providerCompletion: { responseId: messageId, model: 'configured-alias', providerEffort: null,
+        usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 5 } } };
+    const population = { participants: [participant], sources: [{ participant, nativeSessionId, usage }] };
+    const save = () => { f.row.note = JSON.stringify({ nativeGatewayAttempt: identity, nativeGatewayAttemptResult: result }); };
+    save();
+    return { ...f, identity, result, population, usage, participant, nativeSessionId, save,
+      matches: () => currentBenchAttemptPopulationMatches(f.binding, population, f.census, structuredClone(f.census)) };
+  }
+  it('joins Claude through the measured provider message without requiring or inventing native turns', () => {
+    const f = claudeAttemptFixture();
+    expect(f.matches()).toBe(true);
+    expect(f.identity).not.toHaveProperty('nativeTurnId');
+    expect(f.row.status).toBe('open');
+  });
+  it('retains Claude message identities in complete normalized and billed source receipts', async () => {
+    const f = claudeAttemptFixture();
+    Object.assign(f.protocol.priceSchedule.rates[0], { cacheWriteUsdPerMillion: 1.25 });
+    const ports: CurrentBenchNativeCostReaderPorts = { readParticipants: async () => [f.participant],
+      readRuntime: async () => ({ complete: true, sessions: [{ nativeSessionId: f.nativeSessionId, usage: f.usage }] }),
+      readBilled: async () => ({ knownSubtotalUsd: 0.002, complete: true }),
+      readAttemptAccountingComplete: async population => currentBenchAttemptPopulationMatches(f.binding, population, f.census, f.census) };
+    const cost = await currentBenchNativeCostReader(f.protocol, ports)();
+    expect(cost).toMatchObject({ tokensIn: 75, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 5, turns: 1,
+      costUsdMeasurementMissing: false, armMeta: { nativeCostAccounting: { billedCostUsd: 0.002,
+        sources: [{ agent: 'claude', nativeTurnIds: [], nativeMessageIds: ['msg_exact_native_1'] }] } } });
+    expect(currentBenchNativeSessionCostDelta(null, cost, f.nativeSessionId)).toMatchObject({ agent: 'claude', nativeTurnIds: [],
+      nativeMessageIds: ['msg_exact_native_1'] });
+    for (const fault of ['invented-turn', 'duplicate-message', 'missing-message', 'wrong-agent']) {
+      const changed = structuredClone(cost), source = changed.armMeta.nativeCostAccounting.sources[0];
+      if (fault === 'invented-turn') source.nativeTurnIds.push('synthetic-turn');
+      if (fault === 'duplicate-message') source.nativeMessageIds!.push(source.nativeMessageIds![0]);
+      if (fault === 'missing-message') delete source.nativeMessageIds;
+      if (fault === 'wrong-agent') delete source.agent;
+      expect(() => currentBenchNativeSessionCostDelta(null, changed, f.nativeSessionId)).toThrow(/incomplete/);
+    }
+  });
+  it('distinguishes equal-token Claude requests through their exact provider message IDs', () => {
+    const f = claudeAttemptFixture(), other = structuredClone(f.row), note = JSON.parse(other.note!);
+    const secondId = 'msg_exact_native_2';
+    f.usage.nativeMessageIds = [...f.usage.nativeMessageIds, secondId];
+    f.usage.events = [...f.usage.events, { ...f.usage.events[0], providerResponseId: secondId,
+      sourceId: `message:${secondId}`, usageEventKey: 'second-native-message' }];
+    other.id = 'second-claude-attempt'; other.runRef = `manifest:${f.binding.preregHash}/attempt:${other.id}`;
+    note.nativeGatewayAttempt.attemptId = other.id;
+    note.nativeGatewayAttemptResult.attemptId = other.id; note.nativeGatewayAttemptResult.reservationRef = other.id;
+    note.nativeGatewayAttemptResult.providerCompletion.responseId = secondId;
+    other.note = JSON.stringify(note); f.census.reservations.push(other);
+    expect(f.matches()).toBe(true);
+  });
+  it.each(['wrong-message', 'wrong-model', 'wrong-input', 'wrong-cache-read', 'wrong-cache-write', 'unknown-cache',
+    'wrong-transport', 'invented-turn', 'invented-session', 'duplicate-message', 'codex-source', 'claude-source-as-codex',
+    'foreign-arm-message', 'foreign-arm-result-message', 'incomplete-response', 'duplicate-event'] as const)
+  ('keeps Claude attempt accounting closed for %s', change => {
+    const f = claudeAttemptFixture();
+    if (change === 'wrong-message') f.result.providerCompletion.responseId = 'msg_foreign';
+    if (change === 'wrong-model') f.result.providerCompletion.model = 'other-model';
+    if (change === 'wrong-input') f.result.providerCompletion.usage.inputTokens++;
+    if (change === 'wrong-cache-read') f.result.providerCompletion.usage.cacheReadTokens++;
+    if (change === 'wrong-cache-write') f.result.providerCompletion.usage.cacheCreationTokens++;
+    if (change === 'unknown-cache') f.result.providerCompletion.usage.cacheReadTokens = null as never;
+    if (change === 'wrong-transport') Object.assign(f.identity, { transport: 'bearer-http' });
+    if (change === 'invented-turn') Object.assign(f.identity, { nativeTurnId: 'invented-codex-turn' });
+    if (change === 'invented-session') Object.assign(f.identity, { nativeSessionId: 'unmeasured-session' });
+    if (change === 'duplicate-message') f.usage.events = [...f.usage.events,
+      { ...f.usage.events[0], usageEventKey: 'duplicate-message-key' }];
+    if (change === 'codex-source') Object.assign(f.population.sources[0], { usage: attemptFixture().usage });
+    if (change === 'claude-source-as-codex') Object.assign(f.participant, { agent: 'codex' });
+    if (change === 'foreign-arm-message' || change === 'foreign-arm-result-message') {
+      const other = structuredClone(f.row), note = JSON.parse(other.note!);
+      other.id = 'other-claude-assignment'; other.runRef = `manifest:${f.binding.preregHash}/attempt:${other.id}`;
+      other.resources!.armId = 'bench-assignment:other';
+      Object.assign(note.nativeGatewayAttempt, { attemptId: other.id, armId: other.resources!.armId });
+      Object.assign(note.nativeGatewayAttemptResult, note.nativeGatewayAttempt, { reservationRef: other.id });
+      if (change === 'foreign-arm-message') f.census.reservations = [];
+      other.note = JSON.stringify(note); f.census.reservations.push(other);
+    }
+    if (change === 'incomplete-response') f.result.outcome = 'response-incomplete';
+    if (change === 'duplicate-event') f.usage.events = [...f.usage.events, f.usage.events[0]];
+    f.save();
+    expect(f.matches()).toBe(false);
   });
   it.each(['missing', 'extra', 'wrong-turn', 'wrong-session', 'wrong-model', 'wrong-cache', 'unknown-cache',
     'failed-fetch', 'headers-only', 'incomplete-response', 'live', 'foreign-loop', 'foreign-workspace',
@@ -1064,6 +1163,134 @@ describe('registered benchmark provider authentication', () => {
   });
 });
 
+describe('Anthropic provider-enforced model input limits', () => {
+  function fixture() {
+    const f = providerAuthFixture(), input = { model: 'claude-pinned-model', inputTokens: 10_000, outputTokens: 128 };
+    const body = { model: input.model, max_tokens: 10, output_config: { effort: 'high' },
+      system: [{ type: 'text', text: 'private instructions', cache_control: { type: 'ephemeral', ttl: '1h' } }],
+      messages: [{ role: 'user', content: 'private native input' }],
+      tools: [{ name: 'shell', input_schema: { type: 'object', properties: {} } }] };
+    const bytes = JSON.stringify(body);
+    const attempt: GatewayCarryTrialAttempt = { ...f.attempt, transport: 'anthropic-http',
+      target: 'https://api.anthropic.com/v1/messages', credentialHeader: 'x-api-key',
+      credentialSha256: f.digest(NEVER_EMIT_MARKER), anthropicVersion: '2023-06-01', anthropicBeta: null,
+      body: bytes, bodySha256: f.digest(bytes) };
+    const model = { type: 'model', id: input.model, max_input_tokens: input.inputTokens, max_tokens: input.outputTokens };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(model, { headers: { 'request-id': 'req-model-1' } }));
+    const reader = currentBenchAnthropicInputReader(input, { fetch });
+    return { ...f, input, body, attempt, model, fetch, reader, credential: { secret: NEVER_EMIT_MARKER } };
+  }
+  it('binds the contract to both full model limits and refuses unsafe model paths', () => {
+    const contract = currentBenchAnthropicInputContract('claude-pinned-model', 10_000, 128);
+    expect(contract).not.toBe(currentBenchAnthropicInputContract('claude-pinned-model', 10_001, 128));
+    expect(contract).not.toBe(currentBenchAnthropicInputContract('claude-pinned-model', 10_000, 129));
+    expect(() => currentBenchAnthropicInputContract('../models', 10_000, 128)).toThrow(/Anthropic input contract/);
+  });
+  it.each(['', 'context-1m-2025-08-07', 'unknown-feature-2099-01-01'])(
+    'admits normalized GA effort only when no other beta remains (%s)', async otherBeta => {
+      const f = fixture();
+      const headers = claudeAttemptHeaders({ 'anthropic-version': '2023-06-01',
+        'anthropic-beta': ['claude-code-20250219', 'oauth-2025-04-20', 'effort-2025-11-24', otherBeta].filter(Boolean).join(',') },
+        'api-key', f.credential.secret);
+      const attempt = { ...f.attempt, anthropicVersion: headers['anthropic-version'],
+        anthropicBeta: headers['anthropic-beta'] ?? null };
+      try {
+        const proof = await f.reader.read(attempt, f.credential);
+        expect(JSON.parse(attempt.body).output_config.effort).toBe('high');
+        expect(attempt.anthropicBeta).toBe(otherBeta || null);
+        if (otherBeta) {
+          expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled();
+        } else {
+          expect(proof).toMatchObject({ inputTokens: f.input.inputTokens, model: f.input.model,
+            evidence: { bodySha256: f.attempt.bodySha256, anthropicVersion: '2023-06-01' } });
+          expect(f.fetch).toHaveBeenCalledOnce();
+          proof!.validateAuthorization();
+        }
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it('uses only the authenticated Models API, preserves full-window evidence and revokes synchronously', async () => {
+    const f = fixture();
+    try {
+      const proof = await f.reader.read(f.attempt, f.credential);
+      expect(proof).toMatchObject({ model: f.input.model, inputTokens: 10_000,
+        evidence: { kind: 'provider-model-limit', model: f.input.model, inputTokens: 10_000, outputTokens: 128,
+          bodySha256: f.attempt.bodySha256, responseSha256: f.digest(JSON.stringify(f.model)),
+          requestId: 'req-model-1', anthropicVersion: '2023-06-01' } });
+      expect(f.fetch).toHaveBeenCalledExactlyOnceWith('https://api.anthropic.com/v1/models/claude-pinned-model',
+        expect.objectContaining({ method: 'GET', redirect: 'error',
+          headers: { 'x-api-key': NEVER_EMIT_MARKER, 'anthropic-version': '2023-06-01', accept: 'application/json' } }));
+      expect(f.fetch.mock.calls[0]![1]).not.toHaveProperty('body');
+      expect(JSON.stringify(proof)).not.toContain(NEVER_EMIT_MARKER);
+      proof!.validateAuthorization(); f.reader.revoke();
+      expect(() => proof!.validateAuthorization()).toThrow(/expired or revoked/);
+      expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each(['alias', 'larger-input', 'smaller-input', 'output', 'missing', 'estimate', 'null', 'type', 'oversized', 'error', 'revoked'])(
+    'refuses %s metadata instead of treating it as an input bound', async changed => {
+      const f = fixture();
+      try {
+        if (changed === 'alias') f.model.id = 'resolved-different-model';
+        if (changed === 'larger-input') f.model.max_input_tokens++;
+        if (changed === 'smaller-input') f.model.max_input_tokens--;
+        if (changed === 'output') f.model.max_tokens++;
+        if (changed === 'missing') delete (f.model as Partial<typeof f.model>).max_input_tokens;
+        if (changed === 'null') f.model.max_input_tokens = null as never;
+        if (changed === 'type') f.model.type = 'message';
+        if (changed === 'estimate') f.fetch.mockImplementation(async () => Response.json({ input_tokens: 7 }));
+        if (changed === 'oversized') f.fetch.mockImplementation(async () => new Response(' '.repeat(16_385)));
+        if (changed === 'error') f.fetch.mockRejectedValue(new Error('unavailable'));
+        if (changed === 'revoked') f.fetch.mockImplementation(async () => { f.reader.revoke(); return Response.json(f.model); });
+        expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it.each(['beta', 'missing-beta', 'version', 'missing-version', 'oauth', 'credential', 'route', 'hash', 'clock',
+    'aborted', 'output', 'hosted-tool', 'remote-file', 'image', 'context', 'unknown'])(
+    'refuses %s before making even a model metadata request', async changed => {
+      const f = fixture(), body = JSON.parse(f.attempt.body);
+      const patch: { -readonly [K in keyof GatewayCarryTrialAttempt]?: GatewayCarryTrialAttempt[K] } = {};
+      if (changed === 'beta') patch.anthropicBeta = 'context-1m-2025-08-07';
+      if (changed === 'missing-beta') patch.anthropicBeta = undefined;
+      if (changed === 'version') patch.anthropicVersion = '2099-01-01';
+      if (changed === 'missing-version') patch.anthropicVersion = undefined;
+      if (changed === 'oauth') patch.credentialHeader = 'authorization';
+      if (changed === 'credential') patch.credentialSha256 = f.digest('foreign');
+      if (changed === 'route') patch.target = 'https://api.anthropic.com.evil.invalid/v1/messages';
+      if (changed === 'clock') patch.clockId = 'foreign';
+      if (changed === 'aborted') patch.signal = AbortSignal.abort();
+      if (changed === 'output') delete body.max_tokens;
+      if (changed === 'hosted-tool') body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
+      if (changed === 'remote-file') body.messages[0].content = [{ type: 'document', source: { type: 'file', file_id: 'file-1' } }];
+      if (changed === 'image') body.messages[0].content = [{ type: 'image', source: { type: 'url', url: 'https://remote.invalid' } }];
+      if (changed === 'context') body.context_management = { edits: [] };
+      if (changed === 'unknown') body.unknown_provider_feature = true;
+      const bytes = JSON.stringify(body), attempt = { ...f.attempt, body: bytes, bodySha256: f.digest(bytes), ...patch };
+      if (changed === 'hash') attempt.bodySha256 = f.digest('foreign');
+      try {
+        expect(await f.reader.read(attempt, f.credential)).toBeNull();
+        expect(f.fetch).not.toHaveBeenCalled();
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it('authenticates a frozen Claude API-key arm through the default model-limit reader', async () => {
+    const f = fixture(), baseline = providerAuthFixture();
+    const arm = baseline.input.protocol.arms[0], rate = baseline.input.protocol.priceSchedule.rates[0];
+    arm.agent = 'claude'; rate.model = f.input.model;
+    for (const value of baseline.input.protocol.arms) value.model = f.input.model;
+    rate.outputTokenCeiling = 128; rate.cacheWriteUsdPerMillion = 25;
+    rate.inputTokenCeilingSourceSha256 = currentBenchAnthropicInputContract(rate.model, 10_000, 128);
+    baseline.ports.readAccount.mockResolvedValue({ ...baseline.account, provider: 'claude' });
+    baseline.ports.credentialResolver.mockReturnValue({ ...baseline.resolver, kind: 'apikey', authMode: 'api-key' });
+    const { readNativeInputCeiling: _custom, ...input } = baseline.input;
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(f.fetch);
+    const auth = currentBenchProviderAuthenticator(input, baseline.ports);
+    try {
+      expect(await auth.authenticateProvider({ ...f.attempt, manifestSha256: input.preregHash,
+        armId: baseline.attempt.armId })).toMatchObject({ inputTokens: 10_000, outputTokens: 10, requestedUsd: 0.25002,
+        inputEvidence: { kind: 'provider-model-limit', outputTokens: 128 } });
+    } finally { auth.revoke(); fetch.mockRestore(); baseline.revoke(); f.reader.revoke(); f.revoke(); }
+  });
+});
+
 // benchmark-coverage-frontierswe-v2-2026-10-10#D-023: a Codex arm frozen with the
 // subscription payer sends only through the ChatGPT backend (oauth-http), only with a
 // registered codex-cli account, and reserves the provider's own frozen input and output
@@ -1231,7 +1458,57 @@ function observedFixture() {
   return { task, observation };
 }
 
+function observedClaudeFixture() {
+  const { task, observation } = observedFixture();
+  Object.assign(observation.worker, { agent: 'claude', claudeConfigDir: '/host/owned-claude' });
+  const telemetry = new GatewayRequestTelemetry({ now: () => Date.parse('2026-10-09T20:00:00Z') });
+  const span = telemetry.begin({ ownerId: observation.worker.ownerId, provider: 'claude', protocol: 'anthropic-messages' });
+  span.setModel('native-requested-model');
+  span.setCacheShape(Buffer.from(JSON.stringify({ system: 'PRIVATE_SYSTEM_PROMPT', tools: [{ name: 'tool-exact' }],
+    output_config: { effort: 'high' }, messages: [{ role: 'user', content: 'Public problem.' }] })));
+  span.setNativeCorrelation({}); span.setServingAccount('actual-account');
+  span.recordProviderIdentity('msg-exact', 'actual-provider-model', null, 'actual-account');
+  span.recordCacheUsage(10, 0, 0, 'msg-exact');
+  observation.gateway.timeline = span.finish('ok', 200)!;
+  observation.nativeTranscript = JSON.stringify({ type: 'assistant', sessionId: observation.worker.nativeSessionId,
+    version: '2.1.293', perTurnEffort: 'high', isSidechain: false,
+    message: { id: 'msg-exact', model: 'actual-provider-model', stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 } } }) + '\n';
+  return { task, observation };
+}
+
 describe('exact native benchmark identity observation', () => {
+  it('joins Claude native version/session/message with the measured Anthropic response without inventing Codex turn metadata', () => {
+    const { task, observation } = observedClaudeFixture();
+    // The current telemetry writer marks this Codex-only format invalid on
+    // Anthropic; Claude is joined through its exact native provider message.
+    expect(observation.gateway.timeline.nativeCorrelation.status).toBe('invalid');
+    const identity = currentBenchIdentityFromObservation(task, observation);
+    expect(identity).toMatchObject({ clientVersion: 'claude/2.1.293', model: 'actual-provider-model', effort: 'high',
+      nativeSessionId: observation.worker.nativeSessionId, providerResponseId: 'msg-exact', accountId: 'actual-account' });
+    expect(identity?.evidenceRefs).toContain(`claude:${observation.worker.nativeSessionId}#message:msg-exact`);
+    expect(JSON.stringify(identity)).not.toContain('PRIVATE_SYSTEM_PROMPT');
+  });
+
+  it.each(['session', 'message', 'model', 'effort', 'version', 'sidechain', 'api-error', 'missing-home', 'foreign-codex-correlation', 'partial-prompt', 'malformed'])
+    ('refuses Claude %s drift or incomplete source evidence', changed => {
+      const { task, observation } = observedClaudeFixture();
+      const record = JSON.parse(observation.nativeTranscript);
+      if (changed === 'session') record.sessionId = 'other-native';
+      if (changed === 'message') record.message.id = 'other-message';
+      if (changed === 'model') record.message.model = 'configured-alias';
+      if (changed === 'effort') record.perTurnEffort = 'low';
+      if (changed === 'version') record.version = '';
+      if (changed === 'sidechain') record.isSidechain = true;
+      if (changed === 'api-error') record.isApiErrorMessage = true;
+      if (changed === 'missing-home') Object.assign(observation.worker, { claudeConfigDir: undefined });
+      if (changed === 'foreign-codex-correlation') observation.gateway.timeline.nativeCorrelation = {
+        status: 'observed', sessionId: null, threadId: 'other-native', turnId: 'other-turn', windowId: null,
+      };
+      if (changed === 'partial-prompt') observation.gateway.timeline.cache.instructions!.hashedBytes--;
+      observation.nativeTranscript = JSON.stringify(record) + '\n' + (changed === 'malformed' ? '{' : '');
+      expect(currentBenchIdentityFromObservation(task, observation)).toBeNull();
+    });
+
   it('joins native version and turn with a provider response and complete exposure hashes', () => {
     const { task, observation } = observedFixture();
     const result = currentBenchIdentityFromObservation(task, observation);
@@ -1302,6 +1579,83 @@ function hostObservationFixture() {
   return { task, rows, report, ports, opts };
 }
 describe('host-backed benchmark observation reader', () => {
+  function claudeHostFixture() {
+    const f = hostObservationFixture(), { observation } = observedClaudeFixture();
+    f.ports.readBinding = vi.fn(async () => ({ agent: 'claude' as const,
+      ownerId: observation.worker.ownerId, nativeSessionId: observation.worker.nativeSessionId,
+      claudeConfigDir: observation.worker.claudeConfigDir! }));
+    f.ports.readTranscript = vi.fn(async () => observation.nativeTranscript);
+    f.report.stageTelemetry.recent = [observation.gateway.timeline];
+    return f;
+  }
+  it('observes the exact Claude message when newer gateway traffic belongs to another native session', async () => {
+    const f = claudeHostFixture();
+    const unrelated = structuredClone(f.report.stageTelemetry.recent[0]);
+    unrelated.requestId++; unrelated.finalizedAt++;
+    unrelated.providerIdentity!.responseId = 'msg-other';
+    unrelated.cache.providerRequestId = 'msg-other';
+    f.report.stageTelemetry.recent.push(unrelated);
+    const observation = await currentBenchObservationReader(f.opts, f.ports)(f.task);
+    expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({
+      clientVersion: 'claude/2.1.293', providerResponseId: 'msg-exact', nativeSessionId: f.task.sessionId });
+    expect(observation?.worker).toMatchObject({ agent: 'claude', claudeConfigDir: '/host/owned-claude' });
+    expect(observation?.worker.codexHome).toBeUndefined();
+    expect(f.ports.readTranscript).toHaveBeenCalledWith(f.task.sessionId, '/host/owned-claude', 'claude');
+  });
+  it.each(['missing-home', 'mixed-home', 'foreign-message', 'old-request', 'home-changed', 'agent-changed'])(
+    'refuses Claude live observation with %s', async changed => {
+      const f = claudeHostFixture();
+      const binding = (await f.ports.readBinding(f.task))!;
+      if (changed === 'missing-home') delete binding.claudeConfigDir;
+      if (changed === 'mixed-home') binding.codexHome = '/foreign/codex';
+      if (changed === 'foreign-message') f.report.stageTelemetry.recent[0].providerIdentity!.responseId = 'msg-other';
+      if (changed === 'old-request') f.task.startedAt = new Date(f.report.stageTelemetry.recent[0].finalizedAt + 1).toISOString();
+      f.ports.readBinding = vi.fn(async () => binding);
+      if (changed === 'home-changed' || changed === 'agent-changed') f.ports.readTranscript = vi.fn(async () => {
+        if (changed === 'home-changed') binding.claudeConfigDir = '/foreign/claude';
+        else binding.agent = 'codex';
+        return observedClaudeFixture().observation.nativeTranscript;
+      });
+      expect(await currentBenchObservationReader(f.opts, f.ports)(f.task)).toBeNull();
+    });
+  it('reads only the enrolled Claude home and refuses source links beneath the issued root', async () => {
+    const f = claudeHostFixture(), root = mkdtempSync(join(tmpdir(), 'bench-claude-observation-'));
+    const sid = f.task.sessionId!, home = join(root, 'home'), project = join(home, 'projects', '-task');
+    const transcript = observedClaudeFixture().observation.nativeTranscript;
+    const file = join(project, `${sid}.jsonl`), io = liveCurrentBenchObservationReaderPorts(f.opts);
+    try {
+      mkdirSync(project, { recursive: true }); writeFileSync(file, transcript);
+      expect(await io.readTranscript(sid, home, 'claude')).toBe(transcript);
+      const relocated = join(root, 'relocated'); symlinkSync(home, relocated);
+      expect(await io.readTranscript(sid, relocated, 'claude')).toBe(transcript);
+      const foreign = join(root, 'foreign'); mkdirSync(join(foreign, 'projects'), { recursive: true });
+      // The shared finder may retain an id hit. Containment must still reject it.
+      expect(await io.readTranscript(sid, foreign, 'claude')).toBeNull();
+      rmSync(file); writeFileSync(join(root, 'external.jsonl'), transcript);
+      symlinkSync(join(root, 'external.jsonl'), file);
+      expect(await io.readTranscript(sid, home, 'claude')).toBeNull();
+      expect(await io.readTranscript('../escape', home, 'claude')).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('derives the Claude config directory from the uniquely enrolled owner instead of task-supplied paths', async () => {
+    const f = claudeHostFixture();
+    const sql = vi.fn(async () => [{ id: 42, agent: 'claude', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    const io = liveCurrentBenchObservationReaderPorts({ ...f.opts, sql: sql as never });
+    f.task.detail.claudeConfigDir = '/candidate/chosen';
+    const { sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
+    expect(await io.readBinding(f.task)).toEqual({ agent: 'claude', ownerId: 'su-exact', nativeSessionId: f.task.sessionId,
+      claudeConfigDir: sessionClaudeConfigDir('su-exact') });
+    sql.mockResolvedValue([{ id: 42, agent: 'omp', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    expect(await io.readBinding(f.task)).toBeNull();
+  });
+  it('preserves the existing Codex enrollment binding shape', async () => {
+    const f = hostObservationFixture();
+    const sql = vi.fn(async () => [{ id: 42, agent: 'codex', coord_owner_id: 'su-exact', session_id: f.task.sessionId }]);
+    const io = liveCurrentBenchObservationReaderPorts({ ...f.opts, sql: sql as never });
+    const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+    expect(await io.readBinding(f.task)).toEqual({ ownerId: 'su-exact', nativeSessionId: f.task.sessionId,
+      codexHome: codexHomeForSessionKey(42) });
+  });
   async function privateHostFixture() {
     const f = hostObservationFixture(), protocol = currentProtocolFixture();
     const controller = currentBenchGatewayController({ workspaceId: f.task.workspaceId, loopId: 'private-observation-loop',
@@ -1417,6 +1771,27 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it('runs the frozen Claude stock baseline only through its matching native blueprint and measured identity', async () => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[1].agent = 'claude'; protocol.arms[1].runtime.clientVersion = 'claude/2.1.0';
+    const opts: CurrentSuBenchOptions = { ...options, agent: 'claude', armId: 'baseline',
+      preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
+    vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, clientVersion: 'claude/2.1.0' });
+    const { launch, ...common } = f.ports;
+    const stock = currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts);
+    const rejected = await stock.spinRunAndCost({ ...request, blueprintId: 'native-codex' });
+    expect(rejected.telemetry.generationError).toMatch(/blueprint/);
+    expect(launchNative).not.toHaveBeenCalled();
+    const result = await stock.spinRunAndCost({ ...request, blueprintId: 'native-claude' });
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ kind: 'stock-native',
+      configured: { agent: 'claude' }, protocolIdentity: { status: 'matched' },
+      measured: { clientVersion: 'claude/2.1.0' } });
+    expect(launchNative).toHaveBeenCalledOnce(); expect(launch).not.toHaveBeenCalled();
+    expect(f.ports.verifyPreregistration).toHaveBeenCalled(); expect(f.ports.verifyContext).toHaveBeenCalled();
+    expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
+  });
   it('stock shares protocol/context/accounting checks without invoking a su launch or accepting its blueprint', async () => {
     const opts = { ...options, armId: 'baseline' };
     const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
@@ -2042,6 +2417,30 @@ describe('current benchmark restart and live binding', () => {
       const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as typeof override;
       expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
+  });
+  it('issues and revokes the frozen Claude baseline route through the existing host controller', async () => {
+    const f = budgetFixture(); f.input.protocol.arms[1].agent = 'claude';
+    f.input.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
+    const controller = currentBenchGatewayController({ ...f.input, armId: 'baseline' }, f.governor);
+    const stop = vi.fn(async () => {}), start = vi.fn(async () => ({ port: 32112, stop } as never));
+    try {
+      const hosted = await controller.startNativeGateway(() => {}, start);
+      expect(start).toHaveBeenCalledOnce();
+      expect(hosted.nativeGateway.baseURL).toBe('http://127.0.0.1:32112');
+      expect(hosted.nativeAccountingBinding.assignmentId).toBe(currentBenchAssignmentId(f.input.protocol.runId, 'baseline', 't1', 1));
+      const opts = { ...options, agent: 'claude' as const, armId: 'baseline',
+        preregistration: { preregHash: f.input.preregHash, config: f.input.protocol } };
+      const verify = beginCurrentBenchNativeSession(hosted, opts, handle);
+      verify();
+      const body = JSON.stringify({ model: opts.model, output_config: { effort: opts.effort }, max_tokens: 10 });
+      const attempt = { ...f.attempt, armId: hosted.nativeAccountingBinding.assignmentId,
+        transport: 'anthropic-http' as const, target: 'https://api.anthropic.com/v1/messages', body, bodySha256: f.digest(body) };
+      expect(await controller.gateway.carryTrial.authorizeAttempt(attempt)).not.toBeNull();
+      expect(f.input.authenticateProvider).toHaveBeenCalledOnce(); expect(f.reserve).toHaveBeenCalledOnce();
+      await hosted.stop(); expect(stop).toHaveBeenCalledOnce();
+      expect(verify).toThrow(/active host-owned/);
+      expect(await controller.gateway.carryTrial.authorizeAttempt({ ...attempt, attemptId: randomUUID() })).toBeNull();
+    } finally { controller.revoke(); f.revoke(); }
   });
   it('refuses an unsupported native client before starting a service', async () => {
     const f = budgetFixture(); f.input.protocol.arms[0].agent = 'claude';

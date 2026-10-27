@@ -27,7 +27,7 @@ import { staticImportClosure, tsconfigPathEntriesFor } from "./related-tests.mjs
 
 export const E2E_DIR = "apps/operator/e2e";
 export const E2E_WORKSPACE_DIR = "apps/operator";
-const SPEC_RE = /\.spec\.ts$/;
+const SPEC_RE = /\.spec\.(?:ts|mts)$/;
 /** A quoted repo-relative `__fixtures__` path, the form every fixture spec passes to Vite. */
 const FIXTURE_LITERAL_RE = /['"`](apps\/operator\/e2e\/__fixtures__\/[^'"`\s]+)['"`]/g;
 

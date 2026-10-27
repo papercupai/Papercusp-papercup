@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "recordKind": "focused-fixture-proof-refresh",
+  "plan": "seed-miniflare-cache-census-2026-10-24",
+  "workItem": "WI-6554700010026184",
+  "observer": "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+  "testedCommit": "8a2bac865af36e65eaa46b1b22b0cceac1b9f006",
+  "reason": "Existing R-1/R-2 proof became fixture-stale after dependency-generation.sh changed. Product source and test bytes remained unchanged. This refresh renews that focused proof; it does not remove the historical R-5 publication counterexample.",
+  "source": {
+    "path": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts",
+    "sha256": "daa3c178566f4c2328289c1f8454c58c62b3ab478b7593fe724ae70425d4c983"
+  },
+  "test": {
+    "path": "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.test.ts",
+    "sha256": "0b4b79115455d0fc20347614f9858e33c31a9c8c2e05b12593c1bc45f7a27208"
+  },
+  "changedFixture": {
+    "path": "apps/operator/bin/release/dependency-generation.sh",
+    "previousSha256": "b6b5f84e26b612c84180c195e57e07f1e5851c55e53520302c6c0ea87dc62b19",
+    "observedSha256": "ecabe1d0a5dab3b6e896dac6823a6e24b698280d887fc7ae29a113b71980d3ab",
+    "change": "Marker-compatible ref-pin retention and collection of its checkout anchor."
+  },
+  "focusedRun": {
+    "testRunId": 21967004,
+    "passed": 49,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "nativeExit": 0,
+    "log": "/tmp/843e2-miniflare-fixture-refresh-test-v2.log",
+    "sourceMap": "/tmp/843e2-miniflare-fixture-refresh-source-map-v1.json",
+    "bindings": [69679, 69680]
+  },
+  "mutations": [
+    {
+      "requirement": "R-1",
+      "change": "Disable the .mf admission branch.",
+      "baselineRun": 21967036,
+      "unmutatedCopyRun": 21967046,
+      "mutantRun": 21967088,
+      "bindingId": 69681,
+      "verdict": "caught",
+      "log": "/tmp/843e2-miniflare-fixture-refresh-r1-probe-v1.log"
+    },
+    {
+      "requirement": "R-2",
+      "change": "Remove the assertMiniflareToolingCache call.",
+      "baselineRun": 21967863,
+      "unmutatedCopyRun": 21968611,
+      "mutantRun": 21968613,
+      "bindingId": 69682,
+      "verdict": "caught",
+      "log": "/tmp/843e2-miniflare-fixture-refresh-r2-probe-v1.log"
+    }
+  ],
+  "mutationProcedure": "Maintained scripts/mutation-probe.sh, copy-out overlay, contained writes, passing original and unmutated-copy baselines, parseable mutants, assertion failures, and verified byte-identical source after each probe. Native batch exited zero.",
+  "certification": {
+    "tool": "plans:certify-spec-clauses",
+    "classRef": "plan-class-bugfix",
+    "selectedBindingIds": [69679, 69680, 69681, 69682],
+    "R-1": "mechanical-pass",
+    "R-2": "mechanical-pass",
+    "gaps": [],
+    "limit": "Mechanical test adequacy only; no independent acceptance card or work-item completion is implied."
+  },
+  "custodyRecheck": {
+    "measuredAt": "2026-10-25T04:33:37.514561Z",
+    "cloneHead": "b9958b789d92909c0af5c1500fccd4ef7640f50f",
+    "trackedPorcelain": "",
+    "headExit": 0,
+    "statusExit": 0,
+    "receiptSha256": [
+      "e6a668986017dc75f50fb589b58b775cb3f2821bccf993e85434f166914b38c9",
+      "e273c1b6fc77c60ff22f72684154220b18ba43493b7cedff5e65824692c186d2"
+    ],
+    "matchesPreservedBaseline": true,
+    "limit": "Bounded observation only; the preserved clone and receipts were not modified."
+  },
+  "negativeEvidence": {
+    "bindingId": 69668,
+    "kind": "manual",
+    "record": "docs/evidence/seed-miniflare-current-source-acceptance-2026-10-24.json",
+    "recordSha256": "9a05abe40c043fbca5b6e0e96e27203f0c11a784df5cf401cf5660056643d303",
+    "decision": "seed-miniflare-cache-census-2026-10-24#D-006",
+    "predicateStatus": "falsifier-observed",
+    "coverageStatus": "unknown",
+    "limit": "Current evidence is not a healthy rating. Historical owner Reports publication violates the unchanged R-5 BAR; contributor, interval and downstream-effect coverage remains incomplete."
+  },
+  "procedureConsult": "thread-post:1204772",
+  "completionAuditSeq": 7,
+  "acceptanceStatus": "blocked",
+  "sourceEnrollmentRecovery": {
+    "activationAuditSeq": 5,
+    "ownerTurnCount": 0,
+    "itemProvenance": {
+      "P-001": "agent-added",
+      "P-002": "agent-added"
+    },
+    "excludedSources": [
+      {
+        "ref": "session_turn:codex:01a16bbc-832f-70c0-81a8-263b7a8fc69b:1",
+        "observedOrigin": "self-compaction",
+        "briefDisposition": "not-owner"
+      },
+      {
+        "ref": "session_turn:codex:01a16bbc-832f-70c0-81a8-263b7a8fc69b:4",
+        "observedSpeaker": "assistant",
+        "briefDisposition": "not-owner"
+      }
+    ],
+    "inheritedDirectiveCandidates": [
+      "session_turn:codex:01a163d2-4c49-7d60-b3bb-047f4f1617fb:1",
+      "session_turn:codex:01a16510-9e88-7300-908d-8fce23ed8384:19"
+    ],
+    "candidateProvenance": "Persisted unenrolled-origin; resolver verdict unknown. These are source candidates, not authenticated owner evidence.",
+    "boundedOrderLookup": {
+      "workspace": "papercusp-workspace",
+      "recordedBy": [
+        "su-843e294a-e363-4b17-b899-52a3c0f75fb6",
+        "su-449b148a-0f8b-4323-9824-70eb8a71ad59"
+      ],
+      "additionalPredicate": "verbatim_text contains the full su-449b148a-0f8b-4323-9824-70eb8a71ad59 identifier",
+      "matchedRows": 0,
+      "positiveControl": {
+        "sameWorkspaceDirectiveId": 2195,
+        "status": "passed"
+      },
+      "limit": "Only these recorded-by and literal identifier predicates were checked. This does not establish absence of every possible governing owner source."
+    },
+    "existingFollowups": [
+      "EI-26039268349575485#thread-post:1204822",
+      "EI-26641094941437310"
+    ],
+    "consult": {
+      "ref": "conv-request-39b59270fa53556609bf69acced576adeaa3108cc3f45dc04d0db41ff2deb18b",
+      "state": "expired",
+      "answer": "No usable answer; routed expert declined the unrelated evidence span."
+    },
+    "supervisorRequest": "coord-send-46feadd096ffe83a51497007f85501bc4ff1fcda18b8618161dc075d6bad557f",
+    "disposition": "No source-origin stamps or historical classifications were changed. No blind reviewer was launched. Source recovery and independent acceptance remain blocked."
+  },
+  "remaining": [
+    "Blind-review mint refused no_owner_turns: activation audit5 resolves no authenticated owner turns. Original recovery directives are unenrolled-origin candidates and the bounded authenticated-order lookup returned no matches. Obtain a supported authenticated source; do not substitute agent notes or manufacture historical provenance.",
+    "No blind reviewer or independent acceptance grader was launched by the failed attempts.",
+    "After canonical prerequisites, obtain a complete independent card and record a separate author rejection using acceptanceOf; preserve the literal R-5 failure.",
+    "P-002 remains unfinished. Parent admission, original native-stall root cause, Windows baseline and shipment remain unresolved."
+  ]
+}

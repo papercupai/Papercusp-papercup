@@ -106,4 +106,30 @@ describe('execProcess → governor receipt metadata (the production begin path)'
     const metadata = await admittedMetadata({ command: 'node', args: ['-e', '0'] });
     expect(metadata).toEqual({ processKind: 'sidecar-exec', command: 'node' });
   });
+
+  it('forwards admission phase observations from the production begin path', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'sidecar-phase-wiring-'));
+    const phase = { phase: 'enqueue', state: 'fulfilled', elapsedMs: 3 } as const;
+    const onAdmissionPhase = vi.fn();
+    governed.begin.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[1] as { onAdmissionPhase?: (event: typeof phase) => void };
+      input.onAdmissionPhase?.(phase);
+      return {
+        receiptId: 'phase-wiring-test',
+        context: context('phase-wiring-test'),
+        lease: { leaseId: 'l', generation: 1, admissionClass: 'process', expiresAtMs: 2, owner: 'test' },
+        finish: vi.fn(async () => true),
+        cancel: vi.fn(async () => true),
+      };
+    });
+    try {
+      await execProcess(
+        { command: 'node', args: ['-e', '0'], cwd, workspaceId: 'ws-phase-wiring' },
+        { lazyReceiptMs: 0, onAdmissionPhase },
+      );
+      expect(onAdmissionPhase).toHaveBeenCalledWith(phase);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

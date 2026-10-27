@@ -467,10 +467,10 @@ function formatWindowTitle(opts: AppearanceOpts): string {
  *    `PAPERCUSP_SCRIPTS_DIR` (bundled scripts). These are papercusp's OWN
  *    commands; a user shim must win over a same-named bundled script, and both
  *    must win over anything else called `papercup` on the box.
- *  • ALSO PREPENDED — `PAPERCUSP_NODE_RUNTIME_DIR`, set only for a Papercusp
+ *  • FIRST — `PAPERCUSP_NODE_RUNTIME_DIR`, set only for a Papercusp
  *    checkout. Its commands must use the operator's Node runtime so native
  *    addons such as better-sqlite3 match the ABI; a desktop PATH may put an
- *    older system Node first.
+ *    older system Node first, and a shim directory can contain Bun named node.
  *  • APPENDED — the backend-CLI dirs the OPERATOR resolved
  *    ({@link SPAWN_PATH_DIRS_ENV}, filled by `buildConsoleEnvelope` because only
  *    the operator process has the full environment; this window does not — see
@@ -492,9 +492,9 @@ function formatWindowTitle(opts: AppearanceOpts): string {
  */
 export function buildPathExport(env: Record<string, string>): string | null {
   const pathPrepend = [
+    env.PAPERCUSP_NODE_RUNTIME_DIR,
     env.PAPERCUSP_BIN_DIR,
     env.PAPERCUSP_SCRIPTS_DIR,
-    env.PAPERCUSP_NODE_RUNTIME_DIR,
   ].filter(Boolean) as string[];
   const pathAppend = decodeSpawnPathDirs(env[SPAWN_PATH_DIRS_ENV]);
   if (!pathPrepend.length && !pathAppend.length) return null;
@@ -2810,7 +2810,14 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({ ...agentInheritedOperatorEnv(process.env), ...launchEnv })),
+      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({
+        ...agentInheritedOperatorEnv(process.env),
+        ...launchEnv,
+        // The child bootstrap can use this exact enrollment id if the CLI exits
+        // before its native session identity is recorded. Only send it when the
+        // ledger row is owner-stamped, so the exact binder can prove the join.
+        ...(coordOwnerId ? { PAPERCUSP_AGENT_TASK_ID: enrolment.taskId } : {}),
+      })),
     });
     // Keep a second, persistent observer before the bounded boot probes remove
     // their own listeners. The consult reviver consumes this promise to turn a

@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "spec-evidence-mapping",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "spec": "GF-P002-source@1",
+  "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+  "repairWorkItem": "EI-26926908996380334",
+  "repairCommit": "50cad665c33630bf776e2824d7e2865fbe5dc6b1",
+  "status": "Supplementary current source-fixture proof; complete P002 acceptance remains open.",
+  "behavior": "A native target capacity refusal is source-independent. Initial, later and deferred source walks stop instead of trying another source or refilling the pool. Ordinary source-local failover remains available. A replaced deferred worker cannot persist the stop.",
+  "namedFiles": {
+    "packages/operator-core/lib/consult/consult-dispatch.ts": "72786492538dc89ae80754f6dbc7855e6f390246fe284afb466248aed3a9d726",
+    "packages/operator-core/lib/consult/cascade-core.ts": "0c3805e5dffdfad827c1de69c7b26ffdb17579f3900808668a5e65adfee58bac",
+    "packages/operator-core/lib/consult/get-feedback-core.ts": "96b8fe7d3ee070465fc63e4ebdf683a302374c218d071298bdaf902297054bba",
+    "packages/operator-core/lib/consult/consult-dispatch.test.ts": "a56f6bedb2e90722ddc10270e902a6328a10622aeb1b8b58095923850ad3672c",
+    "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts": "c94e2852d7229790d54b408512526eb344d894ca3ee08b265692ccfce4c2af2e"
+  },
+  "unit": {
+    "testRunId": 21986251,
+    "bindingId": 69868,
+    "passed": 164,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "targetedCaseTitles": [
+      "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > keeps native backend constraints on a later cascade and preserves a walled target as unavailable",
+      "makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes) > records every native target rank but probes a source-independent capacity wall only once"
+    ],
+    "fixturePaths": [
+      "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+    ],
+    "sourceFingerprint": "sha256-file-set-v1:15e00161ce3f00290cc4bea25107a78d95681f26def06f63363dc8cc1a3d2b53",
+    "testFingerprint": "sha256-file-set-v1:7a04235f351d6e2c418674cc6b87f7e0caa3441d2b5025d060752e51a16059d7",
+    "fixtureFingerprint": "sha256-file-set-v1:7a04235f351d6e2c418674cc6b87f7e0caa3441d2b5025d060752e51a16059d7"
+  },
+  "integration": {
+    "testRunId": 21994267,
+    "bindingId": 69875,
+    "priorCleanTestRunId": 21986977,
+    "withdrawnIncompleteBindingId": 69869,
+    "calibrationReason": "Binding69869 omitted the seven SQL migrations directly read by the test. It was explicitly withdrawn. Run21994267 captures the first complete direct-fixture recipe; it was not a HEAD-only replay. The original21986977 remains dated clean execution evidence.",
+    "passed": 156,
+    "failed": 0,
+    "skipped": 0,
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "caseComparison": {
+      "population": "Canonical test_case_runs caseKey, occurrence and status",
+      "priorCount": 156,
+      "currentCount": 156,
+      "identical": true,
+      "nonPassing": []
+    },
+    "targetedCaseTitles": [
+      "recoverable interactive feedback requests > persists a native target capacity stop through deferred recovery and expiry without trying another source",
+      "recoverable interactive feedback requests > does not persist a target-capacity stop after its deferred dispatch lease is replaced",
+      "getFeedbackCore — dispatch walk (D-002/D-004) > stops initial source failover and refill when the native target has no capacity",
+      "getFeedbackCore — dispatch walk (D-002/D-004) > stops a later source failure walk before its next candidate or refill when target capacity is unavailable"
+    ],
+    "fixturePaths": [
+      "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+      "libs/test-config/src/pg.ts",
+      "libs/papercusp/libs/db/sql/834-consult-threads.sql",
+      "libs/papercusp/libs/db/sql/837-consult-query-embedding.sql",
+      "libs/papercusp/libs/db/sql/847-widen-consult-interest-vecs-to-768.sql",
+      "libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql",
+      "libs/papercusp/libs/db/sql/1242-text-chunks.sql",
+      "libs/papercusp/libs/db/sql/1484-consult-state-no-launchable-responder.sql",
+      "libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql"
+    ],
+    "fixtureComparison": "All nine named fixture inputs matched the committed50cad665 snapshot, resolving submodule paths through their pinned gitlinks.",
+    "sourceFingerprint": "sha256-file-set-v1:15e00161ce3f00290cc4bea25107a78d95681f26def06f63363dc8cc1a3d2b53",
+    "testFingerprint": "sha256-file-set-v1:6e129d45d93103292293cf6d8a2f745355c3d8e31c2e35fe0e83af00763c38de",
+    "fixtureFingerprint": "sha256-file-set-v1:0178b0ca61d536babd25f767160ec8d2cc89f195e4df655c175c59f27420e91b",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --ref=50cad665c33630bf776e2824d7e2865fbe5dc6b1 -- packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+    "commandEnvironment": "Explicit canonical reporter-only sink resolved through scripts/lib/pg-url.mjs; workspace papercusp-workspace and harness papercusp; unique reporter receipts required by lint-as-committed.",
+    "commandExit": 0,
+    "childSubstituted": 0,
+    "privatePostgresStopped": true,
+    "log": "/tmp/gf-p002-capacity-sql-fixtures-20261025.log",
+    "logSha256": "90ff9fb6d46326002e65ab9ea4a29f7bc24fd8b0fdab6472f51b99349de9408a"
+  },
+  "independentCurrentness": {
+    "tool": "plans:get-spec-evidence",
+    "bindingIds": [69868, 69875],
+    "provenance": "server-measured",
+    "overall": "current",
+    "currentDimensions": ["spec", "source", "test", "fixture", "testRun"],
+    "notApplicableDimensions": ["rubric", "environment", "coverageEvidence"],
+    "staleReasons": [],
+    "unknownReasons": []
+  },
+  "historicalDispatcherComparison": {
+    "priorTestRunId": 21871310,
+    "currentTestRunId": 21986251,
+    "priorCases": 148,
+    "currentCases": 164,
+    "absentPriorTitles": [
+      "dispatchConsultResponder — the walk > rejects a real cyclic source once for every conversion rank without launching it",
+      "dispatchConsultResponder — the walk > fails closed on unknown conversion eligibility"
+    ],
+    "disposition": "This comparison does not establish equivalent historical case coverage. The new bindings are supplementary; no older adapter, control, mutation or native binding was retired or silently replaced. Title absence alone is not a claim that the old behavior was removed."
+  },
+  "preserved": {
+    "originalOperationalBindings": [28326, 28545],
+    "additionalNativeBindings": [69704, 69782],
+    "originalCohortSha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "nativeSourceCalibration": "docs/evidence/get-feedback-p002-native-calibration-2026-10-25.json",
+    "nativeCallCensus": "docs/evidence/get-feedback-p002-native-call-census-2026-10-25.json",
+    "reporterGap": "EI-26900834772734276: original21936773 timeout cause remains unknown;68733 is not requalified."
+  },
+  "limitations": [
+    "The integration replacement-worker lease assertion is not a source-plan-lease transition or ABA observation.",
+    "Source-fixture currentness is limited to the named three capacity source files and declared direct fixture inputs, not the entire import graph.",
+    "No new native trial or original native replay was performed for this mapping.",
+    "Full source proof, remaining native matrix cells, actor/lease attribution, custody/admission/approval, cohorts, independent acceptance and shipment remain open."
+  ]
+}

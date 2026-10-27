@@ -75,9 +75,9 @@ export function coordDeafBudgetMs(env: NodeJS.ProcessEnv = process.env): number 
   return Math.max(60_000, Math.floor(raw));
 }
 
-/** Batched "when did each owner last read its coord mail" — ONE GROUP BY over
- *  tool_invocations for the whole roster (never per-row queries; the roster
- *  can be ~70 rows). Returns ISO strings keyed by owner; absent key = no read
+/** Batched "when did each owner last read its coord mail" — one SQL round trip,
+ *  seeking the latest qualifying row per owner through the existing
+ *  (coord_owner_id, invoked_at DESC) index. Returns ISO strings keyed by owner; absent key = no read
  *  on record. Fail-soft: any error returns an empty map (callers treat
  *  unknown as not-flaggable, never as deaf). */
 export async function lastInboxReadAtBatch(
@@ -105,15 +105,24 @@ export async function lastInboxReadAtBatch(
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     const foldedOnly = opts.foldedOnly === true;
+    // MAX/GROUP BY walked every owner's entire retained history on each
+    // roster/wake read. WI-6554700010020300 measured 9,545 examined rows for
+    // one owner versus one row through this existing index. Keep the tool and
+    // hook predicates inside the seek so LIMIT cannot select a non-read.
     const rows = await sql<{ coord_owner_id: string; last_read: string | Date }[]>`
-      SELECT coord_owner_id, MAX(invoked_at) AS last_read
-        FROM harness_shared.tool_invocations
-       WHERE coord_owner_id = ANY(${ids})
-         AND tool_name = ANY(${[...COORD_READ_TOOL_NAMES]})
-         AND (NOT ${foldedOnly}::boolean
-              OR tool_name NOT IN ('activity:report', 'activity_report')
-              OR args_json ? 'hook_bundle')
-       GROUP BY coord_owner_id
+      SELECT wanted.owner_id AS coord_owner_id, latest.invoked_at AS last_read
+        FROM unnest(${ids}::text[]) AS wanted(owner_id)
+       CROSS JOIN LATERAL (
+         SELECT invoked_at
+           FROM harness_shared.tool_invocations
+          WHERE coord_owner_id = wanted.owner_id
+            AND tool_name = ANY(${[...COORD_READ_TOOL_NAMES]})
+            AND (NOT ${foldedOnly}::boolean
+                 OR tool_name NOT IN ('activity:report', 'activity_report')
+                 OR args_json ? 'hook_bundle')
+          ORDER BY invoked_at DESC
+          LIMIT 1
+       ) AS latest
     `;
     for (const r of rows) {
       const d = r.last_read instanceof Date ? r.last_read : new Date(r.last_read);

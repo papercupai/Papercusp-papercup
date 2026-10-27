@@ -193,6 +193,23 @@ test('projectHeadroom — Codex scope uses Codex admission and health, not Claud
   assert.equal(h.paused, undefined, 'Claude pause must not pause a Codex scope');
 });
 
+// WI-6554700010030250: the grading-audit fallback reads the per-model Codex count through
+// this projection, so a measured zero must survive it and a malformed entry must not become one.
+test('projectHeadroom — Codex scope carries codexServiceableByModel, normalized; Claude scope omits it', () => {
+  const stats = baseStats({
+    codexHealthyAccounts: 1,
+    codexServiceableByModel: { 'GPT-5.6-Sol ': 0, 'gpt-5.5': 2, 'gpt-bad': -1, 'gpt-frac': 0.5 } as Record<string, number>,
+  });
+  const codex = projectHeadroom(stats, 1_000_000, { provider: 'codex' });
+  assert.deepEqual(codex.serviceableByModel, { 'gpt-5.6-sol': 0, 'gpt-5.5': 2 });
+  assert.equal(projectHeadroom(stats, 1_000_000).serviceableByModel, undefined);
+  assert.equal(
+    projectHeadroom(baseStats({ codexHealthyAccounts: 1 }), 1_000_000, { provider: 'codex' }).serviceableByModel,
+    undefined,
+    'an older gateway without the map is unknown, not an empty measurement',
+  );
+});
+
 test('projectHeadroom — derives process uptime from processStartedAt for mixed-version stats readers', () => {
   const now = 1_000_000;
   const h = projectHeadroom(baseStats({ processStartedAt: now - 5_000 }), now);

@@ -1725,6 +1725,45 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.dropped).toBe(0);
   });
 
+  it('settles only surviving non-loop rows when a mixed loop wake reaches the inbox', async () => {
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'inbox' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 40,
+        subscriberId: 'su-a',
+        eventKey: 'candidate:ready',
+        payload: { candidate: 'c-1', state: 'ready' },
+        createdAt: new Date(1_000).toISOString(),
+      }),
+      workRow({
+        id: 42,
+        subscriberId: 'su-a',
+        eventKey: 'work-item:claimable',
+        payload: { id: 'WI-41477', kind: 'bug', state: 'open', harness: 'papercusp' },
+        createdAt: new Date(2_000).toISOString(),
+      }),
+      workRow({
+        id: 41,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        source: 'loop:rt-loop',
+        payload: { carry: 'cold', wakeCount: 6, harness: 'papercusp', routineId: 'rt-loop' },
+        createdAt: new Date(3_000).toISOString(),
+      }),
+    ]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(
+      41,
+      expect.stringContaining('loop turn was not started'),
+    );
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledExactlyOnceWith(42, 'inbox', 2);
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(41, 'inbox', expect.anything());
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledExactlyOnceWith([40], 42);
+    expect(stats).toMatchObject({ claimed: 3, dropped: 1, inbox: 1, coalesced: 1, delivered: 0 });
+  });
+
   it('drop and error settle visibly (dropped / failed-with-backoff)', async () => {
     h.executeWake
       .mockResolvedValueOnce({ kind: 'drop', reason: 'dead waiter' })

@@ -23,8 +23,8 @@
 #     before npm's prebuild and before any wait behind a peer's build (measured
 #     38 min on 2026-10-06), so on its own it makes every edit made during the
 #     wait look unbuilt, and the gate waits for a build it already has.
-# A source file whose mtime is NEWER than the stamp was not read by the build
-# that produced this dist.
+# A source file whose mtime is NEWER than the stamp is not proven included.
+# It may have changed or been generated during the build before being read.
 #
 # Opt-in by design. At any moment dozens of frontend sources are newer than the
 # stamp because of fleet churn (32 measured at 18:21Z on 2026-10-01), so an
@@ -172,6 +172,7 @@ spa_require_built_gate() {
 # spa_require_built_note DIST REPO_DIR
 #   One informational line for every run: when the frozen bundle's build started,
 #   and how many in-root frontend sources are newer than it (capped at 500).
+#   This timestamp comparison cannot determine which files the build included.
 #   Never fails the run. This is the hint the WI-10004955 FAIL verdict lacked.
 spa_require_built_note() {
   local dist="$1" repo="$2"
@@ -193,6 +194,6 @@ spa_require_built_note() {
   fi
   local more=""
   [ "$n" -ge 500 ] && more="+"
-  _srb_log "SPA build stamp: $(_srb_iso "$(_srb_mtime "$stamp")") (when the bundle's build started). ${n}${more} frontend source file(s) are newer and NOT in this bundle. Verifying an edit? Set VERIFY_TAURI_REQUIRE_BUILT=<the paths you edited> to wait for a build that contains them (WI-10004972)."
+  _srb_log "SPA build stamp: $(_srb_iso "$(_srb_mtime "$stamp")") (when the bundle's build started). ${n}${more} frontend source file(s) are newer than this stamp. Timestamps alone do not prove whether those files are in this bundle; files may change or be generated during the build. Verifying an edit? Set VERIFY_TAURI_REQUIRE_BUILT=<the paths you edited> to wait for a build that contains them (WI-10004972)."
   return 0
 }

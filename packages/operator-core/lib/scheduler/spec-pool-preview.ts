@@ -53,6 +53,7 @@ import { compileFilter } from './get-next';
 import { observationLaneExclusionSql, type OrgSql } from '../work-items';
 import { issuesScopeWorkspace } from '../issues-engineer';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 export interface SpecPoolEffect {
   /** Rows of the pool the spec's view.filter matches. */
   matched: number;
@@ -145,7 +146,7 @@ export function specPoolFloors(
     )
     AND (
       CASE
-        WHEN item_kind NOT IN ('bug', 'change', 'task') AND status = 'todo' THEN 'open'
+        WHEN item_kind NOT IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND status = 'todo' THEN 'open'
         ELSE status
       END
     ) = ANY(${states}::text[])

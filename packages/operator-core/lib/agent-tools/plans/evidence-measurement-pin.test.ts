@@ -94,6 +94,32 @@ describe('defaultGitRunner (EI-24852529885337741)', () => {
     }
   });
 
+  it('WI-6554700010029986: a missing working directory fails exactly like git, without starting git', async () => {
+    const missing = join(root, 'deleted-disposable-clone');
+    const args = ['rev-parse', '--path-format=absolute', '--git-common-dir'];
+    const gitShape = new RegExp(
+      `^Command failed \\(exit 128\\): git -C ${missing} ${args.join(' ')}\\nfatal: cannot change to '${missing}': No such file or directory`,
+    );
+    // Real git, for reference: the synthesized error must match what the child would have said.
+    let realStderr = '';
+    try {
+      execFileSync('git', ['-C', missing, ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch (error) {
+      realStderr = String((error as { stderr?: Buffer }).stderr ?? '');
+    }
+    expect(realStderr).toContain(`fatal: cannot change to '${missing}': No such file or directory`);
+    // With no git on PATH, a spawn would fail as code=ENOENT/no exit status instead; exit 128
+    // here proves the runner answered without starting a child.
+    vi.stubEnv('PATH', join(root, 'no-executables'));
+    try {
+      await expect(defaultGitRunner(missing, args)).rejects.toThrow(gitShape);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // An existing directory still reaches git.
+    await expect(defaultGitRunner(root, ['rev-parse', '--show-toplevel'])).resolves.toContain(root.split('/').pop()!);
+  });
+
   it('shares one child between concurrent identical content-addressed reads', async () => {
     const head = git(root, 'rev-parse', 'HEAD');
     const args = ['rev-parse', '--verify', '--quiet', `${head}:src/a.ts`];

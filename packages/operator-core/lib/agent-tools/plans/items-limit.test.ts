@@ -93,6 +93,12 @@ const ctx = () => {
 const run = async (args: Record<string, unknown>) =>
   tool.handler(args as never, ctx());
 
+// Mirrors production dispatch: args pass through the schema (whose preprocess
+// folds the unadvertised exact-item alias spellings into itemIds) before the
+// handler sees them. Use this for any test that sends an alias spelling.
+const runParsed = async (args: Record<string, unknown>) =>
+  tool.handler(tool.args.parse(args) as never, ctx());
+
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
@@ -164,7 +170,7 @@ describe("plans:items bounded limit", () => {
       plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
     );
 
-    const result = (await run({ harness: "papercup", slug: "plan-a", item: "P-002" })) as {
+    const result = (await runParsed({ harness: "papercup", slug: "plan-a", item: "P-002" })) as {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 
@@ -186,7 +192,7 @@ describe("plans:items bounded limit", () => {
       plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
     );
 
-    const result = (await run({ harness: "papercup", slug: "plan-a", ids: ["P-002"] })) as {
+    const result = (await runParsed({ harness: "papercup", slug: "plan-a", ids: ["P-002"] })) as {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 

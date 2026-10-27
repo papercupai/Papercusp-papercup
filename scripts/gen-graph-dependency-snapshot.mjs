@@ -755,6 +755,17 @@ export async function main(argv = process.argv.slice(2)) {
         headCommit,
         now,
       });
+      // P006: full parsing and family preparation remain in this off-hook producer.
+      const { tsImport } = await import('tsx/esm/api');
+      const [{ buildCloneIndex }, { prepareCloneAdvisories }] = await Promise.all([
+        tsImport('../packages/operator-core/lib/code-intelligence/clone-index.ts', import.meta.url),
+        tsImport('../packages/operator-core/lib/code-intelligence/clone-advisory.ts', import.meta.url),
+      ]);
+      const sources = files.filter(path => /\.tsx?$/.test(path)).flatMap(path => {
+        const source = readSource(path);
+        return source === null ? [] : [{ path, source }];
+      });
+      result.snapshot.clones = { schema: 'clone-advisory-v1', files: prepareCloneAdvisories(buildCloneIndex(sources)) };
       const d = result.derive;
       process.stderr.write(
         `GRAPH_SNAPSHOT_DERIVE importers=${d.importers} unreadable=${d.unreadable} aliasResolved=${d.aliasResolved} aliasUnresolved=${d.aliasUnresolved} packageResolved=${d.packageResolved} packageUnresolved=${d.packageUnresolved} packageAmbiguous=${d.packageAmbiguous} relativeUnresolved=${d.relativeUnresolved} bare=${d.bare}\n`,

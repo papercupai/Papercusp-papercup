@@ -9,6 +9,44 @@ import { CardRenderer, PendingCardsBar, ReportBlockCard, type ResolvedGoalOwnerR
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('@papercusp/chat-cards', () => {
+  it('submits empty form input and checkbox selections only with schema opt-in', () => {
+    const onResponse = vi.fn();
+    const textCard = { correlationId: 'empty', prompt: 'Empty form', createdAt: 1,
+      presentation: { kind: 'text' as const, allowEmpty: true } };
+    const view = render(<CardRenderer card={textCard} onResponse={onResponse} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onResponse).toHaveBeenLastCalledWith({ action: 'submit', correlationId: 'empty', value: { value: '' } });
+    view.rerender(<CardRenderer card={{ ...textCard, presentation: { kind: 'checkbox', allowEmpty: true,
+      options: [{ id: '0', label: 'one' }] } }} onResponse={onResponse} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onResponse).toHaveBeenLastCalledWith({ action: 'submit', correlationId: 'empty', value: { picks: [] } });
+  });
+
+  it('masks and clears private card input, without rendering it as a saved answer', () => {
+    const onResponse = vi.fn();
+    render(<CardRenderer card={{ correlationId: 'private', createdAt: 1, prompt: 'Credential',
+      presentation: { kind: 'text', sensitive: true, multiline: true } }} onResponse={onResponse} />);
+    const input = screen.getByLabelText('response') as HTMLInputElement;
+    expect(input.type).toBe('password');
+    expect(input.autocomplete).toBe('off');
+    fireEvent.change(input, { target: { value: 'private-for-native' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onResponse).toHaveBeenCalledWith({ action: 'submit', correlationId: 'private', value: { value: 'private-for-native' } });
+    expect(input.value).toBe('');
+    expect(screen.queryByText('private-for-native')).toBeNull();
+  });
+
+  it('renders only a live, exact same-origin card authentication link', () => {
+    const card = { correlationId: 'auth', createdAt: 1, prompt: 'Authenticate',
+      presentation: { kind: 'radio' as const, options: [{ id: 'continue', label: 'Continue' }], link: '/api/ui/cards/auth/link' } };
+    const view = render(<CardRenderer card={card} onResponse={() => {}} />);
+    expect(screen.getByRole('link', { name: 'Open secure link' }).getAttribute('href')).toBe('/api/ui/cards/auth/link');
+    view.rerender(<CardRenderer card={card} expired onResponse={() => {}} />);
+    expect(screen.queryByRole('link')).toBeNull();
+    view.rerender(<CardRenderer card={{ ...card, presentation: { ...card.presentation, link: 'https://untrusted.example/' } }} onResponse={() => {}} />);
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
   it('shapes a shared choice card submission as CardResponse', () => {
     const onResponse = vi.fn();
     render(<CardRenderer card={{

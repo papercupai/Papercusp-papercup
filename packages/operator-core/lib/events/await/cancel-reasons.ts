@@ -19,6 +19,16 @@
  * Leaf module (no imports) so store.ts, compose-store.ts, the idle-session
  * reaper and rebind-identity can all import it without a cycle.
  */
+/**
+ * WI-6554700010030084: the last_error phrase a cancelled await's delivery keeps when the psu host
+ * had ALREADY accepted it (parked "delivery accepted before turn-start proof"). A cold loop's
+ * context reset ends the session it was delivered to, and SessionEnd hygiene then cancels that
+ * session's standing inbox wake and drops the reset's own row. Dropping is correct (a retry could
+ * re-inject the reset into the successor), but the row is not an undelivered fire, and
+ * lastLoopFireParked (agent-tools/loop/next-wake.ts) must be able to tell.
+ */
+export const HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER = 'after the psu host had accepted this delivery';
+
 export const AWAIT_CANCEL_REASONS = {
   /** retireLifecycleBoundWatches: the claim / lane / obligation the watch was bound to ended. */
   lifecycleBindingRetired: 'lifecycle-binding-retired',

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "code-intel liveness check is a registered scheduled check that runs on the running build (SPEC-P-003-E)",
+  "plan": "code-intel-delivery-and-outcomes-2026-10-26",
+  "specId": "SPEC-P-003-E",
+  "workItemId": "WI-6554700010029477",
+  "host": "127.0.0.1:3170",
+  "buildSha": "ebe9abeb3f",
+  "command": [
+    "node scripts/mcp-call.mjs schedule:inventory '{\"name\":\"plan-schedule-code-intel-delivery-and-outcomes-2026-10-26\",\"installSlug\":\"papercusp\"}' --port 3170",
+    "node scripts/mcp-call.mjs routines:fire '{\"name\":\"plan-schedule-code-intel-delivery-and-outcomes-2026-10-26\",\"installSlug\":\"papercusp\"}' --port 3170",
+    "dev:pg_query SELECT id, action, ts, details FROM harness_shared.audit_log WHERE workspace_id='papercusp-workspace' AND action='code-intel.liveness.probe'"
+  ],
+  "startedAt": "2026-10-27T13:24:52Z",
+  "finishedAt": "2026-10-27T13:30:18Z",
+  "exitCode": 0,
+  "summary": "schedule:inventory on :3170 (build ebe9abeb3f) lists the durable routine plan-schedule-code-intel-delivery-and-outcomes-2026-10-26 (armed, cron '40 6 * * *', targetRole system:rubric-rescore). That routine re-scores rubric acceptance-code-intel-delivery-and-outcomes-2026-10-26 rev 12, whose R-1 check is the registered instrument code-intel:liveness-probe (packages/operator-core/lib/code-intelligence/push-leg-liveness.ts, registered in packages/operator-core/lib/rubric-instrument-registry.ts). Firing the routine on the same build wrote audit_log ci-liveness-mvqpxo66-uxmyms (action code-intel.liveness.probe, buildSha ebe9abeb3f), which raised 7 liveness alarms over real data.",
+  "observations": {
+    "scheduleInventoryRow": {
+      "source": "routines",
+      "scope": "operator",
+      "tier": "durable",
+      "category": "routine",
+      "name": "plan-schedule-code-intel-delivery-and-outcomes-2026-10-26",
+      "installSlug": "papercusp",
+      "cadence": "40 6 * * *",
+      "armed": true,
+      "lastFire": "2026-10-27T10:40:26.026Z",
+      "nextFire": "2026-10-28T10:40:00.000Z",
+      "lastError": null,
+      "detail": { "triggerKind": "cron", "targetRole": "system:rubric-rescore" },
+      "observedAt": "2026-10-27T13:30:18Z"
+    },
+    "probeRun": {
+      "auditLogId": "ci-liveness-mvqpxo66-uxmyms",
+      "action": "code-intel.liveness.probe",
+      "actor": "system:code-intel-liveness-probe",
+      "subject": "code-intel:liveness-probe",
+      "at": "2026-10-27T13:25:44.478Z",
+      "buildSha": "ebe9abeb3f",
+      "verdictCount": 14,
+      "raised": [
+        "alarm:code-intel-liveness:papercusp-workspace:completion",
+        "alarm:code-intel-liveness:papercusp-workspace:antipattern",
+        "alarm:code-intel-liveness:papercusp-workspace:intent",
+        "alarm:code-intel-liveness:papercusp-workspace:graph:query",
+        "alarm:code-intel-liveness:papercusp-workspace:lsp:query",
+        "alarm:code-intel-liveness:papercusp-workspace:symbol-capture",
+        "alarm:code-intel-liveness:papercusp-workspace:cannot-observe"
+      ]
+    },
+    "routineFire": {
+      "firedAt": "2026-10-27T13:24:52Z",
+      "status": "enqueued",
+      "routineId": "rt_papercusp_plan_schedule_code_intel_delivery_and_outcomes_2026_10_26"
+    }
+  },
+  "assertions": [
+    {
+      "id": "schedule-inventory-lists-liveness-check",
+      "passed": true,
+      "evidence": "schedule:inventory on :3170 build ebe9abeb3f returned exactly 1 row for plan-schedule-code-intel-delivery-and-outcomes-2026-10-26: armed=true, tier durable, targetRole system:rubric-rescore, lastError null."
+    },
+    {
+      "id": "scheduled-check-dispatches-liveness-instrument",
+      "passed": true,
+      "evidence": "Rubric acceptance-code-intel-delivery-and-outcomes-2026-10-26 rev 12 binds R-1 to instrument code-intel:liveness-probe (amendment amend-58fb632dab305e873628504c, plan Decision D-025). The routine's rescore produced the liveness audit row below."
+    },
+    {
+      "id": "liveness-check-runs-on-running-build",
+      "passed": true,
+      "evidence": "audit_log ci-liveness-mvqpxo66-uxmyms at 2026-10-27T13:25:44.478Z carries buildSha ebe9abeb3f, the build /api/health reported on :3170 at 13:24:31Z; 14 verdicts, 7 alarms raised, 0 resolved."
+    }
+  ]
+}

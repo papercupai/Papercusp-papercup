@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "r2gcs-inventory-v1",
+  "plan": "r2-to-gcs-storage-migration-2026-10-23",
+  "workItem": "WI-6554700010025560",
+  "status": "inventory-complete",
+  "migrationAccepted": false,
+  "sourceSnapshot": {
+    "gitHead": "038caf5ae096cef14015342c64dc713e0b803eb1",
+    "fingerprint": "5f8adc0af8a47d9b10755d733bfc6bdab56acd7abbccd2e28bd1c2b5c083b568",
+    "fingerprintMethod": "SHA256 of sorted path + NUL + binary SHA256(file), concatenated for sourceFiles; includes working-tree bytes",
+    "sourceFiles": [
+      "apps/operator-public/src/env.ts",
+      "apps/operator-public/wrangler.toml",
+      "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+      "apps/operator-public/src/routes/self-describing-artifacts.ts",
+      "apps/operator-public/src/routes/creator-drafts.ts",
+      "apps/operator-public/src/routes/release-mirror.ts",
+      "apps/papercusp-publish/src/env.ts",
+      "apps/papercusp-publish/wrangler.toml",
+      "apps/papercusp-publish/src/r2-archive.ts",
+      "papercusp-desktop/bin/upload-release.sh",
+      "papercusp-desktop/bin/upload-mobile-release.sh",
+      "papercusp-desktop/bin/publish-release-history.sh",
+      "papercusp-desktop/bin/publish-release-instructions.sh",
+      "papercusp-desktop/bin/lib/release-artifacts.sh",
+      "papercusp-desktop/src-tauri/build.rs",
+      "papercusp-desktop/src-tauri/src/main.rs",
+      "apps/tui/scripts/publish-release.sh",
+      "scripts/publish-workspace-host-artifacts.mjs",
+      "scripts/lib/workspace-host-gcs-publication.mjs",
+      "libs/generic/artifact-registry/src/blob-store.ts"
+    ]
+  },
+  "integrations": [
+    {
+      "id": "cupboard-workspace-host",
+      "classification": "runtime-source-and-config",
+      "worker": "papercusp-cupboard",
+      "binding": "ARTIFACTS",
+      "sourceBucket": "papercusp-marketplace-tarballs",
+      "namespace": "artifacts/workspace-host/sha256/",
+      "source": "apps/operator-public/src/routes/workspace-host-artifacts.ts",
+      "operations": ["head", "get", "conditional-put", "delete", "multipart-create", "multipart-resume", "part-upload", "multipart-complete", "multipart-abort"],
+      "preserve": ["authenticated writes", "streaming", "create-only immutability", "same-operation multipart reconciliation", "part receipts", "custom metadata", "trusted finalized marker before public reads"],
+      "implementationItem": "P-004"
+    },
+    {
+      "id": "cupboard-self-describing",
+      "classification": "runtime-source-and-config",
+      "binding": "ARTIFACTS",
+      "sourceBucket": "papercusp-marketplace-tarballs",
+      "namespace": "artifacts/cupboard/sha256/",
+      "source": "apps/operator-public/src/routes/self-describing-artifacts.ts",
+      "operations": ["head", "get", "put"],
+      "preserve": ["content-address verification", "origin metadata", "public reads restricted to objects admitted by this route"],
+      "implementationItem": "P-004"
+    },
+    {
+      "id": "cupboard-private-creator",
+      "classification": "runtime-source-and-config",
+      "binding": "ARTIFACTS",
+      "sourceBucket": "papercusp-marketplace-tarballs",
+      "namespace": "artifacts/cupboard/sha256/",
+      "source": "apps/operator-public/src/routes/creator-drafts.ts",
+      "operations": ["head", "put"],
+      "preserve": ["private visibility", "authenticated upload tokens", "occupied-address preservation", "shared bytes do not confer public visibility"],
+      "implementationItem": "P-004"
+    },
+    {
+      "id": "cupboard-public-mirror",
+      "classification": "runtime-source-and-config",
+      "binding": "ARTIFACTS",
+      "sourceBucket": "papercusp-marketplace-tarballs",
+      "source": "apps/operator-public/src/routes/release-mirror.ts",
+      "operations": ["get"],
+      "preserve": ["public-only mirror gate", "visibility policy before byte delivery"],
+      "implementationItem": "P-004"
+    },
+    {
+      "id": "publish-archive",
+      "classification": "runtime-source-and-config",
+      "worker": "papercusp-publish",
+      "binding": "ARCHIVE",
+      "sourceBucket": "papercusp-marketplace-tarballs",
+      "namespace": "publish/<tenant>/<deployment>/",
+      "source": "apps/papercusp-publish/src/r2-archive.ts",
+      "callers": ["apps/papercusp-publish/src/routes/publish-file.ts", "apps/papercusp-publish/src/routes/publish-finalize.ts", "apps/papercusp-publish/src/routes/admin.ts"],
+      "operations": ["put", "list-with-cursor", "delete-prefix"],
+      "preserve": ["manifest and file identity", "tenant isolation", "restore metadata", "retain original R2 data during migration"],
+      "implementationItem": "P-004"
+    },
+    {
+      "id": "release-producers",
+      "classification": "operational-producers",
+      "sourceBucket": "papercusp-releases",
+      "sources": ["papercusp-desktop/bin/upload-release.sh", "papercusp-desktop/bin/upload-mobile-release.sh", "papercusp-desktop/bin/publish-release-history.sh", "papercusp-desktop/bin/publish-release-instructions.sh", "apps/tui/scripts/publish-release.sh"],
+      "populations": ["desktop releases", "mobile releases", "TUI releases", "updater manifests", "download history", "release instructions"],
+      "preserve": ["signatures", "immutable artifact identity", "manifest companion rules"],
+      "implementationItem": "P-003"
+    },
+    {
+      "id": "installed-release-consumers",
+      "classification": "compiled-runtime-and-operational-consumers",
+      "sources": ["papercusp-desktop/src-tauri/build.rs", "papercusp-desktop/src-tauri/src/main.rs", "papercusp-desktop/bin/lib/release-artifacts.sh"],
+      "configurationReferences": ["~/.papercusp/release-host.env:PAPERCUSP_RELEASE_HOST", "~/.papercusp/release-host.env:PAPERCUSP_UPDATE_BASE_URL"],
+      "configuredOrigin": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev",
+      "configuredFullValueSha256": "0ea54f0ef0aa8bd883ad3614d394a5e81e55f32c9f16b52577f5ba60ea5fa28d",
+      "privatePathOmitted": true,
+      "preserve": ["tested explicit recovery for baked R2 addresses", "signature-verified replacement", "user data", "no false up-to-date result"],
+      "dnsRepointAvailable": false,
+      "implementationItem": "P-003"
+    },
+    {
+      "id": "retained-p544-publication",
+      "classification": "existing-GCS-stage-and-managed-publication-client",
+      "sources": ["scripts/publish-workspace-host-artifacts.mjs", "scripts/lib/workspace-host-gcs-publication.mjs"],
+      "bundleSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+      "preserve": ["existing admitted bytes", "detached signature", "SBOM", "trusted source manifest", "original journal and unknown R2 multipart outcome"],
+      "implementationItem": "P-002"
+    }
+  ],
+  "validationAndFixtureClassification": {
+    "releaseValidationTools": ["papercusp-desktop/bin/mac-vm-fresh-install-e2e.sh", "papercusp-desktop/bin/offline-installer-journey.sh", "papercusp-desktop/bin/verify-provenance-parity.sh"],
+    "fixtureOnlyMatches": ["packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts", "apps/operator-public/src/__tests__/fake-d1.ts", "packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json"],
+    "rule": "Fixture/history labels do not establish an active storage dependency. Validation tools remain P003 migration-check targets. Existing GCS backup work is outside this R2 cutover scope."
+  },
+  "liveObservations": {
+    "r2Listings": [
+      {"bucket": "papercusp-releases", "operation": "ListObjectsV2", "result": "NotEntitled", "sourceObjectCount": null},
+      {"bucket": "papercusp-marketplace-tarballs", "operation": "ListObjectsV2", "result": "NotEntitled", "sourceObjectCount": null}
+    ],
+    "deployedWorkerSettings": [
+      {
+        "worker": "papercusp-cupboard",
+        "result": "Maintained Wrangler OAuth refresh and deployed-version read succeeded",
+        "observedAt": "2026-10-24T02:24:39Z",
+        "deploymentId": "909a5f8e-8451-4094-a883-908ba5e4fe95",
+        "versionId": "1bbf0ef3-5b33-479b-8f04-10347480abbd",
+        "versionCreatedOn": "2026-10-16T00:20:37.011282Z",
+        "trafficPercentage": 100,
+        "bindingsVerifiedLive": true,
+        "r2Bindings": [{"name": "ARTIFACTS", "type": "r2_bucket", "bucket_name": "papercusp-marketplace-tarballs"}]
+      },
+      {
+        "worker": "papercusp-publish",
+        "result": "Authenticated deployments read returned Worker-not-found code10007; authenticated account scripts list contains only papercup-public-site and papercusp-cupboard",
+        "observedAt": "2026-10-24T02:24:39Z",
+        "bindingsVerifiedLive": false,
+        "deployedInVerifiedAccount": false,
+        "sourceConfigStillInMigrationScope": true,
+        "scopeLimit": "Absent from the authenticated configured account, not every possible account. Committed D1/KV identifiers are local-dev-stub-id."
+      }
+    ],
+    "gcs": {
+      "bucket": "pc-p317-host-bundle-20260917",
+      "location": "US-CENTRAL1",
+      "uniformBucketLevelAccess": true,
+      "publicAccessPrevention": "inherited",
+      "censusObservedAt": "2026-10-24T02:05:06.618678+00:00",
+      "censusComplete": true,
+      "censusBound": "100 objects per page, at most 10 pages; final response had no next-page token",
+      "anonymousBundleReadHttpStatus": 403,
+      "finalManifestPresent": false,
+      "objects": [
+        {"file": "sbom.cdx.json", "generation": "1792799168769239", "sizeBytes": 800554, "sha256Metadata": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d", "crc32c": "QYdBCw=="},
+        {"file": "server.tgz", "generation": "1792799154148744", "sizeBytes": 2118168717, "sha256Metadata": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948", "crc32c": "oTKWpw=="},
+        {"file": "server.tgz.minisig", "generation": "1792799162572395", "sizeBytes": 295, "sha256Metadata": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54", "crc32c": "lzKe5w=="}
+      ],
+      "observationLimit": "This census reads current metadata. It does not replace the earlier authenticated full-byte stage verification or establish public delivery."
+    }
+  },
+  "ownedExceptions": [
+    {
+      "workItem": "WI-6554700010025592",
+      "assignee": "su-f9dd6b51-766b-4428-9ead-7cef3459f49e",
+      "populations": ["papercusp-releases objects", "papercusp-marketplace-tarballs workspace-host objects and multipart state", "papercusp-marketplace-tarballs cupboard and private creator objects", "papercusp-marketplace-tarballs publish archives"],
+      "boundary": "Source listing is refused as NotEntitled. Source keys and count beyond known saved identities are unknown, not zero. Preserve originals; use verified admitted originals/mirrors only, or retain precisely bounded owned inaccessible-data exceptions.",
+      "originalAccountAction": "WI-6554700010022667 remains needs-human; this exception does not authorize account activation or resolve that ask."
+    }
+  ],
+  "populationDisposition": {
+    "pinnedAt": "2026-10-24T02:25:42Z",
+    "sourceHighWaterMark": null,
+    "sourceHighWaterMarkReason": "Both source bucket listings are refused as NotEntitled; source census and migration-window completeness remain unknown.",
+    "populations": [
+      {"population": "desktop/mobile/TUI releases, updater manifests, history and instructions", "sourceBucket": "papercusp-releases", "sourceCount": null, "disposition": "retained-inaccessible-source", "ownerWorkItem": "WI-6554700010025592", "implementationItem": "P-003"},
+      {"population": "workspace-host artifacts and original multipart state", "sourceBucket": "papercusp-marketplace-tarballs", "sourceCount": null, "disposition": "retained-inaccessible-source; admitted P544 original and private GCS copies preserved separately", "ownerWorkItem": "WI-6554700010025592", "implementationItem": "P-002", "originalMultipartOutcome": "unknown-preserved"},
+      {"population": "Cupboard public and private creator objects", "sourceBucket": "papercusp-marketplace-tarballs", "sourceCount": null, "disposition": "retained-inaccessible-source; deployed ARTIFACTS binding verified", "ownerWorkItem": "WI-6554700010025592", "implementationItem": "P-004"},
+      {"population": "publish archives", "sourceBucket": "papercusp-marketplace-tarballs", "sourceCount": null, "disposition": "retained-inaccessible-source; configured producer absent from authenticated account deployment census", "ownerWorkItem": "WI-6554700010025592", "implementationItem": "P-004"},
+      {"population": "retained P544 GCS stage", "destinationBucket": "pc-p317-host-bundle-20260917", "destinationCount": 3, "disposition": "private-stage-only; complete bounded destination metadata census; no final manifest or public delivery", "implementationItem": "P-002"}
+    ],
+    "cutoverGate": "P-005 must reconcile pinned source census and migration-window deltas or fence writers; inaccessible retained data requires explicit owned exceptions. Inventory completion is not migration acceptance."
+  },
+  "maintainedVerificationTargets": {
+    "P-002": ["scripts/publish-workspace-host-artifacts.test.ts"],
+    "P-003": ["papercusp-desktop/bin/lib/release-artifacts.selftest.sh"],
+    "P-004": ["apps/operator-public/src/routes/workspace-host-artifacts.test.ts", "apps/operator-public/src/__tests__/creator-drafts.test.ts", "apps/operator-public/src/__tests__/release-mirror.test.ts", "apps/operator-public/src/__tests__/self-describing-artifacts.test.ts"],
+    "limit": "Located maintained test targets, not claims that GCS paths are implemented or passing. P-004 also needs archive adapter regression coverage."
+  },
+  "reuseAndNextActions": {
+    "storageSeam": "libs/generic/artifact-registry/src/blob-store.ts",
+    "policyLocation": "Existing registry and HTTP routes retain authentication, visibility, content-address verification and finalization policy.",
+    "adapterRequirements": ["preserve head/get/put/delete seam", "host-compatible streaming and metadata", "conditional create and generation fencing", "list pagination", "multipart recovery and finalization"],
+    "p001Remaining": [],
+    "dataCutover": "Pin the source census/high-water mark and reconcile migration-window deltas or fence writers before reader cutover. Never delete original R2 data during migration.",
+    "publication": "Use private GCS behind maintained delivery routes; preserve org policy and privacy outside admitted public objects. Do not rebuild accepted P544 bytes or retry unknown original R2 publication.",
+    "sequence": "Complete full migration and independent exact deployed acceptance before resuming P544 under-$20 hybrid-pool-plus-swap experiments."
+  }
+}

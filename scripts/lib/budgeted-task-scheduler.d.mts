@@ -1,6 +1,8 @@
 export interface TaskBudgetInput {
   workerBudget: number | string;
   memoryBudgetMb: number | string;
+  memoryBudgetScope?: string;
+  sharedMemoryBudgetMb?: number;
   workerMemoryMb: number | string;
   maxConcurrentTasks?: number | string;
   reserveWorkers?: number | string;
@@ -8,6 +10,63 @@ export interface TaskBudgetInput {
   pidsPerConcurrentTask?: number | string;
   pidsReserve?: number | string;
 }
+
+/** Bounded descriptor read shared by native receipt and continuation readers. */
+export function readNativeArtifactBytes(file: string, byteLength: number, byteLimit: number,
+  recordRead?: (count: number) => void): Buffer;
+export interface NativeArtifactPin { ref: string; sha256: string; byteLength: number; }
+export interface NativeCustodyIdentity { workspace: string; harness: string; runId: string; }
+export interface NativeCustodyAuxiliary {
+  role: string; state: 'produced' | 'not-requested' | 'not-produced' | 'not-applicable' | 'unavailable';
+  path?: string; reason?: string;
+}
+export interface NativeCustodyGroup {
+  id: string; attempt: 'primary' | 'detail'; selected: string[]; runner: 'vitest' | 'node' | 'unsupported';
+  armed: boolean; out: string | null; cwd?: string; auxiliary: NativeCustodyAuxiliary[];
+}
+export interface NativeCustodyLocator {
+  manifest: NativeArtifactPin; identity: NativeCustodyIdentity; expectedHash: string;
+  /** Producer capture seal; retain independently of any replacement manifest. */
+  inventoryHash: string;
+}
+export interface NativeCustodyFamily {
+  family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
+  entries: Array<{ original: string; artifact: NativeArtifactPin }>;
+}
+export interface NativeCustodyRetainedGroup {
+  id: string; attempt: 'primary' | 'detail'; families: NativeCustodyFamily[];
+  captureComplete: boolean | null;
+  references: Array<{ location: string; codeRef: string; sha256: string; byteLength: number }>;
+  auxiliary: Array<NativeCustodyAuxiliary & { artifact?: NativeArtifactPin }>;
+  protocol?: unknown;
+}
+export interface NativeCustodyManifest {
+  schemaVersion: 'native-proof-custody-v1'; identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
+  expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
+  verdicts: { custody: 'complete' | 'partial'; execution: unknown; protocol: 'unqualified';
+    producerRetirement: 'not-performed'; cleanup: unknown; nativeProof: 'unqualified'; acceptance: 'unmeasured' };
+}
+export function retainNativeProofPacket(directory: string, input: {
+  identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
+  observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
+  execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+}): { directory: string; locator: NativeCustodyLocator; status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
+export function verifyNativeProofPacket(directory: string, locator: NativeCustodyLocator,
+  contract: { identity: NativeCustodyIdentity; expected: NativeCustodyGroup[] }):
+  { status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
+/** Custody only: these helpers never create execution or acceptance proof. */
+export function createNativeArtifactPersister(evidenceRoot: string): {
+  root: string; persist: (bytes: Buffer, suffix: string) => NativeArtifactPin;
+};
+export function retainReporterEvaluatorArtifacts(payload: unknown, out: string,
+  persist: (bytes: Buffer, suffix: string) => NativeArtifactPin):
+  NonNullable<ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>['observation']['processTrace']['reporter']['evaluatorArtifacts']>;
+export function readNativeProcessTraceArtifacts(out: string, startedAtMs?: number, finishedAtMs?: number): {
+  sourceRoot: string;
+  rows: Array<{ row: Record<string, any>; bytes: Buffer }>;
+  population: { artifactLimit: number; artifactsVisited: number; eventByteLimit: number;
+    eventBytesRead: number; complete: boolean; truncatedBy: string | null };
+};
 
 export interface NativeNpmLifecycleDiagnostics {
   scope: 'direct-root-npm-spawn-close'; status: 'observed' | 'unknown'; gaps: string[];
@@ -21,8 +80,14 @@ export interface NativeNpmLifecycleDiagnostics {
     close: { ref: string; sha256: string; byteLength: number } }>;
 }
 
+export function syncBudgetedTaskNativeExecutionReceipt(saved: ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>): void;
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
   task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
+  /** Requested command and environment before diagnostic preload/wrapper additions. Values are never retained. */
+  invocation?: { command: string[]; environmentSha256: string };
+  /** Captured physical provenance; independently validated for current-only composition. */
+  currentExecution?: { schemaVersion: 1; fingerprint: string | null; childPid: number; childIdentity: string;
+    sourceBefore: { commit: string; clean: boolean } | null; sourceAfter: { commit: string; clean: boolean } | null };
   startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
   error: string | null; captureComplete: boolean; stdout: Buffer; stderr: Buffer;
   before?: Array<{ path: string; sha256: string }> | null;
@@ -34,6 +99,12 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      /** Referenced returned-source bytes only; never a complete runtime census. */
+      loaderSources?: { scope: 'referenced-loader-source'; status: 'retained' | 'partial' | 'unobserved';
+        referenceLimit: number; artifactByteLimit: number; totalByteLimit: number;
+        referencesVisited: number; bytesRead: number; bytesRetained: number; gaps: string[];
+        entries: Array<{ processIdentity: string; pid: number; loadId: number; url: string;
+          artifact: { ref: string; sha256: string; byteLength: number } }> };
       /** Observed direct root npm spans only; inherited shell streams remain unknown. */
       npmLifecycle: NativeNpmLifecycleDiagnostics;
       /** Diagnostic bytes and observed process/time binding; never a pass qualification. */
@@ -163,6 +234,8 @@ export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
 export interface ResolvedTaskBudget {
   workerBudget: number;
   memoryBudgetMb: number;
+  memoryBudgetScope?: string;
+  sharedMemoryBudgetMb?: number;
   workerMemoryMb: number;
   memoryWorkerBudget: number;
   effectiveWorkerBudget: number;
@@ -496,6 +569,8 @@ export interface AdmissionNoticeInfo {
 }
 
 export interface SharedAdmissionOptions {
+  /** Recheck this launcher deadline after task admission; null disables the inherited deadline. */
+  deadlineEpochMs?: number | null;
   /**
    * Sink for queue notices. DEFAULTS to `console.error`, which cannot reach the
    * affected-tests run log — the runner injects a sink that writes both, so a queued run
@@ -503,7 +578,11 @@ export interface SharedAdmissionOptions {
    */
   onAdmissionNotice?: (line: string, info: AdmissionNoticeInfo) => void;
   /** Fires once per acquisition, with how long it queued and the bound it was given. */
-  onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number }) => void;
+  onAdmissionAcquired?: (info: { waitedMs: number; budgetMs: number; queueChargeMs?: number }) => void;
+  /** Opt in to shared task-sized worker/memory leases. Equal keys exclude each other; '*' excludes every task. */
+  taskAdmissionKey?: (task: any) => string;
+  /** Defer before queueing when a release-gate holder's measured age reaches this waiter's remaining queue budget. */
+  deferWhenHolderOlderThanBudget?: boolean;
   /**
    * EI-21917992245424964 — a self-description published into the admission mutex's owner
    * record, so a BLOCKED peer can judge whether waiting is worth it without a coord
@@ -590,6 +669,9 @@ export function admissionMutexName(env?: Record<string, string | undefined>): st
  * misclassifies it exits with no verdict, which the green-checkpoint records as a lost run.
  */
 export function isSharedAdmissionTimeout(error: unknown): boolean;
+
+/** True when a release-gate waiter deferred before spending its budget behind an aged holder. */
+export function isSharedAdmissionDeferral(error: unknown): boolean;
 
 export function runBudgetedTasks<Task, Value>(
   tasks: Task[],

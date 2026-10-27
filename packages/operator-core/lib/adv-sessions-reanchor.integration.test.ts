@@ -32,6 +32,7 @@ import {
   latestAdvSessionByCoordOwner,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
+  readAdvSessionLaunchRecordByOwner,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordSuLaunchSpec,
@@ -374,6 +375,128 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
       }
     },
   );
+});
+
+describe('native reanchor applied receipt retention (real PG)', () => {
+  const sources = ['current', 'history', 'missing', 'desired-only', 'foreign-owner', 'foreign-workspace'] as const;
+  type ReceiptSource = typeof sources[number];
+
+  async function fixture(source: ReceiptSource, alreadyAnchored = false) {
+    const owner = `su-native-receipt-${randomUUID()}`;
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: alreadyAnchored ? FRESH_ID : DEAD_ID });
+    const makeRecord = (text: string, stateRevision: string) => {
+      const artifact = compileAgentSpecification({
+        source: {
+          id: 'native-reanchor-receipt', workItem: { kind: 'feature' },
+          spine: { edges: { DONE: { to: 'done' } } }, grants: { requires: [], optional: [] },
+        },
+        prompt: { role: 'worker', text }, inputClosure: [],
+      });
+      return {
+        v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+        stack: ['domain:blueprint-operation-worker'], stateRevision,
+        specificationRevision: artifact.specificationRevision, specificationArtifact: artifact,
+      };
+    };
+    const original = makeRecord('retained native row', 'retained-state');
+    const receipt = makeRecord('acknowledged identity', 'applied-state');
+    const applied = { specificationRevision: receipt.specificationRevision, stateRevision: receipt.stateRevision };
+    expect(await recordSuLaunchSpec(id, owner, original)).toBe(true);
+    if (source !== 'missing') {
+      const sibling = await seedAdv({
+        coordOwnerId: source === 'foreign-owner' ? `su-other-${randomUUID()}` : owner,
+        sessionId: DEAD_ID, ended: true,
+      });
+      const record = source === 'history'
+        ? { ...makeRecord('newer prepared identity', 'prepared-state'), identityHistory: [receipt] }
+        : receipt;
+      await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify(record)}::text::jsonb WHERE id = ${sibling}`;
+      if (source === 'foreign-workspace') {
+        await admin`UPDATE harness_shared.adv_sessions SET workspace_id = 'other-native-receipt-ws' WHERE id = ${sibling}`;
+      }
+    }
+    const requested = await requestSessionIdentityActivation({
+      ownerId: owner, workspaceId: WS, revision: applied, source: 'launch',
+      attribution: { actorId: owner, principalId: owner, sessionId: owner },
+    });
+    const activation = source === 'desired-only' ? requested.state.activation!
+      : acknowledgeActivation(prepareActivation(requested.state.activation!, applied), applied);
+    await admin`
+      UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(activation)}, true)
+       WHERE workspace_id = ${WS} AND owner_id = ${owner}
+    `;
+    const read = async () => (await admin<{
+      session_id: string; launch_spec: Record<string, unknown>; ended: boolean;
+    }[]>`
+      SELECT session_id, launch_spec, ended_at IS NOT NULL AS ended
+        FROM harness_shared.adv_sessions WHERE id = ${id}
+    `)[0];
+    return { owner, id, original, receipt, applied, activation, read };
+  }
+
+  describe.each(['exact', 'owner'] as const)('%s path', (path) => {
+    it.each(sources.flatMap((source) => [false, true].map((alreadyAnchored) => ({ source, alreadyAnchored }))))(
+      'retains only a genuine applied receipt from $source (already anchored: $alreadyAnchored)',
+      async ({ source, alreadyAnchored }) => {
+        const f = await fixture(source, alreadyAnchored);
+        try {
+          expect(resolveIdentityArtifact((await f.read()).launch_spec, f.applied))
+            .toEqual({ kind: 'stale-artifact', reason: 'receipt-missing' });
+          const result = path === 'exact'
+            ? await reanchorAdvSessionNativeId(f.id, FRESH_ID)
+            : await reanchorAdvSessionNativeIdByOwner(f.owner, FRESH_ID);
+          expect(result).toEqual({ reanchored: !alreadyAnchored, owner: f.owner });
+          const stored = await f.read();
+          expect(stored).toMatchObject({ session_id: FRESH_ID, ended: false });
+          const { identityHistory: _history, ...unchanged } = stored.launch_spec;
+          expect(unchanged).toEqual(f.original);
+          if (source === 'current' || source === 'history') {
+            expect(resolveIdentityArtifact(stored.launch_spec, f.applied)).toMatchObject({
+              kind: 'governed', artifact: f.receipt.specificationArtifact,
+            });
+          } else {
+            expect(resolveIdentityArtifact(stored.launch_spec, f.applied))
+              .toEqual({ kind: 'stale-artifact', reason: 'receipt-missing' });
+          }
+          const [brief] = await admin<{ activation: unknown }[]>`
+            SELECT control_state->'activation' AS activation FROM harness_shared.session_briefs
+             WHERE workspace_id = ${WS} AND owner_id = ${f.owner}
+          `;
+          expect(brief.activation).toEqual(f.activation);
+        } finally {
+          await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${f.owner}`;
+        }
+      },
+    );
+
+    it('rolls back native and terminal state when retaining the receipt fails', async () => {
+      const f = await fixture('current');
+      if (path === 'exact') {
+        await admin`UPDATE harness_shared.adv_sessions SET ended_at = now(), ended_by = 'self' WHERE id = ${f.id}`;
+      }
+      const before = await f.read();
+      await admin.unsafe(`
+        CREATE FUNCTION harness_shared.reject_reanchor_receipt() RETURNS trigger
+          LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected reanchor receipt rejection'; END $$;
+        CREATE TRIGGER reject_reanchor_receipt BEFORE UPDATE OF launch_spec
+          ON harness_shared.adv_sessions FOR EACH ROW
+          EXECUTE FUNCTION harness_shared.reject_reanchor_receipt();
+      `);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = path === 'exact'
+          ? await reanchorAdvSessionNativeId(f.id, FRESH_ID)
+          : await reanchorAdvSessionNativeIdByOwner(f.owner, FRESH_ID);
+        expect(result).toEqual({ reanchored: false, owner: null });
+        expect(await f.read()).toEqual(before);
+      } finally {
+        warn.mockRestore();
+        await admin.unsafe('DROP TRIGGER reject_reanchor_receipt ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.reject_reanchor_receipt()');
+        await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${f.owner}`;
+      }
+    });
+  });
 });
 
 describe('keyed resume applied receipt retention (real PG)', () => {
@@ -941,28 +1064,36 @@ describe('control activation receipt concurrency', () => {
       let signalReceiptReadReturned!: () => void;
       const receiptReadReturned = new Promise<void>((resolve) => { signalReceiptReadReturned = resolve; });
       refresh = admin.begin(async (tx) => {
-        const observedTx = async (strings: TemplateStringsArray, ...values: postgres.ParameterOrFragment<never>[]) => {
+        const observedTx = (strings: TemplateStringsArray, ...values: postgres.ParameterOrFragment<never>[]) => {
           const statement = strings.join(' ');
           const isReceiptRead = statement.includes("SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec");
-          if (isReceiptRead) {
-            signalReceiptReadStarted();
-            await receiptReadAllowed;
-          }
-          const rows = await tx<Array<{ id: number | string; launch_spec: Record<string, unknown> }>>(strings, ...values);
-          if (isReceiptRead) {
-            const [row] = rows;
-            receiptReadSnapshot = {
-              id: row?.id,
-              specificationRevision: row?.launch_spec?.specificationRevision,
-              stateRevision: row?.launch_spec?.stateRevision,
-              artifactRevision: (row?.launch_spec?.specificationArtifact as Record<string, unknown> | undefined)?.specificationRevision,
-            };
-            signalReceiptReadReturned();
-          }
-          if (statement.includes('UPDATE harness_shared.adv_sessions') && statement.includes('SET launch_spec')) {
-            receiptUpdateRows = Array.isArray(rows) ? rows.length : null;
-          }
-          return rows;
+          const isReceiptUpdate = statement.includes('UPDATE harness_shared.adv_sessions') && statement.includes('SET launch_spec');
+          const query = tx<Array<{ id: number | string; launch_spec: Record<string, unknown> }>>(strings, ...values);
+          // Preserve the driver's lazy Query objects for composable fragments.
+          // An async tag eagerly executes fragments such as EXCLUDED.control_state
+          // as standalone SQL and returns a Promise the enclosing query cannot use.
+          if (!isReceiptRead && !isReceiptUpdate) return query;
+          return (async () => {
+            if (isReceiptRead) {
+              signalReceiptReadStarted();
+              await receiptReadAllowed;
+            }
+            const rows = await query;
+            if (isReceiptRead) {
+              const [row] = rows;
+              receiptReadSnapshot = {
+                id: row?.id,
+                specificationRevision: row?.launch_spec?.specificationRevision,
+                stateRevision: row?.launch_spec?.stateRevision,
+                artifactRevision: (row?.launch_spec?.specificationArtifact as Record<string, unknown> | undefined)?.specificationRevision,
+              };
+              signalReceiptReadReturned();
+            }
+            if (isReceiptUpdate) {
+              receiptUpdateRows = Array.isArray(rows) ? rows.length : null;
+            }
+            return rows;
+          })();
         };
         return refreshControlAnchorAfterMutation({
           ownerId: owner,
@@ -1428,6 +1559,35 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
 });
 
 describe('resume finalization records the current headless posture (real PG)', () => {
+  it('D019 retains the original native routing before repeated resumes and persona refreshes', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    const originalArgv = ['psu', '--agent=codex', '--account=default', '--model=gpt-6:high', '--carry=warm'];
+    const launchSpec = { v: 1, agent: 'codex', workspaceId: WS, harnessSlug: 'papercusp',
+      fleet: { slug: 'routing-test', role: 'member' }, model: 'gpt-6:high' };
+    const firstKey = randomUUID();
+    await admin`UPDATE harness_shared.adv_sessions SET agent = 'codex',
+      launch_spec = ${JSON.stringify(launchSpec)}::text::jsonb,
+      launch_argv = ${JSON.stringify(originalArgv)}::text::jsonb,
+      resume_claim_key = ${firstKey}, resume_claimed_at = now() WHERE id = ${id}`;
+    await expect(finalizeAdvSessionResume(id, firstKey, ['psu', `--resume=${DEAD_ID}`, '--account=auto', '--headless', '--carry=cold'])).resolves.toBe(true);
+    const read = async () => (await admin<{ launch_spec: Record<string, unknown> }[]>`
+      SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`)[0].launch_spec.originalMemberLaunch;
+    const original = await read();
+    expect(original).toMatchObject({ v: 1, advSessionId: id, ownerId: OWNER, sessionId: DEAD_ID,
+      workspaceId: WS, agent: 'codex', launchArgv: originalArgv, launchSpec });
+    expect((await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: DEAD_ID }))?.launchSpec)
+      .toMatchObject({ originalMemberLaunch: original });
+    expect(await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id, sessionId: 'wrong-native' })).toBeNull();
+    expect(await readAdvSessionLaunchRecordByOwner('su-wrong-owner', WS, { advSessionId: id, sessionId: DEAD_ID })).toBeNull();
+    expect(await readAdvSessionLaunchRecordByOwner(OWNER, WS, { advSessionId: id + 1000, sessionId: DEAD_ID })).toBeNull();
+    const secondKey = randomUUID();
+    await admin`UPDATE harness_shared.adv_sessions SET resume_claim_key = ${secondKey}, resume_claimed_at = now() WHERE id = ${id}`;
+    await expect(finalizeAdvSessionResume(id, secondKey, ['psu', `--resume=${DEAD_ID}`, '--account=auto'])).resolves.toBe(true);
+    expect(await read()).toEqual(original);
+    await expect(recordSuLaunchSpec(id, OWNER, { ...launchSpec, model: 'changed', originalMemberLaunch: { forged: true } })).resolves.toBe(true);
+    expect(await read()).toEqual(original);
+  });
+
   it('persists a visible resume posture and repairs it on an idempotent finalize replay', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
     const claimKey = randomUUID();
@@ -1465,6 +1625,9 @@ describe('resume finalization records the current headless posture (real PG)', (
     `;
     expect(row.launch_spec.headless).toBe(false);
     expect(row.launch_argv).toEqual(visibleArgv);
+    // A legacy already-resumed row has lost its original routing. Never bless
+    // that current command as original provenance during receipt backfill.
+    expect(row.launch_spec).not.toHaveProperty('originalMemberLaunch');
 
     // Model a prior runtime that finalized the row but left the launch spec stale.
     await admin`

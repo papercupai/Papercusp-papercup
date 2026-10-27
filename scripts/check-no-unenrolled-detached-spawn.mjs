@@ -130,6 +130,8 @@ export const ALLOWLIST = new Map([
   // (which throws when group exit is unverified) runs before the function returns.
   ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts', 'test fixture: detached ONLY to lead a process group so the private-fixture deadline group-kills the child tree; nativeFixtureProcess awaits close, and processGroupLifetime terminate/waitForExit proves the group exited before it returns (WI-6554700010009949)'],
   ['packages/operator-core/lib/release/admission-fix-precheck.ts', 'detached ONLY to lead a process group so a timeout (or a stdout-holding grandchild after exit) group-kills the pre-check subtree; the child is awaited and dies with the call (WI-10004928 part 5)'],
+  ['packages/operator-core/lib/release/admission-private-test-pg.ts', 'detached ONLY to lead a process group: processGroupLifetime SIGTERMs the private-PG fixture group on postmaster failure or close, and stop() awaits the child close before resolving, so the fixture dies with the pre-check that owns it'],
+  ['packages/operator-core/lib/external-bench/proximus-runtime.ts', 'detached ONLY to lead a process group so the wall-clock deadline or an abort kill(-pid)s the sandboxed Python host; the child is awaited (the Promise settles on close) and dies with the call'],
   // Same category-(2) shape, verified first-hand (WI-10004340): each spawn site is inside
   // `await new Promise((resolve) => …)` that resolves on the child's `close`, and `detached`
   // exists only so the timeout can `process.kill(-child.pid, 'SIGTERM')` the whole replay /

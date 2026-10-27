@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import runTool, {
   buildDetachedMixedTestRunRequest,
@@ -225,6 +225,35 @@ describe('testing:run selector arbitration', () => {
       `--outputFile=${reportPath}`,
       '--testNamePattern=focused proof',
     ]);
+  });
+
+  it('boots detached test workers in test mode without changing a production host', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const artifactDirs: string[] = [];
+    try {
+      const now = Date.now();
+      const scoped = { root: REPO_ROOT, files: ['agent-credentials.test.ts'],
+        harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
+      const callerBound = buildDetachedTestRunRequest({ ...scoped, deadline: {
+        startedAtMs: now, taskDeadlineAtMs: now + 60_000,
+        childCutoffAtMs: now + 55_000, cleanupReserveMs: 5_000,
+      } });
+      artifactDirs.push(...(callerBound.detachedReportArtifacts ?? []).map(artifact => dirname(artifact.reportPath)));
+      const requests = [
+        buildDetachedTestRunRequest(scoped),
+        buildDetachedMixedTestRunRequest({ groups: [{ root: REPO_ROOT, files: scoped.files }],
+          harnessSlug: scoped.harnessSlug, workspaceId: scoped.workspaceId }),
+        callerBound,
+      ];
+      for (const request of requests) {
+        expect(request.env).toMatchObject({ NODE_ENV: 'test',
+          PAPERCUSP_TEST_RUN_HARNESS: scoped.harnessSlug, PAPERCUSP_WORKSPACE_ID: scoped.workspaceId });
+      }
+      expect(process.env.NODE_ENV).toBe('production');
+    } finally {
+      vi.unstubAllEnvs();
+      await Promise.all(artifactDirs.map(path => rm(path, { recursive: true, force: true })));
+    }
   });
 
   it('retains a JSON recovery report beside the admin reporter for ordinary multi-file runs', () => {

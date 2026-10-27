@@ -62,6 +62,24 @@ describe('buildOperatorE2eInvocation', () => {
     expect(inv.args).toEqual([RUNNER]);
   });
 
+  it('prepares the native default-suite contract without reusing inherited receipts', () => {
+    const inv = buildOperatorE2eInvocation(
+      ROOT,
+      { fireId: 'wf-native', workspaceId: 'ws', harnessSlug: 'papercusp', receiptBasePath: '/evidence/attempt-1.log' },
+      {
+        VERIFY_TAURI_ISOLATED_SEED: 'fresh', PAPERCUSP_DEV_BACKGROUND_WORKERS: '0',
+        PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '/stale/shared.json',
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/stale/shared.json',
+      },
+      () => true,
+    );
+    expect(inv.env).toMatchObject({
+      VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+      PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '/evidence/attempt-1.log.inbox-ack.json',
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/evidence/attempt-1.log.test-runs.jsonl',
+    });
+  });
+
   it('never lets a CLI reporter argument reach the runner', () => {
     // The runner refuses --reporter (it would disable the ledger reporter); the action passes none.
     const inv = buildOperatorE2eInvocation(ROOT, { fireId: 'x', workspaceId: 'ws', harnessSlug: 'h' }, {}, () => true);
@@ -198,6 +216,10 @@ describe('runOperatorE2eIsolated', () => {
     expect(opts.spawnOptions.detached).toBe(true);
     expect(opts.spawnOptions.env.PAPERCUSP_TEST_RUN_GROUP).toBe('operator-e2e-nightly:wf-777');
     expect(opts.spawnOptions.env.PAPERCUSP_TEST_RUN_WORKSPACE).toBe('papercusp-workspace');
+    expect(opts.spawnOptions.env.VERIFY_TAURI_ISOLATED_SEED).toBe('ready');
+    expect(opts.spawnOptions.env.PAPERCUSP_DEV_BACKGROUND_WORKERS).toBe('1');
+    expect(opts.spawnOptions.env.PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE).toBe(`${result.logPath}.inbox-ack.json`);
+    expect(opts.spawnOptions.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(`${result.logPath}.test-runs.jsonl`);
     expect(opts.spawnOptions.stdio[0]).toBe('ignore');
     expect(typeof opts.spawnOptions.stdio[1]).toBe('number');
   });

@@ -64,6 +64,89 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 }
 
 describe('systemd-scope-env-runner SIGTERM grace (WI-1064487)', () => {
+  it('replaces the inherited-output runner with the exact payload when execve is supported', async () => {
+    const dir = mkNonRepoTmpDir('runner-generation-owner-');
+    const payloadRoot = join(dir, 'payload-generation');
+    const envPath = writeEnvFile(dir, { PAPERCUSP_INTEGRATION_ROOT: payloadRoot });
+    const payload = 'process.stdout.write(JSON.stringify({ pid: process.pid, root: process.env.PAPERCUSP_INTEGRATION_ROOT })); process.exitCode = 23';
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', process.execPath, '-e', payload], {
+      env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: join(dir, 'spawning-generation') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const output = createTextCollector(runner.stdout);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    expect(code).toBe(23);
+    const actual = JSON.parse(output.text());
+    expect(actual.root).toBe(payloadRoot);
+    if ('execve' in process && typeof process.execve === 'function' && process.platform !== 'win32') {
+      // A forked payload has the correct env too, but leaves an additional
+      // process retaining the spawning generation until the task ends.
+      expect(actual.pid).toBe(runner.pid);
+    } else {
+      expect(actual.pid).not.toBe(runner.pid);
+    }
+  });
+
+  it('keeps the inherited-output fallback usable without execve', async () => {
+    const dir = mkNonRepoTmpDir('runner-execve-fallback-');
+    const envPath = writeEnvFile(dir, { ONLY_PAYLOAD: 'exact' });
+    const payload = 'process.stdout.write(JSON.stringify({ pid: process.pid, value: process.env.ONLY_PAYLOAD })); process.exitCode = 23';
+    const bootstrap = `process.execve = undefined; const { main } = await import(${JSON.stringify(new URL(RUNNER, 'file:').href)}); main(${JSON.stringify([
+      process.execPath, RUNNER, '--env-fd-path', envPath, '--', process.execPath, '-e', payload,
+    ])});`;
+    const runner = spawn(process.execPath, ['--input-type=module', '-e', bootstrap], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = createTextCollector(runner.stdout);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    expect(code).toBe(23);
+    const actual = JSON.parse(output.text());
+    expect(actual.value).toBe('exact');
+    expect(actual.pid).not.toBe(runner.pid);
+  });
+
+  it('preserves spawn failure reporting for an absent absolute payload', async () => {
+    const dir = mkNonRepoTmpDir('runner-absent-exec-');
+    const envPath = writeEnvFile(dir, {});
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', join(dir, 'absent')], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const errors = createTextCollector(runner.stderr);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    expect(code).toBe(1);
+    expect(errors.text()).toContain('payload spawn failed');
+  });
+
+  it('delivers SIGTERM to an inherited-output Node payload and lets its cleanup finish', async () => {
+    const dir = mkNonRepoTmpDir('runner-node-signal-');
+    const ready = join(dir, 'ready');
+    const cleaned = join(dir, 'cleaned');
+    const envPath = writeEnvFile(dir, {});
+    const payload = `const fs = require('node:fs'); process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(cleaned)}, 'cleaned'); process.exit(143); }); fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); setTimeout(() => process.exit(124), 15000);`;
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', process.execPath, '-e', payload], {
+      stdio: 'ignore',
+    });
+    const exited = new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+    try {
+      expect(await waitFor(() => existsSync(ready), 15_000), 'payload signal handler never became ready').toBe(true);
+      runner.kill('SIGTERM');
+      expect(await exited).toBe(143);
+      expect(readFileSync(cleaned, 'utf8')).toBe('cleaned');
+    } finally {
+      if (runner.exitCode === null && runner.signalCode === null) runner.kill('SIGTERM');
+    }
+  }, 30_000);
+
   it('persists unit and payload phases without adding diagnostic bytes to stdout', async () => {
     const dir = mkNonRepoTmpDir('wi8539-runner-phases-');
     const logPath = join(dir, 'job.log');

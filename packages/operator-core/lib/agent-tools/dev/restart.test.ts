@@ -37,6 +37,7 @@ vi.mock('../locks/su-lock-store', () => ({
   })),
 }));
 vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
+vi.mock('../../serving-host-identity', () => ({ hostIdentity: vi.fn(() => 'pid-test') }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const { EventEmitter } = await import('node:events');
@@ -141,6 +142,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } from '../locks/resource-lock-guard';
+import { hostIdentity } from '../../serving-host-identity';
 import { spawn } from 'node:child_process';
 import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
@@ -414,6 +416,7 @@ const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DEV_RESTART;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(hostIdentity).mockReturnValue('pid-test');
   delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   freshnessM.mockResolvedValue({
     bundleMtimeMs: null,
@@ -586,6 +589,85 @@ describe('bgHostIntegrationRootFromUnitProperties (WI-10003606)', () => {
     expect(bgHostIntegrationRootFromUnitProperties('Environment=\nWorkingDirectory=/opt/bg\n')).toBeNull();
     expect(bgHostIntegrationRootFromUnitProperties('Environment=PAPERCUSP_INTEGRATION_ROOT=relative/root\n')).toBeNull();
     expect(bgHostIntegrationRootFromUnitProperties('')).toBeNull();
+  });
+});
+
+describe('dev:restart serving API lifetime (WI-6554700010023103)', () => {
+  it.each([
+    ['port-3170', 'staging-server'],
+    ['port-3070', 'dev-server'],
+  ])('keeps %s leased while the target barrier waits, then releases on refusal', async (host, resource) => {
+    vi.mocked(hostIdentity).mockReturnValue(host);
+    mockResolvedTyped(acquireM, {
+      ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-SERVING',
+      expires_ts: new Date(), shared_holders: [], fence_seq: 1,
+    });
+    let held = false;
+    let finishBarrier!: () => void;
+    const barrierStarted = new Promise<void>((resolve) => {
+      gitSyncBarrierM.mockImplementation(async () => {
+        expect(held).toBe(true);
+        resolve();
+        await new Promise<void>((done) => { finishBarrier = done; });
+        return { acquired: false, resource: 'git-sync', reason: 'drain_timeout', holders: [] };
+      });
+    });
+    mockImplementationTyped(guardM, async (spec, run) => {
+      expect(spec).toMatchObject({ resource, mode: 'shared' });
+      held = true;
+      try { return await runGuard(fenceOk())(spec, run); }
+      finally { held = false; }
+    });
+    const pending = call({ target: 'bg-host', confirm: true, authorize: true });
+    await barrierStarted;
+    expect(held).toBe(true);
+    expect(spawnM).not.toHaveBeenCalled();
+    finishBarrier();
+    expect(body(await pending)).toMatchObject({ reason: 'git_sync_barrier_drain_timeout', restarted: false });
+    expect(held).toBe(false);
+  });
+
+  it('refuses a cross-target restart before preflight when its serving API is already draining', async () => {
+    vi.mocked(hostIdentity).mockReturnValue('port-3170');
+    mockResolvedTyped(guardM, { acquired: false, reason: 'exclusive_pending', holders: [] });
+    expect(body(await call({ target: 'bg-host', confirm: true, authorize: true }))).toMatchObject({
+      ok: false, reason: 'request_host_exclusive_pending', resource: 'staging-server', restarted: false,
+    });
+    expect(preflightM).not.toHaveBeenCalled();
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+  });
+
+  it('releases its serving API lease when target preflight throws', async () => {
+    vi.mocked(hostIdentity).mockReturnValue('port-3170');
+    let held = false;
+    mockImplementationTyped(guardM, async (spec, run) => {
+      held = true;
+      try { return await runGuard(fenceOk())(spec, run); }
+      finally { held = false; }
+    });
+    preflightM.mockImplementation(async () => {
+      expect(held).toBe(true);
+      throw new Error('preflight unavailable');
+    });
+    await expect(call({ target: 'bg-host', confirm: true, authorize: true })).rejects.toThrow('preflight unavailable');
+    expect(held).toBe(false);
+  });
+
+  it.each([['port-3170', 'staging'], ['port-3070', 'dev']])(
+    'does not take a shared lease that would block its own %s restart', async (host, target) => {
+      vi.mocked(hostIdentity).mockReturnValue(host);
+      preflightM.mockResolvedValue(bootVerdict({ ok: false, missing: ['hono'] }));
+      expect(body(await call({ target, confirm: true, authorize: true }))).toMatchObject({
+        reason: 'boot_integrity_inconsistent',
+      });
+      expect(guardM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a cross-target dry run free of serving-host leases', async () => {
+    vi.mocked(hostIdentity).mockReturnValue('port-3170');
+    expect(body(await call({ target: 'bg-host' }))).toMatchObject({ dry_run: true });
+    expect(guardM).not.toHaveBeenCalled();
   });
 });
 

@@ -8,7 +8,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type Settings } from '@anthropic-ai/claude-agent-sdk';
-import { applyDefaultClaudeOAuthToken, applyGithubTokenEnv, applyPsuClaudeSettingsArgs, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, persistPsuClaudeSessionSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { applyDefaultClaudeOAuthToken, applyGithubTokenEnv, applyPsuClaudeSettingsArgs, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, persistPsuClaudeSessionSettings, prepareSuLaunch, recordSessionOwner, startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { SuApprovalsMode } from '@papercusp/chat-protocol';
 import { splitModelSpec } from './agent-config-constants';
@@ -25,7 +25,9 @@ import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventIn
 import { claudeModelOptions } from './su-session-engine-models';
 import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
+import { prepareSuSessionInput, SuInputRefusal } from './su-session-input';
 import { admitNativeIdentityInference } from './cupboard/identity-activation-gate-io';
+import { prepareTrackedClaudeFork, type TrackedClaudeForkSource } from './su-session-tracked-claude-fork';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
   // P-026: the streaming-input model switch. Optional so a peer without it
@@ -67,6 +69,8 @@ export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   /** Defaults to `su`. */
   identity?: ClaudeEngineIdentity;
   resume?: boolean;
+  /** Fresh tracked child only; the SDK forks history and registration gates ready. */
+  forkFrom?: TrackedClaudeForkSource;
   /** Acceptance-only opt-in to the native permission request/card path. */
   toolApproval?: 'prompt';
   beforeReady?: (pid: number | null) => Promise<void>;
@@ -208,12 +212,17 @@ export function startClaudeSuEngine(
   options: ClaudeEngineOptions,
 ): ClaudeSuEngine {
   const nativeId = runtime.nativeSession.sessionId;
+  if (options.forkFrom && options.resume) throw new Error('Claude fork and exact resume are mutually exclusive');
   if (boot.agent !== 'claude' || boot.sessionId !== binding.advSessionId || boot.nativeSessionId !== nativeId
     || boot.workspaceId !== binding.workspaceId || boot.harnessSlug !== binding.harnessSlug
     || boot.envelopeEnv.PAPERCUSP_SID !== binding.ownerId) {
     throw new Error('Structured Claude bootstrap does not match the durable SU identity');
   }
   assertLaunchPersona(boot.promptFile);
+  const preparation = prepareSuLaunch(boot, {
+    model: options.model, executionKind: 'programmatic', accountRoute: options.accountRoute,
+    nativeSessionId: nativeId,
+  });
   const input = new PassThrough({ objectMode: true });
   const abortController = new AbortController();
   // Readiness uses the SDK's actual control responses. A transcript-only
@@ -229,6 +238,11 @@ export function startClaudeSuEngine(
   let heartbeat: ManagedHandle | undefined;
   let sdk: ClaudeEngineQuery;
   let inputTail = Promise.resolve();
+  let interruptInFlight: Promise<ClaudeNativeCommandVerdict> | undefined;
+  let interruptFailure: ClaudeNativeCommandVerdict | undefined;
+  // Include the head while admission/configuration is pending, before it has
+  // a native input UUID. Interrupt cancels that delivery, never later inputs.
+  const deliveries: Array<{ interrupted: boolean }> = [];
   let activeInputUuid: string | undefined;
   let activeOwnerTurnId: string | undefined;
   // Filled once the SU tool connection is up; until then every request asks.
@@ -289,29 +303,42 @@ export function startClaudeSuEngine(
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
-    ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
+    ...options, executionKind: 'programmatic', typedInput: true, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
     resultErrorSource: 'transport',
     ...(currentApprovals ? { approvals: currentApprovals } : {}),
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {
-      async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }) {
+      async ownerTurn({ content, input: richInput, turnId, model: nextModel, approvals: nextApprovals }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);
+        const delivery = { interrupted: false };
+        deliveries.push(delivery);
+        const deliveryStopped = () => {
+          if (delivery.interrupted) {
+            receipt.resolve({ ok: false, code: 'turn_interrupted', retryable: false,
+              message: 'The owner interrupted this turn before native delivery' });
+            return true;
+          }
+          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return true; }
+          return false;
+        };
         let timer: ReturnType<typeof setTimeout> | undefined;
         inputTail = inputTail.then(async () => {
-          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return; }
+          // The interrupted result can arrive before the SDK control receipt.
+          // A follow-up must wait for both boundaries on this same session.
+          await interruptInFlight;
+          if (deliveryStopped()) return;
+          if (interruptFailure) { receipt.resolve(interruptFailure); return; }
           if (su) {
             if (!binding.workspaceId || !binding.ownerId) {
               receipt.resolve(unavailable('Native admission requires the authenticated workspace and owner')); return;
             }
             const admission = await admitNativeIdentityInference({ workspaceId: binding.workspaceId,
               ownerId: binding.ownerId, backend: 'claude' });
+            if (deliveryStopped()) return;
             if (!admission.ok) { receipt.resolve(admission); return; }
-            // A funding read can outlive teardown; it never authorizes writing
-            // a querying input to an engine that closed while admission waited.
-            if (closed) { receipt.resolve(unavailable('Claude closed during native admission')); return; }
           }
           // P-026: switch in the input order, after any earlier queued turn has
           // finished (so it never changes the model under that turn) and before
@@ -328,6 +355,7 @@ export function startClaudeSuEngine(
             }
             currentModel = nextModel;
             adapter.host.updateModel(nextModel);
+            if (deliveryStopped()) return;
           }
           // D-026: the approvals switch follows the same order and refusal rule.
           if (nextApprovals && nextApprovals !== currentApprovals) {
@@ -342,7 +370,19 @@ export function startClaudeSuEngine(
             }
             currentApprovals = nextApprovals;
             adapter.host.updateApprovals(nextApprovals);
+            if (deliveryStopped()) return;
           }
+          // Resolve references after admission/model/permission waits, at the
+          // serialized native write boundary. Earlier validation can go stale.
+          let prepared: Awaited<ReturnType<typeof prepareSuSessionInput>>;
+          try {
+            prepared = await prepareSuSessionInput({ content, input: richInput }, { workspaceId: boot.workspaceId, root: boot.cwd });
+          } catch (error) {
+            if (!(error instanceof SuInputRefusal)) throw error;
+            receipt.resolve({ ok: false, code: error.code, message: error.message, retryable: false });
+            return;
+          }
+          if (deliveryStopped()) return;
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);
@@ -354,7 +394,7 @@ export function startClaudeSuEngine(
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
             input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
-              origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
+              origin: { kind: 'human' }, message: { role: 'user', content: prepared.claude } } satisfies SDKUserMessage);
             await finished.promise;
           } finally {
             disarmStallWatch();
@@ -362,16 +402,34 @@ export function startClaudeSuEngine(
             activeOwnerTurnId = undefined;
             finishActiveTurn = undefined;
           }
-        }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
+        }).catch((error: unknown) => receipt.resolve(unavailable(String(error))))
+          .finally(() => { deliveries.shift(); });
         try {
           return await receipt.promise;
         } finally { clearTimeout(timer); pending.delete(uuid); }
       },
       async interrupt() {
-        cards.cancel();
-        if (activeInputUuid) activeTurnInterrupted = true;
-        await sdk.interrupt();
-        return { ok: true };
+        if (interruptInFlight) return interruptInFlight;
+        if (interruptFailure) return interruptFailure;
+        if (deliveries[0] && !activeInputUuid) {
+          deliveries[0].interrupted = true;
+          cards.cancel();
+          return { ok: true };
+        }
+        const request = (async (): Promise<ClaudeNativeCommandVerdict> => {
+          cards.cancel();
+          if (activeInputUuid) activeTurnInterrupted = true;
+          try {
+            await sdk.interrupt();
+            return { ok: true };
+          } catch (error) {
+            interruptFailure = unavailable(`Claude interrupt acknowledgement is unknown; reconcile before sending a follow-up: ${String(error)}`);
+            return interruptFailure;
+          }
+        })();
+        interruptInFlight = request;
+        try { return await request; }
+        finally { if (interruptInFlight === request) interruptInFlight = undefined; }
       },
       async resume() { return ready && !closed ? { ok: true } : unavailable('Reconnect the structured Claude runtime before resuming'); },
       async focus() { return { ok: true }; },
@@ -389,12 +447,15 @@ export function startClaudeSuEngine(
     // session, which is the auto-edit approvals mode (D-026).
     approvalsChanged: (mode) => { currentApprovals = mode; adapter.host.updateApprovals(mode); },
   });
-  const model = splitModelSpec(options.model);
-  const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
+  const flagValue = (flag: string) => {
+    const at = preparation.modelArgs.indexOf(flag);
+    return at < 0 ? undefined : preparation.modelArgs[at + 1];
+  };
+  const model = { model: flagValue('--model'), effort: flagValue('--effort') };
+  const launch = preparation;
   const su = (options.identity ?? 'su') === 'su';
   const systemPrompt = su ? readFileSync(boot.promptFile, 'utf8') : null;
-  const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
-  delete env.PAPERCUSP_TTY;
+  const env = preparation.env;
   // The per-session SessionStart hook otherwise mistakes the SDK initialize
   // channel for a dropped argv prompt and injects the full parked playbook as
   // additionalContext on every start/resume.
@@ -435,7 +496,8 @@ export function startClaudeSuEngine(
     if (env.CLAUDE_CONFIG_DIR) syncPersonalClaudeMemory(env.CLAUDE_CONFIG_DIR, !su, env.HOME || undefined);
   }
   // Reuse the launcher's deny policy as well as its environment sanitizer.
-  const disallowedTools = launch.args.filter((a: string) => a.startsWith('--disallowedTools=')).flatMap((a: string) => a.slice('--disallowedTools='.length).split(','));
+  const disallowedTools = launch.args.filter((a): a is string => typeof a === 'string' && a.startsWith('--disallowedTools='))
+    .flatMap(a => a.slice('--disallowedTools='.length).split(','));
   const sdkOptions: Options = {
     cwd: boot.cwd,
     env,
@@ -462,6 +524,14 @@ export function startClaudeSuEngine(
       });
     },
     disallowedTools,
+    onElicitation(request, elicitation) {
+      if (closed || !activeOwnerTurnId) return Promise.resolve({ action: 'cancel' });
+      awaitingOwnerAnswers += 1;
+      return cards.handleClaudeElicitation(request, activeOwnerTurnId, elicitation).finally(() => {
+        awaitingOwnerAnswers -= 1;
+        lastFrameAt = Date.now();
+      });
+    },
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
     abortController,
@@ -564,6 +634,17 @@ export function startClaudeSuEngine(
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
     if (closed) throw new Error('Claude startup was cancelled');
+    let fork: Awaited<ReturnType<typeof prepareTrackedClaudeFork>> | undefined;
+    if (options.forkFrom) {
+      if (!runtime.nativeSession.configDir) throw new Error('Claude child configuration is unavailable');
+      enterStartupStage('tracked fork preparation');
+      fork = await prepareTrackedClaudeFork({ source: options.forkFrom, workspaceId: boot.workspaceId,
+        cwd: boot.cwd, childAdvSessionId: binding.advSessionId, childOwnerId: binding.ownerId!,
+        childNativeSessionId: nativeId, childConfigDir: runtime.nativeSession.configDir });
+      Object.assign(sdkOptions, { resume: options.forkFrom.nativeSession.sessionId!, forkSession: true, sessionId: nativeId });
+    }
+    try {
+    if (closed) throw new Error('Claude fork preparation was cancelled');
     if (options.resume) {
       // WI-10004162: show the saved conversation now, not after the SDK launch,
       // its initialization and the SU tool connection (seconds, or never when
@@ -715,6 +796,12 @@ export function startClaudeSuEngine(
     if (closed) throw new Error('Claude connection closed during startup');
     enterStartupStage('resume finalization');
     await options.beforeReady?.(processId);
+    if (fork) {
+      enterStartupStage('fork visible history');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true, path: fork.transcriptPath });
+      enterStartupStage('tracked fork registration');
+      await fork.register();
+    }
     if (closed) throw new Error('Claude connection closed while finalizing resume');
     ready = true;
     adapter.host.transition('ready', su
@@ -724,6 +811,13 @@ export function startClaudeSuEngine(
     // workspace's routing tiers. Published after every startup descriptor
     // write so none of them can drop it.
     adapter.host.updateModels(claudeModelOptions(initialization?.models));
+    } catch (error) {
+      // Stop the native writer before removing any unregistered fork artifacts.
+      if (!adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+      await close();
+      await fork?.cleanup();
+      throw error;
+    }
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([

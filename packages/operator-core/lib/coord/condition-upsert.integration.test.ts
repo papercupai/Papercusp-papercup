@@ -181,6 +181,13 @@ beforeAll(async () => {
       '1294-work-item-readiness-payload-projections.sql',
       '1308-work-items-severity-projection.sql',
     ],
+    knownInapplicable: [
+      {
+        file: '1534-work-items-duplicate-of.sql',
+        reason:
+          'locks and re-declares harness_shared.work_items_claimable and two sibling views this fixture never builds; condition upsert reads no duplicate_of column',
+      },
+    ],
   });
 }, 120_000);
 

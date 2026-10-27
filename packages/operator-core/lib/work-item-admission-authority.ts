@@ -46,6 +46,35 @@ export class AdmissionAuthorityUnavailable extends Error {
   readonly code = 'policy-unavailable';
 }
 
+const authorityReadSourceSchema = z.enum([
+  'control-anchor-query-failed', 'verified-caller-row-unavailable',
+  'power-user-revocation-query-failed', 'authority-reader-initialization-failed',
+  'identity-policy-evaluation-failed',
+]);
+const policyReadDiagnosticSchema = z.object({
+  kernelDecision: z.object({
+    serverAudit: z.object({
+      authorityUnavailableSources: z.array(authorityReadSourceSchema).max(8).optional(),
+      authorityReadFailures: z.array(z.object({
+        source: authorityReadSourceSchema,
+        pgCode: z.string().regex(/^[0-9A-Z]{5}$/).nullable(),
+        elapsedMs: z.number().finite().nonnegative(),
+        servingPid: z.number().int().positive(),
+      })).max(8).optional(),
+    }),
+  }),
+});
+
+/** Existing run-error records keep this message. Preserve safe reader evidence
+ * there without serializing the dispatch context, SQL, parameters or credentials. */
+function policyReadDiagnosticSuffix(meta: unknown): string {
+  const parsed = policyReadDiagnosticSchema.safeParse(meta);
+  if (!parsed.success) return '';
+  const diagnostic = parsed.data.kernelDecision.serverAudit;
+  if (!diagnostic.authorityUnavailableSources?.length && !diagnostic.authorityReadFailures?.length) return '';
+  return ` [authority-read ${JSON.stringify(diagnostic)}]`;
+}
+
 /** Called on the authenticated dispatch context, never on caller-supplied args. */
 export function bindAdmissionAuthority(
   ctx: UnifiedToolContext & AdmissionAuthorityContext,
@@ -155,9 +184,47 @@ export async function authorizeAdmissionReplay(
     if (!verdict.allowed) {
       const message = `${name}: ${verdict.error?.message ?? 'current authority denied'}`;
       if (verdict.error?.meta?.kernelCode === 'policy-unavailable') {
-        throw new AdmissionAuthorityUnavailable(message);
+        throw new AdmissionAuthorityUnavailable(message + policyReadDiagnosticSuffix(verdict.error.meta));
       }
       throw new AdmissionAuthorityRefused(message);
     }
   }
+}
+
+/** Renew the actual review WRITE operation. Dispatch/claim/read permissions are
+ * deliberately irrelevant. The applied policy revision is an observation only;
+ * callers must renew it at the transactional persistence boundary. */
+export async function authorizeAdmissionReviewReplay(
+  sql: Sql, scope: AdmissionRecoveryScope,
+  request: { caller: string; requestId: string; purpose: 'admission-review'; authority: AdmissionRecoveryAuthority },
+): Promise<string> {
+  const ctx = await admissionReplayContext(sql, scope, request.caller, request.authority);
+  const { PROJECTED_DEPS } = await import('./projected-tool-deps');
+  await import('./agent-tools/work_items/review-admission');
+  const name = 'work_items:review-admission';
+  const tool = lookupByMcpName(name);
+  if (!tool || ctx.profile === 'power' && tool.profile === 'engineer') {
+    throw new AdmissionAuthorityRefused(`${name}: canonical operation unavailable for this profile`);
+  }
+  let revision: ReturnType<typeof appliedExecutionRevision> = null;
+  const verdict = await runWithWorkspaceIfConcrete(scope.workspaceId, () =>
+    preflightDispatchStack(tool, name, {
+      id: scope.workItemId, harness: scope.harnessSlug,
+      requestId: request.requestId, purpose: request.purpose,
+    }, ctx, {
+      ...PROJECTED_DEPS,
+      kernelEnforcement: async input => {
+        if (!PROJECTED_DEPS.kernelEnforcement) throw new AdmissionAuthorityUnavailable('review policy reader unavailable');
+        const decision = await PROJECTED_DEPS.kernelEnforcement(input);
+        if (input.phase === 'enforce') revision = appliedExecutionRevision(decision, 'enforce');
+        return decision;
+      },
+    }));
+  if (!verdict.allowed) {
+    const message = `${name}: ${verdict.error?.message ?? 'current policy denied'}`;
+    if (verdict.error?.meta?.kernelCode === 'policy-unavailable') throw new AdmissionAuthorityUnavailable(message);
+    throw new AdmissionAuthorityRefused(message);
+  }
+  if (!revision) throw new AdmissionAuthorityRefused(`${name}: current applied policy revision unavailable`);
+  return JSON.stringify(revision);
 }

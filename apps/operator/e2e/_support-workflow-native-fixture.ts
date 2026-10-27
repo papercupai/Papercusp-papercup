@@ -1,6 +1,9 @@
 import type { Sql } from 'postgres';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { access, readFile, stat, writeFile } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectBlueprintToPg, retainBlueprintSpecificationSnapshot } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
@@ -16,6 +19,35 @@ import { isCodingAgentRole } from '../../../packages/operator-core/lib/personal-
 import { readWorkflowAdministration } from '../../../packages/operator-core/lib/blueprint/support-workflow-administration';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers, searchOrganizationDocuments,
   upsertOrganizationDocuments, upsertPermissionList } from '../../../packages/operator-core/lib/data-sources/documents-corpus';
+
+/** Reference-only transfer, following launch-blueprint-account-route's private runtime pattern. */
+export async function prepareSupportWorkerAccountReferences(sourceWorkspace: string, path: string) {
+  if (!sourceWorkspace.trim() || /^verify-tauri-isolated-/.test(sourceWorkspace)
+    || !isAbsolute(path) || path.startsWith(fileURLToPath(new URL('../../../', import.meta.url))))
+    throw new Error('Support worker references require an explicit source workspace and external destination');
+  const { loadAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
+  const { accountsForProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
+  const accounts = accountsForProvider(await loadAccountPool(sourceWorkspace), 'codex')
+    // This fixture freezes an API-key payer and requires a provider-enforced
+    // output cap. Subscription transports cannot enforce that contract.
+    .filter(row => isSpawnEligible(row, Date.now()) && !row.credentialRef.startsWith('codex-cli:'))
+    .map(row => ({ ...row, boundTo: [], softPin: [], credentialRef: row.credentialRef.replace(/~/g, homedir()) }));
+  if (!accounts.length) throw new Error('Support worker references require an eligible configured Codex API-key account');
+  const { parseCodexCliRef } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
+  const { makeBearerCredentialResolver, parseCredentialRef } = await import('../../../packages/operator-core/lib/inference-gateway/credential-store');
+  for (const row of accounts) {
+    const cliHome = parseCodexCliRef(row.credentialRef);
+    if (cliHome) await access(`${cliHome}/auth.json`);
+    else {
+      makeBearerCredentialResolver(row.credentialRef); // validate reference syntax without reading credentials
+      const reference = parseCredentialRef(row.credentialRef);
+      if (reference.kind === 'env') {
+        if (!process.env[reference.path]) throw new Error('Support worker credential environment reference is unavailable');
+      } else await access(reference.path);
+    }
+  }
+  await writeFile(path, JSON.stringify({ accounts }), { mode: 0o600, flag: 'wx' });
+}
 
 async function assertSupportFixtureDatabase(sql: Sql, workspaceId: string) {
   if (!/^verify-tauri-isolated-[a-zA-Z0-9-]+$/.test(workspaceId))
@@ -40,9 +72,41 @@ async function assertSupportFixtureDatabase(sql: Sql, workspaceId: string) {
 export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
   workspaceId: string;
   harnessSlug?: string;
+  requireWorkerAccount?: boolean;
+  workerAccountReferenceFile?: string;
 }) {
   const { workspaceId } = input;
   await assertSupportFixtureDatabase(sql, workspaceId);
+  if (input.workerAccountReferenceFile) {
+    // References are injected explicitly from outside the checkout. Never
+    // discover the shared pool from inside this disposable database.
+    const path = input.workerAccountReferenceFile;
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
+    if (!isAbsolute(path) || path.startsWith(root))
+      throw new Error('Support native account references must be outside the checkout');
+    const metadata = await stat(path);
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.size > 1_048_576)
+      throw new Error('Support native account references require a private bounded file');
+    const source = JSON.parse(await readFile(path, 'utf8'));
+    const { accountProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
+    if (!Array.isArray(source.accounts) || !source.accounts.length || source.accounts.some((row: any) =>
+      !row || typeof row.id !== 'string' || typeof row.credentialRef !== 'string'
+      || accountProvider(row) !== 'codex' || !isSpawnEligible(row, Date.now())
+      || row.credentialRef.startsWith('codex-cli:')))
+      throw new Error('Support native account references require eligible Codex API-key accounts');
+    const { updateAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
+    await updateAccountPool(() => ({ accounts: source.accounts.map((row: any) =>
+      ({ ...row, boundTo: [], softPin: [] })) }), workspaceId);
+  }
+  if (input.requireWorkerAccount) {
+    // The launcher's shared gateway statistics do not establish that this
+    // disposable workspace has an allowed pool. Use bootstrap's actual route
+    // decision before creating inputs or waiting for a worker that cannot boot.
+    const { resolveAccountPin } = await import('../../../packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su');
+    const route = await resolveAccountPin(workspaceId, 'auto', 'codex', undefined, false, 'gpt-6.1-sol');
+    if (route.error || route.provider !== 'codex' || !route.gatewayAuto)
+      throw new Error('Support native worker account preflight refused: configure an allowed Codex auto route in the isolated workspace');
+  }
   // Admission alone accepts a syntactically valid identity pin. The actual
   // worker bootstrap also resolves its source, so pin the maintained identity
   // instead of inventing a role-named source and a placeholder content hash.

@@ -13,8 +13,8 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { launcherBootId } from '../../fleet/spawn-reclaim';
 
-// The retirement helper resolves getOrgPg lazily. Point it at this file's throwaway database so
-// the concurrent retire regression exercises the real transaction and metadata SQL, not a fake.
+// Keep ancillary global readers pinned too. Concurrent retirement passes its
+// private SQL explicitly so dynamic-import mocking cannot decide its isolation.
 const orgDb = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -324,8 +324,8 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     expect(seed?.candidate).toBe(queue.candidate);
 
     const results = await Promise.all([
-      retireFrozenCandidateRepairQueue(target, queue),
-      retireFrozenCandidateRepairQueue(target, queue),
+      retireFrozenCandidateRepairQueue(target, queue, sql),
+      retireFrozenCandidateRepairQueue(target, queue, sql),
     ]);
 
     expect(results.filter((result) => result.retired), JSON.stringify(results)).toHaveLength(1);

@@ -345,7 +345,12 @@ export function acceptanceDrainObservationSignals(
     ? (typeof existingPayload?.sourceGeneration === 'string' ? existingPayload.sourceGeneration : null)
     : agentObligationSourceGeneration({ planSlug, gate: observation });
   const sameGeneration = sourceGeneration !== null && sourceGeneration === existingPayload?.sourceGeneration;
-  const firstObservedAt = sameGeneration && validIso(existingPayload?.firstObservedAt)
+  // A runtime refresh changes the evidence generation, but it is not progress
+  // on an outstanding blocker. Keep its escalation clock until the gate moves
+  // to another blocker or resolves; otherwise frequent deploys keep it fresh forever.
+  const sameBlocker = state === 'blocked' && existingPayload?.gateObservation === 'blocked'
+    && observation?.code != null && observation.code === existingPayload?.blockerCode;
+  const firstObservedAt = (sameGeneration || sameBlocker) && validIso(existingPayload?.firstObservedAt)
     ? existingPayload.firstObservedAt
     : now;
   const ageMs = Math.max(0, Date.parse(now) - Date.parse(firstObservedAt));

@@ -36,7 +36,7 @@ import {
   type GradingLaunchProfile,
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
-import { getRubric } from './rubrics';
+import { getRubric, readRubric } from './rubrics';
 import {
   acquireGradingAuditSubjectMutex,
   cancelSupersededPendingGradingAuditAtomically,
@@ -66,7 +66,7 @@ import {
   type GradingAuditDispatchSuppression,
 } from './acceptance-rubric-vetting';
 import { routeSourceGradingAudit } from './grading-audit-routing';
-import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks } from './task-manager/store';
+import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks, markEndedUnobserved } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
 import type { TaskRow } from './task-manager/types';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
@@ -77,11 +77,14 @@ import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { lineagePartyKeys } from './acceptance-author-identity';
 import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 import {
+  fetchGatewayHeadroom,
   fetchGatewayOwnerExecution,
+  type GatewayHeadroom,
   type GatewayOwnerExecution,
 } from './inference-gateway/observability';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
 
@@ -489,9 +492,18 @@ export const GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
  */
 export const GRADING_AUDIT_ACCOUNT = 'auto' as const;
 const GRADING_AUDIT_MAX_TERMINAL_FALLBACKS = 1;
+/**
+ * WI-6554700010030191: re-routes after a launch the Codex walled-pool preflight
+ * refused before opening any process. Unpaid, so separate from the terminal
+ * retry ceiling, but still bounded so a flapping pool cannot loop a dispatch.
+ */
+const GRADING_AUDIT_MAX_PREFLIGHT_REROUTES = 1;
+/** psu-launcher.mjs boot refusals that name Claude as the route (exit 78). */
+const CODEX_PREFLIGHT_REFUSAL =
+  /REFUSING TO LAUNCH — (?:no Codex account will serve model|Codex auto-route (?:has no serviceable accounts|pool is fully walled)|Codex upstream has not responded)/;
 const GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
 const GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS = 4;
-const GRADING_AUDIT_FALLBACK = {
+export const GRADING_AUDIT_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
   effort: 'high' as const,
@@ -575,6 +587,7 @@ export type GradingAuditDispatchPhase =
   | 'reservation'
   | 'reservation-confirm'
   | 'live-task-read'
+  | 'retained-task-kernel-reconciliation'
   | 'task-session-bind'
   | 'native-session-read'
   | 'task-terminal-detection'
@@ -689,6 +702,8 @@ export interface DispatchPendingGradingAuditsDeps {
   release?: typeof releasePendingGradingAudit;
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
+  /** Canonical kernel/systemd terminal proofs for the exact retained task rows. */
+  readRetainedTaskKernelVerdicts?: typeof readRetainedTaskKernelVerdicts;
   /** Reconcile a legacy/late-enrolled task through the existing owner-bound session binder. */
   bindTaskNativeSession?: typeof bindAgentSessionTaskToLatestNativeSession;
   /** Exact native session bindings for the retained tasks' recorded session ids. */
@@ -701,6 +716,7 @@ export interface DispatchPendingGradingAuditsDeps {
   /** A live task is viable only while it remains the active consult answerer for its lease. */
   isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
   getTask?: typeof getTask;
+  promoteClaim?: typeof promotePendingGradingAuditClaim;
   notifyRetainedAuditor?: typeof notifyRetainedGradingAuditor;
   readLogTail?: (path: string) => string | Promise<string>;
   /** Read log progress time; null means missing/unreadable and cannot prove a stall. */
@@ -708,6 +724,8 @@ export interface DispatchPendingGradingAuditsDeps {
   /** Resolve one auditor owner only after an old no-first-turn log candidate needs liveness corroboration. */
   resolveOwnerLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null>;
   killTask?: typeof killTask;
+  /** Persist independently confirmed collected scopes before replacing their auditor. */
+  markEndedUnobserved?: typeof markEndedUnobserved;
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
   terminalLogMaxRechecks?: number;
@@ -731,6 +749,49 @@ export interface DispatchPendingGradingAuditsDeps {
   providerEvidenceDelayMs?: number;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
+}
+
+async function retireGradingAuditTask(
+  taskId: string,
+  options: Parameters<typeof killTask>[1],
+  deps: Pick<DispatchPendingGradingAuditsDeps, 'killTask' | 'markEndedUnobserved' | 'getTask'>,
+): ReturnType<typeof killTask> {
+  const result = await (deps.killTask ?? killTask)(taskId, options);
+  if (result.ok || result.error !== 'already_gone') return result;
+
+  // A collected scope proves absence, but killTask leaves its exit to the
+  // watcher. If that watcher was lost, raw running rows still fence the next
+  // auditor. Reconcile through the canonical ended_at CAS; an observed exit
+  // that wins the race keeps its original state and exit metadata.
+  await (deps.markEndedUnobserved ?? markEndedUnobserved)([{
+    taskId,
+    reason: 'grading auditor scope independently confirmed collected during retirement',
+  }]);
+  const persisted = await (deps.getTask ?? getTask)(taskId);
+  if (persisted && !isTerminalState(persisted.state)) {
+    return {
+      ok: false, taskId, action: 'kill', error: 'incomplete',
+      detail: 'collected grading auditor scope still has a nonterminal task-ledger row',
+    };
+  }
+  return result;
+}
+
+async function readRetainedTaskKernelVerdicts(
+  tasks: readonly TaskRow[],
+  workspaceId?: string,
+): Promise<ReadonlyMap<string, string>> {
+  if (tasks.length === 0) return new Map();
+  const { reconcileTick } = await import('./task-manager/reconcile-tick');
+  const tick = await reconcileTick({
+    workspaceId,
+    dryRun: true,
+    listLive: async () => [...tasks],
+  });
+  // Scan failure/absence is unknown. Only the existing reconciler's positive,
+  // healthy kernel + released-scope proof may retire an auditor's identity.
+  if (tick.degraded) return new Map();
+  return new Map((tick.result.endedUnobserved ?? []).map((row) => [row.taskId, row.reason]));
 }
 
 async function resolveGradingAuditorOwnerLiveness(
@@ -905,13 +966,14 @@ export interface GradingAuditDispatchBackoff {
 export interface GradingAuditReservationResult {
   status: GradingAuditReservationStatus;
   reservation?: GradingAuditReservationLease;
+  /** Private election epoch while the original auditor lease stays visible. */
+  dispatchClaim?: GradingAuditReservationLease;
   /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
   /**
-   * The retained pending lease this claim replaced, whether it was still active or had already
-   * lapsed and been cleared by an earlier sweep. A dispatcher that dedupes to the live auditor
-   * still holding that lease must hand it back with `releasePendingGradingAudit({ restore })`;
-   * otherwise the new epoch invalidates the auditor's brief before a renewal notice can arrive.
+   * The prior auditor lease. preserveAuditorLease keeps it visible while the
+   * separate dispatchClaim elects a dispatcher. Legacy callers replace it and
+   * must restore it if they dedupe to an existing auditor.
    */
   prior?: GradingAuditReservationLease;
 }
@@ -937,6 +999,7 @@ export async function confirmPendingGradingAuditReservation(
   reservationKey: string,
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     reservedAt?: string;
+    dispatchClaimReservedAt?: string;
     snapshot?: ScorecardGradingAuditReservationSnapshot;
     /** Commit-boundary confirmation on the notification's own transaction. */
     tx?: OrgSql;
@@ -950,9 +1013,11 @@ export async function confirmPendingGradingAuditReservation(
         FROM harness_shared.work_items AS scorecard
        WHERE scorecard.workspace_id = ${workspaceId}
          AND scorecard.feature_id = ${issueId}
-         AND scorecard.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND scorecard.item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND scorecard.payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND (${options.dispatchClaimReservedAt ?? null}::text IS NULL OR
+           scorecard.payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' = ${options.dispatchClaimReservedAt ?? null})
          AND (
            ${reservedAt}::text IS NULL
            OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
@@ -1003,6 +1068,8 @@ export async function notifyRetainedGradingAuditor(
     reservation: GradingAuditReservationLease;
     workspaceId: string;
     harness?: string;
+    /** Exact endpoint already validated by the canonical runtime recovery. */
+    runtime?: GradingAuditRuntimeBinding;
     /** Resume a positively parked retained task without replacing its lease. */
     resumeParked?: boolean;
   },
@@ -1027,13 +1094,20 @@ export async function notifyRetainedGradingAuditor(
       (task.workItemId != null && task.workItemId !== card.issueId)) {
     return { state: 'skipped', reason: 'retained auditor target/owner/fingerprint provenance is missing or mismatched' };
   }
+  const notificationIdentity: unknown[] = [workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation];
+  // A restored endpoint needs a new handoff even when the audit lease did not
+  // change. Legacy notices keep their original replay identity.
+  if (input.runtime) notificationIdentity.push(input.runtime);
   const msgId = `${input.resumeParked ? 'grading-audit-resume' : 'grading-audit-renewal'}:${createHash('sha256')
-    .update(JSON.stringify([workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation]))
+    .update(JSON.stringify(notificationIdentity))
     .digest('hex')}`;
   const body = [
     `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
+    ...(input.runtime ? [
+      `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. If this route cannot be used, stop and report the route failure; do not substitute a default operator.`,
+    ] : []),
     `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt, fingerprint, and reservation snapshot ${JSON.stringify(reservation.snapshot ?? null)} before auditing; otherwise stop without grading or emitting.`,
-    gradingAuditBrief(card, reservation.reservedAt),
+    gradingAuditBrief(card, reservation.reservedAt, input.runtime),
   ].join('\n\n');
   const summary = input.resumeParked
     ? `Resume retained grading audit for ${card.issueId}`
@@ -1067,6 +1141,7 @@ export async function notifyRetainedGradingAuditor(
               const tx = rawTx as OrgSql;
               if (!(await (deps.confirmReservation ?? confirmPendingGradingAuditReservation)(card.issueId, key, {
                 workspaceId, reservedAt: reservation.reservedAt, expectedCard: card, tx,
+                ...(reservation.snapshot ? { snapshot: reservation.snapshot } : {}),
               }))) throw new Error('renewal target/fingerprint/lease changed before delivery');
               const taskDetail = JSON.stringify({
                 gradingAudit: {
@@ -1074,6 +1149,7 @@ export async function notifyRetainedGradingAuditor(
                   evidenceFingerprint: card.evidenceFingerprint,
                   reservation,
                 },
+                ...(input.runtime ? { gradingAuditRuntimeBinding: input.runtime } : {}),
               });
               const tasks = await tx<{ task_id: string }[]>`
                 UPDATE harness_shared.task_ledger
@@ -1105,7 +1181,8 @@ export async function notifyRetainedGradingAuditor(
     if (!created) return { state: 'already-delivered', ownerId, msgId, pickupConfirmed: false };
     const outcome = await wake([ownerId], { workspaceId, requiredWake: true,
       source: GRADING_AUDIT_DISPATCH_ACTOR, summary,
-      payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation } });
+      payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation,
+        ...(input.runtime ? { gradingAuditRuntimeBinding: input.runtime } : {}) } });
     return { state: 'delivered', ownerId, msgId, queued: outcome.queued ?? outcome.woken, pickupConfirmed: false };
   } catch (error) {
     // An appended inbox directive remains delivered even if its best-effort
@@ -1256,6 +1333,8 @@ export async function notifyCancelledGradingAuditors(
 interface GradingAuditReservationOptions {
   workspaceId?: string | null;
   now?: Date;
+  /** Dispatcher election leaves an earlier auditor epoch visible until task checks finish. */
+  preserveAuditorLease?: boolean;
   /** Point-in-time evidence/evaluator identity to persist with the lease. */
   snapshot?: ScorecardGradingAuditReservationSnapshot;
   /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
@@ -1364,23 +1443,64 @@ export async function readWalledAccountResets(nowMs: number): Promise<number[]> 
  * Fail-OPEN (true) on any read failure, matching readWalledAccountResets: a
  * missing ledger must degrade to the previous unconditional behaviour, never
  * strand the queue by refusing to try at all.
+ *
+ * WI-6554700010030250: for the Codex fallback a serviceable ACCOUNT is not
+ * enough — the account must also accept GRADING_AUDIT_FALLBACK.model. Measured
+ * 2026-10-27 12:57Z: the pool had one serviceable Codex account, so the retry
+ * was routed to Codex, and that account answered `model_not_found` ("The
+ * 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT
+ * account") on the auditor's first turn, burning the single terminal retry.
+ * The gateway publishes the per-model reading the launcher's preflight already
+ * refuses on (`/stats.codexServiceableByModel`); this check reads the same one.
  */
 export async function gradingAuditProviderCanServe(
   provider: string,
   nowMs = Date.now(),
+  deps: {
+    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number } | undefined>;
+    readCodexHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'>>;
+  } = {},
 ): Promise<boolean> {
+  let poolCanServe: boolean;
   try {
-    const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
-      import('./deployment/account-pool-store'),
-      import('./workspace-registry'),
-    ]);
-    const rows = await accountStatus(activeWorkspaceId(), nowMs);
-    return gradingAuditFallbackVerdictCanServe(
-      poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider),
+    poolCanServe = gradingAuditFallbackVerdictCanServe(
+      await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(provider, nowMs),
     );
   } catch {
     return true;
   }
+  if (!poolCanServe || provider !== GRADING_AUDIT_FALLBACK.agent) return poolCanServe;
+  const headroom = await (deps.readCodexHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'codex' })))()
+    .catch(() => null);
+  return gradingAuditFallbackModelCanServe(headroom, GRADING_AUDIT_FALLBACK.model);
+}
+
+async function readGradingAuditPoolVerdict(
+  provider: string,
+  nowMs: number,
+): Promise<{ serviceable: number } | undefined> {
+  const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
+    import('./deployment/account-pool-store'),
+    import('./workspace-registry'),
+  ]);
+  const rows = await accountStatus(activeWorkspaceId(), nowMs);
+  return poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
+}
+
+/**
+ * Does the live gateway reading leave the fallback MODEL serviceable?
+ *
+ * Only a MEASURED zero refuses: the gateway reports a count only for models with
+ * a live refusal, so an absent model, a malformed count, or an unreachable
+ * gateway is unknown and keeps the account-pool verdict (fail-open, the same
+ * reading psu-launcher.mjs `codexAutoPoolVerdict` applies at boot).
+ */
+export function gradingAuditFallbackModelCanServe(
+  headroom: Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'> | null | undefined,
+  model: string,
+): boolean {
+  if (!headroom?.reachable) return true;
+  return headroom.serviceableByModel?.[model.trim().toLowerCase()] !== 0;
 }
 
 /**
@@ -1527,7 +1647,7 @@ export async function reservePendingGradingAudit(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const priorRow = priorRows[0];
     const prior = priorRow?.prior_state === 'pending'
@@ -1536,6 +1656,11 @@ export async function reservePendingGradingAudit(
           ? parsePriorGradingAuditReservation(priorRow.prior_last_reservation)
           : undefined)
       : undefined;
+    // EI-26929808782001216: a temporary election must not invalidate the
+    // original auditor during slow task/native checks. Publish a separate
+    // expiring claim, then promote it only after proving no viable task remains.
+    const retained = options.preserveAuditorLease && prior?.key === reservationKey ? prior : undefined;
+    const retainedJson = retained ? JSON.stringify(retained) : null;
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -1543,20 +1668,21 @@ export async function reservePendingGradingAudit(
                  -- A claim only succeeds once any blocking backoff below has expired,
                  -- or a compatible dispatcher has proved it can clear a legacy
                  -- generation-incompatible stamp, so clearing it here spends the stamp.
-                 COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}',
-                 '{observation,gradingAudit,dispatchReservation}',
+                 COALESCE(payload, '{}'::jsonb) #- '{observation,gradingAudit,dispatchBackoff}'
+                   #- '{observation,gradingAudit,dispatchClaim}',
+                 ${retained ? tx`'{observation,gradingAudit,dispatchClaim}'` : tx`'{observation,gradingAudit,dispatchReservation}'`},
                  ${reservation}::text::jsonb,
                  true
                ),
-               '{observation,gradingAudit,lastDispatchReservation}',
-               ${reservation}::text::jsonb,
+               ${retained ? tx`'{observation,gradingAudit,dispatchReservation}'` : tx`'{observation,gradingAudit,lastDispatchReservation}'`},
+               ${retainedJson ?? reservation}::text::jsonb,
                true
              ),
              origin = 'local',
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'retracted' IS NULL
          AND (
            (
@@ -1569,6 +1695,15 @@ export async function reservePendingGradingAudit(
                     THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
                     ELSE TRUE
                   END
+             )
+             AND (
+               payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' IS NULL
+               OR CASE
+                 WHEN payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt'
+                   ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                 THEN (payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
+                 ELSE TRUE
+               END
              )
              -- EI-22978598482930667: a live reset-aware quota backoff refuses the
              -- claim outright. Fail OPEN on an unparseable stamp, exactly like the
@@ -1623,11 +1758,12 @@ export async function reservePendingGradingAudit(
                  updated_ts = ${Date.now()}
            WHERE workspace_id = ${workspaceId}
              AND feature_id = ${issueId}
-             AND item_kind = ANY (ARRAY['bug', 'change', 'task'])`;
+             AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])`;
       }
       return {
         status: 'claimed' as const,
-        reservation: lease,
+        reservation: retained ?? lease,
+        ...(retained ? { dispatchClaim: lease } : {}),
         ...(prior ? { prior } : {}),
       };
     }
@@ -1647,7 +1783,7 @@ export async function reservePendingGradingAudit(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
        FOR UPDATE`;
     const row = current[0];
     if (row?.state !== 'pending' || row.retracted) return { status: 'not-pending' as const };
@@ -1687,6 +1823,7 @@ export async function releasePendingGradingAudit(
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     backoff?: GradingAuditDispatchBackoff;
     reservedAt?: string;
+    dispatchClaimReservedAt?: string;
     restore?: GradingAuditReservationLease;
   } = {},
 ): Promise<boolean> {
@@ -1736,14 +1873,19 @@ export async function releasePendingGradingAudit(
                      payload->'observation'->'gradingAudit'->'dispatchReservation',
                      true
                    )`
-         },
+         } #- '{observation,gradingAudit,dispatchClaim}',
              origin = 'local',
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
-         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
          AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${reservationKey}
+         AND (
+           (${options.dispatchClaimReservedAt ?? null}::text IS NULL AND
+             payload->'observation'->'gradingAudit'->'dispatchClaim' IS NULL)
+           OR payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' = ${options.dispatchClaimReservedAt ?? null}
+         )
          AND (
            ${reservedAt}::text IS NULL
            OR payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
@@ -1751,6 +1893,34 @@ export async function releasePendingGradingAudit(
       RETURNING feature_id`,
   ));
   return Boolean(released[0]);
+}
+
+/** Publish a new auditor epoch only after the elected dispatcher's task checks. */
+export async function promotePendingGradingAuditClaim(
+  issueId: string,
+  prior: GradingAuditReservationLease,
+  claim: GradingAuditReservationLease,
+  workspaceId: string,
+): Promise<boolean> {
+  return withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(async (tx: OrgSql) => {
+    const lease = JSON.stringify(claim);
+    const rows = await tx<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(jsonb_set(
+               payload #- '{observation,gradingAudit,dispatchClaim}',
+               '{observation,gradingAudit,dispatchReservation}', ${lease}::text::jsonb, true),
+               '{observation,gradingAudit,lastDispatchReservation}', ${lease}::text::jsonb, true),
+             origin = 'local', updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY[${tx.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}])
+         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
+         AND payload->'observation'->'retracted' IS NULL
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${prior.key}
+         AND payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${prior.reservedAt}
+         AND payload->'observation'->'gradingAudit'->'dispatchClaim' = ${lease}::text::jsonb
+       RETURNING feature_id`;
+    return rows.length > 0;
+  }));
 }
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
@@ -1831,9 +2001,18 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
   return a.createdAt.localeCompare(b.createdAt) || a.issueId.localeCompare(b.issueId);
 }
 
-function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
+function gradingAuditBrief(
+  card: ScorecardRow,
+  reservationReservedAt: string,
+  runtime?: GradingAuditRuntimeBinding,
+): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
   const recordedEvaluatorBuild = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
+  // The helper's inherited port hint may fall back to a different operator.
+  // Only its explicit --port flag preserves the validated evaluator binding.
+  const recoveryCommand = runtime
+    ? `node scripts/mcp-call.mjs --port ${new URL(runtime.baseUrl).port || '80'} <tool> --json -`
+    : 'node scripts/mcp-call.mjs <tool> --json -';
   // WI-6554700010009935: the rubric's terminal-re-rate drill says only
   // `scorecards:list { rubricRef, sourceHive }`, so judges paged 200-500 terminal cards
   // (1.6-4MB per read) to find one subject's interim cards. Name the exact narrow read.
@@ -1860,7 +2039,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     'MCP result-shape safety: concurrent scorecards:get pages can be replaced inline by a recoverable `papercusp.output-envelope/v1` wrapper when the shared result-door budget is exceeded. Inspect the outer response before reading scorecard.criteria. If it is an output envelope, follow its content reference with capability:read and restore the underlying scorecards:get result; never pass the wrapper to a scorecard field reader or treat absent inline fields as missing evidence.',
     'Evidence completeness: follow rerunRecipeRead.read and every rerunRecipeRead.next, concatenate the exact JSON chunks in offset order, and parse only when rerunRecipeRead.complete is true. Follow evidenceRead.next through the entire criterion index, then read every indexed criterion through its final evidence page; evidenceRead.complete on a selected criterion applies only to that criterion. An incomplete page with a valid continuation is recoverable evidence, not a missing or unre-runnable recipe. Do not rate re-runnable-evidence from the first page. If a continuation fails, preserve the exact cursor request and returned failure; distinguish that retrieval failure from absent stored evidence.',
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
-    `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
+    `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, use \`${recoveryCommand}\` and stream each JSON payload through quoted stdin (--json -). ${runtime ? `The explicit --port pins the validated evaluator at '${runtime.baseUrl}'; retain it on every recovery call, even if PAPERCUSP_HONO_PORT is set. If that endpoint is unreachable, stop without grading or emitting and report the exact route failure so the pending-audit dispatcher can restore it through canonical runtime recovery. Never remove the pin or substitute a default operator or proxy. ` : ''}If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly from the lease you confirmed. If you verified a renewal at start or pre-emit, use its renewed key and reservedAt.`,
     `Before emitting, re-read the target with scorecards:get { issueId: '${card.issueId}' } and check scorecard.gradingAudit.state plus scorecard.auditTarget (current, superseded/supersededBy, retracted, subjectRubricCurrentness — read-time relations, not observation stamps): this dispatch brief may be stale after the reservation lease expires. Emit only when the exact target is still current and its gradingAudit.state is exactly 'pending'. If the state is not 'pending' (including 'passed', 'failed', or 'cancelled'), the rubric subject is no longer current, or the target is superseded or retracted, do not emit any audit; report the current state and any auditIssueId, then stop.`,
     // WI-10006794: the start-of-audit lease check above is strict, but at EMIT time an absent
@@ -1951,7 +2130,14 @@ export async function dispatchPendingGradingAudits(
   );
 
   const readCards = deps.listScorecards ?? listScorecards;
-  const resolveRubric = deps.getRubric ?? getRubric;
+  const resolveRubric = deps.getRubric ?? (async (rubricRef: string) => {
+    const lookup = await readRubric(rubricRef);
+    if (lookup.kind === 'ambiguous') throw lookup.error;
+    if (lookup.kind === 'read-failed') {
+      throw new Error('target rubric read failed; retry this audit when its backing plan is readable');
+    }
+    return lookup.kind === 'found' ? lookup.rubric : null;
+  });
   const profile = gradingLaunchProfile(input.ctx);
   const launch = withGradingLaunchProfile(deps.launch ?? launchAgentTool.handler, profile);
   const reserve = deps.reserve ?? reservePendingGradingAudit;
@@ -1983,7 +2169,8 @@ export async function dispatchPendingGradingAudits(
   const cancelStaleEvidence = deps.cancelStaleEvidence ?? cancelStaleEvidencePendingGradingAuditAtomically;
   const readEvidenceForDispatch = deps.readEvidence ?? readScorecardEvidence;
   const readTasksForCleanup = deps.listTasks ?? listTasks;
-  const terminateSupersededTask = deps.killTask ?? killTask;
+  const terminateSupersededTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+    retireGradingAuditTask(taskId, options, deps);
   const supersededPendingCards = cards
     .filter((card) => card.gradingAudit?.state === 'pending' && card.supersededBy)
     .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
@@ -2225,12 +2412,29 @@ export async function dispatchPendingGradingAudits(
    * Resolved once per dispatched target and memoised, so the two terminal paths
    * below cannot disagree with each other or double-read the account ledger.
    */
-  let fallbackServiceable: Promise<boolean> | null = null;
-  const canServeFallback = (): Promise<boolean> => {
-    fallbackServiceable ??= (deps.providerCanServe ?? gradingAuditProviderCanServe)(
-      GRADING_AUDIT_FALLBACK.agent,
-    ).catch(() => true);
-    return fallbackServiceable;
+  const backendServiceable = new Map<'claude' | 'codex', Promise<boolean>>();
+  const canServeBackend = (backend: 'claude' | 'codex'): Promise<boolean> => {
+    let reading = backendServiceable.get(backend);
+    if (!reading) {
+      reading = (deps.providerCanServe ?? gradingAuditProviderCanServe)(backend).catch(() => true);
+      backendServiceable.set(backend, reading);
+    }
+    return reading;
+  };
+  /**
+   * WI-6554700010030191: the bounded terminal retry goes to the backend that did
+   * NOT just fail. The fallback was a fixed Codex target, so a Codex auditor that
+   * died on its 429 retry budget was "recovered" onto Codex again, which the
+   * launcher's walled-pool preflight then refused. A pinned routine profile keeps
+   * its own backend (the profile wrapper overrides the route regardless).
+   */
+  const terminalRetryBackend = async (
+    failedBackend: 'claude' | 'codex',
+    current: 'claude' | 'codex',
+  ): Promise<'claude' | 'codex'> => {
+    if (profile) return (await canServeBackend(GRADING_AUDIT_FALLBACK.agent)) ? GRADING_AUDIT_FALLBACK.agent : current;
+    const other = failedBackend === GRADING_AUDIT_FALLBACK.agent ? 'claude' : GRADING_AUDIT_FALLBACK.agent;
+    return (await canServeBackend(other)) ? other : current;
   };
 
   const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
@@ -2263,11 +2467,12 @@ export async function dispatchPendingGradingAudits(
       allowGradingAuditRefusal: true,
       detectStartupStall: false,
     });
-  const retireProvenTerminalDriftTasks = async (issueId: string) => {
+  const retireProvenTerminalAuditTasks = async (issueId: string) => {
     const retiredTaskIds: string[] = [];
     const codes: GradingAuditRecoveryCode[] = [];
     const errors: string[] = [];
-    if (!workspaceId) return { retiredTaskIds, codes, errors };
+    const remainingTaskIds: string[] = [];
+    if (!workspaceId) return { retiredTaskIds, codes, errors, remainingTaskIds };
 
     const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
     let tasks: Awaited<ReturnType<typeof listTasks>>;
@@ -2283,6 +2488,7 @@ export async function dispatchPendingGradingAudits(
         retiredTaskIds,
         codes,
         errors: [`retained auditor task read failed: ${error instanceof Error ? error.message : String(error)}`],
+        remainingTaskIds,
       };
     }
 
@@ -2290,6 +2496,11 @@ export async function dispatchPendingGradingAudits(
       const label = task.detail?.label;
       return typeof label === 'string' && (label === labelPrefix || label.startsWith(`${labelPrefix}:`));
     });
+    // A full page cannot prove that another healthy reviewer is absent.
+    if (tasks.length >= 10) return {
+      retiredTaskIds, codes, errors: ['retained auditor task scan reached its page limit'],
+      remainingTaskIds: matchingTasks.map(task => task.taskId),
+    };
     for (const task of matchingTasks) {
       const taskLogPath = task.logPath ?? null;
       const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
@@ -2353,7 +2564,8 @@ export async function dispatchPendingGradingAudits(
       retiredTaskIds.push(task.taskId);
       codes.push(terminalFailure.code);
     }
-    return { retiredTaskIds, codes, errors };
+    remainingTaskIds.push(...matchingTasks.filter(task => !retiredTaskIds.includes(task.taskId)).map(task => task.taskId));
+    return { retiredTaskIds, codes, errors, remainingTaskIds };
   };
 
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
@@ -2365,7 +2577,7 @@ export async function dispatchPendingGradingAudits(
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
-        const cleanup = driftCard ? await retireProvenTerminalDriftTasks(issueId) : { retiredTaskIds: [], codes: [], errors: [] };
+        const cleanup = driftCard ? await retireProvenTerminalAuditTasks(issueId) : { retiredTaskIds: [], codes: [], errors: [] };
         const stranding = driftCard
           ? await assessEvaluatorBuildStrandingAsync(driftCard, liveEvaluatorBuild, {
               nowMs: deps.now?.() ?? Date.now(),
@@ -2399,7 +2611,18 @@ export async function dispatchPendingGradingAudits(
       reason: `exact audit endpoint unavailable: ${runtimeFailures.get(issueId)}`,
     };
     markPhase('rubric-read');
-    const rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
+    let rubric: Awaited<ReturnType<typeof getRubric>>;
+    try {
+      rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
+    } catch (error) {
+      return {
+        issueId,
+        rubricRef: card.rubricRef,
+        state: 'failed',
+        phase,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (!rubric) {
       return { issueId, rubricRef: card.rubricRef, state: 'skipped', reason: 'target rubric not found' };
     }
@@ -2438,9 +2661,11 @@ export async function dispatchPendingGradingAudits(
     const terminalCodes: GradingAuditRecoveryCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
     let terminalFallbacks = 0;
+    let preflightReroutes = 0;
     let attempts = 0;
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
+    let dispatchClaim: GradingAuditReservationLease | undefined;
     let priorReservation: GradingAuditReservationResult['prior'];
     let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
     let routingFallback: string | undefined;
@@ -2458,8 +2683,9 @@ export async function dispatchPendingGradingAudits(
         return await release(issueId, idempotencyKey, {
           workspaceId: input.ctx.workspaceId,
           reservedAt: reservationReservedAt,
+          ...(dispatchClaim ? { dispatchClaimReservedAt: dispatchClaim.reservedAt } : {}),
           ...(backoff ? { backoff } : {}),
-          ...(restore ? { restore } : {}),
+          ...(restore || dispatchClaim ? { restore: restore ?? priorReservation } : {}),
         });
       } catch {
         // The reservation TTL is the durable cleanup fallback if this release
@@ -2472,7 +2698,8 @@ export async function dispatchPendingGradingAudits(
       const current = await confirmReservation(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
         reservedAt: reservationReservedAt,
-        snapshot: reservationSnapshot,
+        ...(dispatchClaim ? { dispatchClaimReservedAt: dispatchClaim.reservedAt } : {}),
+        snapshot: dispatchClaim ? priorReservation?.snapshot : reservationSnapshot,
         expectedCard: {
           evidenceFingerprint: card.evidenceFingerprint,
           createdBy: card.createdBy,
@@ -2509,7 +2736,8 @@ export async function dispatchPendingGradingAudits(
           }
         : {}),
     });
-    const terminateTask = deps.killTask ?? killTask;
+    const terminateTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+      retireGradingAuditTask(taskId, options, deps);
     const readTask = deps.getTask ?? getTask;
     /**
      * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
@@ -2557,7 +2785,7 @@ export async function dispatchPendingGradingAudits(
         // later 15-minute reservation epoch must not dedupe its one allowed
         // recovery to the previous epoch's already-terminal fallback task.
         .update(
-          `${reservationReservedAt}\0` +
+          `${dispatchClaim?.reservedAt ?? reservationReservedAt}\0` +
             `${currentIdempotencyKey}\0${taskId}\0${failureCode}\0${GRADING_AUDIT_FALLBACK.agent}`,
         )
         .digest('hex')
@@ -2587,18 +2815,68 @@ export async function dispatchPendingGradingAudits(
       }
 
       markPhase('reservation');
-      const reservation = await reserve(issueId, idempotencyKey, {
+      const reservationOptions = {
         workspaceId: input.ctx.workspaceId,
+        preserveAuditorLease: true,
         currentness: card.gradingAuditCurrentness,
         snapshot: reservationSnapshot,
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
-      });
+      };
+      let reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+      // Targeted repair must reach an auditor's proven terminal provider error
+      // even while its original dispatch lease is fresh. Reuse the native
+      // identity proof; a healthy/unreadable peer or an incomplete scan keeps
+      // the lease. The exact timestamp CAS fences concurrent lease renewals.
+      const heldReservation = card.gradingAudit?.dispatchReservation;
+      if (reservation.status === 'already-reserved' && explicitTargetIds.includes(issueId) &&
+          heldReservation?.key === idempotencyKey && heldReservation.reservedAt) {
+        const cleanup = await retireProvenTerminalAuditTasks(issueId);
+        retiredTaskIds.push(...cleanup.retiredTaskIds);
+        terminalCodes.push(...cleanup.codes);
+        if (cleanup.retiredTaskIds.length > 0 && cleanup.remainingTaskIds.length === 0 && cleanup.errors.length === 0 &&
+            await release(issueId, heldReservation.key, {
+              workspaceId: input.ctx.workspaceId, reservedAt: heldReservation.reservedAt,
+            })) {
+          reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+        }
+        // EI-26950964476692806: exact-runtime recovery runs before reservation
+        // admission. A fresh lease must not suppress the restored endpoint's
+        // handoff to its existing auditor for the remainder of the lease TTL.
+        // Keep that epoch untouched; the notification transaction rechecks its
+        // target, fingerprint, owner and independence before updating the task.
+        const retainedRuntime = retainedRuntimes.get(issueId);
+        if (reservation.status === 'already-reserved' && retainedRuntime &&
+            cleanup.errors.length === 0 && cleanup.remainingTaskIds.length === 1) {
+          const retainedTask = await readTask(cleanup.remainingTaskIds[0]!);
+          const ownerId = typeof retainedTask?.detail?.coordOwnerId === 'string'
+            ? retainedTask.detail.coordOwnerId.trim() : '';
+          let currentResponder = false;
+          if (retainedTask?.taskId === cleanup.remainingTaskIds[0] && ownerId &&
+              retainedTask.workspaceId === workspaceId && retainedTask.class === 'agent-session' &&
+              ['pending', 'running'].includes(retainedTask.state)) {
+            try {
+              currentResponder = await (deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder)(
+                issueId, heldReservation, ownerId);
+            } catch { /* Unknown responder identity cannot authorize a handoff. */ }
+          }
+          if (currentResponder && retainedTask) {
+            markPhase('retained-auditor-notification');
+            const renewalNotification = await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+              card, task: retainedTask, reservation: heldReservation, runtime: retainedRuntime,
+              workspaceId: workspaceId!, ...(harnessResolved ? { harness } : {}),
+            });
+            return { issueId, rubricRef: card.rubricRef, state: 'deduped', idempotencyKey,
+              dispatchReservation: heldReservation, renewalNotification, ...recoveryFields() };
+          }
+        }
+      }
       if (reservation.status !== 'claimed') {
         return {
           issueId,
           rubricRef: card.rubricRef,
           state: 'skipped',
           idempotencyKey,
+          ...recoveryFields(),
           reason:
             reservation.status === 'quota-backoff'
               ? `re-dispatch suppressed until ${reservation.backoff?.until} ` +
@@ -2612,6 +2890,7 @@ export async function dispatchPendingGradingAudits(
       }
       reservationReservedAt = reservation.reservation?.reservedAt ?? reservationReservedAt;
       priorReservation = reservation.prior;
+      dispatchClaim = reservation.dispatchClaim;
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         return receipt!;
@@ -2625,12 +2904,51 @@ export async function dispatchPendingGradingAudits(
        * side effect.
        */
       markPhase('live-task-read');
-      const liveTasks = await readTasks({
+      let liveTasks = await readTasks({
         workspaceId: input.ctx.workspaceId,
         states: ['pending', 'running'],
         labelPrefix: idempotencyKey,
         limit: 10,
       });
+      if (liveTasks.length > 0) {
+        markPhase('retained-task-kernel-reconciliation');
+        let kernelEnded: ReadonlyMap<string, string> = new Map();
+        try {
+          kernelEnded = await (deps.readRetainedTaskKernelVerdicts ?? readRetainedTaskKernelVerdicts)(
+            liveTasks, workspaceId,
+          );
+        } catch {
+          // An unavailable oracle is not permission to replace a retained auditor.
+        }
+        const retainedTasks: typeof liveTasks = [];
+        for (const task of liveTasks) {
+          const reason = kernelEnded.get(task.taskId);
+          if (reason === undefined) {
+            retainedTasks.push(task);
+            continue;
+          }
+          await (deps.markEndedUnobserved ?? markEndedUnobserved)([{ taskId: task.taskId, reason }]);
+          const persisted = await readTask(task.taskId);
+          if (!persisted || !isTerminalState(persisted.state)) {
+            await releaseReservation(undefined, priorReservation ?? {
+              key: idempotencyKey, reservedAt: reservationReservedAt,
+            });
+            return {
+              issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey,
+              phase,
+              reason: `kernel-ended grading auditor '${task.taskId}' still lacks a terminal task-ledger receipt`,
+              ...recoveryFields(),
+            };
+          }
+          retiredTaskIds.push(task.taskId);
+          terminalCodes.push('task_receipt_not_live');
+          if (terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            terminalFallbacks += 1;
+            currentIdempotencyKey = recoveryKeyFor(task.taskId, 'task_receipt_not_live');
+          }
+        }
+        liveTasks = retainedTasks;
+      }
       // EI-26004619150008295: older headless tasks can retain a null
       // session_id even after their owner has a tracked native transcript.
       // Repair that missing link through the enrollment binder before using
@@ -2824,9 +3142,12 @@ export async function dispatchPendingGradingAudits(
           // measurably serve. Otherwise stay on the primary, whose auto-routed
           // gateway pool may still have headroom.
           terminalFallbacks += 1;
-          if (await canServeFallback()) {
-            launchBackend = GRADING_AUDIT_FALLBACK.agent;
-          }
+          // The retained task's own native-session binding names the backend that
+          // failed; without it the configured primary is the best reading.
+          const failedBackend = nativeSession?.agent === 'codex' || nativeSession?.agent === 'claude'
+            ? nativeSession.agent
+            : launchBackend;
+          launchBackend = await terminalRetryBackend(failedBackend, launchBackend);
           currentIdempotencyKey = recoveryKeyFor(task.taskId, terminalFailure.code);
         }
       }
@@ -2867,18 +3188,21 @@ export async function dispatchPendingGradingAudits(
           }
         }
         markPhase('retained-auditor-notification');
+        const retainedRuntime = retainedRuntimes.get(issueId);
         const renewalNotification = !priorReservation
           ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
               : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                  ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 })
           : !retainedTask || !retainedOwnerId
             ? undefined
             : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                 card, task: retainedTask, reservation: retainedReservation,
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 ...(resumeParked ? { resumeParked: true } : {}),
               });
         if (renewalNotification?.state === 'failed') {
@@ -2913,6 +3237,17 @@ export async function dispatchPendingGradingAudits(
         };
         return receipt;
       }
+      if (dispatchClaim) {
+        if (!(await (deps.promoteClaim ?? promotePendingGradingAuditClaim)(
+          issueId, reservation.reservation!, dispatchClaim, workspaceId!,
+        ))) {
+          await releaseReservation();
+          return { issueId, state: 'skipped', idempotencyKey, reason: 'dispatch claim changed before replacement promotion' };
+        }
+        reservationReservedAt = dispatchClaim.reservedAt;
+        dispatchClaim = undefined;
+        if (!(await confirmOwnedPendingReservation())) return receipt!;
+      }
       markPhase('source-audit-route');
       const routed = profile || generationBound || evaluatorBuildBound
         ? {
@@ -2928,7 +3263,7 @@ export async function dispatchPendingGradingAudits(
               card,
               reservationKey: idempotencyKey,
               reservationReservedAt,
-              brief: gradingAuditBrief(card, reservationReservedAt),
+              brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntimes.get(issueId)),
               ctx: input.ctx,
               ...(harnessResolved ? { harness } : {}),
             },
@@ -2970,7 +3305,7 @@ export async function dispatchPendingGradingAudits(
       }
       routingFallback = routed.reason;
 
-      for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS; attempt += 1) {
+      for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS + preflightReroutes; attempt += 1) {
         attempts = attempt + 1;
         // Routing can itself create a durable consult and take long enough for
         // another auditor to settle the target. Re-check directly before each
@@ -3001,7 +3336,7 @@ export async function dispatchPendingGradingAudits(
         markPhase('auditor-launch');
         const result = (await launch(
           {
-            brief: gradingAuditBrief(card, reservationReservedAt),
+            brief: gradingAuditBrief(card, reservationReservedAt, retainedRuntime),
             ...(harnessResolved ? { harness } : {}),
             workItem: issueId,
             headless: true,
@@ -3201,9 +3536,7 @@ export async function dispatchPendingGradingAudits(
           // consumed regardless, but it is only ROUTED to the fallback provider
           // when that provider can measurably serve.
           terminalFallbacks += 1;
-          if (await canServeFallback()) {
-            launchBackend = GRADING_AUDIT_FALLBACK.agent;
-          }
+          launchBackend = await terminalRetryBackend(nativeProof?.nativeBackend ?? launchBackend, launchBackend);
           currentIdempotencyKey = recoveryKeyFor(taskId, terminalFailure.code);
           continue;
         }
@@ -3217,18 +3550,35 @@ export async function dispatchPendingGradingAudits(
           // explicitly proves zero opened processes and no durable tasks.
           const failedLaunch = result.data?.launch as {
             opened?: number; failed?: number; tasks?: unknown[]; partial?: boolean;
+            failures?: Array<{ reason?: unknown }>;
           } | undefined;
+          const zeroProcessRefusal =
+            failedLaunch?.opened === 0 && (failedLaunch.failed ?? 0) > 0 &&
+            failedLaunch.partial === false && Array.isArray(failedLaunch.tasks) &&
+            failedLaunch.tasks.length === 0;
           const noPrimaryAccount =
             /no allowed claude account is available in the pool/i.test(reason);
-          if (noPrimaryAccount && launchBackend === 'claude' &&
-              failedLaunch?.opened === 0 && (failedLaunch.failed ?? 0) > 0 &&
-              failedLaunch.partial === false && Array.isArray(failedLaunch.tasks) &&
-              failedLaunch.tasks.length === 0 &&
+          if (noPrimaryAccount && launchBackend === 'claude' && zeroProcessRefusal &&
               terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS &&
-              await canServeFallback()) {
+              await canServeBackend(GRADING_AUDIT_FALLBACK.agent)) {
             terminalFallbacks += 1;
             launchBackend = GRADING_AUDIT_FALLBACK.agent;
             currentIdempotencyKey = recoveryKeyFor('confirmed-zero-process-pool-refusal', 'task_receipt_not_live');
+            continue;
+          }
+          // WI-6554700010030191: the symmetric case. psu's Codex walled-pool
+          // preflight refuses at boot (exit 78) before any model call, naming
+          // Claude as the route. Nothing was paid, so this re-route does not spend
+          // the one terminal retry; it is bounded separately to one per dispatch.
+          const refusalText = [reason, ...(failedLaunch?.failures ?? [])
+            .map((failure) => (typeof failure?.reason === 'string' ? failure.reason : ''))].join('\n');
+          if (!profile && launchBackend === 'codex' && zeroProcessRefusal &&
+              CODEX_PREFLIGHT_REFUSAL.test(refusalText) &&
+              preflightReroutes < GRADING_AUDIT_MAX_PREFLIGHT_REROUTES &&
+              await canServeBackend('claude')) {
+            preflightReroutes += 1;
+            launchBackend = 'claude';
+            currentIdempotencyKey = recoveryKeyFor('confirmed-zero-process-codex-preflight-refusal', 'task_receipt_not_live');
             continue;
           }
           await releaseReservation(
@@ -3328,6 +3678,8 @@ export async function reconcilePendingGradingAudits(
       if (current.length !== ids.length) return ids;
       return current.filter(card => currentPendingScorecard(card)).map(card => card.issueId);
     },
+    undefined,
+    input.targetIds,
   );
   const result = await dispatchPendingGradingAudits(input, deps);
   const recertifications =
@@ -3418,12 +3770,41 @@ async function recertifyStrandedSpecAdequacyCards(
   const reserve = deps.reserve ?? reservePendingGradingAudit;
   const release = deps.release ?? releasePendingGradingAudit;
   const recertify = deps.recertifyStranded ?? defaultRecertifyStranded;
+  const readTasks = deps.listTasks ?? listTasks;
   const results: StrandedRecertifyReceipt[] = [];
   for (const receipt of candidates) {
     const issueId = receipt.issueId;
     const call = receipt.stranded!.recertify!;
     const key = `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`;
     try {
+      // An expired lease does not establish that the exact-build auditor ended.
+      // Taking a recertification epoch would invalidate its completed audit even
+      // if certification cannot produce a replacement card. Preserve unknown
+      // liveness; reuse the canonical kernel proof for genuinely ended scopes.
+      if (!workspaceId) throw new Error('Recertification requires a concrete workspace');
+      const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
+      const taskLimit = 10;
+      const tasks = await readTasks({
+        workspaceId, states: ['pending', 'running'], classes: ['agent-session'], labelPrefix, limit: taskLimit,
+      });
+      const exactTasks = tasks.filter(task => {
+        const label = task.detail?.label;
+        return (task.state === 'pending' || task.state === 'running') && typeof label === 'string' &&
+          (label === labelPrefix || label.startsWith(`${labelPrefix}:`));
+      });
+      const kernelEnded = exactTasks.length > 0
+        ? await (deps.readRetainedTaskKernelVerdicts ?? readRetainedTaskKernelVerdicts)(exactTasks, workspaceId)
+        : new Map<string, string>();
+      const retainedTasks = exactTasks.filter(task => !kernelEnded.has(task.taskId));
+      if (retainedTasks.length > 0 || tasks.length >= taskLimit) {
+        results.push({
+          issueId, state: 'deduped', call,
+          reason: retainedTasks.length > 0
+            ? `retained grading auditor owns this card: ${retainedTasks.map(task => task.taskId).join(', ')}`
+            : 'retained auditor scan reached its page limit; liveness remains unknown',
+        });
+        continue;
+      }
       // The stranded receipt is produced only after this dispatcher has proven that
       // the live build descends from the card's recorded evaluator build. A prior
       // exact-build dispatcher can therefore leave a generation-incompatible
@@ -3569,7 +3950,8 @@ async function retireSettledGradingAuditTasks(
     .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
   if (oldestSettledTasks.length === 0) return;
 
-  const terminateTask = deps.killTask ?? killTask;
+  const terminateTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
+    retireGradingAuditTask(taskId, options, deps);
   const retired = await mapWithConcurrency(
     oldestSettledTasks,
     GRADING_AUDIT_DISPATCH_CONCURRENCY,

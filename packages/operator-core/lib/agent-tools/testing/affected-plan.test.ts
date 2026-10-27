@@ -199,6 +199,32 @@ describe('deriveAffectedPlan', () => {
     // The dangerous misreading is "the probe returned nothing, so nothing is affected".
     expect(plan.detail).toContain('NOT evidence that the affected set is empty');
   });
+
+  it('WI-6554700010029567: a clean exit with NO derivation banner is undetermined, never an empty plan', async () => {
+    // Observed live 2026-10-26: exit 0, no AFFECTED_DERIVATION line, and the tool answered
+    // `workspaces: []` + "a real and common answer, NOT a failed probe" for six code paths
+    // that select 9 workspaces / 48 tasks. A caller reading that skips verification.
+    const { exec } = execReturning('Full run log: /tmp/pcv/papercusp-affected-tests/x.log\n', {
+      stderr: 'AFFECTED_TESTS_ABORT reason=exit-without-verdict code=0',
+    });
+    const plan = await deriveAffectedPlan({ changedPaths: ['a/one.ts'], root: '/repo', execFileImpl: exec });
+    expect(plan.ok).toBe(false);
+    if (plan.ok) return;
+    expect(plan.error).toBe('probe_failed');
+    expect(plan.exitCode).toBe(0);
+    expect(plan.detail).toContain('no AFFECTED_DERIVATION banner');
+    expect(plan.detail).toContain('UNDETERMINED');
+    expect(plan.stderrTail).toContain('exit-without-verdict');
+  });
+
+  it('CONTROL: a banner-carrying EMPTY selection is still a real plan, not a probe failure', async () => {
+    const { exec } = execReturning('AFFECTED_DERIVATION source=explicit changedPaths=1 workspaces=0 guards=0 tasks=0\n');
+    const plan = await deriveAffectedPlan({ changedPaths: ['docs/x.md'], root: '/repo', execFileImpl: exec });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.counts).toEqual({ workspaces: 0, tasks: 0, guards: 0 });
+    expect(plan.note).toContain('real and common answer');
+  });
 });
 
 describe('planNote', () => {

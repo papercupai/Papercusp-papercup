@@ -23,7 +23,10 @@ import type { WorkItemMechanics } from './_mechanics';
 export type PrefillableField = 'filesChanged' | 'testsRun' | 'testResult';
 
 export interface CompletionPrefill {
-  /** The fields this close filled, in fixed order. Empty arrays are never returned. */
+  /**
+   * The fields this close filled, in fixed order. Empty only when `skipped` is the whole
+   * disclosure (a field the ledger could have filled was deliberately left alone).
+   */
   fields: PrefillableField[];
   source: 'read-time-mechanics';
   attribution: 'path-and-claim-window';
@@ -31,7 +34,19 @@ export interface CompletionPrefill {
   filesChangedTruncated?: { listed: number; total: number };
   /** The verdict behind a prefilled testResult. */
   testVerdict?: 'all-pass' | 'all-skipped' | 'failing';
+  /** Fields the ledger had values for that this close deliberately did not fill. */
+  skipped?: Array<{ field: PrefillableField; reason: string; ledgerPaths: number }>;
   note: string;
+}
+
+export interface CompletionPrefillOptions {
+  /**
+   * EI-27112155694647220: leave filesChanged as supplied. Set when the close declares the
+   * `no-code-change` kind, whose proof IS an empty filesChanged list: the claim-window ledger
+   * attributes every file the holder edited (for any item it holds) to this one, so filling
+   * it would turn the kind's own proof into a refusal. The skip is disclosed in `skipped`.
+   */
+  skipFilesChanged?: { reason: string };
 }
 
 type EvidenceShape = {
@@ -41,6 +56,26 @@ type EvidenceShape = {
   tests?: unknown;
   verification?: unknown;
 };
+
+export const NO_CODE_CHANGE_PREFILL_SKIP_REASON =
+  "the close declares change kind 'no-code-change', whose proof is an empty filesChanged list; " +
+  "the claim-window ledger counts the holder's edits for every item it holds, not only this one";
+
+/**
+ * EI-27112155694647220: the prefill options for a close, from its EFFECTIVE change kinds,
+ * resolved the way the change-kind gate resolves them: the kinds declared at close, else the
+ * stored declaration. `readStored` is only called when nothing was declared at close; a read
+ * error resolves to no kinds, which keeps the ordinary fill.
+ */
+export async function prefillOptionsForDeclaredKinds(input: {
+  declaredAtClose: readonly string[] | null | undefined;
+  readStored: () => Promise<readonly string[] | null | undefined>;
+}): Promise<CompletionPrefillOptions> {
+  const kinds = input.declaredAtClose?.length
+    ? input.declaredAtClose
+    : await input.readStored().catch(() => null);
+  return kinds?.includes('no-code-change') ? { skipFilesChanged: { reason: NO_CODE_CHANGE_PREFILL_SKIP_REASON } } : {};
+}
 
 function hasText(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0;
@@ -81,19 +116,25 @@ function describeRun(r: WorkItemMechanics['tests']['latest'][number]): string {
 export function prefillCompletionFromMechanics<C extends object>(
   completion: C,
   mechanics: WorkItemMechanics | null | undefined,
+  options: CompletionPrefillOptions = {},
 ): { completion: C; prefill: CompletionPrefill | null } {
   if (!mechanics) return { completion, prefill: null };
 
   const fill: { filesChanged?: string[]; testsRun?: string; testResult?: string } = {};
   const fields: PrefillableField[] = [];
+  const skipped: NonNullable<CompletionPrefill['skipped']> = [];
   let filesChangedTruncated: CompletionPrefill['filesChangedTruncated'];
   let testVerdict: CompletionPrefill['testVerdict'];
 
   const written = mechanics.filesWritten;
   if (!completionSuppliesField(completion, 'filesChanged') && written.paths.length > 0) {
-    fill.filesChanged = [...written.paths];
-    fields.push('filesChanged');
-    if (written.truncated) filesChangedTruncated = { listed: written.paths.length, total: written.total };
+    if (options.skipFilesChanged) {
+      skipped.push({ field: 'filesChanged', reason: options.skipFilesChanged.reason, ledgerPaths: written.total });
+    } else {
+      fill.filesChanged = [...written.paths];
+      fields.push('filesChanged');
+      if (written.truncated) filesChangedTruncated = { listed: written.paths.length, total: written.total };
+    }
   }
 
   const latest = mechanics.tests.latest;
@@ -120,12 +161,24 @@ export function prefillCompletionFromMechanics<C extends object>(
     }
   }
 
-  if (fields.length === 0) return { completion, prefill: null };
+  if (fields.length === 0 && skipped.length === 0) return { completion, prefill: null };
 
   const supplied = (completion as EvidenceShape).verification;
   const existingVerification =
     supplied && typeof supplied === 'object' ? (supplied as Record<string, unknown>) : {};
-  const next = { ...completion, verification: { ...existingVerification, ...fill } } as C;
+  const next =
+    fields.length > 0 ? ({ ...completion, verification: { ...existingVerification, ...fill } } as C) : completion;
+
+  const notes: string[] = [];
+  if (fields.length > 0) {
+    notes.push(
+      `Filled ${fields.join(', ')} from the ledgers because the completion omitted them. ` +
+        'Supplied values are never overwritten; pass the field explicitly to replace a prefilled value.',
+    );
+  }
+  for (const s of skipped) {
+    notes.push(`Did not fill ${s.field} (${s.ledgerPaths} path(s) in the claim window): ${s.reason}.`);
+  }
 
   return {
     completion: next,
@@ -135,9 +188,8 @@ export function prefillCompletionFromMechanics<C extends object>(
       attribution: 'path-and-claim-window',
       ...(filesChangedTruncated ? { filesChangedTruncated } : {}),
       ...(testVerdict ? { testVerdict } : {}),
-      note:
-        `Filled ${fields.join(', ')} from the ledgers because the completion omitted them. ` +
-        'Supplied values are never overwritten; pass the field explicitly to replace a prefilled value.',
+      ...(skipped.length > 0 ? { skipped } : {}),
+      note: notes.join(' '),
     },
   };
 }

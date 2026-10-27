@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "r2gcs-current-live-v1",
+  "workItem": "WI-6554700010025563",
+  "observedAt": "2026-10-24T03:54:23.929Z",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "principal": "papercusp-artifacts@active-alcove-504205-q3.iam.gserviceaccount.com",
+  "prefix": "migration-verification/p004-current-d02fdff5-ee7d-44bb-b99d-cd7d3a1d1b77/",
+  "checks": [
+    {
+      "name": "private-create",
+      "ok": true,
+      "detail": {
+        "generation": "1792814052966559",
+        "sha256": "070ac4583f590384e43ca8ac955d0d2d646aa07c036f4e77be09d9f8ecdf7afa",
+        "sizeBytes": 78
+      }
+    },
+    {
+      "name": "occupied-address-retained",
+      "ok": true,
+      "detail": {
+        "generation": "1792814052966559"
+      }
+    },
+    {
+      "name": "private-exact-generation-read",
+      "ok": true,
+      "detail": {
+        "generation": "1792814052966559"
+      }
+    },
+    {
+      "name": "lost-session-response-reconciled",
+      "ok": true,
+      "detail": {
+        "uploadId": "a0d3f4bd-d6f1-485b-ada5-46faa835ec46"
+      }
+    },
+    {
+      "name": "lost-completion-response-resumes-same-generation",
+      "ok": true,
+      "detail": {
+        "uploadId": "a0d3f4bd-d6f1-485b-ada5-46faa835ec46",
+        "generation": "1792814055530526",
+        "composeCount": 1
+      }
+    },
+    {
+      "name": "archive-exact-file-manifest-tenant-isolation",
+      "ok": true,
+      "detail": {
+        "sha256": "070ac4583f590384e43ca8ac955d0d2d646aa07c036f4e77be09d9f8ecdf7afa",
+        "sizeBytes": 78
+      }
+    },
+    {
+      "name": "anonymous-private-denied",
+      "ok": true,
+      "detail": {
+        "status": 403
+      }
+    },
+    {
+      "name": "current-worker-anonymous-write-denied",
+      "ok": true,
+      "detail": {
+        "status": 401
+      }
+    },
+    {
+      "name": "current-worker-authenticated-exact-GCS-upload",
+      "ok": true,
+      "detail": {
+        "status": 201,
+        "sha256": "070ac4583f590384e43ca8ac955d0d2d646aa07c036f4e77be09d9f8ecdf7afa"
+      }
+    },
+    {
+      "name": "current-worker-exact-replay",
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "current-worker-unfinalized-denied",
+      "ok": true,
+      "detail": {
+        "status": 404
+      }
+    }
+  ],
+  "sourceHashes": {
+    "libs/generic/artifact-registry/src/object-store.ts": "620a588c0acd589252b48c7ccc56e9fd74a171c0c8cd5cf052aebd8667655443",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "68d401dcb656f008eaadacdb186686853d671d1de9f1b21f4dfa2c47376f66fc",
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "78c0f45e8b6a5de209b515c87ca29fe1bddf3e303cf03c37bed2fe54c83987d2",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "apps/papercusp-publish/src/r2-archive.ts": "b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9"
+  },
+  "result": "pass",
+  "runtime": "current local workerd with isolated D1/KV and real private GCS",
+  "cleanup": "Only this unique probe population removed; original P544 and R2 artifacts untouched"
+}

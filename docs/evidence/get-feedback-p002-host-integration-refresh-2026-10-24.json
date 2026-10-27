@@ -1,0 +1,1213 @@
+{
+  "schemaVersion": 1,
+  "kind": "GF-P002-source-host-integration-refresh",
+  "actualLoopOrigin": "366f60a3bb245504",
+  "observedAt": "2026-10-24T02:25:32.846143+00:00",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "specId": "GF-P002-source",
+  "specRevision": 1,
+  "scope": "Current committed host source and inline-fixture integration proof; no native consult, source-actor/lease-ABA/full-filesystem/cohort/independent-acceptance/shipment credit.",
+  "testedCommit": "f4644977167361d2c2e152ff0004617d87916903",
+  "comparisonHead": "038caf5ae096cef14015342c64dc713e0b803eb1",
+  "prior": {
+    "bindingId": 28264,
+    "testRunId": 20883759,
+    "commit": "3c8f23e7bbfbeb1f2159205c0980c3e74f4c7d3a",
+    "passed": 98,
+    "recordedPassedCaseTitles": 64,
+    "unrecordedPassedCaseTitles": 34,
+    "retentionNote": "No original execution identities were reconstructed for missing titles."
+  },
+  "candidateComparison": {
+    "testRunId": 21801772,
+    "commit": "bea65fac9c6e045887231bba8e1522eb4ddce25d",
+    "passed": 136,
+    "worktreeDirty": false,
+    "testAndTempShimMatch": true,
+    "hostSourceMatches": false,
+    "decision": "Existing clean result was not reused because named host bytes changed."
+  },
+  "setupRefusal": {
+    "log": "/tmp/gf-loop366-host-clean.log",
+    "phase": "baseline-schema-global-setup/postgres-storage-headroom",
+    "testAssertionsExecuted": false,
+    "sharedContainer": "0a27c7b8fd2e",
+    "freeBytes": 38810763264,
+    "totalBytes": 2013991550976,
+    "existingIssue": "EI-26753443744806914",
+    "disposition": "Exact refusal evidence added to existing issue; shared storage untouched. No pass/fail assertion credit."
+  },
+  "privatePg": {
+    "runner": "scripts/with-test-pg.mjs",
+    "tmpdir": "/mnt/data/offload",
+    "datadir": "/mnt/data/offload/papercusp-test-pg-PHnefO",
+    "dataRemovedAfterRun": true,
+    "guard": "Storage guard retained; integration setup selected supervisor-owned private PostgreSQL, and reporter-only durable sink remained separate."
+  },
+  "execution": {
+    "testRunId": 21861888,
+    "receiptId": "035de74e-9a20-4757-9e04-907582d63dd5",
+    "outcome": "inserted",
+    "source": "local",
+    "filePath": "apps/operator/lib/psu-pty-host.integration.test.ts",
+    "passed": 136,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "testLayer": "integration",
+    "passedCaseTitles": [
+      "failure evidence: host event tails (WI-10005017) > includes logs written since the test started, tail-bounded, and skips older ones",
+      "attributes real PTY dialog submissions to machine control or human terminal input",
+      "keeps owner input and real PTY output responsive while discovery rename is stalled",
+      "binds, discovers, injects and cleans a byte-bounded control socket for a long owner",
+      "managed-pty integration evidence isolation > waits for resumed Codex native readiness before writing the first continuation (WI-10007270)",
+      "managed-pty integration evidence isolation > preserves startup evidence when the 'native binding' times out before first-turn injection (WI-10007305)",
+      "managed-pty integration evidence isolation > preserves startup evidence when the 'backend frame' times out before first-turn injection (WI-10007305)",
+      "managed-pty integration evidence isolation > preserves startup evidence when the 'delayed backend banner' times out before first-turn injection (WI-10007305)",
+      "managed-pty integration evidence isolation > preserves startup evidence when the 'backend frame after kickoff deadline' times out before first-turn injection (WI-10007305)",
+      "managed-pty integration evidence isolation > does not attempt a marked kickoff after the host ends before its first backend frame",
+      "managed-pty integration evidence isolation > excludes caller launch state and native homes while preserving explicit fixture inputs",
+      "managed-pty integration evidence isolation > redirects host lifecycle evidence away from the live operator corpus",
+      "Codex startup process evidence (EI-24353430528930250) > records real child PID counters and a terminal trace row in the per-owner host log",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: immediate",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: delayed",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: healthy",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: old-banner",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: repeated-banner",
+      "plain launch kickoff turn-start proof > returns the provider admission verdict for a headless Codex kickoff: no-receipt",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('empty' receipt, 'immediate' native publication, resume=false)",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('nonempty' receipt, 'immediate' native publication, resume=false)",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('empty' receipt, 'gated' native publication, resume=false)",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('nonempty' receipt, 'gated' native publication, resume=false)",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('empty' receipt, 'immediate' native publication, resume=true)",
+      "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ('empty' receipt, 'gated' native publication, resume=true)",
+      "plain launch kickoff turn-start proof > keeps a staged Codex marker through a Starting repaint (recovers=true)",
+      "plain launch kickoff turn-start proof > keeps a staged Codex marker through a Starting repaint (recovers=false)",
+      "plain launch kickoff turn-start proof > passes the Codex model offer by keeping the configured model before seeding the first turn",
+      "plain launch kickoff turn-start proof > does not resend a kickoff whose native turn completed before marker proof returned (count output delayed 0 ms)",
+      "plain launch kickoff turn-start proof > does not resend a kickoff whose native turn completed before marker proof returned (count output delayed 150 ms)",
+      "plain launch kickoff turn-start proof > suppresses a queued retry when native execution begins before the final write boundary",
+      "plain launch kickoff turn-start proof > does not rewrite a queued kickoff after its first native turn starts beyond the bounded tail",
+      "plain launch kickoff turn-start proof > does not submit a fresh Codex kickoff when the composer echo lost leading marker bytes",
+      "plain launch kickoff turn-start proof > waits beyond two seconds for a complete Codex composer echo before submitting",
+      "Claude launch kickoff bracketed-paste regression (EI-24141825238362808) > submits the complete long kickoff in the paste frame advertised by the child",
+      "Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331) > resume control submits after a replayed wall and still blocks a new wall",
+      "Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331) > resume kickoff submits after a replayed wall and still blocks a new wall",
+      "Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331) > fork control submits after a replayed wall and still blocks a new wall",
+      "Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331) > fork kickoff submits after a replayed wall and still blocks a new wall",
+      "session-port managed seed + native persistence helpers > waits for OMP backend startup rather than treating terminal-query noise as editor readiness",
+      "session-port managed seed + native persistence helpers > waits for the Codex composer footer rather than its first output byte or onboarding-tip animation",
+      "session-port managed seed + native persistence helpers > recognises the Codex >=0.156 status footer, and only once its status is past Starting",
+      "session-port managed seed + native persistence helpers > control: exact status equality misses the flattened Ready suffix",
+      "session-port managed seed + native persistence helpers > keeps the original turn-origin line first when composing a Codex carry turn",
+      "session-port managed seed + native persistence helpers > delivers an identical carry body only once while retaining provenance and lineage",
+      "session-port managed seed + native persistence helpers > retains a distinct continuation body even if the mint contains a similar substring",
+      "session-port managed seed + native persistence helpers > measures the Codex startup fallback from the first painted frame, not the banner or the probe",
+      "session-port managed seed + native persistence helpers > waits for the Codex session frame when the no-frame fallback expires first",
+      "session-port managed seed + native persistence helpers > keeps waiting past the frame budget while the Codex footer still reads Starting",
+      "session-port managed seed + native persistence helpers > holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame",
+      "session-port managed seed + native persistence helpers > drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer",
+      "session-port managed seed + native persistence helpers > ends a held Codex kickoff when the host tears down instead of polling until the ceiling",
+      "session-port managed seed + native persistence helpers > replaces a fresh Codex launch child stuck at Starting and delivers the kickoff on the fresh child",
+      "session-port managed seed + native persistence helpers > records the write-time footer and the write-to-frame gap for a Codex turn inject",
+      "session-port managed seed + native persistence helpers > waits for a Codex Ready footer before sending a resumed launch kickoff",
+      "session-port managed seed + native persistence helpers > does not spend Codex last-resort input while a resumed TUI still says Starting",
+      "session-port managed seed + native persistence helpers > recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows",
+      "session-port managed seed + native persistence helpers > delivers a fresh headless Claude kickoff through a real PTY with the captured cursor-spaced placeholder",
+      "session-port managed seed + native persistence helpers > checks role MCP connection before sending a fresh headless Claude kickoff",
+      "session-port managed seed + native persistence helpers > waits for the /mcp local-command turn to settle before a fresh headless Claude kickoff",
+      "session-port managed seed + native persistence helpers > auto-advances the headless Claude theme and Security notes prompts exactly once",
+      "session-port managed seed + native persistence helpers > signals the forkpty process group and retains a direct-child fallback",
+      "session-port managed seed + native persistence helpers > securely reads a 0600 seed and rejects a symlink",
+      "session-port managed seed + native persistence helpers > chunks the maximum-style UTF-8 paste without changing a code point or exceeding 64KiB/write",
+      "session-port managed seed + native persistence helpers > stamps a dedicated verified session-port provenance row before injection",
+      "session-port managed seed + native persistence helpers > writes session-port provenance under the platform home without a directory override",
+      "session-port managed seed + native persistence helpers > accepts only the exact marker in the target Claude/Codex/OMP native JSONL roots",
+      "session-port managed seed + native persistence helpers > accepts a kickoff whose marker lost its head, but only with enough nonce left",
+      "hostThroughPty real round-trip > refuses a second live host before spawn/unlink and leaves the original socket injectable",
+      "hostThroughPty real round-trip > selects Claude resume-compaction summary before delivering a scripted kickoff",
+      "hostThroughPty real round-trip > publishes a plain-launch native kickoff proof into the parent receipt",
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for child-exit before acknowledgement and cleanup",
+      "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for missing-native-marker before acknowledgement and cleanup",
+      "hostThroughPty real round-trip > external SIGTERM tears down the whole OMP-style process group and reaps detached scope before child exit",
+      "hostThroughPty real round-trip > creates socket+meta on start, injects into the live child, cleans up on exit",
+      "hostThroughPty real round-trip > EI-153: REFUSES a control envelope addressed to a DIFFERENT ownerId \u2014 never runs it \u2014 then still serves a correctly-addressed one",
+      "hostThroughPty real round-trip > rejects unsupported control envelopes with a NACK and zero child input, then accepts a supported request",
+      "hostThroughPty real round-trip > WI-2141435: control-payload-unaddressed fires with envelope:true for a v1 envelope that simply omits ownerId, and envelope:false for a genuinely non-envelope legacy payload \u2014 the detector the EI-153 guard's reject-only logging could not provide (its silence could not distinguish 'nothing to catch' from 'structurally blind to this class'). DETECTOR ONLY: control flow is unchanged, so this test only asserts the event log, not delivery.",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting (drill metadata: true; role: '')",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting (drill metadata: false; role: '')",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting (drill metadata: true; role: 'researcher')",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > does not submit a carry when papercusp-su readiness fails after the fresh TUI boots",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > retries a carry on one fresh child when MCP becomes ready after the first epoch",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note",
+      "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > force-kills a graceful-signal-resistant predecessor before spawning the successor",
+      "carry-respawn TERMINAL FALLBACK \u2014 a successor that emits NOTHING still gets its turn (WI-38257) > delivers the carry to a zero-output successor instead of dropping it with attempts:0",
+      "carry-respawn TERMINAL FALLBACK \u2014 a successor that emits NOTHING still gets its turn (WI-38257) > stores only operator-pin enums for an interactive stale host (route=staging-proxy) and preserves the D-008 no-reexec refusal",
+      "carry-respawn TERMINAL FALLBACK \u2014 a successor that emits NOTHING still gets its turn (WI-38257) > stores only operator-pin enums for an interactive stale host (route=undefined) and preserves the D-008 no-reexec refusal",
+      "carry completion follows native delivery and reanchor (WI-10004791) > does not confuse a booted Codex with a completed carry (persists=true, deferred=false, stuckOnce=false)",
+      "carry completion follows native delivery and reanchor (WI-10004791) > does not confuse a booted Codex with a completed carry (persists=true, deferred=true, stuckOnce=false)",
+      "carry completion follows native delivery and reanchor (WI-10004791) > does not confuse a booted Codex with a completed carry (persists=false, deferred=false, stuckOnce=false)",
+      "carry completion follows native delivery and reanchor (WI-10004791) > does not confuse a booted Codex with a completed carry (persists=true, deferred=false, stuckOnce=true)",
+      "P-020 carry-respawn drill correlation > records the fresh native id, carry path, and first-prompt delivery in the durable host event log",
+      "carry-drill busy-gate metric correlation (WI-6554700010012191) > persists a tagged fake-PTY expiry measurement in the owner log and shared ledger",
+      "host-code adopted carry drill lifecycle (EI-25602595012290893) > records adopted drill respawn and delivery in both lifecycle ledgers",
+      "host-code adopted carry drill lifecycle (EI-25602595012290893) > records an unverified adopted drill carry as dropped in both lifecycle ledgers",
+      "carry-respawn native turn-start proof (EI-21561923024113260) > retries one CR and one fresh epoch before terminally dropping an unverified native turn",
+      "carry-respawn STALENESS guard \u2014 only drills expire; production carries remain must-deliver > preserves the age policy at the first prompt boundary (drill=true)",
+      "carry-respawn STALENESS guard \u2014 only drills expire; production carries remain must-deliver > preserves the age policy at the first prompt boundary (drill=false)",
+      "RECYCLE respawns with FRESH session args + re-anchors identity (WI-1980 seam) > feeds the child the mintRecycleArgs-rewritten argv, fires onRespawn once with the fresh native id, and keeps the coord identity env unchanged",
+      "RECYCLE respawn report ordering > waits for the async onRespawn report before publishing successor metadata and output wiring",
+      "ADOPTION \u2014 a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292) > writes the successor's orders, releases the discovery key, and leaves by the re-exec door WITHOUT respawning a child",
+      "ADOPTION \u2014 a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292) > CONTROL: with no shim advertisement it respawns in place \u2014 a launcher nobody will re-run must never exit",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > waits for a delayed predecessor exit notification before spawning the successor",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=true (graceful signal resistant=false)",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=false (graceful signal resistant=false)",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=true (graceful signal resistant=true)",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=false (graceful signal resistant=true)",
+      "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > routes a direct :3170 pin through the same-build staging proxy before respawn",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > boots the successor on the REFRESHED render, not the predecessor's",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > reuses the live child render when a later refresh fails after the original was collected",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > KEEPS the inherited render when the refresh yields nothing (fail-soft, = pre-fix behaviour)",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > KEEPS the current child alive when refresh fails and the inherited render is missing, then retries",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > PROOF the guard discriminates: under the PRE-FIX mint the successor inherits the stale render even though a refresh was available",
+      "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > REFUSES the respawn on an identity-activation refusal instead of booting the inherited render (P-016 D-012)",
+      "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > RETRIES past a fresh child that stays busy beyond one busy-cap, injecting the carry once it settles",
+      "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > retries one fresh epoch, then DROPS LOUDLY when the child never settles",
+      "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > books a verifier-exhausted RECYCLE carry as dropped, keeps the child controllable, and never emits delivered (WI-42318)",
+      "final interactive terminal handoff (WI-42458) > disables mouse reporting after the child exits before returning the terminal to its shell",
+      "force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg) > lands a real SIGINT mid-run through the control socket; the shell survives",
+      "orphan / vanished-terminal teardown (WI-3141) > tears down (kills the child, cleans up socket+meta) when the bridged terminal closes \u2014 stdin EOF/close",
+      "orphan / vanished-terminal teardown (WI-3141) > tears down when the launching parent dies (reparent-to-init) even if the pts stays alive",
+      "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > self-heals: recreates a deleted json + re-binds a deleted sock while the host is live",
+      "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > exit cleanup leaves a SUCCESSOR's registration alone (no unlink of a key that is no longer ours)",
+      "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > stands down while a LIVE psu-marked process owns the key, then reclaims it after that process dies",
+      "SHUTDOWN \u2014 a finished agent session exits and closes its own window (WI-6638) > ACCEPTS an agent-launched, never-typed-into session: kills the child and tears the host down",
+      "SHUTDOWN \u2014 a finished agent session exits and closes its own window (WI-6638) > REFUSES a session with no PAPERCUSP_LAUNCHED_BY and leaves it ALIVE \u2014 a hand-started window is the owner's"
+    ],
+    "startedAt": "2026-10-24T02:13:24.882Z",
+    "finishedAt": "2026-10-24T02:17:10.579Z",
+    "logPath": "/tmp/gf-loop366-host-private.log",
+    "logSha256": "3b276863b9a96a9726a9e6e9a1f0f40f49ff646fa63ea5f8b4ed837f3a14da16"
+  },
+  "sourceCensus": [
+    {
+      "path": "apps/operator/scripts/psu-pty-host.mjs",
+      "sha256": "58407fb34b5b675b1c2da0ae7d8c126bd579fe96c825db31a734e61de21a006b",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "sha256": "651cac8c6257ab7dad254658dbd1474c2c94e814424a44532bfd6571307da910",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "sha256": "5791bfa9875b110216f1c730f83cfabccaf93874e4ddda773cd33cc0e932357c",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
+      "sha256": "a72aeb82beb2c1b5f363dcadb29994a45bf19952780f53196a2e63cdf482186b",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "sha256": "f0889b83b99564850c1913bcce54beaf8fb375cc4a2da2b8f2f587e060ef2fe6",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/child-output.ts",
+      "sha256": "f4f3a3192876dc0131edf7b5f70b3b87e4a5763aa728aeae6135234bd7b4e138",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/process-identity.ts",
+      "sha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "apps/operator/package.json",
+      "sha256": "49fd999f0961e8e106e4412087ea8caa2f68b42bd0ce4e9454d9774d6c4815b1",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "packages/operator-core/package.json",
+      "sha256": "2f1b7940e831eee1d80c2f09da5ffbd188461b0f728137beb4e05d61505286b4",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "package.json",
+      "sha256": "5f62eda1ac60a3c8bdf3136dedeae23553febe1e7402489489678b55ec07afa2",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "d7e9f41e9f3d63494d8b701713ac812866634ef6a563aa200ea31d51d7d0c8ee",
+      "matchesComparisonHead": true
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "sha256": "3f4a74cb7752cb0385cafcfd97b4639ee134cb73701d582700b8cb8dcd5bb03a",
+      "matchesComparisonHead": true
+    }
+  ],
+  "binding": {
+    "id": 68194,
+    "run": 21861888,
+    "currentness": {
+      "overall": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "staleReasons": [],
+      "unknownReasons": [],
+      "comparisonSupplied": true,
+      "provenance": "server-measured"
+    },
+    "counts": [
+      136,
+      0,
+      0
+    ],
+    "caseTitles": 11,
+    "declaredCases": 11,
+    "sourcePaths": 11,
+    "fixturePaths": 6
+  },
+  "retirement": {
+    "ok": true,
+    "results": [
+      {
+        "bindingId": 28264,
+        "status": "retracted",
+        "ok": true
+      }
+    ]
+  },
+  "finalAuditAndGoverningEvaluation": {
+    "audit": [
+      {
+        "id": 68194,
+        "run": 21861888,
+        "current": "current",
+        "withdrawn": false
+      },
+      {
+        "id": 28264,
+        "run": 20883759,
+        "current": "stale",
+        "withdrawn": true
+      }
+    ],
+    "evaluation": {
+      "ok": true,
+      "build": {
+        "sha": "924695edbf",
+        "version": "0.0.0"
+      },
+      "rows": [
+        {
+          "specId": "GF-P002-source",
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "fixture-calibration",
+            "falsifiability",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor",
+            "disclosed-gap"
+          ],
+          "ratings": {
+            "traceability": "unknown",
+            "fixture-calibration": "unknown",
+            "falsifiability": "unknown",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "unknown",
+            "freshness": "fail",
+            "plan-class-risk-floor": "unknown",
+            "disclosed-gap": "fail"
+          },
+          "dragging": {
+            "traceability": [
+              28326,
+              28545
+            ],
+            "fixture-calibration": [
+              28205,
+              28206,
+              28243,
+              28262,
+              28820,
+              38683,
+              45213,
+              45214,
+              68129,
+              68131,
+              68194
+            ],
+            "execution-integrity": [
+              28326,
+              28545
+            ],
+            "freshness": [
+              28205,
+              28206,
+              28243,
+              28262,
+              28326,
+              28545,
+              28820,
+              38683,
+              45213,
+              45214,
+              45261,
+              66844,
+              67056,
+              68129,
+              68131
+            ],
+            "disclosed-gap": [
+              28815,
+              28820,
+              37837,
+              38628,
+              38682,
+              38683,
+              45261,
+              66822
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "declarationComparison": {
+    "oldCommit": "3c8f23e7bbfbeb1f2159205c0980c3e74f4c7d3a",
+    "testedCommit": "f4644977167361d2c2e152ff0004617d87916903",
+    "oldDeclarations": 81,
+    "currentDeclarations": 98,
+    "missing": [
+      {
+        "name": "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication)",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "2afecefe23e115c0382bb62eaf4daf67115f58e73c19c1b2b2d0226b8e020f4c",
+        "currentCallShas": []
+      },
+      {
+        "name": "hostThroughPty real round-trip > publishes managed %s session-port parent proof before HTTP ack and preserves success across child exit",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "fb1e90692706a4b8028f2183f0433f876ee99d80216265afbc82a4f46238f579",
+        "currentCallShas": []
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "ea3aa319bb9d890d4db3932b67480496dfa9ab4ff52530247cdc1bae7fa7c641",
+        "currentCallShas": []
+      },
+      {
+        "name": "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=%s",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "779a4c3e2f3ae1e8dd37e6c73e1a321c5be2b4c2d1361d3ddd6637c4d1bbc088",
+        "currentCallShas": []
+      },
+      {
+        "name": "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered (WI-42318)",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "eaf8f01a5357ed4e9553fa1d5302d9781928de7e013706664a14384da56e9c82",
+        "currentCallShas": []
+      }
+    ],
+    "sameCallAst": 41,
+    "comparisons": [
+      {
+        "name": "failure evidence: host event tails (WI-10005017) > includes logs written since the test started, tail-bounded, and skips older ones",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "f3101ccc13a19aa22723d7a5355eba8716c0880e99aa94b0d6c56eba3033086d",
+        "currentCallShas": [
+          "f3101ccc13a19aa22723d7a5355eba8716c0880e99aa94b0d6c56eba3033086d"
+        ]
+      },
+      {
+        "name": "managed-pty integration evidence isolation > excludes caller launch state and native homes while preserving explicit fixture inputs",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "43e7210736e84c7f2ed88105a0b908af74c60cb8cac23d8b2c4d0c202e34d4fb",
+        "currentCallShas": [
+          "5aa66a3c8fb9a1f7b1aee4b08edbf22cb8bb79a1e5a13c58c111908b5039ac05"
+        ]
+      },
+      {
+        "name": "managed-pty integration evidence isolation > redirects host lifecycle evidence away from the live operator corpus",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "d3c6d050b390434d4773bd38c84f1df3d85c90af216046933c4e1c2f63887c5f",
+        "currentCallShas": [
+          "d3c6d050b390434d4773bd38c84f1df3d85c90af216046933c4e1c2f63887c5f"
+        ]
+      },
+      {
+        "name": "Codex startup process evidence (EI-24353430528930250) > records real child PID counters and a terminal trace row in the per-owner host log",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "bcf1dab737fe1f49e6a26167109f7a3c5d7f3007879bbf6749a7a88ab5282a73",
+        "currentCallShas": [
+          "c6c8ffd42f09d47487cc37729be82fbd8124da2c3c973fa97650642ed7a2a4ed"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication)",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "2afecefe23e115c0382bb62eaf4daf67115f58e73c19c1b2b2d0226b8e020f4c",
+        "currentCallShas": []
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > passes the Codex model offer by keeping the configured model before seeding the first turn",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "b7341108291399b7718cb79749f639155a6e11722540d84290cf3dde5ac7a437",
+        "currentCallShas": [
+          "49987d50b1a51425dedab04f88ad8e2d307dbfaaaf085cf4483adbab09c2157e"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > does not resend a kickoff whose native turn completed before marker proof returned (count output delayed %d ms)",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "1cd9d1f77745cbebb288884ff59f632541827e1386eed4bd1056b8eee653d159",
+        "currentCallShas": [
+          "b04f3f2c00cfd3558e725f5ef1f6aeb3436f4b5727afbc2d468a52376235a826"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > suppresses a queued retry when native execution begins before the final write boundary",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "6194758c006422166b6f3397ed4c5d171e96cb3843bd27ff7b51b4ca72fb752b",
+        "currentCallShas": [
+          "6194758c006422166b6f3397ed4c5d171e96cb3843bd27ff7b51b4ca72fb752b"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > does not rewrite a queued kickoff after its first native turn starts beyond the bounded tail",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "d60fee0a4d94ee3334db20765a2a91d3c24b704346d2f22fc9527e618926b00b",
+        "currentCallShas": [
+          "4e13a117d6bd3454198ea5f878aaed36f2016d250b01c54ae7bf50c0597b08a7"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > does not submit a fresh Codex kickoff when the composer echo lost leading marker bytes",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "b98e5bee39ece8a86daec06b454f3da9caad0c78bcd7468ed57e460676db54a7",
+        "currentCallShas": [
+          "df7f9219b2b46a8bf3371496af4370f40940ce2241c043504cb4b130e2669b71"
+        ]
+      },
+      {
+        "name": "plain launch kickoff turn-start proof > waits beyond two seconds for a complete Codex composer echo before submitting",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "eb75314ec75356983a46df439bfe36a2e7e5907bdedf134f6728ce67adb515b4",
+        "currentCallShas": [
+          "f53da6d465096e2881c9b51fb002a5aaa02363af8bcf90ce49c184d6547af581"
+        ]
+      },
+      {
+        "name": "Claude launch kickoff bracketed-paste regression (EI-24141825238362808) > submits the complete long kickoff in the paste frame advertised by the child",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "9956448439cfddd806796510025a95b3c29bb2931c72d28da7da01fce52eb487",
+        "currentCallShas": [
+          "9aadab4d92f4c99c02afd022b5e021401730077b9ba08b873d69b015f6fc19b1"
+        ]
+      },
+      {
+        "name": "Codex resumed and forked quota history (EI-22609012864215464, EI-22800121604015331) > %s %s submits after a replayed wall and still blocks a new wall",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "cbe05edb5d98137b44cd8704e7f9065f3831a252899eeafc8a3088da5764cfbb",
+        "currentCallShas": [
+          "cbe05edb5d98137b44cd8704e7f9065f3831a252899eeafc8a3088da5764cfbb"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > waits for OMP backend startup rather than treating terminal-query noise as editor readiness",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "9e80f8c7947e11c18a01909255f8c0db50b7e3fa8eaf6556f96160a2609fa744",
+        "currentCallShas": [
+          "9e80f8c7947e11c18a01909255f8c0db50b7e3fa8eaf6556f96160a2609fa744"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > waits for the Codex composer footer rather than its first output byte or onboarding-tip animation",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "2bb97924d6744acb73511d2ac9d4c47eca7e453ca9743691680678d0322d834c",
+        "currentCallShas": [
+          "2bb97924d6744acb73511d2ac9d4c47eca7e453ca9743691680678d0322d834c"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > recognises the Codex >=0.156 status footer, and only once its status is past Starting",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "d1fbb96029c9f3148bd9d8e728fcd998c1190115d7c0161b42a751ff8f346df9",
+        "currentCallShas": [
+          "d1fbb96029c9f3148bd9d8e728fcd998c1190115d7c0161b42a751ff8f346df9"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > control: exact status equality misses the flattened Ready suffix",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "b871f8e3aab3915fad5774e5b21296e46700af25ebfcc5888a1f3e2af8a16ff4",
+        "currentCallShas": [
+          "b871f8e3aab3915fad5774e5b21296e46700af25ebfcc5888a1f3e2af8a16ff4"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > keeps the original turn-origin line first when composing a Codex carry turn",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "d352b92c22f525bc27162aaa9ee6c47c2c3b14952ed6b461f437c6cd236b6396",
+        "currentCallShas": [
+          "d352b92c22f525bc27162aaa9ee6c47c2c3b14952ed6b461f437c6cd236b6396"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > delivers an identical carry body only once while retaining provenance and lineage",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "66cad054b687eb9227459aa564590359e00493633daf20381b6aae2aa1988058",
+        "currentCallShas": [
+          "66cad054b687eb9227459aa564590359e00493633daf20381b6aae2aa1988058"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > retains a distinct continuation body even if the mint contains a similar substring",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "b7c81f0c5ec98df19c39ce5023f1f369b2afc72d51daddeaed9235065ee80be0",
+        "currentCallShas": [
+          "b7c81f0c5ec98df19c39ce5023f1f369b2afc72d51daddeaed9235065ee80be0"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > measures the Codex startup fallback from the first painted frame, not the banner or the probe",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "c2245f38e884943b84fb50482a410fc77cc634e1cba222461c7ad4bfa8ad7a4f",
+        "currentCallShas": [
+          "c2245f38e884943b84fb50482a410fc77cc634e1cba222461c7ad4bfa8ad7a4f"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > waits for the Codex session frame when the no-frame fallback expires first",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "babb043b7ff4873730834383617a7a20d2a8f7cc52151b9f1c5a968b0a2e6859",
+        "currentCallShas": [
+          "babb043b7ff4873730834383617a7a20d2a8f7cc52151b9f1c5a968b0a2e6859"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > keeps waiting past the frame budget while the Codex footer still reads Starting",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "1d08d0ab749544cfc14974e273f7bc1924d86742d7516e84fd6a2f51bfc5fe70",
+        "currentCallShas": [
+          "1d08d0ab749544cfc14974e273f7bc1924d86742d7516e84fd6a2f51bfc5fe70"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "1aadfa100a69c0b76561bda693ef1ee9b52af304267cc16fb2d8acf27e346c45",
+        "currentCallShas": [
+          "1aadfa100a69c0b76561bda693ef1ee9b52af304267cc16fb2d8acf27e346c45"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "430e2dd6eab0f4306b0fbff5c7fb337d43ab0327d858be0232b059e922572150",
+        "currentCallShas": [
+          "ebc9c730f527738e37112adaed23c5c90279cc04cef9eeb9998ab57cdc453245"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > ends a held Codex kickoff when the host tears down instead of polling until the ceiling",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "8e2fe7f029df91ad9bcc3b504e632dd40a8c4871035ac8bc5e54ac57f73322e3",
+        "currentCallShas": [
+          "c4a05cb867e8a2d49159e16fcb465c672f06af0f7345cd48f057856caae7c6e9"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > replaces a fresh Codex launch child stuck at Starting and delivers the kickoff on the fresh child",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "cdb695021744f6a838a33cdc4eeb1cb0e58efb8436b85a24830d492e6695e346",
+        "currentCallShas": [
+          "c08c97f812f00222ac215ad2412cec5be557419701edcbe9292822a7cec4a0e6"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > records the write-time footer and the write-to-frame gap for a Codex turn inject",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "2f36c21f77c1bb1d7dbc2eb53c971f1e111fcd5f4889ba0f1023ff26c6614d65",
+        "currentCallShas": [
+          "2f36c21f77c1bb1d7dbc2eb53c971f1e111fcd5f4889ba0f1023ff26c6614d65"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > waits for a Codex Ready footer before sending a resumed launch kickoff",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "cfaf53814070f775b9e4b23875bc0fd650e7313b66097406fca73996e541e11e",
+        "currentCallShas": [
+          "cfaf53814070f775b9e4b23875bc0fd650e7313b66097406fca73996e541e11e"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > does not spend Codex last-resort input while a resumed TUI still says Starting",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "dce1128e03c7bf9f21fd052e4805e805bcced30cd3226ad0bd01cd03a5d77be0",
+        "currentCallShas": [
+          "dce1128e03c7bf9f21fd052e4805e805bcced30cd3226ad0bd01cd03a5d77be0"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "e3b06af7b6cce88be041e08a578f7e12ac3fd4e904bbf7692b3dd285e4f7dc7b",
+        "currentCallShas": [
+          "e3b06af7b6cce88be041e08a578f7e12ac3fd4e904bbf7692b3dd285e4f7dc7b"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > delivers a fresh headless Claude kickoff through a real PTY with the captured cursor-spaced placeholder",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "1b606c712c12477dbefc1ca6c83c1e89166e8139802dda719a9c1fedf4c8b974",
+        "currentCallShas": [
+          "1b606c712c12477dbefc1ca6c83c1e89166e8139802dda719a9c1fedf4c8b974"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > checks role MCP connection before sending a fresh headless Claude kickoff",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "32e004a359c1ef4980de62b4a33357d9e41d30cb15b2f4a8f7ce4c5f72a3ae35",
+        "currentCallShas": [
+          "32e004a359c1ef4980de62b4a33357d9e41d30cb15b2f4a8f7ce4c5f72a3ae35"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > auto-advances the headless Claude theme and Security notes prompts exactly once",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "b1cc423941d27e4df65072070ede9ae5cba0cf8bc2326f5356a2f8c863c6c240",
+        "currentCallShas": [
+          "b1cc423941d27e4df65072070ede9ae5cba0cf8bc2326f5356a2f8c863c6c240"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > signals the forkpty process group and retains a direct-child fallback",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "9110576725cd7dd5e923e12c8130e3bc4427bf4e33ff2b1ed5dcf647131e0212",
+        "currentCallShas": [
+          "9110576725cd7dd5e923e12c8130e3bc4427bf4e33ff2b1ed5dcf647131e0212"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > securely reads a 0600 seed and rejects a symlink",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "829af73fca6be8be2b538308b8870c4401a8006c75f1b604dbffbb5702b7c07a",
+        "currentCallShas": [
+          "829af73fca6be8be2b538308b8870c4401a8006c75f1b604dbffbb5702b7c07a"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > chunks the maximum-style UTF-8 paste without changing a code point or exceeding 64KiB/write",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "7f08ca952a3530474b471ac674dbc4db1c1e58e7176ac810d145a4beb5ec87c6",
+        "currentCallShas": [
+          "7f08ca952a3530474b471ac674dbc4db1c1e58e7176ac810d145a4beb5ec87c6"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > stamps a dedicated verified session-port provenance row before injection",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "22d48fe2489207695efbe31949fb6edf645200002ed2168722d18c315a124a4b",
+        "currentCallShas": [
+          "22d48fe2489207695efbe31949fb6edf645200002ed2168722d18c315a124a4b"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > accepts only the exact marker in the target Claude/Codex/OMP native JSONL roots",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "f423f470517d6c414a479f7901052bc64892255bf1406d44d8e6cfc1167b3aab",
+        "currentCallShas": [
+          "f423f470517d6c414a479f7901052bc64892255bf1406d44d8e6cfc1167b3aab"
+        ]
+      },
+      {
+        "name": "session-port managed seed + native persistence helpers > accepts a kickoff whose marker lost its head, but only with enough nonce left",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "b89766ae349a7dde36a7a4a6abeb2b96b28c0f735e2357d899d433784dd2d4be",
+        "currentCallShas": [
+          "b89766ae349a7dde36a7a4a6abeb2b96b28c0f735e2357d899d433784dd2d4be"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > refuses a second live host before spawn/unlink and leaves the original socket injectable",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "277d409d8d5430b6c36733654b0ca0477c310fc19552e516a0c7168935230638",
+        "currentCallShas": [
+          "277d409d8d5430b6c36733654b0ca0477c310fc19552e516a0c7168935230638"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > selects Claude resume-compaction summary before delivering a scripted kickoff",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "6423fce00e0cb3ea924c0460ad83086b3f3fe3f53e9f38ed81088b0ec1f93f7c",
+        "currentCallShas": [
+          "6423fce00e0cb3ea924c0460ad83086b3f3fe3f53e9f38ed81088b0ec1f93f7c"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > publishes a plain-launch native kickoff proof into the parent receipt",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "c288f0c9ab2fbe3cf157051b327fbd284da9f957a256ceadc411218d52a7db89",
+        "currentCallShas": [
+          "c9de97661bf6472c43db06803a1cb4585fdcb331f88436881b4f3e4b9be52d68"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > publishes managed %s session-port parent proof before HTTP ack and preserves success across child exit",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "fb1e90692706a4b8028f2183f0433f876ee99d80216265afbc82a4f46238f579",
+        "currentCallShas": []
+      },
+      {
+        "name": "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for %s before acknowledgement and cleanup",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "7eebe028ef69715f782e160d1688fe5f840e7e8a5d943db96d62216caf39b522",
+        "currentCallShas": [
+          "c61be8f459ec9153c312947c764c6d36d0597597a145245f72cc0ce042220348"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > external SIGTERM tears down the whole OMP-style process group and reaps detached scope before child exit",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "df85e61652c77a24d4237b6ff12cded01e1ff2604eff8e73de8cfdc33acbc62b",
+        "currentCallShas": [
+          "b2621ae4656afb2be76c724cca4e13510ee687c2966c7563443844fff9e4b46d"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > creates socket+meta on start, injects into the live child, cleans up on exit",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "6a0febb8761bd6ce3ec719508db6d4385a2882e7b390fcdc474283297ae865a5",
+        "currentCallShas": [
+          "1351ef88ce5f6545d0631c899ea839e9b3f4f8ba4d70c4754c6ffe2a256c1a30"
+        ]
+      },
+      {
+        "name": "hostThroughPty real round-trip > EI-153: REFUSES a control envelope addressed to a DIFFERENT ownerId \u2014 never runs it \u2014 then still serves a correctly-addressed one",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "569b1ad3d8fd6fcf91ff073fc41f7f889150733828cc50794a4d102082df0d3c",
+        "currentCallShas": [
+          "4c14e14111fbb6a65c0a0f080b697647e36b5ec7cbb90ce45e41c4e7f0269019"
+        ]
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "ea3aa319bb9d890d4db3932b67480496dfa9ab4ff52530247cdc1bae7fa7c641",
+        "currentCallShas": []
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > does not submit a carry when papercusp-su readiness fails after the fresh TUI boots",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "28435cd248e9668e5ffec6dfa0257bbea0524dfe97a8269746dbafe452489c97",
+        "currentCallShas": [
+          "5f3f9331670546a5714494aa9b4f25c72153064c652f292d86fa414a850c6aa6"
+        ]
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > retries a carry on one fresh child when MCP becomes ready after the first epoch",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "e857d2122c5303fbf35bfe282fe8ce9cc8586d8410b2de4e2e3bf267058431b4",
+        "currentCallShas": [
+          "e857d2122c5303fbf35bfe282fe8ce9cc8586d8410b2de4e2e3bf267058431b4"
+        ]
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > replaces the child process, keeps the host (socket/meta) alive, and opens the fresh process on the carry-note",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "699b379554f492bac57ec94029cb51821e6646b6c913b4adfb88e97bbd1e044e",
+        "currentCallShas": [
+          "53d33efac31427dd854a27120467032fc2473b50e0aa0928dfe22001894f7199"
+        ]
+      },
+      {
+        "name": "RECYCLE / backend-aware RESET \u2014 kill + respawn the child in the same host (su-cold-auto-mode P-004b) > force-kills a graceful-signal-resistant predecessor before spawning the successor",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "714e7efc48f215fde81b48a691c2e8ac7eda72c6d57fcd0ab74955d2d1f1cc69",
+        "currentCallShas": [
+          "a0bd20d5f9b0ab5e57406bf19a4fe39a3539498e37a6a88afbae6716731e5c22"
+        ]
+      },
+      {
+        "name": "carry-respawn TERMINAL FALLBACK \u2014 a successor that emits NOTHING still gets its turn (WI-38257) > delivers the carry to a zero-output successor instead of dropping it with attempts:0",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "55f5c9bccd3515c9b162f73769116f5165f81b489d3b11b7dbebb1cde47ff196",
+        "currentCallShas": [
+          "be90a07aa3540240a2f156231d0461cfd9952cfa814be0d4839dc7bef8230d75"
+        ]
+      },
+      {
+        "name": "carry-respawn TERMINAL FALLBACK \u2014 a successor that emits NOTHING still gets its turn (WI-38257) > stores only operator-pin enums for an interactive stale host (route=%s) and preserves the D-008 no-reexec refusal",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "6815281828eb646a95d41148fc92ae284bfedfcfbc3da3b00f82a217c81c8e4b",
+        "currentCallShas": [
+          "6cde940ab4c990d2cae08a44a1aea3b6ec6e6bbecdfcd82a245001043e077285"
+        ]
+      },
+      {
+        "name": "carry completion follows native delivery and reanchor (WI-10004791) > does not confuse a booted Codex with a completed carry (persists=$persists, deferred=$deferred, stuckOnce=$stuckOnce)",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "dd63a2dc0a3d1ecb6bcb6adf7a44ad78901a5af6c1d0236c34677960308b205c",
+        "currentCallShas": [
+          "aef720b4b04fd57738db8b8ed5d0a57520d84099436c08a3973155094fba4b92"
+        ]
+      },
+      {
+        "name": "P-020 carry-respawn drill correlation > records the fresh native id, carry path, and first-prompt delivery in the durable host event log",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "81dd91abcee641965a9acb76b9e6fe9e8576b5717b985176140fc5bd16a2c062",
+        "currentCallShas": [
+          "f9933e81ee9daf24a095f23427c175f4216effec3c6a59319bdfd82ec1234a80"
+        ]
+      },
+      {
+        "name": "carry-respawn native turn-start proof (EI-21561923024113260) > retries one CR and one fresh epoch before terminally dropping an unverified native turn",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "bfbe9a21fc77640e0fac6edadb557a761c2da87380715ca74e6ceb767779d4cd",
+        "currentCallShas": [
+          "5aa3484bf5e1ef57da33c9a43fcac2c0376dc6273eca359e00424e9ab8142883"
+        ]
+      },
+      {
+        "name": "carry-respawn STALENESS guard \u2014 only drills expire; production carries remain must-deliver > preserves the age policy at the first prompt boundary (drill=%s)",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "c83b51bc36086a8e8780a0bf414e7b2d8a6bdb9b02b6b6fb3759acd9ac7f3c31",
+        "currentCallShas": [
+          "dfd26decfa5a08930948c369f093920eaed3f1a3c5d6f7f8fb47b8969cdb4f0e"
+        ]
+      },
+      {
+        "name": "RECYCLE respawns with FRESH session args + re-anchors identity (WI-1980 seam) > feeds the child the mintRecycleArgs-rewritten argv, fires onRespawn once with the fresh native id, and keeps the coord identity env unchanged",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "3552b81aa9b9d0e92d47828ea57e9083343364b875f663b8344ec98dafef4e2f",
+        "currentCallShas": [
+          "f918ccee4b56c4f29d7ccc2c71a23fa2be6c40aff1e66e2c7c9c07bbf29e53fb"
+        ]
+      },
+      {
+        "name": "RECYCLE respawn report ordering > waits for the async onRespawn report before publishing successor metadata and output wiring",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "eb9a4b09c482e5be76da9a646126c055a6b781bc7890f050edfafe144df4431c",
+        "currentCallShas": [
+          "eb9a4b09c482e5be76da9a646126c055a6b781bc7890f050edfafe144df4431c"
+        ]
+      },
+      {
+        "name": "ADOPTION \u2014 a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292) > writes the successor's orders, releases the discovery key, and leaves by the re-exec door WITHOUT respawning a child",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "e87aab8b3327596edd590b7e23cb0b662ce8564341433f299ad35010e442c13a",
+        "currentCallShas": [
+          "4f2b6023ed0880a8231fa6fa319b5dca889e436a03dd0b47cfaf838e75686c24"
+        ]
+      },
+      {
+        "name": "ADOPTION \u2014 a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292) > CONTROL: with no shim advertisement it respawns in place \u2014 a launcher nobody will re-run must never exit",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "40c37c73ab8c3999b95e616c0bd8dc4abcb942edb3a24ec40b633685008be84e",
+        "currentCallShas": [
+          "11206d204e20ce8f2a3ff507a8da8b7045259a4829c99be74fa56c583d74f118"
+        ]
+      },
+      {
+        "name": "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > a refused pin changes in the respawned child only when managed=%s",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "779a4c3e2f3ae1e8dd37e6c73e1a321c5be2b4c2d1361d3ddd6637c4d1bbc088",
+        "currentCallShas": []
+      },
+      {
+        "name": "RECYCLE heals a DEAD operator pin before the successor starts (EI-24091823697677465) > routes a direct :3170 pin through the same-build staging proxy before respawn",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "2e95ccac721cb464e0c220261d3963e4dee1b6bf36e8728fa3b5c30c8db40ddb",
+        "currentCallShas": [
+          "7dd2c52dd0601eeb45e6d97e998afec684900bb90eca812e5415e2d5708c3e65"
+        ]
+      },
+      {
+        "name": "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > boots the successor on the REFRESHED render, not the predecessor's",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "3ff9b9baa5d8fd7d27a81020e0fae33af73d337475f67880fe5ab1823e14a044",
+        "currentCallShas": [
+          "059b8ed80aa45da8385dfef3985816970c802a7b766df8c7841be2f7c3462e41"
+        ]
+      },
+      {
+        "name": "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > KEEPS the inherited render when the refresh yields nothing (fail-soft, = pre-fix behaviour)",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "576b79c4df96cc9f0b151348bb156ab0fde583be30f67ea818bc3996dd64ecc4",
+        "currentCallShas": [
+          "576b79c4df96cc9f0b151348bb156ab0fde583be30f67ea818bc3996dd64ecc4"
+        ]
+      },
+      {
+        "name": "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > PROOF the guard discriminates: under the PRE-FIX mint the successor inherits the stale render even though a refresh was available",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "ec44e50dd5258be275a993acd8ab9ff0992f70b0c9185c4cf94119b1ebd275da",
+        "currentCallShas": [
+          "ec44e50dd5258be275a993acd8ab9ff0992f70b0c9185c4cf94119b1ebd275da"
+        ]
+      },
+      {
+        "name": "RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003) > REFUSES the respawn on an identity-activation refusal instead of booting the inherited render (P-016 D-012)",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "fb48ea6bcd18d0f0a2601bd875a29198d519f8707147f359de6a76cf9c918d6b",
+        "currentCallShas": [
+          "fb48ea6bcd18d0f0a2601bd875a29198d519f8707147f359de6a76cf9c918d6b"
+        ]
+      },
+      {
+        "name": "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > RETRIES past a fresh child that stays busy beyond one busy-cap, injecting the carry once it settles",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "95776de0e58a7424ca6ebee65e6ac9de50de808fd1afd01d50495a7394c413b9",
+        "currentCallShas": [
+          "95776de0e58a7424ca6ebee65e6ac9de50de808fd1afd01d50495a7394c413b9"
+        ]
+      },
+      {
+        "name": "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > retries one fresh epoch, then DROPS LOUDLY when the child never settles",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "b48d1364e1ef0bb18babaab90b948069f1eacb7754f1b464531a2ff9e3935ce2",
+        "currentCallShas": [
+          "c8bfe23ee99aa714cb571e8f35b1c79a7f2abae79ad578bfb2b10597e798d72b"
+        ]
+      },
+      {
+        "name": "RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (WI-1941) > books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered (WI-42318)",
+        "preserved": false,
+        "sameCallAst": false,
+        "oldCallSha": "eaf8f01a5357ed4e9553fa1d5302d9781928de7e013706664a14384da56e9c82",
+        "currentCallShas": []
+      },
+      {
+        "name": "final interactive terminal handoff (WI-42458) > disables mouse reporting after the child exits before returning the terminal to its shell",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "44e3abfe785acfd64dd1e65c6eb6e57788691ae370490d578d4a9b7c1d9024b7",
+        "currentCallShas": [
+          "44e3abfe785acfd64dd1e65c6eb6e57788691ae370490d578d4a9b7c1d9024b7"
+        ]
+      },
+      {
+        "name": "force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg) > lands a real SIGINT mid-run through the control socket; the shell survives",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "767b12af8dc353dc565ce429a63be4cbf7751a39dbd8dd893e017d725606f003",
+        "currentCallShas": [
+          "767b12af8dc353dc565ce429a63be4cbf7751a39dbd8dd893e017d725606f003"
+        ]
+      },
+      {
+        "name": "orphan / vanished-terminal teardown (WI-3141) > tears down (kills the child, cleans up socket+meta) when the bridged terminal closes \u2014 stdin EOF/close",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "4224d3ec6350456771908d48549a8d740c0a66fb6cc387336fb54fe73ea8f1ea",
+        "currentCallShas": [
+          "cd1770299709e1bca43b89eef296639561f4b12a9869fbb30da32d0624508123"
+        ]
+      },
+      {
+        "name": "orphan / vanished-terminal teardown (WI-3141) > tears down when the launching parent dies (reparent-to-init) even if the pts stays alive",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "202ae5f0b959c70c92437fdc69de539fe42a93ab5878acf5ff4fa3ff6e54aeb1",
+        "currentCallShas": [
+          "04ddf444f44725df60d4ddf087304a94619ae6b9148f96961643dd0a0c5f2a86"
+        ]
+      },
+      {
+        "name": "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > self-heals: recreates a deleted json + re-binds a deleted sock while the host is live",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "a50ea6efa502b6ad115b18324aa7208a881c9444bbdd230ef1eae5fad694b1ef",
+        "currentCallShas": [
+          "80edc3c0cb69f260ddb96fda1f0c7f9084f657c826edf7b90774a69e5181fefb"
+        ]
+      },
+      {
+        "name": "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > exit cleanup leaves a SUCCESSOR's registration alone (no unlink of a key that is no longer ours)",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "ea24431ca96157c00b1d1fb1f1f6fd8791a9543271c61a10a5bcae751deb2ebb",
+        "currentCallShas": [
+          "ea24431ca96157c00b1d1fb1f1f6fd8791a9543271c61a10a5bcae751deb2ebb"
+        ]
+      },
+      {
+        "name": "WI-3455 \u2014 discovery key ownership + self-heal (the su-a8f52 stranding class) > stands down while a LIVE psu-marked process owns the key, then reclaims it after that process dies",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "c6d7f8321305e7ac2d0b6854b9ebb5727d4626fdaf6c44dcfaadc5ce445c710a",
+        "currentCallShas": [
+          "c6d7f8321305e7ac2d0b6854b9ebb5727d4626fdaf6c44dcfaadc5ce445c710a"
+        ]
+      },
+      {
+        "name": "SHUTDOWN \u2014 a finished agent session exits and closes its own window (WI-6638) > ACCEPTS an agent-launched, never-typed-into session: kills the child and tears the host down",
+        "preserved": true,
+        "sameCallAst": false,
+        "oldCallSha": "a6761532e4e5cff500c4f2fa9457de1bbb5926abf6743db29138fc9ec4f05924",
+        "currentCallShas": [
+          "c186935fc8590b80422913b65dd780b5d60fcfa3879ae7a5df9de4a417f8204d"
+        ]
+      },
+      {
+        "name": "SHUTDOWN \u2014 a finished agent session exits and closes its own window (WI-6638) > REFUSES a session with no PAPERCUSP_LAUNCHED_BY and leaves it ALIVE \u2014 a hand-started window is the owner's",
+        "preserved": true,
+        "sameCallAst": true,
+        "oldCallSha": "7a6ae64da37c07dcd7afffdaf3c6efcb0c134f3c6760d684b7ab2abbe526a3a3",
+        "currentCallShas": [
+          "7a6ae64da37c07dcd7afffdaf3c6efcb0c134f3c6760d684b7ab2abbe526a3a3"
+        ]
+      }
+    ]
+  },
+  "evolvedDeclarations": [
+    {
+      "old": "long Codex kickoff viewport",
+      "current": "Adds isResume matrix; all original receipt/publication combinations remain at isResume=false.",
+      "kind": "input-expansion"
+    },
+    {
+      "old": "three managed backend parent proofs",
+      "current": "Each backend adds accepted/unknown/refused acknowledgement cases; accepted cases retain proof-before-ack and child-exit preservation assertions.",
+      "kind": "input-expansion"
+    },
+    {
+      "old": "Claude composer glyph while repainting",
+      "current": "Adds drill-metadata and role matrix; original metadata-present/default-role shape retained.",
+      "kind": "input-expansion"
+    },
+    {
+      "old": "managed/unmanaged refused-pin healing",
+      "current": "Adds graceful-signal-resistant predecessor matrix; original non-resistant shapes retained.",
+      "kind": "input-expansion"
+    },
+    {
+      "old": "unverified carry drops and cleans up fatally",
+      "current": "Unverified carry remains dropped, never delivered, while child remains controllable until explicit quit. Historical fatal-cleanup oracle is not claimed unchanged.",
+      "kind": "changed-current-behavior"
+    }
+  ],
+  "canonicalNamedCaseComparison": {
+    "oldRecorded": 64,
+    "sameTitles": 56,
+    "renamedRecorded": 8,
+    "mapping": "Four viewport titles map to resume=false, three backend parent-proof titles map to accepted acknowledgement, one Claude repaint title maps to metadata=true/default role. Current canonical run includes all mapped controls.",
+    "scope": "Old ledger retained64 of98 passing titles. This comparison does not assert canonical identities for the other34."
+  },
+  "calibration": "Inline fixture programs simulate native backend logs; literal checksum/token/native-ref plus independently observed proof file establish expected positive and negative outcomes before acknowledgement. Private discovery/native homes, helper, manifests and lock are pinned. Real PTY children execute Node fixtures; no actual agent or consult replay.",
+  "sourceBoundary": "Original two source paths preserved and bounded direct-import helpers/manifests added; test/inline fixture plus helper/manifests/lock declared. No full transitive graph claim.",
+  "remaining": [
+    "Full GF-P002-source clause remains FAIL.",
+    "Latest recorded falsifiability and L4 floor are UNKNOWN after agent-launch-core.ts committed drift; requalify exact existing baseline/mutant at changed bytes.",
+    "Traceability and execution-integrity gaps still name original28326/28545; untouched.",
+    "Native P006, R5, original/supplementary cohorts, independent acceptance and exact shipment remain open."
+  ]
+}

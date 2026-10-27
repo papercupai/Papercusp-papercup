@@ -27,7 +27,35 @@ import { isKnownWorkspace } from './workspace-registry';
 
 export const WORKSPACE_HEADER = 'x-papercusp-workspace';
 
-export const workspaceContextMiddleware: MiddlewareHandler = async (c, next) => {
+export interface WorkspaceContextTransport {
+  /** Host-owned transport: authorize the selection before consuming either hint.
+   * A refusal is a response, never permission to run the request locally. */
+  forwardMachineRequest(request: Request, machine: string): Promise<Response>;
+}
+
+export function createWorkspaceContextMiddleware(transport?: WorkspaceContextTransport): MiddlewareHandler {
+  return async (c, next) => {
+  // A transport must resolve a remote machine before entering this local
+  // workspace chain. The authenticated operator-http relay consumes that
+  // selection and filters it from forwarded headers. An unconsumed hint is
+  // never permission to run the operation here under an otherwise valid ws.
+  // A bound hosted channel already consumed the header. Its stream query is
+  // left intact for compatibility; only a host with an explicit machine
+  // transport interprets query hints here.
+  const header = c.req.header('x-papercusp-machine')?.trim();
+  const query = transport ? c.req.query('desktopHost')?.trim() : undefined;
+  if (header && query && header !== query) {
+    return c.json({ error: 'machine_selection_mismatch' }, 400);
+  }
+  const machine = header || query;
+  if (machine && machine !== 'local') {
+    if (transport) return transport.forwardMachineRequest(c.req.raw, machine);
+    return c.json({
+      error: 'selected_machine_not_connected',
+      machine,
+      message: 'Connect the selected machine before using its workspace.',
+    }, 409);
+  }
   // Header (fetch) first; ?ws= query (streams — EventSource/WS can't set headers) as fallback.
   const raw = c.req.header(WORKSPACE_HEADER) ?? c.req.query('ws');
   const ws = raw?.trim();
@@ -41,4 +69,7 @@ export const workspaceContextMiddleware: MiddlewareHandler = async (c, next) => 
     return c.json({ error: 'unknown_workspace', workspace: ws }, 400);
   }
   return runWithWorkspace(ws, () => next());
-};
+  };
+}
+
+export const workspaceContextMiddleware = createWorkspaceContextMiddleware();

@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   armTargetedTaskReuse,
+  defaultRunnerIdentity,
   isUnitVitestTaskScript,
   LANE_SCRIPTS,
+  nodeVersionRunnerIdentity,
   resolveWorkspacePackage,
   restoreCandidateCheckpointForReuse,
 } from '../../../../scripts/lib/targeted-task-reuse.mjs';
@@ -216,6 +218,27 @@ afterEach(() => {
 });
 
 describe('isUnitVitestTaskScript / LANE_SCRIPTS', () => {
+  it('binds npm proof identity to the actual workspace PATH and refuses composite or hooked launchers', () => {
+    fixture();
+    const workspaceRoot = join(root, 'packages/lane-ws');
+    const bin = join(workspaceRoot, 'node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(root, 'node_modules'));
+    writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+      `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+    writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env node\n', { mode: 0o755 });
+    const actualExecutable = process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath;
+    symlinkSync(actualExecutable, join(bin, 'node'));
+    const task = { workspaceRoot, scriptText: 'vitest run' };
+    const identity = defaultRunnerIdentity(root, process.env, 'proof-v3', task);
+    expect(identity).toMatch(/^proof-v3 runtime-v1 [a-f0-9]{64}$/);
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, scriptText: 'vitest run && bun other.ts' })).toBeNull();
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', { ...task, preScript: 'bun setup.ts' })).toBeNull();
+    writeFileSync(join(bin, 'vitest'), '#!/usr/bin/env bun\n');
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task)).toBeNull();
+  });
+
   it('names the unit tasks affected-tests arms reuse on, and nothing else', () => {
     expect([...LANE_SCRIPTS]).toEqual(['test:lane-pure', 'test:lane-stateful']);
     expect(isUnitVitestTaskScript('test')).toBe(true);
@@ -468,7 +491,14 @@ describe('armTargetedTaskReuse', () => {
     fixture('vitest run');
     const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
     const wsRoot = join(root, 'packages/lane-ws');
-    symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    // Own the fixture's generation marker: writing through a shared node_modules
+    // symlink would falsely publish a generation for the real mutable checkout.
+    mkdirSync(join(root, 'node_modules'));
+    symlinkSync(join(repoRoot, 'node_modules/vitest'), join(root, 'node_modules/vitest'), 'dir');
+    mkdirSync(join(root, '.git'));
+    writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+    writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+      `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
     mkdirSync(join(wsRoot, 'src'));
     const skipConsumer = join(repoRoot, 'libs/test-config/src/test-pass-reuse-skip.ts');
     writeFileSync(join(wsRoot, 'vitest.config.mts'),
@@ -485,6 +515,7 @@ describe('armTargetedTaskReuse', () => {
         cwd: wsRoot, env, encoding: 'utf8', timeout: 30_000,
       });
       expect(result.error, result.stderr).toBeUndefined();
+      expect(result.stdout.trim(), `Vitest status=${result.status} signal=${result.signal}\n${result.stderr}`).not.toBe('');
       return { status: result.status, report: JSON.parse(result.stdout) };
     };
     const runGroupId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
@@ -495,7 +526,8 @@ describe('armTargetedTaskReuse', () => {
     const first = run(env);
     expect(first.status).toBe(0);
     expect(first.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['a.test.ts', 'b.test.ts']);
-    const identity = `proof-v3 ${process.version} ${process.platform} ${process.arch}`;
+    const identity = defaultRunnerIdentity(root, env);
+    expect(identity).toMatch(/^proof-v3 runtime-v1 [a-f0-9]{64}$/);
     const loadProofs = async () => ({ rows: 2, proofs: new Map(
       ['a', 'b'].map(name => [`packages/lane-ws/${name}.test.ts`, {
         ...proof(OLD, [`packages/lane-ws/${name}.test.ts`, `packages/lane-ws/src/${name}.ts`]), runnerIdentity: identity,
@@ -854,5 +886,87 @@ describe('armTargetedTaskReuse', () => {
       expect(ended).toBe(1);
       armed.finish();
     });
+  });
+});
+
+/**
+ * WI-6554700010029685: repair head 327e4d1d of frozen candidate 8c03b5dc pins a recorder (libs/test-config
+ * @ c389255bc0) that writes `<format> <process.version> <process.platform> <process.arch>`. The gate's
+ * selector measured the runtime fingerprint instead, so its proof read matched nothing (`rows=0`) or it
+ * gave up (`no-runner-identity`), and every repair round re-ran ~5,900 files. The identity must follow
+ * the JUDGED recorder's scheme, exactly as the proof format already does (WI-6554700010008589).
+ */
+describe('runner identity follows the judged recorder scheme (WI-6554700010029685)', () => {
+  /** Verbatim from libs/test-config @ c389255bc0 src/test-pass-reuse-skip.ts. */
+  const LEGACY_RECORDER = [
+    "export const REUSE_PROOF_FORMAT = 'proof-v3';",
+    '/** Proof format + node version + platform + arch of this process (D-004 rule 6, P-001). */',
+    'export function executedSourceRunnerIdentity(): string {',
+    '  return `${REUSE_PROOF_FORMAT} ${process.version} ${process.platform} ${process.arch}`;',
+    '}',
+    '',
+  ].join('\n');
+  const legacyRecorder = () => {
+    const file = join(root, 'libs/test-config/src/test-pass-reuse-skip.ts');
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, LEGACY_RECORDER);
+  };
+  /** A lane script shape the fingerprint capture refuses (env prefix + wrapper), as operator-core's are. */
+  const WRAPPED = 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests';
+
+  it('measures the PATH node exactly as a pre-fingerprint lineage does, and null when the probe fails', () => {
+    const calls: Array<{ file: string; args: string[]; cwd: unknown; env: unknown }> = [];
+    const env = { PATH: '/x' };
+    const exec = (file: string, args: string[], options: { cwd?: unknown; env?: unknown }) => {
+      calls.push({ file, args, cwd: options.cwd, env: options.env });
+      return 'v25.9.0 linux x64\n';
+    };
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', exec)).toBe('proof-v3 v25.9.0 linux x64');
+    expect(calls).toEqual([{ file: 'node', args: ['-p', "process.version + ' ' + process.platform + ' ' + process.arch"],
+      cwd: '/judged', env }]);
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', () => { throw new Error('ENOENT'); })).toBeNull();
+    expect(nodeVersionRunnerIdentity('/judged', env, 'proof-v3', () => '  \n')).toBeNull();
+  });
+
+  it('takes the node-version identity for a legacy judged tree, whatever the task script shape', () => {
+    fixture(WRAPPED);
+    legacyRecorder();
+    const task = { workspaceRoot: join(root, 'packages/lane-ws'), scriptText: WRAPPED };
+    const legacy = defaultRunnerIdentity(root, process.env, 'proof-v3', task);
+    expect(legacy).toMatch(/^proof-v3 v\d+\.\d+\.\d+ \S+ \S+$/);
+    expect(legacy).toBe(nodeVersionRunnerIdentity(root, process.env, 'proof-v3'));
+    // The pre-fix measurement of the same task: the fingerprint capture refuses the wrapper.
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task, 'runtime-fingerprint')).toBeNull();
+    // An unclassifiable recorder keeps the fingerprint measurement (the pre-fix behaviour).
+    expect(defaultRunnerIdentity(root, process.env, 'proof-v3', task, null)).toBeNull();
+  });
+
+  it('arms reuse on a legacy lineage from the default identity seam, and the judged consumer accepts the list', async () => {
+    fixture();
+    legacyRecorder();
+    const expected = nodeVersionRunnerIdentity(root, baseEnv(), 'proof-v3');
+    expect(expected).not.toBeNull();
+    const seen: unknown[] = [];
+    // The proof read keys on the identity, as the database read does: any other identity loads nothing.
+    const loadProofs = async ({ runnerIdentity }: { runnerIdentity: string }) => {
+      seen.push(runnerIdentity);
+      const rows = runnerIdentity === expected
+        ? [['packages/lane-ws/a.test.ts', { ...proof(HEAD, ['packages/lane-ws/a.test.ts', 'packages/lane-ws/src/a.ts']), runnerIdentity: expected }]] as const
+        : [];
+      return { proofs: new Map(rows), rows: rows.length };
+    };
+    const seams = deps({ loadProofs }) as Record<string, unknown>;
+    delete seams.runnerIdentity; // the default seam is the thing under test
+    delete seams.proofFormat;
+    const armed = await armTargetedTaskReuse({
+      root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(), scope: 'targeted-gate',
+      deps: seams as Deps,
+    });
+    expect(seen).toEqual([expected]);
+    expect(armed.reused).toBe(1);
+    const list = parseReuseSkipList(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
+    expect(list.runnerIdentity).toBe(expected);
+    expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: expected! })).toMatchObject({ applied: true });
+    armed.finish();
   });
 });

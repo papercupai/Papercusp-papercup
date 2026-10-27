@@ -60,8 +60,11 @@ import { reportSessionPortDelivery } from '../scripts/psu-launcher.mjs';
 // Default it to a no-op for the file; a test that passes its own onExit still wins.
 // Fixture owners have no live session to notify. Keep the detached compaction
 // bridge inside the fixture; completion-order tests supply their own emit spy.
-const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
-  hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
+let testHostEventNames: Set<string> | null = null;
+const hostThroughPty: typeof hostThroughPtyProduction = (o) => {
+  testHostEventNames?.add(basename(eventLogPathForOwner(o.ownerId)));
+  return hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
+};
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
@@ -78,10 +81,15 @@ import { linuxProcStateFromStat } from '@papercusp/operator-core/lib/process-ide
  * output, so a non-reproducing failure carries its own evidence.
  */
 const FAILURE_EVENT_TAIL_LINES = 30;
-function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT_TAIL_LINES): string {
+function hostEventTailsSince(
+  dir: string,
+  sinceMs: number,
+  lines = FAILURE_EVENT_TAIL_LINES,
+  selectedNames?: ReadonlySet<string>,
+): string {
   let names: string[];
   try {
-    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl'));
+    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl') && (!selectedNames || selectedNames.has(n)));
   } catch {
     return `(host event dir ${dir} unreadable)`;
   }
@@ -101,8 +109,12 @@ function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT
 
 beforeEach((ctx) => {
   const startedAtMs = Date.now() - 1_000;
+  const eventNames = new Set<string>();
+  testHostEventNames = eventNames;
   ctx.onTestFailed(({ task }) => {
-    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs);
+    // A previous fixture can finish after this test started. Its log must not
+    // displace this test's own host evidence in the reporter's bounded message.
+    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs, FAILURE_EVENT_TAIL_LINES, eventNames);
     console.error(`[WI-10005017] host events for failed test "${task.name}":\n${evidence}`);
     const first = task.result?.errors?.[0];
     if (first && typeof first.message === 'string') first.message += `\n[host events]\n${evidence}`;
@@ -115,8 +127,10 @@ describe('failure evidence: host event tails (WI-10005017)', () => {
     try {
       const fresh = join(dir, 'su-fresh.events.jsonl');
       const stale = join(dir, 'su-stale.events.jsonl');
+      const peer = join(dir, 'su-previous-fixture.events.jsonl');
       writeFileSync(fresh, Array.from({ length: 40 }, (_, i) => `{"kind":"e${i}"}`).join('\n'));
       writeFileSync(stale, '{"kind":"old"}\n');
+      writeFileSync(peer, '{"kind":"late-previous-fixture"}\n');
       const old = new Date(Date.now() - 60_000);
       utimesSync(stale, old, old);
       writeFileSync(join(dir, 'su-fresh.json'), '{}');
@@ -127,6 +141,10 @@ describe('failure evidence: host event tails (WI-10005017)', () => {
       expect(out).not.toContain('{"kind":"e34"}');
       expect(out).not.toContain('su-stale');
       expect(out).not.toContain('--- su-fresh.json ');
+      const selected = hostEventTailsSince(dir, Date.now() - 10_000, 5, new Set([basename(fresh)]));
+      expect(selected).toContain('su-fresh.events.jsonl');
+      expect(selected).not.toContain('su-previous-fixture');
+      expect(selected).not.toContain('late-previous-fixture');
       expect(hostEventTailsSince(dir, Date.now() + 60_000)).toBe('(no host event log written during this test)');
       expect(hostEventTailsSince(join(dir, 'missing'), 0)).toMatch(/unreadable/);
     } finally {
@@ -149,6 +167,24 @@ function fakeIo() {
 
 const FLATTENED_CODEX_READY_FOOTER =
   '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
+
+it('acknowledges startup with the exact initial live PTY PID', async () => {
+  const ownerId = `su-startup-witness-${process.pid}-${Date.now()}`;
+  const signals = new EventEmitter(), onSpawn = vi.fn();
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({ command: execPath,
+    args: ['-e', "process.stdout.write('STARTUP_WITNESS_READY\\n');setInterval(()=>{},1000)"],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io, bridgeTty: false, signalSource: signals, onSpawn });
+  try {
+    await vi.waitFor(() => expect(captured()).toContain('STARTUP_WITNESS_READY'), { timeout: 5000 });
+    await vi.waitFor(() => expect(existsSync(metaPathFor(ownerId))).toBe(true));
+    const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ ptyPid: meta.ptyPid });
+    expect(meta.ptyPid).not.toBe(process.pid);
+    expect(() => process.kill(meta.ptyPid, 0)).not.toThrow();
+  } finally { signals.emit('SIGTERM'); await done; }
+}, 10_000);
 
 it('attributes real PTY dialog submissions to machine control or human terminal input', async () => {
   const ownerId = `su-dialog-host-${process.pid}-${Date.now()}`;
@@ -1773,12 +1809,27 @@ describe('session-port managed seed + native persistence helpers', () => {
   }, 35_000);
 
   it('drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer', async () => {
+    // Exercise the existing deadline after the child has actually painted its
+    // Starting frame. Process startup latency must not choose another drop path.
+    let clock = Date.now();
+    const kickoffStartedAt = clock;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
     const stderrWrite = vi.spyOn(process.stderr, 'write');
     const run = runCodexStartingKickoff('starting-ceiling', codexStartingChild(null, 9000), {
       PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
       PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '3000',
     });
     try {
+      await vi.waitFor(() => {
+        expect(run.hostEvents().some((e) => e.kind === 'backend-session-frame-observed')).toBe(true);
+        expect(run.captured()).toContain('Starting');
+      }, { timeout: 8000 });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+      clock = kickoffStartedAt + 1000;
+      await vi.waitFor(() => {
+        expect(run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame')).toHaveLength(1);
+      });
+      clock = kickoffStartedAt + 3000;
       const dropped = await vi.waitFor(() => {
         const row = run.hostEvents().find((e) => e.kind === 'startup-turn-dropped');
         expect(row).toBeDefined();
@@ -1796,8 +1847,10 @@ describe('session-port managed seed + native persistence helpers', () => {
       const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
       expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(true);
     } finally {
+      now.mockRestore();
       stderrWrite.mockRestore();
-      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      // This fixture deliberately swallows input while Starting, including QUIT.
+      run.signalSource.emit('SIGTERM');
       await run.done;
     }
   }, 20_000);
@@ -2709,7 +2762,12 @@ describe('hostThroughPty real round-trip', () => {
           return reportSessionPortDelivery(
             { portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 999 },
             { persisted: true, renderedHash: hash, nativeRef: nativeFile },
-            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent },
+            // WI-6554700010029943: this case asserts ordering and the emitted ack event, not
+            // timing. Every fetch after the two mocked ones is unanswered, so the status-read
+            // re-read backoff (WI-6554700010029882: 2+4+8+16s) would run on the real clock
+            // and overrun the 15s test timeout. Keep the retry SEMANTICS, drop the wall time.
+            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent,
+              sleepImpl: async () => {} },
           );
         }
       });
@@ -4566,14 +4624,19 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
 
-      // BOOT, then spin (busy) for ~2000ms before going quiet + echoing stdin —
-      // a generous window (well past this environment's fork/pty-startup
-      // latency) so the message, sent once BOOT is confirmed AND still while
-      // spinning, ages well past the tiny CARRY_STALE_MS below during the
-      // busy-gate's wait for it to settle.
+      const nativeHome = mkdtempSync(join(tmpdir(), 'carry-age-native-'));
+      const nativeId = 'bfbf7540-c7bd-4b6c-9d66-6557f1a13722';
+      const successorNativeId = '36c766c0-507c-41a7-ae91-f327e0dc9693';
+      let sourcePid: number | null = null;
+      const nativeTranscript = join(nativeHome, 'sessions', `rollout-${nativeId}.jsonl`);
+      mkdirSync(dirname(nativeTranscript), { recursive: true });
+      // Hold a positive native busy boundary until the accepted message has
+      // actually aged past 50ms. Timed PTY output alone did not establish that
+      // precondition: run22046694 recycled only 3ms after receipt.
       const childCode =
+        "const fs=require('node:fs');if(!fs.existsSync(process.env.NATIVE_FILE)){" +
+        "fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'carry-age'}})+'\\n');}" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
-        'let n=0;const iv=setInterval(()=>{process.stdout.write(".");if(++n>100)clearInterval(iv);},20);' +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -4591,12 +4654,13 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
           // session. Ambient identity/configuration must not rewrite the
           // handoff contract this test is asserting.
           PAPERCUSP_ADV_SESSION_ID: '42',
-          CODEX_HOME: '/tmp/codex-home-for-handoff',
+          CODEX_HOME: nativeHome,
+          NATIVE_FILE: nativeTranscript,
           PAPERCUSP_AGENT: 'codex',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the busy gate must NOT defer/drop here
-          PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50', // tiny — the ~600ms spin easily ages past it
+          PAPERCUSP_PSU_PTY_CARRY_STALE_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
@@ -4609,31 +4673,42 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         ownerId,
         io,
         bridgeTty: false,
+        resolveRespawnNativeId: (pid: number) => {
+          sourcePid ??= pid;
+          return pid === sourcePid ? nativeId : successorNativeId;
+        },
+        onRespawn: async () => true,
         nativePersistenceTimeoutMs: 200,
         onExit: (c: number) => { exitCode = c; },
       });
 
       try {
-        // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-        // varies by environment; the child's ~2000ms spin gives ample margin
-        // to detect BOOT and still inject while it's genuinely busy.
+        // BOOT follows the persisted native task_started row.
         const bootDeadline = Date.now() + 3_000;
         while (Date.now() < bootDeadline && !captured().includes('BOOT:')) {
           await sleep(20);
         }
         expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
 
-        // Sent while the child is still busy spinning: receivedAtMs is stamped
-        // NOW, then the (unconditional) busy gate waits out the remaining spin
-        // + quiet(100ms) before this would otherwise deliver — comfortably
-        // aging past the 50ms stale cap during that wait.
         await envelopeInject(sock, {
           mode: 'carry-respawn',
           ownerId,
           data: 'CARRIED',
           systemPromptAddendum: 'stale carry test',
+          sourceTranscriptPath: nativeTranscript,
           ...(isDrill ? { drillId: 'age-expiry-control' } : {}),
         });
+        await vi.waitFor(() => {
+          const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+          const receipt = events.find((event) => event.kind === 'control-carry-origin-stamped');
+          expect(receipt).toBeDefined();
+          expect(Date.now() - Date.parse(receipt.ts)).toBeGreaterThan(50);
+          expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
+        });
+        writeFileSync(nativeTranscript, readFileSync(nativeTranscript, 'utf8') + JSON.stringify({
+          type: 'event_msg', timestamp: new Date().toISOString(),
+          payload: { type: 'task_complete', turn_id: 'carry-age' },
+        }) + '\n');
 
         const deadline = Date.now() + 8_000;
         while (Date.now() < deadline) {
@@ -4674,6 +4749,7 @@ describe('carry-respawn STALENESS guard — only drills expire; production carri
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
         await done;
         if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(nativeHome, { recursive: true, force: true });
       }
     },
     25_000,
@@ -4753,6 +4829,70 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
       expect(existsSync(meta)).toBe(false);
     },
     25_000,
+  );
+});
+
+describe('Codex RECYCLE re-anchors the successor native id (WI-6554700010029835)', () => {
+  // A Codex recycle mints no native id (mintRecycleArgs returns nativeId:null):
+  // the successor's id exists only once Codex starts. The host must resolve it
+  // from the exact successor PTY child and report it through onRespawn, or a
+  // later untracked resume orphans this owner. The verified-carry announcement
+  // cannot stand in for that binding here: a plain recycle has no carry.
+  it(
+    'resolves the successor id from the new child and reports it through onRespawn',
+    async () => {
+      const ownerId = `su-codex-recycle-reanchor-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+' ARGV:'+process.argv[process.argv.length-1]+'\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const PREDECESSOR_NATIVE = '01a1aaaa-0000-7000-8000-000000000001';
+      const SUCCESSOR_NATIVE = '01a1bbbb-0000-7000-8000-000000000002';
+      let sourcePid: number | null = null;
+      const respawns: string[] = [];
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintRecycleArgs: (a: string[]) => ({ args: a.slice(0, -1).concat('RECYCLED'), nativeId: null }),
+        resolveRespawnNativeId: (pid: number) => {
+          sourcePid ??= pid;
+          return pid === sourcePid ? PREDECESSOR_NATIVE : SUCCESSOR_NATIVE;
+        },
+        onRespawn: async (nativeId: string) => { respawns.push(nativeId); return true; },
+        onExit: () => {},
+      });
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('ARGV:ORIGINAL'), { timeout: 8000 });
+        await vi.waitFor(() => expect(sourcePid).not.toBeNull(), { timeout: 8000 });
+        await controlInject(sock, 'recycle', '');
+        await vi.waitFor(() => expect(captured()).toContain('ARGV:RECYCLED'), { timeout: 10_000 });
+        await vi.waitFor(() => expect(respawns).toContain(SUCCESSOR_NATIVE), { timeout: 8000 });
+        expect(respawns).not.toContain(PREDECESSOR_NATIVE);
+        await vi.waitFor(() => {
+          const rows = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({
+            kind: 'respawn-binding-confirmed', nativeId: SUCCESSOR_NATIVE,
+          }));
+        }, { timeout: 8000 });
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    30_000,
   );
 });
 
@@ -6468,6 +6608,11 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
       // Advertised so a would-be requester can see the verdict before sending.
       expect(m.caps).toContain('shutdown');
       expect(m.caps).toContain('shutdown-identity');
+      // EI-27053660657887116: this host has no resolveRespawnNativeId (the Claude
+      // shape), so it can never match a pending-carry fence identity and must not
+      // advertise one; advertising it made every request-compaction a refusal.
+      expect(m.caps).toContain('carry-respawn');
+      expect(m.caps).not.toContain('pending-carry-fence-v1');
       expect(m.launchedBy).toBe('su-the-launching-agent');
 
       const staleAck = await injectForAck(sock, {

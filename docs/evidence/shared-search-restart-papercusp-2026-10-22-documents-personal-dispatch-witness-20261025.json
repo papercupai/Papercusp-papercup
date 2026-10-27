@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-c",
+  "status": "partial-contributing-evidence",
+  "scope": "Isolated actual documents:search dispatch, personal stored reader and structured result projection",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57",
+    "frozenSourcePinsMatched": 10,
+    "capturedSourcePins": 14,
+    "sourcePinsStableAcrossRun": true,
+    "additionalSchemaPin": "libs/papercusp/libs/db/sql/1414-vault-mail-partition.sql"
+  },
+  "test": {
+    "path": "packages/operator-core/lib/agent-tools/documents/search-personal-freshness.integration.test.ts",
+    "sha256": "15fad6348cefbd9763c53dfa805a35923621f68c6882254e6179bf53dfeb562d",
+    "taskId": "0mvo3frj4xijrxb1bn7",
+    "exitCode": 0,
+    "testRunId": "22046345",
+    "ledgerOutcome": "inserted",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "databaseCleanup": "dropped",
+    "provenance": "Local shared-tree run; tested file untracked at execution and native worktreeDirty=true. Subsequent commit does not change the run provenance.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/documents/search-personal-freshness.integration.test.ts",
+      "taskId": "0mvo3gz5w1sb8b3rsgf",
+      "exitCode": 0,
+      "scope": "Named file and resolved importers; whole project and full runtime closure unmeasured"
+    }
+  },
+  "population": {
+    "observedFieldIds": [
+      "papercusp/documents:search/personal/title",
+      "papercusp/documents:search/personal/snippet",
+      "papercusp/documents:search/personal/occurredAt"
+    ],
+    "declaredCases": ["projected-fields", "content-update", "grant-transition", "privacy-transition"],
+    "executedCases": ["projected-fields", "content-update", "grant-transition", "privacy-transition"],
+    "unexecutedCases": [],
+    "nativeDispatchCaptures": 9,
+    "nonemptyFieldObservations": 18,
+    "unknownFieldOracleResults": 18,
+    "qualifiedFieldClaims": 0
+  },
+  "findings": [
+    "Actual dispatch matches separate canonical SQL values and excludes competing foreign-user and ungranted-source documents from rows and counts.",
+    "The next actual request observes an in-place content update with stable entity id and changed stored tuple revision.",
+    "The oracle detects an old-title replay; this is an oracle-input mutation only.",
+    "Grant revocation, a grant for another scope and vault disablement each refuse the personal leg without changing stored content revision.",
+    "A privacy-rule update changes projected privacy and the restricted count without changing stored content revision.",
+    "Migration 1414 requires the provider-neutral mail/personal:mail partition. Canonical seed assertions now check setup before dispatch capture."
+  ],
+  "limits": [
+    "Candidate/index and provider revisions are absent, so every returned-field oracle remains unknown/degrade.",
+    "Synthetic values enter through the real import writer; production provider ingestion and currentness are unmeasured.",
+    "Canonical xmin identifies a stored tuple, not a provider revision.",
+    "The authority snapshot covers fixture principal, vault settings, grants and privacy rules, not complete production authority closure.",
+    "An admin SQL client is injected into the in-process dispatcher; host authentication, RLS, native lexical tracing and full runtime closure remain unmeasured.",
+    "Sealed, live and remaining field populations, enforcement bypass/fix-revert proof, quality labels, costs, budgets, independent acceptance and shipment remain open."
+  ],
+  "artifacts": [
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-personal-dispatch-20261025-c/witness.json",
+      "sha256": "45f4c10cf9e5861a33d728a539191c6dcfed20e56da85ad1d85bcc2336f0d72c",
+      "bytes": 80661,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-personal-dispatch-20261025-c/native-ledger-receipt.json",
+      "sha256": "de6c32e96bfc30069978a0beab55375108cc0cf6c605cf0338668e7a2bdd2db5",
+      "bytes": 3520,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-personal-dispatch-20261025-c/native-test.log",
+      "sha256": "55547007abb8667a21f1af9f2547ebf3a25ef41c967822208fd0983064573f32",
+      "bytes": 12180,
+      "completeReadbackEqual": true
+    }
+  ],
+  "qualifiedBaseline": false,
+  "rankingTreatmentAllowed": false,
+  "shipped": false
+}

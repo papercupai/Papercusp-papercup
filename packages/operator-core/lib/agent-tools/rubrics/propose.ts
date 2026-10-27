@@ -30,7 +30,7 @@ import { normalizeRequirementSections } from '../../requirement-contract';
 import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
-import { lintAcceptanceCriterionMethods } from '../../rubrics-method-lint';
+import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 
 const driftMarkers = z
@@ -456,7 +456,7 @@ export default defineTool({
     // (non-blocking — see rubrics-replication-sql.ts for why this warns, never rejects).
     const replicationSqlCheck = await validateRubricReplicationSql(rubric.criteria);
     const methodLint =
-      rubric.kind === 'acceptance' ? lintAcceptanceCriterionMethods(rubric.criteria) : [];
+      rubric.kind === 'acceptance' ? await lintAcceptanceMethods(rubric.criteria, rubric.subjectHarnessSlug ?? undefined) : [];
     // acceptance-runtime-plane P-004: a live/deployed BAR with no evidenceRuntime is a
     // vetting finding (non-blocking) — undeclared, graders default to :3070 and wait on main.
     const runtimeFindings = rubric.kind === 'acceptance' ? runtimeVettingFindings(rubric.criteria) : [];

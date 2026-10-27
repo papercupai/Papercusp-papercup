@@ -460,9 +460,11 @@ export function censusCommand(
  * One subprocess per directory replaces a per-entry lstat awaited on the operator's event
  * loop, which ran at ~106 entries/s on bg-host: a 427,868-file directory on /mnt/data took
  * ~67 min that way and 15 s through find (measured 2026-10-12, WI-6554700010009487).
+ * Ignore a child disappearing after readdir, while retaining errors for an unavailable
+ * starting directory and permission/I/O failures (EI-26770034992506271).
  */
 export function censusOwnFilesArgs(dir: string): string[] {
-  return [dir, '-maxdepth', '1', '-type', 'f', '-printf', '%b %p\\0'];
+  return [dir, '-maxdepth', '1', '-ignore_readdir_race', '-type', 'f', '-printf', '%b %p\\0'];
 }
 
 /** Parse one censusOwnFilesArgs record (`<blocks> <path>`); null when malformed. */

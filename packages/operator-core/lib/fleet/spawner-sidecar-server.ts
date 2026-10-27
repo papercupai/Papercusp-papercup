@@ -42,6 +42,7 @@ import * as path from 'node:path';
 import * as net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
 // WI-6822: MUST be the first import in this file, textually before
 // `orchestrator-runner` below — it installs the flag-override store as an
 // import-time side effect. `orchestrator-runner` transitively imports
@@ -358,59 +359,88 @@ export function runSpawnerSidecarServer(deps: {
         // stall from admission/settlement IO. Reuse the request's exact RPC identity
         // and emit bounded static milestones only for slow executions. Fast reads
         // produce no logs; there is no periodic timer or durable per-read write.
-        const startedAt = performance.now();
-        let stage: ExecProcessStage | 'dispatch' = 'dispatch';
-        let childPid: number | null = null;
-        let slow = false;
-        const stageMs: Partial<Record<ExecProcessStage, number>> = {};
-        const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
-        const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
+        await withPgAcquireDiagnostics('spawner.process.exec', async (diagnosticRequestId) => {
+          const startedAt = performance.now();
+          let stage: ExecProcessStage | 'dispatch' = 'dispatch';
+          let childPid: number | null = null;
+          let slow = false;
+          const stageMs: Partial<Record<ExecProcessStage, number>> = {};
+          const admissionPhases = new Map<string, {
+            state: 'pending' | 'fulfilled' | 'rejected';
+            startedAt: number;
+            elapsedMs: number;
+          }>();
+          const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
+          const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
+            try {
+              const poolAcquisitions = pgAcquireTimingSnapshot();
+              console.info('[spawner-process-exec-stage]', {
+                event, serverGeneration, connectionId,
+                clientConnectionId: connection.clientConnectionId,
+                requestId: id, diagnosticRequestId, method: 'process:exec', sidecarPid: processExecIdentity.pid,
+                ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
+                childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
+                admissionPhases: Array.from(admissionPhases, ([phase, timing]) => ({
+                  phase,
+                  state: timing.state,
+                  elapsedMs: timing.state === 'pending'
+                    ? Math.max(0, Math.round(performance.now() - timing.startedAt))
+                    : timing.elapsedMs,
+                })),
+                poolAcquisitionContext: poolAcquisitions
+                  ? { requestId: poolAcquisitions.requestId, operation: poolAcquisitions.operation }
+                  : null,
+                poolAcquisitions: poolAcquisitions?.acquisitions ?? [],
+                poolAcquisitionsOmitted: poolAcquisitions?.omitted ?? 0,
+              });
+            } catch { /* diagnostics must not interrupt the execution/drain fence */ }
+          };
+          const slowTimer = setTimeout(() => { slow = true; report('slow'); }, deps.slowExecMs ?? 5_000);
+          slowTimer.unref?.();
           try {
-            console.info('[spawner-process-exec-stage]', {
-              event, serverGeneration, connectionId,
-              clientConnectionId: connection.clientConnectionId,
-              requestId: id, method: 'process:exec', sidecarPid: processExecIdentity.pid,
-              ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
-              childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
+            const executionParams = { ...params };
+            delete executionParams.callerLabel;
+            const execution = (deps.executeProcess ?? execProcess)(executionParams, {
+              signal: controller.signal,
+              onStage: (nextStage) => {
+                stage = nextStage;
+                stageMs[nextStage] ??= elapsedMs();
+                if (slow) report('progress');
+              },
+              onAdmissionPhase: (event) => {
+                const current = admissionPhases.get(event.phase);
+                admissionPhases.set(event.phase, {
+                  state: event.state,
+                  startedAt: event.state === 'pending' ? performance.now() : current?.startedAt ?? performance.now(),
+                  elapsedMs: event.state === 'pending' ? 0 : event.elapsedMs,
+                });
+                if (slow) report('progress');
+              },
+              onPid: (pid) => {
+                childPid = pid;
+                write(rpcNotification('spawn:pid', { requestId: id, pid }));
+              },
+              onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
+              admissionHealth: admissionWedge,
             });
-          } catch { /* diagnostics must not interrupt the execution/drain fence */ }
-        };
-        const slowTimer = setTimeout(() => { slow = true; report('slow'); }, deps.slowExecMs ?? 5_000);
-        slowTimer.unref?.();
-        try {
-          const executionParams = { ...params };
-          delete executionParams.callerLabel;
-          const execution = (deps.executeProcess ?? execProcess)(executionParams, {
-            signal: controller.signal,
-            onStage: (nextStage) => {
-              stage = nextStage;
-              stageMs[nextStage] ??= elapsedMs();
-              if (slow) report('progress');
-            },
-            onPid: (pid) => {
-              childPid = pid;
-              write(rpcNotification('spawn:pid', { requestId: id, pid }));
-            },
-            onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
-            admissionHealth: admissionWedge,
-          });
-          executions.set(id, execution);
-          const result = await execution;
-          write(rpcResult(result, id));
-        } catch (e) {
-          const err = e as { message?: string };
-          write(rpcError(-32603, err.message ?? 'Internal error', id));
-        } finally {
-          clearTimeout(slowTimer);
-          if (slow) report('request-settled');
-          controllers.delete(controller);
-          requests.delete(id);
-          requestMethods.delete(id);
-          requestCallerLabels.delete(id);
-          executions.delete(id);
-          forgetDrainedConnection();
-          exitWhenDrained();
-        }
+            executions.set(id, execution);
+            const result = await execution;
+            write(rpcResult(result, id));
+          } catch (e) {
+            const err = e as { message?: string };
+            write(rpcError(-32603, err.message ?? 'Internal error', id));
+          } finally {
+            clearTimeout(slowTimer);
+            if (slow) report('request-settled');
+            controllers.delete(controller);
+            requests.delete(id);
+            requestMethods.delete(id);
+            requestCallerLabels.delete(id);
+            executions.delete(id);
+            forgetDrainedConnection();
+            exitWhenDrained();
+          }
+        });
         return;
       }
 

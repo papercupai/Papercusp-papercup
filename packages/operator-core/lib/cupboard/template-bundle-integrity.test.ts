@@ -230,31 +230,33 @@ export function findUnvendoredImports(templatesDir: string): string[] {
 }
 
 /** Invariant 2, likewise pure so a fixture can prove it fires. */
-export function findVendorDrift(templatesDir: string, libsGenericDir: string): string[] {
+export function findVendorDrift(templatesDir: string, libsGenericDir: string,
+  options: { refs?: readonly string[]; prefix?: string; packages?: readonly string[] } = {}): string[] {
   const drift: string[] = [];
+  const prefix = options.prefix ?? 'templates';
   if (!existsSync(templatesDir)) return drift;
-  for (const ref of readdirSync(templatesDir).sort()) {
+  for (const ref of options.refs ?? readdirSync(templatesDir).sort()) {
     const templateDir = join(templatesDir, ref);
     if (!statSync(templateDir).isDirectory()) continue;
-    for (const entry of readdirSync(templateDir).sort()) {
+    for (const entry of options.packages ?? readdirSync(templateDir).sort()) {
       const vendored = join(templateDir, entry);
       if (!statSync(vendored).isDirectory()) continue;
       if (!existsSync(join(vendored, 'package.json'))) continue;
       const canonical = join(libsGenericDir, entry);
       if (!existsSync(canonical)) {
-        drift.push(`templates/${ref}/${entry} is vendored but has no canonical source at libs/generic/${entry}`);
+        drift.push(`${prefix}/${ref}/${entry} is vendored but has no canonical source at libs/generic/${entry}`);
         continue;
       }
       // Direction 1: everything IN the vendored copy matches canonical.
       for (const rel of filesUnder(vendored)) {
         const b = join(canonical, rel);
         if (!existsSync(b)) {
-          drift.push(`templates/${ref}/${entry}/${rel} has no counterpart in libs/generic/${entry}`);
+          drift.push(`${prefix}/${ref}/${entry}/${rel} has no counterpart in libs/generic/${entry}`);
           continue;
         }
         if (readFileSync(join(vendored, rel), 'utf8') !== expectedVendoredText(rel, readFileSync(b, 'utf8'))) {
           drift.push(
-            `templates/${ref}/${entry}/${rel} differs from libs/generic/${entry}/${rel}` +
+            `${prefix}/${ref}/${entry}/${rel} differs from libs/generic/${entry}/${rel}` +
               (rel === 'package.json'
                 ? ' (a vendored manifest must equal vendoredManifestOf(canonical), scripts/lib/vendored-manifest.mjs)'
                 : ''),
@@ -271,7 +273,7 @@ export function findVendorDrift(templatesDir: string, libsGenericDir: string): s
         if (isVendorDevOnly(rel)) continue;
         if (!existsSync(join(vendored, rel))) {
           drift.push(
-            `libs/generic/${entry}/${rel} is missing from the vendored copy at templates/${ref}/${entry}/ — ` +
+            `libs/generic/${entry}/${rel} is missing from the vendored copy at ${prefix}/${ref}/${entry}/ — ` +
               `only <ref>/ is overlaid into a materialized app, so a user cannot resolve it`,
           );
         }
@@ -371,6 +373,13 @@ describe('template bundle integrity — a materialized app can run the checks it
 
   it('every vendored package is byte-identical to its canonical libs/generic source', () => {
     const drift = findVendorDrift(TEMPLATES_DIR, join(ROOT, 'libs', 'generic'));
+    expect(drift, drift.join('\n')).toEqual([]);
+  });
+
+  it('covers the frozen P020 materialized app copy through the same bidirectional identity guard', () => {
+    expect(existsSync(join(ROOT, 'apps/slack-asana-bug-drill/template-kit/package.json'))).toBe(true);
+    const drift = findVendorDrift(join(ROOT, 'apps'), join(ROOT, 'libs/generic'),
+      { refs: ['slack-asana-bug-drill'], prefix: 'apps', packages: ['template-kit'] });
     expect(drift, drift.join('\n')).toEqual([]);
   });
 

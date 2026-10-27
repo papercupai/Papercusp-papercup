@@ -38,6 +38,36 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
   });
 
   it.each([
+    'Mandatory composite conjunction; no healthy rating is allowed unless every leg below is evidenced.',
+    'A healthy rating is permitted when every mandatory leg is evidenced.',
+    'Any healthy rating is allowed if the complete conjunction is evidenced.',
+    'No `healthy` rating is allowed unless every leg below is evidenced.',
+  ])('treats descriptive rating allowances as conditions rather than labels: %s', (method) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'composite-conjunction', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result).toMatchObject({ ok: true, instructions: [], violations: [] });
+  });
+
+  it.each([
+    ['Rating is partial if a mandatory leg is missing.', 'partial'],
+    ['The correct rating is partial if a mandatory leg is missing.', 'partial'],
+    ['Rating is allowed unless a mandatory leg is missing.', 'allowed'],
+    ['Grade allowed unless a mandatory leg is missing.', 'allowed'],
+    ['No healthy rating is allowed unless every leg is evidenced. Grade partial if evidence is missing.', 'partial'],
+  ])('preserves explicit off-scale directives around allowance prose: %s', (method, rating) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-composite-directive', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.violations.map((violation) => violation.rating)).toEqual([rating]);
+  });
+
+  it.each([
     'Enumerate change/delete/revoke streams, rate limits, private routes, and credential rotation.',
     'Exercise connector rate limits. Grade broken if recovery fails.',
     'Inspect the provider rate limit; Grade healthy when the recorded bound holds.',

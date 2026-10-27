@@ -125,6 +125,32 @@ describe('describeUnreadRun', () => {
     expect(advisory?.signals.runRefs).toContain('/tmp/new-typecheck.log');
   });
 
+  it('does not attribute completed test logs to a separate pending typecheck clause', () => {
+    const body = 'Read /tmp/unit.log: 47 tests passed exit0; ' +
+      'read /tmp/integration.log: 126 tests passed exit0; separate typecheck is still running.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
+  it('attributes only the pending typecheck log when completed logs share its sentence', () => {
+    const body = 'Read /tmp/unit.log: 47 tests passed exit0; ' +
+      'read /tmp/integration.log: 126 tests passed exit0; ' +
+      'separate typecheck is still running at /tmp/types.log.';
+    expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/types.log']);
+  });
+
+  it('does not borrow a completed log from a later clause for an unreferenced pending run', () => {
+    const body = 'The typecheck is still running; tests completed exit0 at /tmp/unit.log.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it.each(['output at', 'output:', 'log:', 'Handle:'])(
+    'preserves an explicitly attached unread output clause introduced by %s', (label) => {
+      const body = `The typecheck is still running; ${label} /tmp/types.log.`;
+      expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/types.log']);
+    },
+  );
+
   it('ignores an unread-run advisory quoted from a checkpoint receipt being reconciled', () => {
     const body = [
       'Reconciled the work_items:checkpoint receipt for contentHash d6260111f61c that warns',
@@ -156,6 +182,47 @@ describe('describeUnreadRun', () => {
     const body = 'The completed GET is not still running; final.log was read.\n' +
       'The new suite is still running; output at /tmp/current.log.';
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['still running']);
+  });
+
+  it.each([
+    'No agent was launched',
+    'No agents launched',
+    'No fleet launched',
+    'Zero fleets were launched',
+    'No agents or fleets launched',
+    'No jobs launched',
+  ])('does not attribute retained worker evidence to a negated launch: %s (EI-26741883152223587)', (status) => {
+    const body = `${status} this unit. ` +
+      'Read the worker-owned qualification receipt at /tmp/worker/qualification.json; its result is retained.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it.each([
+    'No agents launched this unit; launched a separate suite',
+    'No fleets launched this unit. Launched a separate suite',
+    'No agents launched, but launched a separate suite',
+  ])('keeps an affirmative unread run after a negated agent launch: %s', (status) => {
+    const body = `${status}; output at /tmp/current.log is not yet read.`;
+    expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['launched', 'not yet read']);
+  });
+
+  it.each([
+    'No agent is still running',
+    'No agents still running',
+    'No fleet is still running',
+    'Zero fleets were still running',
+    'No agents or fleets still running',
+    'No jobs still running',
+  ])('does not infer an unread run from a negated status beside a retained receipt: %s', (status) => {
+    expect(describeUnreadRun(`${status}; receipt /tmp/read.log is retained.`, 0)).toBeNull();
+  });
+
+  it.each([
+    'No agents still running; a separate suite is still running',
+    'No fleets are still running, but a separate suite is still running',
+  ])('preserves a separate affirmative status after a negated subject: %s', (status) => {
+    expect(describeUnreadRun(`${status}; output at /tmp/current.log.`, 0)?.signals.inFlight)
+      .toEqual(['still running']);
   });
 
   it('does not infer an active run from a negated inventory and a proposed scenario (EI-26699409305176974)', () => {

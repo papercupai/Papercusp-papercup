@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "r2gcs-p003-production-source-preparation-v1",
+  "workItem": "WI-6554700010025562",
+  "observedAt": "2026-10-26T03:21:59.017098+00:00",
+  "status": "prepared-source-not-qualified-for-cut",
+  "scope": "Static inspection of named source files and saved evidence; no tests, builds, publication, provider requests or deployment.",
+  "sourcePolicy": {
+    "authority": "orders:get id 85",
+    "owner": "Avi",
+    "verbatim": "Can you cut and publish a 0.0.22 release off of the latest green main?  These build cuts should always come from the latest green main unless explicitly said otherwise",
+    "sourceSpecificExceptionVerified": false,
+    "planDecision": "r2-to-gcs-storage-migration-2026-10-23#D-004",
+    "decisionScope": "Independent mechanical preparation does not grant a cut/source exception."
+  },
+  "inspectedReference": {
+    "name": "origin/main",
+    "localMainMatches": true,
+    "sha": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "desktopGitlink": "c864f7a1d1b62721a21dc8b0a576d51ff4edb345",
+    "workerConfigSha256": "c0664acc40c0e60a3b939d57805dd734f2117ffcea81aee86da1091b0209b9e8",
+    "gcsBucketConfigured": false,
+    "r2Bindings": ["ARTIFACTS"],
+    "limitation": "Local ref snapshot only; no fetch, live gate read or current green-verdict assertion."
+  },
+  "preparedSource": {
+    "root": "/mnt/data/offload/papercusp-r2gcs-p003-34e5b38d",
+    "sha": "34e5b38da4526279a07ed3c93ba95ee262d017e5",
+    "desktopGitlink": "152064a838d3bc6934aa0edca2e36531a439bd5b",
+    "gcsBucket": "pc-p317-host-bundle-20260917",
+    "r2Bindings": [],
+    "packagePairNominated": false,
+    "checkedFilesMatchFrozenAndCanonicalBytes": true,
+    "checkedFiles": {
+      "apps/operator-public/wrangler.toml": "d2222364b70203ab5957080a51d348d28f16f132694c1444c119655e4dc7df1d",
+      "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+      "scripts/lib/workspace-host-gcs-publication.mjs": "690419670be2935b05e8f4da2dd79a57616a5d0a6d41a7e900aaef5f8d320582",
+      "scripts/publish-workspace-host-artifacts.mjs": "96c81bf54b27cb817687f5b22a1082d3650e0b353a26ab56afead65e7397f589",
+      "papercusp-desktop/bin/lib/release-storage.sh": "82087ac353fc8f1be6914a85486911320d4830e5da5c0647fa54c158c6fdd5e7",
+      "papercusp-desktop/bin/upload-release.sh": "147c2a7b38a18f1a3b6e7eebd9942476e4d43e7d75a403e2fbbbda1d1b56d64d",
+      "papercusp-desktop/bin/publish-release-history.sh": "8b6ef68d12d1c17821479c2c401883681c84c5666e7e0fc54e02a0f20ab28a17",
+      "papercusp-desktop/bin/publish-release-instructions.sh": "9575db69fdd2f5e8963c49ad10c7d66bb7f155afc464cbff8cac5d92662465de"
+    },
+    "inspectionProcedure": "Read candidate HEAD and desktop gitlink; parse Worker TOML; compare each named file to git show HEAD:path in its owning repository and to canonical staging bytes; SHA-256 each named file.",
+    "limitation": "Named-file comparison only, not a complete source/import census, dependency validation, signing check or release eligibility proof."
+  },
+  "maintainedProducer": {
+    "tool": "release:cut",
+    "sourceInput": "Exact 40-character superproject sourceSha plus isolated root; run/run-leg require ownerName.",
+    "entrypoint": "papercusp-desktop/bin/release-local.sh",
+    "roles": ["gui", "server"],
+    "storageAdapter": "papercusp-desktop/bin/lib/release-storage.sh",
+    "storageConfiguration": "PAPERCUSP_RELEASE_STORAGE_ENV or operating-account .papercusp/release-storage.env; credentials remain outside the repository.",
+    "permanentManifestAddress": "Preserve the existing release-host.env address baked into shipped clients; move artifact URLs through the manifest.",
+    "runbook": "agent-insights/desktop-release-upload-runbook",
+    "sectionsRead": ["The two invariants — read these before you touch anything", "Cut the release"],
+    "executed": false
+  },
+  "p002ProductionPrerequisite": {
+    "workItem": "WI-6554700010025561",
+    "deliveryReceipt": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-maintained-delivery-live.json",
+    "custodyReceipt": "docs/evidence/r2-to-gcs-storage-migration-2026-10-23/p002-custody-retention.json",
+    "originalTaskId": "0mvkl22i0febmllzn1h",
+    "originalOperationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+    "bundleSha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+    "savedProof": "Four retained files delivered with matching digest and size through an isolated GCS-backed Worker; anonymous raw-bucket access denied.",
+    "savedReceiptProductionDeployed": false,
+    "savedReceiptIndependentAcceptance": false,
+    "remaining": "Qualified production Worker deployment and verification of original retained bytes at that serving artifact; localhost evidence does not satisfy this.",
+    "limitation": "Saved receipt inspection only; no current production probe or deployment claim."
+  },
+  "producerRequestReconciliation": {
+    "readSurface": "Read-only workspace-scoped harness_shared.task_ledger query through code:run/dev:pg_query",
+    "stage": "release.build.linux",
+    "requests": [
+      {
+        "taskId": "0mvn19xc37swj7y4efe",
+        "cutUnit": "pc-0mvn19xc37swj7y4efe.service",
+        "requestIdentity": "67720fd6-f797-49cf-83bd-4f59430e0f42",
+        "taskState": "ended_unobserved",
+        "exitCode": null,
+        "logPath": null,
+        "releaseCursor": 1,
+        "releaseReceiptState": "intent"
+      },
+      {
+        "taskId": "0mvnggdyt1uff753h8u",
+        "cutUnit": "pc-0mvnggdyt1uff753h8u.service",
+        "requestIdentity": "f7a1f22c-3528-4c9f-a4a3-051c6ff6fb75",
+        "taskState": "ended_unobserved",
+        "exitCode": null,
+        "logPath": null,
+        "releaseCursor": 1,
+        "releaseReceiptState": "intent"
+      },
+      {
+        "taskId": "0mvnmc0lsaozrj7rb6l",
+        "cutUnit": "pc-0mvnmc0lsaozrj7rb6l.service",
+        "requestIdentity": "96aefc51-2994-4888-ac4a-350436473c52",
+        "taskState": "ended_unobserved",
+        "exitCode": null,
+        "logPath": null,
+        "releaseCursor": 1,
+        "releaseReceiptState": "intent"
+      }
+    ],
+    "interpretation": "The ledger has no observed exit code or committed build receipt for these requests. This does not establish either build success or build failure, nor an available signed package pair.",
+    "readerRouting": "tasks:get reads feature/task rows; capability:bash_output refuses these release tasks as task_not_attachable. Neither reader is evidence of missing execution-ledger rows. Use the release journal/store and retained producer-unit evidence.",
+    "next": "Inspect retained producer-unit evidence and reconcile the original request through the maintained journal flow before any further mutation; do not blindly restart a producer."
+  },
+  "remainingExecution": [
+    "Establish an eligible migration source under the original latest-green-main rule or a verified explicit source-specific exception; the prepared root is not a cut authorization.",
+    "Before any future mutation, reconcile the existing release task request at its recorded stage; retain original operation identities.",
+    "Use the maintained producer to obtain the GUI/Server candidate pair with original provenance and trusted signatures, then nominate the pair with the retained rollback packages.",
+    "Run the maintained disposable-VM install/upgrade/exact-rollback journey and required consumer/old-client recovery acceptance at current spec revisions when execution is permitted.",
+    "Coordinate production delivery through the owning release lane; preserve this session's prior peer-owned LIVE_GATE_OPS stand-down.",
+    "Complete D090 migration delivery and independent acceptance before D086 integrated hybrid pool/swap and all-cost under-$20 trial qualification."
+  ],
+  "acceptance": {
+    "migrationComplete": false,
+    "packageJourneyComplete": false,
+    "trialQualified": false,
+    "shipped": false
+  }
+}

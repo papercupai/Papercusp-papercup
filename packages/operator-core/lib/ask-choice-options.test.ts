@@ -12,7 +12,24 @@
  * disagree, so the card rendered and then 500'd on click.
  */
 import { describe, expect, it } from 'vitest';
-import { askChoiceOptionIds, coerceAskChoiceOptions } from './ask-choice-options';
+import { askChoiceOptionIds, coerceAskChoiceOptions, canonicalAskChoiceInput,
+  normalizeParsedChoiceArgs, askChoiceArgsSchema } from './ask-choice-options';
+
+describe('P010 canonical native ask-choice arguments', () => {
+  it('uses the same canonical form for raw native input and already parsed dispatch args', () => {
+    const raw = { question: 'Choose', options: '[{"id":"YES","label":"Proceed","ignored":true}]', ignored: true };
+    const parsed = askChoiceArgsSchema.parse(raw);
+    expect(canonicalAskChoiceInput(raw)).toEqual({ question: 'Choose', options: [{ id: 'yes', label: 'Proceed' }] });
+    expect(normalizeParsedChoiceArgs(parsed)).toEqual(canonicalAskChoiceInput(raw));
+    expect(raw.options).toBeTypeOf('string');
+    expect(parsed.options).toEqual([{ id: 'YES', label: 'Proceed' }]);
+  });
+  it.each([null, {}, { question: 'Choose', options: 'invalid' },
+    { question: 'Choose', options: [{ id: '!', label: 'invalid' }] },
+  ])('refuses invalid raw args without guessing a normalized payload: %j', raw => {
+    expect(canonicalAskChoiceInput(raw)).toBeNull();
+  });
+});
 
 describe('coerceAskChoiceOptions', () => {
   it('passes a real array straight through', () => {

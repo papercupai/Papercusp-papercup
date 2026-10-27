@@ -126,6 +126,20 @@ function opaqueCloudIdentity(kind: string, environment: string, organization: st
   return createHash('sha256').update(JSON.stringify(['papercusp-cloud-v1', kind, environment, organization, identifier])).digest('hex');
 }
 
+/** Capture and read-side selectors share this derivation. Request JSON must
+ * never supply a replacement distinct_id or organization identity. */
+export function cloudTelemetryIdentity(context: Pick<CloudTelemetryContext, 'principal' | 'environment'>):
+  { distinctId: string; organizationId: string } {
+  if (!isHostedPrincipal(context.principal) || !['development', 'staging', 'production'].includes(context.environment)) {
+    throw new Error('cloud_telemetry_identity_unavailable');
+  }
+  const principal = context.principal;
+  return {
+    distinctId: opaqueCloudIdentity('person', context.environment, principal.activeOrganizationId, principal.userId),
+    organizationId: opaqueCloudIdentity('organization', context.environment, principal.activeOrganizationId, principal.activeOrganizationId),
+  };
+}
+
 /** Revalidate at the FINAL delivery boundary, including batches queued earlier.
  * A missing/changed consent epoch fails closed instead of backfilling history. */
 export function prepareCloudTelemetryDelivery(input: unknown, context: CloudTelemetryContext, consent: unknown): CloudTelemetryPreparation {
@@ -157,13 +171,14 @@ export function prepareCloudTelemetryDelivery(input: unknown, context: CloudTele
   if (Date.parse(observedAt) < Date.parse(choice.since) ||
       (aggregate && Date.parse(event.properties.period_start) < Date.parse(choice.since))) return { ok: false, code: 'outside_consent_epoch' };
   const principal = context.principal;
+  const identity = cloudTelemetryIdentity(context);
   return { ok: true, envelope: {
     event: event.event,
-    distinct_id: opaqueCloudIdentity('person', context.environment, principal.activeOrganizationId, principal.userId),
+    distinct_id: identity.distinctId,
     timestamp: new Date(observedAt).toISOString(),
     properties: {
       ...event.properties,
-      organization_id: opaqueCloudIdentity('organization', context.environment, principal.activeOrganizationId, principal.activeOrganizationId),
+      organization_id: identity.organizationId,
       ...(aggregate ? { workspace_id: opaqueCloudIdentity('workspace', context.environment, principal.activeOrganizationId, principal.selectedWorkspaceId!) } : {}),
       operation_id: opaqueCloudIdentity('operation', context.environment, principal.activeOrganizationId, event.operation_id),
       environment: context.environment, release: context.release,

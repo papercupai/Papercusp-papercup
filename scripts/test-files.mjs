@@ -13,14 +13,15 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadavg, availableParallelism, tmpdir } from 'node:os';
+import { loadavg, availableParallelism, tmpdir, homedir } from 'node:os';
+import { retainNativeProofPacket } from './lib/budgeted-task-scheduler.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
@@ -342,6 +343,14 @@ function isVitestPackageDir(dir) {
 // the same cross-tree ownership, and test:file must honor it too; walking ancestors alone can
 // never discover a config under libs/generic/template-kit for a path under templates/.
 const NON_WORKSPACE_VITEST_ROUTES = [
+  // This maintained native assertion predates the e2e filename convention.
+  // Its own config records the real native witness; the unit fallback cannot.
+  {
+    prefix: 'apps/operator/bin/',
+    pathPattern: /\/desktop-portal-native\.test\.ts$/,
+    cwd: 'apps/operator',
+    config: 'vitest.e2e.config.ts',
+  },
   {
     prefix: 'templates/papercusp-ops-pots/',
     pathPattern: /\/checks\/operation-first-triggers\.test\.[cm]?[jt]sx?$/,
@@ -608,13 +617,77 @@ export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
  * Reuse the CLI report naming rule; RESULT remains one append-only stream.
  * Resolve relative OUT paths before changing workspace cwd, and never mutate
  * the parent env (later groups must suffix the original path, not each other).
+ * The operator may run in production mode, but Vitest children need test mode
+ * before module collection: production React omits act, and Vite's production
+ * browser placeholders cannot represent Node setup imports.
  */
 export function perGroupVitestEnv(env, groupIndex, groupCount) {
+  const testEnv = { ...env, NODE_ENV: 'test' };
   const outPath = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
-  if (!outPath) return env;
-  return { ...env,
+  if (!outPath) return testEnv;
+  return { ...testEnv,
     PC_EXECUTED_SOURCE_MAP_OUT: perGroupOutputPath(resolve(outPath), groupIndex, groupCount),
   };
+}
+
+/** The router knows the population before launch, including groups which never
+ * start. Keep the unsealed declaration readable if the router is hard-killed. */
+export function createRouterProofCustody(groups, env, repoRoot) {
+  if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
+  const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const directory = mkdtempSync(join(base, 'native-router-'));
+  const identity = { workspace: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE || 'unscoped',
+    harness: env.PAPERCUSP_TEST_RUN_HARNESS || 'unscoped', runId: env.PAPERCUSP_TEST_RUN_GROUP || randomUUID() };
+  const expected = groups.map((group, index) => {
+    const child = perGroupVitestEnv(env, index, groups.length);
+    return { id: `group-${index}`, attempt: 'primary', selected: group.routes.map(route => route.absolute),
+      runner: group.runner === 'node' ? 'node' : 'vitest',
+      armed: Boolean(child.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && child.PC_EXECUTED_SOURCE_MAP_OUT?.trim()),
+      out: child.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(child.PC_EXECUTED_SOURCE_MAP_OUT) : null,
+      cwd: resolve(group.cwd), auxiliary: [] };
+  });
+  const observations = [];
+  const publishDeclaration = () => writeFileSync(join(directory, 'expected.json'), JSON.stringify({ identity, expected }), { mode: 0o600 });
+  publishDeclaration();
+  const declare = (id, auxiliary) => {
+    const group = expected.find(row => row.id === id);
+    if (!group) throw new Error('native custody group is undeclared');
+    group.auxiliary = auxiliary;
+    publishDeclaration();
+  };
+  const observe = (id, result, command, args) => {
+    const group = expected.find(row => row.id === id);
+    const raw = result.rawStreams;
+    const original = role => join(directory, `${id}.${role}`);
+    const receipt = { command: [command, ...args], cwd: group.cwd, status: result.status ?? null,
+      signal: result.signal ?? null, timedOut: result.timedOut ?? false,
+      error: result.error ? String(result.error.message ?? result.error) : null,
+      captureComplete: raw?.complete === true, writer: 'router-owned-child-close' };
+    writeFileSync(original('command-exit.json'), JSON.stringify(receipt), { mode: 0o600 });
+    if (raw) for (const channel of ['stdout', 'stderr'])
+      writeFileSync(original(channel), raw[channel], { mode: 0o600 });
+    // Stream/close applicability was declared before launch. A missing raw
+    // channel is unavailable, never reconstructed from decoded console output.
+    observations.push({ id, out: group.out, captureComplete: raw?.complete === true });
+  };
+  const childEvidence = id => ['stdout', 'stderr', 'command-exit.json'].map(role => ({ role,
+    state: 'produced', path: join(directory, `${id}.${role}`) }));
+  return { directory, identity, expected, observations, declare, observe, childEvidence,
+    detail(parentId, index, file, out) {
+      const parent = expected.find(row => row.id === parentId);
+      const id = `${parentId}-detail-${index}`;
+      expected.push({ ...parent, id, attempt: 'detail', selected: [resolve(parent.cwd, file)], out,
+        auxiliary: childEvidence(id) });
+      publishDeclaration();
+      return id;
+    },
+    finish() {
+      const result = retainNativeProofPacket(directory, { identity, expected, observations, execution: 'router-settled' });
+      writeFileSync(join(directory, 'locator.json'), JSON.stringify(result.locator), { mode: 0o600 });
+      console.log(`TEST_FILE_NATIVE_CUSTODY status=${result.status} directory=${JSON.stringify(directory)} manifest=${JSON.stringify(result.locator.manifest)}`);
+      return result;
+    } };
 }
 
 /**
@@ -2603,18 +2676,25 @@ async function probeTestChildScopeSupport(options) {
 }
 
 /** Share outcome retention across the asynchronous Vitest and synchronous Node:test routes. */
-export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild) {
+export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild, { onPhase = () => {} } = {}) {
   let childResult;
   let childCompleted = false;
+  const phase = (value) => { try { onPhase(value); } catch { /* diagnostics never own settlement */ } };
   try {
-    return await governedProcessImpl(options, (...args) => {
+    phase('governed-start');
+    const result = await governedProcessImpl(options, (...args) => {
+      phase('child-start');
       return Promise.resolve(runChild(...args)).then((result) => {
         childResult = result;
         childCompleted = true;
+        phase('child-returned');
         return result;
       });
     });
+    phase('governed-returned');
+    return result;
   } catch (cause) {
+    phase(childCompleted ? 'governed-finalization-failed' : 'child-or-admission-failed');
     const error = new Error(cause instanceof Error ? cause.message : String(cause), { cause });
     // Admission, execution and receipt finalization share one promise. Once
     // the child returned, a later rejection cannot erase its measured outcome
@@ -2797,12 +2877,17 @@ export function runCapturedTestProcess(command, args, options = {}) {
     killProcessImpl = defaultKillOwnedProcess,
     stopScopeImpl = stopTestScope,
     readProcessDiagnosticImpl = readTestChildDiagnostic,
+    finalizationDiagnosticDelayMs = 30_000,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     // Tests may replace this narrow governance seam; production callers leave
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
   } = options;
+  const finalizationStartedAt = Date.now();
+  const finalizationPhase = (phase) => onProgress('TEST_FILE_FINALIZATION ' + JSON.stringify({
+    pid: process.pid, cwd: cwdLabel, phase, elapsedMs: Date.now() - finalizationStartedAt,
+  }));
   // The launcher is resolved per spawn, inside runChild, against the env the child actually
   // gets (the governed env when admission supplies one) — see resolveTestChildLauncher.
   const plannedDemand = buildGovernedProcessDemand({
@@ -2935,6 +3020,14 @@ export function runCapturedTestProcess(command, args, options = {}) {
       // watchdog budget, so waiting for that watchdog loses the evidence.
       onProgress(`TEST_FILE_CHILD_DIAGNOSTIC ${JSON.stringify({ scope: scopeUnit, ...processDiagnostic, trigger })}`);
     };
+    let finalizationDiagnosticTimer = null;
+    const watchFinalization = () => {
+      if (finalizationDiagnosticTimer || settled || !readProcessDiagnosticImpl) return;
+      finalizationDiagnosticTimer = setTimeout(() => {
+        if (!settled) captureProcessDiagnostic('file-completion-finalization');
+      }, finalizationDiagnosticDelayMs);
+      finalizationDiagnosticTimer.unref?.();
+    };
     const terminate = (state) => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
@@ -3023,6 +3116,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         return;
       }
       allFilesCompleteObserved = true;
+      watchFinalization();
       try {
         // The returned cleanup is intentionally discarded here — see the note on
         // marker ownership above `runChild`. The caller keeps its own handle and
@@ -3064,7 +3158,11 @@ export function runCapturedTestProcess(command, args, options = {}) {
     child.stdout?.on('data', capture('stdout', stdout));
     child.stderr?.on('data', capture('stderr', stderr));
     child.once('error', (error) => { spawnError = error; });
-    child.once('exit', () => stopOwnedScope('exit'));
+    child.once('exit', () => {
+      finalizationPhase('child-exit');
+      watchFinalization();
+      stopOwnedScope('exit');
+    });
 
     let progressTimer = null;
     const scheduleProgress = () => {
@@ -3080,6 +3178,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
 
     child.once('close', (status, signal) => {
       settled = true;
+      if (finalizationDiagnosticTimer) clearTimeout(finalizationDiagnosticTimer);
+      finalizationPhase('child-close');
       removeSignalForwarders();
       if (progressTimer) clearTimeout(progressTimer);
       progressWatchdog?.stop();
@@ -3089,8 +3189,9 @@ export function runCapturedTestProcess(command, args, options = {}) {
       // Releasing it at close ends the protected window while the run is still
       // producing its terminal evidence.
       emitProgress('finished', status, signal, true);
-      const capturedStdout = Buffer.concat(stdout).toString('utf8');
-      const capturedStderr = Buffer.concat(stderr).toString('utf8');
+      const rawStdout = Buffer.concat(stdout), rawStderr = Buffer.concat(stderr);
+      const capturedStdout = rawStdout.toString('utf8');
+      const capturedStderr = rawStderr.toString('utf8');
       // EI-25878128777441671: the harmless preflight and this named-scope
       // admission are separate manager requests. Classify only an exact
       // systemd rejection with no stdout as a pre-payload launch failure;
@@ -3128,15 +3229,20 @@ export function runCapturedTestProcess(command, args, options = {}) {
           { code: 'TEST_SCOPE_LAUNCH_FAILED', scopeLaunchEvidence },
         );
       }
+      finalizationPhase('demand-sample-start');
+      const actualDemand = sampler.stop({ diskBytes: capturedBytes });
+      finalizationPhase('demand-sample-returned');
       resolveRun({
         status,
         signal,
         stdout: capturedStdout,
         stderr: capturedStderr,
+        rawStreams: childEnv.PC_EXECUTED_SOURCE_MAP_OUT?.trim() || childEnv.PAPERCUSP_TEST_ARTIFACT_DIR
+          ? { stdout: rawStdout, stderr: rawStderr, complete: !captureError && !spawnError } : undefined,
         error: spawnError ?? captureError ?? scopeLaunchError,
         timedOut,
         processDiagnostic,
-        actualDemand: sampler.stop({ diskBytes: capturedBytes }),
+        actualDemand,
         admissionReceiptId: admissionContext?.receiptId ?? null,
         admissionInherited: inherited,
         // EI-21903376339103215: ms of pc-heavy SIGSTOP freeze that fell inside this run's own
@@ -3201,7 +3307,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     env,
     settle: classifyGovernedTestProcessOutcome,
   };
-  return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild);
+  return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild, { onPhase: finalizationPhase });
 }
 
 /**
@@ -3291,29 +3397,44 @@ export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
-/**
- * @param {string[]} [argv]
- * @param {{runCapturedTestProcessImpl?: typeof runCapturedTestProcess}} [options]
- */
-/** Vite's bundler/runner transforms config before Node can judge source bytes.
- * Native config imports keep the committed-source loader on that boundary and
- * avoid its intentional CommonJS refusal. Apply one choice to list AND run. */
-export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = process.execArgv) {
-  let selected = null;
-  const remaining = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--configLoader') selected = args[++i] ?? '';
-    else if (arg.startsWith('--configLoader=')) selected = arg.slice('--configLoader='.length);
-    else remaining.push(arg);
+/** Evaluator code and native traces contain exact machine paths. Keep their
+ * custody outside publishable source, including when OUT's own JSON is ignored
+ * but its derived directories are not. Do not rewrite the recorded bytes. */
+export function assertExecutedProofOutputCustody(root, env = process.env) {
+  const out = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
+  if (!out) return;
+  const canonicalRoot = realpathSync(root);
+  const physicalPath = path => {
+    let parent = resolve(path);
+    const suffix = [];
+    while (!existsSync(parent)) {
+      const next = dirname(parent);
+      if (next === parent) throw new Error('cannot resolve executed proof output parent');
+      suffix.unshift(basename(parent));
+      parent = next;
+    }
+    return join(realpathSync(parent), ...suffix);
+  };
+  const candidates = [out, `${out}.modules/`, `${out}.native-processes/`, `${out}.processes/`];
+  const inside = candidates.flatMap((path, index) => {
+    const rel = relative(canonicalRoot, physicalPath(path));
+    return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+      ? [rel + (index > 0 ? '/' : '')] : [];
+  });
+  if (!inside.length) return;
+  const ignored = spawnSync('git', ['check-ignore', '--no-index', '-z', '--stdin'], {
+    cwd: canonicalRoot, input: `${inside.join('\0')}\0`, encoding: 'utf8', timeout: 10_000,
+  });
+  const safe = new Set((ignored.stdout ?? '').split('\0'));
+  if (ignored.error || ignored.status !== 0 || inside.some(path => !safe.has(path))) {
+    throw new Error('PC_EXECUTED_SOURCE_MAP_OUT and its .modules/.native-processes/.processes sidecars must be ' +
+      'outside the repository or in a Git-ignored custody directory; use an external evidence path ' +
+      'or .papercusp/scratch/ instead of a tracked docs/evidence path');
   }
-  const guarded = `${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs');
-  if (guarded && selected !== null && selected !== 'native') {
-    throw new Error('committed-source config requires --configLoader native; transformed config loaders bypass its source boundary');
-  }
-  if (guarded) selected = 'native';
-  return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
 }
+
+import { vitestConfigLoaderPolicy } from './lib/vitest-host-preflight.mjs';
+export { vitestConfigLoaderPolicy };
 
 /** Match with-test-pg's explicit, reporter-only evidence contract before the
  * immutable source/dependency copy. Never infer this sink from a product DSN. */
@@ -3380,6 +3501,7 @@ export async function main(
       return import('../libs/test-config/src/admin-test-runs-reporter.ts');
     },
     runGovernedTestProcessImpl = runGovernedTestProcess,
+    createRouterProofCustodyImpl = createRouterProofCustody,
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
@@ -3409,6 +3531,7 @@ export async function main(
   // WI-6554700010009516: the child notice channel. Opened after the restricted-hold census (below)
   // and closed in the finally, so it stays null on every early return before that point.
   let childSourceNoticeSink = null;
+  let proofCustody = null;
   let cleanupPreemptReadyMarker = null;
   let cleanupPreemptFinalizationMarker = null;
   const cleanupPreemptMarkers = () => {
@@ -3476,6 +3599,8 @@ export async function main(
   try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
   const { configLoaderArgs, vitestArgs } = loaderPolicy;
+  try { assertExecutedProofOutputCustody(repoRoot); }
+  catch (error) { console.error(formatRouteError(error.message)); return 2; }
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
     return TEST_FILE_EXIT_NOT_MEASURED;
@@ -3618,6 +3743,7 @@ export async function main(
   const receiptChildEnv = receiptFile
     ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
     : process.env;
+  if (!dry) proofCustody = createRouterProofCustodyImpl(groups, receiptChildEnv, repoRoot);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -3665,6 +3791,8 @@ export async function main(
           console.error(`TEST_FILE_LEDGER runner=node:test rows=0 reason=${JSON.stringify(`ledger unavailable: ${error?.message ?? error}`)}`);
         }
       }
+      if (!dry) proofCustody?.declare(`group-${groupIndex}`, proofCustody.childEvidence(`group-${groupIndex}`));
+      const nodeArgs = buildNodeTestArgs(exact, vitestArgs, { nodeArgs: group.nodeArgs, reporterArgs: nodeLedger?.reporterArgs });
       const result = await runGovernedTestFileProcess(runGovernedTestProcessImpl, {
         workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
         namespace: 'test-files-node-process',
@@ -3677,17 +3805,16 @@ export async function main(
         env: process.env,
         settle: classifyGovernedTestProcessOutcome,
       }, async (_admissionContext, governedEnv) => {
-        const child = spawnSync(process.execPath, buildNodeTestArgs(exact, vitestArgs, {
-          nodeArgs: group.nodeArgs,
-          reporterArgs: nodeLedger?.reporterArgs,
-        }), {
+        const child = spawnSync(process.execPath, nodeArgs, {
           cwd: group.cwd,
           env: governedEnv,
-          encoding: 'utf8',
           maxBuffer: 256 * 1024 * 1024,
         });
-        return { ...child, actualDemand: nodeDemand };
+        return { ...child, stdout: child.stdout?.toString('utf8'), stderr: child.stderr?.toString('utf8'),
+          rawStreams: { stdout: child.stdout ?? Buffer.alloc(0), stderr: child.stderr ?? Buffer.alloc(0), complete: !child.error },
+          actualDemand: nodeDemand };
       });
+      if (!dry) proofCustody?.observe(`group-${groupIndex}`, result, process.execPath, nodeArgs);
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       let nodeCounts = null;
@@ -3743,12 +3870,23 @@ export async function main(
     // meant to read a failure — never sees these args.
     const injectedReportDir = injectedReportDirFor();
     const groupChildEnv = perGroupVitestEnv(receiptChildEnv, groupIndex, groups.length);
+    try { assertExecutedProofOutputCustody(repoRoot, groupChildEnv); }
+    catch (error) { console.error(formatRouteError(error.message)); return 2; }
     const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(
       perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
       injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,
       { env: groupChildEnv, requireTestCounts: Boolean(nameFilter) },
     );
     const requested = group.routes.map((route) => route.requested);
+    proofCustody?.declare(`group-${groupIndex}`, [
+      ...proofCustody.childEvidence(`group-${groupIndex}`),
+      { role: 'report', ...(outputFilePathFrom(groupVitestArgs)
+        ? { state: 'produced', path: resolve(group.cwd, outputFilePathFrom(groupVitestArgs)) }
+        : { state: 'not-requested', reason: 'no-json-report-configured' }) },
+      ...['PC_EXECUTED_SOURCE_MAP_RESULT', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE'].map(key => ({ role: key,
+        ...(groupChildEnv[key]?.trim() ? { state: 'produced', path: resolve(groupChildEnv[key]) }
+          : { state: 'not-requested', reason: `${key}-unset` }) })),
+    ]);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
     // entirely so Vitest auto-discovers its defaults from the package cwd, exactly as its own
     // documented `npm test` (`vitest run`) does.
@@ -3999,6 +4137,7 @@ export async function main(
     // typically `null` — `null !== 0` would make vitestRunFailed() report a false FAILED verdict
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
     // skip the classifier entirely rather than run it against a killed process's exit state.
+    proofCustody?.observe(`group-${groupIndex}`, result, 'npx', ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs]);
     const groupFailed = result.timedOut ? false : vitestRunFailed({ status: result.status, output: runOutput });
     const reportPath = outputFilePathFrom(groupVitestArgs);
     // EI-22591950423157299: the private report is removed in main()'s finally, so consume the
@@ -4054,6 +4193,8 @@ export async function main(
           if (detailEnv.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {
             console.log(`TEST_FILE_SOURCE_MAP_OUT group=${groupIndex} detail=${detailIndex} path=${JSON.stringify(detailEnv.PC_EXECUTED_SOURCE_MAP_OUT)}`);
           }
+          const detailId = proofCustody?.detail(`group-${groupIndex}`, detailIndex, file,
+            detailEnv.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(detailEnv.PC_EXECUTED_SOURCE_MAP_OUT) : null);
           const detailResult = await runCapturedTestProcessImpl(
             'npx',
             ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
@@ -4066,6 +4207,8 @@ export async function main(
             },
           );
           if (detailResult.stdout) process.stdout.write(detailResult.stdout);
+          if (detailId) proofCustody.observe(detailId, detailResult, 'npx',
+            ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)]);
           if (detailResult.stderr) process.stderr.write(detailResult.stderr);
           printTestFinalizationError(detailResult);
           if (detailResult.timedOut) {
@@ -4416,6 +4559,15 @@ export async function main(
       return TEST_FILE_EXIT_NOT_MEASURED;
     }
   }
+  // Custody settlement is part of the measured result. Finish before emitting
+  // its terminal marker, and consume it once even if settlement throws.
+  const settledCustody = proofCustody;
+  proofCustody = null;
+  try { settledCustody?.finish(); }
+  catch (error) {
+    summary.anyFinalizationError = true;
+    console.error(`TEST_FILE_FINALIZATION_ERROR phase=native-proof-custody detail=${JSON.stringify(String(error?.stack ?? error))}`);
+  }
   const status = summary.anyFailed ? 'failed' : 'passed';
   const skippedField =
     typeof summary.testsSkipped === 'number' && summary.skippedUnmeasuredGroups === 0
@@ -4429,9 +4581,12 @@ export async function main(
   if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;
   return summary.anyFailed ? TEST_FILE_EXIT_FAILED : TEST_FILE_EXIT_PASSED;
   } finally {
-    cleanupPreemptMarkers();
-    cleanupInjectedReports();
-    childSourceNoticeSink?.close();
+    try { proofCustody?.finish(); }
+    finally {
+      cleanupPreemptMarkers();
+      cleanupInjectedReports();
+      childSourceNoticeSink?.close();
+    }
   }
 }
 

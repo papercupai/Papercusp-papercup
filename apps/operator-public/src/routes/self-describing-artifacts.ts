@@ -90,7 +90,8 @@ export function selfDescribingArtifactsRoute(): Hono<{ Bindings: Env }> {
       return c.json({ ok: true, existed: true, content_hash: contentHash, size_bytes: existing.size });
     }
 
-    await c.env.ARTIFACTS.put(key, bytes, {
+    const stored = await c.env.ARTIFACTS.put(key, bytes, {
+      onlyIf: { etagDoesNotMatch: '*' },
       httpMetadata: { contentType: 'application/octet-stream' },
       customMetadata: {
         origin: SELF_DESCRIBING_ORIGIN,
@@ -98,6 +99,11 @@ export function selfDescribingArtifactsRoute(): Hono<{ Bindings: Env }> {
         uploaderGithubUserId: String(user.id),
       },
     });
+    if (!stored) {
+      const raced = await c.env.ARTIFACTS.head(key);
+      if (raced?.customMetadata?.origin !== SELF_DESCRIBING_ORIGIN) return c.json({ error: 'artifact_key_occupied' }, 409);
+      return c.json({ ok: true, existed: true, content_hash: contentHash, size_bytes: raced.size });
+    }
     return c.json({ ok: true, existed: false, content_hash: contentHash, size_bytes: bytes.length }, 201);
   });
 

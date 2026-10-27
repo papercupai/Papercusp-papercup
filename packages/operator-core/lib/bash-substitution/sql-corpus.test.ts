@@ -19,6 +19,8 @@ import { ALL_PAIRS, BASH_GATE_PAIRS } from './pairs';
 import { normalizeSqlAtom, sqlAtomize, sqlPairClaimsAtom, SQL_CORPUS_TOOL } from './sql-corpus';
 import { corpusOf, isSqlPair, patternFlagsOf, patternSourceOf } from './types';
 import type { SampledCommand, SqlSubstitutionPair } from './types';
+import { aggregateSqlDemand, observeSqlDemand, type SqlDemandSource, type SqlDemandCoverage } from './sql-intent-corpus';
+import type { SqlIntentScope } from './sql-intent-fingerprint';
 
 /**
  * A pair over a relation with genuinely uniform traffic: `db:migrations` covers a
@@ -204,5 +206,107 @@ describe('the corpus boundary', () => {
 
   it('names the tool whose calls ARE this corpus', () => {
     expect(SQL_CORPUS_TOOL).toBe('dev:pg_query');
+  });
+});
+
+const demandScope: SqlIntentScope = { workspaceId: 'discovery-workspace', sourceBoundary: 'authorized-corpus',
+  epoch: '2026-10', key: new Uint8Array(32).fill(37) };
+const completeCoverage: SqlDemandCoverage = { status: 'complete', scannedRows: 1, cap: 100,
+  retention: 'complete', providers: ['codex', 'claude', 'omp'] };
+const demandSource = (over: Partial<SqlDemandSource> = {}): SqlDemandSource => ({
+  workspaceId: demandScope.workspaceId, harnessSlug: 'harness-a', namespace: 'native-session-a',
+  callId: 'call-1', resultCallId: 'call-1', identityAuthority: 'provider', provider: 'codex',
+  actor: 'su-agent-a', verifiedAgent: true, at: '2026-10-24T23:59:59Z', origin: 'agent', status: 'ok',
+  durationMs: 20, sql: "SELECT id FROM jobs WHERE id='one'", sourceComplete: true, copyRef: 'transcript:1', ...over,
+});
+const summarize = (sources: SqlDemandSource[], scope = demandScope) =>
+  aggregateSqlDemand(sources.map(s => observeSqlDemand(s, scope)), completeCoverage);
+
+describe('SQL logical demand', () => {
+  it('counts the SQL child once while preserving the pure parent copy OUTCOME-P-002', () => {
+    const child = demandSource();
+    const parent = demandSource({ origin: 'wrapper', copyRef: 'parent:1', resultCallId: null });
+    const result = summarize([parent, child]);
+    expect(result.logicalCalls).toBe(1);
+    expect(result.copiesCollapsed).toBe(1);
+    expect(result.daily[0]).toMatchObject({ logicalCalls: 1, status: 'ok', distinctAgents: 1,
+      duration: { measured: 1, totalMs: 20 } });
+    expect(result.daily[0]!.sourceTokens).toHaveLength(2);
+    // Counterexample: a distinct call to the SAME SQL must remain a second operation.
+    expect(summarize([parent, child, demandSource({ callId: 'call-2', resultCallId: 'call-2' })]).logicalCalls).toBe(2);
+  });
+
+  it('deduplicates canonical copies without merging independent same-text calls R22-DEDUP', () => {
+    for (const provider of ['codex', 'claude', 'omp']) {
+      const source = demandSource({ provider });
+      const result = summarize([source, { ...source, copyRef: 'activity:1' }, { ...source, copyRef: 'tool-log:1' },
+        { ...source, callId: 'call-2', resultCallId: 'call-2', copyRef: 'transcript:2' }]);
+      expect(result).toMatchObject({ logicalCalls: 2, copiesCollapsed: 2, distinctAgents: 1 });
+      expect(result.daily[0]!.duration.totalMs).toBe(40);
+    }
+  });
+
+  it('pairs only exact source IDs, including interleaved same-actor calls R21-PAIRING', () => {
+    for (const provider of ['codex', 'claude', 'omp']) {
+      const rows = [demandSource({ provider }),
+        demandSource({ provider, callId: 'call-2', resultCallId: 'call-3' }),
+        demandSource({ provider, callId: 'call-3', resultCallId: null }),
+        demandSource({ provider, callId: 'call-4', resultCallId: 'call-4', sourceComplete: false }),
+        demandSource({ provider, callId: null, resultCallId: null })];
+      const result = summarize(rows);
+      expect(result.unknownIdentityRows).toBe(1);
+      expect(result.unknownParseOperations).toBe(1);
+      expect(result.daily.filter(r => r.status === 'ok').reduce((n, r) => n + r.logicalCalls, 0)).toBe(1);
+      expect(result.daily.filter(r => r.status === 'unknown').reduce((n, r) => n + r.logicalCalls, 0)).toBe(2);
+    }
+  });
+
+  it('keeps conflicting canonical identities UNKNOWN rather than borrowing a success R21-PAIRING', () => {
+    const a = demandSource(), b = demandSource({ sql: 'SELECT name FROM jobs', copyRef: 'collision' });
+    expect(summarize([a, b])).toMatchObject({ logicalCalls: 0, collisions: 1, unknownParseOperations: 1 });
+    const conflict = summarize([a, { ...a, status: 'error', copyRef: 'conflicting-result' }]);
+    expect(conflict.daily[0]!.status).toBe('unknown');
+    expect(conflict.daily[0]!.duration.measured).toBe(0);
+  });
+
+  it('partitions polling/system/failures and counts verified agents across UTC dates R2-CONTRACT', () => {
+    const rows = [demandSource(), demandSource({ callId: '2', resultCallId: '2', at: '2026-10-25T00:00:01Z', actor: 'su-agent-b' }),
+      ...(['polling', 'system', 'test', 'fixture', 'replay', 'unknown'] as const).map(origin =>
+        demandSource({ callId: origin, resultCallId: origin, origin })),
+      demandSource({ callId: 'error', resultCallId: 'error', status: 'error' }),
+      demandSource({ callId: 'denied', resultCallId: 'denied', status: 'refused' }),
+      demandSource({ callId: 'unverified', resultCallId: 'unverified', actor: 'shared', verifiedAgent: false })];
+    const result = summarize(rows);
+    expect(result).toMatchObject({ logicalCalls: 4, distinctAgents: 2, activeDays: ['2026-10-24', '2026-10-25'] });
+    expect(result.daily.find(r => r.origin === 'polling')?.logicalCalls).toBe(1);
+    expect(result.daily.find(r => r.status === 'error')?.logicalCalls).toBe(1);
+    expect(result.daily.find(r => r.status === 'refused')?.logicalCalls).toBe(1);
+  });
+
+  it('retains parse/coverage gaps and does not promote capped input to a full census R2-CONTRACT', () => {
+    const rows = [observeSqlDemand(demandSource(), demandScope),
+      observeSqlDemand(demandSource({ callId: 'bad', resultCallId: 'bad', sql: 'SELECT (' }), demandScope)];
+    const coverage = { ...completeCoverage, status: 'truncated' as const, retention: 'gap' as const };
+    expect(aggregateSqlDemand(rows, coverage)).toMatchObject({ logicalCalls: 1, unknownParseOperations: 1, coverage });
+    expect(summarize([demandSource({ sql: "SELECT set_config('must_not_execute','1',false)" })]).unknownParseOperations).toBe(1);
+  });
+
+  it('isolates source/workspace/epoch/harness and emits no private SQL or raw identity R2-CONTRACT', () => {
+    const source = demandSource({ sql: "SELECT id FROM private_jobs WHERE id='private-entity'" });
+    const first = observeSqlDemand(source, demandScope);
+    expect(observeSqlDemand({ ...source, harnessSlug: 'harness-b' }, demandScope).operationToken).not.toBe(first.operationToken);
+    expect(observeSqlDemand(source, { ...demandScope, sourceBoundary: 'other-source' }).operationToken).not.toBe(first.operationToken);
+    expect(observeSqlDemand(source, { ...demandScope, epoch: '2026-11' }).operationToken).not.toBe(first.operationToken);
+    expect(() => observeSqlDemand(source, { ...demandScope, workspaceId: 'wrong' })).toThrow('invalid_sql_demand_scope');
+    for (const text of ['private_jobs', 'private-entity', 'su-agent-a', 'native-session-a', 'transcript:1'])
+      expect(JSON.stringify(summarize([source]))).not.toContain(text);
+  });
+
+  it('replaces overlapping observations deterministically and measures each operation cost once R2-CONTRACT', () => {
+    const one = demandSource(), two = demandSource({ callId: '2', resultCallId: '2', durationMs: 40 });
+    const once = summarize([one, two]), replay = summarize([one, two, one, two]);
+    expect(replay.daily).toEqual(once.daily);
+    expect(replay.logicalCalls).toBe(2);
+    expect(replay.daily[0]!.duration).toEqual({ measured: 2, totalMs: 60, p50Ms: 20, p95Ms: 40 });
   });
 });

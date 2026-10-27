@@ -64,7 +64,7 @@ import {
   sessionMcpJsonPath,
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
-import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
+import { capabilityPolicyFlags, composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import {
   codexFreshDefaultAuthPreflight,
@@ -75,6 +75,7 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
+  LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS,
   latestAdvSessionByCoordOwner,
   workspaceForCoordOwner,
   claimAdvSessionResume,
@@ -150,12 +151,14 @@ import {
 } from './psu-pty-discovery';
 import { decideQuotaWakeRecovery, recentAuthRecoveryCount } from './host-recovery-eligibility';
 import {
+  coldDecisionRecord,
   decideColdWake,
   readColdLoopMarker,
   renderColdWakeInjection,
   COLD_NOTE_POST_TURN_FLOOR_MS,
   type ColdLoopMarker,
   type ColdWakeDecision,
+  type LoopColdDecisionRecord,
 } from '../../su-cold-loop';
 import { recordColdNoHostParkAndMaybeEscalate } from './cold-nohost-park-guard';
 import {
@@ -730,8 +733,33 @@ export async function defaultEnsureCodexHomeForWake(
       import('../../capability-envelope/session-confinement-store')
         .then(() => import('../../capability-envelope/session-confinement-port')),
     ]);
-    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner, input.advSessionId));
+    const rawRecord = await readSuLaunchSpecByOwner(input.owner, input.advSessionId);
+    const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
     const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
+    const savedRole = rawRecord && typeof rawRecord === 'object'
+      ? (rawRecord as { role?: unknown }).role : null;
+    const restrictedSavedRole = typeof savedRole === 'string' && savedRole !== 'su';
+    if (restrictedSavedRole || (sessionRow?.role && sessionRow.role !== 'su')) {
+      // Do not let an unreadable/conflicting role record fall through to the
+      // legacy SU builder. Interactive recovery uses this same gated writer.
+      if (!sessionRow || sessionRow.coordOwnerId !== input.owner || sessionRow.agent !== 'codex'
+        || !sessionRow.role || sessionRow.role === 'su'
+        || (savedRole && savedRole !== sessionRow.role)) {
+        return { ok: false, repaired: false, reason: 'role-launch-provenance-unavailable' };
+      }
+      const { repairRoleCodexHome } = await import('../../role-codex-home-repair');
+      const result = await repairRoleCodexHome({
+        advSessionId: input.advSessionId, owner: input.owner, sessionRow, rawRecord,
+        operatorBaseUrl: resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL)
+          || `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`,
+        body: { requireGatewayProvider: input.requireGatewayProvider, headless: input.headless },
+      });
+      if (result.status !== 200 || !result.body.ok || result.body.repaired !== true) {
+        return { ok: false, repaired: false,
+          reason: result.body.error ?? result.body.reason ?? 'role-home-repair-failed' };
+      }
+      return { ok: true, repaired: true };
+    }
     const record =
       persistedRecord ??
       fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
@@ -784,8 +812,8 @@ export async function defaultEnsureCodexHomeForWake(
       })),
     };
   } catch (err) {
-    // A repair failure must not turn a recoverable rollout into a dropped wake;
-    // the exact UUID check below remains the authoritative resume safety gate.
+    // Keep repair failures retryable: executeWake parks before claiming a
+    // resume, even when an old rollout is still recoverable on disk.
     console.warn(`[wake-executor] codex home repair failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`);
     return { ok: false, repaired: false, reason: 'repair-failed' };
   }
@@ -2108,6 +2136,9 @@ async function readLoopDeliverySupersession(
         // stale imperative text, so the safe rebuilt representation has no note.
         note: null,
         coalescedCount: survivors.length,
+        ...(typeof latest.delivery_id === 'number' && Number.isSafeInteger(latest.delivery_id)
+          ? { inboxDeliveryId: latest.delivery_id }
+          : {}),
         ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
       },
       supersession: null,
@@ -2719,19 +2750,21 @@ export async function degradeToInboxOrDrop(
   d: DeliveryWork,
   reason: string,
   send: typeof sendMessage,
-  options: { allowLoopMarkerFallback?: boolean } = {},
 ): Promise<WakeOutcome> {
   // An inbox notice proves that a message was queued, not that a loop iteration
   // started. Keep a surviving loop marker as a visible drop so reconciliation
   // can retry/backstop it; mixed wakes whose stale loop component was stripped
   // above remain eligible for the ordinary inbox fallback.
-  if (!options.allowLoopMarkerFallback && readLoopDeliveryMarkers(d.payload).length > 0) {
+  if (readLoopDeliveryMarkers(d.payload).length > 0) {
     return {
       kind: 'drop',
       reason: 'loop turn delivery cannot fall back to inbox: ' + reason,
     };
   }
-  const inboxDelivery = deferredLockGrantInboxSnapshot(d);
+  const inboxDelivery = deferredLockGrantInboxSnapshot({
+    ...d,
+    id: d.inboxDeliveryId ?? d.id,
+  });
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [inboxDelivery.subscriberId],
@@ -2813,6 +2846,7 @@ export function resumeCommandFor(
   },
   wakeText: string,
   accountRoute?: WakeAccountRoute | null,
+  capabilityPolicy: Omit<CapabilityPolicyRequest, 'client' | 'surface' | 'audience'> = {},
 ): { bin: string; args: string[]; promptViaPty: boolean } | null {
   if (handle.agent === 'claude') {
     // Exact-session resume only (see header). Prompt rides as the positional
@@ -2864,12 +2898,15 @@ export function resumeCommandFor(
   }
   if (handle.agent === 'omp') {
     if (!handle.ompThreadId) return null;
+    const restrictedArgs = (args: string[]) => composeOmpCapabilityTools(args, {
+      ...capabilityPolicy, surface: 'wake', audience: 'headless-agent',
+    });
     if (process.env.PAPERCUSP_OMP_RESUME_VIA_PTY === '1') {
       // Fallback for older OMP builds: resume interactively and inject once the
       // TUI is ready. The default modern path below is true headless one-turn.
       return {
         bin: 'omp',
-        args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo'],
+        args: restrictedArgs(['-r', handle.ompThreadId, '--approval-mode', 'yolo']),
         promptViaPty: true,
       };
     }
@@ -2878,7 +2915,7 @@ export function resumeCommandFor(
     // injection so a wake has a bounded subprocess lifecycle.
     return {
       bin: 'omp',
-      args: ['-r', handle.ompThreadId, '--approval-mode', 'yolo', '-p', wakeText],
+      args: restrictedArgs(['-r', handle.ompThreadId, '--approval-mode', 'yolo', '-p', wakeText]),
       promptViaPty: false,
     };
   }
@@ -3303,6 +3340,7 @@ export interface ExecuteWakeDeps {
     carry?: 'cold';
     /** Preserve the enrolled origin only for a loop-fire successor kickoff. */
     turnOrigin?: 'loop-fire';
+    loopFire?: { routineId: string; wakeCount: number };
   }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
@@ -3337,6 +3375,12 @@ export interface ExecuteWakeDeps {
    *  session resolves to (no bridged TTY ⇒ no keystroke timestamp), so the cold-loop
    *  lifecycle is untouched. engine.ts wires the real activeInteractiveExchangeForWake. */
   activeInteractiveExchange?: (host: { bridgeTty?: boolean | null; lastInputAt?: number | null }) => boolean | Promise<boolean>;
+  /** WI-6554700010029492: persist a cold-eligible loop fire's {@link LoopColdDecisionRecord}
+   *  onto its routine row so loop:status can say WHY a cold fire stayed warm (or which cold
+   *  mode it took). Injected for tests; the default merges `metadata.lastColdDecision` via
+   *  getOrgPg (unmockable in a unit test, per WI-6860 — hence the seam). Observability
+   *  only: a failure is swallowed and never costs the wake. */
+  recordColdDecisionFn?: (ref: { routineId: string; record: LoopColdDecisionRecord }) => Promise<void>;
   /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
    *  RECYCLE reconstructs from. Injected for tests; defaults to the real
    *  getLoopCarryNote (carry-note.ts). */
@@ -3699,6 +3743,10 @@ async function injectPsuHostWake(
   };
 
   let decision: ColdWakeDecision = { cold: false, reason: 'warm (cold fork not engaged)' };
+  // WI-6554700010029492: true once this fire was ELIGIBLE to go cold (explicitly cold-armed,
+  // or P-021 class-default cold) — the only fires whose decision is worth recording. A plain
+  // warm loop never pays the write.
+  let coldEligible = false;
   // EI-18224278118395857: the carry-note's absolute write instant, threaded into
   // renderColdWakeInjection so a cold successor can detect a note that went stale in
   // the fire→busy-gate-flush gap (see that function's `updatedAtMs` doc). null when
@@ -3727,6 +3775,7 @@ async function injectPsuHostWake(
         ? await (deps.activeInteractiveExchange ?? (() => false))(host)
         : false;
       if (marker.carry === 'cold' || classDefaultCold) {
+        coldEligible = true;
         // Only pay the carry-note read when the master gate is actually on (P-006's
         // anchor is moot if cold-auto is disabled). A test-injected getLoopCarryNoteFn
         // seam is note-only (no meta stamp); the production read uses the META variant
@@ -3771,6 +3820,30 @@ async function injectPsuHostWake(
   } catch {
     // Any resolution failure ⇒ warm (never let the cold path drop a wake).
     decision = { cold: false, reason: 'cold resolution threw — warm fallback' };
+  }
+  // The explicit opt-in is eligible even when resolution threw before the fork was reached.
+  if (loopMarker?.carry === 'cold') coldEligible = true;
+  if (coldEligible && loopMarker?.routineId) {
+    try {
+      const record = coldDecisionRecord(decision, {
+        at: new Date(),
+        wakeCount: loopMarker.wakeCount ?? null,
+        deliveryId: d.id ?? null,
+      });
+      const write =
+        deps.recordColdDecisionFn ??
+        (async (ref: { routineId: string; record: LoopColdDecisionRecord }) => {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { sql } = getOrgPg();
+          await sql`
+            UPDATE harness_shared.routines
+               SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ lastColdDecision: { ...ref.record } })}
+             WHERE id = ${ref.routineId}`;
+        });
+      await write({ routineId: loopMarker.routineId, record });
+    } catch {
+      /* observability only — never cost the wake */
+    }
   }
 
   if (decision.cold) {
@@ -4147,7 +4220,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
-  const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
+  const getSessionLifecycle = deps.getSessionLifecycle ??
+    ((ownerId: string) => getSessionBriefLifecycle(ownerId, { failClosed: true }));
   const readLockGrantOwnership = deps.readLockGrantOwnership ?? readCurrentLockGrantOwnership;
   const lockGrantOwnershipLookupTimeoutMs =
     deps.lockGrantOwnershipLookupTimeoutMs ?? LOCK_GRANT_OWNERSHIP_LOOKUP_TIMEOUT_MS;
@@ -4327,7 +4401,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // wake can outlive the stand-down cue by minutes (especially on a cold
     // carry respawn), so every handle-less/plan-run/pty/resume path must share
     // this terminal gate before it can inject, spawn, or resume anything.
-    const lifecycle = await getSessionLifecycle(d.subscriberId).catch(() => null);
+    let lifecycle: SessionBriefLifecycle | null;
+    try { lifecycle = await getSessionLifecycle(d.subscriberId); }
+    catch { return { kind: 'park', reason: 'session lifecycle custody is unknown; wake retained for retry' }; }
+    if (lifecycle && Object.prototype.hasOwnProperty.call(lifecycle, 'assumeCaller')) {
+      return { kind: 'park', reason: 'caller is paused for a managed identity transition; wake retained for return' };
+    }
     const released = lifecycle?.released;
     if (released) {
       return {
@@ -4652,21 +4731,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
             ? 'the loop was re-armed after this delivery was created'
             : `the wake harness lineage ${loopSupersession.markerHarness} does not match the current active loop ` +
               `harness ${loopSupersession.currentHarness}`;
-      if (loopSupersession.kind === 'lineage-mismatch') {
-        // EI-21567207447038868: the lineage guard protects the CURRENT loop
-        // from stale loop state, but the delivery may be the sole result of a
-        // one-shot await (for example claim:released:<id>). A bare drop consumes
-        // that delivery attempt without telling the subscriber its event fired,
-        // silently stranding an await with no timeout. Preserve the no-resume /
-        // no-injection safety decision while routing the event and exact
-        // withholding reason through the durable inbox fallback.
-        return degradeToInboxOrDrop(
-          d,
-          `${lifecycleReason}; loop injection/resume was withheld`,
-          sendCoordMessage,
-          { allowLoopMarkerFallback: true },
-        );
-      }
+      // A non-loop sibling is stripped above and proceeds independently. This
+      // branch therefore represents a pure loop delivery; an inbox notice cannot
+      // satisfy its turn contract or remain a retryable loop failure.
       return {
         kind: 'drop',
         reason:
@@ -4801,10 +4868,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // A delayed wake can outlive the adv-session row it captured. Elect the
       // current row for this coord owner before Channel 2 can resume a dead
       // predecessor while its carry successor already exists.
+      // This lookup has a primary transaction and an independent dedicated
+      // fallback. Bound the caller across both phases plus cleanup; the former
+      // 1.5s wrapper returned "unverifiable" before the fallback could finish.
       const latest = await withWakeTimeout(
         getLatestSessionForOwner(d.subscriberId),
         `latest adv-session/${d.subscriberId}`,
-        1_500,
+        LATEST_ADV_SESSION_BY_COORD_OWNER_MAX_DURATION_MS,
       ).catch(() => null);
       if (!latest || latest.coordOwnerId !== d.subscriberId) {
         return {
@@ -5169,6 +5239,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
         subscriberId: string; workspaceId: string; harness: string | null;
         wakeText: string; deliveryId: number; carry?: 'cold'; turnOrigin?: 'loop-fire';
+        loopFire?: { routineId: string; wakeCount: number };
       }) => {
         const { default: launchTool, INTERNAL_LOOP_FIRE_ORIGIN } =
           await import('../../agent-tools/capability/launch-agent');
@@ -5177,7 +5248,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           harnessSlug: input.harness,
           role: 'su',
           ...(input.turnOrigin === 'loop-fire'
-            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire' as const }
+            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: {
+                origin: 'loop-fire' as const, loopFire: input.loopFire,
+              } }
             : {}),
         };
         const result = await launchTool.handler({
@@ -5197,6 +5270,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // beyond the ledger TTL. Re-tag the same delivery-time text at this final
       // launch boundary so the successor opens with a live ledger row.
       const successorText = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
+      const successorLoopFire = readLoopDeliveryMarker(sessionDelivery.payload);
       const successorStarted = await launchSuccessor({
         subscriberId: d.subscriberId,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
@@ -5205,6 +5279,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         deliveryId: d.id,
         ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
         ...(successorText.origin === 'loop-fire' ? { turnOrigin: 'loop-fire' as const } : {}),
+        ...(successorText.origin === 'loop-fire' && successorLoopFire?.routineId &&
+          Number.isInteger(successorLoopFire.wakeCount) && (successorLoopFire.wakeCount ?? 0) > 0
+          ? { loopFire: { routineId: successorLoopFire.routineId, wakeCount: successorLoopFire.wakeCount! } }
+          : {}),
       }).catch((error) => {
         console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
         return false;
@@ -5411,14 +5489,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           return { ok: false, reason };
         });
         if (
-          codexAccountRoute &&
-          (codexAccountRoute.mode === 'auto' || codexAccountRoute.mode === 'pin') &&
-          (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent')
+          !repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent'
         ) {
           return {
             kind: 'park',
             reason:
-              `Codex ${codexAccountRoute.mode} gateway route repair did not complete ` +
+              `Codex ${codexAccountRoute?.mode ?? 'default'} home repair did not complete ` +
               `(${repair.reason ?? 'unknown'}); parked before native resume`,
           };
         }

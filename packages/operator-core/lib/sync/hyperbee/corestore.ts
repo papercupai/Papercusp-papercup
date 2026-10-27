@@ -179,6 +179,25 @@ function lockHolderIsProvablyStale(
   return currentIdentity !== null && currentIdentity !== holder.processIdentity;
 }
 
+/** Discovery only: an undiscovered live owner is not permission to open a
+ * second store. Keep the actual open's atomic lock check as the final fence. */
+export async function getForeignHarnessStoreOwner(
+  opts: HarnessStoreOpts,
+): Promise<{ pid: number; processIdentity: string | null } | null> {
+  let holder: HarnessStoreLockHolder;
+  try {
+    holder = JSON.parse(await readFile(harnessStoreLockPath(opts), 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Cannot establish Harness Corestore ownership: ${harnessStoreLockPath(opts)}`, { cause: error });
+  }
+  if (!holder || !Number.isInteger(holder.pid) || holder.pid! <= 0) {
+    throw new Error(`Cannot establish Harness Corestore ownership: ${harnessStoreLockPath(opts)}`);
+  }
+  if (holder.pid === process.pid || lockHolderIsProvablyStale(holder)) return null;
+  return { pid: holder.pid!, processIdentity: holder.processIdentity ?? null };
+}
+
 async function releaseLockFile(
   handle: FileHandle,
   lockPath: string,

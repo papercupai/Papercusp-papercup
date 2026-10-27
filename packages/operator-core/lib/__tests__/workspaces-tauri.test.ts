@@ -27,6 +27,8 @@ afterEach(() => {
   navigateClient.mockReset();
   fetchMock.mockReset();
   vi.unstubAllGlobals();
+  window.sessionStorage.clear();
+  window.history.replaceState(null, '', '/');
   commands.workspacesList.mockReset();
   commands.workspacesCreate.mockReset();
   commands.workspacesRename.mockReset();
@@ -36,6 +38,85 @@ afterEach(() => {
 });
 
 describe('workspaces-tauri', () => {
+  it('discovers the selected machine before its URL update has flushed', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=machine-a&ws=workspace-a');
+    const registry = { current: 'workspace-b', workspaces: [{ id: 'workspace-b', name: 'B' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => registry }));
+    const { installWorkspaceHeaderFetch } = await import('../transport-adapters/workspace-header-fetch');
+    installWorkspaceHeaderFetch();
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces('machine-b')).toEqual(registry);
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get('x-papercusp-machine')).toBe('machine-b');
+    expect(headers.get('x-papercusp-workspace')).toBe('');
+    expect(new URL(window.location.href).searchParams.get('desktopHost')).toBe('machine-a');
+  });
+
+  it('avoids the local native registry when a remote selection precedes the URL flush', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=local&ws=local');
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {},
+      location: { href: window.location.href }, sessionStorage: window.sessionStorage });
+    commands.workspacesList.mockResolvedValue({ current: 'local', workspaces: [] });
+    const remote = { current: 'remote', workspaces: [{ id: 'remote', name: 'Remote' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => remote }));
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces('machine-b')).toEqual(remote);
+    expect(commands.workspacesList).not.toHaveBeenCalled();
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('x-papercusp-machine')).toBe('machine-b');
+  });
+
+  it('discovers a machine registry without sending the previous workspace through the installed fetch adapter', async () => {
+    window.history.replaceState(null, '', '/?desktopHost=local&ws=previous-machine-workspace');
+    const registry = { current: 'new-workspace', workspaces: [{ id: 'new-workspace', name: 'New' }] };
+    vi.stubGlobal('fetch', fetchMock.mockResolvedValue({ ok: true, json: async () => registry }));
+    const { installWorkspaceHeaderFetch } = await import('../transport-adapters/workspace-header-fetch');
+    installWorkspaceHeaderFetch();
+    const { listWorkspaces } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces()).toEqual(registry);
+    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+    expect(headers.get('x-papercusp-machine')).toBe('local');
+    expect(headers.get('x-papercusp-workspace')).toBe('');
+    expect(commands.workspacesSwitch).not.toHaveBeenCalled();
+  });
+
+  it('uses the selected remote operator for workspace commands even inside a Tauri window', async () => {
+    window.history.replaceState(null, '', '/desktops?desktopHost=machine-b&ws=own');
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {},
+      location: { href: window.location.href }, sessionStorage: window.sessionStorage });
+    commands.workspacesList.mockResolvedValue({ current: 'local', workspaces: [{ id: 'local', name: 'Local' }] });
+    const remote = { current: 'remote', workspaces: [{ id: 'remote', name: 'Remote' }] };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => remote });
+    vi.stubGlobal('fetch', fetchMock);
+    const { listWorkspaces, createWorkspace, renameWorkspace, deleteWorkspace, switchWorkspace } = await import('../workspaces-tauri');
+
+    expect(await listWorkspaces()).toEqual(remote);
+    await createWorkspace('Remote');
+    await renameWorkspace('remote', 'Renamed');
+    await deleteWorkspace('unused');
+    await switchWorkspace('remote');
+
+    for (const command of Object.values(commands)) expect(command).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(new Headers(init.headers).get('x-papercusp-machine')).toBe('machine-b');
+    }
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=remote&desktopHost=machine-b', { hard: true });
+  });
+
+  it('opens a second window with its own selected machine instead of a local native workspace', async () => {
+    window.history.replaceState(null, '', '/desktops?desktopHost=machine-b&ws=own');
+    const windowOpen = vi.fn();
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {}, open: windowOpen,
+      location: { href: window.location.href }, sessionStorage: window.sessionStorage });
+    const { openWorkspaceWindow } = await import('../workspaces-tauri');
+    await openWorkspaceWindow('remote');
+    expect(windowOpen).toHaveBeenCalledWith('/harness?ws=remote&desktopHost=machine-b', '_blank', 'noopener');
+    expect(commands.workspacesOpenWindow).not.toHaveBeenCalled();
+  });
+
   it('builds the default workspace reset path', async () => {
     const { resolveWorkspaceSwitchTarget } = await import('../workspaces-tauri');
     expect(resolveWorkspaceSwitchTarget('alpha')).toBe('/harness?ws=alpha');

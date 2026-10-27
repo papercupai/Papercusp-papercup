@@ -8,6 +8,7 @@ import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
 import { selfDescribingArtifactsRoute } from './self-describing-artifacts.ts';
 import { releaseMirrorRoute } from './release-mirror.ts';
+import { releaseFilesRoute } from './release-files.ts';
 import { githubWebhookRoute } from './github-webhook.ts';
 import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
@@ -54,6 +55,7 @@ export function buildApi(
   api.route('/', bindingRoute());
   api.route('/', adminRoute());
   api.route('/', workspaceHostArtifactsRoute());
+  api.route('/', releaseFilesRoute());
   api.route('/', creatorDraftsRoute());
   // R2 ORIGIN for self-describing release bytes (cupboard-release-pipeline-content-trust
   // P-011): content-addressed PUT (Merkle-root verified) + tokenless GET.

@@ -23,6 +23,7 @@ import {
   listLearningSpendEvents,
   listLearningSpendReservations,
   recordLearningSpend,
+  recordLearningSpendAttemptResult,
   registerLearningLoop,
   reserveLearningSpend,
   settleLearningSpend,
@@ -122,6 +123,7 @@ describe('native gateway controller with the persisted cycle ledger', () => {
     const request: GatewayCarryTrialAttempt = { attemptId: randomUUID(), manifestSha256: input.manifestSha256,
       armId: input.armId, transport: 'anthropic-http', accountId: 'private-selected-account',
       credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_PG_PROVIDER_CREDENTIAL'),
+      anthropicVersion: '2023-06-01', anthropicBeta: null,
       target: 'https://provider.invalid/v1/messages', body, bodySha256: digest(body),
       clockId: processMonotonicClock.id, signal: new AbortController().signal };
     const rows = () => listLearningSpendReservations(sql, { workspaceId: WS, loopId });
@@ -175,6 +177,8 @@ describe('native gateway controller with the persisted cycle ledger', () => {
         expect(row).toMatchObject({ id: receipt.reservationRef, usedUsd: 0,
           status: outcome === 'send-refused' ? 'cancelled' : 'open' });
         expect(row.settledAt === null).toBe(outcome !== 'send-refused');
+        expect(JSON.parse(row.note!).nativeGatewayAttemptResult).toMatchObject({
+          anthropicVersion: '2023-06-01', anthropicBeta: null });
         expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId }))
           .toBe(outcome === 'send-refused' ? 0 : 0.25);
         expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId: f.input.loopId })).toEqual([]);
@@ -183,7 +187,8 @@ describe('native gateway controller with the persisted cycle ledger', () => {
       } finally { f.revoke(); }
     });
 
-  it.each(['attemptId', 'accountId', 'credentialSha256', 'bodySha256', 'clockId', 'reservationRef'] as const)(
+  it.each(['attemptId', 'accountId', 'credentialSha256', 'bodySha256', 'clockId', 'reservationRef',
+    'anthropicVersion', 'anthropicBeta'] as const)(
     'keeps real reservation open for substituted result %s', async key => {
       const f = await fixture();
       try {
@@ -195,6 +200,28 @@ describe('native gateway controller with the persisted cycle ledger', () => {
         expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.25);
       } finally { f.revoke(); }
     });
+  it.each(['anthropicVersion', 'anthropicBeta'] as const)('store refuses omitted effective %s identity', async field => {
+    const f = await fixture();
+    try {
+      const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+      if (!receipt) throw new Error('registered exact attempt must grant');
+      const value = { ...result(f.request, receipt.reservationRef, 'send-refused') }; delete value[field];
+      expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: receipt.reservationRef,
+        result: value })).toEqual({ ok: false, reason: 'invalid-result' });
+      expect(JSON.parse((await f.rows())[0]!.note!).nativeGatewayAttemptResult).toBeUndefined();
+    } finally { f.revoke(); }
+  });
+  it('store refuses header control characters before writing attempt evidence', async () => {
+    const f = await fixture();
+    try {
+      const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+      if (!receipt) throw new Error('registered exact attempt must grant');
+      expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: receipt.reservationRef,
+        result: { ...result(f.request, receipt.reservationRef, 'send-refused'), anthropicBeta: 'context\r\nforeign' } }))
+        .toEqual({ ok: false, reason: 'invalid-result' });
+      expect(JSON.parse((await f.rows())[0]!.note!).nativeGatewayAttemptResult).toBeUndefined();
+    } finally { f.revoke(); }
+  });
 
   it.each(['disabled', 'pot-disabled', 'lifetime', 'budget', 'missing-resources', 'resources'] as const)(
     'refuses actual registered %s policy before issuing a receipt', async mismatch => {

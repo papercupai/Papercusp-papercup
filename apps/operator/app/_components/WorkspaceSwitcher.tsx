@@ -53,6 +53,12 @@ export default function WorkspaceSwitcher() {
         // opened a different workspace to whatever the global pointed at (the
         // P-030 reload-flip). reg.current is only the new-window default (D-005).
         const active = resolveActiveWorkspaceId(r, getBrowserWorkspaceId());
+        // A newly selected machine may not own the previous machine's
+        // workspace. Requests prefer the injected pin over the URL, so update
+        // that pin from the authorized registry before mirroring its URL.
+        if (r.workspaces.some((workspace) => workspace.id === active)) {
+          window.__PAPERCUSP_WS__ = active;
+        }
         if (active && active !== 'default') void setWsParam(active);
       })
       .catch((e) => toast.error(`workspaces: ${e?.message ?? e}`));

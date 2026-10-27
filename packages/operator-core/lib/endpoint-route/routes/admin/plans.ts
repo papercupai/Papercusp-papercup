@@ -264,7 +264,7 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
   // → papercup default (they target a specific plan whose harness the UI passes).
   if (verb === 'list' && body.harness == null && body.harness_slugs == null && body.workspaceWide == null) {
     body.workspaceWide = true;
-  } else if (body.harness == null) {
+  } else if (body.harness == null && verb !== 'run-transcript') {
     body.harness = 'all';
   }
   // The admin Edit mode round-trips the whole document through plans:set-content

@@ -59,17 +59,19 @@ describe('employee support selection on Workflows', () => {
     expect(screen.getByText(`Receipt 42 revision ${workflow.approvedRevision}`)).toBeTruthy();
   });
   it('uses the organization-only existing search contract and rejects unauthorized or malformed evidence', async () => {
-    ports.tool.mockResolvedValue({ ok: true, data: { data: { legs: { organization: { allowed: true } },
-      results: [{ ...document, scope: 'organization' }] } } });
+    // runScheduleTool parses the MCP text payload; dispatch has already
+    // serialized the handler's data field as that payload's root.
+    ports.tool.mockResolvedValue({ ok: true, data: { legs: { organization: { allowed: true } },
+      results: [{ ...document, scope: 'organization' }] } });
     renderForm({ seam: { submitOperations: vi.fn() } });
     await selectEvidence();
     expect(ports.tool).toHaveBeenCalledWith('documents:search', { query: 'cobalt', sources: ['slack'], legs: ['organization'], limit: 50 });
-    ports.tool.mockResolvedValue({ ok: true, data: { data: { legs: { organization: { allowed: true } },
-      results: [{ ...document, scope: 'organization', source: 'forbidden' }] } } });
+    ports.tool.mockResolvedValue({ ok: true, data: { legs: { organization: { allowed: true } },
+      results: [{ ...document, scope: 'organization', source: 'forbidden' }] } });
     fireEvent.click(screen.getByRole('button', { name: 'Search allowed sources' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Invalid case search result');
     expect(screen.queryByRole('checkbox', { name: /^Include / })).toBeNull();
-    ports.tool.mockResolvedValue({ ok: true, data: { data: { legs: { organization: { allowed: false } }, results: [] } } });
+    ports.tool.mockResolvedValue({ ok: true, data: { legs: { organization: { allowed: false } }, results: [] } });
     fireEvent.click(screen.getByRole('button', { name: 'Search allowed sources' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('access was refused'));
   });

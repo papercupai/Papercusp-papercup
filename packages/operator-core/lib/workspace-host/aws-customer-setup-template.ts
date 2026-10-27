@@ -19,7 +19,10 @@
  * Nothing here is secret: no ExternalId is required on this path because the trusted principal is the
  * customer's own account or a principal inside it, never Papercusp's.
  */
+import { createHash } from 'node:crypto';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import { planAwsCanaryDeadline } from './aws-canary-deadline';
+import { papercuspHostingPolicy } from './hosted-aws-hosting';
 import {
   AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
   awsWorkspaceHostImageKeyStatement,
@@ -71,6 +74,17 @@ export interface AwsCustomerSetupTemplateRequest {
    * customer's own IAM policies (a principal still needs sts:AssumeRole on the role to use it).
    */
   principalArn?: string;
+  /** Private finite qualification only; adds dedicated roles and an immutable SSM document. */
+  finiteCanary?: AwsCustomerFiniteCanary;
+}
+
+export interface AwsCustomerFiniteCanary {
+  runId: string;
+  workspaceId: string;
+  organizationId: string;
+  hostId: string;
+  workloadDeadlineAt: string;
+  teardownDeadlineAt: string;
 }
 
 export interface AwsCustomerSetupTemplate {
@@ -116,7 +130,8 @@ export function awsWorkspaceHostLeastPrivilegePolicy(): {
   };
 }
 
-function validated(request: AwsCustomerSetupTemplateRequest): Required<AwsCustomerSetupTemplateRequest> {
+function validated(request: AwsCustomerSetupTemplateRequest): Required<Pick<AwsCustomerSetupTemplateRequest,
+  'accountId' | 'region' | 'principalArn'>> {
   const accountId = String(request.accountId ?? '').trim();
   if (!AWS_ACCOUNT.test(accountId)) throw new Error('accountId must be a 12-digit AWS account ID');
   const region = String(request.region ?? '').trim();
@@ -130,9 +145,84 @@ function validated(request: AwsCustomerSetupTemplateRequest): Required<AwsCustom
   return { accountId, region, principalArn };
 }
 
-export function awsCustomerSetupTemplate(request: AwsCustomerSetupTemplateRequest): AwsCustomerSetupTemplate {
+/**
+ * Compose onto the maintained host stack, rather than a second network or a new
+ * scheduling service. Installation alone does NOT admit a canary: the SDK must
+ * read these exact policies/document and observe its execution sleeping first.
+ */
+export function awsCanaryDeadlineStackFragment(input: AwsCustomerFiniteCanary & {
+  accountId: string; region: string; principalArn: string;
+}, nowMs = Date.now()) {
+  // Apply the same account/region/principal validation as the containing template.
+  const { accountId, region, principalArn } = validated(input);
+  const suffix = createHash('sha256').update(input.runId).digest('hex').slice(0, 32);
+  const cleanupRoleName = `PapercuspCanaryCleanup-${suffix}`;
+  const launcherRoleName = `PapercuspCanaryLauncher-${suffix}`;
+  const cleanupRoleArn = `arn:aws:iam::${accountId}:role/${cleanupRoleName}`;
+  const launcherRoleArn = `arn:aws:iam::${accountId}:role/${launcherRoleName}`;
+  const plan = planAwsCanaryDeadline({ accountId, region, runId: input.runId, workspaceId: input.workspaceId,
+    workloadDeadlineAt: input.workloadDeadlineAt, teardownDeadlineAt: input.teardownDeadlineAt, cleanupRoleArn }, nowMs);
+  const hosting = papercuspHostingPolicy({ accountId, region, organizationId: input.organizationId,
+    hostId: input.hostId }) as { Version: string; Statement: Record<string, unknown>[] };
+  const resource = (kind: string) => `arn:aws:ec2:${region}:${kind === 'snapshot' ? '' : accountId}:${kind}/*`;
+  // Separate each missing/wrong tag into its own deny: multiple keys in a
+  // StringNotEquals block are ANDed and would let a single wrong tag through.
+  const creationConstraints = [
+    { action: 'ec2:RunInstances', kinds: ['instance', 'volume', 'spot-instances-request'] },
+    { action: 'ec2:CreateVolume', kinds: ['volume'] },
+    { action: 'ec2:CreateSnapshot', kinds: ['snapshot'] },
+  ].flatMap(({ action, kinds }) => Object.entries({
+    'papercusp:managed': 'true', 'papercusp:workspace-id': input.workspaceId,
+  }).map(([tag, value]) => ({ Effect: 'Deny', Action: action, Resource: kinds.map(resource),
+    Condition: { StringNotEquals: { [`aws:RequestTag/${tag}`]: value } } })));
+  const launcherPolicy = { Version: '2012-10-17', Statement: [
+    ...hosting.Statement, ...plan.launcherDeadlineDenyPolicy.Statement, ...creationConstraints,
+    { Effect: 'Allow', Action: 'ssm:GetDocument', Resource: `arn:aws:ssm:${region}:${accountId}:document/${plan.documentName}` },
+    { Effect: 'Allow', Action: ['ssm:GetAutomationExecution', 'ssm:DescribeAutomationStepExecutions'],
+      Resource: `arn:aws:ssm:${region}:${accountId}:automation-execution/*` },
+    { Effect: 'Allow', Action: ['iam:GetRole', 'iam:GetRolePolicy', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies'],
+      Resource: [launcherRoleArn, cleanupRoleArn] },
+  ] };
+  const tags = [{ Key: 'papercusp:canary-run', Value: input.runId }];
+  return {
+    plan,
+    Resources: {
+      CanaryCleanupRole: { Type: 'AWS::IAM::Role', Properties: {
+        RoleName: cleanupRoleName,
+        AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow',
+          Principal: { Service: 'ssm.amazonaws.com' }, Action: 'sts:AssumeRole', Condition: {
+            StringEquals: { 'aws:SourceAccount': accountId },
+            ArnLike: { 'aws:SourceArn': `arn:aws:ssm:${region}:${accountId}:automation-execution/*` },
+          } }] },
+        Policies: [{ PolicyName: 'PapercuspCanaryCleanup', PolicyDocument: plan.cleanupPolicy }], Tags: tags,
+      } },
+      CanaryLauncherRole: { Type: 'AWS::IAM::Role', Properties: {
+        RoleName: launcherRoleName,
+        AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow',
+          Principal: { AWS: principalArn }, Action: 'sts:AssumeRole' }] },
+        Policies: [{ PolicyName: 'PapercuspCanaryLaunch', PolicyDocument: launcherPolicy }], Tags: tags,
+      } },
+      CanaryDeadlineDocument: { Type: 'AWS::SSM::Document', DependsOn: ['CanaryCleanupRole', 'CanaryLauncherRole'],
+        Properties: { Name: plan.documentName, DocumentType: 'Automation', DocumentFormat: 'JSON',
+          UpdateMethod: 'NewVersion', Content: plan.document, Tags: tags } },
+    },
+    Outputs: {
+      CanaryCleanupRoleArn: { Value: { 'Fn::GetAtt': ['CanaryCleanupRole', 'Arn'] } },
+      CanaryLauncherRoleArn: { Value: { 'Fn::GetAtt': ['CanaryLauncherRole', 'Arn'] } },
+      CanaryDocumentName: { Value: { Ref: 'CanaryDeadlineDocument' } },
+      CanaryDocumentVersion: { Value: plan.documentVersion },
+      CanaryCreationCutoffAt: { Value: input.workloadDeadlineAt },
+      CanaryTeardownDeadlineAt: { Value: input.teardownDeadlineAt },
+    },
+  };
+}
+
+export function awsCustomerSetupTemplate(request: AwsCustomerSetupTemplateRequest, nowMs = Date.now()): AwsCustomerSetupTemplate {
   const { accountId, region, principalArn } = validated(request);
   const host = hostedAwsHostStackFragment(accountId, region, AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID);
+  const canary = request.finiteCanary ? awsCanaryDeadlineStackFragment({
+    ...request.finiteCanary, accountId, region, principalArn,
+  }, nowMs) : undefined;
   const roleName = `${AWS_CUSTOMER_OPERATOR_ROLE_NAME_PREFIX}${accountId}`;
   const hostOutputs = host.Outputs as Record<string, unknown>;
   const document: Record<string, unknown> = {
@@ -155,6 +245,7 @@ export function awsCustomerSetupTemplate(request: AwsCustomerSetupTemplateReques
         },
       },
       ...host.Resources,
+      ...canary?.Resources,
     },
     Outputs: {
       OperatorRoleArn: {
@@ -163,6 +254,7 @@ export function awsCustomerSetupTemplate(request: AwsCustomerSetupTemplateReques
       },
       VpcId: { Description: 'VPC ID for the desktop connection form', Value: { Ref: 'HostVpc' } },
       ...hostOutputs,
+      ...canary?.Outputs,
     },
   };
   const template: AwsCustomerSetupTemplate = {

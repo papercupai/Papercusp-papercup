@@ -1,0 +1,1721 @@
+{
+ "minMass": 80,
+ "filesListed": 10339,
+ "filesParsed": 10339,
+ "readFailures": 0,
+ "functionsAtOrAboveMinMass": 36183,
+ "totalMass": 11050226,
+ "type1": {
+  "groups": 132,
+  "crossFile": 128,
+  "crossPackage": 66,
+  "fnsInGroups": 362,
+  "redundantMass": 56256
+ },
+ "type2": {
+  "groups": 327,
+  "crossFile": 250,
+  "crossPackage": 87,
+  "fnsInGroups": 824,
+  "redundantMass": 91935
+ },
+ "type2RenamedOnlyGroups": 205,
+ "topType1": [
+  {
+   "mass": 2717,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:399 validateChecksConfig",
+    "libs/generic/template-kit/src/checks-config.ts:399 validateChecksConfig",
+    "templates/papercusp-android-app/template-kit/src/checks-config.ts:399 validateChecksConfig",
+    "templates/papercusp-app/template-kit/src/checks-config.ts:399 validateChecksConfig"
+   ]
+  },
+  {
+   "mass": 1356,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:315 validateTemplateManifest",
+    "libs/generic/template-kit/src/template-manifest.ts:315 validateTemplateManifest",
+    "templates/papercusp-android-app/template-kit/src/template-manifest.ts:315 validateTemplateManifest",
+    "templates/papercusp-app/template-kit/src/template-manifest.ts:315 validateTemplateManifest"
+   ]
+  },
+  {
+   "mass": 957,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/composition.ts:317 composeTemplates",
+    "libs/generic/template-kit/src/composition.ts:317 composeTemplates",
+    "templates/papercusp-android-app/template-kit/src/composition.ts:317 composeTemplates",
+    "templates/papercusp-app/template-kit/src/composition.ts:317 composeTemplates"
+   ]
+  },
+  {
+   "mass": 687,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/composition.ts:216 resolveSelection",
+    "libs/generic/template-kit/src/composition.ts:216 resolveSelection",
+    "templates/papercusp-android-app/template-kit/src/composition.ts:216 resolveSelection",
+    "templates/papercusp-app/template-kit/src/composition.ts:216 resolveSelection"
+   ]
+  },
+  {
+   "mass": 470,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:245 validateDecisionSelect",
+    "libs/generic/template-kit/src/template-manifest.ts:245 validateDecisionSelect",
+    "templates/papercusp-android-app/template-kit/src/template-manifest.ts:245 validateDecisionSelect",
+    "templates/papercusp-app/template-kit/src/template-manifest.ts:245 validateDecisionSelect"
+   ]
+  },
+  {
+   "mass": 406,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/component-manifest.ts:72 validateComponentManifest",
+    "libs/generic/template-kit/src/component-manifest.ts:72 validateComponentManifest",
+    "templates/papercusp-android-app/template-kit/src/component-manifest.ts:72 validateComponentManifest",
+    "templates/papercusp-app/template-kit/src/component-manifest.ts:72 validateComponentManifest"
+   ]
+  },
+  {
+   "mass": 368,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:886 <anon>",
+    "libs/generic/template-kit/src/checks-config.ts:886 <anon>",
+    "templates/papercusp-android-app/template-kit/src/checks-config.ts:886 <anon>",
+    "templates/papercusp-app/template-kit/src/checks-config.ts:886 <anon>"
+   ]
+  },
+  {
+   "mass": 356,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:1115 <anon>",
+    "libs/generic/template-kit/src/checks-config.ts:1115 <anon>",
+    "templates/papercusp-android-app/template-kit/src/checks-config.ts:1115 <anon>",
+    "templates/papercusp-app/template-kit/src/checks-config.ts:1115 <anon>"
+   ]
+  },
+  {
+   "mass": 322,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:268 <anon>",
+    "libs/generic/template-kit/src/template-manifest.ts:268 <anon>",
+    "templates/papercusp-android-app/template-kit/src/template-manifest.ts:268 <anon>",
+    "templates/papercusp-app/template-kit/src/template-manifest.ts:268 <anon>"
+   ]
+  },
+  {
+   "mass": 283,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/composition.ts:149 resolveRequiresClosure",
+    "libs/generic/template-kit/src/composition.ts:149 resolveRequiresClosure",
+    "templates/papercusp-android-app/template-kit/src/composition.ts:149 resolveRequiresClosure",
+    "templates/papercusp-app/template-kit/src/composition.ts:149 resolveRequiresClosure"
+   ]
+  },
+  {
+   "mass": 272,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/composition.ts:100 validateTemplateSet",
+    "libs/generic/template-kit/src/composition.ts:100 validateTemplateSet",
+    "templates/papercusp-android-app/template-kit/src/composition.ts:100 validateTemplateSet",
+    "templates/papercusp-app/template-kit/src/composition.ts:100 validateTemplateSet"
+   ]
+  },
+  {
+   "mass": 260,
+   "n": 5,
+   "pkgs": 5,
+   "members": [
+    "apps/slack-asana-bug-drill/template-kit/src/guide-lint.ts:101 lintTemplateProse",
+    "libs/generic/template-kit/src/guide-lint.ts:101 lintTemplateProse",
+    "templates/papercusp-android-app/template-kit/src/guide-lint.ts:101 lintTemplateProse",
+    "templates/papercusp-app/template-kit/src/guide-lint.ts:101 lintTemplateProse"
+   ]
+  }
+ ],
+ "topRenamedOnly": [
+  {
+   "mass": 131,
+   "n": 10,
+   "pkgs": 1,
+   "members": [
+    "packages/operator-core/lib/ablation/governor.ts:53 promptAblationGovernorGate",
+    "packages/operator-core/lib/calibration/governor.ts:44 calibrationGovernorGate",
+    "packages/operator-core/lib/deferral-interest/governor.ts:44 deferralInterestGovernorGate",
+    "packages/operator-core/lib/fleet-ekg/governor.ts:48 fleetEkgGovernorGate"
+   ]
+  },
+  {
+   "mass": 121,
+   "n": 10,
+   "pkgs": 1,
+   "members": [
+    "packages/operator-core/lib/harness/routines/seed-acceptance-grading-sweep-routine.ts:45 main",
+    "packages/operator-core/lib/harness/routines/seed-account-capacity-reprobe-routine.ts:40 main",
+    "packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts:46 main",
+    "packages/operator-core/lib/harness/routines/seed-consult-expiry-routine.ts:41 main"
+   ]
+  },
+  {
+   "mass": 123,
+   "n": 6,
+   "pkgs": 1,
+   "members": [
+    "packages/operator-core/test/admission-http-fixture.ts:22 stopHost",
+    "packages/operator-core/test/consult-cascade-http-fixture.ts:21 stopHost",
+    "packages/operator-core/test/cupboard-listing-install-http-fixture.ts:36 stopHost",
+    "packages/operator-core/test/integrations-setup-http-fixture.ts:51 stopHost"
+   ]
+  },
+  {
+   "mass": 578,
+   "n": 2,
+   "pkgs": 2,
+   "members": [
+    "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:2924 parseIssuesMdLocal",
+    "packages/operator-core/lib/harness-issues.ts:253 parseIssuesMdLocal"
+   ]
+  },
+  {
+   "mass": 561,
+   "n": 2,
+   "pkgs": 2,
+   "members": [
+    "apps/operator-vite/src/routes/support.tsx:29 buildFaqs",
+    "apps/operator/app/support/page.tsx:33 buildFaqs"
+   ]
+  },
+  {
+   "mass": 540,
+   "n": 2,
+   "pkgs": 2,
+   "members": [
+    "templates/papercusp-android-app/checks/android-app-contract.ts:53 validateAndroidAppComposition",
+    "templates/papercusp-iphone-app/checks/iphone-app-contract.ts:53 validateIphoneAppComposition"
+   ]
+  },
+  {
+   "mass": 124,
+   "n": 5,
+   "pkgs": 1,
+   "members": [
+    "packages/operator-core/lib/harness/routines/seed-cargo-test-routine.ts:28 main",
+    "packages/operator-core/lib/harness/routines/seed-gate-fire-drill-routine.ts:32 main",
+    "packages/operator-core/lib/harness/routines/seed-periodic-full-run-routine.ts:26 main",
+    "packages/operator-core/lib/harness/routines/seed-sync-batch-delta-check-routine.ts:37 main"
+   ]
+  },
+  {
+   "mass": 95,
+   "n": 6,
+   "pkgs": 1,
+   "members": [
+    "packages/operator-core/lib/goals/spend-rollup.ts:941 startGoalSpendRollupTick",
+    "packages/operator-core/lib/system-health/agent-productivity-watchdog.ts:1307 startAgentProductivityWatchdog",
+    "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts:2570 startGoalDrainFleetWatchdog",
+    "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts:3383 startGoalLivenessWatchdog"
+   ]
+  }
+ ],
+ "allType2": [
+  [
+   "_retired/harness-dashboard/InsightsPanel.tsx:236 KpiCard m=147",
+   "libs/papercusp/_retired/apps-web/app/harness/InsightsPanel.tsx:236 KpiCard m=147"
+  ],
+  [
+   "_retired/harness-dashboard/MemoryBrowser.tsx:76 <anon> m=91",
+   "libs/papercusp/_retired/apps-web/app/harness/MemoryBrowser.tsx:60 <anon> m=91"
+  ],
+  [
+   "_retired/harness-dashboard/MemoryBrowser.tsx:142 <anon> m=130",
+   "libs/papercusp/_retired/apps-web/app/harness/MemoryBrowser.tsx:95 <anon> m=130"
+  ],
+  [
+   "_retired/harness-dashboard/MemoryBrowser.tsx:197 <anon> m=198",
+   "libs/papercusp/_retired/apps-web/app/harness/MemoryBrowser.tsx:163 <anon> m=198"
+  ],
+  [
+   "_retired/harness-dashboard/MemoryBrowser.tsx:383 FileRow m=293",
+   "libs/papercusp/_retired/apps-web/app/harness/MemoryBrowser.tsx:339 FileRow m=293"
+  ],
+  [
+   "_retired/harness-dashboard/PromptsTab.tsx:122 <anon> m=138",
+   "libs/papercusp/_retired/apps-web/app/harness/PromptsTab.tsx:73 <anon> m=138"
+  ],
+  [
+   "_retired/harness-dashboard/PromptsTab.tsx:359 <anon> m=192",
+   "libs/papercusp/_retired/apps-web/app/harness/PromptsTab.tsx:275 <anon> m=192"
+  ],
+  [
+   "_retired/harness-dashboard/dock/RealAgentsPanel.tsx:24 fmtAge m=89",
+   "apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx:130 fmtAge m=89"
+  ],
+  [
+   "_retired/inbox-pane/InboxPane.tsx:76 formatRelativeDate m=160",
+   "apps/operator/app/_components/inbox/InboxPane.tsx:255 formatRelativeDate m=160"
+  ],
+  [
+   "_retired/inbox-pane/InboxPane.tsx:226 <anon> m=102",
+   "apps/operator/app/_components/inbox/InboxPane.tsx:724 <anon> m=102"
+  ],
+  [
+   "_retired/inbox-pane/InboxPane.tsx:374 <anon> m=95",
+   "apps/operator/app/_components/inbox/InboxPane.tsx:978 <anon> m=95"
+  ],
+  [
+   "_retired/mug-kettle-deciders/packages/operator-core/lib/harness/routines/seed-bee-transcript-cap-routine.ts:34 main m=135",
+   "packages/operator-core/lib/harness/routines/seed-hetzner-orphan-frame-reaper-routine.ts:33 main m=135",
+   "packages/operator-core/lib/harness/routines/seed-idle-session-reaper-routine.ts:31 main m=135",
+   "packages/operator-core/lib/harness/routines/seed-orphaned-mcp-reaper-routine.ts:38 main m=135"
+  ],
+  [
+   "_retired/mug-kettle-deciders/packages/operator-core/lib/llm-testing/targets/cup.ts:34 resolveCupPromptPath m=102",
+   "_retired/mug-kettle-deciders/packages/operator-core/lib/llm-testing/targets/mug.ts:38 resolveMugPromptPath m=102"
+  ],
+  [
+   "_retired/papercup/app/features/page.tsx:78 ago m=99",
+   "_retired/papercup/app/harness/[slug]/[feature_id]/page.tsx:85 ago m=99",
+   "_retired/papercup/app/harness/[slug]/page.tsx:85 ago m=99"
+  ],
+  [
+   "_retired/papercup/app/timeline/page.tsx:26 relativeTime m=84",
+   "libs/papercusp/_retired/apps-web/app/harness/HarnessDashboard.tsx:252 fmtAgo m=84"
+  ],
+  [
+   "_retired/snapshot-system/operator-core/snapshot-discovery.ts:135 listAllSnapshots m=88",
+   "packages/operator-core/lib/spawnable-templates.ts:111 getSpawnableTemplates m=88"
+  ],
+  [
+   "apps/operator-vite/src/components/adv/AdvEvalsTab.tsx:1928 fmtDurMs m=81",
+   "apps/operator/app/eval-viz/ThroughputBars.tsx:57 fmtDur m=81"
+  ],
+  [
+   "apps/operator-vite/src/components/adv/LearningTab.tsx:6184 <anon> m=136",
+   "apps/operator-vite/src/components/adv/LearningTab.tsx:6304 <anon> m=136"
+  ],
+  [
+   "apps/operator-vite/src/routes/support.tsx:29 buildFaqs m=561",
+   "apps/operator/app/support/page.tsx:33 buildFaqs m=561"
+  ],
+  [
+   "apps/operator/app/_components/MarkdownEditor.tsx:151 colorChannels m=128",
+   "libs/generic/ui-primitives/src/PlanDocumentView.tsx:40 planDocumentColorChannels m=128"
+  ],
+  [
+   "apps/operator/app/_components/chat/HydratedWorkRefPill.tsx:79 HydratedWorkRefPill m=268",
+   "packages/operator-ui/src/papercup-chat/HydratedWorkRefPill.tsx:87 HydratedWorkRefPill m=268"
+  ],
+  [
+   "apps/operator/app/_components/chat/HydratedWorkRefPill.tsx:92 <anon> m=103",
+   "packages/operator-ui/src/papercup-chat/HydratedWorkRefPill.tsx:100 <anon> m=103"
+  ],
+  [
+   "apps/operator/app/_components/chat/ReportBlockCard.tsx:100 workrefpill m=109",
+   "packages/operator-ui/src/papercup-chat/PapercupChat.tsx:598 <anon> m=109"
+  ],
+  [
+   "apps/operator/app/_components/inbox/use-inbox-bulk-run.ts:487 <anon> m=87",
+   "apps/operator/app/_components/plans/use-plan-cleanup-run.ts:457 <anon> m=87"
+  ],
+  [
+   "apps/operator/app/_components/inbox/use-inbox-bulk-run.ts:514 <anon> m=143",
+   "apps/operator/app/_components/plans/use-plan-cleanup-run.ts:486 <anon> m=143"
+  ],
+  [
+   "apps/operator/app/_components/inbox/use-inbox-bulk-run.ts:551 <anon> m=94",
+   "apps/operator/app/_components/plans/use-plan-cleanup-run.ts:525 <anon> m=94"
+  ],
+  [
+   "apps/operator/app/_components/plans/use-plan-cleanup-run.ts:553 <anon> m=87",
+   "apps/operator/app/_components/plans/use-plan-cleanup-run.ts:579 <anon> m=87"
+  ],
+  [
+   "apps/operator/app/admin/_components/TableAdmin.tsx:431 renderCell m=100",
+   "apps/operator/app/dev/_components/SqlTab.tsx:180 renderCell m=100"
+  ],
+  [
+   "apps/operator/app/admin/plans/AgentsPanel.tsx:382 formatOriginAuthor m=85",
+   "apps/operator/app/admin/plans/RevisionsPanel.tsx:180 formatAuthor m=85"
+  ],
+  [
+   "apps/operator/app/admin/plans/PlanActions.tsx:130 handleApprove m=108",
+   "apps/operator/app/admin/plans/PlanActions.tsx:152 handleDemote m=108"
+  ],
+  [
+   "apps/operator/app/admin/plans/PlanActions.tsx:413 previewNextDecisionId m=80",
+   "apps/operator/app/admin/plans/PlanActions.tsx:426 previewNextItemId m=80"
+  ],
+  [
+   "apps/operator/app/admin/plans/PlansClient.tsx:580 <anon> m=110",
+   "apps/operator/app/adv/create/use-create-data.ts:447 <anon> m=110"
+  ],
+  [
+   "apps/operator/app/admin/plans/PlansClient.tsx:618 <anon> m=88",
+   "apps/operator/app/adv/create/use-create-data.ts:479 <anon> m=88"
+  ],
+  [
+   "apps/operator/app/admin/plans/PlansClient.tsx:825 <anon> m=109",
+   "apps/operator/app/adv/create/PlansListPanel.tsx:46 onNewPlan m=109"
+  ],
+  [
+   "apps/operator/app/admin/plans/RevisionConversationModal.tsx:167 TurnRow m=105",
+   "apps/operator/app/admin/plans/RunDetailPanel.tsx:365 TurnRow m=105"
+  ],
+  [
+   "apps/operator/app/admin/plans/plans-api.ts:933 triageAttentionItem m=80",
+   "apps/operator/app/admin/plans/plans-api.ts:1182 decideStandingApproval m=80"
+  ],
+  [
+   "apps/operator/app/admin/testing/_lib/recorder-channel.ts:68 saveRun m=100",
+   "libs/testing-shell/src/desktop/recorder-channel.ts:91 saveRun m=100"
+  ],
+  [
+   "apps/operator/app/admin/testing/_lib/recorder-channel.ts:99 rollupRoutes m=225",
+   "libs/testing-shell/src/desktop/recorder-channel.ts:122 rollupRoutes m=225"
+  ],
+  [
+   "apps/operator/app/adv/harnesses/AdvDocsTab.tsx:44 groupByDir m=134",
+   "apps/operator/app/project-docs/page.tsx:141 groupByDir m=134"
+  ],
+  [
+   "apps/operator/app/adv/harnesses/AdvGitGraphPanel.tsx:79 formatAge m=96",
+   "libs/generic/git-graph/src/GitGraphPanel.tsx:66 formatAge m=96"
+  ],
+  [
+   "apps/operator/app/adv/harnesses/useHarnessData.ts:225 syncRowToIssue m=161",
+   "libs/papercusp/_retired/apps-web/app/harness/issues/IssuesList.tsx:16 rowToIssue m=161"
+  ],
+  [
+   "apps/operator/app/adv/hud/hud-board-model.ts:1544 <anon> m=97",
+   "apps/operator/app/adv/hud/hud-board-model.ts:1588 <anon> m=97"
+  ],
+  [
+   "apps/operator/app/dev/_components/BackupsTab.tsx:36 fmtAgo m=89",
+   "apps/operator/app/settings/backups/page.tsx:52 fmtAgo m=89"
+  ],
+  [
+   "apps/operator/app/dev/_components/RightRail.tsx:39 fmtRel m=84",
+   "apps/operator/app/dev/_components/RoutesTab.tsx:26 fmtRelTime m=84",
+   "apps/operator/app/dev/_components/SessionsTab.tsx:66 fmtRelTime m=84"
+  ],
+  [
+   "apps/operator/app/dev/swarm-logos/page.tsx:179 BlackCombGlyph m=86",
+   "apps/operator/app/dev/swarm-logos/page.tsx:218 SentinelBeeGlyph m=86"
+  ],
+  [
+   "apps/operator/app/harness/brainstorm/BrainstormChat.tsx:8 BrainstormChat m=117",
+   "libs/papercusp/_retired/apps-web/app/harness/brainstorm/BrainstormChat.tsx:8 BrainstormChat m=117"
+  ],
+  [
+   "apps/operator/app/harness/brainstorm/WriteView.tsx:70 <anon> m=117",
+   "libs/papercusp/_retired/apps-web/app/harness/brainstorm/WriteView.tsx:59 <anon> m=117"
+  ],
+  [
+   "apps/operator/app/harness/theme.ts:628 getStatusOrder m=81",
+   "libs/papercusp/_retired/apps-web/app/harness/theme.ts:167 getStatusOrder m=81",
+   "libs/papercusp-shared/src/theme.ts:167 getStatusOrder m=81"
+  ],
+  [
+   "apps/operator/app/notes/page.tsx:30 timeAgo m=109",
+   "apps/operator/app/settings/user/memory/page.tsx:105 timeAgo m=109"
+  ],
+  [
+   "apps/operator/app/res/page.tsx:125 p2pAllotmentSetRest m=107",
+   "apps/operator/app/settings/p2p/page.tsx:126 p2pGrantSetRest m=107"
+  ],
+  [
+   "apps/operator/app/settings/personal-vault/page.tsx:347 formatBytes m=100",
+   "apps/operator/app/settings/storage/page.tsx:113 formatBytes m=100"
+  ],
+  [
+   "apps/operator/app/settings/personal-vault/page.tsx:578 <anon> m=87",
+   "apps/operator/app/settings/personal-vault/page.tsx:647 <anon> m=87"
+  ],
+  [
+   "apps/operator/scripts/hooks/omp/coord-hook.ts:2994 extractOmpMessageText m=104",
+   "packages/operator-core/lib/search/session-ingest.ts:348 textFromContent m=104"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:399 validateChecksConfig m=2717",
+   "libs/generic/template-kit/src/checks-config.ts:399 validateChecksConfig m=2717",
+   "templates/papercusp-android-app/template-kit/src/checks-config.ts:399 validateChecksConfig m=2717",
+   "templates/papercusp-app/template-kit/src/checks-config.ts:399 validateChecksConfig m=2717",
+   "templates/papercusp-iphone-app/template-kit/src/checks-config.ts:399 validateChecksConfig m=2717"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:712 <anon> m=202",
+   "libs/generic/template-kit/src/checks-config.ts:712 <anon> m=202",
+   "templates/papercusp-android-app/template-kit/src/checks-config.ts:712 <anon> m=202",
+   "templates/papercusp-app/template-kit/src/checks-config.ts:712 <anon> m=202",
+   "templates/papercusp-iphone-app/template-kit/src/checks-config.ts:712 <anon> m=202"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:886 <anon> m=368",
+   "libs/generic/template-kit/src/checks-config.ts:886 <anon> m=368",
+   "templates/papercusp-android-app/template-kit/src/checks-config.ts:886 <anon> m=368",
+   "templates/papercusp-app/template-kit/src/checks-config.ts:886 <anon> m=368",
+   "templates/papercusp-iphone-app/template-kit/src/checks-config.ts:886 <anon> m=368"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/checks-config.ts:1115 <anon> m=356",
+   "libs/generic/template-kit/src/checks-config.ts:1115 <anon> m=356",
+   "templates/papercusp-android-app/template-kit/src/checks-config.ts:1115 <anon> m=356",
+   "templates/papercusp-app/template-kit/src/checks-config.ts:1115 <anon> m=356",
+   "templates/papercusp-iphone-app/template-kit/src/checks-config.ts:1115 <anon> m=356"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/component-manifest.ts:72 validateComponentManifest m=406",
+   "libs/generic/template-kit/src/component-manifest.ts:72 validateComponentManifest m=406",
+   "templates/papercusp-android-app/template-kit/src/component-manifest.ts:72 validateComponentManifest m=406",
+   "templates/papercusp-app/template-kit/src/component-manifest.ts:72 validateComponentManifest m=406",
+   "templates/papercusp-iphone-app/template-kit/src/component-manifest.ts:72 validateComponentManifest m=406"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/component-manifest.ts:124 validateCatalog m=166",
+   "libs/generic/template-kit/src/component-manifest.ts:124 validateCatalog m=166",
+   "templates/papercusp-android-app/template-kit/src/component-manifest.ts:124 validateCatalog m=166",
+   "templates/papercusp-app/template-kit/src/component-manifest.ts:124 validateCatalog m=166",
+   "templates/papercusp-iphone-app/template-kit/src/component-manifest.ts:124 validateCatalog m=166"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/component-manifest.ts:128 <anon> m=84",
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:107 <anon> m=84",
+   "libs/generic/template-kit/src/component-manifest.ts:128 <anon> m=84",
+   "libs/generic/template-kit/src/composition.ts:107 <anon> m=84",
+   "templates/papercusp-android-app/template-kit/src/component-manifest.ts:128 <anon> m=84",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:107 <anon> m=84",
+   "templates/papercusp-app/template-kit/src/component-manifest.ts:128 <anon> m=84",
+   "templates/papercusp-app/template-kit/src/composition.ts:107 <anon> m=84",
+   "templates/papercusp-iphone-app/template-kit/src/component-manifest.ts:128 <anon> m=84",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:107 <anon> m=84"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:100 validateTemplateSet m=272",
+   "libs/generic/template-kit/src/composition.ts:100 validateTemplateSet m=272",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:100 validateTemplateSet m=272",
+   "templates/papercusp-app/template-kit/src/composition.ts:100 validateTemplateSet m=272",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:100 validateTemplateSet m=272"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:149 resolveRequiresClosure m=283",
+   "libs/generic/template-kit/src/composition.ts:149 resolveRequiresClosure m=283",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:149 resolveRequiresClosure m=283",
+   "templates/papercusp-app/template-kit/src/composition.ts:149 resolveRequiresClosure m=283",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:149 resolveRequiresClosure m=283"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:161 visit m=161",
+   "libs/generic/template-kit/src/composition.ts:161 visit m=161",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:161 visit m=161",
+   "templates/papercusp-app/template-kit/src/composition.ts:161 visit m=161",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:161 visit m=161"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:216 resolveSelection m=687",
+   "libs/generic/template-kit/src/composition.ts:216 resolveSelection m=687",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:216 resolveSelection m=687",
+   "templates/papercusp-app/template-kit/src/composition.ts:216 resolveSelection m=687",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:216 resolveSelection m=687"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/composition.ts:317 composeTemplates m=957",
+   "libs/generic/template-kit/src/composition.ts:317 composeTemplates m=957",
+   "templates/papercusp-android-app/template-kit/src/composition.ts:317 composeTemplates m=957",
+   "templates/papercusp-app/template-kit/src/composition.ts:317 composeTemplates m=957",
+   "templates/papercusp-iphone-app/template-kit/src/composition.ts:317 composeTemplates m=957"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/guide-lint.ts:101 lintTemplateProse m=260",
+   "libs/generic/template-kit/src/guide-lint.ts:101 lintTemplateProse m=260",
+   "templates/papercusp-android-app/template-kit/src/guide-lint.ts:101 lintTemplateProse m=260",
+   "templates/papercusp-app/template-kit/src/guide-lint.ts:101 lintTemplateProse m=260",
+   "templates/papercusp-iphone-app/template-kit/src/guide-lint.ts:101 lintTemplateProse m=260"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:245 validateDecisionSelect m=470",
+   "libs/generic/template-kit/src/template-manifest.ts:245 validateDecisionSelect m=470",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:245 validateDecisionSelect m=470",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:245 validateDecisionSelect m=470",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:245 validateDecisionSelect m=470"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:268 <anon> m=322",
+   "libs/generic/template-kit/src/template-manifest.ts:268 <anon> m=322",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:268 <anon> m=322",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:268 <anon> m=322",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:268 <anon> m=322"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:289 <anon> m=149",
+   "libs/generic/template-kit/src/template-manifest.ts:289 <anon> m=149",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:289 <anon> m=149",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:289 <anon> m=149",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:289 <anon> m=149"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:315 validateTemplateManifest m=1356",
+   "libs/generic/template-kit/src/template-manifest.ts:315 validateTemplateManifest m=1356",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:315 validateTemplateManifest m=1356",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:315 validateTemplateManifest m=1356",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:315 validateTemplateManifest m=1356"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:335 <anon> m=114",
+   "libs/generic/template-kit/src/template-manifest.ts:335 <anon> m=114",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:335 <anon> m=114",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:335 <anon> m=114",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:335 <anon> m=114"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:367 <anon> m=137",
+   "libs/generic/template-kit/src/template-manifest.ts:367 <anon> m=137",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:367 <anon> m=137",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:367 <anon> m=137",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:367 <anon> m=137"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:393 <anon> m=138",
+   "libs/generic/template-kit/src/template-manifest.ts:393 <anon> m=138",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:393 <anon> m=138",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:393 <anon> m=138",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:393 <anon> m=138"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:421 <anon> m=141",
+   "libs/generic/template-kit/src/template-manifest.ts:421 <anon> m=141",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:421 <anon> m=141",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:421 <anon> m=141",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:421 <anon> m=141"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:448 <anon> m=184",
+   "libs/generic/template-kit/src/template-manifest.ts:448 <anon> m=184",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:448 <anon> m=184",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:448 <anon> m=184",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:448 <anon> m=184"
+  ],
+  [
+   "apps/slack-asana-bug-drill/template-kit/src/template-manifest.ts:492 validateTemplateAgainstCatalog m=117",
+   "libs/generic/template-kit/src/template-manifest.ts:492 validateTemplateAgainstCatalog m=117",
+   "templates/papercusp-android-app/template-kit/src/template-manifest.ts:492 validateTemplateAgainstCatalog m=117",
+   "templates/papercusp-app/template-kit/src/template-manifest.ts:492 validateTemplateAgainstCatalog m=117",
+   "templates/papercusp-iphone-app/template-kit/src/template-manifest.ts:492 validateTemplateAgainstCatalog m=117"
+  ],
+  [
+   "libs/generic/bench-metrics/src/horizon.ts:257 mulberry32 m=94",
+   "libs/generic/bench-metrics/src/intervals.ts:169 mulberry32 m=94",
+   "libs/generic/memory/src/bench/synthetic.ts:15 mulberry32 m=94"
+  ],
+  [
+   "libs/generic/bench-metrics/src/horizon.ts:259 <anon> m=82",
+   "libs/generic/bench-metrics/src/intervals.ts:171 <anon> m=82",
+   "libs/generic/memory/src/bench/synthetic.ts:17 <anon> m=82"
+  ],
+  [
+   "libs/generic/deployment-driver/src/workspace-host-agent-home.ts:307 liveApiKeyPaths m=113",
+   "libs/generic/deployment-driver/src/workspace-host-agent-home.ts:357 liveRefreshTokenPaths m=113"
+  ],
+  [
+   "libs/generic/desktop-ipc/src/http-stream.ts:25 base64ToUint8Universal m=128",
+   "libs/generic/desktop-ipc/src/ipc-stream.ts:93 base64ToUint8 m=128"
+  ],
+  [
+   "libs/generic/dock-workbench/src/layout.ts:148 validateNode m=138",
+   "packages/operator-core/lib/dock-layouts.ts:611 validateNode m=138"
+  ],
+  [
+   "libs/generic/linkable-edges/src/memory-store.ts:47 listOutMany m=92",
+   "libs/generic/linkable-edges/src/memory-store.ts:56 listInMany m=92"
+  ],
+  [
+   "libs/generic/memory/src/local-embedder-worker.ts:535 loadOnnxBindingFrom m=89",
+   "libs/generic/rerank/src/local-reranker-worker.ts:112 loadOnnxBindingFrom m=89"
+  ],
+  [
+   "libs/generic/memory/src/local-embedder-worker.ts:933 retireWorker m=175",
+   "libs/generic/rerank/src/local-reranker-worker.ts:353 retireWorker m=175"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:340 stableJson m=121",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:292 stableJson m=121"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:383 deriveRequestKey m=81",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:335 deriveRequestKey m=81"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:490 parseScorecardReviewerProof m=180",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:401 parseScorecardReviewerProof m=180"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:521 readCompleteScorecard m=768",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:432 readCompleteScorecard m=768"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:524 read m=126",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:435 read m=126"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:600 scorecardHostFromInvoker m=112",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:511 scorecardHostFromInvoker m=112"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:602 emitScorecard m=88",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:513 emitScorecard m=88"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:711 bootstrapPots m=124",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:595 bootstrapPots m=124"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:736 submitOperations m=121",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:620 submitOperations m=121"
+  ],
+  [
+   "libs/generic/pot-app-seam/src/index.ts:834 startIngestLoop m=116",
+   "templates/papercusp-ops-pots/pot-app-seam/src/index.ts:686 startIngestLoop m=116"
+  ],
+  [
+   "libs/generic/search/src/__testing__/native-pg.ts:63 freeLoopbackPort m=81",
+   "libs/test-config/src/dedicated-native-pg.ts:63 freeLoopbackPort m=81"
+  ],
+  [
+   "libs/generic/search/src/__testing__/native-pg.ts:93 stopChild m=86",
+   "libs/test-config/src/dedicated-native-pg.ts:158 stopChild m=86"
+  ],
+  [
+   "libs/generic/search-core/src/width-sweep.fixture.ts:39 mulberry32 m=90",
+   "packages/operator-core/lib/code-intelligence/fair-comparison.ts:327 mulberry32 m=90",
+   "packages/operator-core/lib/pilot-arm-assignment.ts:119 mulberry32 m=90",
+   "packages/operator-core/lib/sync/hyperbee/perf/corpus.ts:37 mulberry32 m=90"
+  ],
+  [
+   "libs/generic/tooldef/src/define-prompt.ts:12 deriveNameFromCallSite m=145",
+   "libs/generic/tooldef/src/define-resource.ts:18 deriveNameFromCallSite m=145"
+  ],
+  [
+   "libs/generic/tooldef/src/payload-tier.ts:418 parsePreservePath m=111",
+   "packages/operator-core/lib/result-projection/apply.ts:569 parsePickPath m=111"
+  ],
+  [
+   "libs/generic/tooldef/src/tool-projection.ts:1972 canonical m=92",
+   "packages/operator-core/lib/llm-testing/targets/su.ts:1113 stableStringify m=92"
+  ],
+  [
+   "libs/generic/ui-primitives/src/ProjectHistoryView.tsx:1215 closeDocument m=92",
+   "libs/generic/ui-primitives/src/ProjectHistoryView.tsx:1256 closeWorkItem m=92"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:1009 <anon> m=121",
+   "packages/operator-core/lib/endpoint-route/routes/harness/runs.ts:33 <anon> m=121"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:1037 <anon> m=103",
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:1782 <anon> m=103"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:1137 <anon> m=109",
+   "packages/operator-core/lib/endpoint-route/routes/harness/orchestration-actions.ts:48 <anon> m=109"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:1967 <anon> m=81",
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:2210 <anon> m=81"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:2827 <anon> m=86",
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:2838 <anon> m=86"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:2924 parseIssuesMdLocal m=578",
+   "packages/operator-core/lib/harness-issues.ts:253 parseIssuesMdLocal m=578"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/_hono/harness.ts:3761 resolveMemoryPath m=87",
+   "packages/operator-core/lib/harness-memory-map.ts:60 resolveMemoryPath m=87"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/api/desktop/preflight/route.ts:34 <anon> m=118",
+   "packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts:127 <anon> m=118"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/app/harness/FeaturePeekPanel.tsx:434 displayRunId m=104",
+   "libs/papercusp/_retired/apps-web/app/harness/issues/IssueDetail.tsx:269 displayRunId m=104"
+  ],
+  [
+   "libs/papercusp/_retired/apps-web/lib/browser-papercusp-api.ts:53 callServer m=191",
+   "packages/operator-core/lib/browser-papercusp-api.ts:53 callServer m=191"
+  ],
+  [
+   "libs/papercusp/libs/db/src/connection.ts:1876 getOrgPg m=108",
+   "libs/papercusp/libs/db/src/connection.ts:2371 getOrgPgApp m=108"
+  ],
+  [
+   "libs/papercusp/packages/cli/src/operator-cli.node-test.ts:19 parseEntries m=224",
+   "libs/papercusp/packages/cli/src/operator-cli.ts:82 parseEntries m=224"
+  ],
+  [
+   "libs/papercusp/packages/cli/src/operator-cli.node-test.ts:24 flush m=124",
+   "libs/papercusp/packages/cli/src/operator-cli.ts:87 flush m=124"
+  ],
+  [
+   "libs/papercusp/packages/cli/src/papercusp-root.ts:54 resolve m=94",
+   "libs/papercusp/plugins/cloudflare-pages/index.ts:71 <anon> m=94"
+  ],
+  [
+   "libs/papercusp/packages/harness/paths.ts:94 consider m=91",
+   "papercusp-desktop/src-tauri/env-sidecars/staging/harness/paths.ts:94 consider m=91"
+  ],
+  [
+   "libs/papercusp/packages/harness/paths.ts:140 packageRoot m=80",
+   "papercusp-desktop/src-tauri/env-sidecars/staging/harness/paths.ts:128 packageRoot m=80"
+  ],
+  [
+   "libs/papercusp/packages/harness/paths.ts:190 harnessRootCandidates m=104",
+   "papercusp-desktop/src-tauri/env-sidecars/staging/harness/paths.ts:178 harnessRootCandidates m=104"
+  ],
+  [
+   "libs/papercusp/packages/orchestrator/src/feature-debug-notes.ts:87 materializeFeatureDebugNote m=140",
+   "libs/papercusp/packages/orchestrator/src/feature-notes.ts:41 materializeFeatureNote m=140"
+  ],
+  [
+   "libs/papercusp/packages/orchestrator/src/feature-history.ts:271 formatAuditRow m=81",
+   "packages/agent-mcp/src/tools/features/history.ts:156 formatAuditRow m=81"
+  ],
+  [
+   "libs/papercusp/packages/orchestrator/src/invoke.ts:362 resolveOperatorPromptsDir m=85",
+   "libs/papercusp/packages/orchestrator/src/invoke.ts:385 resolveOperatorDocsAgentsDir m=85"
+  ],
+  [
+   "libs/test-config/src/baseline-schema-global-setup.ts:99 readBaselineReuseGeneration m=89",
+   "libs/test-config/src/pg-container.ts:365 readTestPgReuseGeneration m=89"
+  ],
+  [
+   "libs/testing-shell/src/llm/LlmTestPanel.tsx:265 <anon> m=88",
+   "libs/testing-shell/src/llm/LlmTestPanel.tsx:336 <anon> m=88"
+  ],
+  [
+   "libs/testing-shell/src/llm/fixtures/loader.ts:353 parseCardEvent m=82",
+   "packages/operator-core/lib/llm-testing/targets/operator.ts:546 parseCardEvent m=82"
+  ],
+  [
+   "packages/backup/src/destinations.ts:38 hkdfExpand m=83",
+   "packages/backup/src/password.ts:28 hkdfExpand m=83"
+  ],
+  [
+   "packages/backup/src/workspace-backup.ts:1508 <anon> m=99",
+   "packages/backup/src/workspace-backup.ts:1585 <anon> m=99"
+  ],
+  [
+   "packages/coordination/src/capabilities/pg-stores.ts:551 listOutMany m=153",
+   "packages/coordination/src/capabilities/pg-stores.ts:579 listInMany m=153"
+  ],
+  [
+   "packages/docs-engine/src/adapters/generic-fs.ts:48 extractHeadings m=85",
+   "packages/docs-engine/src/adapters/harness-fs.ts:71 extractHeadings m=85"
+  ],
+  [
+   "packages/docs-engine/src/adapters/generic-fs.ts:86 walkDocs m=126",
+   "packages/docs-engine/src/adapters/harness-fs.ts:111 walkDocs m=126",
+   "packages/docs-engine/src/adapters/starlight.ts:200 walkContent m=126"
+  ],
+  [
+   "packages/docs-engine/src/adapters/generic-fs.ts:88 walk m=98",
+   "packages/docs-engine/src/adapters/harness-fs.ts:113 walk m=98",
+   "packages/docs-engine/src/adapters/starlight.ts:202 walk m=98"
+  ],
+  [
+   "packages/docs-engine/src/adapters/generic-fs.ts:157 getContent m=113",
+   "packages/docs-engine/src/adapters/harness-fs.ts:205 getContent m=113"
+  ],
+  [
+   "packages/docs-engine/src/adapters/generic-fs.ts:159 <anon> m=89",
+   "packages/docs-engine/src/adapters/harness-fs.ts:207 <anon> m=89"
+  ],
+  [
+   "packages/operator-core/lib/ablation/governor.ts:53 promptAblationGovernorGate m=131",
+   "packages/operator-core/lib/calibration/governor.ts:44 calibrationGovernorGate m=131",
+   "packages/operator-core/lib/deferral-interest/governor.ts:44 deferralInterestGovernorGate m=131",
+   "packages/operator-core/lib/fleet-ekg/governor.ts:48 fleetEkgGovernorGate m=131",
+   "packages/operator-core/lib/graduation/governor.ts:47 graduationGovernorGate m=131",
+   "packages/operator-core/lib/negative-space/governor.ts:56 negativeSpaceGovernorGate m=131",
+   "packages/operator-core/lib/neologism/governor.ts:52 neologismGovernorGate m=131",
+   "packages/operator-core/lib/red-queen/governor.ts:46 redQueenGovernorGate m=131",
+   "packages/operator-core/lib/replay/regret/governor.ts:50 regretGovernorGate m=131",
+   "packages/operator-core/lib/transfer/governor.ts:45 transferGovernorGate m=131"
+  ],
+  [
+   "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts:598 canonical m=88",
+   "packages/operator-core/lib/acceptance-live-requirements.ts:83 canonical m=88",
+   "packages/operator-core/lib/agent-tools/plans/rubric-loss-guard.ts:313 canonicalValue m=88",
+   "packages/operator-core/lib/role-launch-spec.ts:411 stableLaunchState m=88",
+   "packages/operator-core/lib/rubrics.ts:2036 canonical m=88",
+   "packages/operator-core/lib/session-identity-attribution.ts:10 stable m=88"
+  ],
+  [
+   "packages/operator-core/lib/acceptance-bar-seed.ts:1019 stableJson m=102",
+   "packages/operator-core/lib/pilot-fan-in-guards.ts:68 canonicalJson m=102",
+   "packages/operator-core/lib/scorecards.ts:907 canonicalJson m=102"
+  ],
+  [
+   "packages/operator-core/lib/admin-test-suites.ts:948 run m=118",
+   "packages/operator-core/lib/admin-test-suites.ts:1065 run m=118"
+  ],
+  [
+   "packages/operator-core/lib/admin-test-suites.ts:993 run m=99",
+   "packages/operator-core/lib/admin-test-suites.ts:1105 run m=99"
+  ],
+  [
+   "packages/operator-core/lib/adv-sessions.ts:2986 shutdownAcceptedOwnerIds m=112",
+   "packages/operator-core/lib/adv-sessions.ts:3009 endedRecordedOwnerIds m=112"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/blog/post.ts:27 handler m=145",
+   "packages/operator-core/lib/agent-tools/notify/send.ts:25 handler m=145"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/coordination/premise-probes.ts:233 planDecision m=80",
+   "packages/operator-core/lib/agent-tools/coordination/premise-probes.ts:260 planItem m=80"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/coordination/relay-provenance-resolve.ts:99 findClaudeOwnerDialogAnswer m=80",
+   "packages/operator-core/lib/turn-provenance/turn-ref.ts:391 findClaudeOwnerDialogAnswer m=80"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/coordination/tools/topics-unsubscribe.ts:46 handler m=90",
+   "packages/operator-core/lib/agent-tools/events/unsubscribe.ts:48 handler m=90"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/cross_harness/plans_search.ts:72 snippet m=112",
+   "packages/operator-core/lib/agent-tools/plans/search.ts:236 snippet m=112"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/cupboard/publish-rubric.ts:55 handler m=194",
+   "packages/operator-core/lib/agent-tools/cupboard/publish-template.ts:56 handler m=194"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/db/txn-timeouts.ts:293 verify m=85",
+   "packages/operator-core/lib/agent-tools/telemetry/set-buffer.ts:89 verify m=85"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/dev/limit_failure_rate.ts:35 handler m=86",
+   "packages/operator-core/lib/agent-tools/dev/orient_dedup_rate.ts:33 handler m=86"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/docs/_engineering-adapter.ts:61 extractHeadings m=81",
+   "packages/operator-core/lib/agent-tools/docs/_guidance-adapter.ts:145 extractHeadings m=81"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/docs/semantic-leg.ts:148 resolveDocsEmbedder m=115",
+   "packages/operator-core/lib/agent-tools/plans/semantic-leg.ts:244 resolvePlansEmbedder m=115"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/fleet/leader-brief.ts:2012 positivePlanSlugsFromFilter m=161",
+   "packages/operator-core/lib/fleet/executable-frontier.ts:25 positivePlanSlugsFromFilter m=161"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts:1499 stableKey m=91",
+   "packages/operator-core/lib/session-port/render.ts:12 stableJson m=91",
+   "packages/operator-core/lib/session-port/service.ts:215 stableJson m=91"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/harness_docs/regenerate.ts:55 handler m=234",
+   "packages/operator-core/lib/agent-tools/harness_docs/verify.ts:55 handler m=234"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/harness_docs/regenerate.ts:67 <anon> m=86",
+   "packages/operator-core/lib/agent-tools/harness_docs/verify.ts:67 <anon> m=86"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/inbox/bulk-run.ts:361 failureDetails m=91",
+   "packages/operator-core/lib/plan-cleanup/action-dispatch.ts:15 failureDetails m=91"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/orchestration/durability-inspection.ts:8 stableJson m=95",
+   "packages/operator-core/lib/dbos/durable-orchestration-workflow.ts:112 stableJson m=95"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/plans/owner-gate-marker.ts:59 findOwnerGateMarker m=96",
+   "packages/operator-core/lib/scheduler/plan-item-lane-guard.ts:195 findOwnerGateMarker m=96"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/plans/set-archived.ts:74 handler m=178",
+   "packages/operator-core/lib/agent-tools/plans/set-priority.ts:51 handler m=178"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/plans/set-archived.ts:85 <anon> m=103",
+   "packages/operator-core/lib/agent-tools/plans/set-priority.ts:62 <anon> m=103"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/search/sources.ts:443 <anon> m=91",
+   "packages/operator-core/lib/agent-tools/search/sources.ts:477 <anon> m=91"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/search/sources.ts:652 <anon> m=94",
+   "packages/operator-core/lib/agent-tools/search/sources.ts:686 <anon> m=94"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/sessions/cursor.ts:27 stableValue m=88",
+   "packages/operator-core/lib/work-items-admission-merge-quality.ts:488 canonicalize m=88"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:798 firstCompletionStringRejection m=108",
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:986 firstCompletionCoverageContract m=108"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:2106 completionFilesChanged m=119",
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:2118 completionFilesDeleted m=119"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:2448 epochSeconds m=122",
+   "packages/operator-core/lib/agent-tools/work_items/untouched-paths.ts:446 epochSeconds m=122"
+  ],
+  [
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:6445 <anon> m=90",
+   "packages/operator-core/lib/agent-tools/work_items/complete.ts:6454 <anon> m=90"
+  ],
+  [
+   "packages/operator-core/lib/authority/lock-authority.ts:367 queryPresenceRows m=132",
+   "packages/operator-core/lib/authority/lock-authority.ts:435 queryPresenceRowsForHive m=132"
+  ],
+  [
+   "packages/operator-core/lib/authority/lock-authority.ts:576 lockAuthorityFor m=139",
+   "packages/operator-core/lib/authority/lock-authority.ts:649 lockAuthorityForHive m=139"
+  ],
+  [
+   "packages/operator-core/lib/backup/state-census-producers.ts:557 visit m=97",
+   "packages/operator-core/lib/backup/state-census-producers.ts:658 visit m=97"
+  ],
+  [
+   "packages/operator-core/lib/blueprint-steps/ops/hive-eval-gen.ts:57 run m=168",
+   "packages/operator-core/lib/blueprint-steps/ops/iq-battery-gen.ts:57 run m=168"
+  ],
+  [
+   "packages/operator-core/lib/carry-respawn.ts:118 carryNoteSnapshotIdentity m=92",
+   "packages/operator-core/lib/events/await/wake-executor.ts:2093 carryNoteSnapshotIdentity m=92"
+  ],
+  [
+   "packages/operator-core/lib/code-intelligence/lsp-daemon-facade.ts:397 lspFacadeOpSpec m=109",
+   "packages/operator-core/lib/code-intelligence/lsp-facade.ts:78 lspFacadeOpSpec m=109"
+  ],
+  [
+   "packages/operator-core/lib/cold-boot-drill-live.ts:213 appendColdBootDrillLedgerEvent m=121",
+   "packages/operator-core/lib/residual-carry-pass-live.ts:154 appendResidualCarryLedgerEvent m=121"
+  ],
+  [
+   "packages/operator-core/lib/connected-apps/mcp-oauth.ts:502 readBasicCredentials m=91",
+   "packages/operator-core/lib/endpoint-route/routes/connected-apps/oauth.ts:121 basicCredentials m=91"
+  ],
+  [
+   "packages/operator-core/lib/cupboard/datatype-store.ts:167 installedDatatypeRef m=112",
+   "packages/operator-core/lib/cupboard/event-store.ts:181 installedEventRef m=112"
+  ],
+  [
+   "packages/operator-core/lib/cupboard/funded-tool-turn-store.ts:61 encodeMeter m=195",
+   "packages/operator-core/lib/cupboard/funded-tool-turn-store.ts:73 decodeMeter m=195"
+  ],
+  [
+   "packages/operator-core/lib/cupboard/install-io.ts:40 gitCloneShallow m=87",
+   "packages/operator-core/lib/cupboard/offline-content-bundle-install-io.ts:91 gitCloneShallow m=87"
+  ],
+  [
+   "packages/operator-core/lib/cupboard/install-plan-core.ts:70 installPlanFromCupboardCore m=92",
+   "packages/operator-core/lib/cupboard/install-recipe-core.ts:57 installRecipeFromCupboardCore m=92"
+  ],
+  [
+   "packages/operator-core/lib/data-governance/kek-providers.ts:264 wrapDataKey m=85",
+   "packages/operator-core/lib/data-governance/kek-providers.ts:274 unwrapDataKey m=85"
+  ],
+  [
+   "packages/operator-core/lib/dbos/periodic-workflows.ts:1645 specTriadSweepTick m=81",
+   "packages/operator-core/lib/dbos/periodic-workflows.ts:1675 specEvidenceAutobindTick m=81"
+  ],
+  [
+   "packages/operator-core/lib/dbos/routines-workflow.ts:1858 <anon> m=119",
+   "packages/operator-core/lib/dbos/routines-workflow.ts:1883 <anon> m=119",
+   "packages/operator-core/lib/dbos/routines-workflow.ts:1910 <anon> m=119",
+   "packages/operator-core/lib/dbos/routines-workflow.ts:1941 <anon> m=119"
+  ],
+  [
+   "packages/operator-core/lib/dbos/workspace-host-provision-workflow.ts:706 startWorkspaceHostDestroyWorkflow m=84",
+   "packages/operator-core/lib/dbos/workspace-host-provision-workflow.ts:729 startWorkspaceHostLifecycleWorkflow m=84"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts:202 <anon> m=142",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts:259 <anon> m=142"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts:209 <anon> m=94",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts:282 <anon> m=94",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts:266 <anon> m=94",
+   "packages/operator-core/lib/shared-pot-loop/composition-rig.ts:500 <anon> m=94"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts:349 createLineReader m=201",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-agent.ts:402 createLineReader m=201",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts:730 createLineReader m=201",
+   "packages/operator-core/lib/sync/hyperbee/perf/peer-child.ts:537 createLineReader m=201"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-launcher.ts:155 localClaimLauncher m=210",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-launcher.ts:54 localEvictionLauncher m=210"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-launcher.ts:163 <anon> m=109",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-launcher.ts:62 <anon> m=109"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-launcher.ts:221 sshClaimLauncher m=334",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-launcher.ts:120 sshEvictionLauncher m=334"
+  ],
+  [
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/claim-launcher.ts:230 launch m=135",
+   "packages/operator-core/lib/deployment/p2p-perf-tier3/eviction-launcher.ts:132 launch m=135"
+  ],
+  [
+   "packages/operator-core/lib/device-voice-ws.ts:143 <anon> m=96",
+   "packages/operator-core/lib/voice-node/desktop-voice-ws.ts:117 <anon> m=96"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/admin/accounts-pin.ts:43 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/config.ts:42 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/coord.ts:39 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/coordination.ts:48 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/goals.ts:85 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/inbox.ts:31 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/mode.ts:40 unwrap m=106",
+   "packages/operator-core/lib/endpoint-route/routes/admin/plans.ts:124 unwrap m=106"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/admin/accounts-pin.ts:74 dispatchWrite m=155",
+   "packages/operator-core/lib/endpoint-route/routes/admin/config.ts:73 dispatchWrite m=155",
+   "packages/operator-core/lib/endpoint-route/routes/admin/inbox.ts:62 dispatchWrite m=155",
+   "packages/operator-core/lib/endpoint-route/routes/admin/mode.ts:71 dispatchWrite m=155"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-cartesia-test.ts:13 handler m=88",
+   "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-openai-test.ts:13 handler m=88"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/agent-mcp/saved-prompts.ts:239 handler m=115",
+   "packages/operator-core/lib/endpoint-route/routes/agent-mcp/saved-prompts.ts:259 handler m=115"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/backups/failures.ts:14 handler m=93",
+   "packages/operator-core/lib/endpoint-route/routes/backups/snapshots.ts:24 handler m=93"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/design/regressions.ts:24 listDir m=103",
+   "packages/operator-core/lib/sync-resolver/index.ts:600 listDir m=103"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/design/regressions.ts:54 <anon> m=120",
+   "packages/operator-core/lib/sync-resolver/index.ts:622 <anon> m=120"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/dev/sql.ts:205 <anon> m=119",
+   "packages/operator-core/lib/endpoint-route/routes/dev/sql.ts:221 <anon> m=119"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts:117 handler m=109",
+   "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts:150 handler m=109"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts:134 handler m=118",
+   "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts:167 handler m=118"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/claim-status.ts:61 parseIdArray m=159",
+   "packages/operator-core/lib/endpoint-route/routes/harness/pr-reviewer-settings.ts:215 parseClaimantIds m=159",
+   "packages/operator-core/lib/endpoint-route/routes/pot/policy-set.ts:115 parseIdArray m=159"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/docs.ts:50 handler m=80",
+   "packages/operator-core/lib/endpoint-route/routes/harness/docs.ts:64 handler m=80"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/feature-queue.ts:41 handler m=140",
+   "packages/operator-core/lib/endpoint-route/routes/harness/working-set.ts:36 handler m=140"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/feature-queue.ts:95 handler m=118",
+   "packages/operator-core/lib/endpoint-route/routes/harness/feature-queue.ts:124 handler m=118"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/process-control.ts:49 handler m=84",
+   "packages/operator-core/lib/endpoint-route/routes/harness/process-control.ts:66 handler m=84"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/project-docs.ts:75 walk m=87",
+   "packages/operator-core/lib/harness/docs/doc-fs.ts:51 walk m=87"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/harness/working-set.ts:86 handler m=117",
+   "packages/operator-core/lib/endpoint-route/routes/harness/working-set.ts:108 handler m=117"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/hosted-provider-delegation.ts:86 handler m=82",
+   "packages/operator-core/lib/endpoint-route/routes/hosted-provider-delegation.ts:112 handler m=82"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/plugins/enable.ts:22 run m=174",
+   "packages/operator-core/lib/endpoint-route/routes/plugins/uninstall.ts:19 run m=174"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/plugins/enable.ts:34 <anon> m=120",
+   "packages/operator-core/lib/endpoint-route/routes/plugins/uninstall.ts:31 <anon> m=120"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:6416 raceDeadline m=92",
+   "packages/operator-core/lib/memory/claim-port.ts:147 withDeadline m=92"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/transport/tool-allowlist.ts:217 sweepSessionSurfaces m=100",
+   "packages/operator-core/lib/endpoint-route/routes/transport/tool-allowlist.ts:232 sweepSessionToolRegistryRevisions m=100"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/tui/intent-result.ts:20 handler m=228",
+   "packages/operator-core/lib/endpoint-route/routes/ui/intent-result.ts:21 handler m=228"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/tui/intents-stream.ts:36 handler m=346",
+   "packages/operator-core/lib/endpoint-route/routes/ui/intents-stream.ts:38 handler m=346"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/tui/intents-stream.ts:50 setup m=250",
+   "packages/operator-core/lib/endpoint-route/routes/ui/intents-stream.ts:52 setup m=250"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/tui/intents-stream.ts:56 drain m=148",
+   "packages/operator-core/lib/endpoint-route/routes/ui/intents-stream.ts:58 drain m=148"
+  ],
+  [
+   "packages/operator-core/lib/endpoint-route/routes/user/personal-vault.ts:439 selectOwnedGoogleProviderAccount m=84",
+   "packages/operator-core/lib/endpoint-route/routes/user/personal-vault.ts:464 selectOwnedFacebookProviderAccount m=84"
+  ],
+  [
+   "packages/operator-core/lib/external-bench/_xbench_compare.ts:53 dockerhubTag m=137",
+   "packages/operator-core/lib/external-bench/_xbench_realqueen_compare.ts:105 dockerhubTag m=137",
+   "packages/operator-core/lib/external-bench/_xbench_su_compare.ts:168 dockerhubTag m=137",
+   "packages/operator-core/lib/external-bench/task-sets.ts:160 dockerhubTag m=137"
+  ],
+  [
+   "packages/operator-core/lib/external-bench/_xbench_realqueen_compare.ts:128 <anon> m=90",
+   "packages/operator-core/lib/external-bench/_xbench_su_compare.ts:191 <anon> m=90"
+  ],
+  [
+   "packages/operator-core/lib/external-bench/_xbench_realqueen_compare.ts:270 <anon> m=107",
+   "packages/operator-core/lib/external-bench/_xbench_su_compare.ts:311 <anon> m=107"
+  ],
+  [
+   "packages/operator-core/lib/external-bench/metr-hcast-backlog.ts:83 metrHcastBacklogDriver m=130",
+   "packages/operator-core/lib/external-bench/tac-backlog-driver.ts:80 theAgentCompanyBacklogDriver m=130"
+  ],
+  [
+   "packages/operator-core/lib/external-bench/task-sets.ts:285 loadVerifiedTaskSet m=86",
+   "packages/operator-core/lib/external-bench/task-sets.ts:365 loadTheAgentCompanyTaskSet m=86"
+  ],
+  [
+   "packages/operator-core/lib/fleet-ekg/run.ts:61 runFleetEkgScan m=124",
+   "packages/operator-core/lib/negative-space/mine.ts:60 runNegativeSpaceMine m=124",
+   "packages/operator-core/lib/neologism/mine.ts:61 runNeologismMine m=124"
+  ],
+  [
+   "packages/operator-core/lib/fleet/assignments.ts:831 agentOriginToolCallOwnersSince m=122",
+   "packages/operator-core/lib/fleet/assignments.ts:875 nativeToolCallOwnersSince m=122"
+  ],
+  [
+   "packages/operator-core/lib/gates/gate-canary-sweep-action.ts:234 defaultRunGreenCheckpointCanary m=221",
+   "packages/operator-core/lib/harness/routines/autoloop-release-readiness-action.ts:57 defaultRunEvaluator m=221"
+  ],
+  [
+   "packages/operator-core/lib/gates/gate-canary-sweep-action.ts:237 <anon> m=193",
+   "packages/operator-core/lib/harness/routines/autoloop-release-readiness-action.ts:60 <anon> m=193"
+  ],
+  [
+   "packages/operator-core/lib/goals/spend-rollup.ts:941 startGoalSpendRollupTick m=95",
+   "packages/operator-core/lib/system-health/agent-productivity-watchdog.ts:1307 startAgentProductivityWatchdog m=95",
+   "packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts:2570 startGoalDrainFleetWatchdog m=95",
+   "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts:3383 startGoalLivenessWatchdog m=95",
+   "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts:3410 startGoalHolderRespawner m=95",
+   "packages/operator-core/lib/system-health/unservable-critical-watchdog.ts:518 startUnservableCriticalWatchdog m=95"
+  ],
+  [
+   "packages/operator-core/lib/harness-insights/github-facts.ts:264 loadProjectCardFromGithub m=161",
+   "packages/operator-core/lib/harness-insights/github-facts.ts:342 loadGithubContributorCommits m=161"
+  ],
+  [
+   "packages/operator-core/lib/harness-insights/load-contributors-tab.ts:83 bindingStatusFromAttestations m=88",
+   "packages/operator-core/lib/harness-insights/load-people.ts:31 pickBindingStatus m=88"
+  ],
+  [
+   "packages/operator-core/lib/harness-state/git-export/git-committer.ts:31 <anon> m=93",
+   "packages/operator-core/lib/harness/docs/git-runner.ts:53 <anon> m=93"
+  ],
+  [
+   "packages/operator-core/lib/harness/git-sync/git-sync-routine.ts:103 getGitSyncRoutine m=222",
+   "packages/operator-core/lib/harness/git-sync/hive-git-gc-routine.ts:110 getPotGitGcRoutine m=222",
+   "packages/operator-core/lib/pr-host/pr-poll-routine.ts:94 getPrPollRoutine m=222"
+  ],
+  [
+   "packages/operator-core/lib/harness/git-sync/quarantine-import-guard.ts:222 registerPackage m=188",
+   "packages/operator-core/lib/harness/git-sync/quarantine-import-guard.ts:516 registerHeadPackage m=188"
+  ],
+  [
+   "packages/operator-core/lib/harness/git-sync/quarantine-import-guard.ts:226 <anon> m=115",
+   "packages/operator-core/lib/harness/git-sync/quarantine-import-guard.ts:520 <anon> m=115"
+  ],
+  [
+   "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:607 <anon> m=261",
+   "packages/operator-core/lib/harness/git-sync/run-git-sync.ts:882 <anon> m=261"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts:81 readSourceGitlinks m=214",
+   "packages/operator-core/lib/release-cut-operation.ts:400 readSourceGitlinks m=214"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-acceptance-drain-sweep-routine.ts:76 main m=143",
+   "packages/operator-core/lib/harness/routines/seed-organization-content-reseal-routine.ts:43 main m=143",
+   "packages/operator-core/lib/harness/routines/seed-plan-drain-sweep-routine.ts:65 main m=143"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-acceptance-grading-sweep-routine.ts:45 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-account-capacity-reprobe-routine.ts:40 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts:46 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-consult-expiry-routine.ts:41 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-frozen-candidate-drift-sweep-routine.ts:69 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-hosted-lifecycle-reconcile-routine.ts:45 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-hosted-public-ingress-probe-routine.ts:39 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-supervision-reconcile-routine.ts:41 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-task-reconcile-routine.ts:38 main m=121",
+   "packages/operator-core/lib/harness/routines/seed-worker-breaker-watch-routine.ts:44 main m=121"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-cargo-test-routine.ts:28 main m=124",
+   "packages/operator-core/lib/harness/routines/seed-gate-fire-drill-routine.ts:32 main m=124",
+   "packages/operator-core/lib/harness/routines/seed-periodic-full-run-routine.ts:26 main m=124",
+   "packages/operator-core/lib/harness/routines/seed-sync-batch-delta-check-routine.ts:37 main m=124",
+   "packages/operator-core/lib/harness/routines/seed-sync-batch-lint-guards-routine.ts:25 main m=124"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-completion-claim-recheck-routine.ts:21 main m=130",
+   "packages/operator-core/lib/harness/routines/seed-dead-citation-sweep-routine.ts:18 main m=130",
+   "packages/operator-core/lib/harness/routines/seed-durable-escalation-orphan-sweep-routine.ts:29 main m=130"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-doc-anchor-reconcile-routine.ts:28 main m=118",
+   "packages/operator-core/lib/harness/routines/seed-session-dir-gc-routine.ts:30 main m=118"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-episode-scoped-operational-reconcile-routine.ts:39 main m=139",
+   "packages/operator-core/lib/harness/routines/seed-legacy-needs-human-reconcile-routine.ts:36 main m=139"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-gc-dead-loops-routine.ts:51 main m=211",
+   "packages/operator-core/lib/harness/routines/seed-gc-verify-instances-routine.ts:58 main m=211"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-hive-canary-routine.ts:20 main m=101",
+   "packages/operator-core/lib/harness/routines/seed-hive-canary-sla-routine.ts:28 main m=101"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-inbox-bulk-resolve-routine.ts:14 main m=133",
+   "packages/operator-core/lib/harness/routines/seed-intake-triage-drain-routine.ts:22 main m=133",
+   "packages/operator-core/lib/harness/routines/seed-plan-cleanup-sweep-routine.ts:38 main m=133"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-plan-item-orphan-reconcile-routine.ts:52 main m=144",
+   "packages/operator-core/lib/harness/routines/seed-plan-item-reflect-orphan-reconcile-routine.ts:56 main m=144"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/seed-pty-host-wedge-routine.ts:41 main m=144",
+   "packages/operator-core/lib/harness/routines/seed-silent-halt-routine.ts:44 main m=144",
+   "packages/operator-core/lib/harness/routines/seed-stalled-loops-routine.ts:55 main m=144"
+  ],
+  [
+   "packages/operator-core/lib/harness/routines/sync-batch-delta-check-action.ts:49 <anon> m=107",
+   "packages/operator-core/lib/harness/routines/sync-batch-lint-guards-action.ts:27 <anon> m=107"
+  ],
+  [
+   "packages/operator-core/lib/idle-session-reaper.ts:607 planWorkItemLeaseReap m=94",
+   "packages/operator-core/lib/idle-session-reaper.ts:659 planResourceLockLeaseReap m=94"
+  ],
+  [
+   "packages/operator-core/lib/inference-gateway/account-resolver.ts:65 loadPoolOrThrow m=86",
+   "packages/operator-core/lib/inference-gateway/account-resolver.ts:99 loadDefaultAccountIdOrThrow m=86"
+  ],
+  [
+   "packages/operator-core/lib/inference-gateway/gateway.ts:9128 fetch m=163",
+   "packages/operator-core/lib/inference-gateway/gateway.ts:10268 fetch m=163"
+  ],
+  [
+   "packages/operator-core/lib/instance-spec/genome.ts:123 canonicalJson m=110",
+   "packages/operator-core/lib/instance-spec/types.ts:61 canonicalJson m=110",
+   "packages/operator-core/lib/instance-spec/vary.ts:25 canonicalJson m=110"
+  ],
+  [
+   "packages/operator-core/lib/issue-blocks-merge.ts:124 getAllBlockedPlanItems m=80",
+   "packages/operator-core/lib/issue-blocks-merge.ts:210 getBlockedFeatures m=80"
+  ],
+  [
+   "packages/operator-core/lib/issues-engineer.ts:682 extractTerminalCompletionEvidence m=114",
+   "packages/operator-core/lib/work-items.ts:623 extractTerminalCompletionEvidence m=114"
+  ],
+  [
+   "packages/operator-core/lib/llm-testing/scenarios/operator/S11-voice-card-answer.ts:38 eval m=84",
+   "packages/operator-core/lib/llm-testing/scenarios/operator/S16-voice-disambiguation.ts:17 cardsAreVoiceAnswerable m=84"
+  ],
+  [
+   "packages/operator-core/lib/llm-testing/scenarios/operator/S12-tool-error-recovery.ts:40 eval m=137",
+   "packages/operator-core/lib/llm-testing/scenarios/operator/S12b-tool-error-injected.ts:45 eval m=137"
+  ],
+  [
+   "packages/operator-core/lib/llm-testing/targets/architect.ts:165 readSse m=119",
+   "packages/operator-core/lib/llm-testing/targets/operator.ts:454 readSse m=119",
+   "packages/operator-core/lib/llm-testing/targets/oracle.ts:150 readSse m=119"
+  ],
+  [
+   "packages/operator-core/lib/llm-testing/targets/architect.ts:186 parseSseBlock m=123",
+   "packages/operator-core/lib/llm-testing/targets/operator.ts:476 parseSseBlock m=123",
+   "packages/operator-core/lib/llm-testing/targets/oracle.ts:171 parseSseBlock m=123"
+  ],
+  [
+   "packages/operator-core/lib/memory/bench/agent-prose-acceptance-cli.ts:135 comparePair m=178",
+   "packages/operator-core/lib/memory/bench/leg-split-acceptance-cli.ts:119 comparePair m=178"
+  ],
+  [
+   "packages/operator-core/lib/memory/bench/bench-host-primitives.ts:115 ensureBenchSchema m=91",
+   "packages/operator-core/lib/memory/bench/bench-host.ts:118 ensureBenchSchema m=91"
+  ],
+  [
+   "packages/operator-core/lib/memory/bench/bench-host-primitives.ts:150 reapOrphanBenchSchemas m=85",
+   "packages/operator-core/lib/memory/bench/bench-host.ts:153 reapOrphanBenchSchemas m=85"
+  ],
+  [
+   "packages/operator-core/lib/memory/bench/jev-admission-cli.ts:127 mapPool m=81",
+   "packages/operator-core/lib/memory/bench/jev-robustness-cli.ts:114 mapPool m=81"
+  ],
+  [
+   "packages/operator-core/lib/memory/bench/judged.ts:628 writeBlindReceipt m=108",
+   "packages/operator-core/lib/memory/bench/measurement-manifest.ts:942 writeMeasurementReceipt m=108"
+  ],
+  [
+   "packages/operator-core/lib/memory/jev-memory-gate-core.ts:68 jevMemoryCacheKey m=85",
+   "packages/operator-core/lib/memory/jev-memory-gate.ts:166 jevMemoryCacheKey m=85"
+  ],
+  [
+   "packages/operator-core/lib/memory/jev-memory-gate-core.ts:225 jevMemoryBudgetMs m=85",
+   "packages/operator-core/lib/memory/jev-memory-gate.ts:126 jevMemoryBudgetMs m=85"
+  ],
+  [
+   "packages/operator-core/lib/memory/jev-memory-gate-core.ts:245 jevFunnelEntry m=231",
+   "packages/operator-core/lib/memory/jev-memory-gate.ts:369 jevFunnelEntry m=231"
+  ],
+  [
+   "packages/operator-core/lib/oauth/providers.ts:238 googleTokenResponse m=83",
+   "packages/operator-core/lib/oauth/providers.ts:629 claudeTokenResponse m=83"
+  ],
+  [
+   "packages/operator-core/lib/overwatch/control-state.ts:180 readStartedRows m=107",
+   "packages/operator-core/lib/pot/started.ts:240 readStartedRows m=107"
+  ],
+  [
+   "packages/operator-core/lib/overwatch/control-state.ts:231 listStartedWorkspaceOverwatches m=208",
+   "packages/operator-core/lib/pot/started.ts:324 listStartedWorkspaceLoops m=208"
+  ],
+  [
+   "packages/operator-core/lib/overwatch/liveness.ts:194 getOverwatchTimeWake m=113",
+   "packages/operator-core/lib/pot/wake.ts:274 getPotTimeWake m=113"
+  ],
+  [
+   "packages/operator-core/lib/overwatch/watchdog.ts:104 alertMissingStartedOverwatch m=84",
+   "packages/operator-core/lib/pot/watchdog.ts:94 alertMissingStartedPot m=84"
+  ],
+  [
+   "packages/operator-core/lib/p2p/artifact-distribution.ts:260 validateDistributionEvent m=296",
+   "packages/operator-core/lib/p2p/commerce-events.ts:62 validateCommerceEvent m=296"
+  ],
+  [
+   "packages/operator-core/lib/p2p/onchain-governance-bridge.ts:309 runExclusive m=86",
+   "packages/operator-core/lib/role-codex-home.ts:392 withCodexHomeAsyncWriteLock m=86"
+  ],
+  [
+   "packages/operator-core/lib/pilot-participant-receipts.ts:103 bindingReceipt m=96",
+   "packages/operator-core/lib/pilot-participant-receipts.ts:120 dispatchReceipt m=96"
+  ],
+  [
+   "packages/operator-core/lib/plan-audits.ts:1905 getLatestPlanAudit m=104",
+   "packages/operator-core/lib/plan-audits.ts:1934 getLatestActivationAudit m=104"
+  ],
+  [
+   "packages/operator-core/lib/plan-items/claim-authority-swarm.ts:35 route m=90",
+   "packages/operator-core/lib/work-item-claim-authority-swarm.ts:42 route m=90",
+   "packages/operator-core/lib/work-item-replica-authority-swarm.ts:37 route m=90"
+  ],
+  [
+   "packages/operator-core/lib/poll-suspect-alarm.ts:91 defaultEmitToast m=147",
+   "packages/operator-core/lib/search/embed-coverage.ts:743 defaultEmitToast m=147",
+   "packages/operator-core/lib/storage/disk-space-alarm.ts:495 defaultEmitToast m=147",
+   "packages/operator-core/lib/storage/pg-tuning-drift.ts:122 defaultEmitToast m=147",
+   "packages/operator-core/lib/storage/replication-slot-alarm.ts:198 defaultEmitToast m=147",
+   "packages/operator-core/lib/test-desktop-reaper.ts:317 defaultEmitToast m=147"
+  ],
+  [
+   "packages/operator-core/lib/post-card-response.ts:26 postCardResponse m=107",
+   "packages/operator-core/lib/post-card-response.ts:59 postRunCancel m=107"
+  ],
+  [
+   "packages/operator-core/lib/release/gate-live-invariants.ts:428 readGateInvariantWindow m=367",
+   "packages/operator-core/lib/release/green-main-slo.ts:236 readGreenMainRepairRoundWindow m=367"
+  ],
+  [
+   "packages/operator-core/lib/release/gate-live-invariants.ts:600 executeGateInvariantAlarmWindow m=169",
+   "packages/operator-core/lib/release/green-main-slo.ts:482 executeGreenMainRepairRoundWindow m=169"
+  ],
+  [
+   "packages/operator-core/lib/release/gate-live-invariants.ts:610 run m=104",
+   "packages/operator-core/lib/release/green-main-slo.ts:492 run m=104"
+  ],
+  [
+   "packages/operator-core/lib/resource-governor/admission-ledger-store.ts:408 endedLeaseOwners m=148",
+   "packages/operator-core/lib/resource-governor/queue.ts:1119 endedLeaseOwners m=148"
+  ],
+  [
+   "packages/operator-core/lib/scorecards.ts:461 measureGoalMode m=86",
+   "packages/operator-core/lib/scorecards.ts:484 measureHolder m=86"
+  ],
+  [
+   "packages/operator-core/lib/scout/intent-rank-leg.ts:90 queryPlanSimsReal m=84",
+   "packages/operator-core/lib/scout/intent-rank-leg.ts:103 queryWorkItemSimsReal m=84",
+   "packages/operator-core/lib/scout/semantic-novelty-leg.ts:181 queryPlanSimsReal m=84",
+   "packages/operator-core/lib/scout/semantic-novelty-leg.ts:196 queryWorkItemSimsReal m=84"
+  ],
+  [
+   "packages/operator-core/lib/scout/tick-ledger.ts:186 <anon> m=154",
+   "packages/operator-core/lib/scout/tick-ledger.ts:285 <anon> m=154"
+  ],
+  [
+   "packages/operator-core/lib/shared-pot-loop/composition-rig.ts:124 makeIdentityOverride m=88",
+   "packages/operator-core/lib/sync/hyperbee/__tests__/_cross-peer-rig.ts:154 makeIdentity m=88",
+   "packages/operator-core/lib/sync/hyperbee/__tests__/_hive-substrate-rig.ts:95 makeIdentity m=88"
+  ],
+  [
+   "packages/operator-core/lib/su-session-claude-adapter.ts:183 defaultControls m=190",
+   "packages/operator-core/lib/su-session-codex-adapter.ts:208 defaultControls m=190",
+   "packages/operator-core/lib/su-session-omp-adapter.ts:175 defaultControls m=190"
+  ],
+  [
+   "packages/operator-core/lib/su-session-claude-adapter.ts:376 <anon> m=81",
+   "packages/operator-core/lib/su-session-omp-adapter.ts:338 <anon> m=81"
+  ],
+  [
+   "packages/operator-core/lib/su-session-claude-adapter.ts:513 emitTranscript m=128",
+   "packages/operator-core/lib/su-session-codex-adapter.ts:530 emitTranscript m=128"
+  ],
+  [
+   "packages/operator-core/lib/su-session-codex-adapter.ts:451 <anon> m=209",
+   "packages/operator-core/lib/su-session-omp-adapter.ts:411 <anon> m=209"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:2166 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2266 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2289 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2441 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2467 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2647 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2805 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:2828 resolve m=112",
+   "packages/operator-core/lib/sync-resolver/index.ts:3827 resolve m=112"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:2320 resolve m=109",
+   "packages/operator-core/lib/sync-resolver/index.ts:3026 resolve m=109"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:2531 resolve m=131",
+   "packages/operator-core/lib/sync-resolver/index.ts:2562 resolve m=131",
+   "packages/operator-core/lib/sync-resolver/index.ts:2708 resolve m=131",
+   "packages/operator-core/lib/sync-resolver/index.ts:2739 resolve m=131",
+   "packages/operator-core/lib/sync-resolver/index.ts:2914 resolve m=131"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:2589 resolve m=116",
+   "packages/operator-core/lib/sync-resolver/index.ts:2851 resolve m=116"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:2969 resolve m=83",
+   "packages/operator-core/lib/sync-resolver/index.ts:3884 resolve m=83"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:4224 resolve m=111",
+   "packages/operator-core/lib/sync-resolver/index.ts:4283 resolve m=111"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:5961 resolve m=135",
+   "packages/operator-core/lib/sync-resolver/index.ts:5998 resolve m=135"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/index.ts:6287 resolve m=88",
+   "packages/operator-core/lib/sync-resolver/index.ts:6315 resolve m=88"
+  ],
+  [
+   "packages/operator-core/lib/sync-resolver/learning-retain-read.ts:872 legRunbooks m=115",
+   "packages/operator-core/lib/sync-resolver/learning-retain-read.ts:898 legRecipes m=115"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/load-queue-membership.ts:57 loadQueueMembership m=250",
+   "packages/operator-core/lib/sync/hyperbee/load-working-set.ts:55 loadWorkingSet m=250"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts:185 defer m=150",
+   "packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts:217 deferUnresolvedSourceLog m=150"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts:248 drainForDevices m=102",
+   "packages/operator-core/lib/sync/hyperbee/pending-membership-content.ts:270 drainForSourceLogKeys m=102"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/projections/contributors.ts:135 deleteFromPg m=82",
+   "packages/operator-core/lib/sync/hyperbee/projections/hive-pending-joins.ts:124 deleteFromPg m=82"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/projections/feature-queue.ts:59 isFeatureQueueRow m=151",
+   "packages/operator-core/lib/sync/hyperbee/projections/feature-working-set.ts:80 isFeatureWorkingSetRow m=151"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/projections/fleet-directory.ts:233 deleteFromPg m=129",
+   "packages/operator-core/lib/sync/hyperbee/projections/fleet-leader-leases.ts:108 deleteFromPg m=129",
+   "packages/operator-core/lib/sync/hyperbee/projections/work-offers.ts:384 deleteFromPg m=129"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/write-feature-queue.ts:54 enqueueFeature m=114",
+   "packages/operator-core/lib/sync/hyperbee/write-working-set.ts:43 setActiveFeature m=114"
+  ],
+  [
+   "packages/operator-core/lib/sync/hyperbee/write-feature-queue.ts:86 dequeueFeature m=114",
+   "packages/operator-core/lib/sync/hyperbee/write-working-set.ts:70 clearActiveFeature m=114"
+  ],
+  [
+   "packages/operator-core/lib/sync/pot-git/handoff-token.ts:142 hashBlob m=90",
+   "packages/operator-core/lib/sync/pot-git/sigrefs.ts:159 hashBlob m=90"
+  ],
+  [
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:332 validateLegE m=273",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:382 validateLegF m=273",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:481 validateLegG m=273",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:531 validateLegH m=273",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:581 validateLegI m=273",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-evidence.ts:631 validateLegJ m=273"
+  ],
+  [
+   "packages/operator-core/lib/sync/pot-git/physical-drill-phase-b.ts:145 git m=94",
+   "packages/operator-core/lib/sync/pot-git/physical-drill-phase-h.ts:150 git m=94"
+  ],
+  [
+   "packages/operator-core/lib/system-health/agent-productivity-watchdog.ts:754 makeResolveGraders m=87",
+   "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts:255 makeResolveGraders m=87"
+  ],
+  [
+   "packages/operator-core/lib/system-health/agent-productivity-watchdog.ts:755 <anon> m=80",
+   "packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts:256 <anon> m=80"
+  ],
+  [
+   "packages/operator-core/lib/system-health/embed-latency-watchdog.ts:269 startEmbedLatencyWatchdog m=94",
+   "packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts:305 startServiceRestartRateWatchdog m=94"
+  ],
+  [
+   "packages/operator-core/lib/work-admission/pr-delivery-audit.ts:51 auditGit m=89",
+   "packages/operator-core/lib/work-admission/settlement-scope.ts:10 defaultGit m=89"
+  ],
+  [
+   "packages/operator-core/lib/work-items.ts:2283 lexical m=169",
+   "packages/operator-core/lib/work-items.ts:2363 lexical m=169"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/aws-ami-production.ts:351 verifyBootcAmiArtifact m=143",
+   "packages/operator-core/lib/workspace-host/gcp-image-family-adapter.ts:1173 verifyBootcGceArtifact m=143"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/aws-connection-profile.ts:61 restrictedSourceRanges m=160",
+   "packages/operator-core/lib/workspace-host/azure-connection-profile.ts:120 restrictedSourceRanges m=160"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/aws-connection-profile.ts:65 <anon> m=128",
+   "packages/operator-core/lib/workspace-host/azure-connection-profile.ts:124 <anon> m=128"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/azure-compute-gallery-release.ts:439 validateScan m=106",
+   "packages/operator-core/lib/workspace-host/gcp-image-family.ts:422 validateScan m=106"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/azure-provider.ts:380 azureWorkspaceHostRequestUuid m=123",
+   "packages/operator-core/lib/workspace-host/gcp-provider.ts:1354 gcpWorkspaceHostRequestUuid m=123"
+  ],
+  [
+   "packages/operator-core/lib/workspace-host/initialization-operations-resolver.ts:569 enrollGcpIapHostKeys m=122",
+   "packages/operator-core/lib/workspace-host/initialization-operations-resolver.ts:821 pruneGcpIapHostKeysForAbsentHost m=122"
+  ],
+  [
+   "packages/operator-core/test/admission-http-fixture.ts:22 stopHost m=123",
+   "packages/operator-core/test/consult-cascade-http-fixture.ts:21 stopHost m=123",
+   "packages/operator-core/test/cupboard-listing-install-http-fixture.ts:36 stopHost m=123",
+   "packages/operator-core/test/integrations-setup-http-fixture.ts:51 stopHost m=123",
+   "packages/operator-core/test/liveness-alarm-http-fixture.ts:17 stopHost m=123",
+   "packages/operator-core/test/plan-cleanup-http-fixture.ts:13 stopHost m=123"
+  ],
+  [
+   "packages/operator-core/test/portal-calendar-fixture.ts:67 <anon> m=126",
+   "packages/operator-core/test/portal-workflows-fixture.ts:84 <anon> m=126"
+  ],
+  [
+   "packages/operator-core/test/portal-git-fixture.ts:15 seedPrivateGit m=143",
+   "packages/operator-core/test/portal-stats-fixture.ts:14 seedPrivateStats m=143"
+  ],
+  [
+   "packages/operator-core/test/portal-git-fixture.ts:80 <anon> m=85",
+   "packages/operator-core/test/portal-stats-fixture.ts:67 <anon> m=85"
+  ],
+  [
+   "packages/operator-core/test/private-read-cancellation-http-scenario.ts:39 health m=88",
+   "packages/operator-core/test/private-read-deadline-http-scenario.ts:44 health m=88",
+   "packages/operator-core/test/private-read-pg-error-http-scenario.ts:41 health m=88"
+  ],
+  [
+   "scripts/migrate-agent-runs-to-pg.ts:194 main m=163",
+   "scripts/migrate-issues-to-pg.ts:144 main m=163",
+   "scripts/migrate-proposals-to-pg.ts:146 main m=163"
+  ],
+  [
+   "templates/papercusp-android-app/checks/android-app-contract.ts:53 validateAndroidAppComposition m=540",
+   "templates/papercusp-iphone-app/checks/iphone-app-contract.ts:53 validateIphoneAppComposition m=540"
+  ],
+  [
+   "templates/papercusp-android-app/checks/android-app-contract.ts:184 validateDecisionPointAnswers m=124",
+   "templates/papercusp-iphone-app/checks/iphone-app-contract.ts:184 validateDecisionPointAnswers m=124"
+  ],
+  [
+   "templates/papercusp-android-app/checks/closure-manifests.ts:47 resolveSiblingClosure m=110",
+   "templates/papercusp-iphone-app/checks/closure-manifests.ts:47 resolveSiblingClosure m=110"
+  ]
+ ]
+}

@@ -8,10 +8,12 @@ import {
   ALIGNED_PHASE_WARMUP_MS,
   alignedSlotDelayMs,
   configureScheduledRegistry,
+  createManagedSweepStarter,
   getManaged,
   listManaged,
   managedCount,
   managedSetInterval,
+  managedTickThresholdMs,
   resetScheduledRegistry,
   stopAllManaged,
   type TimerHandle,
@@ -68,6 +70,179 @@ function harness() {
 }
 
 afterEach(() => resetScheduledRegistry());
+
+describe('managed sweep starters', () => {
+  it('preserves metadata and cadence, and replaces the previous named timer', async () => {
+    const h = harness();
+    const first = vi.fn(async () => undefined);
+    const second = vi.fn(async () => undefined);
+    const start = createManagedSweepStarter({ name: 'sweep', intervalMs: 100,
+      options: { category: 'watchdog', classification: 'timeout-reaper' }, onError: vi.fn() });
+    expect(h.intervals).toHaveLength(0);
+    start(first);
+    expect(h.intervals[0].ms).toBe(100);
+    start(second, 53);
+    expect(h.intervals[0].cleared).toBe(true);
+    expect(getManaged('sweep')).toMatchObject({ intervalMs: 53, category: 'watchdog', classification: 'timeout-reaper' });
+    await h.fire(0);
+    expect(first).not.toHaveBeenCalled();
+    await h.fire(1);
+    expect(second).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the registry overlap guard held until the actual async sweep settles', async () => {
+    const h = harness();
+    let finish!: () => void;
+    const run = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    createManagedSweepStarter({ name: 'slow', intervalMs: 100,
+      options: { category: 'watchdog' }, onError: vi.fn() })(run);
+    await h.fire();
+    await h.fire();
+    await h.fire();
+    expect(run).toHaveBeenCalledOnce();
+    expect(getManaged('slow')).toMatchObject({ running: true, skippedWhileRunning: 2 });
+    finish();
+    await flush();
+    expect(getManaged('slow')).toMatchObject({ running: false, fires: 1 });
+    await h.fire();
+    expect(run).toHaveBeenCalledTimes(2);
+    finish();
+    await flush();
+  });
+
+  it('delivers rejected and synchronous failures and releases the guard for the next tick', async () => {
+    const h = harness();
+    const rejected = new Error('rejected sweep');
+    const thrown = new Error('synchronous sweep');
+    const onError = vi.fn();
+    const run = vi.fn<() => Promise<unknown>>().mockRejectedValueOnce(rejected)
+      .mockImplementationOnce(() => { throw thrown; }).mockResolvedValue(undefined);
+    createManagedSweepStarter({ name: 'errors', intervalMs: 100,
+      options: { category: 'watchdog' }, onError })(run);
+    await h.fire();
+    await h.fire();
+    await h.fire();
+    expect(onError.mock.calls).toEqual([[rejected], [thrown]]);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(getManaged('errors')).toMatchObject({ running: false, fires: 3 });
+  });
+});
+
+describe('managed tick hang episodes', () => {
+  it.each([
+    [1_000, undefined, 300_000], [120_000, undefined, 600_000],
+    [120_000, 10_000, 300_000], [1_000, 420_000, 420_000],
+    [120_000, 360_000, 360_000], [120_000, 0, 600_000],
+    [120_000, -1, 600_000], [120_000, NaN, 600_000], [120_000, Infinity, 600_000],
+  ])('uses the declared threshold for interval %s and override %s', (interval, custom, expected) => {
+    expect(managedTickThresholdMs(interval, custom)).toBe(expected);
+  });
+
+  it.each([1_000, 120_000])('raises only past T on its independent watcher (%sms)', async (intervalMs) => {
+    const h = harness();
+    h.setNow(0);
+    const open = new Map<number, { timerName: string; heldMs: number }>();
+    const raises = vi.fn((e) => { open.set(e.id, e); });
+    const resolves = vi.fn((e) => { open.delete(e.id); });
+    configureScheduledRegistry({ onHungTick: raises, onHungTickSettled: resolves });
+    let finish!: () => void;
+    managedSetInterval('held', intervalMs, () => new Promise<void>((r) => { finish = r; }), {
+      category: 'global-sweep', phase: 'arm',
+    });
+    await h.fire();
+    const watcher = h.intervals[1];
+    expect(watcher.ms).toBeLessThanOrEqual(Math.min(intervalMs, 60_000));
+    const threshold = Math.max(5 * intervalMs, 300_000);
+    for (const at of [threshold - 1, threshold]) {
+      h.setNow(at);
+      await h.fire(1);
+      expect(open.size).toBe(0);
+    }
+    h.setNow(threshold + 1);
+    // No further target fire is required: a held target cannot disable its watcher.
+    await h.fire(1);
+    expect([...open.values()]).toEqual([expect.objectContaining({ timerName: 'held', heldMs: threshold + 1 })]);
+    h.setNow(threshold + watcher.ms);
+    await h.fire(1);
+    await h.fire(0);
+    expect(raises).toHaveBeenCalledOnce();
+    finish();
+    await flush();
+    expect(resolves).toHaveBeenCalledOnce();
+    expect(open.size).toBe(0);
+    expect(watcher.cleared).toBe(true);
+  });
+
+  it('honors a clamped custom threshold at the watcher deadline', async () => {
+    const h = harness();
+    h.setNow(0);
+    const raised = vi.fn();
+    configureScheduledRegistry({ onHungTick: raised });
+    managedSetInterval('custom', 120_000, () => new Promise<void>(() => {}), {
+      category: 'global-sweep', hungTickThresholdMs: 1,
+    });
+    await h.fire();
+    h.setNow(300_000);
+    await h.fire(1);
+    expect(raised).not.toHaveBeenCalled();
+    h.setNow(360_000);
+    await h.fire(1);
+    expect(raised).toHaveBeenCalledWith(expect.objectContaining({ thresholdMs: 300_000, heldMs: 360_000 }));
+  });
+
+  it('separates simultaneous instanced ticks and later episodes of the same timer', async () => {
+    const h = harness();
+    h.setNow(0);
+    const open = new Set<number>();
+    const raised = vi.fn((e) => { open.add(e.id); });
+    const resolved = vi.fn((e) => { open.delete(e.id); });
+    configureScheduledRegistry({ onHungTick: raised, onHungTickSettled: resolved });
+    const finishes: (() => void)[] = [];
+    const tick = () => new Promise<void>((r) => { finishes.push(r); });
+    managedSetInterval('same-name', 1_000, tick, { category: 'lifecycle', instanced: true });
+    managedSetInterval('same-name', 1_000, tick, { category: 'lifecycle', instanced: true });
+    await h.fire(0);
+    await h.fire(1);
+    h.setNow(300_001);
+    await h.fire(2);
+    await h.fire(3);
+    expect(open.size).toBe(2);
+    const first = raised.mock.calls[0][0].id;
+    finishes[1]();
+    await flush();
+    expect(open).toEqual(new Set([first]));
+    finishes[0]();
+    await flush();
+    expect(open.size).toBe(0);
+    await h.fire(0);
+    h.setNow(600_002);
+    await h.fire(4);
+    expect(raised.mock.calls[2][0].id).not.toBe(first);
+  });
+
+  it('orders resolution after an in-flight raise without holding the target guard', async () => {
+    const h = harness();
+    h.setNow(0);
+    const events: string[] = [];
+    let deliver!: () => void;
+    let finish!: () => void;
+    configureScheduledRegistry({
+      onHungTick: () => new Promise<void>((r) => { deliver = () => { events.push('raised'); r(); }; }),
+      onHungTickSettled: () => { events.push('resolved'); },
+    });
+    managedSetInterval('delivery-race', 1_000, () => new Promise<void>((r) => { finish = r; }), { category: 'global-sweep' });
+    await h.fire();
+    h.setNow(300_001);
+    await h.fire(1);
+    finish();
+    await flush();
+    expect(getManaged('delivery-race')?.running).toBe(false);
+    expect(events).toEqual([]);
+    deliver();
+    await flush();
+    expect(events).toEqual(['raised', 'resolved']);
+  });
+});
 
 describe('managedSetInterval / listManaged', () => {
   it('registers a named, listable entry with category + interval + armedAt', () => {

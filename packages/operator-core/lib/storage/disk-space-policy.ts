@@ -67,3 +67,32 @@ export function diskPolicyFromEnv(): DiskAlarmPolicy {
   };
 }
 
+/**
+ * Minimum writer reserve, without loading the alarm runtime. The absolute floor
+ * and capped percentage reserve are unchanged (EI-23337577023503501): demand
+ * does not scale with volume size. Invalid totals retain the absolute floor;
+ * a cap can never lower it. Alarm tiers themselves continue using their policy.
+ */
+export function criticalWriteHeadroomBytes(
+  totalBytes: number,
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): number {
+  const absolute =
+    Number.isFinite(policy.criticalFreeBytesMin) && policy.criticalFreeBytesMin > 0
+      ? policy.criticalFreeBytesMin
+      : 0;
+  const proportional =
+    Number.isFinite(totalBytes) &&
+    totalBytes > 0 &&
+    Number.isFinite(policy.criticalFreePctMin) &&
+    policy.criticalFreePctMin > 0
+      ? totalBytes * policy.criticalFreePctMin
+      : 0;
+  const cap =
+    Number.isFinite(policy.criticalFreeBytesCap) && policy.criticalFreeBytesCap > 0
+      ? policy.criticalFreeBytesCap
+      : Number.POSITIVE_INFINITY;
+  // The cap bounds the proportional term; the absolute floor stays a hard minimum.
+  return Math.max(absolute, Math.min(proportional, cap));
+}
+

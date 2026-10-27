@@ -20,7 +20,7 @@
  * it by bundle-host-common.sh; an unbundled run forks the `.ts` source, which
  * Node's native type stripping loads.
  */
-import { fork, type ChildProcess } from 'node:child_process';
+import { fork, type ChildProcess, type Serializable } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,12 +42,16 @@ export interface FirstPartyCallersRunOptions {
   readonly workerPath?: string;
   readonly budgetMs?: number;
   readonly heapMb?: number;
+  /** Source-only jobs whose module graph needs the workspace TypeScript loader. */
+  readonly sourceLoader?: boolean;
 }
 
-export function defaultFirstPartyCallersWorker(): string {
+export function defaultFirstPartyCallersWorker(preferSource = false): string {
   const here = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+  const source = join(dirname(here), FIRST_PARTY_CALLERS_WORKER_SOURCE);
+  if (preferSource && existsSync(source)) return source;
   const bundled = join(dirname(here), FIRST_PARTY_CALLERS_WORKER_BUNDLED);
-  return existsSync(bundled) ? bundled : join(dirname(here), FIRST_PARTY_CALLERS_WORKER_SOURCE);
+  return existsSync(bundled) ? bundled : source;
 }
 
 const isAnswer = (value: unknown): value is FirstPartyCallersAnswer =>
@@ -60,7 +64,8 @@ const isProgress = (value: unknown): value is FirstPartyCallersProgress => {
   if (typeof value !== 'object' || value === null) return false;
   const progress = value as FirstPartyCallersProgress;
   return progress.kind === 'first-party-callers-progress'
-    && ['job-received', 'typescript-load', 'compiler-query'].includes(progress.phase)
+    && ['job-received', 'typescript-load', 'compiler-query', 'source-tree', 'source-capture',
+      'source-diff', 'source-clones', 'source-calls'].includes(progress.phase)
     && Number.isFinite(progress.elapsedMs) && progress.elapsedMs >= 0;
 };
 
@@ -71,13 +76,24 @@ export async function firstPartyCallersOffthread(
 ): Promise<FirstPartyCallersAnswer> {
   const started = Date.now();
   const fail = (why: string): FirstPartyCallersAnswer => failedCallersAnswer(job.name, why, started, Date.now(), job);
+  return codeIntelWorkerRequest(job, { accept: isAnswer, fail }, options);
+}
+
+/** Shared finite code-intelligence worker lifecycle. Callers and reuse census
+ * use the same heap, deadline, stderr capture and whole-process-group cleanup.
+ */
+export async function codeIntelWorkerRequest<T>(job: Serializable,
+  contract: { accept(value: unknown): value is T; fail(reason: string): T },
+  options: FirstPartyCallersRunOptions = {}): Promise<T> {
+  const fail = contract.fail;
   const budgetMs = options.budgetMs ?? FIRST_PARTY_CALLERS_BUDGET_MS;
-  const workerPath = options.workerPath ?? defaultFirstPartyCallersWorker();
+  const workerPath = options.workerPath ?? defaultFirstPartyCallersWorker(options.sourceLoader);
   const detached = process.platform !== 'win32';
   let child: ChildProcess;
   try {
     child = fork(workerPath, [], {
-      execArgv: [`--max-old-space-size=${options.heapMb ?? FIRST_PARTY_CALLERS_HEAP_MB}`],
+      execArgv: [`--max-old-space-size=${options.heapMb ?? FIRST_PARTY_CALLERS_HEAP_MB}`,
+        ...(options.sourceLoader && workerPath.endsWith('.ts') ? ['--import', 'tsx'] : [])],
       serialization: 'advanced',
       silent: true,
       detached,
@@ -97,7 +113,7 @@ export async function firstPartyCallersOffthread(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastProgress: FirstPartyCallersProgress | null = null;
   try {
-    return await new Promise<FirstPartyCallersAnswer>((resolve) => {
+    return await new Promise<T>((resolve) => {
       timer = setTimeout(
         () => resolve(fail(`the callers worker exceeded its ${budgetMs} ms deadline and was killed; `
           + (lastProgress ? `last measured phase=${lastProgress.phase}, workerElapsedMs=${lastProgress.elapsedMs}`
@@ -106,7 +122,9 @@ export async function firstPartyCallersOffthread(
       );
       child.on('message', (message: unknown) => {
         if (isProgress(message)) { lastProgress = message; return; }
-        resolve(isAnswer(message) ? message : fail('the callers worker returned something that is not an answer'));
+        resolve(contract.accept(message) ? message : fail('the callers worker returned something that is not an answer'
+          + ` (entry=${workerPath}, keys=${message && typeof message === 'object' ? Object.keys(message).join(',') : typeof message}`
+          + `, kind=${message && typeof message === 'object' && 'kind' in message ? String(message.kind) : 'absent'})`));
       });
       child.once('error', (error) => resolve(fail(`callers worker error: ${error.message}`)));
       child.once('exit', (code, signal) => {

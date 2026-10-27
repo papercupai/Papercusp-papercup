@@ -1,0 +1,1339 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "preparedAt": "2026-10-25T12:32:22.275Z",
+  "status": "prospective-protocol-not-executed",
+  "purpose": "P-001 documents adapter field freshness source binding and falsification preparation before ranking treatment.",
+  "authorityRefs": [
+    "SEARCH-FRESHNESS-BOUNDARIES@2",
+    "D-012",
+    "D-013",
+    "D-014",
+    "D-015",
+    "D-016"
+  ],
+  "inventory": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-inventory-20261023-v2.json",
+    "sha256": "42c2be9bea124d343066f5191f940388e43f2358bd361aca38f1f22cc025940a"
+  },
+  "sourcePins": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/documents/search.ts",
+      "sha256": "7cd604f2496bc22844a3daf459f02853360c1c1c2c8eda7a7a1dd2a422b706a7",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "06f065fdf95d89b6147294af2e5569a0cf9431d5",
+      "clean": true,
+      "inventoryV2Sha256": "08ccc03b9e9b74800bf13ab3b2672610df56af0cd7ffbe3aa7d3212207691bba",
+      "sameAsInventoryV2": false
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/documents-corpus.ts",
+      "sha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "29f1bc93ba192d383086e9fbf7ba2bc8dc39646e",
+      "clean": true,
+      "inventoryV2Sha256": "afc8d6f5154c871b111b73c02bcf03a1a548253e8c096d00dc125e3ec5840766",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/live-search-adapter.ts",
+      "sha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "9dd3d41d8dcb4765b3e02549ea989b6ef7ad2932",
+      "clean": true,
+      "inventoryV2Sha256": "0265392ddd175f969d3bda710810bf2f8d4b21595f6e14cd87576d6f94b164ad",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/store.ts",
+      "sha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "4828497f90b9a43577e82016783aa40752aa3533",
+      "clean": true,
+      "inventoryV2Sha256": "a808eeeedb6083e886a0d543a66fa731a38ac1598776b7c3101139032cdb4bd8",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/authorization.ts",
+      "sha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "49185a21fa2d534c51b445f443b11a6de6c71ea4",
+      "clean": true,
+      "inventoryV2Sha256": "af62e324b78e6b47188c506a407001adaf7050ac27787a347f205fbc41378368",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts",
+      "sha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "0196c991d39e58e23630b3527acc1591018400c9",
+      "clean": true,
+      "inventoryV2Sha256": "f4705cf44e5c051427a63211dd66ed67b7ed8bc2121124b41c75f6c734f63243",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/granted-sources-injection.ts",
+      "sha256": "0a705830fac5f2a370daa97a05bd718cd9f0357e3989e98ebfbea9f2525284d6",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "0c946a70eab8a434084db1f4789bc6697491bd33",
+      "clean": true,
+      "inventoryV2Sha256": null,
+      "sameAsInventoryV2": null
+    },
+    {
+      "path": "packages/operator-core/lib/search/surface-registry.ts",
+      "sha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "38130ba4c9fa6fdbe785d903f3fde790a829665a",
+      "clean": true,
+      "inventoryV2Sha256": "53e3bd3fd49a1d3d2413d6486983715882f857d841117b7727f30a83dbf30e23",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "libs/generic/search-core/src/relevance-eval.ts",
+      "sha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+      "repo": "libs/generic/search-core",
+      "head": "48c944b60b576f4143a8922b15895359cbb88b63",
+      "headBlob": "ddaa71cbd416874a304b9c4cc17117c31bd92cfd",
+      "clean": true,
+      "inventoryV2Sha256": "5f7f4ef8d76674b75ed2dc6972ce631d0f6873393700155868e12db46b7fb6ab",
+      "sameAsInventoryV2": true
+    },
+    {
+      "path": "packages/operator-core/lib/data-sources/live-search-adapter.integration.test.ts",
+      "sha256": "d58957a4078b1705cff9aed3525f29b2c41c8be478752f73841f21688673f4a8",
+      "repo": ".",
+      "head": "42ce61fc1b32b46a0aea9316b38478774c379bf8",
+      "headBlob": "a90c4d6ac271f6207d3f99f578eaabec58d89c44",
+      "clean": true,
+      "inventoryV2Sha256": null,
+      "sameAsInventoryV2": null
+    }
+  ],
+  "sourceReconciliation": {
+    "changed": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/documents/search.ts",
+        "oldSha256": "08ccc03b9e9b74800bf13ab3b2672610df56af0cd7ffbe3aa7d3212207691bba",
+        "newSha256": "7cd604f2496bc22844a3daf459f02853360c1c1c2c8eda7a7a1dd2a422b706a7",
+        "observation": "Current handler wraps four legs in boundedOrgTxn, savepoint-isolated deadline results, request abort/total deadline handling and per-leg output. Field readers remain separately pinned; this protocol is not an endorsement of old runtime evidence for the new handler."
+      }
+    ],
+    "treatmentAllowed": false,
+    "inheritedEvidence": "Earlier inventory suite receipts retain their original source and scope. This protocol creates no replacement runtime or qualification receipt."
+  },
+  "population": {
+    "identityFormat": "product/(surface or prose source)/fieldPath",
+    "frozen": [
+      "papercusp/escalations/excerpt",
+      "papercusp/escalations/highlight",
+      "papercusp/brainstorm/excerpt",
+      "papercusp/brainstorm/highlight",
+      "papercusp/turns/excerpt",
+      "papercusp/turns/highlight",
+      "papercusp/decisions/excerpt",
+      "papercusp/decisions/highlight",
+      "papercusp/work_item/excerpt",
+      "papercusp/work_item/highlight",
+      "papercusp/work_item/ts",
+      "papercusp/work_item/meta.lane",
+      "papercusp/session_turn/excerpt",
+      "papercusp/session_turn/highlight",
+      "papercusp/session_turn/ts",
+      "papercusp/coord_message/excerpt",
+      "papercusp/coord_message/highlight",
+      "papercusp/report/excerpt",
+      "papercusp/report/highlight",
+      "papercusp/report/ts",
+      "papercusp/plan/excerpt",
+      "papercusp/plan/highlight",
+      "papercusp/plan/ts",
+      "papercusp/doc/excerpt",
+      "papercusp/doc/highlight",
+      "papercusp/doc/ts",
+      "papercusp/personal:search/title",
+      "papercusp/personal:search/snippet",
+      "papercusp/personal:search/occurredAt",
+      "papercusp/documents:search/personal/title",
+      "papercusp/documents:search/personal/snippet",
+      "papercusp/documents:search/personal/occurredAt",
+      "papercusp/social:search/postId",
+      "papercusp/social:search/title",
+      "papercusp/social:search/snippet",
+      "papercusp/social:search/occurredAt",
+      "papercusp/social:search/replyable",
+      "papercusp/documents:search/organization/title",
+      "papercusp/documents:search/organization/snippet",
+      "papercusp/documents:search/organization/occurredAt",
+      "papercusp/documents:search/organization/privacy",
+      "papercusp/documents:search/pot/title",
+      "papercusp/documents:search/pot/snippet",
+      "papercusp/documents:search/pot/occurredAt",
+      "papercusp/documents:search/pot/privacy",
+      "papercusp/documents:search/live/title",
+      "papercusp/documents:search/live/snippet",
+      "papercusp/documents:search/live/occurredAt",
+      "papercusp/documents:search/live/permalink",
+      "papercusp/documents:search/live/privacy",
+      "restart/storefront:search/name",
+      "restart/storefront:search/category",
+      "restart/storefront:search/priceCents",
+      "restart/storefront:search/minPriceCents",
+      "restart/storefront:search/maxPriceCents",
+      "restart/storefront:search/availableQty",
+      "restart/storefront:wholesale/name",
+      "restart/storefront:wholesale/category",
+      "restart/storefront:wholesale/priceCents",
+      "restart/storefront:wholesale/minPriceCents",
+      "restart/storefront:wholesale/maxPriceCents",
+      "restart/storefront:wholesale/availableQty",
+      "restart/storefront:autocomplete/name",
+      "restart/storefront:autocomplete/category",
+      "restart/storefront:autocomplete/priceCents",
+      "restart/storefront:autocomplete/minPriceCents",
+      "restart/storefront:autocomplete/maxPriceCents",
+      "restart/storefront:autocomplete/availableQty",
+      "restart/scout:search_products/name",
+      "restart/scout:search_products/category",
+      "restart/scout:search_products/priceCents",
+      "restart/scout:search_products/minPriceCents",
+      "restart/scout:search_products/maxPriceCents",
+      "restart/scout:search_products/availableQty",
+      "restart/scout:shopper-memory/scope",
+      "restart/scout:shopper-memory/kind",
+      "restart/scout:shopper-memory/text"
+    ],
+    "prepared": [
+      "papercusp/documents:search/personal/title",
+      "papercusp/documents:search/personal/snippet",
+      "papercusp/documents:search/personal/occurredAt",
+      "papercusp/documents:search/organization/title",
+      "papercusp/documents:search/organization/snippet",
+      "papercusp/documents:search/organization/occurredAt",
+      "papercusp/documents:search/organization/privacy",
+      "papercusp/documents:search/pot/title",
+      "papercusp/documents:search/pot/snippet",
+      "papercusp/documents:search/pot/occurredAt",
+      "papercusp/documents:search/pot/privacy",
+      "papercusp/documents:search/live/title",
+      "papercusp/documents:search/live/snippet",
+      "papercusp/documents:search/live/occurredAt",
+      "papercusp/documents:search/live/permalink",
+      "papercusp/documents:search/live/privacy"
+    ],
+    "executed": [],
+    "remaining": [
+      "papercusp/escalations/excerpt",
+      "papercusp/escalations/highlight",
+      "papercusp/brainstorm/excerpt",
+      "papercusp/brainstorm/highlight",
+      "papercusp/turns/excerpt",
+      "papercusp/turns/highlight",
+      "papercusp/decisions/excerpt",
+      "papercusp/decisions/highlight",
+      "papercusp/work_item/excerpt",
+      "papercusp/work_item/highlight",
+      "papercusp/work_item/ts",
+      "papercusp/work_item/meta.lane",
+      "papercusp/session_turn/excerpt",
+      "papercusp/session_turn/highlight",
+      "papercusp/session_turn/ts",
+      "papercusp/coord_message/excerpt",
+      "papercusp/coord_message/highlight",
+      "papercusp/report/excerpt",
+      "papercusp/report/highlight",
+      "papercusp/report/ts",
+      "papercusp/plan/excerpt",
+      "papercusp/plan/highlight",
+      "papercusp/plan/ts",
+      "papercusp/doc/excerpt",
+      "papercusp/doc/highlight",
+      "papercusp/doc/ts",
+      "papercusp/personal:search/title",
+      "papercusp/personal:search/snippet",
+      "papercusp/personal:search/occurredAt",
+      "papercusp/social:search/postId",
+      "papercusp/social:search/title",
+      "papercusp/social:search/snippet",
+      "papercusp/social:search/occurredAt",
+      "papercusp/social:search/replyable",
+      "restart/storefront:search/name",
+      "restart/storefront:search/category",
+      "restart/storefront:search/priceCents",
+      "restart/storefront:search/minPriceCents",
+      "restart/storefront:search/maxPriceCents",
+      "restart/storefront:search/availableQty",
+      "restart/storefront:wholesale/name",
+      "restart/storefront:wholesale/category",
+      "restart/storefront:wholesale/priceCents",
+      "restart/storefront:wholesale/minPriceCents",
+      "restart/storefront:wholesale/maxPriceCents",
+      "restart/storefront:wholesale/availableQty",
+      "restart/storefront:autocomplete/name",
+      "restart/storefront:autocomplete/category",
+      "restart/storefront:autocomplete/priceCents",
+      "restart/storefront:autocomplete/minPriceCents",
+      "restart/storefront:autocomplete/maxPriceCents",
+      "restart/storefront:autocomplete/availableQty",
+      "restart/scout:search_products/name",
+      "restart/scout:search_products/category",
+      "restart/scout:search_products/priceCents",
+      "restart/scout:search_products/minPriceCents",
+      "restart/scout:search_products/maxPriceCents",
+      "restart/scout:search_products/availableQty",
+      "restart/scout:shopper-memory/scope",
+      "restart/scout:shopper-memory/kind",
+      "restart/scout:shopper-memory/text"
+    ],
+    "disposition": "prepared means source/procedure mapped only; every field remains unmeasured until a real-adapter receipt is accepted"
+  },
+  "captureContract": {
+    "oracle": "libs/generic/search-core/src/relevance-eval.ts#assertSearchFieldFreshness",
+    "rowIdentity": [
+      "runId",
+      "attemptId",
+      "surface",
+      "actualPath",
+      "requestFingerprint",
+      "entityRef",
+      "fieldPath"
+    ],
+    "returned": [
+      "entityRef",
+      "fieldPath",
+      "valueFingerprint"
+    ],
+    "candidate": [
+      "entityRef",
+      "fieldPath",
+      "valueFingerprint",
+      "sourceRevision",
+      "authority",
+      "authorityEpoch",
+      "indexRevision",
+      "observedAtMs"
+    ],
+    "canonical": [
+      "entityRef",
+      "fieldPath",
+      "valueFingerprint",
+      "sourceRevision",
+      "authority",
+      "authorityEpoch",
+      "readAtMs"
+    ],
+    "clocks": [
+      "requestStartedAtMs",
+      "responseAtMs"
+    ],
+    "fingerprint": "sha256 of a declared deterministic encoding of the exact returned/canonical value. Preserve null, missing and empty as distinct values; apply the same declared field projection/snippet bound on the independent canonical value.",
+    "revision": "Use an actual independently captured canonical/provider revision. A content hash binds a value but alone does not establish revision order, provider currentness or authority.",
+    "epoch": "Host-resolved current authorization/binding components. Capture both candidate-time and independent canonical-time snapshots; no epoch accepted from query text or the candidate payload.",
+    "zeroAge": "The frozen maxAgeMs and maxFutureSkewMs are both zero. Preserve actual measured clock values; do not round, copy responseAtMs into canonical.readAtMs or widen the policy to obtain current. If the actual read cannot meet it, record stale/unknown.",
+    "directSql": "Even when canonical content is selected directly by SQL, retain the actual candidate observation and independent trusted canonical validation. Do not duplicate a returned object as purported independent proof.",
+    "authorization": "onUnknown:degrade is a freshness disposition only. It never authorizes retaining a row after access is revoked.",
+    "missingEvidence": "Store null/unknown with the missing evidence reason. Do not replace unavailable canonical/provider proof with occurredAt, updated_at, cache time or an envelope timestamp.",
+    "outputAssertions": [
+      "rows",
+      "snippets",
+      "counts",
+      "leg reports",
+      "privacy/disclosures",
+      "references/permalinks",
+      "omitted eligible candidates"
+    ],
+    "executionArtifacts": [
+      "frozen protocol/source/corpus/config hashes",
+      "complete predeclared attempt identities",
+      "actual entrypoint/provider invocation receipt",
+      "exact redacted request/response fingerprints",
+      "independent canonical reads and authority snapshots",
+      "clock provenance",
+      "field oracle results",
+      "negative/mutation receipt",
+      "native test-run ledger and spec binding when tests execute"
+    ]
+  },
+  "adapters": [
+    {
+      "surface": "documents:search/personal",
+      "entry": "packages/operator-core/lib/agent-tools/documents/search.ts#personal",
+      "reader": "packages/operator-core/lib/personal-vault/store.ts#searchPersonalDocuments",
+      "paths": [
+        "lexical-only/queryEmbedding:null"
+      ],
+      "declaredReaderArgs": {
+        "query": "args.query",
+        "scopes": "authorizePersonalAccess.scopes",
+        "limit": "args.limit ?? 10",
+        "queryEmbedding": null
+      },
+      "returnedKeys": [
+        "scope",
+        "id",
+        "source",
+        "scopeKey",
+        "sourceId",
+        "providerAccountId",
+        "kind",
+        "externalId",
+        "occurredAt",
+        "participants",
+        "participantIds",
+        "title",
+        "snippet",
+        "metadata",
+        "score",
+        "lexicalRank",
+        "vectorRank",
+        "privacy"
+      ],
+      "requestedCandidateMode": "queryEmbedding:null selects no vector embedding in this documents:search entrypoint; exercise any other advertised reader path separately",
+      "epochComponents": [
+        "workspace",
+        "principal user",
+        "live personal grant",
+        "authorized scope set",
+        "privacy rules/disclosure reader set"
+      ],
+      "sourceRevision": "independent canonical harness_shared.documents row/content revision plus provider/import revision for a provider-current claim; no public revision field is returned by this reader"
+    },
+    {
+      "surface": "documents:search/organization",
+      "entry": "packages/operator-core/lib/agent-tools/documents/search.ts#organization",
+      "reader": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchOrganizationDocuments",
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "returnedKeys": [
+        "scope",
+        "id",
+        "source",
+        "kind",
+        "externalId",
+        "occurredAt",
+        "participants",
+        "title",
+        "snippet",
+        "metadata",
+        "permissionListId",
+        "score",
+        "tsRank",
+        "privacy"
+      ],
+      "epochComponents": [
+        "workspace",
+        "principal user",
+        "live organization grant",
+        "provider identity mapping",
+        "source ACL membership",
+        "sealing/key authority",
+        "privacy rules/disclosure reader set"
+      ],
+      "sourceRevision": "independent plaintext/opened canonical document field revision plus connector/provider revision; ACL freshness does not prove provider content current"
+    },
+    {
+      "surface": "documents:search/pot",
+      "entry": "packages/operator-core/lib/agent-tools/documents/search.ts#pot",
+      "reader": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchPotDocuments",
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "returnedKeys": [
+        "scope",
+        "id",
+        "source",
+        "kind",
+        "externalId",
+        "occurredAt",
+        "participants",
+        "title",
+        "snippet",
+        "metadata",
+        "potSlug",
+        "score",
+        "tsRank",
+        "privacy"
+      ],
+      "epochComponents": [
+        "workspace",
+        "trusted server presence pot assignment",
+        "sealing/key authority",
+        "privacy rules/disclosure reader set"
+      ],
+      "sourceRevision": "independent plaintext/opened canonical document field revision plus connector/provider revision; current presence is a separate authority boundary"
+    },
+    {
+      "surface": "documents:search/live",
+      "entry": "packages/operator-core/lib/agent-tools/documents/search.ts#live",
+      "reader": "packages/operator-core/lib/data-sources/live-search-adapter.ts#searchLiveSources",
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "returnedKeys": [
+        "scope",
+        "id",
+        "source",
+        "dataSourceId",
+        "kind",
+        "externalId",
+        "occurredAt",
+        "participants",
+        "title",
+        "snippet",
+        "metadata",
+        "permalink",
+        "score",
+        "privacy"
+      ],
+      "epochComponents": [
+        "workspace",
+        "principal user",
+        "source id/config/status/sync mode",
+        "mapped provider identity",
+        "live organization grant after all providers settle",
+        "privacy rules/disclosure reader set"
+      ],
+      "sourceRevision": "provider entity/field revision independently verifiable in the current provider scope; LiveSearchHit has no dedicated revision property and host wall-clock response time cannot fill the gap"
+    }
+  ],
+  "fields": [
+    {
+      "id": "papercusp/documents:search/personal/title",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "returnedPath": "data.results[scope=personal].title",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/store.ts#searchPersonalDocuments",
+        "returned": "canonical/opened title",
+        "canonical": "independent exact canonical/provider field"
+      },
+      "paths": [
+        "lexical-only/queryEmbedding:null"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/personal/snippet",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "returnedPath": "data.results[scope=personal].snippet",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/store.ts#searchPersonalDocuments",
+        "returned": "plaintext SQL left(d.text,snippetChars); this personal reader has no sealed branch",
+        "canonical": "independently read exact canonical content and apply the actual pinned snippet bound"
+      },
+      "paths": [
+        "lexical-only/queryEmbedding:null"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/personal/occurredAt",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "Personal Vault imported provider value in harness_shared.documents; provider revision required for provider-current claim",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/user + live grant + disclosure transaction",
+      "versionSource": "documents canonical content revision + field fingerprint + import/provider revision; occurred_at is event time",
+      "returnedPath": "data.results[scope=personal].occurredAt",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/store.ts#searchPersonalDocuments",
+        "returned": "d.occurred_at::text",
+        "canonical": "independent exact event-time value; this value is not the field observation clock"
+      },
+      "paths": [
+        "lexical-only/queryEmbedding:null"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/organization/title",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server live grant + provider identity + source ACL + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=organization].title",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchOrganizationDocuments",
+        "returned": "canonical/opened title",
+        "canonical": "independent exact canonical/provider field"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/organization/snippet",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server live grant + provider identity + source ACL + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=organization].snippet",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchOrganizationDocuments",
+        "returned": "plaintext SQL left(text,snippetChars) or sealed opened text.slice(0,snippetChars)",
+        "canonical": "independently read exact canonical content and apply the actual pinned snippet bound"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/organization/occurredAt",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server live grant + provider identity + source ACL + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=organization].occurredAt",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchOrganizationDocuments",
+        "returned": "d.occurred_at::text",
+        "canonical": "independent exact event-time value; this value is not the field observation clock"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/organization/privacy",
+      "policy": {
+        "fieldPath": "privacy",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server live grant + provider identity + source ACL + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=organization].privacy",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts#discloseDocuments",
+        "returned": "loadPrivacyRules -> labelDocument -> optional disclosure; null is a value",
+        "canonical": "independent current privacy-rule/reader-set and disclosure authority, separate from content provider revision"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/pot/title",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/pot presence + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=pot].title",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchPotDocuments",
+        "returned": "canonical/opened title",
+        "canonical": "independent exact canonical/provider field"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/pot/snippet",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/pot presence + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=pot].snippet",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchPotDocuments",
+        "returned": "plaintext SQL left(text,snippetChars) or sealed opened text.slice(0,snippetChars)",
+        "canonical": "independently read exact canonical content and apply the actual pinned snippet bound"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/pot/occurredAt",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/pot presence + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=pot].occurredAt",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/documents-corpus.ts#searchPotDocuments",
+        "returned": "d.occurred_at::text",
+        "canonical": "independent exact event-time value; this value is not the field observation clock"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/pot/privacy",
+      "policy": {
+        "fieldPath": "privacy",
+        "authority": "authorized harness_shared.documents plaintext or opened sealed canonical value; connector/provider revision for upstream currentness",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server workspace/pot presence + key custody + disclosure",
+      "versionSource": "canonical document content revision, current authorization epoch and returned-value fingerprint; updated_at is not provider proof",
+      "returnedPath": "data.results[scope=pot].privacy",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts#discloseDocuments",
+        "returned": "loadPrivacyRules -> labelDocument -> optional disclosure; null is a value",
+        "canonical": "independent current privacy-rule/reader-set and disclosure authority, separate from content provider revision"
+      },
+      "paths": [
+        "plaintext-BM25",
+        "plaintext-ts-rank-fallback",
+        "sealed-blind-candidate/decrypt/ts-rank-merge"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "sealed-hydration",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/live/title",
+      "policy": {
+        "fieldPath": "title",
+        "authority": "live provider response; provider field revision/clock remains required, not local response time",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server current source binding + provider identity + grant recheck after all responses + disclosure",
+      "versionSource": "provider entity/field revision + returned-value fingerprint + current local grant/binding epoch",
+      "returnedPath": "data.results[scope=live].title",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/live-search-adapter.ts#searchLiveSources",
+        "returned": "hit.title",
+        "canonical": "independent exact canonical/provider field"
+      },
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "late-provider-revocation",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/live/snippet",
+      "policy": {
+        "fieldPath": "snippet",
+        "authority": "live provider response; provider field revision/clock remains required, not local response time",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server current source binding + provider identity + grant recheck after all responses + disclosure",
+      "versionSource": "provider entity/field revision + returned-value fingerprint + current local grant/binding epoch",
+      "returnedPath": "data.results[scope=live].snippet",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/live-search-adapter.ts#searchLiveSources",
+        "returned": "hit.text.slice(0,snippetChars)",
+        "canonical": "independently read exact canonical content and apply the actual pinned snippet bound"
+      },
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "late-provider-revocation",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/live/occurredAt",
+      "policy": {
+        "fieldPath": "occurredAt",
+        "authority": "live provider response; provider field revision/clock remains required, not local response time",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server current source binding + provider identity + grant recheck after all responses + disclosure",
+      "versionSource": "provider entity/field revision + returned-value fingerprint + current local grant/binding epoch",
+      "returnedPath": "data.results[scope=live].occurredAt",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/live-search-adapter.ts#searchLiveSources",
+        "returned": "hit.occurredAt",
+        "canonical": "independent exact event-time value; this value is not the field observation clock"
+      },
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "late-provider-revocation",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/live/permalink",
+      "policy": {
+        "fieldPath": "permalink",
+        "authority": "live provider response; provider field revision/clock remains required, not local response time",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server current source binding + provider identity + grant recheck after all responses + disclosure",
+      "versionSource": "provider entity/field revision + returned-value fingerprint + current local grant/binding epoch",
+      "returnedPath": "data.results[scope=live].permalink",
+      "derivation": {
+        "writer": "packages/operator-core/lib/data-sources/live-search-adapter.ts#searchLiveSources",
+        "returned": "hit.permalink",
+        "canonical": "independent provider permalink plus current source/binding epoch"
+      },
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "late-provider-revocation",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    },
+    {
+      "id": "papercusp/documents:search/live/privacy",
+      "policy": {
+        "fieldPath": "privacy",
+        "authority": "live provider response; provider field revision/clock remains required, not local response time",
+        "clock": "canonical-read",
+        "maxAgeMs": 0,
+        "maxFutureSkewMs": 0,
+        "readAfterWrite": "not-promised",
+        "onUnknown": "degrade"
+      },
+      "scopeEpochSource": "trusted server current source binding + provider identity + grant recheck after all responses + disclosure",
+      "versionSource": "provider entity/field revision + returned-value fingerprint + current local grant/binding epoch",
+      "returnedPath": "data.results[scope=live].privacy",
+      "derivation": {
+        "writer": "packages/operator-core/lib/personal-vault/disclosure-ledger.ts#discloseDocuments",
+        "returned": "loadPrivacyRules -> labelDocument -> optional disclosure; null is a value",
+        "canonical": "independent current privacy-rule/reader-set and disclosure authority, separate from content provider revision"
+      },
+      "paths": [
+        "providerLiveSearchAdapters/registered-provider",
+        "mapped-provider-identity",
+        "all-provider-settlement/recheck",
+        "disclosure"
+      ],
+      "controlIds": [
+        "within-bound-current",
+        "mixed-version-field",
+        "fresh-envelope-stale-value",
+        "canonical-index-disagreement",
+        "canonical-unavailable",
+        "missing-version-or-clock",
+        "clock-rollback",
+        "future-clock",
+        "pre-request-canonical",
+        "epoch-replay",
+        "omitted-new-match",
+        "privacy-rule-change",
+        "late-provider-revocation",
+        "leg-timeout-and-total-deadline"
+      ],
+      "executionStatus": "unmeasured",
+      "receipt": null,
+      "oracleResult": null
+    }
+  ],
+  "controls": [
+    {
+      "id": "within-bound-current",
+      "kind": "positive",
+      "procedure": "Read a controlled eligible entity through the real entrypoint and independently read the same canonical field under the current trusted scope. Bind returned/candidate/canonical versions and the actual request/response clocks.",
+      "expected": "current/accept only when every frozen boundary is satisfied; keep unknown or stale otherwise"
+    },
+    {
+      "id": "mixed-version-field",
+      "kind": "negative",
+      "procedure": "Commit a new canonical field value while retaining an old candidate or one old hydrated field. Preserve the row id and fresh envelope.",
+      "expected": "stale/degrade for the mismatched field; another fresh field cannot validate it"
+    },
+    {
+      "id": "fresh-envelope-stale-value",
+      "kind": "negative",
+      "procedure": "Replay a recorded old field value with a freshly generated response/envelope clock and unchanged claimed applied status.",
+      "expected": "the returned value fingerprint fails currentness; envelope time never substitutes for a field witness"
+    },
+    {
+      "id": "canonical-index-disagreement",
+      "kind": "negative",
+      "procedure": "Make the real candidate source revision differ from an independent current canonical revision while retaining an eligible entity.",
+      "expected": "stale/degrade; preserve both observed revisions"
+    },
+    {
+      "id": "canonical-unavailable",
+      "kind": "negative",
+      "procedure": "Fail or refuse the independent canonical read without changing the returned candidate value.",
+      "expected": "unknown/degrade, never current; respect separate access refusals"
+    },
+    {
+      "id": "missing-version-or-clock",
+      "kind": "negative",
+      "procedure": "Omit one field revision, index/candidate revision, authority epoch or trusted observation clock from the capture.",
+      "expected": "unknown/degrade; no synthetic timestamps, revisions or epochs"
+    },
+    {
+      "id": "clock-rollback",
+      "kind": "negative",
+      "procedure": "Inject a controlled rollback in the capture clock so responseAtMs precedes requestStartedAtMs.",
+      "expected": "not current; retain the invalid-clock evidence"
+    },
+    {
+      "id": "future-clock",
+      "kind": "negative",
+      "procedure": "Set a controlled candidate/canonical observation beyond the frozen maxFutureSkewMs, retaining the original field value and identity.",
+      "expected": "not current; do not silently clamp to response time"
+    },
+    {
+      "id": "pre-request-canonical",
+      "kind": "negative",
+      "procedure": "Replay canonical evidence collected before the real request and preserve an otherwise fresh envelope.",
+      "expected": "stale/degrade under canonical-read policy"
+    },
+    {
+      "id": "epoch-replay",
+      "kind": "negative",
+      "procedure": "Capture a result, change the actual applicable grant/mapping/ACL/presence/config or privacy epoch, and replay the recorded candidate with a fresh cache clock.",
+      "expected": "previous epoch cannot validate currentness; revoked access yields no protected row/snippet/count/reference"
+    },
+    {
+      "id": "omitted-new-match",
+      "kind": "coverage",
+      "procedure": "Commit a new eligible matching document or newly eligible field, query the actual reader/index paths before and after index visibility, and compare the known controlled corpus to returned candidates.",
+      "expected": "record omissions separately from freshness; hydration of returned rows cannot discharge candidate coverage"
+    },
+    {
+      "id": "privacy-rule-change",
+      "kind": "authorization",
+      "procedure": "Change the canonical privacy rule or reader set between controlled captures and compare the delivered label/disclosure ledger with the current rule.",
+      "expected": "labels and restricted disclosures reflect the authorized delivery; old privacy proof cannot certify a new epoch"
+    },
+    {
+      "id": "late-provider-revocation",
+      "kind": "authorization",
+      "appliesTo": [
+        "documents:search/live"
+      ],
+      "procedure": "Hold one real-adapter provider response, let another settle, then revoke or change the fast source's mapped identity/config/binding or grant before the slow response settles.",
+      "expected": "post-settlement liveSearchBindingCurrent/currentAuth rejects old binding or grant; no revoked hit or disclosure is delivered"
+    },
+    {
+      "id": "sealed-hydration",
+      "kind": "negative",
+      "appliesTo": [
+        "documents:search/organization",
+        "documents:search/pot"
+      ],
+      "procedure": "Execute the sealed candidate/decrypt/rank/merge path on controlled versioned content; compare each opened returned field with an independent authorized canonical opening, including a stale-field variant.",
+      "expected": "sealing/key success alone does not validate content revision; mixed/old plaintext remains stale or unknown"
+    },
+    {
+      "id": "leg-timeout-and-total-deadline",
+      "kind": "degradation",
+      "procedure": "Exercise an actual timed-out leg and total deadline through documents:search; bind empty/partial output, leg report and all output references to the captured request.",
+      "expected": "timeout/partial stays explicit; no currentness witness is manufactured for an absent or failed leg"
+    }
+  ],
+  "observations": [
+    "All four leg rows receive a scope discriminator from documents:search after the dedicated reader returns.",
+    "Personal rows also receive privacy from discloseDocuments although personal privacy is outside the three frozen personal field policies; capture that key in the output census without silently treating it as a newly qualified policy.",
+    "A direct local DB read can bind imported content to the stored version. It does not establish that an upstream provider has no newer version.",
+    "Live provider responses are followed by binding and grant rechecks after all providers settle. This is a source observation, not an executed recurrence or provider-current witness.",
+    "The registered live-search integration suite uses a controlled fake provider. Its native receipts can prove only that adapter/custody scenario, never a production provider's content revision."
+  ],
+  "executionPrerequisites": [
+    "Use the existing canonical isolated Postgres test/fixture surfaces; do not seed private production corpus rows.",
+    "Predeclare exact field/path/control/corpus/config identities before execution and retain attempted, executed, judged and failed/unknown partitions.",
+    "Recheck source bytes against every pin immediately before execution and commit the actual source used in evidence.",
+    "Do not rerun R10 retrieval, historical inventory tests or paid judge attempts solely to reconstruct saved proof.",
+    "Provider content currentness requires an admissible provider revision/clock capture; missing capability remains unknown.",
+    "P-001 qualified labels, cost/budget population, runtime closure, independent acceptance and shipment remain separate open requirements."
+  ],
+  "qualification": {
+    "actualAdapterWitnesses": 0,
+    "fieldClaimsCurrent": 0,
+    "qualifiedBaseline": false,
+    "rankingTreatment": false,
+    "shipped": false
+  }
+}

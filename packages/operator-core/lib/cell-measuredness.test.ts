@@ -58,6 +58,7 @@ const MEASURED_EMPTY = {
       // modelled payload too — a declared path the payload omits downgrades the whole read to
       // `unavailable`, which is what this suite caught.
       stillBrokenNeedsRunCount: 0,
+      unmeasuredCount: 0,
       distinctFailingFiles: [],
       filesJudged: 0,
       scope: 'affected radius',

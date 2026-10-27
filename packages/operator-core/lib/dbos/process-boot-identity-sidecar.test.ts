@@ -82,6 +82,8 @@ describe('sweep reads go through the spawner sidecar (WI-10005424)', () => {
     });
     const [file, args] = execFileViaSidecar.mock.calls[0]!;
     expect(file).toBe('git');
-    expect(args).toEqual(['diff', '--name-status', '--no-renames', `${A}..${B}`, '--', ROUTINE_SOURCE_PREFIX]);
+    // WI-6554700010030186: the pathspec is anchored at the repo top, because the sidecar
+    // runs git with cwd process.cwd() and the operator hosts run from apps/operator.
+    expect(args).toEqual(['diff', '--name-status', '--no-renames', `${A}..${B}`, '--', `:(top)${ROUTINE_SOURCE_PREFIX}`]);
   });
 });

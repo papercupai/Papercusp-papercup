@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "kind": "focused-clause-evidence-reconciliation",
+  "acceptance": "incomplete",
+  "papercuspSourceDriftFollowup": {
+    "comparison": "SHA256 of exactly the 27 Papercusp files in inventory-20261023-v2 sourceSnapshots; not a new adapter census",
+    "checked": 27,
+    "changed": 6,
+    "unchanged": 21,
+    "changedPaths": [
+      "packages/operator-core/lib/memory/corpus-recall-io.ts",
+      "packages/operator-core/lib/search/bench/bm25-hybrid-recall.ts",
+      "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+      "packages/operator-core/lib/agent-tools/social/search.ts",
+      "packages/operator-core/lib/agent-tools/documents/search.ts",
+      "packages/operator-core/lib/capability-verbs/social-read.ts"
+    ],
+    "interpretation": "Historical evidence retains its original source pins. Changed bytes require semantic reconciliation before reuse; this comparison does not declare a defect or upgrade currentness.",
+    "remaining": "Inspect the six diffs against retained source bytes, then reconcile Restart and discover adapters beyond the frozen file population."
+  },
+  "authority": {
+    "clausesRead": {
+      "SEARCH-SURFACE-INVENTORY": 2,
+      "SEARCH-FRESHNESS-BOUNDARIES": 2,
+      "SEARCH-BASELINE-PINS": 2,
+      "SEARCH-BASELINE-BUDGETS": 4
+    },
+    "decisions": ["D-009", "D-010", "D-011", "D-012", "D-013"],
+    "boundary": "Focused P001 clauses remain mandatory. Integrated cross-product BAR outcomes discharge at P011, final shipment at P012. Supporting auth fixtures do not discharge baseline, inventory or field-value freshness."
+  },
+  "clauses": [
+    {
+      "id": "SEARCH-SURFACE-INVENTORY",
+      "existingMechanism": "packages/operator-core/lib/search/search-surface-conformance.test.ts",
+      "priorEvidence": "docs/evidence/shared-search-restart-papercusp-2026-10-22-inventory-reconciliation-20261025.json",
+      "remaining": "Reconcile current actual entrypoints against the maintained registry, including Restart adapters and bounded import-graph exclusions; historical declaration equality is not a runtime census."
+    },
+    {
+      "id": "SEARCH-FRESHNESS-BOUNDARIES",
+      "contributingTestRuns": [22247225, 22259688, 22284963, 22287706, 22288138, 22289131],
+      "remaining": "Bind each claimed-current field to returned value/source revision and current authority epoch; retain unknowns. Auth, HTTP cookie, signing epoch and principal-cache captures qualify only their exercised boundaries. Production RLS, full operator mount and actual provisioning invalidation are not inferred."
+    },
+    {
+      "id": "SEARCH-BASELINE-PINS",
+      "existingMechanisms": [
+        "packages/operator-core/lib/search/bench/adapter-baseline.ts",
+        "packages/operator-core/lib/search/bench/adapter-baseline-capture.ts"
+      ],
+      "priorEvidence": "docs/evidence/shared-search-restart-papercusp-2026-10-22-baseline-qualification-20261025-r10.json",
+      "remaining": "Freeze corpus, query set, source and model configuration for each actual measured adapter population. Historical R10 remains partial and unaccepted. Validator consistency does not authenticate supplied receipts."
+    },
+    {
+      "id": "SEARCH-BASELINE-BUDGETS",
+      "existingMechanism": "packages/operator-core/lib/search/bench/adapter-baseline.test.ts",
+      "remaining": "Before a new treatment declare source-backed numeric quality, latency, retrieval cost and error/degradation ceilings, attempted/executed/judged identities, per-cell minimum coverage and censoring. Preserve unknown cost/quality and uncovered product/adapter/query/cold-warm strata. Do not retrofit thresholds onto historical R10."
+    }
+  ],
+  "executionOrder": [
+    "Read current conformance and baseline validator results without interpreting fixture passes as actual baseline acceptance.",
+    "Reconcile actual adapter population and source drift using the existing inventory and registry.",
+    "Build a prospective study using the maintained FrozenAdapterStudy and capture interfaces; preserve accepted targets and document source authority for missing targets.",
+    "Capture actual adapters, pins and attributable retrieval cost. Keep paid judging paused until the funded-route/model decision is resolved.",
+    "Bind exact evidence and seek canonical independent acceptance only after focused clauses are satisfied."
+  ],
+  "constraints": ["Codex self implementation", "no additional implementation workers", "paid judging paused", "no LIVE_GATE_OPS"],
+  "verification": "Current guard runs are recorded separately in the work-item checkpoint; this artifact claims no new test outcome."
+}

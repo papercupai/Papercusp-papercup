@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "r2gcs-p004-live-archive-v1",
+  "workItem": "WI-6554700010025563",
+  "observedAt": "2026-10-24T15:55:19.827Z",
+  "result": "pass",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "operationId": "0e6975f4-8a32-456c-9c4f-291c45a1872d",
+  "prefix": "migration-verification/0e6975f4-8a32-456c-9c4f-291c45a1872d/publish/tenant-a/deployment-a/",
+  "instrument": {
+    "path": "apps/papercusp-publish/src/r2-archive.ts",
+    "testPath": "apps/papercusp-publish/src/archive-storage.test.ts"
+  },
+  "sourceHashes": {
+    "apps/papercusp-publish/src/r2-archive.ts": "b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa"
+  },
+  "admitted": {
+    "sha256": "9ba32561cadfbb95970df37c81b6aa30f8c102c24ec31ff4b5c16a784360708c",
+    "sizeBytes": 74
+  },
+  "restored": {
+    "sha256": "9ba32561cadfbb95970df37c81b6aa30f8c102c24ec31ff4b5c16a784360708c",
+    "sizeBytes": 74
+  },
+  "manifestMatches": true,
+  "metadataMatches": true,
+  "tenantIsolation": true,
+  "deleteIsolation": true,
+  "scope": "Maintained archive functions with real private GCS in a unique verification namespace; not historical R2 population migration or deployed publish-worker acceptance."
+}

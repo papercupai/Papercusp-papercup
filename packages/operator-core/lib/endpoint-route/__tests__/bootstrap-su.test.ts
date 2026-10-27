@@ -16,6 +16,18 @@ import type { RouteContext } from '../define-route';
 import { renderSessionPortSeed } from '../../session-port/render';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
 
+// This suite invokes route handlers directly; keep route-shaped definitions but
+// skip @papercusp/agent-mcp's package-entry bootstrap of the full tool catalog.
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (definition: any) => definition,
+}));
+
+const nativeFork = vi.hoisted(() => ({ complete: vi.fn(), resolveSource: vi.fn() }));
+vi.mock('../../su-session-tracked-codex-fork', () => ({
+  completeTrackedCodexFork: nativeFork.complete,
+  resolveTrackedCodexForkSource: nativeFork.resolveSource,
+}));
+
 // Redirect the launch-context file writes to a throwaway temp dir so the
 // route's best-effort persistence doesn't touch the real ~/.papercusp.
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-su-lc-'));
@@ -194,6 +206,11 @@ const recordSessionPortBootstrapReceiptMock = vi.fn(async (_input: unknown) => u
 const failSessionPortTargetReservationMock = vi.fn(async (_input: unknown) => true);
 const readSessionPortArtifactMock = vi.fn(async (_port: unknown) => SESSION_PORT_ARTIFACT.seed);
 const recordSessionPortTelemetryMock = vi.fn(async (_event: unknown) => true);
+const bindAgentTasksMock = vi.hoisted(() => vi.fn(async (_input: unknown) => [] as string[]));
+
+vi.mock('../../task-manager/store', () => ({
+  bindLiveAgentSessionTasksToNativeSession: (...args: unknown[]) => bindAgentTasksMock(...args),
+}));
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -316,8 +333,9 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
   releaseAgentLaunchClaim: (...args: unknown[]) =>
     releaseAgentLaunchClaimMock(...(args as [any])),
 }));
-vi.mock('../../role-codex-home', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../role-codex-home')>()),
+// bootstrap-su only needs these mocked boundaries; importing the real module
+// also loads its CODEX_HOME filesystem and worker graph during routesOf().
+vi.mock('../../role-codex-home', () => ({
   assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
     assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as Parameters<typeof assertSuCodexHomeNotOwnedByLiveSessionMock>)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
@@ -566,10 +584,13 @@ vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
 type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
 // EI-21365235532676472: pin pty discovery hermetically — no fake owner has a real
 // host on this machine, and the live-evidence leg must be deterministic.
-vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
-  ...((await orig()) as Record<string, unknown>),
-  findLiveHost: () => null,
-  findLiveHostAsync: async () => null,
+// bootstrap-su only needs the async lookup, and agent-launch-core's launch
+// functions are mocked below. Avoid importing the production discovery graph
+// while routesOf() is still loading the route module.
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHost: vi.fn(() => null),
+  findLiveHostAsync: vi.fn(async () => null),
+  injectIntoHost: vi.fn(async () => false),
 }));
 // EI-21365235532676472: hermetic PG for the pre-pinned guard's two reads. Only
 // queries the guard itself issues are answered; everything else stays empty.
@@ -614,8 +635,13 @@ async function routesOf(): Promise<Route[]> {
   return mod.default as Route[];
 }
 
-async function callPost(body: unknown): Promise<Response> {
+async function callPost(
+  body: unknown,
+  onStage?: (stage: 'loading-routes' | 'running-handler') => void,
+): Promise<Response> {
+  onStage?.('loading-routes');
   const post = (await routesOf()).find((r) => r.method === 'POST')!;
+  onStage?.('running-handler');
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-su', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -623,6 +649,59 @@ async function callPost(body: unknown): Promise<Response> {
   });
   return post.handler(req, CTX);
 }
+
+describe('bootstrap headless task/session binding', () => {
+  it('forwards the exact enrolled task id to the owner-scoped binder', async () => {
+    const taskId = '0123456789abcdefghj';
+    let routeStage = 'not-started';
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const request = callPost({
+      agent: 'claude', harness_slug: 'papercup', headless: true,
+      owner_id: 'su-headless-owner', agent_task_id: taskId,
+    }, (stage) => { routeStage = stage; }).then(
+      (response) => ({ kind: 'response' as const, response }),
+      (error: unknown) => ({ kind: 'error' as const, error }),
+    );
+    const outcome = await Promise.race([
+      request,
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: 'timeout' }), 10_000);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (outcome.kind === 'timeout') {
+      throw new Error(`bootstrap did not settle; observed route calls: ${JSON.stringify({
+        routeStage,
+        prePinnedQueries: dbSqlMock.mock.calls.length,
+        livenessChecks: resolveSessionStatesMock.mock.calls.length,
+        launchSpecs: buildLaunchSpecMock.mock.calls.length,
+        sessionWrites: recordAdvSessionMock.mock.calls.length,
+        taskBinds: bindAgentTasksMock.mock.calls.length,
+        modeWrites: setModeMock.mock.calls.length,
+      })}`);
+    }
+    if (outcome.kind === 'error') throw outcome.error;
+    const response = outcome.response;
+    expect(response.status).toBe(200);
+    expect(bindAgentTasksMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default', coordOwnerId: 'su-headless-owner', initialTaskId: taskId,
+    }));
+    expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({
+      sid: 'su-headless-owner', agentTaskId: taskId,
+    }));
+    const launch = await response.json();
+    expect(launch.envelopeEnv).not.toHaveProperty('PAPERCUSP_AGENT_TASK_ID');
+  });
+
+  it('rejects malformed or non-headless task ids before recording a session', async () => {
+    const response = await callPost({
+      agent: 'claude', harness_slug: 'papercup', headless: true,
+      agent_task_id: 'bad/id',
+    });
+    expect(response.status).toBe(400);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+});
 
 async function callGet(query = ''): Promise<Response> {
   const get = (await routesOf()).find((r) => r.method === 'GET' && (r as any).path?.endsWith('/options'))!;
@@ -642,6 +721,8 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  nativeFork.complete.mockReset();
+  nativeFork.resolveSource.mockReset();
   vi.stubEnv('HOME', TEST_CODEX_AUTH_HOME);
   vi.stubEnv('OPENAI_API_KEY', '');
   sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
@@ -961,6 +1042,47 @@ describe('bootstrap-su', () => {
     } finally {
       warn.mockRestore();
     }
+  }, 30_000);
+
+  it.each([false, true])('native fork failure keeps retry safe when child cleanup fails=%s', async cleanupFails => {
+    const source = { advSessionId: 9, nativeSessionId: '11111111-1111-4111-8111-111111111111' };
+    const childNativeId = '22222222-2222-4222-8222-222222222222';
+    const lineage = { ...source, ownerId: 'su-fork-parent' };
+    nativeFork.resolveSource.mockResolvedValue({ ownerId: lineage.ownerId });
+    nativeFork.complete
+      .mockRejectedValueOnce(new Error('native fork preparation failed'))
+      .mockResolvedValueOnce({ nativeSessionId: childNativeId, nativeFork: lineage });
+    recordAdvSessionMock.mockResolvedValueOnce(42).mockResolvedValueOnce(43);
+    if (cleanupFails) markAdvSessionEndedMock.mockRejectedValueOnce(new Error('terminalization unavailable'));
+    const request = { agent: 'codex', harness_slug: 'papercup', owner_id: 'su-fork-child',
+      native_fork_source: source, bootstrap_idempotency_key: `fork-cleanup-${cleanupFails}` };
+
+    const warn = cleanupFails ? vi.spyOn(console, 'warn').mockImplementation(() => {}) : null;
+    try {
+      await expect(callPost(request)).rejects.toThrow('native fork preparation failed');
+      if (warn) expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        'incomplete session 42 could not be terminalized; retaining bootstrap idempotency claim'));
+    } finally { warn?.mockRestore(); }
+    expect(nativeFork.complete).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 42 }), source);
+    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', { throwOnError: true });
+    if (cleanupFails) {
+      expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+      expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseAgentLaunchClaimMock.mock.invocationCallOrder[0]);
+
+    const replay = await callPost(request);
+    expect(replay.status).toBe(200);
+    const receipt = await replay.json();
+    expect(receipt).toMatchObject({ sessionId: 43, nativeSessionId: childNativeId, nativeFork: lineage });
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(2);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledTimes(1);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({ summary: receipt }));
+    expect(nativeFork.complete.mock.invocationCallOrder[1]).toBeLessThan(
+      recordAgentLaunchResultMock.mock.invocationCallOrder[0]);
   }, 30_000);
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {
@@ -1986,6 +2108,24 @@ describe('bootstrap-su', () => {
       } }));
   });
 
+  it('persists the exact launch-envelope provenance directory for indexed ingestion', async () => {
+    const { buildConsoleEnvelope } = await import('../../console-launcher');
+    const envelopeMock = vi.mocked(buildConsoleEnvelope);
+    const original = envelopeMock.getMockImplementation()!;
+    const dir = '/scoped/selected-workspace/turn-provenance';
+    envelopeMock.mockImplementationOnce(async opts => {
+      const result = await original(opts);
+      return { ...result, env: { ...result.env, PAPERCUSP_TURN_PROVENANCE_DIR: dir } };
+    });
+    const response = await callPost({ agent: 'codex' });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.envelopeEnv.PAPERCUSP_TURN_PROVENANCE_DIR).toBe(dir);
+    const { recordSuLaunchSpec } = await import('../../adv-sessions');
+    expect(recordSuLaunchSpec).toHaveBeenCalledWith(expect.anything(), result.envelopeEnv.PAPERCUSP_SID,
+      expect.objectContaining({ turnProvenanceDir: dir, workspaceId: result.workspaceId }));
+  });
+
   it('pins every component of a selected named composition at bootstrap', async () => {
     const { resolveNamedIdentityCompositionSelection } = await import('../../agent-identities/source');
     const dir = mkdtempSync(join(tmpdir(), 'bootstrap-named-composition-'));
@@ -1994,6 +2134,8 @@ describe('bootstrap-su', () => {
       const rootDir = join(dir, '.papercusp', 'blueprints', 'named-route-root');
       mkdirSync(componentDir, { recursive: true });
       mkdirSync(rootDir, { recursive: true });
+      mkdirSync(join(componentDir, 'prompts'), { recursive: true });
+      writeFileSync(join(componentDir, 'prompts', 'domain.md'), 'Named route domain fixture.');
       const componentPath = join(componentDir, 'blueprint.yaml');
       writeFileSync(componentPath,
         'id: named-route-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');

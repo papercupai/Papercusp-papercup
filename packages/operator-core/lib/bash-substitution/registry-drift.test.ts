@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { loadPairFixtures } from './corpus';
 import type { SubstitutionRow } from './match';
 import { BASH_GATE_PAIRS } from './pairs';
-import { diffRegistry, expectedRows, formatDrift, type ExpectedRow } from './registry-drift';
+import { diffRegistry, expectedRows, formatDrift, registryCheckVerdict, type ExpectedRow } from './registry-drift';
 
 /** A seeded row that agrees with `want` on every compared field. */
 function rowFor(want: ExpectedRow, overrides: Partial<SubstitutionRow> = {}): SubstitutionRow {
@@ -98,6 +98,23 @@ describe('expectedRows', () => {
       expect(row.bashPattern).toBe(pair.bashPattern.source);
       expect(row.advisoryText).toBe(pair.advisoryText);
     }
+  });
+});
+
+describe('registryCheckVerdict (measured 2026-10-27: gate leg red on an unseeded private DB)', () => {
+  const expected = expectedRows(loadPairFixtures(BASH_GATE_PAIRS));
+
+  it('calls an EMPTY registry unseeded (nothing compared), never drift', () => {
+    expect(expected.length).toBeGreaterThan(0);
+    expect(registryCheckVerdict(expected, [])).toEqual({ kind: 'unseeded' });
+  });
+
+  it('still reports real drift and a clean match on a seeded registry', () => {
+    const rows = expected.map((e) => rowFor(e));
+    expect(registryCheckVerdict(expected, rows)).toEqual({ kind: 'clean' });
+    const missingOne = registryCheckVerdict(expected, rows.slice(1));
+    expect(missingOne.kind).toBe('drift');
+    expect(missingOne.kind === 'drift' ? missingOne.drifts.length : 0).toBeGreaterThan(0);
   });
 });
 

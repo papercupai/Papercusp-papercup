@@ -19,6 +19,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import type { ReleaseRequestConsequenceJob } from './work-items-release-request';
 import {
   applyDisclosureLedgerForTest,
   applyEventSubstrateMigrationsForTest,
@@ -71,11 +72,13 @@ const rr = await import('./work-items-release-request');
 const workItems = await import('./work-items');
 const { Governor } = await import('./resource-governor/admission');
 const { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } = await import('./resource-governor/queue');
-const { registerAwait } = await import('./events/await/store');
+const { registerAwait, listRecentDeliveries } = await import('./events/await/store');
+const { setAutoPumpEnabledForTests } = await import('./events/await/engine');
 
 const H = 'papercup';
 const WS = 'default';
 let db: FreshPgDb;
+let previousAutoPump = true;
 
 async function seedIssue(
   id: string,
@@ -105,6 +108,9 @@ async function readClaimReleaseAwaitStates(ids: number[]): Promise<
 }
 
 beforeAll(async () => {
+  // These tests own event publication and queueing, not host discovery or a
+  // detached wake executor. Keep the durable intents available for assertions.
+  previousAutoPump = setAutoPumpEnabledForTests(false);
   db = await createFreshPgDb('wi-release-request');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
@@ -137,6 +143,7 @@ beforeAll(async () => {
   await db.sql.unsafe(POTS_DDL);
 }, 180_000);
 afterAll(async () => {
+  setAutoPumpEnabledForTests(previousAutoPump);
   await db?.cleanup();
 });
 beforeEach(async () => {
@@ -307,6 +314,43 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([pending]);
     expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(true);
     expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([]);
+  });
+
+  it('settles exactly one durable consequence idempotently without changing its successor claim', async () => {
+    const id = 'WI-rr-settle-successor';
+    const job: ReleaseRequestConsequenceJob = {
+      id: 'release-request:100:200',
+      resolution: 'consequence-reclaim',
+      by: 'requester',
+      holder: 'original-holder',
+      reclaimHolder: 'original-holder',
+      reason: 'expired',
+      onSilence: 'reclaim',
+      requestedAt: 100,
+      deadlineAt: 200,
+      paths: [],
+    };
+    const sibling = { ...job, id: 'release-request:300:400', requestedAt: 300, deadlineAt: 400 };
+    await seedIssue(id, {
+      takenBy: 'successor-holder',
+      payload: {
+        unrelated: 'preserved',
+        release_request_consequence_outbox: { [job.id]: job, [sibling.id]: sibling },
+      },
+    });
+    const pending = { id, harness: H, workspaceId: WS, job };
+
+    expect(await rr.settleReleaseRequestConsequence(db.sql, { ...pending, workspaceId: 'other-workspace' })).toBe(false);
+    expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(true);
+    expect(await rr.settleReleaseRequestConsequence(db.sql, pending)).toBe(false);
+    expect(await readPayload(id)).toEqual({
+      unrelated: 'preserved',
+      release_request_consequence_outbox: { [sibling.id]: sibling },
+    });
+    expect(await rr.findPendingReleaseRequestConsequences(db.sql)).toEqual([{ ...pending, job: sibling }]);
+    const [claim] = await db.sql<{ taken_by: string }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    expect(claim.taken_by).toBe('successor-holder');
   });
 
   it('CAS: a stale progress snapshot cannot resolve a request after the holder made progress', async () => {
@@ -555,8 +599,6 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
 
 describe('EI-21585647336393798 — voluntary release does not self-wake the holder', () => {
   it('retires the holder watch before emitting while still waking another waiter', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
     const id = 'WI-self-release-watch';
     await seedIssue(id, { takenBy: 'holder' });
     const binding = { kind: 'work-item-claim' as const, ref: id };
@@ -595,21 +637,13 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
         cancelled_at: null,
       }),
     ]);
-      // The await-event pump is deliberately detached from releaseWorkItem. Wait for its
-      // durable delivery log before restoring the spy, otherwise the warning lands in the
-      // next test (or fail-on-console observes it after this test has finished).
-      await vi.waitFor(
-        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ other-waiter via inbox')),
-        { timeout: 5_000, interval: 20 },
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await listRecentDeliveries('holder')).toEqual([]);
+    expect(await listRecentDeliveries('other-waiter')).toEqual([
+      expect.objectContaining({ awaitId: otherAwait.id, status: 'pending' }),
+    ]);
   });
 
   it('keeps the holder notification for an unmarked release path', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
     const id = 'WI-involuntary-release-watch';
     await seedIssue(id, { takenBy: 'holder' });
     const holderAwait = await registerAwait({
@@ -632,15 +666,9 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
       cancelled_at: null,
     });
     expect(state.fired_at).toBeInstanceOf(Date);
-      // Delivery is fire-and-forget; synchronize on the asserted trace while the spy is
-      // still installed so the expected warning cannot leak into the following test.
-      await vi.waitFor(
-        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ holder via inbox')),
-        { timeout: 5_000, interval: 20 },
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await listRecentDeliveries('holder')).toEqual([
+      expect.objectContaining({ awaitId: holderAwait.id, status: 'pending' }),
+    ]);
   });
 });
 

@@ -33,7 +33,9 @@
  * on /adv while a fresh run lands on first-run) was verified live, as a
  * control/treatment pair, on the work-item.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -149,5 +151,50 @@ describe('EI-20191599988350937 — opt-in ready-app seed for isolated verificati
     expect(src).toMatch(/VERIFY_TAURI_ISOLATED_SEED\s+which app STATE the isolated run starts from/);
     expect(src).toMatch(/Default `fresh`/);
     expect(src).toMatch(/REQUIRES VERIFY_TAURI_ISOLATED_DB=1 and is/);
+  });
+});
+
+describe('Quick Access native shortcut seed', () => {
+  const validate = src.match(/^validate_isolated_shortcut\(\) \{[\s\S]*?^\}/m)?.[0];
+  const seed = src.match(/^seed_isolated_shortcut\(\) \{[\s\S]*?^\}/m)?.[0];
+
+  function run(shortcut: string, isolated = '1', wrongHome = false) {
+    expect(validate).toBeTruthy();
+    expect(seed).toBeTruthy();
+    const root = mkdtempSync(resolve(tmpdir(), 'quick-access-seed-test-'));
+    const home = resolve(root, 'owner-home');
+    const privateHome = resolve(root, 'papercusp-home');
+    mkdirSync(home); mkdirSync(privateHome);
+    const ownerChoice = resolve(home, 'docs-search-shortcut.json');
+    writeFileSync(ownerChoice, '{"accelerator":null}');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', validate, seed,
+        'WORK="$1"; ISOLATED_HOME="$WORK/papercusp-home"; ISOLATED_DB="$VERIFY_TAURI_ISOLATED_DB"',
+        ...(wrongHome ? ['ISOLATED_HOME="$HOME"'] : []),
+        'validate_isolated_shortcut && seed_isolated_shortcut',
+      ].join('\n'), 'seed-test', root], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, VERIFY_TAURI_ISOLATED_DB: isolated, VERIFY_TAURI_ISOLATED_SHORTCUT: shortcut },
+      });
+      expect(readFileSync(ownerChoice, 'utf8')).toBe('{"accelerator":null}');
+      const path = resolve(privateHome, 'docs-search-shortcut.json');
+      return { status: result.status, choice: existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null };
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+
+  it('does not seed a choice by default', () => {
+    expect(run('')).toEqual({ status: 0, choice: null });
+  });
+  it('uses only the private home and the real persisted payload', () => {
+    expect(run('CmdOrCtrl+Shift+K')).toEqual({ status: 0, choice: { accelerator: 'CmdOrCtrl+Shift+K' } });
+  });
+  it('refuses a shortcut with a shared database or non-private home', () => {
+    expect(run('CmdOrCtrl+Shift+K', '0')).toEqual({ status: 2, choice: null });
+    expect(run('CmdOrCtrl+Shift+K', '1', true)).toEqual({ status: 2, choice: null });
+  });
+  it('refuses arbitrary accelerators before the expensive boot', () => {
+    expect(run('not-a-preset')).toEqual({ status: 2, choice: null });
+    expect(src.indexOf('validate_isolated_shortcut || exit $?')).toBeLessThan(src.indexOf('boot Xvfb (isolated, headless'));
   });
 });

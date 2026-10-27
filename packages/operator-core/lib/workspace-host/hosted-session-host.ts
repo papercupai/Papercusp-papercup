@@ -1219,7 +1219,7 @@ export class HostedWorkspaceHostSessionAdapter {
     if (kind === 'operator-http') {
       // D-418: the principal is the one the control plane bound from the single-use
       // ticket; nothing a later frame carries can change it.
-      const principal = { userId, hostedSessionId };
+      const principal = { userId, hostedSessionId, workspaceId: this.options.binding.customerWorkspaceId };
       const lifetime = new AbortController();
       const handleRequest = this.options.operatorHttp?.handleRequest;
       const http: OperatorHttpChannel = new OperatorHttpChannel({

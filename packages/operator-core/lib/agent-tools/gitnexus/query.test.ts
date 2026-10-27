@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { serializeToolResponse } from '@papercusp/tooldef';
 import { versionedSymbolIdentity, type CodeIntelAnswer, type SymbolSite } from '../../code-intelligence/contracts';
 const snapshotState = vi.hoisted(() => ({ answer: null as CodeIntelAnswer | null, calls: [] as unknown[] }));
 vi.mock('../../code-intelligence/push-snapshot', () => ({ queryPushSnapshot: async (args: unknown) => {
@@ -30,6 +31,33 @@ const run = async (args: Record<string, unknown>) => {
   };
   return out.data;
 };
+
+describe('graph:query engineering evidence admission', () => {
+  it('ee.wire-receipt: preserves the boundary gap through actual MCP serialization', async () => {
+    const parsed = graphQuery.args.parse({ op: 'evidence', harnesses: ['fixture'], plan: 'ee-feature', item: 'P-001' });
+    const response = await graphQuery.handler(parsed, { projectDir: root } as never);
+    if (!('data' in response)) throw new Error('Expected the graph ToolResponse data envelope.');
+    const wire = serializeToolResponse(response, { defaultCompact: false, includeStructured: true });
+    expect(wire.structuredContent).toMatchObject({ status: 'unknown', evidence: null,
+      boundaryObservationGap: 'trace-unavailable' });
+    expect(JSON.parse((wire.content[0] as { text: string }).text)).toMatchObject({
+      boundaryObservationGap: 'trace-unavailable' });
+  });
+  it('exposes evidence through the real schema and refuses an unauthenticated context', async () => {
+    const parsed = graphQuery.args.parse({ op: 'evidence', harnesses: ['fixture'], plan: 'ee-feature', item: 'P-001' });
+    const out = await graphQuery.handler(parsed, { projectDir: root } as never);
+    expect(out).toMatchObject({ data: { status: 'unknown', evidence: null } });
+    expect(JSON.stringify(out)).toContain('authenticated concrete workspace principal');
+  });
+  it('returns a discovery reference when an authenticated caller has only a symbol name', async () => {
+    const parsed = graphQuery.args.parse({ op: 'evidence', name: 'target' });
+    const out = await graphQuery.handler(parsed, { role: 'operator', harnessSlug: 'fixture', workspaceId: 'workspace',
+      principal: { slug: 'reader', workspaceId: 'workspace', capabilities: new Set(['intel:read']) },
+    } as never);
+    expect(out).toMatchObject({ data: { status: 'unknown', evidence: null,
+      recovery: { tool: 'graph:query', args: { op: 'symbol', name: 'target', harnesses: ['fixture'] } } } });
+  });
+});
 
 describe('graph:query callers', () => {
   it('routes a source-proven snapshot answer through the public evidence guard', async () => {

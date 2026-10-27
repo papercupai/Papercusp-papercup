@@ -103,7 +103,38 @@ import {
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
   retractSpecEvidence,
+  testRunEnvironmentUnprovenWarning,
 } from './spec-evidence-store';
+
+describe('test-run environment-unproven bind warning (EI-27081440896857039)', () => {
+  const base = {
+    testRunId: 22264238,
+    runtimeUnits: ['postgres:5432'],
+    completedRuntime: false,
+    environmentFingerprint: null,
+    details: { evidencePlane: 'live' },
+  };
+  it('warns when a live or deployed test-run row has no execution-time witness for its units', () => {
+    expect(testRunEnvironmentUnprovenWarning(base)).toMatchObject({
+      reason: 'test_run_runtime_witness_missing', testRunId: 22264238, runtimeUnits: ['postgres:5432'],
+      evidencePlane: 'live',
+    });
+    expect(testRunEnvironmentUnprovenWarning(base)?.message).toContain('omit testRunId');
+    expect(testRunEnvironmentUnprovenWarning({ ...base, details: { adequacy: { evidencePlane: ' Deployed ' } } }))
+      .toMatchObject({ evidencePlane: 'deployed' });
+  });
+  it.each([
+    ['a witnessed environment', { environmentFingerprint: 'a'.repeat(64) }],
+    ['a live probe with no test run', { testRunId: null }],
+    ['no declared runtime units', { runtimeUnits: undefined }],
+    ['an empty runtime unit list', { runtimeUnits: [] }],
+    ['a completed-runtime recipe', { completedRuntime: true }],
+    ['the tree plane', { details: { evidencePlane: 'tree' } }],
+    ['no declared plane', { details: {} }],
+  ])('stays silent for %s', (_label, override) => {
+    expect(testRunEnvironmentUnprovenWarning({ ...base, ...override })).toBeUndefined();
+  });
+});
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 
@@ -553,6 +584,32 @@ describe('completed isolated runtime certification', () => {
     await state.save();
     return { ...state, basis };
   }
+  it.each(['live', 'tree'].flatMap(plane => ['filtered', 'missing-pattern', 'invalid-pattern',
+    'selected-skip', 'missing-ledger', 'missing-case', 'failed-case', 'unmatched-pass', 'wrong-pass-count']
+    .map(condition => [condition, plane])))(
+    'certifies only ledger-proven excluded direct-verifier cases: %s on the %s plane', async (condition, plane) => {
+      const state = await setupDirectVerifier();
+      state.row.details.evidencePlane = plane;
+      state.execution.skipped = 1;
+      state.execution.testNamePattern = 'selected alarm';
+      const cases = [
+        { case_key: 'suite > selected alarm', occurrence: 0, status: 'pass', duration_ms: 1,
+          file_path: state.execution.filePath },
+        { case_key: 'suite > unrelated alarm', occurrence: 0, status: 'skip', duration_ms: 0,
+          file_path: state.execution.filePath },
+      ];
+      h.caseRows = cases;
+      if (condition === 'missing-pattern') state.execution.testNamePattern = null;
+      if (condition === 'invalid-pattern') state.execution.testNamePattern = '[';
+      if (condition === 'selected-skip') cases[1].case_key = 'suite > selected alarm also';
+      if (condition === 'missing-ledger') h.caseRows = null;
+      if (condition === 'missing-case') cases.pop();
+      if (condition === 'failed-case') cases[0].status = 'fail';
+      if (condition === 'unmatched-pass') cases[0].case_key = 'suite > another alarm';
+      if (condition === 'wrong-pass-count') state.execution.passed = 2;
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(condition === 'filtered' ? 'current' : 'unknown');
+    });
   async function setupDirectNativeMutation() {
     const state = await setupDirectVerifier();
     const files = state.receipt.files;
@@ -635,8 +692,44 @@ describe('completed isolated runtime certification', () => {
       if (failure === 'incomplete-verifier') state.verifier.verdict = 'fail';
       if (failure === 'outside-lifecycle') Object.assign(state.verifier, { endedAt: at(39) });
       await state.save();
-      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+      const original = JSON.stringify(state.row);
+      const evidence = await read();
+      expect(evidence.currentness.dimensions.environment).toBe('unknown');
+      if (failure === 'missing-witness') expect(evidence.serverMeasurement).toMatchObject({
+        completedRuntimeRefusal: { category: 'runtime-witness-missing-or-unstable' },
+      });
+      if (failure === 'unqualified-source') expect(evidence.serverMeasurement).toMatchObject({
+        completedRuntimeRefusal: { category: 'unqualified-source', paths: ['src/feature.ts'], pathCount: 1, omittedPathCount: 0 },
+      });
+      expect(JSON.stringify(state.row)).toBe(original);
     });
+  it('bounds missing-input diagnostics while preserving the full refused population count', async () => {
+    const state = await setupDirectVerifier();
+    const fixture = await mkdtemp(join(tmpdir(), 'bounded-runtime-refusal-'));
+    try {
+      await cp(root, fixture, { recursive: true });
+      const paths = Array.from({ length: 25 }, (_, index) => `src/extra-${String(index).padStart(2, '0')}.ts`);
+      for (const path of paths) await writeFile(join(fixture, path), 'export const qualified = true;');
+      execFileSync('git', ['-C', fixture, 'add', '.']);
+      execFileSync('git', ['-C', fixture, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'extra verifier inputs']);
+      const fixtureCommit = execFileSync('git', ['-C', fixture, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      state.execution.commitSha = fixtureCommit;
+      state.row.test_run_commit_sha = fixtureCommit;
+      state.receipt.sourceCommit = fixtureCommit;
+      state.basis.sourcePaths = ['src/feature.ts', ...paths];
+      const measured = await measureRepoFilesEvidenceDetailedAtRoot(fixture, state.basis);
+      state.receipt.files = measured.files;
+      state.receipt.testedInputs = measured.files.filter(file => file.dimension === 'test');
+      await state.save();
+      let refusal: unknown;
+      expect(await measureCompletedTestRuntime(state.row as any, state.basis, measured.files,
+        { workspaceId: 'workspace-test', harnessSlug: 'papercusp' }, fixture, { onRefusal: value => { refusal = value; } }))
+        .toBeNull();
+      expect(refusal).toMatchObject({ category: 'unqualified-source', pathCount: 26, omittedPathCount: 6,
+        paths: paths.slice(0, 20) });
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  });
   it('rejects changed current source bytes against the original direct-verifier Git objects', async () => {
     const state = await setupDirectVerifier();
     await writeFile(join(root, 'src/feature.ts'), 'changed source');

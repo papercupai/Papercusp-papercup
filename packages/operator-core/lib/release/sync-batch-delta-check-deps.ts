@@ -44,6 +44,7 @@ import {
   parseLoadavg1,
   parseSyncBatches,
   parseTscFailingFiles,
+  SYNC_BATCH_LOG_FORMAT,
   SYNC_DELTA_MAX_LISTED_COMMITS,
   SYNC_DELTA_TIMEOUTS_MS,
   type ConfirmVerdict,
@@ -339,7 +340,8 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
           '--first-parent',
           '--diff-merges=first-parent',
           '--name-only',
-          '--format=%x00%H %ct%n%(trailers:key=Papercusp-Agent)',
+          // WI-6554700010029864: the agent is read from the message, not `%(trailers)`.
+          `--format=${SYNC_BATCH_LOG_FORMAT}`,
         ],
         { cwd: cfg.root, timeoutMs: SYNC_DELTA_TIMEOUTS_MS.git },
       );

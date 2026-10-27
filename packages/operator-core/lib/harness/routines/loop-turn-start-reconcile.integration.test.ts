@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
 import type { Sql } from 'postgres';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
@@ -17,6 +18,8 @@ import { recordLoopTurnStart } from './loop-turn-start-stamp';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import { recordAdvSession, recordSuLaunchSpec } from '../../adv-sessions';
+import { cleanupScopedNativeFixtureDatabase } from '../../../../../apps/operator/vitest-shims/scoped-native-fixture-cleanup';
 
 let pg: DedicatedNativePg;
 let org: OrgTestDb;
@@ -34,12 +37,13 @@ beforeAll(async () => {
   sql = org.adminSql;
   h.sql = sql;
   provenanceDir = await mkdtemp(join(tmpdir(), 'pc-loop-turn-start-'));
-  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provenanceDir;
+  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(provenanceDir, 'host-global');
 }, 180_000);
 
 afterAll(async () => {
   try {
-    await org?.cleanup();
+    const flushed = await cleanupScopedNativeFixtureDatabase(org);
+    expect(flushed?.failed).toBe(0);
   } finally {
     try {
       await pg?.stop();
@@ -90,6 +94,12 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
       // Exercise the real producer and default PG telemetry writer, not a seeded marker.
       let prompt = 'An unrelated owner turn.';
       if (c.enrolled) {
+        const launchId = await recordAdvSession({ workspaceId: WS, agent: 'codex', mode: 'omp',
+          coordOwnerId: c.owner, sessionId: 'native-' + c.owner });
+        expect(launchId).not.toBeNull();
+        expect(await recordSuLaunchSpec(launchId!, c.owner, {
+          v: 1, workspaceId: WS, turnProvenanceDir: provenanceDir,
+        })).toBe(true);
         const tagged = await tagTurnForInjection({
           sid: c.owner,
           origin: 'loop-fire',
@@ -100,9 +110,57 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
         expect(tagged.ledgerWritten).toBe(true);
         prompt = tagged.taggedText;
       }
-      expect(await recordLoopTurnStart({
-        owner: c.owner, workspaceId: WS, client: 'codex', prompt,
-      })).toBe(c.enrolled);
+      if (c.enrolled) {
+        // Use the actual endpoint over HTTP, including its unawaited producer.
+        // Memory is disabled so this proves stamping independently of recall.
+        const { default: routes } = await import('../../endpoint-route/routes/agent-mcp/turn-start-memory');
+        const endpoint = routes[0] as unknown as { handler(req: Request): Promise<Response> };
+        const server = createServer(async (incoming, outgoing) => {
+          try {
+            const chunks: Buffer[] = [];
+            for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+            const response = await endpoint.handler(new Request('http://127.0.0.1/api/agent-mcp/turn-start-memory', {
+              method: incoming.method, body: Buffer.concat(chunks).toString(),
+            }));
+            outgoing.writeHead(response.status, { 'content-type': 'application/json' });
+            outgoing.end(await response.text());
+          } catch (error) {
+            outgoing.writeHead(500);
+            outgoing.end(String(error));
+          }
+        });
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        // Optional recall legs can miss the real hook's wall without affecting
+        // this stamp. Check that specific diagnostic; keep unexpected warnings red.
+        const deadlineWarning = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+          expect(String(message)).toMatch(/^\[turn-start\] response deadline: omitted /);
+        });
+        try {
+          const address = server.address();
+          if (!address || typeof address === 'string') throw new Error('private HTTP listener missing');
+          const response = await fetch(`http://127.0.0.1:${address.port}/api/agent-mcp/turn-start-memory`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ owner: c.owner, workspace: WS, client: 'codex', prompt,
+              memoryEnabled: false, wallMs: 2500 }),
+          });
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ ok: true });
+          await vi.waitFor(async () => {
+            const stamps = await sql`SELECT detail FROM harness_shared.agent_activity
+              WHERE workspace_id = ${WS} AND owner_id = ${c.owner} AND summary = ${LOOP_TURN_START_MARKER}`;
+            expect(stamps).toHaveLength(1);
+            expect(stamps[0]!.detail).toMatchObject({ loopFire: { routineId: c.id, wakeCount: 1 } });
+          }, { timeout: 10_000 });
+        } finally {
+          try {
+            await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+          } finally {
+            deadlineWarning.mockRestore();
+          }
+        }
+      } else {
+        expect(await recordLoopTurnStart({ owner: c.owner, workspaceId: WS, client: 'codex', prompt })).toBe(false);
+      }
     }
 
     const stamps = await sql<Array<{ owner_id: string; created_at: Date; summary: string }>>`

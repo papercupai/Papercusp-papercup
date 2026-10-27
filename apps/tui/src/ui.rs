@@ -4362,6 +4362,9 @@ fn card_lines(app: &App, inner_w: usize, max_rows: usize) -> Vec<Line<'static>> 
         }
     }
     lines.push(Line::from(""));
+    if card.secure_link.is_some() {
+        lines.push(Line::from(Span::styled("  o: open secure authentication link", Theme::notify())));
+    }
     match &card.presentation {
         CardPresentation::Radio { options } | CardPresentation::Checkbox { options } => {
             let is_checkbox = matches!(card.presentation, CardPresentation::Checkbox { .. });
@@ -4397,12 +4400,14 @@ fn card_lines(app: &App, inner_w: usize, max_rows: usize) -> Vec<Line<'static>> 
                 }
             }
         }
-        CardPresentation::Text { placeholder, .. } => {
+        CardPresentation::Text { placeholder, sensitive, .. } => {
             let shown = if app.card_state.input.is_empty() {
                 placeholder
                     .clone()
                     .or_else(|| card.fallback_text.clone())
                     .unwrap_or_else(|| "type your answer".to_string())
+            } else if *sensitive {
+                "•".repeat(app.card_state.input.chars().count())
             } else {
                 app.card_state.input.clone()
             };
@@ -12980,6 +12985,20 @@ mod tests {
             "the next card was focused under the answer: {text}"
         );
         assert!(text.contains("Waiting for the agent"), "{text}");
+    }
+
+    #[test]
+    fn su_exec_p007_private_input_never_paints_the_value() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let snapshot = serde_json::json!({ "runId": "private", "workspaceId": "ws", "version": 1,
+            "snapshot": { "openCards": [{ "correlationId": "private", "prompt": "Credential",
+                "presentation": { "kind": "text", "sensitive": true }, "createdAt": 1.0 }] } });
+        app.card_state.apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string()).unwrap());
+        app.card_state.input = "PRIVATE_P007_VALUE".into();
+        let text = render(&app, 100, 30);
+        assert!(!text.contains("PRIVATE_P007_VALUE"), "private input reached terminal paint");
+        assert!(text.contains("••••"), "private input was not masked: {text}");
     }
 
     #[test]

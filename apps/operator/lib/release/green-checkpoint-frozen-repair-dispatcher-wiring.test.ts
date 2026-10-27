@@ -29,7 +29,7 @@ import {
 import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
 const dispatchReleaseFixer = vi.fn(
-  async (): Promise<{ spawnId: string | null; runId: string | null } | null> => ({
+  async (..._args: unknown[]): Promise<{ spawnId: string | null; runId: string | null } | null> => ({
     spawnId: "s-wiring-test",
     runId: "r-wiring-test",
   }),
@@ -70,7 +70,7 @@ vi.mock(
   }),
 );
 
-const { realCheckpointDeps } = await import("./green-checkpoint");
+const { realCheckpointDeps, frozenRepairNoSpawnDetail } = await import("./green-checkpoint");
 const { releaseConfig } = await import("./release-config");
 
 const RESERVATION_TRIO = [
@@ -183,13 +183,59 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
     expect(fired).toEqual({ spawnId: "s-wiring-test", runId: "r-wiring-test" });
     expect(dispatchReleaseFixer).toHaveBeenCalledTimes(1);
     // The 5th argument is the checkpoint evidence the dispatcher forwards when the gate has
-    // one; this call supplies none, so it is forwarded as undefined.
+    // one; this call supplies none, so it is forwarded as undefined. The 6th carries the
+    // gate's onSkip (WI-6554700010029683) — none here either.
     expect(dispatchReleaseFixer).toHaveBeenCalledWith(
       { workspaceId: "papercusp-workspace", installSlug: "papercusp" },
       queue.repairHead,
       queue.failingTests,
       queue,
       undefined,
+      { onSkip: undefined },
+    );
+  });
+
+  it("WI-6554700010029683: forwards the gate's onSkip so a refused dispatch reports its typed reason", async () => {
+    vi.stubEnv(GATE_VERDICT_WORKSPACE_ENV, "papercusp-workspace");
+    vi.stubEnv(GATE_VERDICT_HARNESS_ENV, "papercusp");
+    const deps = realCheckpointDeps(releaseConfig({}));
+    const queue = {
+      candidate: "c".repeat(40),
+      repairHead: "d".repeat(40),
+      failingTests: ["lib/broken.test.ts"],
+      phase: "awaiting-fixer",
+      attempts: 0,
+      fixerSpawnId: null,
+    } as unknown as FrozenCandidateRepairQueue;
+    const refusal = {
+      code: "snapshot-mismatch" as const,
+      reason: "candidate snapshot does not match the queue",
+      retryable: true,
+    };
+    dispatchReleaseFixer.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[5] as { onSkip?: (skip: typeof refusal) => void } | undefined)?.onSkip?.(refusal);
+      return null;
+    });
+    const skips: unknown[] = [];
+
+    const fired = await deps.dispatchFrozenRepairFixer!(queue, undefined, (skip) => {
+      skips.push(skip);
+    });
+
+    expect(fired).toBeNull();
+    expect(skips).toEqual([refusal]);
+  });
+
+  it("WI-6554700010029683: phrases the no-spawn detail, and stays silent when the dispatcher reported nothing", () => {
+    expect(frozenRepairNoSpawnDetail(null)).toBe("");
+    expect(frozenRepairNoSpawnDetail(undefined)).toBe("");
+    expect(
+      frozenRepairNoSpawnDetail({ code: "covered", reason: "a live fixer covers it", retryable: true }),
+    ).toBe(" (dispatcher refused: covered — a live fixer covers it)");
+    expect(
+      frozenRepairNoSpawnDetail({ code: "scope", reason: "install out of scope", retryable: false }),
+    ).toBe(
+      " (dispatcher refused: scope — install out of scope; another dispatch cannot help until the verdict or head changes)",
     );
   });
 

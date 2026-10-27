@@ -174,7 +174,25 @@ kopia_retention_finish() {
 # it into Kopia. Move it into the same snapshotted tree under a hold; release
 # permits ordinary rotation of these archives on the next successful dump.
 kopia_install_dump_if_held() {
-  local held="$1" out="$2" archive="$2.legal-hold" saved
+  local held="$1" out="$2" archive="$2.legal-hold" saved installer="${3:-}"
+  if [ -n "$installer" ]; then
+    # Keep held immutable bytes before the transcript installer exchanges the
+    # live directory. Hard links add no second encoded copy; failures leave
+    # the current archive intact. Ordinary non-transcript rotation is unchanged.
+    case "$held" in
+      t)
+        if [ -e "$out" ]; then
+          mkdir -p -- "$archive" || return
+          saved=$(mktemp -d "$archive/held.XXXXXXXX") || return
+          cp -al -- "$out" "$saved/dump" || return
+        fi
+        ;;
+      f) rm -rf -- "$archive" || return ;;
+      *) echo 'backup retention: invalid hold state; publication refused' >&2; return 1 ;;
+    esac
+    "$installer" "$out"
+    return
+  fi
   if [ "$held" = t ] && [ -e "$out" ]; then
     mkdir -p -- "$archive" || return
     saved=$(mktemp -d "$archive/held.XXXXXXXX") || return

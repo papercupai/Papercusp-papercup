@@ -23,6 +23,21 @@ const dialogue = [
 ];
 
 describe('consult session-port source preflight', () => {
+  it.each(['exact', 'missing', 'ambiguous', 'foreign-session', 'absent-index'] as const)(
+    'applies the maintained exact-span selector before approving a %s source', async (kind) => {
+      const records = kind === 'ambiguous'
+        ? [...dialogue, { ...dialogue[1], uuid: 'a2', parentUuid: 'a1' }]
+        : dialogue;
+      const span = {
+        sessionId: kind === 'foreign-session' ? 'foreign-id' : 'native-1', turnIndices: [1], contextTurns: 2,
+        evidenceTurns: kind === 'absent-index' ? [] : [{ turnIdx: 1, speaker: 'assistant', timestamp: null,
+          text: kind === 'missing' ? 'absent evidence' : 'answer' }],
+      };
+      const result = await checkConsultSessionPortTranscript(target(), transcript(records), span);
+      expect(result.available).toBe(kind === 'exact');
+      if (kind !== 'exact') expect(result.detail).toMatch(/exact tracked source|not present|ambiguously|absent from/);
+    });
+
   it('accepts portable dialogue and excludes a concurrent partial trailing record', async () => {
     const source = transcript(dialogue, '{partial');
     expect(await checkConsultSessionPortTranscript(target(), source)).toMatchObject({ available: true });

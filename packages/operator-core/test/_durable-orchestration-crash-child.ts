@@ -20,8 +20,10 @@ const mode = process.env.DURABLE_CRASH_MODE;
 const script = process.env.DURABLE_CRASH_SCRIPT;
 const crashTarget = process.env.DURABLE_CRASH_TARGET ?? '';
 const revoked = new Set((process.env.DURABLE_CRASH_REVOKE ?? '').split(',').filter(Boolean));
-if (!dsn || !runKey || !script || (mode !== 'crash' && mode !== 'recover')) {
-  throw new Error('durable orchestration crash fixture configuration is incomplete');
+if (!dsn || !runKey || !script || !['crash', 'recover', 'code'].includes(mode ?? '')) {
+  throw new Error('durable orchestration crash fixture configuration is incomplete: ' + JSON.stringify({
+    dsnPresent: Boolean(dsn), runKeyPresent: Boolean(runKey), mode: mode ?? null, scriptChars: script?.length ?? 0,
+  }));
 }
 
 const sql = postgres(dsn, { max: 2, onnotice: () => {} });
@@ -90,6 +92,41 @@ const input = {
   timeoutSec: 60,
 };
 const workflowId = workflow.durableOrchestrationWorkflowId(input.caller.workspaceId, runKey);
+
+if (mode === 'code') {
+  const { durableRuntimeTools } = await import('@papercusp/tooldef');
+  const { runDurableCode } = await import('../lib/agent-tools/code/durable-run');
+  const { inspectOrchestration } = await import('../lib/agent-tools/orchestration/inspect');
+  const { runOrchestration } = await import('../lib/agent-tools/orchestration/run');
+  const { inspectScriptContract, currentCallerRecipeCatalog } = await import('../lib/agent-tools/orchestration/contract-preflight');
+  const tools = [...TOOLS, ...durableRuntimeTools()];
+  const allowed = new Set(tools.map(tool => tool.expose.mcp!.name!));
+  const inspectScript: typeof inspectScriptContract = args => inspectScriptContract({ ...args,
+    surface: { tools, allowed, catalog: currentCallerRecipeCatalog(tools, allowed) } });
+  const ctx = { workspaceId: input.caller.workspaceId, role: 'worker', uiClientId: input.caller.ownerId } as UnifiedToolContext;
+  const deps = {
+    inspect: (args: Parameters<typeof inspectOrchestration>[0], caller: UnifiedToolContext) =>
+      inspectOrchestration(args, caller, { inspectScript, projectedTools: TOOLS }),
+    run: (args: Parameters<typeof runOrchestration>[0], caller: UnifiedToolContext) => runOrchestration(args, caller, {
+      server: { inspectScript, projectedTools: TOOLS, startDurable: workflow.startDurableOrchestration,
+        durableRunKey: () => runKey, runCode: async () => { throw new Error('foreground replay forbidden'); } },
+    }),
+  };
+  const startedAt = Date.now();
+  const admission = await runDurableCode({ script,
+    execution: { lifecycle: 'background', durability: 'durable', timeoutSec: 180 } }, ctx, deps);
+  const admissionElapsedMs = Date.now() - startedAt;
+  const admissionText = admission.content.find(row => row.type === 'text');
+  const admitted = JSON.parse(JSON.parse((admissionText as { text: string }).text).summary);
+  if (admitted.durableRun?.workflowId !== workflowId) throw new Error('original workflow not admitted: ' + JSON.stringify(admission));
+  await DBOS.getResult(workflowId, 190);
+  const result = await runDurableCode({ durableRun: { workflowId } }, ctx, deps);
+  const resultText = result.content.find(row => row.type === 'text');
+  process.stdout.write('DURABLE_CODE_OUTCOME ' + JSON.stringify({ workflowId, admissionElapsedMs,
+    elapsedMs: Date.now() - startedAt, result: JSON.parse((resultText as { text: string }).text) }) + '\n');
+  await DBOS.shutdown(); await sql.end({ timeout: 5 });
+  process.exit(0);
+}
 
 if (mode === 'crash') {
   await workflow.startDurableOrchestration(input);

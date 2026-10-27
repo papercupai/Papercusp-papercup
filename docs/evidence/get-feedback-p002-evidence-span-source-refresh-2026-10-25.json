@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "kind": "get-feedback-p002-evidence-span-source-refresh",
+  "editionDate": "2026-10-25",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "One committed source/controlled-fixture integration refresh. Native acceptance and whole P002 remain open.",
+  "reason": {
+    "oldBinding": 69330,
+    "oldRun": 21938562,
+    "oldCommit": "a33007fa78315a38df729f32110f6735f67ae465",
+    "newCommit": "afe0419d222e713a8f05197985747088083ea29f",
+    "changedNamedSources": [
+      "packages/operator-core/lib/agent-launch-core.ts",
+      "packages/operator-core/lib/consult/consult-dispatch.ts"
+    ],
+    "comparison": "Eight original source paths and the test path were compared between the old and new commits. Only the two named sources changed. Each of the nine local paths matched the selected committed bytes before execution. This was not a HEAD-only replay."
+  },
+  "test": {
+    "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+    "sha256": "e0a2a08e53a6ffb482a2f1d5dad7b11ffe0d06104d26e51ed159f5f904b79f76",
+    "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs --ref=afe0419d222e713a8f05197985747088083ea29f --any test:file -- packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+    "runGroupId": "gf-p002-evidence-span-refresh-afe0419-20261025",
+    "runId": 21997198,
+    "passed": 33,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "startedAt": "2026-10-25T10:41:22.214Z",
+    "finishedAt": "2026-10-25T10:41:23.741Z",
+    "verification": "Canonical testing:runs independently returned the exact committed row. The maintained test:file runner validated its canonical inserted receipt before reporting passed; the requested parent receipt path was not retained. No claim relies on that absent file.",
+    "caseComparison": {
+      "population": "Canonical cases of runs 21938562 and 21997198",
+      "identity": ["caseKey", "occurrence", "status"],
+      "oldCount": 33,
+      "newCount": 33,
+      "sortedTriplesIdentical": true,
+      "removed": [],
+      "added": []
+    }
+  },
+  "recipe": {
+    "schemaVersion": 1,
+    "kind": "repo-files",
+    "sourcePaths": [
+      "packages/operator-core/lib/adv-sessions.ts",
+      "packages/operator-core/lib/agent-launch-core.ts",
+      "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts",
+      "packages/operator-core/lib/session-port/service.ts",
+      "packages/operator-core/lib/session-port/source.ts",
+      "packages/operator-core/lib/session-port/types.ts",
+      "packages/operator-core/lib/workspace-registry.ts"
+    ],
+    "testPaths": [
+      "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts"
+    ],
+    "preserved": "Exact original source/test recipe and adequacy object. No new fixture-calibration, runtime or oracle-independence attestation was added."
+  },
+  "qualification": {
+    "newBinding": 69919,
+    "currentness": "current",
+    "provenance": "server-measured",
+    "applicableDimensions": ["spec", "source", "test", "testRun"],
+    "staleReasons": [],
+    "unknownReasons": [],
+    "recipeEqual": true,
+    "adequacyEqual": true,
+    "oldBindingRetraction": {
+      "id": 69330,
+      "at": "2026-10-25T10:44:37.906Z",
+      "by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+      "verified": "Exact includeRetracted read returned this withdrawal and independently current replacement69919. Only69330 was retired."
+    }
+  },
+  "cleanup": {
+    "driverExitCode": 0,
+    "nativeExecDrained": true,
+    "sourceRootRemoved": true,
+    "privatePgRemoved": true,
+    "privatePgShutdownLogged": true,
+    "state": "/tmp/gf-p002-evidence-span-refresh-afe0419-20261025.state.json",
+    "stateSha256": "ebbf49e1f4ceeea2e20cbc64e099e2ca6a9ab1b3714fa85c26b44faf837634e0",
+    "log": "/tmp/gf-p002-evidence-span-refresh-afe0419-20261025.log",
+    "logSha256": "888feec3e7fb67375161ac0d49789b1b22defd270606a3b75390810583c0fcdd"
+  },
+  "remaining": {
+    "assessmentBuild": "f30d051362",
+    "spec": "GF-P002-source@1",
+    "verdict": "fail",
+    "wouldBlock": ["traceability", "fixture-calibration", "falsifiability", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"],
+    "fixtureLimitation": "Native answering launch/inspection is controlled fixture behavior. Fixture inputs are not qualified by this unchanged recipe. Binding69919 remains an explicitly disclosed source/fixture proof.",
+    "originalOperationalBindingsPreserved": [28326, 28545],
+    "supplementaryNativeBindingsPreserved": [69704, 69782],
+    "capacityBindingsPreserved": [69868, 69875],
+    "reporter": "EI-26900834772734276 original21936773 timeout root remains UNKNOWN; completed detector21959782 was not replayed and backend68733 was not requalified.",
+    "loop": "Existing own loop recovery is unresolved: delivery977440 remained host-pending and fell back to inbox without genuine loop-origin completion. Additional occurrence evidence is on existing EI-26122701741931277 comment1205147. One existing-routine fire only; no duplicate loop. Supervisor acknowledged recovery investigation.",
+    "native": "No new native consult was launched. Prior actor/lease questions are terminal and were not retried. A Claude reporter corpus search had zero indexed matches with degraded refresh, which is not proof that no matching context exists.",
+    "historicalLimits": "Source blob matches do not identify loaded runtime bytes or an asynchronous lease-renewal actor. Native matrix, complete actor/ABA history, cohorts, custody/admission/approval, independent acceptance and shipment remain open."
+  }
+}

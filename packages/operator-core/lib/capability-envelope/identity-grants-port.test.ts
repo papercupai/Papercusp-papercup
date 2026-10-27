@@ -116,6 +116,33 @@ describe('P-005 current identity grants at the common kernel seat', () => {
     },
   );
 
+  it('admits only the declared hook continuation door without widening the operation receipt', async () => {
+    const f = fixture();
+    const read = vi.fn(async () => f.policy);
+    const readClaim = vi.fn(async () => false);
+    const acceptedOperation = {
+      kind: 'blueprint-operation-worker', workItemId: 'WI-1',
+      operationId: 'send', specificationRevision: 'a'.repeat(64), requiredTools: ['mail:send'],
+      pin: { kind: 'blueprint-operation', harnessSlug: 'sales', operationId: 'send',
+        specificationRevision: 'a'.repeat(64), operationVersion: '1.0.0', input: {} },
+    };
+    const record = { ...f.record, acceptedOperation };
+    const door = { ...f.request, toolName: 'sessions:continue-released-operation',
+      capabilities: ['capability:terminal'] };
+    const hook = { ...door, ctx: { ...door.ctx,
+      requestOrigin: { transport: 'mcp' as const, query: { origin: 'hook' } } } };
+    const model = { ...door, ctx: { ...door.ctx,
+      requestOrigin: { transport: 'mcp' as const, query: { origin: 'agent' } } } };
+
+    expect(await checkIdentityGrantKernel(hook, f.state, record, read, readClaim))
+      .toMatchObject({ decision: 'allow', applied: true });
+    expect(readClaim).not.toHaveBeenCalled();
+    expect(await checkIdentityGrantKernel(model, f.state, record, read, readClaim))
+      .toMatchObject({ decision: 'deny', obligations: {
+        capabilityUnsatisfied: { cause: 'outside-ceiling', toolName: 'sessions:continue-released-operation' },
+      } });
+  });
+
   it('authorizes a deny-all worker identity\'s PLATFORM requiredTools under the role ceiling, and nothing else (WI-10007010)', async () => {
     // The blueprint-operation-worker identity grants no class, so the grant envelope
     // reaches nothing; before WI-10007010 every required platform tool was refused.

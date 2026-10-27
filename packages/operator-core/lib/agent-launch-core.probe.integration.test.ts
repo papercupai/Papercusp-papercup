@@ -51,6 +51,10 @@ beforeAll(async () => {
       workspace_id text, coord_owner_id text, status text, call_origin text,
       tool_name text, invoked_at timestamptz, metadata_json jsonb
     );
+    -- Match the existing production owner-recency access path (migration 427).
+    CREATE INDEX tool_invocations_coord_owner_idx
+      ON harness_shared.tool_invocations (coord_owner_id, invoked_at DESC)
+      WHERE coord_owner_id IS NOT NULL;
     CREATE TABLE harness_shared.coord_presence (workspace_id text, owner_id text, host text, pid integer);
     CREATE TABLE harness_shared.work_items (
       workspace_id text, feature_id text, taken_by text, terminal_owner text,
@@ -170,6 +174,141 @@ describe('resume target registration election (real PG)', () => {
 });
 
 describe('fresh-launch tool-call attribution (real PG)', () => {
+  it('selects the expected owner before limiting the launch cohort', async () => {
+    const workspaceId = 'ws-cohort';
+    const launcherOwnerId = 'su-launcher-cohort';
+    const since = Date.now() - 180_000;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
+      SELECT 1000 + n, 'cohort-native-' || n, 'cohort-owner-' || n, ${workspaceId},
+             to_timestamp(${since / 1000}) + n * interval '1 second', '{}'::jsonb,
+             ${sql.json(['psu', `--launched-by=${launcherOwnerId}`])}
+        FROM generate_series(1, 61) n
+    `;
+    const args = { workspaceId, launcherOwnerId, since };
+    const selected = await probeFreshLaunchSessions({ ...args, expectedOwnerIds: ['cohort-owner-61'] });
+    expect(selected.map((row) => row.ownerId)).toEqual(['cohort-owner-61']);
+    for (const expectedOwnerIds of [undefined, []]) {
+      const unscoped = await probeFreshLaunchSessions({ ...args, expectedOwnerIds });
+      expect(unscoped).toHaveLength(50);
+      expect(unscoped[0].ownerId).toBe('cohort-owner-1');
+      expect(unscoped[49].ownerId).toBe('cohort-owner-50');
+    }
+  });
+
+  it('preserves mixed call counts, latest scheduler disposition and every-origin last signal', async () => {
+    const workspaceId = 'ws-mixed-counts';
+    const ownerId = 'su-mixed-counts';
+    const launcherOwnerId = 'su-launcher-mixed-counts';
+    const since = Date.now() - 180_000;
+    const firstSeen = since + 60_000;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
+      VALUES (2000, 'mixed-native', ${ownerId}, ${workspaceId}, to_timestamp(${firstSeen / 1000}),
+              '{}'::jsonb, ${sql.json(['psu', `--launched-by=${launcherOwnerId}`])})
+    `;
+    const calls = [
+      [workspaceId, ownerId, -1, 'ok', 'agent', 'scheduler:get_next', 'predecessor'],
+      [workspaceId, ownerId, 0, 'ok', 'agent', 'coord:orient', null],
+      [workspaceId, ownerId, 1, 'ok', 'agent', 'scheduler:get_next', 'earlier'],
+      [workspaceId, ownerId, 2, 'error', 'agent', 'scheduler:get_next', 'latest'],
+      [workspaceId, ownerId, 3, 'ok', 'hook', 'scheduler:get_next', 'hook'],
+      [workspaceId, ownerId, 4, 'ok', 'agent', 'activity:report', null],
+      [workspaceId, ownerId, 5, 'ok', 'agent', 'coord:glance', null],
+      [workspaceId, ownerId, 6, 'error', 'agent', 'coord:send', null],
+      ['other-workspace', ownerId, 7, 'ok', 'agent', 'scheduler:get_next', 'wrong-workspace'],
+      [workspaceId, 'other-owner', 8, 'ok', 'agent', 'scheduler:get_next', 'wrong-owner'],
+      [workspaceId, ownerId, 90, 'error', 'hook', 'activity:report', null],
+    ] as const;
+    for (const [workspace, owner, seconds, status, origin, tool, reason] of calls) {
+      await sql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at, metadata_json)
+        VALUES (${workspace}, ${owner}, ${status}, ${origin}, ${tool},
+                to_timestamp(${firstSeen / 1000 + seconds}),
+                ${sql.json({ schedulerDisposition: { kind: 'no-claim', reason } })})
+      `;
+    }
+    const [probe] = await probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
+    expect(probe).toMatchObject({
+      successfulCalls: 2,
+      workerAttestation: { stages: {
+        schedulerPull: { status: 'satisfied', calls: 2, successfulCalls: 1 },
+        disposition: { status: 'satisfied', kind: 'no-claim', reason: 'latest' },
+      } },
+    });
+    const [clock] = await sql`SELECT EXTRACT(EPOCH FROM now()) * 1000 AS now_ms`;
+    const expectedAge = Number(clock.now_ms) - (firstSeen + 90_000);
+    expect(probe.msSinceLastSignal).not.toBeNull();
+    expect(Math.abs(probe.msSinceLastSignal! - expectedAge)).toBeLessThan(5_000);
+  });
+
+  it('examines owner history once for aggregates plus a bounded latest-scheduler seek', async () => {
+    const workspaceId = 'ws-probe-plan';
+    const ownerId = 'su-probe-plan';
+    const launcherOwnerId = 'su-launcher-plan';
+    const since = Date.now() - 180_000;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
+      VALUES (3000, 'plan-native', ${ownerId}, ${workspaceId}, to_timestamp(${since / 1000}),
+              '{}'::jsonb, ${sql.json(['psu', `--launched-by=${launcherOwnerId}`])})
+    `;
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      SELECT ${workspaceId}, ${ownerId}, 'ok', 'agent',
+             CASE WHEN n % 4 = 0 THEN 'scheduler:get_next' ELSE 'coord:orient' END,
+             to_timestamp(${since / 1000}) + n * interval '1 millisecond'
+        FROM generate_series(1, 8000) n
+    `;
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      VALUES (${workspaceId}, ${ownerId}, 'error', 'agent', 'scheduler:get_next', now())
+    `;
+    await sql`ANALYZE harness_shared.tool_invocations`;
+    type PlanNode = {
+      'Relation Name'?: string;
+      'Actual Rows'?: number;
+      'Actual Loops'?: number;
+      'Rows Removed by Filter'?: number;
+      Plans?: PlanNode[];
+    };
+    let plan: PlanNode | undefined;
+    holder.sql = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        if (!args[0][0].includes('SELECT s.id,')) return Reflect.apply(target, thisArg, args);
+        return (async () => {
+          const parts = [...args[0] as TemplateStringsArray];
+          parts[0] = 'EXPLAIN (ANALYZE, FORMAT JSON) ' + parts[0];
+          Object.defineProperty(parts, 'raw', { value: [...parts] });
+          const result = await Reflect.apply(target, thisArg, [parts, ...args.slice(1)]);
+          plan = result[0]['QUERY PLAN'][0].Plan;
+          return Reflect.apply(target, thisArg, args);
+        })();
+      },
+    });
+    try {
+      const [probe] = await probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
+      expect(probe).toMatchObject({ successfulCalls: 8000,
+        workerAttestation: { stages: { schedulerPull: { calls: 2001, successfulCalls: 2000 } } } });
+    } finally {
+      holder.sql = sql;
+    }
+    expect(plan).toBeDefined();
+    const examinedRows = (node: PlanNode): number =>
+      (node['Relation Name'] === 'tool_invocations'
+        ? ((node['Actual Rows'] ?? 0) + (node['Rows Removed by Filter'] ?? 0)) * (node['Actual Loops'] ?? 1)
+        : 0) + (node.Plans ?? []).reduce((sum, child) => sum + examinedRows(child), 0);
+    const examined = examinedRows(plan!);
+    console.info(`FRESH_LAUNCH_PLAN examinedRows=${examined} retainedOwnerRows=8001`);
+    if (examined >= 10_000) console.info(`FRESH_LAUNCH_PLAN_DETAIL ${JSON.stringify(plan)}`);
+    expect(examined).toBeLessThan(10_000);
+  });
+
   it('distinguishes an observed-silent boot from a still-signalling boot', async () => {
     const workspaceId = 'ws-silence';
     const ownerId = 'su-silence';

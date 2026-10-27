@@ -1,0 +1,1155 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "capturedAt": "2026-10-23T23:11:49.853668+00:00",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "nativeSessionId": "01a16aff-7257-7682-bd28-43c65eade77f",
+  "kind": "bounded frozen-source population and advertised-argument reconciliation",
+  "acceptance": "OPEN",
+  "sourceArtifacts": {
+    "docs/evidence/idop-p001-baseline-2026-10-22.json": "28926b71afbeb048c02fd0e137fb72de33e5b30b82131fe0f3d74edd65403c18",
+    "docs/evidence/idop-p001-observation-matrix-2026-10-23.json": "9348d8cf3756cf8e0e063a5981f3728c552452bd1908ae2d33428450dcb33df5",
+    "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json": "d9d4e10a29ef9e69bc704f33b47a241188b51ca14e34dcd0b2138b554cfb25f7",
+    "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json": "bdf71c9a0439768543d74e9fcb080c3ace3aa45531518d59f77bd33daa89579c",
+    "docs/evidence/idop-p001-leader-tool-receipt-2026-10-22.json": "e0e7bcb32555c2edd1c5bf4c283895c558f6bd1db0e822dbb1814e1fe962aef7",
+    "docs/evidence/idop-p001-coverage-audit-2026-10-22.json": "8487e7c7ff28e3c08a3102c6d00edab9ec8d193d3f8ef7147ccfa3f273029eef"
+  },
+  "sourceWriter": {
+    "path": "packages/operator-core/lib/projected-tool-deps.ts",
+    "sha256": "225e1daed98e13c0a430f46d2f624d6a1fa5841c8506793ba3dd060672a39752",
+    "roleMeaning": "buildTelemetryRow writes input.ctx.role; it is not the selected identity or native session id",
+    "principalMeaning": "principal_kind and principal_auth_method are copied from ctx.principal; they are not a per-resource authorization verdict",
+    "timestampMeaning": "invoked_at is dispatch-settle wall-clock, not batch flush or launch time",
+    "qualification": "Current canonical writer read only; this continuation did not recover the historical loaded writer build."
+  },
+  "independentPopulationControls": {
+    "kernelRoleCount": 54,
+    "frozenBuiltinIdentityCount": 29,
+    "requiredWornVariations": 6,
+    "totalDistinctEntries": 89,
+    "unique": true,
+    "kernelRoleSource": {
+      "path": "packages/agent-mcp/src/role-config.ts#AGENT_ROLES",
+      "sha256": "c1707e860788e33af09f5f23aa798cd9a61a61024c4b81d5e0ea99122e31edce"
+    },
+    "identitySource": "docs/evidence/idop-p001-baseline-2026-10-22.json#population.builtInIdentities",
+    "variationSource": "docs/evidence/idop-p001-observation-matrix-2026-10-23.json#population.wornSuVariations.required",
+    "variationScope": "Six named variations carried by the prior matrix only; this count does not establish an exhaustive legal mode-combination/fleet cross-product census."
+  },
+  "catalogValidation": [
+    {
+      "source": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json",
+      "digest": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+      "toolCount": 239,
+      "uniqueNames": true,
+      "schemaHashesResolved": true,
+      "digestMatches": true
+    },
+    {
+      "source": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json",
+      "digest": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+      "toolCount": 1020,
+      "uniqueNames": true,
+      "schemaHashesResolved": true,
+      "digestMatches": true
+    }
+  ],
+  "population": [
+    {
+      "entry": "role:scoper",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:architect",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:worker",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:validator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:debugger",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:documenter",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:curator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:operator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "fifteen exact frozen invocation receipts, separately reconciled below; these do not replace a complete role/argument census"
+    },
+    {
+      "entry": "role:oracle",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:cup",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:mug",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:planner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:orchestrator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:promote",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:security-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "historical advertised role catalog only",
+      "launchReceipt": {
+        "advSessionId": 49805,
+        "ownerId": "su-aed3855d-6698-420c-8f67-98a46a62bfe2",
+        "nativeSessionId": "01a1651d-5ead-7112-80bc-ba24050302f2",
+        "launchAt": "2026-10-22T19:36:26.990Z",
+        "capturedAt": "2026-10-22T20:34:27.763Z",
+        "catalogSha256": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+        "count": 239
+      },
+      "receiptRef": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/role=security-reviewer",
+      "currentIntrospection": "historical signed-route introspection refused; preserved separately in coverage audit"
+    },
+    {
+      "entry": "role:infra-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "historical advertised role catalog only",
+      "launchReceipt": {
+        "advSessionId": 49806,
+        "ownerId": "su-e5f36f51-c7d4-419a-8b9b-357d9e02e1ce",
+        "nativeSessionId": "01a1651d-5d92-7050-b64b-1dd4e5d60119",
+        "launchAt": "2026-10-22T19:36:26.877Z",
+        "capturedAt": "2026-10-22T20:34:27.865Z",
+        "catalogSha256": "ecb3aade2e8672f496b0ca67f0a4f48c415dd55d053b7e00be756f7642384fa4",
+        "count": 239
+      },
+      "receiptRef": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/role=infra-reviewer",
+      "currentIntrospection": "historical signed-route introspection refused; preserved separately in coverage audit"
+    },
+    {
+      "entry": "role:crosscheck",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:ui-qa",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:auditor",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:merge-resolver",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:content-fixer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:release-manager",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:release-fixer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:doc-steward",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:papercup",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:papercup-deep",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:kettle",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:researcher",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:research-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:searcher",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:discoverer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:finding-verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:findings-synthesizer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:synthesizer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:review-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:dimension-reviewer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:migration-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:migration-verifier",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:transformer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:gym-director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:judge",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:task-generator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:variant-runner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:proposer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:scanner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:director",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:committer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:tester",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:test-writer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:monitor",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:blender",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "role:foreign-session",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete role catalog",
+      "availableEvidence": "no matching receipt in these bounded frozen input artifacts; this is not a global absence claim"
+    },
+    {
+      "entry": "identity:blueprint-operation-worker",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen tool-refused sample",
+      "sample": {
+        "ownerId": "su-31c2b870-5080-4406-8a7d-c960f9e54aaa",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T16:21:09.975Z",
+        "toolInvocationId": 43036688,
+        "refusal": "agent_tools:list returned role-not-allowed"
+      }
+    },
+    {
+      "entry": "identity:judge-acceptance",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49614,
+        "ownerId": "su-f9320b8d-e34e-4680-8c95-8c5fca7e15ce",
+        "nativeSessionId": "01a16463-8479-7193-891e-a65deb499ea9",
+        "launchAt": "2026-10-22T16:13:26.953Z",
+        "capturedAt": "2026-10-22T20:48:19.478Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-acceptance",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:judge-domain",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49608,
+        "ownerId": "su-c3c0b1e6-c190-4abd-b543-801e26292824",
+        "nativeSessionId": "01a16461-be2d-70b1-b111-119b5ad7cebf",
+        "launchAt": "2026-10-22T16:11:31.188Z",
+        "capturedAt": "2026-10-22T20:48:15.029Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-domain",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:judge-ensemble",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49625,
+        "ownerId": "su-c7e6e19c-c281-4e6f-b106-ea2f72a81255",
+        "nativeSessionId": "01a16464-8aef-7382-89de-9cda5ea357e5",
+        "launchAt": "2026-10-22T16:14:35.381Z",
+        "capturedAt": "2026-10-22T20:48:15.595Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-ensemble",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:judge-grading-integrity",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49609,
+        "ownerId": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+        "nativeSessionId": "01a16461-be99-7a71-a6b7-2c4e9c247c2d",
+        "launchAt": "2026-10-22T16:11:31.077Z",
+        "capturedAt": "2026-10-22T20:48:09.401Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-grading-integrity",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:judge-gym",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49616,
+        "ownerId": "su-7403dff7-ecd1-4549-a0ad-f7ab2b882f83",
+        "nativeSessionId": "01a16463-8337-7521-ad8c-e5af96e5f09d",
+        "launchAt": "2026-10-22T16:13:26.494Z",
+        "capturedAt": "2026-10-22T20:48:08.458Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=judge-gym",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:operator.audience-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49615,
+        "ownerId": "su-8b79e88e-4682-4e23-81f0-f48e8c470473",
+        "nativeSessionId": "01a16463-84c3-7d03-978e-7303d77fbb9c",
+        "launchAt": "2026-10-22T16:13:27.258Z",
+        "capturedAt": "2026-10-22T20:48:10.708Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=operator.audience-engineer",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:operator.audience-novice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49633,
+        "ownerId": "su-d22cfeff-524c-4558-8aa1-de07236b4ff5",
+        "nativeSessionId": "01a16464-d7b9-7e12-80e3-a996bcf668cd",
+        "launchAt": "2026-10-22T16:14:53.595Z",
+        "capturedAt": "2026-10-22T20:48:17.332Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=operator.audience-novice",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:papercup.audience-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49611,
+        "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+        "nativeSessionId": "01a16461-be32-7870-ad38-42bd7cb2a49b",
+        "launchAt": "2026-10-22T16:11:31.135Z",
+        "capturedAt": "2026-10-22T20:48:13.314Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=papercup.audience-engineer",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:papercup.audience-novice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49627,
+        "ownerId": "su-10052bd8-7413-4fba-96e2-c7d78ffb5f57",
+        "nativeSessionId": "01a16464-8e7c-7bb2-8ab3-f1ecf388cd86",
+        "launchAt": "2026-10-22T16:14:35.840Z",
+        "capturedAt": "2026-10-22T20:48:07.662Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=papercup.audience-novice",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:papercusp-engineer",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:research-steward",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49610,
+        "ownerId": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+        "nativeSessionId": "01a16461-bf1a-7622-b133-f81d3d8e3304",
+        "launchAt": "2026-10-22T16:11:31.131Z",
+        "capturedAt": "2026-10-22T20:48:14.087Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": true
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=research-steward",
+      "wornIdentityQualified": false,
+      "wornQualification": "selected identity occurs in recorded launch specification; applied/effective argument observations remain separate"
+    },
+    {
+      "entry": "identity:scout.lens-analogical",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-analogical is missing practice document"
+      }
+    },
+    {
+      "entry": "identity:scout.lens-constraint-removal",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-constraint-removal is missing practice document"
+      }
+    },
+    {
+      "entry": "identity:scout.lens-first-principles",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-first-principles is missing practice document"
+      }
+    },
+    {
+      "entry": "identity:scout.lens-reframing",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 400: selected SU identity scout.lens-reframing is missing practice document"
+      }
+    },
+    {
+      "entry": "identity:su",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:su-collaborator",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:su.fleet-leader",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "separate historical leader tools/list receipt",
+      "receiptRef": "docs/evidence/idop-p001-leader-tool-receipt-2026-10-22.json",
+      "nativeSessionId": "01a16547-09a0-7d80-a629-7e084c820db2",
+      "catalogCount": 1020,
+      "wornQualification": "previously qualified source/applied posture evidence is preserved in the original receipt; this continuation does not regrade it"
+    },
+    {
+      "entry": "identity:su.fleet-member",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49684,
+        "ownerId": "su-e4e3f3ec-081e-418a-8476-90c04028b92d",
+        "nativeSessionId": "01a16482-4946-7192-ae5e-ddfd93bcd549",
+        "launchAt": "2026-10-22T16:47:03.693Z",
+        "capturedAt": "2026-10-22T20:48:18.424Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.fleet-member",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence."
+    },
+    {
+      "entry": "identity:su.mode-audit",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:su.mode-auto",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen observed sample",
+      "sample": {
+        "ownerId": "su-7a61b3ed-841b-4d7c-b177-f87c76073391",
+        "nativeSessionId": "01a16441-1bb3-7882-8c8f-69bfe2cddb16",
+        "observedAt": "2026-10-22T15:35:51.100747Z",
+        "activationEventId": 87801
+      }
+    },
+    {
+      "entry": "identity:su.mode-drain",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49629,
+        "ownerId": "su-97533b6c-b337-4f3f-a764-bb6879c9509c",
+        "nativeSessionId": "01a16464-8cb4-72b2-8ea7-aeaf0656cee8",
+        "launchAt": "2026-10-22T16:14:35.194Z",
+        "capturedAt": "2026-10-22T20:48:11.677Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-drain",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence."
+    },
+    {
+      "entry": "identity:su.mode-goal",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49632,
+        "ownerId": "su-d1800dfa-4da2-45b3-86fd-09f1e3120db9",
+        "nativeSessionId": "01a16464-8a9a-7ab2-89ac-89d9634e0705",
+        "launchAt": "2026-10-22T16:14:34.540Z",
+        "capturedAt": "2026-10-22T20:48:16.136Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-goal",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence."
+    },
+    {
+      "entry": "identity:su.mode-grade",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "historical advertised launch catalog",
+      "launchReceipt": {
+        "advSessionId": 49631,
+        "ownerId": "su-9b64fd17-7089-4b81-9302-d3539c800255",
+        "nativeSessionId": "01a16464-a13f-7b03-9004-e069c62172a5",
+        "launchAt": "2026-10-22T16:14:39.770Z",
+        "capturedAt": "2026-10-22T20:48:12.586Z",
+        "catalogSha256": "5d7bb6b1d47efac92d28faed8195cdc744f95a34269092b5cdfac22367ea700a",
+        "count": 1020,
+        "selectedIdentityInSpecification": false
+      },
+      "receiptRef": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/identity=su.mode-grade",
+      "wornIdentityQualified": false,
+      "wornQualification": "Selected mode/fleet layer is not among launch specification inputs; later applied activation proof must be joined before treating this as worn-layer tool-set evidence."
+    },
+    {
+      "entry": "identity:su.mode-ideate",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:su.mode-test",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen observed sample",
+      "sample": {
+        "ownerId": "su-af12cd24-704d-4594-9ddd-ee73dd556571",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T16:21:13.139Z",
+        "toolInvocationId": 43036704
+      }
+    },
+    {
+      "entry": "identity:su.practice",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "consult prior accepted mode/source evidence and coverage audit; no new receipt inferred from current loader success"
+    },
+    {
+      "entry": "identity:su.specialist-planner",
+      "acceptance": "OPEN",
+      "effectiveArgumentScopes": "NOT MEASURED for this complete worn identity catalog",
+      "availableEvidence": "frozen launch-refused sample",
+      "sample": {
+        "ownerId": "launch-refused",
+        "nativeSessionId": null,
+        "observedAt": "2026-10-22T17:01:40Z",
+        "refusal": "bootstrap-su HTTP 500: composition compiler prompt-missing specialist:su.planner"
+      }
+    },
+    {
+      "entry": "worn-stack:base su",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    },
+    {
+      "entry": "worn-stack:AUTO",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    },
+    {
+      "entry": "worn-stack:AUTO + AUDIT",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    },
+    {
+      "entry": "worn-stack:AUTO + AUDIT + IDEATE",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    },
+    {
+      "entry": "worn-stack:fleet leader",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    },
+    {
+      "entry": "worn-stack:fleet member",
+      "acceptance": "OPEN",
+      "availableEvidence": "previous bounded evidence in D-027 through D-036; see unchanged matrix and decisions",
+      "effectiveArgumentScopes": "NOT MEASURED as a complete source-bound population entry",
+      "noNewModeOrAckCycle": true
+    }
+  ],
+  "sourceReadability": [
+    {
+      "ref": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/advSessionId=49805",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49805",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49805/sessions/2026/10/22/rollout-2026-10-22T15-36-26-01a1651d-5ead-7112-80bc-ba24050302f2.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-role-tool-receipts-2026-10-22.json#receipts/advSessionId=49806",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49806",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49806/sessions/2026/10/22/rollout-2026-10-22T15-36-25-01a1651d-5d92-7050-b64b-1dd4e5d60119.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49627",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49627",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49627/sessions/2026/10/22/rollout-2026-10-22T12-14-34-01a16464-8e7c-7bb2-8ab3-f1ecf388cd86.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49616",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49616",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49616/sessions/2026/10/22/rollout-2026-10-22T12-13-25-01a16463-8337-7521-ad8c-e5af96e5f09d.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49609",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49609",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49609/sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be99-7a71-a6b7-2c4e9c247c2d.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49615",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49615",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49615/sessions/2026/10/22/rollout-2026-10-22T12-13-26-01a16463-84c3-7d03-978e-7303d77fbb9c.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49629",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49629",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49629/sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8cb4-72b2-8ea7-aeaf0656cee8.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49631",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49631",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49631/sessions/2026/10/22/rollout-2026-10-22T12-14-38-01a16464-a13f-7b03-9004-e069c62172a5.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49611",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49611",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49611/sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be32-7870-ad38-42bd7cb2a49b.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49610",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49610",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49610/sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-bf1a-7622-b133-f81d3d8e3304.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49608",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49608",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49608/sessions/2026/10/22/rollout-2026-10-22T12-11-30-01a16461-be2d-70b1-b111-119b5ad7cebf.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49625",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49625",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49625/sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8aef-7382-89de-9cda5ea357e5.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49632",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49632",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49632/sessions/2026/10/22/rollout-2026-10-22T12-14-33-01a16464-8a9a-7ab2-89ac-89d9634e0705.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49633",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49633",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49633/sessions/2026/10/22/rollout-2026-10-22T12-14-52-01a16464-d7b9-7e12-80e3-a996bcf668cd.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49684",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49684",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49684/sessions/2026/10/22/rollout-2026-10-22T12-47-02-01a16482-4946-7192-ae5e-ddfd93bcd549.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    },
+    {
+      "ref": "docs/evidence/idop-p001-launch-tool-catalogs-2026-10-22.json#receipts/advSessionId=49614",
+      "sourceHome": "~/.papercusp/su-codex-homes/session-49614",
+      "homeReadable": false,
+      "nativeTranscript": "~/.papercusp/su-codex-homes/session-49614/sessions/2026/10/22/rollout-2026-10-22T12-13-26-01a16463-8479-7193-891e-a65deb499ea9.jsonl",
+      "transcriptReadable": false,
+      "cause": "unknown; this read does not prove deletion, retention policy, or a complete source search"
+    }
+  ],
+  "frozenLedgerReconciliation": {
+    "status": "PASS exact id, owner, timestamp and status comparison",
+    "columns": "Original role, principal kind and auth method retained below without treating them as argument authorization",
+    "rows": [
+      {
+        "id": "43032599",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-afaffb1c-c265-4cb5-a71e-cbacf7b4ec85",
+        "invokedAt": "2026-10-22 16:11:52.254+00"
+      },
+      {
+        "id": "43032600",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-86efb84d-fbd6-4007-98a1-f8e054ccdfd4",
+        "invokedAt": "2026-10-22 16:11:52.266+00"
+      },
+      {
+        "id": "43032616",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-be25082a-1b8a-4f4b-b097-1b3f5165727f",
+        "invokedAt": "2026-10-22 16:11:55.59+00"
+      },
+      {
+        "id": "43033038",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-c3c0b1e6-c190-4abd-b543-801e26292824",
+        "invokedAt": "2026-10-22 16:13:01.553+00"
+      },
+      {
+        "id": "43034113",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-c7e6e19c-c281-4e6f-b106-ea2f72a81255",
+        "invokedAt": "2026-10-22 16:15:32.078+00"
+      },
+      {
+        "id": "43036259",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-8b79e88e-4682-4e23-81f0-f48e8c470473",
+        "invokedAt": "2026-10-22 16:19:51.809+00"
+      },
+      {
+        "id": "43036260",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-7403dff7-ecd1-4549-a0ad-f7ab2b882f83",
+        "invokedAt": "2026-10-22 16:19:53.046+00"
+      },
+      {
+        "id": "43036688",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "role-not-allowed",
+        "ownerId": "su-31c2b870-5080-4406-8a7d-c960f9e54aaa",
+        "invokedAt": "2026-10-22 16:21:09.975+00"
+      },
+      {
+        "id": "43036691",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-d1800dfa-4da2-45b3-86fd-09f1e3120db9",
+        "invokedAt": "2026-10-22 16:21:10.814+00"
+      },
+      {
+        "id": "43036702",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-10052bd8-7413-4fba-96e2-c7d78ffb5f57",
+        "invokedAt": "2026-10-22 16:21:11.206+00"
+      },
+      {
+        "id": "43036704",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-af12cd24-704d-4594-9ddd-ee73dd556571",
+        "invokedAt": "2026-10-22 16:21:13.139+00"
+      },
+      {
+        "id": "43036713",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-9b64fd17-7089-4b81-9302-d3539c800255",
+        "invokedAt": "2026-10-22 16:21:13.277+00"
+      },
+      {
+        "id": "43036725",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-d22cfeff-524c-4558-8aa1-de07236b4ff5",
+        "invokedAt": "2026-10-22 16:21:16.25+00"
+      },
+      {
+        "id": "43036854",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-97533b6c-b337-4f3f-a764-bb6879c9509c",
+        "invokedAt": "2026-10-22 16:21:34.048+00"
+      },
+      {
+        "id": "43039339",
+        "role": "operator",
+        "principalKind": "system",
+        "principalAuthMethod": "bearer-token",
+        "status": "ok",
+        "ownerId": "su-f9320b8d-e34e-4680-8c95-8c5fca7e15ce",
+        "invokedAt": "2026-10-22 16:28:10.93+00"
+      }
+    ],
+    "rowCount": 15,
+    "roles": [
+      "operator"
+    ],
+    "principalKinds": [
+      "system"
+    ],
+    "authMethods": [
+      "bearer-token"
+    ],
+    "scope": "fifteen non-null invocation ids from frozen baseline; no unbounded history scan",
+    "sourceTool": "code:run -> dev:pg_query",
+    "sql": "SELECT id,invoked_at,role,coord_owner_id,principal_kind,principal_auth_method,status FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND id IN (43032599,43032600,43032616,43033038,43034113,43036259,43036260,43036688,43036691,43036702,43036704,43036713,43036725,43036854,43039339) ORDER BY id"
+  },
+  "limits": [
+    "Hash resolution for retained historical advertised catalogs is advertised argument evidence, not observed effective argument authorization.",
+    "No role or identity entry is accepted by this supplement. The population is explicit so missing entries remain visible.",
+    "A missing historical Codex-home path does not erase frozen evidence or prove why the source is unavailable.",
+    "The bounded seven-day distinct-role query timed out (57014); it yielded no population census. Exact indexed frozen ids were read successfully instead.",
+    "No original baseline rewrite, new observer, mode cycle, manual ACK, personal payload/rule/grant change, manual git operation, or live gate operation occurred.",
+    "Source-authentication question349651, current activation audit, P001 closure, P024 independent acceptance, and shipment remain open.",
+    "The 89 distinct typed entries account for the 54 kernel roles, 29 frozen built-in identities and six carried variations; the legal stack-combination population is not closed by that arithmetic."
+  ],
+  "sourceBinding": {
+    "head": "9d49c12b4e976ee6e84fc70bd7498a77ef540d2b",
+    "edition": "current working-tree supplement; acceptance on a committed source and shipped artifact remains separate"
+  }
+}

@@ -87,7 +87,15 @@ export type SubstrateComponent =
   /** A separate, non-operator process (gateway sidecar, spawner sidecar, psu-launcher). */
   | 'external-process'
   /** systemd — the only executor in this table that is outside every other component. */
-  | 'systemd';
+  | 'systemd'
+  /**
+   * The release gate (green-checkpoint promoting `staging` to `main`) delivering code. It
+   * is a CODE-DELIVERY component, not a runtime one: a mechanism whose only executing
+   * build is release-gated cannot receive a fix while the gate is red, so it fate-shares
+   * with the gate on exactly the failure it would exist to recover (plan
+   * gate-repair-plane-on-current-build-2026-10-15, P-005).
+   */
+  | 'release-gate';
 
 /**
  * How a recovery mechanism's pass is actually executed. The value of this module is
@@ -111,7 +119,13 @@ export type ExecutorKind =
   /** A timer inside a separate sidecar/daemon process. */
   | 'sidecar-process-timer'
   /** systemd `Restart=` / a unit timer. */
-  | 'systemd-unit';
+  | 'systemd-unit'
+  /**
+   * A request handler (an MCP verb / HTTP route) executed in-process by WHICHEVER host
+   * receives the call. Not a timer: it has no instance of its own, so its build source is
+   * decided per call by the ingress that delivered it (see {@link RecoveryMechanism.ingresses}).
+   */
+  | 'operator-request-handler';
 
 /**
  * What each executor REQUIRES to be healthy in order to fire at all.
@@ -125,6 +139,7 @@ export const EXECUTOR_REQUIRES: Readonly<Record<ExecutorKind, readonly Substrate
   // Still dies with the process, but NOT with the main loop — that separation is the
   // entire point of the sentinel worker.
   'operator-off-loop': ['operator-host-process', 'operator-host-memory'],
+  'operator-request-handler': ['operator-host-process', 'operator-event-loop', 'operator-host-memory', 'postgres'],
   // The primary is a different process from the worker it judges; it shares the host's
   // memory cgroup but not the worker's loop.
   'cluster-primary-timer': ['operator-host-process', 'operator-host-memory'],
@@ -162,6 +177,66 @@ export const EXECUTOR_REQUIRES: Readonly<Record<ExecutorKind, readonly Substrate
 } as const;
 
 /**
+ * Which build a mechanism's running code is delivered by — the CODE-DELIVERY dimension
+ * (P-005). The runtime question ("can it fire during the failure") is the executor's;
+ * this one is "can a FIX to it reach a running executor while the release gate is red".
+ *
+ * Measured topology on the self-hosting box (gate-repair-plane-on-current-build
+ * D-001 + the systemd units' WorkingDirectory):
+ *  - `:3070` dev-api runs from the `papercup-release` checkout (green `main`), with the
+ *    cluster workers — RELEASE-GATED.
+ *  - bg-host `:3271` runs from the canonical `staging` tree with background workers and
+ *    DBOS; `:3170` runs an isolated generation of local `staging` — both CONTINUOUS.
+ *
+ * Two rules, by execution shape (gate-repair-plane-on-current-build D-005):
+ *  - A REDUNDANT mechanism (a timer every eligible host runs independently) is
+ *    `continuous` when at least one of its executing instances runs continuously-delivered
+ *    code — any one instance can perform the recovery. It is `release-gated` only when
+ *    every instance is (e.g. a cluster-primary timer, which exists only on `:3070`).
+ *  - A PER-CALL mechanism (a request handler; it declares `ingresses`) is executed by
+ *    whichever host received THAT call, so it is only as current as its oldest ingress:
+ *    `continuous` only when EVERY ingress that performs its effect runs continuous code.
+ *    Its declared `buildSource` must equal {@link buildSourceForIngresses} of its ingresses.
+ */
+export type BuildSource = 'release-gated' | 'continuous';
+
+/** One route by which a per-call mechanism's effect is performed, and the build it runs. */
+export interface Ingress {
+  /** How the call arrives and which host executes it (one line). */
+  via: string;
+  buildSource: BuildSource;
+}
+
+/**
+ * PURE: the build source of a per-call mechanism — `continuous` only when EVERY ingress
+ * is continuous. An empty list is not evidence of anything, so it is `release-gated`.
+ */
+export function buildSourceForIngresses(ingresses: readonly Ingress[]): BuildSource {
+  if (ingresses.length === 0) return 'release-gated';
+  return ingresses.every((i) => i.buildSource === 'continuous') ? 'continuous' : 'release-gated';
+}
+
+/**
+ * PURE: per-call rows whose declared `buildSource` disagrees with their ingresses. The
+ * declared column is what the verdict reads, so a row may not call itself continuous
+ * while one of its ingresses still executes release-gated code.
+ */
+export function buildSourceMismatches(
+  table: readonly RecoveryMechanism[],
+): Array<{ name: string; declared: BuildSource; derived: BuildSource }> {
+  return table
+    .filter((m) => m.ingresses !== undefined)
+    .map((m) => ({ name: m.name, declared: m.buildSource, derived: buildSourceForIngresses(m.ingresses ?? []) }))
+    .filter((r) => r.declared !== r.derived);
+}
+
+/** What each build source adds to a mechanism's required substrate. */
+export const BUILD_SOURCE_REQUIRES: Readonly<Record<BuildSource, readonly SubstrateComponent[]>> = {
+  'release-gated': ['release-gate'],
+  continuous: [],
+} as const;
+
+/**
  * Why an intersection between "what it needs" and "what it recovers" is nevertheless
  * acceptable. A verdict with no mitigation is a real defect; a verdict with one is a
  * design choice someone made on purpose.
@@ -183,7 +258,13 @@ export type MitigationKind =
    * A DIFFERENT, non-fate-shared mechanism covers the hard case; this one covers the
    * degraded case only. The backstop must be NAMED and must itself be in this table.
    */
-  | 'out-of-band-backstop';
+  | 'out-of-band-backstop'
+  /**
+   * A per-call mechanism whose dominant ingress is ROUTED to the continuous build, while a
+   * residual ingress still reaches release-gated code. The routing must be named in `why`
+   * and the residual must be measured, not assumed to be zero.
+   */
+  | 'current-build-routing';
 
 export interface Mitigation {
   kind: MitigationKind;
@@ -199,6 +280,12 @@ export interface RecoveryMechanism {
   file: string;
   executor: ExecutorKind;
   /**
+   * REQUIRED on every row: which build delivers this mechanism's running code. A
+   * `release-gated` mechanism requires `release-gate`, so one that recovers the gate is
+   * fate-shared unless it carries a stated mitigation.
+   */
+  buildSource: BuildSource;
+  /**
    * Which substrate components are INSIDE the failure this mechanism exists to recover.
    *
    * Empty is the common, correct case and means "the failure it targets is not part of
@@ -207,6 +294,11 @@ export interface RecoveryMechanism {
    */
   recovers: readonly SubstrateComponent[];
   mitigation?: Mitigation;
+  /**
+   * Set ONLY on a per-call mechanism (`operator-request-handler`): every route that can
+   * perform its effect. `buildSource` must then equal {@link buildSourceForIngresses}.
+   */
+  ingresses?: readonly Ingress[];
   /** One line: what it actually watches. Kept short — the source file is linked above. */
   note: string;
 }
@@ -231,11 +323,20 @@ export type RecoveryVerdict =
  * turns the whole audit into noise.
  */
 export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
+  {
+    name: 'managed-tick-watch',
+    file: 'libs/generic/scheduled-registry/src/index.ts',
+    executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
+    recovers: ['dbos-executor', 'dbos-queue'],
+    note: 'Reports a held async managed tick on an independent in-process timer; raises and resolves through the attention rail without DBOS. Requires a turning event loop and PostgreSQL for delivery; a stopped loop is covered by the event-loop sentinel.',
+  },
   // ── The event-loop family — where every real finding lives ────────────────────────
   {
     name: 'event-loop-lag-monitor',
     file: 'packages/operator-core/lib/event-loop-lag-monitor.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-event-loop'],
     mitigation: {
       kind: 'out-of-band-backstop',
@@ -248,6 +349,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'event-loop-sentinel-heartbeat',
     file: 'packages/operator-core/lib/event-loop-sentinel-host.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-event-loop'],
     mitigation: {
       kind: 'absence-is-the-signal',
@@ -259,6 +361,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'lag-self-restart',
     file: 'packages/operator-core/lib/system-health/lag-self-restart.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-event-loop'],
     mitigation: {
       kind: 'out-of-band-backstop',
@@ -271,6 +374,8 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'cluster-lag-beat',
     file: 'packages/operator-core/lib/system-health/cluster-lag-watchdog.ts',
     executor: 'operator-in-process-timer',
+    // Beats only inside true-cluster workers, and only the :3070 release host runs a cluster.
+    buildSource: 'release-gated',
     recovers: ['operator-event-loop'],
     mitigation: {
       kind: 'absence-is-the-signal',
@@ -282,6 +387,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'cluster-lag-scan',
     file: 'packages/operator-core/lib/system-health/cluster-lag-watchdog.ts',
     executor: 'cluster-primary-timer',
+    buildSource: 'release-gated',
     recovers: ['operator-event-loop'],
     note: "The primary SIGKILLs a worker silent past the threshold; cluster-fork respawns it. The primary's loop is independent of the wedged worker's — the reference design for this whole table.",
   },
@@ -289,6 +395,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'primary-managed-timers-broadcast',
     file: 'packages/operator-core/lib/cluster-managed-timers-sync.ts',
     executor: 'cluster-primary-timer',
+    buildSource: 'release-gated',
     // Empty, and deliberately so: this mechanism targets NO failure, so there is no
     // component whose failure IS the failure it addresses. Filling `recovers` with
     // "things this is about" (cluster IPC, the managed-timer registry) is exactly the
@@ -310,6 +417,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'memory-watchdog',
     file: 'packages/operator-core/lib/memory-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-host-memory', 'operator-host-process'],
     mitigation: {
       kind: 'leading-indicator',
@@ -321,6 +429,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'loop-pressure-governor',
     file: 'packages/operator-core/lib/loop-pressure-governor.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-event-loop'],
     mitigation: {
       kind: 'leading-indicator',
@@ -332,6 +441,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'loop-pressure-governor-burn',
     file: 'packages/operator-core/lib/loop-pressure-governor.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Reads remote provider-pool burn and sheds agent concurrency before quota exhaustion; that failure domain is outside the listed operator substrate.',
   },
@@ -339,6 +449,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'claude-update-canary',
     file: 'packages/operator-core/lib/system-health/claude-update-canary.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Probes a changed Claude Code build and its saved model route, then escalates CLI regressions. The external CLI failure domain is outside the listed operator substrate; this timer does not claim to recover a stopped operator.',
   },
@@ -348,6 +459,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'in-process-sweep-arm-reconcile',
     file: 'packages/operator-core/lib/dbos/in-process-sweep-arm.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Converges code-declared in-process sweep timers onto durable arm-state rows. The watchdog observes control-plane drift, not a listed substrate failure, so no substrate component is in its recovery domain.',
   },
@@ -355,6 +467,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'dbos-executor-reaper',
     file: 'packages/operator-core/lib/dbos/dbos-executor-reaper.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['dbos-executor', 'dbos-queue'],
     note: 'Frees dedup ids pinned by dead executors. Deliberately a process-level interval, NOT a DBOS workflow — "a DBOS-scheduled reaper would queue on the very executor that wedges". Correct by construction.',
   },
@@ -362,6 +475,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'dbos-hang-watchdog',
     file: 'packages/operator-core/lib/dbos/dbos-hang-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['dbos-executor'],
     note: 'Detects a workflow recovered without progress (recovery_attempts advances, max function_id does not). In-process, so a wedged DBOS queue does not silence it.',
   },
@@ -369,6 +483,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'routine-fire-cancellation-alarm',
     file: 'packages/operator-core/lib/dbos/routine-fire-cancellation-alarm.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['routines-tick', 'dbos-queue'],
     note: 'Surfaces CANCELLED routineFires. In-process rather than a routine — the pattern this audit wants.',
   },
@@ -376,6 +491,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'red-queen-engine-death',
     file: 'packages/operator-core/lib/red-queen/engine-death.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['routines-tick', 'dbos-executor'],
     note: "Every active routine's next_fire_at in the past at once = the engine is dead. Armed as a plain interval right after the boot catch, explicitly off DBOS and off the routines engine.",
   },
@@ -385,8 +501,11 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'green-stall-watchdog',
     file: 'packages/operator-core/lib/release/green-stall-watchdog.ts',
     executor: 'operator-in-process-timer',
-    recovers: [],
-    note: 'Alarms on a silently-stalled green-checkpoint run.',
+    // Armed from dbos/bootstrap.ts startDbos, which host-bootstrap gates on background
+    // workers AND PAPERCUSP_DBOS_ENABLE=1 — on this box only bg-host (canonical staging).
+    buildSource: 'continuous',
+    recovers: ['release-gate'],
+    note: 'Alarms on a silently-stalled green-checkpoint run; also drives the idle repair-queue actuator (and its release-fixer dispatch), gate live invariants and the green-main SLO pass.',
   },
   {
     // The gate run is its own process (not the operator), so a run lost mid-flight leaves
@@ -394,13 +513,40 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'green-checkpoint-lost-run-alarm',
     file: 'packages/operator-core/lib/release/green-stall-watchdog.ts',
     executor: 'operator-in-process-timer',
-    recovers: [],
+    buildSource: 'continuous',
+    recovers: ['release-gate'],
     note: 'Pages the gate holder and fleet leader once per green-checkpoint run that died with its marker set.',
+  },
+  {
+    // Per-call: release:repair-queue admit/retire writes run in whichever host received the
+    // call. D-002 measured ~96% of them on the release build before D-004 routed the proxy.
+    name: 'release-repair-queue-writes',
+    file: 'packages/operator-core/lib/agent-tools/release/repair-queue.ts',
+    executor: 'operator-request-handler',
+    buildSource: 'release-gated',
+    ingresses: [
+      {
+        via: ':9071 MCP proxy, selector-less top-level / tools:invoke / code:run-nested call → current build (:3170) by default (D-004)',
+        buildSource: 'continuous',
+      },
+      { via: 'bg-host (:9271) and staging (:9171) proxies → current build', buildSource: 'continuous' },
+      {
+        via: 'a direct :3070 MCP call that bypasses the proxy, or an explicit build:"main" → release build',
+        buildSource: 'release-gated',
+      },
+    ],
+    recovers: ['release-gate'],
+    mitigation: {
+      kind: 'current-build-routing',
+      why: 'The :9071 proxy routes selector-less calls to the current build and refuses rather than falling back (D-004); the direct-:3070 residual is measured by SPEC-P-003-LIVE from tool_invocations.serving_build_sha.',
+    },
+    note: 'Lands repair fixes on the frozen candidate (admit) and retires unreachable queues — the write half of the gate-repair plane.',
   },
   {
     name: 'git-sync-stall-watchdog',
     file: 'packages/operator-core/lib/release/git-sync-stall-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Alarms on commit staleness across the shared tree.',
   },
@@ -408,6 +554,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'origin-freshness-watchdog',
     file: 'packages/operator-core/lib/release/origin-freshness-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'The class the other two miss: local commits fine, origin not advancing.',
   },
@@ -415,6 +562,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'worktree-coverage-watchdog',
     file: 'packages/operator-core/lib/release/worktree-coverage-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Alarms when a worktree falls out of git-sync coverage.',
   },
@@ -422,6 +570,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'git-export-drainer',
     file: 'packages/operator-core/lib/harness-state/git-export/drainer.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Drains undrained git_export_outbox rows.',
   },
@@ -431,6 +580,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'liveness-alarm',
     file: 'packages/operator-core/lib/system-health/liveness-alarm.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-host-process'],
     mitigation: {
       kind: 'out-of-band-backstop',
@@ -443,6 +593,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'single-primary-check',
     file: 'packages/operator-core/lib/system-health/single-primary-check.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'R4-2 "exactly one background primary" guard — a split-brain check, not a liveness one.',
   },
@@ -450,6 +601,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'service-restart-rate-watchdog',
     file: 'packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Alarms on the RATE a long-lived unit restarts — reads systemd state, so a crash-loop in ANOTHER unit is fully visible.',
   },
@@ -457,6 +609,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'condition-staleness-alarm',
     file: 'packages/operator-core/lib/system-health/condition-staleness-alarm.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Periodic actor for coord:conditions staleness.',
   },
@@ -464,6 +617,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'escalation-aging-alarm',
     file: 'packages/operator-core/lib/overwatch/escalation-aging-alarm.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Deterministic actor for the escalation-aging anomaly.',
   },
@@ -471,6 +625,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'claude-credential-sync',
     file: 'packages/operator-core/lib/claude-credential-sync.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Newest-wins reconciliation of the OAuth credential bundle across session dirs.',
   },
@@ -480,6 +635,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'resource-governor-live-health-publisher',
     file: 'packages/operator-core/lib/resource-governor/live-health-publisher.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note:
       'Publishes THIS process\'s live-health fragment (loop lag, GC, RSS) to the shared ' +
@@ -492,6 +648,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'resource-governor-live-health-monitor',
     file: 'packages/operator-core/lib/resource-governor/live-health-monitor.ts',
     executor: 'sidecar-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note:
       'The out-of-process live-health sampler its own header calls "cross-platform, ' +
@@ -505,6 +662,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'spawner-sidecar-orphan-watchdog',
     file: 'packages/operator-core/lib/fleet/spawner-sidecar-server.ts',
     executor: 'sidecar-process-timer',
+    buildSource: 'continuous',
     recovers: ['operator-host-process'],
     note: 'Runs INSIDE the spawner sidecar, polling whether its owner pid is gone. The observer is outside the failure domain — correct by construction.',
   },
@@ -512,6 +670,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'gateway-sidecar-reprobe',
     file: 'packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['external-process'],
     note: 'The operator re-probes the gateway sidecar; watcher and watched are different processes.',
   },
@@ -521,6 +680,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'federation-join-stall-watchdog',
     file: 'packages/operator-core/lib/sync/hyperbee/federation-join-stall-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'A federation VM that loses gh auth mid-join stalls silently.',
   },
@@ -528,6 +688,8 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'booted-handles-broadcast',
     file: 'packages/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync.ts',
     executor: 'operator-in-process-timer',
+    // Armed only by a true-cluster primary (hono-host clusterWorkers > 1): the :3070 release host.
+    buildSource: 'release-gated',
     recovers: [],
     note: 'Push-sync of booted handles across true-cluster workers.',
   },
@@ -535,6 +697,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'booted-handles-pg-publish',
     file: 'packages/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Cross-SERVICE leg of the booted-handles status broadcast.',
   },
@@ -544,6 +707,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'agent-productivity-watchdog',
     file: 'packages/operator-core/lib/system-health/agent-productivity-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note:
       'REPORT-ONLY, and its header says so as a decision: "It never respawns anything." It ' +
@@ -558,6 +722,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'mcp-dark-watchdog',
     file: 'packages/operator-core/lib/system-health/mcp-dark-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Layer-4 net for tool-less sessions after a deploy. The watchdog rides the NEW host, so the restart that caused the darkness cannot silence it.',
   },
@@ -565,6 +730,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'goal-liveness-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'P-001 of this plan — goals with a stale agent_modes row and no live holder. A dead agent is not a dead operator.',
   },
@@ -572,6 +738,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'goal-holder-respawner',
     file: 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'P-009 — opt-in lost-holder recovery. It rides the operator rather than the agent-session layer it restores, and shares the bounded flap-damping/give-up policy.',
   },
@@ -579,6 +746,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'standing-goal-boot-arm',
     file: 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'P-011 — bounded boot window that re-arms STANDING goals after an operator restart (self-stops after maxPasses). It rides the fresh operator, so the restart that dropped the arm cannot silence it; a dark standing goal is not a substrate failure.',
   },
@@ -586,6 +754,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'goal-drain-fleet-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Sibling of the above — a goal draining without the fleet its contract requires.',
   },
@@ -593,6 +762,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'goal-edit-claim-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'P-008 — first edit-claim by a goal-mode owner, surfaced to graders in real time. A stale grading signal is not a substrate failure.',
   },
@@ -600,6 +770,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'goal-owner-report-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'P-009 — a goal-mode owner report-silent past the cadence floor gets one nudge with the report skeleton. A quiet owner is not a substrate failure.',
   },
@@ -607,6 +778,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'degradation-watchdog',
     file: 'packages/operator-core/lib/system-health/degradation-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'degradation-signals-on-condition-rail-2026-10-11 P-003 — the generic collapsed-fail-open-rate detector. It absorbed the retrieval-degradation timer (P-002: semantic leg blocked by the embed budget); retrieval-degradation-watchdog.ts no longer arms a timer of its own.',
   },
@@ -614,6 +786,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'embed-latency-watchdog',
     file: 'packages/operator-core/lib/system-health/embed-latency-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['external-process'],
     note: 'Grades per-caller embed latency and unavailability from operator-owned samples. The embed sidecar is an external process, so this in-process observer remains outside the failure domain it reports.',
   },
@@ -621,6 +794,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'compaction-compliance-watchdog',
     file: 'packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Sessions crossing the compaction band without flushing.',
   },
@@ -628,6 +802,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'installed-hook-drift-watchdog',
     file: 'packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'WI-10002031. Compares ~/.papercusp/hooks/cc (the copy that executes on every agent turn) against the canonical hooks under the integration root. The subject is plain files on disk written by an installer, not a component this timer depends on, so the executor sits outside the failure it targets.',
   },
@@ -635,6 +810,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'wedged-identity-activation-watchdog',
     file: 'packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'WI-10002060. Finds sessions whose identity activation cannot be reconciled with their launch record, which makes the kernel refuse every tool for the life of that session. `recovers` is EMPTY deliberately: the failure is scoped to an individual AGENT session\'s authority, not to the operator this timer rides — the operator keeps serving every other session normally, which is precisely why nothing else notices. The wedged session cannot self-report (filing is itself a tool call), so being out-of-band is the whole point of the mechanism.',
   },
@@ -642,6 +818,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'mid-turn-memory-admission-heartbeat',
     file: 'packages/operator-core/lib/memory/mid-turn-admission.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Renews the mid-turn memory-admission lease while drained work is still active, so a slow drain is not mistaken for a dead holder. The renewable lease expiry is the correctness backstop it services; nothing in the substrate is inside the failure it targets.',
   },
@@ -649,6 +826,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'carry-drill-drop-watchdog',
     file: 'packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Carry-drill state dropped across a respawn.',
   },
@@ -656,6 +834,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'codex-rollout-persistence-watchdog',
     file: 'packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Codex rollout files not persisting.',
   },
@@ -663,6 +842,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'cold-boot-drill-autorunner',
     file: 'packages/operator-core/lib/system-health/cold-boot-drill-autorunner.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Runs the cold-boot drill on cadence.',
   },
@@ -672,6 +852,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'own-tunnel-reconciler',
     file: 'packages/operator-core/lib/own-tunnel/service.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: ['external-process'],
     note: 'Makes this process match the remote_access_own_tunnel row: opens the external-ingress listener and (re)starts the cloudflared connector. cloudflared is a separate process, so its death is the failure this recovers, and the in-process timer does not depend on it.',
   },
@@ -679,6 +860,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'portal-relay-reconciler',
     file: 'packages/operator-core/lib/remote-access/relay-opt-in.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Makes this process match the remote_access_portal_relay row: (re)links the outbound relay connector. The connector is an in-process outbound link to the portal, so a dropped link is not a substrate component this timer rides.',
   },
@@ -688,6 +870,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'unservable-critical-watchdog',
     file: 'packages/operator-core/lib/system-health/unservable-critical-watchdog.ts',
     executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
     recovers: [],
     note: 'EI-19919820196426791 — a `critical` item aged past 7d in a lane no claim path serves (lane=observation / state=needs-human). The dispatcher is working correctly and excluding by design, so nothing in work-item-dispatch is inside the failure; the failure is the mis-file itself, and only an outside sweep can see an item nobody writes to.',
   },
@@ -697,6 +880,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'plan-schedule-blender-steward-heartbeat-2026-08-11',
     file: 'packages/operator-core/lib/harness/routines/plan-run-action.ts',
     executor: 'routine-agent-dispatch',
+    buildSource: 'continuous',
     recovers: ['agent-session', 'work-item-dispatch'],
     mitigation: {
       kind: 'out-of-band-backstop',
@@ -709,6 +893,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'system:unguarded-halt-rescue',
     file: 'packages/operator-core/lib/harness/routines/unguarded-halt-rescue-action.ts',
     executor: 'routine-agent-dispatch',
+    buildSource: 'continuous',
     recovers: ['agent-session'],
     mitigation: {
       kind: 'leading-indicator',
@@ -720,6 +905,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'system:sweep-stalled-loops',
     file: 'packages/operator-core/lib/harness/routines/stalled-loops-guard.ts',
     executor: 'routine-system-action',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Deterministic SQL pass over stalled loop rows — classified spend:none, so no agent is in its path.',
   },
@@ -727,8 +913,28 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     name: 'system:gc-dead-loops',
     file: 'packages/operator-core/lib/harness/routines/gc-dead-loops-action.ts',
     executor: 'routine-system-action',
+    buildSource: 'continuous',
     recovers: [],
     note: 'Reaps loop rows whose owning session is long gone. spend:none.',
+  },
+
+  // ── Per-run progress reapers (one-shot, instanced) ─────────────────────────────────
+  {
+    name: 'task-reconcile-slow-phase',
+    file: 'packages/operator-core/lib/task-manager/reconcile-tick.ts',
+    executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
+    recovers: [],
+    note: 'One-shot 30s warning naming the phase a task-ledger reconcile pass is stuck in; diagnostic, recovers no substrate component.',
+  },
+  {
+    // A template-named family: one call site arms one timer per sweep stage.
+    name: 'acceptance-grading-sweep-stage:*',
+    file: 'packages/operator-core/lib/harness/routines/acceptance-grading-sweep-action.ts',
+    executor: 'operator-in-process-timer',
+    buildSource: 'continuous',
+    recovers: [],
+    note: 'Per-stage "still running" warning for the acceptance-grading sweep routine; diagnostic, recovers no substrate component.',
   },
 ] as const;
 
@@ -736,6 +942,7 @@ export interface RecoveryAuditRow {
   name: string;
   file: string;
   executor: ExecutorKind;
+  buildSource: BuildSource;
   verdict: RecoveryVerdict;
   /** The components that are BOTH required by the executor and inside the failure domain. */
   fateSharedOn: readonly SubstrateComponent[];
@@ -767,9 +974,14 @@ export interface RecoveryAuditResult {
   coverage: RecoveryAuditCoverage;
 }
 
+/** PURE: everything a mechanism needs alive — its executor's runtime needs plus its build's delivery needs. */
+export function requiredComponents(m: RecoveryMechanism): SubstrateComponent[] {
+  return [...new Set([...EXECUTOR_REQUIRES[m.executor], ...BUILD_SOURCE_REQUIRES[m.buildSource]])];
+}
+
 /** PURE: which required components fall inside the failure domain. */
 export function fateSharedComponents(m: RecoveryMechanism): SubstrateComponent[] {
-  const required = new Set(EXECUTOR_REQUIRES[m.executor]);
+  const required = new Set(requiredComponents(m));
   return m.recovers.filter((c) => required.has(c));
 }
 
@@ -796,6 +1008,7 @@ export function auditRecoveryDependencies(
     name: m.name,
     file: m.file,
     executor: m.executor,
+    buildSource: m.buildSource,
     verdict: verdictFor(m),
     fateSharedOn: fateSharedComponents(m),
     ...(m.mitigation ? { mitigation: m.mitigation } : {}),
@@ -992,12 +1205,12 @@ export function renderRecoveryAuditTable(result: RecoveryAuditResult = auditReco
   const order: Record<RecoveryVerdict, number> = { 'fate-shared': 0, 'fate-shared-mitigated': 1, sound: 2 };
   const rows = [...result.rows].sort((a, b) => order[a.verdict] - order[b.verdict] || a.name.localeCompare(b.name));
   const lines = [
-    '| mechanism | executor | recovers (shared) | verdict | mitigation |',
-    '| --- | --- | --- | --- | --- |',
+    '| mechanism | executor | build | recovers (shared) | verdict | mitigation |',
+    '| --- | --- | --- | --- | --- | --- |',
   ];
   for (const r of rows) {
     lines.push(
-      `| \`${r.name}\` | ${r.executor} | ${r.fateSharedOn.join(', ') || '—'} | ${r.verdict} | ${
+      `| \`${r.name}\` | ${r.executor} | ${r.buildSource} | ${r.fateSharedOn.join(', ') || '—'} | ${r.verdict} | ${
         r.mitigation ? `${r.mitigation.kind}${r.mitigation.backstop ? ` → \`${r.mitigation.backstop}\`` : ''}` : '—'
       } |`,
     );

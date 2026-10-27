@@ -34,9 +34,11 @@ class MockWorker implements ClusterWorkerLike {
 class MockCluster implements ClusterLike {
   forks = 0;
   readonly workers: MockWorker[] = [];
+  readonly forkEnvs: Array<Record<string, string>> = [];
   private exitCbs: Array<(w: ClusterWorkerLike, code: number, signal: string | null) => void> = [];
   constructor(readonly isPrimary: boolean) {}
-  fork(): ClusterWorkerLike {
+  fork(env: Record<string, string> = {}): ClusterWorkerLike {
+    this.forkEnvs.push({ ...env });
     const w = new MockWorker(++this.forks);
     this.workers.push(w);
     return w;
@@ -59,6 +61,29 @@ class MockCluster implements ClusterLike {
 }
 
 describe('startCluster (P3-2)', () => {
+  it('pins every initial and replacement worker to request-only without mutating the parent contract', () => {
+    const cl = new MockCluster(true);
+    const workerEnv = { PAPERCUSP_BACKGROUND_WORKERS: '1', PAPERCUSP_EXPECTED_OPERATOR_PROCS: '3',
+      PAPERCUSP_SUBSTRATE_SOCKET: '/tmp/pinned-primary.sock' };
+    const handle = startCluster({ workers: 2, workerEnv, cluster: cl, onWorker() {}, log() {} });
+    const expected = { ...workerEnv, PAPERCUSP_BACKGROUND_WORKERS: '0' };
+    expect(cl.forkEnvs).toEqual([expected, expected]);
+    expect(workerEnv.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
+    workerEnv.PAPERCUSP_SUBSTRATE_SOCKET = '/tmp/drifted.sock';
+    cl.emitExit(cl.workers[0]);
+    expect(cl.forkEnvs[2]).toEqual(expected);
+    handle.drain?.();
+  });
+
+  it('declares request-only workers even when the caller omits workerEnv', () => {
+    const cl = new MockCluster(true);
+    const handle = startCluster({ workers: 2, cluster: cl, onWorker() {}, log() {} });
+    expect(cl.forkEnvs).toEqual([
+      { PAPERCUSP_BACKGROUND_WORKERS: '0' }, { PAPERCUSP_BACKGROUND_WORKERS: '0' },
+    ]);
+    handle.drain?.();
+  });
+
   it('single mode (workers<=1): runs both roles inline, no fork', () => {
     const cl = new MockCluster(true);
     const onPrimary = vi.fn();
@@ -139,6 +164,7 @@ describe('startCluster (P3-2)', () => {
       vi.advanceTimersByTime(1);
       expect(h.liveWorkerCount?.()).toBe(2);
       expect(cl.forks).toBe(6);
+      expect(cl.forkEnvs.every(env => env.PAPERCUSP_BACKGROUND_WORKERS === '0')).toBe(true);
       h.drain?.();
     } finally {
       vi.useRealTimers();

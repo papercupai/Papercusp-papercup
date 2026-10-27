@@ -27,7 +27,7 @@
  * to prove the fix; a unit test over `parseGitmodules` alone would prove the parser
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -102,6 +102,57 @@ describe('committed reporter database route', () => {
         expect(mod.lintAsCommittedChildEnv(isolation, original)).not.toHaveProperty('DATABASE_URL');
       }
     } finally { rmSync(original, { recursive: true, force: true }); }
+  });
+
+  it('requires an explicit reporter sink and pins a receipt file for test:file', () => {
+    const receiptFile = join(tmpdir(), 'committed-test-run-receipts.jsonl');
+    expect(() => mod.lintAsCommittedChildEnv({
+      DATABASE_URL: 'postgres://product.invalid',
+      HARNESS_ADMIN_DATABASE_URL: 'postgres://temporary.invalid',
+    }, null, receiptFile)).toThrow(/PAPERCUSP_TEST_RUNS_DB_URL/);
+
+    const preparedRootReceiptFile = join(tmpdir(), 'committed-prepared-root.json');
+    const child = mod.lintAsCommittedChildEnv({
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
+    }, null, receiptFile, preparedRootReceiptFile);
+    expect(child.PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgres://ledger.invalid');
+    expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(receiptFile);
+    expect(child.PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBe(preparedRootReceiptFile);
+    expect(mod.lintAsCommittedChildEnv({
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://ledger.invalid',
+      PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT: '/inherited/stale-receipt.json',
+    }, null, receiptFile).PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBeUndefined();
+  });
+
+  it('writes a private prepared-root receipt bound to HEAD and its owner marker', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'committed-prepared-root-'));
+    const root = join(parent, 'source');
+    try {
+      mkdirSync(root, { recursive: true });
+      execFileSync('git', ['init', '--quiet', root]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--allow-empty', '--quiet', '-m', 'prepared source'], { cwd: root });
+      const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+      const markerPath = join(root, '.git', 'lint-as-committed-owner.json');
+      const marker = JSON.stringify({ pid: process.pid, keep: false, createdAtMs: Date.now(), sha: sourceCommit });
+      writeFileSync(markerPath, marker);
+      const receiptPath = join(parent, 'prepared-root.json');
+
+      expect(mod.writePreparedWorkRootReceipt(root, sourceCommit, receiptPath)).toBe(receiptPath);
+      const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      expect(receipt).toEqual({
+        schemaVersion: 'lint-as-committed-prepared-root-v1',
+        root,
+        sourceCommit,
+        ownerMarkerSha256: createHash('sha256').update(marker).digest('hex'),
+      });
+      expect(lstatSync(receiptPath).mode & 0o777).toBe(0o600);
+      expect(() => mod.writePreparedWorkRootReceipt(root, sourceCommit, join(root, 'prepared-root.json')))
+        .toThrow('prepared work-root receipt must be outside the committed source root');
+      const original = readFileSync(receiptPath, 'utf8');
+      expect(() => mod.writePreparedWorkRootReceipt(root, sourceCommit, receiptPath)).toThrow();
+      expect(readFileSync(receiptPath, 'utf8')).toBe(original);
+    } finally { rmSync(parent, { recursive: true, force: true }); }
   });
 
   // WI-6554700010012470: a kept clone reused WITHOUT lintAsCommittedChildEnv (mutation-probe's
@@ -930,6 +981,9 @@ describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link
       expect(parent.dependencies.leaf.version).toBe('1.0.0');
       expect(parent.dependencies.nested.dependencies.leaf.version).toBe('1.0.0');
       expect(existsSync(join(clone, 'node_modules/.package-lock.json'))).toBe(false);
+      const provenance = join(clone, 'node_modules/.papercusp-installed-package-lock.json');
+      expect(lstatSync(provenance).isSymbolicLink()).toBe(true);
+      expect(realpathSync(provenance)).toBe(join(shared, 'node_modules/.package-lock.json'));
       expect(createRequire(join(clone, 'entry.js'))('leaf')).toBe('installed-leaf');
       expect(realpathSync(join(clone, 'node_modules/leaf/index.js')))
         .toBe(join(shared, 'node_modules/leaf/index.js'));
@@ -1240,6 +1294,74 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it('holds the physical donor install reader through preparation and the committed command', async () => {
+    const f = fixture('node build.cjs');
+    const ready = join(f.root, 'reader-ready');
+    const release = join(f.root, 'reader-release');
+    const lockDir = join(f.root, 'mutexes');
+    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+    const lockName = installLockNameForRoot(f.root);
+    const probe = `
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+assert.ok(process.env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',').includes(${JSON.stringify(lockName)}));
+assert.equal(require('@fixture/runtime'), 'pinned-source');
+fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+const timer = setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); console.log('DONOR_READER_OK'); }
+}, 10);
+setTimeout(() => { if (!fs.existsSync(${JSON.stringify(release)})) process.exit(9); }, 15000).unref();
+`;
+    snapshot(f.root, { 'probe.cjs': probe }, f.head);
+    // This fixture exercises the runner under test, including an uncommitted
+    // repair; the launcher's committed-source loader would substitute HEAD.
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir };
+    const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
+    childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '').split(/\s+/)
+      .filter(option => option !== committedLoader).join(' ');
+    if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+    const child = spawn(process.execPath, [scriptPath, 'lint:probe'], {
+      cwd: f.root, env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const exited = new Promise<number | null>((resolveExit, reject) => {
+      child.once('error', reject);
+      child.once('close', resolveExit);
+    });
+    try {
+      const deadline = Date.now() + 15000;
+      while (!existsSync(ready) && child.exitCode === null && Date.now() < deadline) {
+        await new Promise(resolveWait => setTimeout(resolveWait, 20));
+      }
+      if (!existsSync(ready)) throw new Error(`Donor reader did not start (exit=${child.exitCode}): ${output}`);
+      // A real writer must time out while the committed reader is alive, then
+      // acquire the same lease after its command and cleanup finish.
+      const writer = `import { withFsMutex } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href)};
+await withFsMutex(${JSON.stringify(lockName)}, () => console.log('WRITER_ACQUIRED'), { timeoutMs: 200, retryMs: 10 });`;
+      const attempt = () => spawnSync(process.execPath, ['--input-type=module', '-e', writer], {
+        env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir }, encoding: 'utf8', timeout: 5000,
+      });
+      const blocked = attempt();
+      expect(blocked.status, blocked.stdout + blocked.stderr).not.toBe(0);
+      expect(blocked.stderr).toContain('waiting for fs-mutex');
+      expect(blocked.stdout).not.toContain('WRITER_ACQUIRED');
+      writeFileSync(release, 'release');
+      expect(await exited, output).toBe(0);
+      expect(output).toContain('DONOR_READER_OK');
+      const acquired = attempt();
+      expect(acquired.status, acquired.stdout + acquired.stderr).toBe(0);
+      expect(acquired.stdout).toContain('WRITER_ACQUIRED');
+    } finally {
+      writeFileSync(release, 'release');
+      if (child.exitCode === null) child.kill('SIGTERM');
+      await exited;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('refuses insufficient temporary headroom before cloning or running the committed command', () => {
     const f = fixture('node build.cjs');
     try {
@@ -1285,7 +1407,7 @@ const { execFileSync } = require('node:child_process');
   const { retainCommittedWorkRoot } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   fs.writeFileSync(${JSON.stringify(artifact)}, 'dependent proof');
-  retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
+  await retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
   ${removed ? `fs.rmSync(${JSON.stringify(artifact)});` : ''}
   console.log('DEPENDENT_SOURCE=' + process.cwd());
 })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -1561,7 +1683,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       nowMs: number;
       cwds: string[] | null;
       isAlive: (pid: number) => boolean;
-    }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
+    }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     WORK_ROOT_PREFIX: string;
     OWNER_MARKER: string;
     KEEP_TTL_MS: number;
@@ -1569,7 +1691,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
   };
   const H = 3600_000;
 
-  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', () => {
+  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
     try {
       const source = join(root, `${WORK_ROOT_PREFIX}source`);
@@ -1581,17 +1703,104 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
         pid: 101, keep: true, sha, createdAtMs: 0, retainedFor: [{ path: artifact, sha }],
       }));
       const options = { root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 };
-      expect(mod.sweepStaleWorkRoots(options).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect((await mod.sweepStaleWorkRoots(options)).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
       expect(existsSync(source)).toBe(true);
       rmSync(artifact, { recursive: true });
-      expect(mod.sweepStaleWorkRoots(options).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
+      expect((await mod.sweepStaleWorkRoots(options)).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
       expect(existsSync(source)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('preflights commit identity and imports before registering a dependent artifact', () => {
+  it('serializes deletion with a retention hold being registered (EI-26972693430783811)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-retention-delete-race-'));
+    const source = join(root, `${WORK_ROOT_PREFIX}source`);
+    const artifact = join(root, 'candidate');
+    const sha = 'a'.repeat(40);
+    const marker = { pid: 101, keep: true, sha, createdAtMs: 0 };
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    let sweeping: Promise<{ removed: unknown[]; kept: unknown[] }> | undefined;
+    let deletedDuringRegistration = false;
+    try {
+      mkdirSync(join(source, '.git'), { recursive: true });
+      mkdirSync(artifact);
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify(marker));
+      const mutex = 'committed-source-retention-' + createHash('sha256').update(source).digest('hex').slice(0, 24);
+      await withFsMutex(mutex, async () => {
+        sweeping = Promise.resolve(mod.sweepStaleWorkRoots({
+          root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false,
+        }));
+        // Let cleanup attempt deletion while the actual marker writer's lock is held.
+        await new Promise(resolve => setTimeout(resolve, 100));
+        deletedDuringRegistration = !existsSync(source);
+        if (!deletedDuringRegistration) {
+          writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+            ...marker, retainedFor: [{ path: artifact, sha }],
+          }));
+        }
+      });
+      const result = await sweeping!;
+      expect(deletedDuringRegistration).toBe(false);
+      expect(result.removed).toEqual([]);
+      expect(result.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect(existsSync(source)).toBe(true);
+    } finally {
+      await sweeping;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exit cleanup waits for a competing retention writer before deciding to delete', async () => {
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'lac-exit-retention-'));
+    const source = join(root, 'source');
+    const artifact = join(root, 'artifact');
+    mkdirSync(join(source, '.git'), { recursive: true });
+    mkdirSync(artifact);
+    const sha = 'a'.repeat(40);
+    const marker = join(source, OWNER_MARKER);
+    writeFileSync(marker, JSON.stringify({ sha, keep: false }));
+    let releaseWriter!: () => void;
+    let writerEntered!: () => void;
+    const release = new Promise<void>(done => { releaseWriter = done; });
+    const entered = new Promise<void>(done => { writerEntered = done; });
+    const mutexName = 'committed-source-retention-' + createHash('sha256').update(realpathSync(source)).digest('hex').slice(0, 24);
+    const writer = withFsMutex(mutexName, async () => {
+      writerEntered();
+      await release;
+      writeFileSync(marker, JSON.stringify({ sha, keep: true, retainedFor: [{ path: artifact, sha }] }));
+    });
+    let cleanup: Promise<boolean> | undefined;
+    try {
+      await entered;
+      cleanup = Promise.resolve().then(() => mod.cleanupCommittedWorkRoot(source));
+      // Give cleanup a turn while the real cross-process mutex is still held.
+      await new Promise(done => setTimeout(done, 50));
+      expect(existsSync(source)).toBe(true);
+      releaseWriter();
+      await writer;
+      expect(await cleanup).toBe(false);
+      expect(existsSync(source)).toBe(true);
+      rmSync(artifact, { recursive: true });
+      expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      releaseWriter();
+      await Promise.allSettled([writer, ...(cleanup ? [cleanup] : [])]);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('exit cleanup preserves an explicitly kept tree without an artifact hold', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'lac-exit-keep-'));
+    try {
+      expect(await mod.cleanupCommittedWorkRoot(source, true)).toBe(false);
+      expect(existsSync(source)).toBe(true);
+    } finally { rmSync(source, { recursive: true, force: true }); }
+  });
+
+  it('preflights commit identity and imports before registering a dependent artifact', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-preflight-'));
     try {
       const source = join(root, 'source');
@@ -1612,13 +1821,48 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       expect(mod.verifyCommittedWorkRoot(source, sha, ['packages/core']).sha).toBe(sha);
       expect(() => mod.retainCommittedWorkRoot(source, sha, source)).toThrow('outside');
       expect(() => mod.retainCommittedWorkRoot(source, sha, join(root, 'missing'))).toThrow();
-      mod.retainCommittedWorkRoot(source, sha, artifact);
-      mod.retainCommittedWorkRoot(source, sha, artifact);
+      await mod.retainCommittedWorkRoot(source, sha, artifact);
+      await mod.retainCommittedWorkRoot(source, sha, artifact);
       expect(JSON.parse(readFileSync(join(source, OWNER_MARKER), 'utf8')).retainedFor).toEqual([{ path: realpathSync(artifact), sha }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('preserves concurrent artifact holds and never exposes partially written retention JSON', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-concurrent-retention-'));
+    let monitor: ReturnType<typeof setInterval> | undefined;
+    try {
+      const source = join(root, 'source'); mkdirSync(source);
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      const marker = join(source, OWNER_MARKER);
+      writeFileSync(marker, JSON.stringify({ pid: process.pid, keep: true, sha, createdAtMs: Date.now() }));
+      const artifacts = Array.from({ length: 8 }, (_, i) => join(root, 'artifact-' + i));
+      for (const artifact of artifacts) mkdirSync(artifact);
+      const readErrors: string[] = [];
+      monitor = setInterval(() => { try { JSON.parse(readFileSync(marker, 'utf8')); } catch (error) { readErrors.push(String(error)); } }, 1);
+      const settled = await Promise.allSettled(artifacts.map(artifact => new Promise<void>((resolveChild, reject) => {
+        const code = `const {retainCommittedWorkRoot}=await import(${JSON.stringify(pathToFileURL(scriptPath).href)}); await retainCommittedWorkRoot(${JSON.stringify(source)},${JSON.stringify(sha)},${JSON.stringify(artifact)});`;
+        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
+          cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+        child.once('error', reject);
+        child.once('close', code => code === 0 ? resolveChild() : reject(new Error(stderr)));
+      })));
+      clearInterval(monitor); monitor = undefined;
+      expect(settled.filter(row => row.status === 'rejected')).toEqual([]);
+      expect(readErrors).toEqual([]);
+      const retained = JSON.parse(readFileSync(marker, 'utf8')).retainedFor;
+      expect(retained.map((entry: { path: string }) => entry.path).sort()).toEqual(artifacts.map(p => realpathSync(p)).sort());
+      expect(retained.every((entry: { sha: string }) => entry.sha === sha)).toBe(true);
+    } finally {
+      if (monitor) clearInterval(monitor);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it('materializes without replaying a command and explicitly retains its dependent artifact', () => {
     expect(mod.parseArgs(['--materialize-only', '--ref=recorded', '--retain-for=/tmp/release'])).toMatchObject({
@@ -1629,7 +1873,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(run.stderr).toContain('cannot run or forward a command');
   });
 
-  it('requires both exact source holds before resuming a two-source artifact', () => {
+  it('requires both exact source holds before resuming a two-source artifact', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'lac-paired-custody-'));
     try {
       const sources = join(parent, 'sources');
@@ -1648,12 +1892,12 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       });
       for (const { root, sha } of roots) {
         expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
-        mod.retainCommittedWorkRoot(root, sha, unrelated);
+        await mod.retainCommittedWorkRoot(root, sha, unrelated);
         expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
-        mod.retainCommittedWorkRoot(root, sha, artifact);
+        await mod.retainCommittedWorkRoot(root, sha, artifact);
         expect(mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toEqual({ root: realpathSync(root), sha });
       }
-      const swept = mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
+      const swept = await mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
       expect(swept.removed).toEqual([]);
       expect(swept.kept).toHaveLength(2);
       rmSync(artifact, { recursive: true });
@@ -1762,7 +2006,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(c(false, null, false, Number.NaN)).toEqual({ remove: false, reason: 'age-unknown' });
   });
 
-  it('sweeps only stale trees under the root, never one a live process is inside', () => {
+  it('sweeps only stale trees under the root, never one a live process is inside', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-sweep-'));
     try {
       const now = Date.now();
@@ -1780,7 +2024,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       mkdirSync(join(root, 'unrelated-dir'));
       const isAlive = (pid: number) => pid === 202;
 
-      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
+      const res = await sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
       const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
       expect(names(res.removed)).toEqual(['dead-owner', 'keep-old']);
       expect(names(res.kept)).toEqual(['keep-fresh', 'keep-old-busy', 'live-owner']);
@@ -1790,7 +2034,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
 
       // Without /proc a tree's idleness is unprovable: only a dead non-keep owner goes.
       tree('dead-owner-2', { pid: 101, keep: false, createdAtMs: now - 60_000 });
-      const blind = sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
+      const blind = await sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
       expect(names(blind.removed)).toEqual(['dead-owner-2']);
       expect(existsSync(busy)).toBe(true);
     } finally {
@@ -1823,7 +2067,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(liveProcessCwds(io(new Error('EACCES')))).toBeNull();
   });
 
-  it('WI-6554700010019046: a host owner pid seen from a private PID namespace is unknown, and its tree is kept', () => {
+  it('WI-6554700010019046: a host owner pid seen from a private PID namespace is unknown, and its tree is kept', async () => {
     const { pidAlive, pidNamespaceView, INITIAL_PID_NAMESPACE } = mod as {
       pidAlive: (pid: number, view?: string) => boolean | null;
       pidNamespaceView: (readLink?: (p: string) => string) => string;
@@ -1844,20 +2088,20 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       // What the sweep sees from a private PID namespace: no cwd census, owner liveness unknown.
       const sweep = sweepStaleWorkRoots as unknown as (o: {
         root: string; nowMs: number; cwds: string[] | null; isAlive: (pid: number) => boolean | null;
-      }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
-      const blind = sweep({ root, nowMs: now, cwds: null, isAlive: () => null });
+      }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
+      const blind = await sweep({ root, nowMs: now, cwds: null, isAlive: () => null });
       expect(blind.removed).toEqual([]);
       expect(blind.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-liveness-unknown' });
       expect(existsSync(tree)).toBe(true);
       // The same tree with a provably dead owner still goes.
-      expect(sweep({ root, nowMs: now, cwds: null, isAlive: () => false }).removed)
+      expect((await sweep({ root, nowMs: now, cwds: null, isAlive: () => false })).removed)
         .toEqual([{ name: `${WORK_ROOT_PREFIX}running-elsewhere`, reason: 'owner-dead' }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', () => {
+  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', async () => {
     const { MAX_IDLE_KEPT_TREES } = mod as { MAX_IDLE_KEPT_TREES: number };
     expect(MAX_IDLE_KEPT_TREES).toBe(4);
     const root = mkdtempSync(join(tmpdir(), 'lac-cap-'));
@@ -1876,10 +2120,10 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       const isAlive = () => false;
 
       // Without /proc nothing is provably idle, so the cap removes nothing.
-      const blind = sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
+      const blind = await sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
       expect(blind.removed).toEqual([]);
 
-      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
+      const res = await sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
       expect(names(res.removed)).toEqual(['idle-5h', 'idle-6h']);
       expect(res.removed.every((r) => r.reason === 'keep-over-cap')).toBe(true);
       expect(names(res.kept)).toEqual(['busy-oldest', 'idle-1h', 'idle-2h', 'idle-3h', 'idle-4h']);

@@ -191,6 +191,15 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   // omission paths by driving the REAL projection rather than a hand-written
   // list-row fixture.
   for (const a of item.actions ?? []) {
+    // ask-owner's Decision escalation survives deduplication of its Alert
+    // conversation twin. Keep that surviving card able to answer the exact
+    // linked conversation; a bare Resolve would discard the owner's text.
+    if ((a.id === 'resolve' || a.id === 'mark-done') && !escOpts.length
+      && item.ref.kind === 'coord-escalation'
+      && typeof item.ref.conversationId === 'string' && item.ref.conversationId.trim()) {
+      options.push({ id: 'answer', label: 'Answer', style: 'primary', terminal: false, hint: hintFor(item, 'answer', false) });
+      continue;
+    }
     // Escalation with named options: expand the generic `resolve` action into
     // one terminal option per named choice (each carries the option id the
     // dispatch passes as `choice`).
@@ -343,7 +352,7 @@ export async function answerAttentionItem(item: AttentionItem, answerText: strin
   if (!body) return { resolved: false };
   const kind = (item.ref as { kind: string }).kind;
 
-  if (kind === 'conversation') {
+  if (kind === 'conversation' || (kind === 'coord-escalation' && refField(item, 'conversationId').trim())) {
     const res = await resolveConversationAnswer({
       conversation_id: refField(item, 'conversationId'),
       accepted_answer: body,

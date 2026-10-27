@@ -9,10 +9,12 @@ import { runInNewContext } from 'node:vm';
 import {
   estimateReuseSavings,
   formatReuseAlarmLine,
+  formatReuseExclusionLines,
   formatTestReuseLine,
   formatTestReuseTotalLine,
   laneOfFromSplit,
   laneScopedCandidates,
+  REUSE_EXCLUSION_SAMPLE_PER_TASK,
   selectReusablePasses,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
 // @ts-expect-error — pure JS guard script with no .d.mts (not enrolled in tsconfig.declarations.json; same as empty-suite-guard.test.ts)
@@ -28,6 +30,7 @@ import {
 } from '../../../../scripts/lib/executed-source-map.mjs';
 import {
   buildTestPassReuseHealth,
+  TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES,
   evaluateTestPassReuseAuditWindow,
   formatDurationMs,
   parseTestPassReuse,
@@ -448,24 +451,33 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     expect(archived.auditedFiles).toEqual([]);
   });
 
-  it('the actual affected-tests arming path emits selector runtime without sampled files', async () => {
+  // The real affected-tests arming path (orchestration + selector) with only external IO replaced.
+  // `overrides` swaps seams; returns the stdout lines and the journal-only writes it made.
+  const loadRealArm = (overrides: Record<string, unknown> = {}) => {
     const source = readFileSync(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
     const start = source.indexOf('async function armTestPassReuse(');
     const end = source.indexOf('\n// AFFECTED_RETRY_FAILED=1', start);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     const lines: string[] = [];
+    const journal: string[] = [];
     // Exercise the real orchestration and selector, with only external IO replaced.
     const sandbox = {
       ROOT: '/repo', RUN_LOG_ROOT: '/logs', LANE_SCRIPTS: [], join, relative,
       process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_SOURCE: 'ci', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
       outSync: (line: string) => lines.push(line),
+      // Journal-only appends to the retained run log (outSync also journals; not modelled here).
+      logLine: (text: string) => journal.push(text), RUN_LOG_PATH: '/logs/affected-tests-run.log',
       // The real eligibility selector; the gate-decision PG write is an IO seam.
       scriptSupportsPassReuse, recordGateReuseDecision: async () => undefined,
       testReuseEnabled: () => true,
       execFileSync: (command: string, args: string[]) => command === 'node' ? 'v25 linux x64'
         : args[0] === 'rev-parse' ? invocation().judgedSha : '',
       reuseRunnerIdentity: () => invocation().runnerIdentity,
+      defaultRunnerIdentity: () => invocation().runnerIdentity,
+      nativeProcessTraceEnv: (env: NodeJS.ProcessEnv) => env,
+      executedMapRecordingEnabled: () => false,
+      qualificationPhysicalExecution: null,
       connectExecutedMapPg: async () => ({ end: async () => undefined }),
       gitChangedBetween: () => () => [], gitInertGlobalChange: () => () => false,
       gitSchemaDriftJudge: () => null, testConfigMainProcessFiles: () => new Set(),
@@ -474,6 +486,7 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       setTimeout: () => ({ unref: () => undefined }),
       reuseCandidates: () => ['lib/uncaptured.test.ts'], laneOfTaskScript: () => null,
       selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine, formatDriftUnknownLine,
+      formatReuseExclusionLines,
       estimateReuseSavings, laneOfFromSplit, laneScopedCandidates,
       // Checkout, PG and filesystem seams: the judged-tree read, the destructive checkpoint
       // restore, proof/duration queries and the skip-list write.
@@ -481,6 +494,7 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       restoreCandidateCheckpointForReuse: () => ({ ok: false, reason: 'test-stub' }),
       loadReuseProofFiles: async () => ({ files: [], rows: 0 }),
       loadPassDurations: async () => new Map(), writeReuseSkipList: () => '/logs/reuse-skip.json',
+      ...overrides,
     };
     // Derived completeness: every import the extracted function names must be in the sandbox, so
     // a new dependency fails here BY NAME instead of as a mid-run ReferenceError.
@@ -489,6 +503,11 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       .flatMap((m) => m[1]!.split(',').map((n) => n.trim().split(/\s+as\s+/).pop()!.trim()).filter(Boolean));
     expect(imported.filter((n) => new RegExp(`\\b${n}\\b`).test(body) && !(n in sandbox))).toEqual([]);
     const arm = runInNewContext(`${source.slice(start, end)}\narmTestPassReuse`, sandbox) as (tasks: unknown[]) => Promise<void>;
+    return { arm, lines, journal };
+  };
+
+  it('the actual affected-tests arming path emits selector runtime without sampled files', async () => {
+    const { arm, lines } = loadRealArm();
     await arm([{ ws: { name: '@papercusp/operator-core', dir: '', scripts: { test: 'vitest --passWithNoTests' } },
       script: 'test' }]);
     const parsed = parseTestPassReuse(lines.join('\n'));
@@ -496,6 +515,26 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     expect(parsed[0]!.workspaces[0]!.runtime).toEqual({ version: 1, judgedSha: invocation().judgedSha,
       runnerIdentity: invocation().runnerIdentity, runContext: 'green-checkpoint',
       runGroupId: 'initial-group', dirty: false });
+  });
+
+  it('R-3 / AUTO-FAIL-UNKNOWN-DRIFT journal clause: the actual arming path journals every exclusion record and prints only a bounded sample that names the journal', async () => {
+    const files = Array.from({ length: REUSE_EXCLUSION_SAMPLE_PER_TASK + 2 }, (_, i) => `lib/excluded-${i}.test.ts`);
+    const { arm, lines, journal } = loadRealArm({ reuseCandidates: () => files });
+    await arm([{ ws: { name: '@papercusp/operator-core', dir: '', scripts: { test: 'vitest --passWithNoTests' } },
+      script: 'test' }]);
+    const records = journal.join('').split('\n').filter((l) => l.startsWith('TEST_PASS_REUSE_EXCLUSION '))
+      .map((l) => JSON.parse(l.slice('TEST_PASS_REUSE_EXCLUSION '.length)));
+    expect(records.map((r) => r.file)).toEqual(files);
+    for (const r of records) {
+      expect(r).toEqual({ version: 1, ws: '@papercusp/operator-core::test', file: r.file, reason: 'noProof',
+        recordedSha: null, judgedSha: invocation().judgedSha, evidence: { missing: 'proof' }, runGroupId: 'initial-group' });
+    }
+    // stdout carries the bounded sample only, never a full record line.
+    expect(lines.some((l) => l.startsWith('TEST_PASS_REUSE_EXCLUSION '))).toBe(false);
+    const health = buildTestPassReuseHealth(lines.join('\n'), invocation().judgedSha, 120)!;
+    expect(health.exclusions).toMatchObject({ total: files.length, omitted: 2, malformed: 0,
+      journals: ['/logs/affected-tests-run.log'], runGroupIds: ['initial-group'] });
+    expect(health.exclusions!.examples.map((e) => e.file)).toEqual(files.slice(0, REUSE_EXCLUSION_SAMPLE_PER_TASK));
   });
 
   it.each(['%', 'not-json', encodeURIComponent(JSON.stringify({ version: 2 }))])(
@@ -794,5 +833,76 @@ describe('pass-proof recorder outcome (WI-10003603)', () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.recorder).toBeNull();
     expect(parseTestPassReuseHealth({ ...built, recorder: undefined })!.recorder).toBeNull();
+  });
+});
+
+describe('reuse exclusion evidence in the report (WI-6554700010026699)', () => {
+  const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+  const ws = '@papercusp/operator-core::test';
+  const record = (i: number, over: Record<string, unknown> = {}) => ({
+    file: `packages/operator-core/lib/x-${i}.test.ts`, reason: 'unknownDrift', recordedSha: 'a1b2c3d4e5', judgedSha: sha, ...over });
+  const where = { runGroupId: 'rg-1', journal: '/logs/affected-tests-run.log' };
+  const round = (...samples: string[]) => [formatTestReuseLine(ws, summary(), ''), ...samples,
+    formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 0, unmeasured: 0 })].join('\n');
+  const rawSample = (total: number, examples: unknown[]) =>
+    `TEST_PASS_REUSE_EXCLUSIONS ${JSON.stringify({ version: 1, ws, total, examples, ...where })}`;
+
+  it('R-4 bounds stored examples, keeps the exact omitted count, and links the full journal and run group', () => {
+    const samples = Array.from({ length: 5 }, (_, t) => formatReuseExclusionLines(`${ws}-${t}`,
+      Array.from({ length: 6 }, (_, i) => record(t * 10 + i, i === 0 ? { reason: 'audited' } : {})), where).sample);
+    const out = round(...samples);
+    const unbounded = summarizeTestPassReuse(parseTestPassReuse(out)).exclusions!;
+    expect(unbounded.total).toBe(30);
+    expect(unbounded.omitted).toBe(30 - unbounded.examples.length);
+    const health = buildTestPassReuseHealth(out, sha, 120)!;
+    expect(health.exclusions!.total).toBe(30);
+    expect(health.exclusions!.examples).toHaveLength(TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES);
+    expect(health.exclusions!.omitted).toBe(30 - TEST_PASS_REUSE_HEALTH_MAX_EXCLUSION_EXAMPLES);
+    expect(health.exclusions!.journals).toEqual(['/logs/affected-tests-run.log']);
+    expect(health.exclusions!.runGroupIds).toEqual(['rg-1']);
+    expect(health.exclusions!.examples[0]).toEqual({ ws: `${ws}-0`, file: 'packages/operator-core/lib/x-0.test.ts',
+      reason: 'audited', recordedSha: 'a1b2c3d4e5', judgedSha: sha, evidence: null });
+  });
+
+  it('R-4/R-5 (B4) keeps three states apart: no sample line is not measured, a zero total is 0 excluded and 0 omitted, a sample is populated', () => {
+    const legacy = buildTestPassReuseHealth(round(), sha, 120)!;
+    expect('exclusions' in legacy).toBe(false);
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(legacy)))!.exclusions).toBeUndefined();
+    const zero = buildTestPassReuseHealth(round(formatReuseExclusionLines(ws, [], where).sample), sha, 120)!;
+    expect(zero.exclusions).toEqual({ total: 0, examples: [], omitted: 0, malformed: 0,
+      journals: ['/logs/affected-tests-run.log'], runGroupIds: ['rg-1'] });
+    const one = buildTestPassReuseHealth(round(formatReuseExclusionLines(ws, [record(1)], where).sample), sha, 120)!;
+    expect(one.exclusions).toMatchObject({ total: 1, omitted: 0 });
+    expect(one.exclusions!.examples).toHaveLength(1);
+  });
+
+  it('R-4 validates each example: an unsafe path, an unknown reason or a bad sha is dropped and counted, never stored', () => {
+    const out = round(rawSample(4, [record(1), record(2, { file: '/abs/x.test.ts' }), record(3, { reason: 'nope' }),
+      record(4, { judgedSha: 'not-a-sha' })]), 'TEST_PASS_REUSE_EXCLUSIONS {not json');
+    const health = buildTestPassReuseHealth(out, sha, 120)!;
+    expect(health.exclusions!.examples.map((e) => e.file)).toEqual(['packages/operator-core/lib/x-1.test.ts']);
+    expect(health.exclusions!.total).toBe(4);
+    expect(health.exclusions!.omitted).toBe(3);
+    expect(health.exclusions!.malformed).toBe(4);
+    // A sample claiming fewer records than it carries is inconsistent, so it is rejected whole.
+    expect(buildTestPassReuseHealth(round(rawSample(0, [record(1)])), sha, 120)!.exclusions)
+      .toMatchObject({ total: 0, examples: [], malformed: 1 });
+  });
+
+  it('R-2 keeps branch evidence, clipped to a bounded size', () => {
+    const long = record(1, { reason: 'opaque', evidence: { opaqueReasons: ['x'.repeat(1000)] } });
+    const health = buildTestPassReuseHealth(round(formatReuseExclusionLines(ws, [long], where).sample), sha, 120)!;
+    const evidence = health.exclusions!.examples[0]!.evidence!;
+    expect(evidence.startsWith('{"opaqueReasons":["xxx')).toBe(true);
+    expect(evidence.length).toBe(300);
+  });
+
+  it('R-4 survives the JSON verdict channel and reads a tampered omitted count as not measured', () => {
+    const health = buildTestPassReuseHealth(round(formatReuseExclusionLines(ws, [record(1), record(2)], where).sample), sha, 120)!;
+    const persisted = JSON.parse(JSON.stringify(health));
+    expect(parseTestPassReuseHealth(persisted)!.exclusions).toEqual(health.exclusions);
+    expect(parseTestPassReuseHealth({ ...persisted, exclusions: { ...persisted.exclusions, omitted: 1 } })!.exclusions).toBeNull();
+    expect(parseTestPassReuseHealth({ ...persisted, exclusions: { ...persisted.exclusions,
+      examples: [{ ...persisted.exclusions.examples[0], file: '../escape.ts' }, persisted.exclusions.examples[1]] } })!.exclusions).toBeNull();
   });
 });

@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery64/assume61-current-native-manifest.json.gz.b64"
+updated_at: 1792963508669
+_body: "content"
+---
+
+H4sIAAAAAAAC/4WQvU7sMBBG38X1TuI43iSb7tJQ0VGBKMbOZDE3ji3/gBDi3bGXRZS4HJ/vm9H5YMG5xGbWPjtLrcUQn8Gtq9HUevQUdPZo4M2F/9Hj7zB6dmDaWWtqWFPXnVapu4XGYeK97Cd5HFHpUWglB6mEGlHLrmQwnCObHxmAsd6FVEZNG3UwPsV2M6r9Lk20QHQ5aILN4UKhsS+xsD9kophgNRvF6wd6H1tXbsPkwqXIxwxmoT2Z9A4YY7YEOybzSo3ZE50Ladze1KYmRfZ0YN4sbO45lychDmxz5+olWd9+p4cOdA6hNP70VOTAAmkqR/0BwxVrXqLbt2oPfcqB/opdLVj0l2Tdl/fb4LK/iFdHgVzDMo0KJPY9KEUrTBPiRMdpRK5Kooq6ycuZ0l2R3w+8viIzYSii/9XTBRcDdBzE8V7wmY9z3zXyND2wzy/CJheYIwIAAA==

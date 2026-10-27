@@ -124,6 +124,49 @@ export async function learningGovernorPreflight(
   }
 }
 
+/**
+ * Shared first-contact gate for frontier loops. Registration deliberately omits
+ * budgetUsd and never changes this tick's refusal; only the owner arms a loop.
+ * Keep IO behind preflight so a dark governor never resolves a database pool.
+ */
+export function createLearningGovernorGate<BudgetKind extends NonNullable<RegisterLearningLoopInput['budgetKind']>>(
+  config: {
+    loopId: string;
+    displayName: string;
+    budgetKind: BudgetKind;
+    logPrefix: string;
+    budgetLabel?: string;
+  },
+) {
+  const registrationInput = (workspaceId: string) => ({
+    workspaceId,
+    loopId: config.loopId,
+    displayName: config.displayName,
+    budgetKind: config.budgetKind,
+    enforcement: 'governor' as const,
+  });
+
+  const gate = async (workspaceId: string, deps?: GovernorGlueDeps): Promise<GovernorVerdict> => {
+    const verdict = await learningGovernorPreflight({ workspaceId, loopId: config.loopId }, deps);
+    if (verdict.reason !== 'unregistered') return verdict;
+    const d = resolve(deps);
+    const log = deps?.log ?? ((message: string) => console.log(`[${config.logPrefix}] ${message}`));
+    try {
+      await d.register(await d.getSql(), registrationInput(workspaceId));
+      log(
+        `self-registered loop ${config.loopId} UNBUDGETED on the learning governor ` +
+          `(D-004 watch list) — refusing until the owner sets a ${config.budgetLabel ?? 'budget'} (P-001 arming act)`,
+      );
+    } catch (error) {
+      // The refusal still protects this tick; the next tick retries registration.
+      log(`governor self-registration failed (next tick retries): ${error instanceof Error ? error.message : error}`);
+    }
+    return verdict;
+  };
+
+  return { registrationInput, gate };
+}
+
 // ---------------------------------------------------------------------------
 // Governed spend ATTEMPT (P-005) — the seam every spending call wraps
 // ---------------------------------------------------------------------------

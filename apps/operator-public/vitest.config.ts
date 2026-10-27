@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { gateParticipationConfig, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';
+import { executedSourceMapConfig, gateParticipationConfig, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';
 import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
 
 const participation = gateParticipationConfig();
@@ -10,6 +10,9 @@ const fileProjects = REGISTERED_VITEST_FILE_PROJECTS.filter(project => project.r
 // runner arms them, and the reuse skip list (WI-10003716). Keep the shared layer hook budgets
 // below; reporter opt-out remains available through env.
 export default defineConfig({
+  // Vite plugins belong at the config root; the test participation fragment
+  // supplies reporters and setup files, but cannot install transform receipts.
+  plugins: executedSourceMapConfig(process.env).plugins ?? [],
   test: {
     // WI-4300: the shared-host worker cap — without it a direct `npx vitest run` in
     // this workspace forks ~one worker per host core (128 on the shared dev box).

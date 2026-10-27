@@ -36,6 +36,8 @@
  * `system:operator-e2e-isolated`) is skipped: its ledger rows are partial until the reporter's
  * onEnd. The newest group that is NOT in flight is swept.
  */
+import { open } from 'node:fs/promises';
+import { parseSummaryLine, type SummaryLineFields } from '@papercusp/verification-harness';
 import { listTasks } from '../../task-manager/store';
 import { getOrgPg } from '@papercusp/db-org';
 import { createOneWorkItem } from '../../agent-tools/work_items/_create-core';
@@ -55,6 +57,8 @@ export const OPERATOR_E2E_UMBRELLA_ITEM = 'WI-10006736';
 export const OPERATOR_E2E_GROUP_LOOKBACK_DAYS = 7;
 /** Bound the ledger read; one scheduled run per hour fits comfortably inside this window. */
 const OPERATOR_E2E_TASK_FAILURE_SCAN_LIMIT = 2_000;
+/** Read only the tail, where the verification-harness contract writes its summary marker. */
+const OPERATOR_E2E_TASK_LOG_TAIL_BYTES = 16 * 1024;
 /** Output kept on a filed item: enough for the failing assertion, bounded for the item body. */
 export const OPERATOR_E2E_RED_TAIL_CHARS = 1_500;
 
@@ -84,6 +88,38 @@ export interface TerminalTaskFailure {
   exitReason: string | null;
   finishedAt: string;
   logPath: string | null;
+  summaryLine?: SummaryLineFields;
+}
+
+async function readTaskLogSummaryLine(logPath: string | null): Promise<SummaryLineFields | null> {
+  if (!logPath) return null;
+  try {
+    const file = await open(logPath, 'r');
+    try {
+      const size = (await file.stat()).size;
+      const length = Math.min(size, OPERATOR_E2E_TASK_LOG_TAIL_BYTES);
+      if (length === 0) return null;
+      const buffer = Buffer.alloc(length);
+      const start = size - length;
+      let offset = 0;
+      while (offset < length) {
+        const { bytesRead } = await file.read(buffer, offset, length - offset, start + offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      const lines = buffer.subarray(0, offset).toString('utf8').split(/\r?\n/).reverse();
+      for (const line of lines) {
+        const summary = parseSummaryLine(line);
+        if (summary) return summary;
+      }
+      return null;
+    } finally {
+      await file.close();
+    }
+  } catch {
+    // Keep filing the task failure even when its retained log is unavailable.
+    return null;
+  }
 }
 
 export interface OwnershipCandidate {
@@ -213,13 +249,20 @@ export function renderTaskFailureItem(failure: TerminalTaskFailure): { title: st
   const exitCode = failure.exitCode == null ? 'unknown' : String(failure.exitCode);
   const reason = failure.exitReason?.slice(-500) || '(none recorded)';
   const logPath = failure.logPath ?? '(none recorded)';
+  const parsedFailure = failure.summaryLine?.firstFailure;
+  const firstFailure = parsedFailure
+    ? `${parsedFailure.phase}/${parsedFailure.step ?? '-'}/${parsedFailure.reasonCode ?? '-'}`
+    : 'none';
+  const harnessResult = failure.summaryLine
+    ? `\nParsed harness result: HARNESS_RESULT harness=${failure.summaryLine.harness} verdict=${failure.summaryLine.verdict} run=${failure.summaryLine.runId} first_failure=${firstFailure}`
+    : '';
   return {
     title: `Operator e2e run has no reporter result: ${failure.runGroup}`,
     summary:
       `The managed operator e2e task ${failure.taskId} ended in state ${failure.state} ` +
       `(exit code ${exitCode}) at ${failure.finishedAt}, and no test_runs rows exist for run group ${failure.runGroup}. ` +
       `This is a run-level failure or unknown result; it does not identify a failing spec.\n\n` +
-      `Task exit reason: ${reason}\nTask log: ${logPath}\n\n` +
+      `Task exit reason: ${reason}\nTask log: ${logPath}${harnessResult}\n\n` +
       `Inspect the isolated-run preparation/reporter path, then rerun the standing isolated suite if needed.`,
   };
 }
@@ -238,6 +281,8 @@ export interface RedFilerDeps {
   terminalTaskFailures(workspaceId: string): Promise<TerminalTaskFailure[]>;
   /** Exact reporter groups present for the supplied run-group ids. */
   groupsWithRows(workspaceId: string, runGroups: string[]): Promise<string[]>;
+  /** Parse the bounded tail of a managed task log for its HARNESS_RESULT marker. */
+  readTaskSummaryLine(logPath: string | null): Promise<SummaryLineFields | null>;
   groupRows(runGroup: string): Promise<GroupSpecRow[]>;
   ownershipCandidates(workspaceId: string, harnessSlug: string, specPath: string): Promise<OwnershipCandidate[]>;
   taskFailureOwnershipCandidates(
@@ -306,7 +351,15 @@ export async function fileOperatorE2eReds(
     const reporterGroups = new Set(
       await deps.groupsWithRows(ctx.workspaceId, [...new Set(taskCandidates.map((task) => task.runGroup))]),
     );
-    taskFailures = taskCandidates.filter((task) => !reporterGroups.has(task.runGroup));
+    const missingReporterRows = taskCandidates.filter((task) => !reporterGroups.has(task.runGroup));
+    taskFailures = await Promise.all(missingReporterRows.map(async (task) => {
+      try {
+        const summaryLine = await deps.readTaskSummaryLine(task.logPath);
+        return summaryLine ? { ...task, summaryLine } : task;
+      } catch {
+        return task;
+      }
+    }));
   } catch (error) {
     taskFailureScanError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
   }
@@ -356,6 +409,7 @@ export async function fileOperatorE2eReds(
             taskState: failure.state,
             exitCode: failure.exitCode,
             exitReason: failure.exitReason,
+            harnessResult: failure.summaryLine ?? null,
             plan: 'operator-e2e-standing-isolated-run-2026-10-06',
             umbrella: OPERATOR_E2E_UMBRELLA_ITEM,
           },
@@ -453,6 +507,7 @@ export async function fileOperatorE2eReds(
 export function defaultRedFilerDeps(): RedFilerDeps {
   const prefix = `${OPERATOR_E2E_RUN_GROUP_PREFIX}:%`;
   return {
+    readTaskSummaryLine: readTaskLogSummaryLine,
     async listGroups(workspaceId) {
       const { sql } = getOrgPg();
       const rows = await sql<{ run_group_id: string; finished_at: Date | string }[]>`

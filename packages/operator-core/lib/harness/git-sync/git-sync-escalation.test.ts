@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ATTRIBUTION_SHARE_ESCALATION_TICKS,
+  ATTRIBUTION_SHARE_FLOOR,
+  ATTRIBUTION_SHARE_MIN_FILES,
+  ATTRIBUTION_SHARE_REBROADCAST_TICKS,
   CHRONIC_CUMULATIVE_PEEL_TICKS,
   CHRONIC_CUMULATIVE_REBROADCAST_TICKS,
   classifyGitSyncFailingLeg,
@@ -7,8 +11,10 @@ import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
   effectivePublishRefusal,
+  nextAttributionShareDropTicks,
   nextZeroAttributionTicks,
   oversizedKey,
+  tickAttributedFileShare,
   PUSH_FAILURE_ESCALATION_TICKS,
   selectContentNoticeRecipients,
   ZERO_ATTRIBUTION_ESCALATION_TICKS,
@@ -69,6 +75,97 @@ describe('zero-attribution detector (WI-6554700010018198)', () => {
       ZERO_ATTRIBUTION_ESCALATION_TICKS,
       ZERO_ATTRIBUTION_ESCALATION_TICKS + ZERO_ATTRIBUTION_REBROADCAST_TICKS,
       ZERO_ATTRIBUTION_ESCALATION_TICKS + 2 * ZERO_ATTRIBUTION_REBROADCAST_TICKS,
+    ]);
+  });
+
+  it('does not re-broadcast on an idle tick whose held counter sits on a broadcast tick', () => {
+    // nextZeroAttributionTicks holds the count on a tick that measured nothing, so a run of
+    // idle ticks keeps it at exactly the threshold; each of them used to re-broadcast.
+    for (const attribution of [undefined, [], [tally('superproject', 0, 0)], [tally('superproject', 2, 2)]]) {
+      const d = decideGitSyncEscalation({ ...base, zeroAttributionTicks: ZERO_ATTRIBUTION_ESCALATION_TICKS, attribution });
+      expect(d.reasons).toContain('attribution-failed');
+      expect(d.broadcast).toBeNull();
+    }
+  });
+});
+
+describe('attributed-file share alarm (P-003, gate-systems-as-designed-2026-10-27)', () => {
+  const tally = (scope: string, attributableFileCount?: number, attributedFileCount?: number): AttributionTally => ({
+    scope,
+    agentGroupCount: 2,
+    agentCommitCount: 2,
+    failedGroups: 0,
+    error: null,
+    ...(attributableFileCount === undefined ? {} : { attributableFileCount }),
+    ...(attributedFileCount === undefined ? {} : { attributedFileCount }),
+  });
+  // The P-001 sweep: 40 ledger-attributed files, 36 of them merged into the anonymous
+  // residual while the remaining groups still published (agentCommitCount stayed 2).
+  const collapsed = [tally('superproject', 40, 4)];
+  const healthy = [tally('superproject', 20, 20)];
+
+  it('sums the share over every repo that measured one', () => {
+    expect(tickAttributedFileShare([tally('superproject', 10, 9), tally('libs/papercusp', 3, 0), tally('libs/x')])).toEqual({
+      attributable: 13,
+      attributed: 9,
+    });
+    expect(tickAttributedFileShare([tally('superproject')])).toBeNull();
+    expect(tickAttributedFileShare(undefined)).toBeNull();
+  });
+
+  it('counts a measured tick below the floor even though every agent group published', () => {
+    expect(nextAttributionShareDropTicks(1, collapsed)).toBe(2);
+    // The group-count alarm cannot see this tick at all.
+    expect(nextZeroAttributionTicks(0, collapsed)).toBe(0);
+  });
+
+  it('resets on a measured tick at or above the floor', () => {
+    expect(nextAttributionShareDropTicks(5, healthy)).toBe(0);
+    const atFloor = Math.ceil(ATTRIBUTION_SHARE_FLOOR * 20);
+    expect(nextAttributionShareDropTicks(5, [tally('superproject', 20, atFloor)])).toBe(0);
+    expect(nextAttributionShareDropTicks(5, [tally('superproject', 20, atFloor - 1)])).toBe(6);
+  });
+
+  it('holds the count on a tick with too few attributable files to judge', () => {
+    expect(nextAttributionShareDropTicks(2, undefined)).toBe(2);
+    expect(nextAttributionShareDropTicks(2, [tally('superproject')])).toBe(2);
+    expect(nextAttributionShareDropTicks(2, [tally('superproject', ATTRIBUTION_SHARE_MIN_FILES - 1, 0)])).toBe(2);
+    expect(nextAttributionShareDropTicks(2, [tally('superproject', ATTRIBUTION_SHARE_MIN_FILES, 0)])).toBe(3);
+  });
+
+  it('escalates from the threshold, broadcasting only on low ticks at the threshold and every rebroadcast window', () => {
+    const below = decideGitSyncEscalation({
+      ...base,
+      attributionShareDropTicks: ATTRIBUTION_SHARE_ESCALATION_TICKS - 1,
+      attribution: collapsed,
+    });
+    expect(below.reasons).not.toContain('attribution-share-dropped');
+    expect(below.broadcast).toBeNull();
+    expect(below.clear).toBe(true);
+
+    const at = decideGitSyncEscalation({ ...base, attributionShareDropTicks: ATTRIBUTION_SHARE_ESCALATION_TICKS, attribution: collapsed });
+    expect(at.escalate).toBe(true);
+    expect(at.reasons).toEqual(['attribution-share-dropped']);
+    expect(at.clear).toBe(false);
+    expect(at.broadcast).toContain('only 10% of the ledger-attributed files it committed carried an agent trailer');
+    expect(at.broadcast).toContain(`for ${ATTRIBUTION_SHARE_ESCALATION_TICKS} CONSECUTIVE measured ticks`);
+    expect(at.broadcast).toContain('This tick: superproject: 4/40 attributed');
+
+    // A held tick (too few files) at the threshold keeps the escalation row but says nothing.
+    const held = decideGitSyncEscalation({ ...base, attributionShareDropTicks: ATTRIBUTION_SHARE_ESCALATION_TICKS, attribution: [] });
+    expect(held.reasons).toContain('attribution-share-dropped');
+    expect(held.broadcast).toBeNull();
+
+    const spoken: number[] = [];
+    const last = ATTRIBUTION_SHARE_ESCALATION_TICKS + 2 * ATTRIBUTION_SHARE_REBROADCAST_TICKS;
+    for (let t = ATTRIBUTION_SHARE_ESCALATION_TICKS; t <= last; t++) {
+      const d = decideGitSyncEscalation({ ...base, attributionShareDropTicks: t, attribution: collapsed });
+      if (d.broadcast) spoken.push(t);
+    }
+    expect(spoken).toEqual([
+      ATTRIBUTION_SHARE_ESCALATION_TICKS,
+      ATTRIBUTION_SHARE_ESCALATION_TICKS + ATTRIBUTION_SHARE_REBROADCAST_TICKS,
+      last,
     ]);
   });
 });

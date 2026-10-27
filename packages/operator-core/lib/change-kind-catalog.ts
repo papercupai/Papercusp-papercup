@@ -19,6 +19,7 @@ export const CHANGE_KINDS = [
   'migration',
   'background-job',
   'logic',
+  'refactor',
   'docs',
   'config',
   'test-only',
@@ -79,6 +80,20 @@ export const CHANGE_KIND_CATALOG: Readonly<Record<ChangeKind, ChangeKindSpec>> =
     covers: 'Pure or library code whose behavior a test can fully exercise.',
     proof: ['a passing run of tests that exercise the changed behavior'],
     proofWeight: 3,
+  },
+  // P-004 / R-4 (code-cleanup-campaigns-2026-10-26): heavier than 'logic' so re-declaring a
+  // refactor as logic needs a reason. D-006: its proof refuses regardless of the gate cutover.
+  refactor: {
+    kind: 'refactor',
+    covers: 'A behavior-preserving restructure (extract, merge duplicates, rename, move) that must not change what the code does.',
+    proof: [
+      "passing test_runs rows for the covering test files at the landing change's parent (beforeRuns)",
+      'passing rows for exactly the same test files at the landing change (afterRuns), on a clean tree',
+      'covering test files (from the coverage map and git) that cover every touched member and are unchanged by the landing change',
+      'the targeted finding absent from the detector output after the change',
+      'a clean typecheck and lint:behavioural-strands',
+    ],
+    proofWeight: 4,
   },
   config: {
     kind: 'config',
@@ -230,6 +245,20 @@ export const ChangeKindEvidenceSchema = z
     readBack: nonEmpty()
       .optional()
       .describe('config: the effective value read back from its consumer. docs: the document read back from where readers get it.'),
+    landingCommit: nonEmpty().optional().describe('refactor: the sha of the commit that landed the refactor.'),
+    beforeRuns: z
+      .array(z.number().int().positive())
+      .max(200)
+      .optional()
+      .describe("refactor: test_runs row ids for the covering test files at the landing change's parent."),
+    afterRuns: z
+      .array(z.number().int().positive())
+      .max(200)
+      .optional()
+      .describe('refactor: test_runs row ids for exactly the same test files at the landing change.'),
+    finding: nonEmpty().optional().describe('refactor: the targeted finding (for example a clone-family key) that must be absent on re-scan.'),
+    typecheck: nonEmpty().optional().describe('refactor: the lint:tsc result for the changed files (for example "LINT_TSC_RESULT status=clean").'),
+    behaviouralStrands: nonEmpty().optional().describe('refactor: the lint:behavioural-strands result (exit 0, no strands).'),
   })
   .strict();
 

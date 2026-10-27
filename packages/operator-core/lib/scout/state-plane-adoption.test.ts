@@ -5,13 +5,15 @@ import {
   POLL_TURN_THRESHOLD,
   type PlaneCallRow,
   computeStatePlaneAdoption,
+  readStatePlaneAdoption,
 } from './state-plane-adoption';
 
 const T0 = 1_700_000_000_000;
 
 /** The grouping key is the AGENT — deliberately not a spawn. See the module header. */
-function row(ownerId: string, toolName: string, offsetMs: number): PlaneCallRow {
-  return { ownerId, toolName, atMs: T0 + offsetMs };
+function row(ownerId: string, toolName: string, offsetMs: number,
+  args: unknown = { body: [{ text: 'Gate verdict red.' }] }): PlaneCallRow {
+  return { ownerId, toolName, atMs: T0 + offsetMs, args };
 }
 
 describe('state-plane-adoption — D-003: an empty denominator is null, never 0', () => {
@@ -60,6 +62,33 @@ describe('state-plane-adoption — grouping is by AGENT, not by spawn (regressio
 });
 
 describe('state-plane-adoption — METRIC A (act/quote)', () => {
+  it('excludes unrelated messages and missing content while retaining actual pipeline quotes', () => {
+    const out = computeStatePlaneAdoption([
+      row('su-a', 'dev:pipeline_position', 0, { sourceRuntimeOnly: true }),
+      row('su-a', 'coord:send', 1_000, { summary: 'Exact claim admitted; floor honored.' }),
+      row('su-a', 'coord:send', 2_000, null),
+      row('su-a', 'coord:send', 3_000, { body: 'Re-read the gate verdict before reporting.' }),
+      row('su-a', 'coord:send', 4_000, { body: { mainBehindStaging: false } }),
+    ], 7);
+    expect(out.actQuote.opportunities).toBe(1);
+    expect(out.actQuote.adopted).toBe(0);
+  });
+
+  it('reads stored argument content at the SQL seam instead of restoring a content-blind denominator', async () => {
+    const raw = [
+      { owner_id: 'su-a', tool_name: 'dev:pipeline_position', at_ms: T0, args_json: { sourceRuntimeOnly: true } },
+      { owner_id: 'su-a', tool_name: 'coord:send', at_ms: T0 + 1_000, args_json: { summary: 'Claim admitted' } },
+      { owner_id: 'su-a', tool_name: 'state:read', at_ms: T0 + 2_000, args_json: {} },
+      { owner_id: 'su-a', tool_name: 'coord:send', at_ms: T0 + 3_000, args_json: { body: 'Candidate sha abcdef1234567' } },
+    ];
+    const out = await readStatePlaneAdoption(async <T>(query: string) => {
+      expect(query).toContain('args_json');
+      return raw as T[];
+    }, { workspaceId: 'test-workspace', windowDays: 7 });
+    expect(out.actQuote.opportunities).toBe(1);
+    expect(out.actQuote.adopted).toBe(1);
+  });
+
   it('counts a door-then-write as an unadopted opportunity', () => {
     const out = computeStatePlaneAdoption(
       [row('su-a', 'dev:pipeline_position', 0), row('su-a', 'coord:send', 5_000)],

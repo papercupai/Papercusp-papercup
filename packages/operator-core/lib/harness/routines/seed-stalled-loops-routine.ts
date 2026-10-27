@@ -41,8 +41,7 @@
  *   tsx seed-stalled-loops-routine.ts --dry-run       # report only, disarm/broadcast nothing
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.STALLED_LOOPS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -52,42 +51,31 @@ const SLUG = process.env.STALLED_LOOPS_ROUTINE_SLUG ?? operatorHomeHarnessSlug()
  *  30-min floor before a dead loop's recovery even started). */
 const CRON = '0 */5 * * * *';
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const dryRun = process.argv.includes('--dry-run');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'sweep-stalled-loops';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = {
-    cron: CRON,
-    ...(dryRun ? { dry_run: true } : {}),
-  };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:sweep-stalled-loops', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
-      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-stalled-loops-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `every-5-min sweep disarming turns-stalled loop-<ownerId> routine rows` +
-      (dryRun ? ', dry_run=true' : '') +
-      '.',
-  );
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-stalled-loops-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-stalled-loops-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const dryRun = process.argv.includes('--dry-run');
+    const name = 'sweep-stalled-loops';
+    const triggerConfig = {
+        cron: CRON,
+        ...(dryRun ? { dry_run: true } : {}),
+      };
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: 'system:sweep-stalled-loops',
+      dryRun,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, dryRun, name, triggerConfig }) => {
+    console.log(
+        `[seed-stalled-loops-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `every-5-min sweep disarming turns-stalled loop-<ownerId> routine rows` +
+          (dryRun ? ', dry_run=true' : '') +
+          '.',
+      );
+  },
+});

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { describe, it, expect } from 'vitest';
-import { resolveBuildInfo } from './build-info';
+import { resolveBuild, resolveBuildInfo } from './build-info';
 
 describe('resolveBuildInfo', () => {
   it('prefers PAPERCUSP_BUILD_SHA and never shells out when it is set', () => {
@@ -34,6 +34,22 @@ describe('resolveBuildInfo', () => {
 
   it('null sha when git returns empty', () => {
     expect(resolveBuildInfo({ env: {} as NodeJS.ProcessEnv, gitSha: () => '' }).sha).toBeNull();
+  });
+
+  // gate-repair-plane-on-current-build-2026-10-15 R-1: the resolution names its rung.
+  it('resolveBuild names each rung, and unresolved always pairs with a null sha', () => {
+    const env = {} as NodeJS.ProcessEnv;
+    expect(resolveBuild({ env, bakedSha: 'b1', bundled: true })).toMatchObject({ sha: 'b1', shaSource: 'baked' });
+    expect(resolveBuild({ env: { PAPERCUSP_BUILD_SHA: 'e1' } as NodeJS.ProcessEnv, bakedSha: null }))
+      .toMatchObject({ sha: 'e1', shaSource: 'env' });
+    expect(resolveBuild({ env, bakedSha: null, bundled: false, gitSha: () => 'g1' }))
+      .toMatchObject({ sha: 'g1', shaSource: 'git' });
+    expect(resolveBuild({ env, bakedSha: null, bundled: false, gitSha: () => '' }))
+      .toMatchObject({ sha: null, shaSource: 'unresolved' });
+    expect(resolveBuild({ env, bakedSha: null, bundled: true, gitSha: () => 'checkout-head' }))
+      .toMatchObject({ sha: null, shaSource: 'unresolved' });
+    // BuildInfo stays the plain { sha, version } value other records embed.
+    expect(Object.keys(resolveBuildInfo({ env, bakedSha: 'b1', bundled: true })).sort()).toEqual(['sha', 'version']);
   });
 
   it('trims a whitespace env sha', () => {

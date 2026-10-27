@@ -28,6 +28,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { loadedHandlerFingerprint, observeEngineeringBoundary } from '../../observability/runtime';
 
 import {
   GITNEXUS_FACADE_OPS,
@@ -45,7 +46,14 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
+import { runtimeEvidenceForContracts } from '../../code-intelligence/runtime-code-evidence';
 import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
+import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
+import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
+import { reuseGraphQuery } from '../../code-intelligence/reuse-graph';
+import { semanticConceptQuery, semanticSimilarQuery } from '../../code-intelligence/semantic-code-runtime';
+import { engineeringEvidenceQuery } from '../../code-intelligence/engineering-evidence';
+
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
@@ -107,6 +115,10 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'evidence',
+  'similar', 'clones',
+  'cochange', 'provenance',
+  'sql-lineage',
   'communities', 'flows', 'concept-search',
   'contracts',
   'context',
@@ -118,13 +130,13 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
+    'Code topology and reuse: evidence | symbol | context | callers | callees | impact | trace | contracts | sql-lineage | cochange | provenance | communities | flows | concept-search | similar | clones | health. evidence joins authorized intent, decisions, specs and recorded proof using plan+item or file_path+name/line1; gaps remain explicit. similar accepts name, file_path+line1, or snippet; clones returns bounded families. Exact/renamed use AST equality; near uses calibrated shape similarity; semantic uses calibrated relevance or unknown. cochange measures 90-day first-parent associations; provenance joins edits to sessions/items for file_path and one harnesses entry, never git authorship. sql-lineage takes table, bounded paths and optional column; maps static SQL/migration/sync sites. Callers prefer hash-checked snapshots then compiler. Static retrieval and paths are lower bounds, not runtime proof. contracts joins scoped HTTP/RPC/event evidence. Native topology supports JS/TS; reuse supports TS/TSX.',
   guidance: {
-    when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.',
+    when: 'Who calls X: callers; what X calls: callees. Reuse: similar with name, file_path/line1 or snippet; clones with bounded paths. Read coverage and freshness.',
     notWhen:
-      'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
+      'Use lsp:query for references, implementations, diagnostics and rename; rg for literals; state/log tools for runtime diagnosis.',
     chaining:
-    'op:"context" → op:"impact" for the change radius → op:"trace", target:"name" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:"health" reports index freshness; lsp:query handles references/diagnostics.',
+    'context → impact → trace with target for forward paths. Bound paths for discovery/reuse. Ambiguous similar names need file_path/line1. health reports index freshness.',
   },
   capability: 'intel:read',
   requirePrincipal: false,
@@ -137,9 +149,14 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z.enum(OP_VALUES).describe('Which read-only operation to run.'),
+    plan: z.string().min(1).optional().describe('evidence: exact owning plan slug; pair with item instead of symbol selectors.'),
+    item: z.string().regex(/^P-\d{3,}$/).optional().describe('evidence: exact P-NNN plan item; pair with plan.'),
+    include_context: z.boolean().optional().describe('evidence: include explicitly labelled broader/unscoped decisions; default excludes unscoped context.'),
+    table: z.string().min(1).optional().describe('sql-lineage: exact parsed table name, including schema when present.'),
+    column: z.string().min(1).optional().describe('sql-lineage: exact parsed column name; omitted means table relationships.'),
     harnesses: z.array(z.string().min(1)).min(1).max(8).optional()
-      .describe('contracts: explicit registered repository cohort; scoped callers may only select their own harness.'),
-    workspace: z.string().min(1).optional().describe('contracts: must equal the authenticated principal workspace; never expands authority.'),
+      .describe('contracts: explicit registered repository cohort; evidence: exactly one registered repository. Scoped callers may only select their own harness.'),
+    workspace: z.string().min(1).optional().describe('contracts/evidence: must equal the authenticated principal workspace; never expands authority.'),
     name: z
       .string()
       .min(1)
@@ -158,6 +175,7 @@ export default defineTool({
       .optional()
       .describe('symbol/context/callees: defining file; picks one of several same-name symbols.'),
     line1: z.number().int().min(1).optional().describe('Native symbol/context/callees: defining line to distinguish same-name declarations in one file.'),
+    snippet: z.string().min(1).max(100_000).optional().describe('similar: one TS function or body, instead of name/location selectors.'),
     target: z.string().min(1).optional().describe('trace: exact destination symbol name.'),
     target_file_path: z.string().min(1).optional().describe('trace: destination defining file to disambiguate homonyms.'),
     target_line1: z.number().int().min(1).optional().describe('trace: destination defining line.'),
@@ -194,10 +212,48 @@ export default defineTool({
       .describe('Native operations: join captured source versions to the selected runtime artifact via existing pipeline evidence. Unknown measurements remain explicit.'),
     runtime_limit: z.number().int().min(1).max(8).optional()
       .describe('Maximum supporting files compared to the selected runtime; default 4. Omitted files remain unmeasured.'),
+    runtime_evidence: z.boolean().optional()
+      .describe('contracts only: join linked tool implementations to successful dispatches over rolling seven days; incomplete versions/retention stay unknown, never dead-code proof.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;
-    if (op === 'contracts') return { data: await scopedContractQuery(args, ctx) };
+    if (op === 'evidence') {
+      // Capture one callable for both hashing and execution, including on a hot reload.
+      const handler = engineeringEvidenceQuery;
+      const observed = await observeEngineeringBoundary(loadedHandlerFingerprint(handler), () => handler(args, ctx));
+      // ToolResponse serialization owns `data`; unknown outer siblings do not
+      // cross MCP/HTTP. Keep this invocation's optional receipt in that payload.
+      return { data: { ...observed.result,
+        ...(observed.boundaryObservation ? { boundaryObservation: observed.boundaryObservation } : {}),
+        ...(observed.boundaryObservationGap ? { boundaryObservationGap: observed.boundaryObservationGap } : {}),
+      }, boundaryObservation: observed.boundaryObservation,
+        boundaryObservationGap: observed.boundaryObservationGap };
+    }
+    if (op === 'similar' || op === 'clones') {
+      const root = resolveAgentWorkspaceRoot(ctx);
+      return { data: await reuseGraphQuery(root, { ...args, op }, ctx.signal,
+        op === 'similar' ? (input, signal) => semanticSimilarQuery(root,
+          ctx.workspaceId ?? ctx.principal?.workspaceId, input, signal) : undefined) };
+    }
+    if (op === 'cochange') {
+      const paths = args.paths ?? (args.file_path ? [args.file_path] : []);
+      if (!paths.length) return { data: { status: 'unknown', error: 'cochange requires bounded exact paths.' } };
+      return { data: await readCoChange(resolveAgentWorkspaceRoot(ctx), paths, undefined, ctx.signal) };
+    }
+    if (op === 'provenance') {
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+      const harness = args.harnesses?.length === 1 ? args.harnesses[0] : undefined;
+      if (!workspaceId || !harness || !args.file_path || ctx.harnessSlug && harness !== ctx.harnessSlug)
+        return { data: { status: 'unknown', error: 'provenance requires file_path and one authorized harnesses entry.' } };
+      return { data: await readSymbolProvenance({ workspaceId, harness, root: resolveAgentWorkspaceRoot(ctx),
+        path: args.file_path, name: args.name }) };
+    }
+    if (op === 'sql-lineage') return { data: await postgresLineageQuery(resolveAgentWorkspaceRoot(ctx), args) };
+    if (op === 'contracts') {
+      const report = await scopedContractQuery(args, ctx);
+      if (!args.runtime_evidence || report.error) return { data: report };
+      return { data: { ...report, runtimeEvidence: await runtimeEvidenceForContracts(report, resolveAgentWorkspaceRoot(ctx)) } };
+    }
     const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'communities', 'flows', 'concept-search'].includes(op);
     const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
       const measured = answer.evidence ? answer : { ...answer,
@@ -273,6 +329,15 @@ export default defineTool({
 
     if (native) {
       const answer = scoped(await firstPartyCallersAnswer(args, ctx));
+      if (op === 'concept-search') {
+        const semantic = await semanticConceptQuery(resolveAgentWorkspaceRoot(ctx),
+          ctx.workspaceId ?? ctx.principal?.workspaceId, args.name ?? '',
+          { paths: args.paths, limit: args.limit, signal: ctx.signal,
+            graphIds: answer.sites.filter(site => site.line1 !== null).map(site => `${site.path}:${site.line1}`) });
+        // Keep native evidence intact. The separately versioned hybrid matches
+        // carry their own source identities and may not inherit compiler proof.
+        return { data: { ...answer, semantic } };
+      }
       if (!args.runtime) return { data: answer };
       const runtimeProvenance = await sourceRuntimeProvenance(answer, args.runtime,
         resolveAgentWorkspaceRoot(ctx), ctx.dispatchTool, args.runtime_limit);

@@ -1,11 +1,8 @@
 /**
  * postCardResponse — client wrapper for /api/operator/conversations/:id/card-response.
  *
- * The conversation id in the URL is ignored by the route (the card-
- * correlator looks up by correlationId + expectedWorkspaceId), but
- * Next routes require *some* :id segment. We pass the active
- * conversation id so audit/log searches still associate the response
- * with the user's chat.
+ * The route checks this conversation in the authenticated workspace before
+ * resolving the card. workspaceId is a consistency assertion, never authority.
  */
 
 export interface CardResponseBody {

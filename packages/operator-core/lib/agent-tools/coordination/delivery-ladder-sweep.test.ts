@@ -430,7 +430,7 @@ describe('renderLadderBody — the escalation an agent actually reads (EI-10551)
     expect(body).toContain('coord-mid-turn-delivery');
   });
 
-  it('says plainly that the alarm can be DISCHARGED when nothing in the mail needs you', () => {
+  it('requires a recorded inbox read to discharge an FYI reminder without demanding a reply', () => {
     // The alarm fires on "unread", not on "someone is blocked" — a stand-down ack and an
     // urgent question look identical to the sweep. Saying so stops the next agent treating a
     // correct-but-uninteresting fire as evidence they did something wrong.
@@ -440,6 +440,23 @@ describe('renderLadderBody — the escalation an agent actually reads (EI-10551)
     );
     expect(body).toContain('does NOT mean a peer is necessarily blocked on you');
     expect(body).toContain('DISCHARGED');
+    expect(body).toContain('once the read is recorded');
+    expect(body).toContain('expects:none');
+    expect(body).toContain('no reply is required');
+    expect(body).toContain('A read does not answer a request for an ack, answer, or action');
+    expect(body).not.toContain('nothing is required of you');
+  });
+
+  it('puts the clearing action before the mail preview and explains why FYIs can recur', () => {
+    const body = renderLadderBody(
+      { candidateCount: 1, oldestAgeMs: 6 * MIN, neverRead: false,
+        unread: [msg(6, { summary: 'FYI: both related items are closed' })] },
+      opts,
+    );
+    expect(body.indexOf('call coord:inbox')).toBeLessThan(body.indexOf('FYI: both related items'));
+    expect(body).toContain('reminder can recur until an inbox read is recorded');
+    expect(body).toContain('closing a related work-item, or saving a memory note does not record that read');
+    expect(body).toContain('no personal memory note is needed');
   });
 
   it('tells the reader that coord:orient counts as a read (it does — and I assumed it did not)', () => {
@@ -507,8 +524,10 @@ describe('runDeliveryLadderSweepOnce (DI end-to-end, no PG)', () => {
     expect(identity.ownerId).toBe(DELIVERY_LADDER_OWNER);
     expect(sendArgs.to).toEqual(['su-deaf']);
     expect(sendArgs.summary).toContain('delivery-ladder');
+    expect(sendArgs.summary).toContain('read via coord:inbox or coord:orient; FYIs need no reply');
     expect(sendArgs.body).toContain('coord:inbox');
     expect(io.wakeMock).toHaveBeenCalledWith(['su-deaf'], expect.objectContaining({
+      summary: expect.stringContaining('read via coord:inbox or coord:orient; FYIs need no reply'),
       source: DELIVERY_LADDER_OWNER,
       workspaceId: 'ws-1',
     }));

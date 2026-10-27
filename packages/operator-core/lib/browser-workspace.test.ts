@@ -68,6 +68,48 @@ describe('wsLocalKey', () => {
   it("uses 'default' under SSR", () => {
     expect(wsLocalKey('k')).toBe('pc:ws:default:k');
   });
+
+  it('keeps stored preferences separate when selected machines share a workspace id', () => {
+    const browser = { __PAPERCUSP_WS__: 'default', location: { href: 'http://localhost/?desktopHost=local' } };
+    vi.stubGlobal('window', browser);
+    const storage = new Map<string, string>();
+    storage.set(wsLocalKey('operator:autoAccept'), 'local-preference');
+    browser.location.href = 'http://localhost/?desktopHost=machine-a';
+    expect(storage.get(wsLocalKey('operator:autoAccept'))).toBeUndefined();
+    storage.set(wsLocalKey('operator:autoAccept'), 'remote-a-preference');
+    browser.location.href = 'http://localhost/?desktopHost=machine-b';
+    expect(storage.get(wsLocalKey('operator:autoAccept'))).toBeUndefined();
+    storage.set(wsLocalKey('operator:autoAccept'), 'remote-b-preference');
+    browser.location.href = 'http://localhost/?desktopHost=machine-a';
+    expect(storage.get(wsLocalKey('operator:autoAccept'))).toBe('remote-a-preference');
+    browser.location.href = 'http://localhost/?desktopHost=local';
+    expect(storage.get(wsLocalKey('operator:autoAccept'))).toBe('local-preference');
+  });
+
+  it('restores the same remote cache after navigation using the per-window selection', () => {
+    const session = new Map<string, string>();
+    const browser = { __PAPERCUSP_WS__: 'default', location: { href: 'http://localhost/?desktopHost=machine-a' },
+      sessionStorage: { getItem: (key: string) => session.get(key), setItem: (key: string, value: string) => session.set(key, value) } };
+    vi.stubGlobal('window', browser);
+    const remote = wsLocalKey('recent');
+    setBrowserMachineId('machine-a');
+    browser.location.href = 'http://localhost/agents';
+    expect(wsLocalKey('recent')).toBe(remote);
+    setBrowserMachineId('machine-b');
+    expect(wsLocalKey('recent')).not.toBe(remote);
+  });
+
+  it('does not alias machine and workspace components containing storage delimiters', () => {
+    const browser = { __PAPERCUSP_WS__: 'default', location: { href: 'http://localhost/?desktopHost=machine%3Aws%3Aother' } };
+    vi.stubGlobal('window', browser);
+    const first = wsLocalKey('recent');
+    browser.__PAPERCUSP_WS__ = 'other:ws:default';
+    browser.location.href = 'http://localhost/?desktopHost=machine';
+    expect(wsLocalKey('recent')).not.toBe(first);
+    browser.__PAPERCUSP_WS__ = 'default';
+    browser.location.href = 'http://localhost/?desktopHost=machine%3Aws%3Aother';
+    expect(wsLocalKey('recent')).toBe(first);
+  });
 });
 
 describe('resolveActiveWorkspaceId', () => {

@@ -28,6 +28,22 @@ describe('legacy reporter shared ledger routing', () => {
     expect(database.sql).toHaveBeenCalledTimes(1);
     expect(database.sql.end).toHaveBeenCalledTimes(1);
   });
+
+  it('writes the child run group into the test-run ledger row', async () => {
+    const initialRunGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP;
+    const runGroupId = initialRunGroupId ?? 'candidate-child-run-group';
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://shared/ledger');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', runGroupId);
+    const reporter = new AdminTestRunsReporter();
+    reporter.onTestModuleEnd({ moduleId: MODULE, state: () => 'passed', errors: () => [],
+      diagnostic: () => ({ duration: 1 }), children: { allTests: () => [] } } as unknown as TestModule);
+    await reporter.onTestRunEnd();
+
+    // The first argument is the SQL template; its seventh interpolation is run_group_id.
+    expect(database.sql.mock.calls[0]?.[0]?.join(' ')).toContain('run_group_id');
+    expect(database.sql.mock.calls[0]?.[7]).toBe(runGroupId);
+
+  });
 });
 
 const MODULE = '/repo/packages/operator-core/lib/pc-heavy.test.ts';

@@ -15,44 +15,33 @@
  *   tsx seed-periodic-full-run-routine.ts             # seed ACTIVE
  *   tsx seed-periodic-full-run-routine.ts --inactive  # seed off
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.PERIODIC_FULL_RUN_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** 6-field cron, second-first: :22 and :52 every hour. */
 const CRON = '0 22/30 * * * *';
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'periodic-full-run';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify({ cron: CRON })}::text::jsonb,
-            'system:periodic-full-run', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      active = EXCLUDED.active,
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-periodic-full-run-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `every 30 min (:22/30), full suite of main at least every 6h. ` +
-      (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
-  );
-  await sql.end({ timeout: 5 });
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-periodic-full-run-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-periodic-full-run-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const name = 'periodic-full-run';
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify({ cron: CRON }),
+      targetRole: 'system:periodic-full-run',
+      replaceActive: true,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, name }) => {
+    console.log(
+        `[seed-periodic-full-run-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `every 30 min (:22/30), full suite of main at least every 6h. ` +
+          (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
+      );
+    await sql.end({ timeout: 5 });
+  },
+});

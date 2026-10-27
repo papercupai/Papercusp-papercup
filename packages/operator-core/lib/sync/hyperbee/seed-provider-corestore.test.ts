@@ -1301,7 +1301,7 @@ describe('seed projection — literal matching mirrors the release gate; private
         ts: 1, schema_version: 1, author_pubkey: '' });
     }
     for (const hbKey of [privateKey, 'public-retired']) {
-      await own.append({ type: 'del', table, hbKey, ts: 2, hlc: '2:0:fixture',
+      await own.append({ type: 'del', table, hbKey, ts: 2, hlc: '000000000000002:00000',
         schema_version: 1, author_pubkey: '' });
     }
     if (priorSnapshot) await produceLogSnapshot(own, { now: 10, schemaVersion: 1 });
@@ -1318,7 +1318,7 @@ describe('seed projection — literal matching mirrors the release gate; private
     }
     expect(rows.map(row => row.hbKey).sort()).toEqual(['public-live', 'public-retired']);
     expect(rows.find(row => row.hbKey === 'public-retired')).toMatchObject({
-      value: null, deleted: true, ts: 2, hlc: '2:0:fixture',
+      value: null, deleted: true, ts: 2, hlc: '000000000000002:00000',
     });
     expect(rows.find(row => row.hbKey === 'public-live')?.value).toEqual({ public: true });
     expect(JSON.stringify(rows)).not.toContain(handle);

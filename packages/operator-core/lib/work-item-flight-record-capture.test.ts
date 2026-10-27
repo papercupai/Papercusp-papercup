@@ -25,11 +25,11 @@ const h = vi.hoisted(() => ({
 h.setCheckpoint.mockImplementation(
   async (
     ref: { workItemId: string },
-    checkpoint: string,
-    opts?: { transform?: (prior: string | null, note: string) => string },
+    checkpoint: string | null | undefined,
+    opts?: { transform?: (prior: string | null, note: string | null | undefined) => string },
   ) => {
     const prior = h.priors.get(ref.workItemId) ?? null;
-    h.persisted.set(ref.workItemId, opts?.transform ? (opts.transform(prior, checkpoint) ?? '') : checkpoint);
+    h.persisted.set(ref.workItemId, opts?.transform ? (opts.transform(prior, checkpoint) ?? '') : checkpoint ?? '');
     return { ok: true };
   },
 );
@@ -61,6 +61,23 @@ function capturedAtOf(record: string): string | undefined {
 }
 
 describe('work-item flight record capture site', () => {
+  it('keeps flight metadata separate from the latest authored checkpoint update', async () => {
+    h.priors.set('WI-resume', '## Next action\nContinue the saved acceptance action.');
+
+    await captureWorkItemFlightRecordsForItems({
+      ownerId: 'su-successor',
+      workspaceId: 'ws',
+      cause: 'lease-release',
+      items: [{ id: 'WI-resume', harness: 'papercusp' }],
+    });
+
+    // Undefined input preserves the prior hash-bound authored span in the store.
+    // Passing a machine record here would replace it with activity metadata.
+    expect(h.setCheckpoint.mock.calls[0]?.[1]).toBeUndefined();
+    expect(h.persisted.get('WI-resume')).toContain('Continue the saved acceptance action.');
+    expect(h.persisted.get('WI-resume')).toContain('cause: lease-release');
+  });
+
   it('does not clone one session-level record across several items', async () => {
     const res = await captureWorkItemFlightRecordsForItems({
       ownerId: 'su-8973ac94',

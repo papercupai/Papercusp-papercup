@@ -488,6 +488,7 @@ describe('createPotFromRepo (P-006)', () => {
           harnessSlug: 'shop',
           mode: 'review',
           greenCmd: 'npm test',
+          checkoutPath: '/clones/shop',
           forkRemote: null,
           upstreamRemote: 'https://github.com/acme/shop.git',
           // the fake clone path has no .gitmodules (WI-10006107)

@@ -892,13 +892,16 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
       expect(out.emitter_evidence).toBeUndefined();
     });
 
-    it('is FAIL-SOFT: a latch probe that throws leaves the warning exactly as it was', async () => {
+    it('keeps fire-history probe failure distinct from an empty history', async () => {
       // withBoundedTimeout logs the degrade — expected here, so assert it rather
       // than letting vitest-fail-on-console flag it.
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(probeKeyFireEvidence).mockRejectedValueOnce(new Error('pg down'));
       const out = await call({ event: 'overwatch:surface-landed' });
       expect(out.unknown_event_key).toBe(true);
+      expect(out.fire_history_probe).toEqual({ status: 'unknown', reason: 'error' });
+      expect(out.unknown_event_key_advice).toMatch(/prior fire history could not be checked/i);
+      expect(out.unknown_event_key_advice).not.toMatch(/has EVER fired/i);
       expect(out.ok).toBe(true);
       expect(registerAwait).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:keyFireEvidence'));

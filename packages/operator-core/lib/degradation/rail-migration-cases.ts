@@ -1951,7 +1951,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 },
       yieldAfterClassified: async (count: number) => count + 1,
       escalateWedged: async () => { expect(open.has(key('wedged'))).toBe(true); },
-      escalateNotMeasured: async () => {} };
+      escalateNotMeasured: async () => {}, loadDenialAttestations: async () => [] };
     await runWedgedIdentitySweepOnce(wedge);
     candidates = [{ ...candidate, ownerId: 'foreign-owner', advSessionId: '1' }];
     await runWedgedIdentitySweepOnce(wedge); expect(open.has(key('wedged'))).toBe(true);

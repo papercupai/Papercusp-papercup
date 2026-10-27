@@ -1,0 +1,7 @@
+---
+rel_path: "docs/evidence/oversized-tool-results-reduction-2026-10-12/p009-evaluator-final-reconciled-2026-10-24.json"
+updated_at: 1792800267752
+_body: "content"
+---
+
+{"observedAt":"2026-10-24T00:04:27.744Z","rows":[{"id":"67954","spec_id":"AUTO-BAR-R-2-P-008","spec_revision":5,"work_item_id":"WI-6554700010011026"},{"id":"67955","spec_id":"AUTO-BAR-R-1-P-008","spec_revision":5,"work_item_id":"WI-6554700010011026"},{"id":"67956","spec_id":"AUTO-BAR-R-1-P-001","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67957","spec_id":"AUTO-BAR-R-1-P-002","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67958","spec_id":"AUTO-BAR-R-1-P-003","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67959","spec_id":"AUTO-BAR-R-1-P-004","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67960","spec_id":"AUTO-BAR-R-1-P-005","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67961","spec_id":"AUTO-BAR-R-1-P-006","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67962","spec_id":"AUTO-BAR-R-1-P-007","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67963","spec_id":"AUTO-BAR-R-1-P-010","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67964","spec_id":"AUTO-BAR-R-2-P-001","spec_revision":5,"work_item_id":"WI-6554700010008923"},{"id":"67965","spec_id":"AUTO-BAR-R-2-P-002","spec_revision":5,"work_item_id":"WI-6554700010008923"}],"invocation":[{"id":"43805721","status":"ok","duration_ms":50465,"error_message":null}]}

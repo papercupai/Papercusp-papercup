@@ -220,10 +220,9 @@ describe('cross-agent isolation (adversarial; live papercusp_su)', async () => {
     );
     expect(relAttemptOwnerA.released).toEqual([]);
 
-    // The canonical attack: B has learned A's lock_id (it's persisted in
-    // tool_invocations.result_json that audit:read can read) and tries to free
-    // A's lock by replaying it — but B is authenticated as B, so owner != A → 0
-    // rows. This is exactly the leaked-lock_id case bug #16's owner column defends.
+    // The canonical attack: B has learned A's lock_id and replays it. Even a
+    // caller-visible ID cannot free A's lock when B is authenticated as B;
+    // the owner predicate rejects the replay (0 rows).
     const bReplaysAsBitself = await inWorkspaceTxn(ws, 'B', (tx) =>
       tryRelease(tx, { coordinationDomain: ws, owner: 'B', lockId: a.lock_id }),
     );

@@ -116,8 +116,10 @@ describe('logs:read — unit resolution', () => {
     const unitDescription = argsSchema.properties?.unit?.description ?? '';
     const scopeDescription = argsSchema.properties?.scope?.description ?? '';
 
-    expect(unitDescription).toContain("'papercup-bg-host' → 'papercup-bg-host.service'");
-    expect(unitDescription).not.toContain('papercusp-bg-host');
+    // The canonical unit Id is papercusp-bg-host.service; papercup-bg-host.service
+    // is only a systemd alias of it (`systemctl --user show papercup-bg-host -p Id`).
+    expect(unitDescription).toContain("'papercusp-bg-host' → 'papercusp-bg-host.service'");
+    expect(unitDescription).not.toContain("'papercup-bg-host'");
     expect(scopeDescription).toContain('no unit-name prefix filter');
     expect(scopeDescription).not.toContain('papercusp-* units');
   });

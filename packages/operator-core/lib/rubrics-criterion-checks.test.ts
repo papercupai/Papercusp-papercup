@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { declaredCaseTitles, mayMatchUnresolvedCaseTitle } from './testing-declared-case-titles';
 import {
   validateCriterionCheckPaths,
   assertCriterionCheckPathsResolve,
@@ -100,6 +101,58 @@ afterAll(() => rmSync(vitestWorkspace, { recursive: true, force: true }));
 afterAll(() => rmSync(vitestSiteClone, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
+describe('named test citation preflight (EI-26971745324820138)', () => {
+  const file = 'packages/x/named.test.ts';
+  const title = 'stable review identity excludes volume R5-CONTRACT';
+  writeFileSync(join(root, file), `import { describe, it } from 'vitest';
+    describe('review identity', () => { it('${title}', () => {}); });`);
+
+  it('refuses an embedded case tag before proposal while preserving exact titles and hierarchy suffixes', () => {
+    const criterion = (testName: string) => [{ key: 'r5', check: { ...testsCheck([file]), testName } }];
+    expect(() => assertCriterionCheckPathsResolve(criterion('R5-CONTRACT'), { root })).toThrow(/case.*R5-CONTRACT/i);
+    expect(() => assertCriterionCheckPathsResolve(criterion('review identity'), { root })).toThrow(/case/i);
+    expect(() => assertCriterionCheckPathsResolve(criterion(title), { root })).not.toThrow();
+    expect(() => assertCriterionCheckPathsResolve(criterion(`review identity > ${title}`), { root })).not.toThrow();
+  });
+
+  it('checks each cases selector against its own file and preserves whole-file and planned-file checks', () => {
+    const other = 'packages/x/other-named.test.ts';
+    writeFileSync(join(root, other), "import { it } from 'vitest'; it('different maintained case', () => {});");
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'r7', check: {
+      ...testsCheck([file, other]), cases: [{ file, testName: title }, { file: other, testName: title }],
+    } }], { root })).toThrow(/other-named.*case/i);
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'whole', check: testsCheck([file]) }], { root })).not.toThrow();
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'future', check: {
+      ...testsCheck(['packages/x/future-case.test.ts']), testName: 'future case',
+    } }], { root, allowPlannedPaths: true })).not.toThrow();
+  });
+
+  it('bounds dynamic uncertainty per declaration instead of exempting a mixed file', () => {
+    const file = 'packages/x/dynamic-named.test.ts';
+    writeFileSync(join(root, file), "import { describe, it as caseTest } from 'vitest'; describe('suite', () => { caseTest.each([1])('handles %s rows', () => {}); caseTest('fixed R7-CONTRACT', () => {}); });");
+    const criterion = (testName: string) => [{ key: 'mixed', check: { ...testsCheck([file]), testName } }];
+    expect(() => assertCriterionCheckPathsResolve(criterion('R7-CONTRACT'), { root })).toThrow(/case/);
+    expect(() => assertCriterionCheckPathsResolve(criterion('fixed R7-CONTRACT'), { root })).not.toThrow();
+    expect(() => assertCriterionCheckPathsResolve(criterion('handles 1 rows'), { root })).not.toThrow();
+    expect(() => assertCriterionCheckPathsResolve(criterion('suite'), { root })).toThrow(/case/);
+  });
+
+  it('ignores quoted/commented declarations and confines computed suite uncertainty to its leaf titles', () => {
+    const discovered = declaredCaseTitles('titles.test.ts', "// it('fake', () => {})\nconst text = \"it('also fake', () => {})\"; describe(`region ${region}`, () => { it('real leaf', () => {}); });");
+    expect(discovered.titles).toEqual([]);
+    expect(mayMatchUnresolvedCaseTitle('real leaf', discovered.unresolvedTitles)).toBe(true);
+    expect(mayMatchUnresolvedCaseTitle('region east > real leaf', discovered.unresolvedTitles)).toBe(true);
+    expect(mayMatchUnresolvedCaseTitle('fake', discovered.unresolvedTitles)).toBe(false);
+    expect(mayMatchUnresolvedCaseTitle('region east', discovered.unresolvedTitles)).toBe(false);
+  });
+
+  it('recognizes namespace imports and named callbacks without executing modules', () => {
+    const discovered = declaredCaseTitles('titles.test.ts', "import * as v from 'vitest'; import nodeCase from 'node:test'; v.describe('suite', () => { v.it('literal leaf', callback); }); nodeCase('native leaf', callback); v.describe('computed subtree', registerCases);");
+    expect(discovered.titles).toEqual(['suite > literal leaf', 'native leaf']);
+    expect(mayMatchUnresolvedCaseTitle('computed subtree > generated leaf', discovered.unresolvedTitles)).toBe(true);
+    expect(mayMatchUnresolvedCaseTitle('unrelated tag', discovered.unresolvedTitles)).toBe(true);
+  });
+});
 describe('scorecard integration PG route', () => {
   it.each([
     { integration: true, wrapper: true, privatePg: true },

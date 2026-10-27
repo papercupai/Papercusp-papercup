@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { beginAcquire } from '@papercusp/db-org/acquire-registry';
 import { createSpawnerSidecarLoopDelay } from './spawner-sidecar-loop-delay';
 
 const invocation = vi.hoisted(() => ({ loaded: vi.fn(), run: vi.fn() }));
@@ -102,6 +103,57 @@ describe('spawner sidecar health', () => {
     } finally {
       client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('logs bounded admission phases and pool acquisition timing for a slow process exec', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'sidecar-exec-diagnostics-'));
+    const socketPath = join(directory, 'server.sock');
+    vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', socketPath);
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const server = runSpawnerSidecarServer({
+      slowExecMs: 0,
+      executeProcess: async (_params, deps) => {
+        const ticket = beginAcquire('org-app');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        ticket.acquired();
+        ticket.release();
+        deps.onAdmissionPhase?.({ phase: 'enqueue', state: 'pending', elapsedMs: 0 });
+        deps.onAdmissionPhase?.({ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    const client = new SpawnerIpcClient(socketPath);
+    try {
+      await once(server, 'listening');
+      await expect(client.call('process:exec', {
+        command: 'node', args: ['-e', '0'], cwd: directory,
+      })).resolves.toMatchObject({ code: 0, stdout: '', stderr: '' });
+
+      const settled = logs.mock.calls
+        .filter(([message]) => message === '[spawner-process-exec-stage]')
+        .map(([, detail]) => detail as Record<string, unknown>)
+        .find((detail) => detail.event === 'request-settled');
+      expect(settled).toBeDefined();
+      expect(settled).toMatchObject({
+        diagnosticRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        admissionPhases: [{ phase: 'enqueue', state: 'fulfilled', elapsedMs: 5 }],
+        poolAcquisitionContext: {
+          requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+          operation: 'spawner.process.exec',
+        },
+        poolAcquisitions: [{ pool: 'org-app', outcome: 'acquired' }],
+        poolAcquisitionsOmitted: 0,
+      });
+      expect(settled?.poolAcquisitionContext).toMatchObject({ requestId: settled?.diagnosticRequestId });
+      expect((settled?.poolAcquisitions as Array<{ elapsedMs: number }>)[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      logs.mockRestore();
       vi.unstubAllEnvs();
       await rm(directory, { recursive: true, force: true });
     }

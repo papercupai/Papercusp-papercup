@@ -42,6 +42,7 @@ import { CLAIM_STATES_ALLOWLIST } from './claim-states';
 // compile time — no runtime dependency), so importing its runtime export here does not
 // reopen the cycle above. Safe, one-directional at runtime: claim-spec.ts -> p2p-lane-fence.ts.
 import { buildP2pLaneFence, buildP2pPlanLaneFence } from './p2p-lane-fence';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vocabulary — the fixed primitive set the Queen composes a spec from.
@@ -834,7 +835,7 @@ function detectFrozenIdListFootgun(spec: { view?: { filter?: unknown } }, warnin
  * positive (`=`/`in`) `kind` selector reaching an issue-family kind, with `rank.terms`
  * carrying no `severity_rank` head anywhere.
  */
-const ISSUE_FAMILY_KINDS = new Set<string>(['bug', 'change', 'task']);
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /** Collect every value asserted by a POSITIVE (`=`/`in`) leaf on `field`, anywhere in the
  *  tree. Skips the `not` branch entirely — a negated leaf excludes rather than selects,

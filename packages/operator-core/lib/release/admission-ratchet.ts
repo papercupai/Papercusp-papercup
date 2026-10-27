@@ -147,18 +147,35 @@ export function evaluateAdmissionRatchet(input: AdmissionRatchetInput): Admissio
 }
 
 /**
- * Build the previous-head verdict set the pre-check implies, without a second run: signature
- * test files were red at the previous head by definition; guarded radius files were green there
- * (that is what makes them guarded); an admitted test file outside the signature and radius did
- * not exist as a judged red, so it is ABSENT (a failure there is a new failing test).
+ * The previous-head verdict set the ratchet compares against
+ * (measured-wide-repair-admission-2026-10-24#D-004 ruling 1: the evaluator must not imply green).
+ *
+ *  - Signature test files were red at the previous head by definition (they ARE the frozen red).
+ *  - A guarded radius file carries ONLY its MEASURED previous-head verdict: the paired baseline,
+ *    run by the same per-file runner and env at the previous head. Without one it is
+ *    `unmeasured` — never `pass`. The gate never judged most of a wide guarded population, so
+ *    assuming green there blamed the admission for reds the lineage already carried.
+ *  - An admitted test file outside the signature and radius has no entry: ABSENT (a failure
+ *    there is a new failing test).
+ *
+ * A measured entry for a path outside `guardedRadius` is ignored: the baseline answers only for
+ * the guarded population, and signature membership always wins.
  */
-export function impliedPreviousHead(input: {
+export function previousHeadVerdicts(input: {
   signatureTestFiles: readonly string[];
   guardedRadius: readonly string[];
+  measured?: Readonly<Record<string, RatchetVerdict>>;
 }): Record<string, RatchetVerdict> {
+  const measured = normalizeSet(input.measured ?? {});
   const out: Record<string, RatchetVerdict> = {};
-  for (const p of input.guardedRadius) out[norm(p)] = 'pass';
-  for (const p of input.signatureTestFiles) out[norm(p)] = 'fail';
+  for (const p of input.guardedRadius) {
+    const key = norm(p);
+    if (key) out[key] = measured.get(key) ?? 'unmeasured';
+  }
+  for (const p of input.signatureTestFiles) {
+    const key = norm(p);
+    if (key) out[key] = 'fail';
+  }
   return out;
 }
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveBackfillEmbedder } from '../packages/operator-core/lib/search/embed-backfill.ts';
-import { buildR11TimerSpecs, captureR11JournalBoundary, captureR11Snapshot, evaluateR11Snapshots, publishR11SnapshotBytes, readR11SnapshotBytes, r11DiskAllocations, r11JournalDirectory, r11PreservationRoots, scheduleR11Timers, type R11PreparedJournals, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
+import { buildR11TimerSpecs, captureR11JournalBoundary, captureR11Snapshot, captureR11SystemJournalSuppression, evaluateR11Snapshots, publishR11SnapshotBytes, readR11SnapshotBytes, r11DiskAllocations, r11JournalDirectory, r11PreservationRoots, scheduleR11Timers, type R11PreparedJournals, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
 import { assessAllocationDiskAdmission } from './lib/disk-reservations.mjs';
 import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
@@ -131,11 +131,20 @@ try {
     const prior = stage === 'Tcut' ? { t0: load(arg3!) } : stage === 'T1'
       ? { t0: load(arg3!), cut: load(arg4!) } : {};
     const snapshot = await captureR11Snapshot(getOrgPg().sql, stage as R11Stage, resolved, prior);
+    if (stage === 'T1') {
+      const t0 = load(arg3!);
+      snapshot.systemJournalSuppression = await captureR11SystemJournalSuppression(t0.capturedAt, snapshot.capturedAt);
+    }
     const data = JSON.stringify(snapshot);
     const bytes = path.endsWith('.gz') ? gzipSync(data) : Buffer.from(data);
     const recoveryPath = publishR11SnapshotBytes(path, bytes, recoveryRoot);
     process.stdout.write(`${JSON.stringify({ stage, path, capturedAt: snapshot.capturedAt,
       recoveryPath, targetCount: snapshot.targets.length, bytes: bytes.length, uncompressedBytes: Buffer.byteLength(data), sha256: sha256(bytes),
+      systemJournalSuppression: snapshot.systemJournalSuppression && {
+        status: snapshot.systemJournalSuppression.status,
+        noticeCount: snapshot.systemJournalSuppression.notices.length,
+        error: snapshot.systemJournalSuppression.error,
+      },
       staleByTarget: snapshot.targets.map((target) => ({ table: target.table,
         stale: target.rows.filter((row) => row.stale).length })) })}\n`);
   }

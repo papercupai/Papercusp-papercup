@@ -490,6 +490,41 @@ describe('cup_claim_specs store (mig 372)', () => {
       expect({ ...batch!, heldIds: [...batch!.heldIds].sort(), blockerParkedIds: [...batch!.blockerParkedIds].sort() })
         .toEqual({ ...single, heldIds: [...single.heldIds].sort(), blockerParkedIds: [...single.blockerParkedIds].sort() });
     });
+
+    it('Luna: clearing a typed blocker restores cap2 counting without changing custody or the member override', async () => {
+      const holder = 'su-luna-clearance-owner';
+      const nextHolder = 'su-luna-reassigned-owner';
+      const spec = { ...DEFAULT_CLAIM_SPEC, limits: { maxConcurrentClaims: 2 } };
+      expect((await setClaimSpec({ cupId: holder, spec }, db.sql)).ok).toBe(true);
+      await db.sql`
+        INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status, payload)
+        VALUES ('default', 'LUNA-cap-active', ${holder}, 'wip', NULL),
+               ('default', 'LUNA-cap-blocked', ${holder}, 'blocked', ${withBlockers(active)}::text::jsonb),
+               ('default', 'LUNA-cap-needs-human', ${holder}, 'needs-human', ${withBlockers(active)}::text::jsonb)`;
+      const before = await readClaimConcurrency({ cupId: holder, maxConcurrentClaims: 2 }, db.sql);
+      expect(before).toMatchObject({ activeClaims: 1, maxConcurrentClaims: 2, blocked: false });
+      expect(before.heldIds).toEqual(['LUNA-cap-active']);
+      expect([...before.blockerParkedIds].sort()).toEqual(['LUNA-cap-blocked', 'LUNA-cap-needs-human']);
+
+      await db.sql`UPDATE harness_shared.work_items SET payload = ${withBlockers(cleared)}::text::jsonb
+        WHERE workspace_id = 'default' AND feature_id = 'LUNA-cap-blocked'`;
+      const after = await readClaimConcurrency({ cupId: holder, maxConcurrentClaims: 2 }, db.sql);
+      expect(after).toMatchObject({ activeClaims: 2, maxConcurrentClaims: 2, blocked: true });
+      expect([...after.heldIds].sort()).toEqual(['LUNA-cap-active', 'LUNA-cap-blocked']);
+      expect(after.blockerParkedIds).toEqual(['LUNA-cap-needs-human']);
+      const owners = await db.sql<{ taken_by: string }[]>`SELECT taken_by FROM harness_shared.work_items
+        WHERE workspace_id = 'default' AND feature_id IN ('LUNA-cap-active', 'LUNA-cap-blocked', 'LUNA-cap-needs-human')`;
+      expect(owners.map(row => row.taken_by)).toEqual([holder, holder, holder]);
+      expect((await getClaimSpec({ cupId: holder }, db.sql)).limits).toEqual({ maxConcurrentClaims: 2 });
+
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = ${nextHolder}
+        WHERE workspace_id = 'default' AND feature_id = 'LUNA-cap-blocked'`;
+      expect(await readClaimConcurrency({ cupId: holder, maxConcurrentClaims: 2 }, db.sql))
+        .toMatchObject({ activeClaims: 1, blocked: false, heldIds: ['LUNA-cap-active'] });
+      expect(await readClaimConcurrency({ cupId: nextHolder, maxConcurrentClaims: 2 }, db.sql))
+        .toMatchObject({ activeClaims: 1, blocked: false, heldIds: ['LUNA-cap-blocked'], blockerParkedIds: [] });
+      expect((await getClaimSpec({ cupId: holder }, db.sql)).limits).toEqual({ maxConcurrentClaims: 2 });
+    });
   });
 
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {

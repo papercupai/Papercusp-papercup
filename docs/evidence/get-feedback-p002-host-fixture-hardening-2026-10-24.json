@@ -1,0 +1,263 @@
+{
+  "schemaVersion": 1,
+  "kind": "GF-P002-host-fixture-hardening-and-qualified-refresh",
+  "observedAt": "2026-10-24T06:23:54.401353+00:00",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "EI-26837794414133856",
+  "parentWorkItemId": "WI-10005889",
+  "scope": "Committed inline-fixture real-PTY host source proof only. Native consult, source-actor, lease-ABA, full-filesystem, quality cohort, independent acceptance and shipment remain open.",
+  "changes": {
+    "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+    "testSha256": "89e31419037e3f22e21e4a96efcb5e0e3ef060c08db6006fb3510c96da95ffab",
+    "productSourceChanged": false,
+    "productDeadlinesChanged": false,
+    "detector": "Per-test host event filename selection excludes late prior-fixture logs before bounded tail extraction. Existing regression asserts exclusion of a fresh peer log.",
+    "clock": "After observing the actual Starting frame, control Date.now across the original1000ms budget and3000ms ceiling; original drop/no-input oracles retained.",
+    "cleanup": "Signal the Starting fixture to terminate because it deliberately swallows QUIT."
+  },
+  "originalFailure": {
+    "testRunId": 21868587,
+    "passed": 129,
+    "failed": 7,
+    "skipped": 0,
+    "clean": true,
+    "commandExit": 3,
+    "log": "/tmp/gf-loop147-host-private.log",
+    "disposition": "Historical seven-case failures and worker-finalization failure remain evidence; six functional mechanisms and the old finalization cause are unproven."
+  },
+  "diagnostics": {
+    "unchangedFocused": {
+      "passed": 9,
+      "unselected": 127,
+      "log": "/tmp/gf-host-successor-focused-baseline.log"
+    },
+    "unchangedWholeFile": {
+      "passed": 136,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "log": "/tmp/gf-host-successor-full-baseline.log"
+    },
+    "changedFocused": {
+      "testRunId": 21869336,
+      "passed": 2,
+      "failed": 0,
+      "unselected": 134,
+      "worktreeDirty": true
+    }
+  },
+  "execution": {
+    "testRunId": 21869371,
+    "receiptId": "22b0763c-760e-4b6a-bc61-da9c24d19795",
+    "outcome": "inserted",
+    "commit": "3baa5c709177e00e5804a6d9f47112d5a19f48bf",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-3baa5c7091-60B4G7",
+    "status": "pass",
+    "passed": 136,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "exitCode": 0,
+    "log": "/tmp/gf-host-successor-committed-full.log",
+    "logSha256": "8d8561248160f2c57c9dc2ab8581a1ae78ace267a5a13643f11133b83d588aec",
+    "caseTitleSetSha256": "b63f6bea0911dc5e1421a848a2b051d50e4e083dcc6c7bd8bb615abed6239397",
+    "independentCanonicalRead": "/tmp/gf-host-final-canonical-counts.json"
+  },
+  "caseRetention": {
+    "priorNamedCaseCount": 136,
+    "currentNamedCaseCount": 136,
+    "missingPriorNamedCases": [],
+    "declaredCases": [
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+      "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for child-exit before acknowledgement and cleanup",
+      "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for missing-native-marker before acknowledgement and cleanup"
+    ],
+    "missingDeclaredCases": []
+  },
+  "measurement": {
+    "kind": "repo-files",
+    "testPaths": [
+      "apps/operator/lib/psu-pty-host.integration.test.ts"
+    ],
+    "sourcePaths": [
+      "apps/operator/package.json",
+      "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
+      "apps/operator/scripts/psu-launcher.mjs",
+      "apps/operator/scripts/psu-pty-host.mjs",
+      "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/operator-core/lib/child-output.ts",
+      "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "packages/operator-core/lib/process-identity.ts",
+      "packages/operator-core/package.json"
+    ],
+    "fixturePaths": [
+      "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "apps/operator/package.json",
+      "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/operator-core/package.json"
+    ],
+    "schemaVersion": 1
+  },
+  "sourceCensus": [
+    {
+      "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "sha256": "89e31419037e3f22e21e4a96efcb5e0e3ef060c08db6006fb3510c96da95ffab"
+    },
+    {
+      "path": "apps/operator/package.json",
+      "sha256": "49fd999f0961e8e106e4412087ea8caa2f68b42bd0ce4e9454d9774d6c4815b1"
+    },
+    {
+      "path": "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
+      "sha256": "a72aeb82beb2c1b5f363dcadb29994a45bf19952780f53196a2e63cdf482186b"
+    },
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "sha256": "8e658ced42d4f4fcb01f0a5916086d73170018567301490dfde50e1182c2dbca"
+    },
+    {
+      "path": "apps/operator/scripts/psu-pty-host.mjs",
+      "sha256": "bcf4af056ed7441d519b01f78b13a1da2a134e39b396ba954b0cc0745cc24711"
+    },
+    {
+      "path": "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "sha256": "651cac8c6257ab7dad254658dbd1474c2c94e814424a44532bfd6571307da910"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "e16502a07b06cfed7ec160d6484922c45d0ffbb94085fa8c5292d46253525b68"
+    },
+    {
+      "path": "package.json",
+      "sha256": "52b0f18baa476cfead93908efe9f8800348722756446d1be2c724c2d3550e14e"
+    },
+    {
+      "path": "packages/operator-core/lib/child-output.ts",
+      "sha256": "f4f3a3192876dc0131edf7b5f70b3b87e4a5763aa728aeae6135234bd7b4e138"
+    },
+    {
+      "path": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "sha256": "2e8104f0f295cdcdda13bedb60561dee99cbe6d2f0d5a5ac3684e6c34a5d80a5"
+    },
+    {
+      "path": "packages/operator-core/lib/process-identity.ts",
+      "sha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb"
+    },
+    {
+      "path": "packages/operator-core/package.json",
+      "sha256": "704f9ceba27910c92ad092a5fb67bd5e27ff1c53b190e1b86bd5a53f7ee5a7bf"
+    }
+  ],
+  "sourceCensusMethod": "Read exact committed blobs named by the independently qualified binding. Disposable source copy was collected after the test; commit and durable receipts remain authoritative. No full transitive graph claim.",
+  "binding": {
+    "id": 68551,
+    "qualificationBeforeRetirement": {
+      "overall": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "staleReasons": [],
+      "unknownReasons": [],
+      "comparisonSupplied": true,
+      "provenance": "server-measured"
+    },
+    "designAttestations": {
+      "outcome": "passed",
+      "skipped": false,
+      "executed": true,
+      "targeted": "GF-P002-source",
+      "collected": true,
+      "testCases": [
+        "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed claude session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed codex session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles accepted acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles unknown acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes managed omp session-port parent proof before HTTP ack and handles refused acknowledgement (EI-259750)",
+        "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for child-exit before acknowledgement and cleanup",
+        "hostThroughPty real round-trip > publishes a managed session-port negative parent proof for missing-native-marker before acknowledgement and cleanup"
+      ],
+      "testLayer": "integration",
+      "fixtureFree": false,
+      "pathReachable": true,
+      "fixtureCalibrated": true,
+      "oracleIndependent": true
+    },
+    "finalAudit": {
+      "ok": true,
+      "evidence": [
+        {
+          "id": 68551,
+          "testRunId": 21869371,
+          "currentness": {
+            "overall": "current",
+            "staleReasons": [],
+            "unknownReasons": []
+          }
+        },
+        {
+          "id": 68194,
+          "testRunId": 21861888,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "withdrawal": {
+            "at": "2026-10-24T06:20:57.824Z",
+            "by": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+            "reason": "Replacement68551 from clean committed21869371 independently measured CURRENT in all applicable dimensions before this retirement. Exact11 declared cases/design attestations and11source+6fixture recipe retained; full136 previous named cases pass. Old68194 remains dated history; native/quality/ship gaps and original intermittent failure record remain open."
+          }
+        }
+      ]
+    }
+  },
+  "privatePg": {
+    "datadir": "/tmp/pcv/papercusp-test-pg-XCOrcu",
+    "dataRemovedAfterRun": true,
+    "shutdownObserved": true
+  },
+  "typecheck": {
+    "errorCount": 8,
+    "recordedFileBaseline": 14,
+    "syntaxErrors": 0,
+    "scope": "Requested test file only; each semantic diagnostic is on an exact line retained from originalHEAD. No typecheck0 claim.",
+    "receipt": "/tmp/gf-host-successor-typecheck.json"
+  },
+  "remaining": [
+    "EI-26837794414133856 remains OPEN for the six unproven original functional mechanisms and original worker-finalization cause.",
+    "Full GF-P002-source, BAR and current native matrix remain open.",
+    "R5 cold-concurrent900ms agenda-loss defect remains open.",
+    "Original28326/28545 and historical native/cohort limitations retained.",
+    "Independent acceptance and final shipment remain open."
+  ]
+}

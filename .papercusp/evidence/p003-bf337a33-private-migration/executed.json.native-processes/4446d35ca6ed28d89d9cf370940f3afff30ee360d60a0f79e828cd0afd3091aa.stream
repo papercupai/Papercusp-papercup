@@ -1,0 +1,27 @@
+TEST_FILE_ROUTE requested=1 groups=1
+TEST_FILE_PROVENANCE head=bf337a337a testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-10-25T05:37:37.325Z
+  HEAD         : bf337a337a
+  tested files : packages/operator-core/lib/release-preflight-migration-boot-smoke.integration.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+ROUTE cwd=packages/operator-core config=vitest.integration.config.ts
+TEST_FILE_SOURCE_MAP_OUT group=0 path="/home/marsh-office/papercupai-workspace/papercusp/.papercusp/evidence/p003-bf337a33-private-migration/executed.json"
+  requested lib/release-preflight-migration-boot-smoke.integration.test.ts
+  matched lib/release-preflight-migration-boot-smoke.integration.test.ts
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.8 [39m[90m/mnt/data/offload/papercusp-r2gcs-p003-bf337a33/packages/operator-core[39m
+
+ [32m✓[39m lib/release-preflight-migration-boot-smoke.integration.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 16776[2mms[22m[39m
+     [33m[2m✓[22m[39m every real libs/db/sql migration applies cleanly from scratch (the migration-631 class) [33m 4377[2mms[22m[39m
+     [33m[2m✓[22m[39m a pending data-backfill applies against a SEEDED database, not just an empty one [33m 7091[2mms[22m[39m
+     [33m[2m✓[22m[39m a migration that breaks a per-harness dependent view fails here, not at boot (the migration-678 class) [33m 4816[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 01:37:54
+[2m   Duration [22m 29.35s[2m (transform 1.01s, setup 378ms, import 1.99s, tests 16.78s, environment 0ms)[22m
+
+TEST_FILE_PROVENANCE head=bf337a337a testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-10-25T05:38:26.223Z
+  HEAD         : bf337a337a
+  tested files : packages/operator-core/lib/release-preflight-migration-boot-smoke.integration.test.ts  [clean]
+  scope        : the NAMED paths above only — an edit to any OTHER module in their import graph invalidates this result just as thoroughly and is NOT measured here
+TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=bf337a337a uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-25T05:37:37.325Z childSubstituted=0 skippedTests=0

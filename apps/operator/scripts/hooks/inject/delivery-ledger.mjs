@@ -14,8 +14,11 @@
  * request echoes it as `confirmedDelivery`. No record ⇒ no promotion ⇒ the
  * operator re-diffs from the last proven floor and re-delivers.
  *
- * One file per session under `<PAPERCUSP_HOME or ~/.papercusp>/state/turn-start-delivery/`.
- * The hook is a fresh process every turn, so the token has to outlive it.
+ * The current token and the last 128 immutable emission receipts live under
+ * `<PAPERCUSP_HOME or ~/.papercusp>/state/turn-start-delivery/`. A successor may
+ * replace the token pointer, but retains earlier token/payload-hash/control
+ * provenance. Receipts prove stdout emission, never a later server ACK, and
+ * contain no hook plaintext.
  *
  * FAIL-SILENT, like everything in this directory: every IO failure is swallowed.
  * If the directory cannot be made writable the ledger is not opened at all and the
@@ -25,17 +28,64 @@
  * block forever.
  */
 
-import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { accessSync, constants, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
  * @typedef {object} DeliveryLedger
  * @property {() => string | null} confirmed  the token this session last proved it emitted
- * @property {(token: unknown) => void} offer  remember the token the operator just returned
+ * @property {(token: unknown, emission?: { payload?: string, client?: string, nativeSessionId?: string | null, control?: object | null }) => void} offer
+ *   remember the returned token and the exact payload that the caller will emit
  * @property {() => boolean} commit           record the offered token; call ONLY after emitting
  */
+
+export const MAX_DELIVERY_RECEIPTS = 128;
+
+const hash = value => createHash('sha256').update(value).digest('hex');
+const isHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const revision = value => value && isHash(value.specificationRevision) && isHash(value.stateRevision)
+  ? { specificationRevision: value.specificationRevision, stateRevision: value.stateRevision }
+  : null;
+
+/** Whitelist metadata before writing: context text never enters the receipt. */
+function emissionMetadata(owner, emission) {
+  const payload = typeof emission?.payload === 'string' ? emission.payload : null;
+  const c = emission?.control;
+  const control = c?.targetOwnerId === owner && Number.isSafeInteger(c.generation) && c.generation >= 0
+    ? {
+        generation: c.generation,
+        stateHash: isHash(c.stateHash) ? c.stateHash : null,
+        activationStatus: ['desired', 'prepared', 'applied', 'failed'].includes(c.state?.activation?.status)
+          ? c.state.activation.status : null,
+        desired: revision(c.state?.activation?.desired),
+        prepared: revision(c.state?.activation?.prepared),
+        applied: revision(c.state?.activation?.applied),
+      }
+    : null;
+  return {
+    payloadSha256: payload === null ? null : hash(payload),
+    payloadBytes: payload === null ? null : Buffer.byteLength(payload),
+    client: ['claude', 'codex', 'omp'].includes(emission?.client) ? emission.client : null,
+    nativeSessionId: typeof emission?.nativeSessionId === 'string' && emission.nativeSessionId.length <= 200
+      ? emission.nativeSessionId : null,
+    control,
+  };
+}
+
+/** Retention never deletes the receipt being committed, including timestamp ties. */
+function pruneEmissionReceipts(dir, current) {
+  try {
+    const older = readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /^[a-f0-9]{64}\.json$/.test(entry.name) && entry.name !== current)
+      .map(entry => ({ name: entry.name, mtime: statSync(join(dir, entry.name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
+    for (const entry of older.slice(MAX_DELIVERY_RECEIPTS - 1)) {
+      try { unlinkSync(join(dir, entry.name)); } catch { /* another hook may have pruned it */ }
+    }
+  } catch { /* optional retention must not change a successful emission */ }
+}
 
 /**
  * Where the ledger lives. PAPERCUSP_HOME is an isolation pin (see
@@ -65,8 +115,10 @@ export function openDeliveryLedger(owner, env = process.env) {
   }
   // Session ids are `su-<uuid>`; anything else is flattened so it cannot name a
   // path outside the ledger directory.
-  const file = join(dir, `${owner.replace(/[^A-Za-z0-9._-]/g, '_')}.token`);
-  /** @type {string | null} */
+  const key = owner.replace(/[^A-Za-z0-9._-]/g, '_');
+  const file = join(dir, `${key}.token`);
+  const receipts = join(dir, `${key}.emissions`);
+  /** @type {{ token: string, metadata: ReturnType<typeof emissionMetadata> } | null} */
   let offered = null;
   return {
     confirmed() {
@@ -77,20 +129,42 @@ export function openDeliveryLedger(owner, env = process.env) {
         return null;
       }
     },
-    offer(token) {
-      offered = typeof token === 'string' && token ? token : null;
+    offer(token, emission) {
+      offered = typeof token === 'string' && token
+        ? { token, metadata: emissionMetadata(owner, emission) } : null;
     },
     commit() {
       if (!offered) return false;
-      // Write-then-rename so a hook killed mid-write leaves the previous token
-      // intact rather than a truncated one that matches nothing.
-      const tmp = `${file}.${process.pid}.tmp`;
+      const name = `${hash(offered.token)}.json`;
+      const receiptFile = join(receipts, name);
+      const receiptTmp = `${receiptFile}.${process.pid}.${randomUUID()}.tmp`;
+      const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
       try {
-        writeFileSync(tmp, offered, { mode: 0o600 });
+        mkdirSync(receipts, { recursive: true, mode: 0o700 });
+        const record = { version: 1, stage: 'stdout-emitted', owner, token: offered.token,
+          recordedAt: new Date().toISOString(), ...offered.metadata };
+        writeFileSync(receiptTmp, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
+        // Publish complete bytes without overwriting an earlier emission. A
+        // kill before this link leaves no partial receipt at the durable name.
+        try { linkSync(receiptTmp, receiptFile); }
+        catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          const existing = JSON.parse(readFileSync(receiptFile, 'utf8'));
+          if (existing.version !== 1 || existing.stage !== 'stdout-emitted' ||
+              existing.owner !== owner || existing.token !== offered.token) throw error;
+        }
+        // Advance the compatible current-token pointer only after preserving
+        // this emission. Neither the receipt nor the pointer asserts an ACK.
+        writeFileSync(tmp, offered.token, { mode: 0o600, flag: 'wx' });
         renameSync(tmp, file);
+        pruneEmissionReceipts(receipts, name);
         return true;
       } catch {
         return false;
+      } finally {
+        for (const pending of [receiptTmp, tmp]) {
+          try { unlinkSync(pending); } catch { /* renamed, linked, or never created */ }
+        }
       }
     },
   };

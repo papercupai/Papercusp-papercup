@@ -91,6 +91,7 @@ import { PlanAuditButton } from './PlanAuditPane';
 import type { PlanItemTypeView } from '@papercusp/operator-core/lib/plan-types/item-type-view';
 import PlanItemTypeBadge, { PlanTypeBadge } from './PlanItemTypeBadge';
 import PlanItemTypePanel from './PlanItemTypePanel';
+import PlanEngineeringEvidence from './PlanEngineeringEvidence';
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -279,6 +280,7 @@ export default function PlanDashboard({
   // Literal key (=== PLAN_ITEM_TYPE_PARAM): portal's surface-param isolation scan
   // reads only string-literal useQueryState keys, and registers `pdtype` for plans.
   const [openTypeItem, setOpenTypeItem] = useQueryState('pdtype', parseAsString);
+  const [evidenceItem, setEvidenceItem] = useState<string | null>(null);
   const openTypeView = openTypeItem ? typeByItem.get(openTypeItem) ?? null : null;
 
   // Open-session chat (?pdsess — deep-linkable, same modal the popup tab uses).
@@ -856,6 +858,8 @@ export default function PlanDashboard({
                             testId={`plan-dash-item-type-${it.id}`}
                           />
                         ) : null}
+                        <button type="button" className="plan-dash__iwork" onClick={() => setEvidenceItem(it.id)}
+                          aria-label={`Inspect engineering evidence for ${it.id}`}>Evidence</button>
                         {linked ? (
                           <button
                             type="button"
@@ -886,6 +890,8 @@ export default function PlanDashboard({
             </div>
           )}
 
+          {evidenceItem && harness ? <PlanEngineeringEvidence key={`${planSlug}:${evidenceItem}`} plan={planSlug}
+            item={evidenceItem} harness={harness} onClose={() => setEvidenceItem(null)} onEditItem={() => openPlanTarget(evidenceItem)} /> : null}
           {openTypeView ? (
             <PlanItemTypePanel
               planSlug={planSlug}

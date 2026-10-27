@@ -5,6 +5,14 @@ const PRIVATE_STATE_REMOVE_RETRIES = 3;
 const PRIVATE_STATE_REMOVE_RETRY_DELAY_MS = 100;
 const RETRYABLE_REMOVE_ERRORS = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM']);
 
+/** async-exit-hook registers lazily; unhookEvent throws for an absent event. */
+export function unhookRegisteredExitSignals(exitHook) {
+  const registered = new Set(exitHook.hookedEvents());
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    if (registered.has(signal)) exitHook.unhookEvent(signal);
+  }
+}
+
 export async function removePrivateState(path, remove = rm) {
   let lastError;
   for (let attempt = 0; attempt <= PRIVATE_STATE_REMOVE_RETRIES; attempt++) {

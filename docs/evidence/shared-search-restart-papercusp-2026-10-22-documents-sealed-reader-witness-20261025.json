@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "shared-search-restart-papercusp-2026-10-22",
+  "workItemId": "WI-6554700010022135",
+  "edition": "20261025-b",
+  "status": "partial-contributing-evidence",
+  "scope": "Isolated actual sealed pot writer, blind candidate selection, opening, ranking and merge reader",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57",
+    "frozenSourcePinsMatched": 10,
+    "capturedSourcePins": 16,
+    "sourcePinsStableAcrossRun": true
+  },
+  "test": {
+    "path": "packages/operator-core/lib/data-sources/documents-sealed-freshness.integration.test.ts",
+    "sha256": "da3955320b598120be2a6c11aefadfc6e40823612f54a792bdb76b3d48289231",
+    "command": "node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/data-sources/documents-sealed-freshness.integration.test.ts",
+    "nativeExecSessionId": 3925,
+    "exitCode": 0,
+    "testRunId": "22046702",
+    "ledgerOutcome": "inserted",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "databaseCleanup": "dropped",
+    "provenance": "Local shared-tree run; tested file untracked at execution and native worktreeDirty=true. Later commit does not upgrade provenance.",
+    "typecheck": {
+      "tool": "build:typecheck",
+      "project": "packages/operator-core",
+      "files": ["packages/operator-core/lib/data-sources/documents-sealed-freshness.integration.test.ts"],
+      "scopeToFiles": true,
+      "scopedVerdict": "requested-files-clean",
+      "errorsInRequestedFiles": 0,
+      "otherProjectErrors": 24,
+      "scope": "Named-file diagnostics only; whole-project cleanliness is not claimed"
+    }
+  },
+  "population": {
+    "observedFieldIds": [
+      "papercusp/documents:search/pot/title",
+      "papercusp/documents:search/pot/snippet",
+      "papercusp/documents:search/pot/occurredAt",
+      "papercusp/documents:search/pot/privacy"
+    ],
+    "declaredCases": ["stored-fields", "content-update", "candidate-change", "key-transition"],
+    "executedCases": ["stored-fields", "content-update", "candidate-change", "key-transition"],
+    "unexecutedCases": [],
+    "readerCaptures": 9,
+    "auxiliaryControlReceipts": 2,
+    "nonemptyFieldObservations": 40,
+    "unknownFieldOracleResults": 40,
+    "qualifiedFieldClaims": 0
+  },
+  "findings": [
+    "The real writer stores empty title/text plus sealed content and blind terms. Search output matches a separate canonical transaction and opening for each returned field.",
+    "Foreign-pot and negated-term candidates are absent; matching output carries positive native tsRank.",
+    "An in-place update preserves entity identity, changes the stored tuple revision, and appears on the next reader call. An old-title oracle replay is stale; it is not an enforcement bypass.",
+    "A newly committed eligible sealed match appears in the bounded complete controlled corpus; replacing both fields with nonmatching content removes it. This establishes only that controlled candidate scenario.",
+    "After DEK rotation, both old and new envelope versions remain readable. Destroying the fixture organization's key makes the reader fail closed with OrganizationKeyUnavailableError."
+  ],
+  "limits": [
+    "Provider/candidate revisions are absent, so all field oracles remain unknown/degrade; canonical xmin proves only stored tuple identity.",
+    "Synthetic provider imports and test KMS do not establish production provider currentness or production key custody.",
+    "The direct reader receives an admin client and explicit pot context; host authentication, server-owned presence, RLS and full authority/runtime closure are unmeasured.",
+    "Positive tsRank and matching candidates do not establish a captured native lexical trace or exhaustive candidate coverage.",
+    "Sealed organization and live legs, remaining field population, enforcement bypass/fix-revert, quality labels, retrieval costs, budgets, independent acceptance and shipment remain open."
+  ],
+  "launchCorrection": {
+    "firstTaskId": "0mvo4mvhpuvtjumpqnt",
+    "outcome": "Failed reporter-sink preflight before Postgres allocation or test execution; managed shell did not inherit DATABASE_URL. Native shell supplied the explicit reporter-only sink for edition b."
+  },
+  "artifacts": [
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-sealed-reader-20261025-b/witness.json",
+      "sha256": "d816ee5f0e1053618f26898a3bb28d212c1d8a83e3a8519ba81c64d04e49c621",
+      "bytes": 101717,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-sealed-reader-20261025-b/native-ledger-receipt.json",
+      "sha256": "af5f32db2ae68e44e4e1722582eec7e76d8dae3d42ca66c27d350b7dda81f854",
+      "bytes": 3582,
+      "completeReadbackEqual": true
+    },
+    {
+      "slug": "papercusp",
+      "rel_path": "evidence/shared-search-restart-papercusp-2026-10-22/documents-sealed-reader-20261025-b/native-test.log",
+      "sha256": "bacd80715b203477ba2e3066bb7cbc48311eb283bedab25445bc3499337e4f83",
+      "bytes": 861191,
+      "completeReadbackEqual": true
+    }
+  ],
+  "qualifiedBaseline": false,
+  "rankingTreatmentAllowed": false,
+  "shipped": false
+}

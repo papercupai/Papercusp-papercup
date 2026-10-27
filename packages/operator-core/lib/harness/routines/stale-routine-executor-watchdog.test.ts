@@ -20,6 +20,9 @@ import {
   STALE_EXECUTOR_RESTART_COOLDOWN_MS,
   STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
   STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
+  STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS,
+  noYieldGitSyncPassOwners,
+  parsePtoolResultBody,
   staleExecutorRetryBackoffMs,
   defaultPtoolScriptPath,
   evaluateGateCodeFastPath,
@@ -534,6 +537,177 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
     nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
     await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+  });
+
+  // EI-27074588252473034: the shape ptool ACTUALLY emits for a refused dev:restart.
+  // An isError result goes to STDERR behind `✗ tool returned an error:`, interleaved
+  // with connection-trace lines, and stdout is EMPTY (measured 2026-10-27 against
+  // :3170 with a refusing read-only tool). The fixtures above put the body on stdout,
+  // which is why the journal could log `ptool_failed` for every real refusal while
+  // these cases stayed green.
+  const NO_YIELD_OWNER = 'system:git-sync:3929328:537bc608-0000-4000-8000-000000000001';
+  const refusalOnStderr = (holders: unknown[]) => ({
+    stdout: '',
+    stderr:
+      'ptool: connection trace {"schemaVersion":"ptool-connection-trace-v1","event":"http-request-start"}\n' +
+      '✗ tool returned an error:\n' +
+      JSON.stringify({
+        ok: false,
+        target: 'bg-host',
+        reason: 'git_sync_barrier_drain_timeout',
+        restarted: false,
+        drained: false,
+        resource: 'git-sync',
+        holders,
+      }) +
+      '\n',
+    error: 'Command failed: node ptool.mjs dev:restart --json -',
+  });
+
+  it('classifies a refusal whose body ptool put on STDERR as the drain refusal, never ptool_failed (EI-27074588252473034)', async () => {
+    const run = async (command: string) =>
+      command === 'systemctl' ? { stdout: '101\n' } : refusalOnStderr([]);
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      now: () => 8_000_000_000_000,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+    });
+    expect(result).toMatchObject({ attempted: true, restarted: false, code: 'git_sync_barrier_drain_timeout' });
+    expect(result.code).not.toBe('ptool_failed');
+  });
+
+  it('parsePtoolResultBody: stdout first; stderr only for an object with a boolean ok', () => {
+    expect(parsePtoolResultBody('{"ok":true,"restarted":true}', '')).toEqual({ ok: true, restarted: true });
+    expect(parsePtoolResultBody('', '✗ tool returned an error:\n{"ok":false,"reason":"x"}\n')).toEqual({
+      ok: false,
+      reason: 'x',
+    });
+    // A JSON trace line on stderr is not the answer.
+    expect(parsePtoolResultBody('', '{"schemaVersion":"ptool-connection-trace-v1"}\n')).toBeNull();
+    expect(parsePtoolResultBody('', '')).toBeNull();
+  });
+
+  it('noYieldGitSyncPassOwners: shared git-sync fire owners only, deduplicated', () => {
+    expect(
+      noYieldGitSyncPassOwners([
+        { owner: NO_YIELD_OWNER, owner_label: 'git-sync:papercusp', mode: 'shared', status: 'held' },
+        { owner: NO_YIELD_OWNER, owner_label: 'git-sync:papercusp', mode: 'shared', status: 'held' },
+        { owner: 'system:dev-restart:git-sync-barrier:1:abc', owner_label: null, mode: 'exclusive', status: 'draining' },
+        { owner: 'su-someone', owner_label: null, mode: 'shared', status: 'held' },
+      ]),
+    ).toEqual([NO_YIELD_OWNER]);
+    expect(noYieldGitSyncPassOwners(undefined)).toEqual([]);
+  });
+
+  it('arms the retry on the no-yield pass completing, not on a timed backoff (P-037, EI-27074588252473034)', async () => {
+    let nowMs = 9_000_000_000_000;
+    let ptoolCalls = 0;
+    let holderReads = 0;
+    let liveOwners: string[] | null = [NO_YIELD_OWNER];
+    let answer: 'refuse' | 'restart' = 'refuse';
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return answer === 'refuse'
+        ? refusalOnStderr([{ owner: NO_YIELD_OWNER, owner_label: 'git-sync:papercusp', mode: 'shared', status: 'held' }])
+        : { stdout: JSON.stringify({ ok: true, restarted: true, restartedFromPid: 101 }) };
+    };
+    const deps = {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      verifyGeneration: async () => ({ verified: true, beforePid: 101, observedPid: 202, code: 'generation_changed' as const }),
+      liveGitSyncHolderOwners: async () => {
+        holderReads += 1;
+        return liveOwners;
+      },
+    };
+    const attempt = () => restartStaleBgHostExecutor('port-3271', staleVerdict(), deps);
+
+    await expect(attempt()).resolves.toMatchObject({
+      attempted: true,
+      code: 'git_sync_barrier_drain_timeout',
+      awaitingPassCompletion: [NO_YIELD_OWNER],
+    });
+
+    // Long past the timed backoff the old code would have retried at (3 min), the pass
+    // still holds: no attempt, so no queued exclusive back-pressuring other harnesses.
+    nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS + 60_000;
+    await expect(attempt()).resolves.toMatchObject({ attempted: false, code: 'awaiting_git_sync_pass' });
+    nowMs += 10 * 60_000;
+    await expect(attempt()).resolves.toMatchObject({ attempted: false, code: 'awaiting_git_sync_pass' });
+    expect(ptoolCalls).toBe(1);
+
+    // The pass ends (its fire owner leaves the barrier) while another fire holds it:
+    // the next sweep retries at once, inside what any timed window would still forbid.
+    liveOwners = ['system:git-sync:4000000:11111111-0000-4000-8000-000000000002'];
+    answer = 'restart';
+    nowMs += 30_000;
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, restarted: true, code: 'restarted' });
+    expect(ptoolCalls).toBe(2);
+    expect(holderReads).toBe(3);
+
+    // After a restart nothing is awaited any more: the next refusal-free sweep reads no holders.
+    nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+    answer = 'refuse';
+    liveOwners = [NO_YIELD_OWNER];
+    await attempt();
+    expect(holderReads).toBe(3);
+  });
+
+  it('falls back to the backstop, never an early retry, while the holder read fails (P-037)', async () => {
+    let nowMs = 9_500_000_000_000;
+    let ptoolCalls = 0;
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return refusalOnStderr([{ owner: NO_YIELD_OWNER, owner_label: 'git-sync:papercusp', mode: 'shared', status: 'held' }]);
+    };
+    const deps = {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      liveGitSyncHolderOwners: async (): Promise<string[] | null> => {
+        throw new Error('lock store unreachable');
+      },
+    };
+    const attempt = () => restartStaleBgHostExecutor('port-3271', staleVerdict(), deps);
+
+    await attempt();
+    nowMs += STALE_EXECUTOR_PASS_COMPLETION_BACKSTOP_MS - 1_000;
+    await expect(attempt()).resolves.toMatchObject({ attempted: false, code: 'awaiting_git_sync_pass' });
+    expect(ptoolCalls).toBe(1);
+    nowMs += 1_000;
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+    expect(ptoolCalls).toBe(2);
+  });
+
+  it('keeps the timed backoff when the refusal names no git-sync pass (P-037 scope)', async () => {
+    let nowMs = 9_800_000_000_000;
+    let holderReads = 0;
+    const run = async (command: string) =>
+      command === 'systemctl'
+        ? { stdout: '101\n' }
+        : refusalOnStderr([
+            { owner: 'system:dev-restart:git-sync-barrier:1:abc', owner_label: null, mode: 'exclusive', status: 'held' },
+          ]);
+    const deps = {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      liveGitSyncHolderOwners: async () => {
+        holderReads += 1;
+        return [];
+      },
+    };
+    const first = await restartStaleBgHostExecutor('port-3271', staleVerdict(), deps);
+    expect(first.awaitingPassCompletion).toBeUndefined();
+    nowMs += 30_000;
+    await expect(restartStaleBgHostExecutor('port-3271', staleVerdict(), deps)).resolves.toMatchObject({
+      attempted: false,
+      code: 'restart_cooldown',
+    });
+    expect(holderReads).toBe(0);
   });
 
   it('staleExecutorRetryBackoffMs: base for one refusal, doubling, capped at 30 min', () => {

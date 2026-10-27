@@ -944,6 +944,11 @@ interface LoopRow {
   id: string;
   target_owner_id: string;
   interval_sec: number;
+  /** The concrete schedule currently installed on the row; needed to compare a provider
+   *  deadline marker against the exact timestamp it was written with. */
+  next_fire_at?: Date | string | null;
+  /** `metadata.providerRetrySchedule.nextFireAt`, if a provider wall wrote this exact schedule. */
+  provider_retry_next_fire_at?: Date | string | null;
   parked: boolean;
   /** EI-11407: true when the routine carries a `cron` trigger_config key (a cron+loop).
    *  Distinguishes an ARMED pure loop (newly in-scope for the reachability sweep below) from
@@ -1463,6 +1468,8 @@ export async function reconcileLoopRoutines(
     SELECT r.id,
            r.target_owner_id,
            r.reschedule_interval_sec AS interval_sec,
+           r.next_fire_at,
+           r.metadata->'providerRetrySchedule'->>'nextFireAt' AS provider_retry_next_fire_at,
            (r.next_fire_at = 'infinity'::timestamptz) AS parked,
            jsonb_exists(r.trigger_config, 'cron') AS is_cron,
            r.install_slug,
@@ -1514,7 +1521,16 @@ export async function reconcileLoopRoutines(
                           WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
                           THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
                         END = COALESCE((r.metadata->>'fire_count')::int, 0)
-                    AND u.ts >= start_stamp.created_at
+                    AND (
+                      (start_stamp.detail->>'source' = 'session-ingest'
+                        AND start_stamp.workspace_id = u.workspace_id
+                        AND start_stamp.detail->'indexedTurn'->>'workspaceId' = u.workspace_id
+                        AND start_stamp.detail->'indexedTurn'->>'sourceKind' = u.source_kind
+                        AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
+                        AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
+                      OR (start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                        AND u.ts >= start_stamp.created_at)
+                    )
                )) AS last_loop_turn_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
@@ -1795,6 +1811,13 @@ export async function reconcileLoopRoutines(
         // avoid clearing an error that raced in after this SELECT snapshot. Missing
         // discriminator fields are legacy/unit-test evidence-unavailable and fail open.
         const armedLoopTurnAt = loopTurnCompletionAt(row, lastFiredMs);
+        const armedCurrentScheduleMs = tsMs(row.next_fire_at);
+        const armedProviderDeadlineMs = tsMs(row.provider_retry_next_fire_at);
+        const armedProviderDeadlineIsCurrent =
+          armedCurrentScheduleMs != null && armedProviderDeadlineMs != null &&
+          armedCurrentScheduleMs === armedProviderDeadlineMs;
+        const armedProviderDeadlineIso =
+          armedProviderDeadlineMs == null ? null : new Date(armedProviderDeadlineMs).toISOString();
         if (
           armedLoopTurnAt != null &&
           Object.prototype.hasOwnProperty.call(row, 'fire_state_last_fired_at')
@@ -1824,7 +1847,59 @@ export async function reconcileLoopRoutines(
             }
           }
         }
-        continue; // armed pure loop: nothing to rebase either way (see comment above)
+        // A provider retry deadline is a temporary hold, not the loop's new cadence. The
+        // routine is finite/armed while that hold is active, so the parked completion branch
+        // below cannot see it. Only a strict loop-origin completion with readable non-wedge
+        // assistant text may replace the exact marked timestamp; the marker and next_fire_at
+        // are both in the UPDATE predicate so a concurrent arm/retry wins without being moved.
+        const armedTurnSucceeded =
+          armedLoopTurnAt != null &&
+          typeof row.last_assistant_text_after_fire === 'string' &&
+          row.last_assistant_text_after_fire.trim().length > 0 &&
+          classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs) == null;
+        if (armedTurnSucceeded && armedProviderDeadlineIsCurrent && armedProviderDeadlineIso != null) {
+          const rearmAtMs = futureRearmAtMs(armedLoopTurnAt!, intervalMs, nowMs, intervalMs);
+          const reArmIso = new Date(rearmAtMs).toISOString();
+          const updated = await db<{ id: string }[]>`
+            UPDATE harness_shared.routines
+               SET next_fire_at = ${reArmIso}::timestamptz,
+                   metadata = COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule',
+                   updated_at = now()
+             WHERE id = ${row.id}
+               AND active = TRUE
+               AND reschedule_interval_sec IS NOT NULL
+               AND next_fire_at = ${armedProviderDeadlineIso}::timestamptz
+               AND metadata->'providerRetrySchedule'->>'nextFireAt' = ${String(row.provider_retry_next_fire_at)}
+               AND last_fired_at = ${row.last_fired_at}::timestamptz
+            RETURNING id
+          `;
+          if (updated.length > 0) {
+            result.rearmed++;
+            result.loops.push({
+              id: row.id,
+              targetOwnerId: row.target_owner_id,
+              completedAt: armedLoopTurnAt!,
+              nextFireAt: rearmAtMs,
+              via: 'loop-turn',
+            });
+            void recordLoopTransition(db, {
+              workspaceId: row.routine_workspace_id,
+              installSlug: row.install_slug,
+              routineId: row.id,
+              routineName: row.name,
+              targetOwnerId: row.target_owner_id,
+              event: 'rearmed',
+              actor: 'reconcile-loop-routines',
+              newNextFireAt: reArmIso,
+              intervalSec: row.interval_sec,
+              detail: {
+                via: 'strict-loop-turn-provider-deadline-rebase',
+                providerDeadlineAt: armedProviderDeadlineIso,
+              },
+            });
+          }
+        }
+        continue; // armed pure loop: nothing else to rebase either way (see comment above)
       }
 
       // Resolve the re-arm time + provenance.
@@ -2457,6 +2532,11 @@ export async function reconcileLoopRoutines(
       const deferPastWall = turnDeath?.reason === 'usage_limit' && rearmMs > intervalMs;
       const rearmAtMs = futureRearmAtMs(deferPastWall ? nowMs : completedAt, rearmMs, nowMs, intervalMs);
       const reArmIso = new Date(rearmAtMs).toISOString();
+      const currentScheduleMs = tsMs(row.next_fire_at);
+      const providerDeadlineMs = tsMs(row.provider_retry_next_fire_at);
+      const providerDeadlineIsCurrent =
+        currentScheduleMs != null && providerDeadlineMs != null && currentScheduleMs === providerDeadlineMs;
+      const providerDeadlineIso = providerDeadlineMs == null ? null : new Date(providerDeadlineMs).toISOString();
 
       // WI-6852: a USAGE-LIMIT death is the one case that must be allowed to push next_fire_at
       // LATER. The general statement below is never-later BY CONSTRUCTION (LEAST, plus a WHERE
@@ -2487,6 +2567,10 @@ export async function reconcileLoopRoutines(
                      WHEN next_fire_at = 'infinity'::timestamptz THEN ${reArmIso}::timestamptz
                      ELSE GREATEST(next_fire_at, ${reArmIso}::timestamptz)
                    END,
+                   metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                     'providerRetrySchedule',
+                     jsonb_build_object('nextFireAt', ${reArmIso}, 'source', 'reconcile-loop-routines')
+                   ),
                    updated_at = now()
              WHERE id = ${row.id}
                AND reschedule_interval_sec IS NOT NULL
@@ -2494,9 +2578,27 @@ export async function reconcileLoopRoutines(
                      OR next_fire_at < ${reArmIso}::timestamptz )
             RETURNING id
           `
+        : providerDeadlineIsCurrent
+          ? via === 'loop-turn' && turnDeath == null && providerDeadlineIso != null
+            ? await db<{ id: string }[]>`
+                UPDATE harness_shared.routines
+                   SET next_fire_at = ${reArmIso}::timestamptz,
+                       metadata = COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule',
+                       updated_at = now()
+                 WHERE id = ${row.id}
+                   AND active = TRUE
+                   AND reschedule_interval_sec IS NOT NULL
+                   AND next_fire_at = ${providerDeadlineIso}::timestamptz
+                   AND metadata->'providerRetrySchedule'->>'nextFireAt' = ${String(row.provider_retry_next_fire_at)}
+                   AND last_fired_at = ${row.last_fired_at}::timestamptz
+                RETURNING id
+              `
+            : []
         : await db<{ id: string }[]>`
         UPDATE harness_shared.routines
-           SET next_fire_at = LEAST(next_fire_at, ${reArmIso}::timestamptz), updated_at = now()
+           SET next_fire_at = LEAST(next_fire_at, ${reArmIso}::timestamptz),
+               metadata = COALESCE(metadata, '{}'::jsonb) - 'providerRetrySchedule',
+               updated_at = now()
          WHERE id = ${row.id}
            AND reschedule_interval_sec IS NOT NULL
            AND ( ${!withheldFireHasNoTurn}

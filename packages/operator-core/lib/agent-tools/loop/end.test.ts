@@ -22,6 +22,15 @@ const readFleetWindDownLoopEndAuthorizationMock = vi.hoisted(() =>
 const readFleetWindDownLoopEndRequirementMock = vi.hoisted(() =>
   vi.fn(async (..._a: unknown[]) => null as boolean | null),
 );
+// WI-6554700010029607: the fleet-member claimable-work rail. Default null (no refusal) so
+// every other case here never reaches its real presence/claimability/PG reads.
+const readFleetMemberLoopEndRefusalMock = vi.hoisted(() =>
+  vi.fn(async (..._a: unknown[]) => null as Record<string, unknown> | null),
+);
+vi.mock('./fleet-member-claimable-work', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet-member-claimable-work')>()),
+  readFleetMemberLoopEndRefusal: (...a: unknown[]) => readFleetMemberLoopEndRefusalMock(...a),
+}));
 
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
@@ -202,6 +211,8 @@ beforeEach(() => {
   readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(null);
   readFleetWindDownLoopEndRequirementMock.mockReset();
   readFleetWindDownLoopEndRequirementMock.mockResolvedValue(null);
+  readFleetMemberLoopEndRefusalMock.mockReset();
+  readFleetMemberLoopEndRefusalMock.mockResolvedValue(null);
   checkOpenDirectivesGuardMock.mockReset();
   checkOpenDirectivesGuardMock.mockResolvedValue(null);
   predicateH.readHeldWorkItems.mockReset();
@@ -709,7 +720,10 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
   });
 
   it('honors a verified owner stop directive without demanding the acknowledgement', async () => {
-    getOwnerDirectiveMock.mockResolvedValue({ id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: true });
+    // Production rows carry owner_id='owner' (the human); the session is recorded_by.
+    getOwnerDirectiveMock.mockResolvedValue({
+      id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: ME, capturedByHook: true,
+    });
 
     const got = await run({ ownerStopDirectiveId: 77 });
 
@@ -718,8 +732,8 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
   });
 
   it.each([
-    ['another session', { id: 77, workspaceId: 'ws-1', ownerId: 'su-someone-else', capturedByHook: true }, /belongs to/],
-    ['an agent-recorded row', { id: 77, workspaceId: 'ws-1', ownerId: ME, capturedByHook: false }, /agent-recorded/],
+    ['another session', { id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: 'su-someone-else', capturedByHook: true }, /belongs to/],
+    ['an agent-recorded row', { id: 77, workspaceId: 'ws-1', ownerId: 'owner', recordedBy: ME, capturedByHook: false }, /agent-recorded/],
     ['a missing row', null, /not found/],
   ])('rejects an owner stop directive from %s', async (_label, row, why) => {
     getOwnerDirectiveMock.mockResolvedValue(row);
@@ -1163,5 +1177,61 @@ describe('the keepalive exclusion is by SHAPE, not key prefix (WI-2146110 / EI-2
     expect(note).not.toMatch(/no independent event awaits remain/);
     expect(note).toMatch(/1 independent event await\(s\) remain active/);
     expect(note).toContain('#150975');
+  });
+});
+
+describe('the fleet-member claimable-work rail (WI-6554700010029607)', () => {
+  const refusal = { ok: false, error: 'fleet_member_claimable_work_refused', claimableCount: 1041 };
+
+  it('refuses BEFORE deactivation when the rail reads claimable work for an autonomous self-end', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'auto' }]);
+    readFleetMemberLoopEndRefusalMock.mockResolvedValue(refusal);
+
+    const got = await run({ reason: 'blocked on the leader' });
+
+    expect(got).toMatchObject({ isError: true, error: 'fleet_member_claimable_work_refused', claimableCount: 1041 });
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+    expect(readFleetMemberLoopEndRefusalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-caller-own-id', workspaceId: 'ws-1' }),
+    );
+  });
+
+  it('is not overridden by acknowledgeWakeLessAutonomy', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'auto' }]);
+    readFleetMemberLoopEndRefusalMock.mockResolvedValue(refusal);
+
+    const got = await run({ reason: 'parking', acknowledgeWakeLessAutonomy: true, acknowledgeOpenDirectives: true });
+
+    expect(got.error).toBe('fleet_member_claimable_work_refused');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('is never consulted for a non-autonomous session', async () => {
+    getModesMock.mockResolvedValue([]);
+    readFleetMemberLoopEndRefusalMock.mockResolvedValue(refusal);
+
+    const got = await run({ reason: 'done' });
+
+    expect(got.error).not.toBe('fleet_member_claimable_work_refused');
+    expect(readFleetMemberLoopEndRefusalMock).not.toHaveBeenCalled();
+  });
+
+  it("is never consulted when ending ANOTHER owner's loop (the count is read as the caller)", async () => {
+    getModesMock.mockResolvedValue([{ mode: 'auto' }]);
+    readFleetMemberLoopEndRefusalMock.mockResolvedValue(refusal);
+
+    await run({ ownerId: 'su-some-other-member', reason: 'leader stand-down', acknowledgeWakeLessAutonomy: true });
+
+    expect(readFleetMemberLoopEndRefusalMock).not.toHaveBeenCalled();
+  });
+
+  it('lets the end proceed when the rail reads no refusal', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'auto' }]);
+    readFleetMemberLoopEndRefusalMock.mockResolvedValue(null);
+
+    const got = await run({ reason: 'done', acknowledgeWakeLessAutonomy: true, acknowledgeOpenDirectives: true });
+
+    expect(got.error).not.toBe('fleet_member_claimable_work_refused');
+    expect(readFleetMemberLoopEndRefusalMock).toHaveBeenCalledTimes(1);
   });
 });

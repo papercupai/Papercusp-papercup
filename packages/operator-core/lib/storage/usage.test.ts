@@ -316,7 +316,7 @@ describe('disk consumer census attribution', () => {
 describe('own-files listing (find)', () => {
   it('lists only immediate regular files with ALLOCATED size, never prefiltered on apparent size', () => {
     const args = censusOwnFilesArgs('/mnt/data/Debug');
-    expect(args).toEqual(['/mnt/data/Debug', '-maxdepth', '1', '-type', 'f', '-printf', '%b %p\\0']);
+    expect(args).toEqual(['/mnt/data/Debug', '-maxdepth', '1', '-ignore_readdir_race', '-type', 'f', '-printf', '%b %p\\0']);
     // -size tests the apparent size; XFS preallocation can push the allocation past it.
     expect(args).not.toContain('-size');
   });

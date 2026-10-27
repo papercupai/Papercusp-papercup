@@ -25,8 +25,7 @@
  *   - min_age_minutes (default 30) — grace window before a group is reap-eligible.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG = process.env.ORPHANED_MCP_REAPER_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -35,40 +34,29 @@ const SLUG = process.env.ORPHANED_MCP_REAPER_ROUTINE_SLUG ?? operatorHomeHarness
  *  cadence bounds the leak tightly without being a noisy sweep. */
 const CRON = '0 */30 * * * *';
 
-async function main(): Promise<void> {
-  const active = process.argv.includes('--active');
-  const dryRun = process.argv.includes('--dry-run');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'orphaned-mcp-reaper';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, dry_run: dryRun };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:orphaned-mcp-reaper', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
-      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-orphaned-mcp-reaper-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}, dry_run=${dryRun}) — ` +
-      `half-hourly reap of leaked agent-spawned playwright-mcp server processes. ` +
-      (active
-        ? 'Cadence LIVE.'
-        : 'Inactive — enable with --active (recommend --active --dry-run first) or the routines admin.'),
-  );
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-orphaned-mcp-reaper-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-orphaned-mcp-reaper-routine',
+  prepare: () => {
+    const active = process.argv.includes('--active');
+    const dryRun = process.argv.includes('--dry-run');
+    const name = 'orphaned-mcp-reaper';
+    const triggerConfig = { cron: CRON, dry_run: dryRun };
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: 'system:orphaned-mcp-reaper',
+      dryRun,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, dryRun, name, triggerConfig }) => {
+    console.log(
+        `[seed-orphaned-mcp-reaper-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}, dry_run=${dryRun}) — ` +
+          `half-hourly reap of leaked agent-spawned playwright-mcp server processes. ` +
+          (active
+            ? 'Cadence LIVE.'
+            : 'Inactive — enable with --active (recommend --active --dry-run first) or the routines admin.'),
+      );
+  },
+});

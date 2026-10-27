@@ -7,11 +7,16 @@ import { rubricTemplateDataSchema } from '../plans/rubric-template';
 const mocks = vi.hoisted(() => ({
   proposeRubric: vi.fn(),
   validateRubricReplicationSql: vi.fn(),
+  getWorkItemsByIds: vi.fn(),
   // P-005: the handler reads the stored revision to grandfather carried instrument keys.
   getRubric: vi.fn(async (): Promise<unknown> => null),
 }));
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
+  getWorkItemsByIds: mocks.getWorkItemsByIds,
+}));
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
   return { ...actual, proposeRubric: mocks.proposeRubric, getRubric: mocks.getRubric };
@@ -278,6 +283,28 @@ describe('rubrics:propose args — standard-only watchdog fields', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.grandfatheredInstruments).toEqual([{ criterion: 'tests', instrumentKey: 'pot-throughput-ticks' }]);
     expect(mocks.proposeRubric).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces mismatched terminal implementation coverage at the real proposal handler', async () => {
+    const method = 'Missing detector branches remain unknown. Their implementation dependency is WI-6554700010014915, assigned to the leader.';
+    const item = { ...lightAcceptanceCriterion, key: 'r-6', barKey: 'R-6', method };
+    mocks.getWorkItemsByIds.mockResolvedValue([{
+      id: 'WI-6554700010014915', state: 'done',
+      terminalCompletionEvidence: { coverage: { checked: ['R1 scope detector', 'R9 deployment detector'] } },
+    }]);
+    mocks.proposeRubric.mockResolvedValue({
+      ...base, rubricId: 'release-readiness', kind: 'acceptance', subjectPlan: 'release-plan',
+      subjectHarnessSlug: 'papercusp', criteria: [item],
+    });
+    const response = await proposeTool.handler({ ...base, kind: 'acceptance', subjectPlan: 'release-plan', criteria: [item] } as never, {} as never);
+    const result = JSON.parse((response as { content: Array<{ text: string }> }).content[0]!.text);
+    expect(result.ok).toBe(true);
+    expect(result.methodLint).toEqual([expect.objectContaining({
+      code: 'acceptance-method-dependency-coverage', criterionKey: 'r-6', dependencyId: 'WI-6554700010014915',
+    })]);
+    expect(mocks.getWorkItemsByIds).toHaveBeenCalledWith(['WI-6554700010014915'], 'papercusp', {
+      includeBody: false, payloadProjection: 'completionEvidence',
+    });
   });
 
   it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {

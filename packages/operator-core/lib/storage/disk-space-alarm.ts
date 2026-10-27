@@ -32,14 +32,20 @@ import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
 import type { CensusDeviceView } from './disk-consumer-census';
 import type { DiskReclaimReceipt } from './disk-reclaim';
 import { activeWorkspaceId } from '../workspace-registry';
+import {
+  DECLARED_MOUNT_ALARM_CONDITION_KEY,
+  formatMissingMountsEscalation,
+  readMissingDeclaredMounts,
+  type DeclaredBindMount,
+} from './declared-mounts';
 
 const statPath = promisify(statCb);
 const statfs = promisify(statfsCb);
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
 
-import { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
-export { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
+import { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
+export { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
 
 /** The watched filesystems (one statfs per path). Defaults to the workspaces root plus the
  *  process temp root: test module caches can live on a separate filesystem and fill it while the
@@ -199,52 +205,6 @@ export function detectCriticalWriteHeadroom(
   });
 }
 
-/**
- * Minimum free bytes that keep a filesystem OUTSIDE the alarm's critical byte
- * band. This is the scalar form of {@link detectCriticalWriteHeadroom} for a
- * writer that must budget its own transient demand before it starts.
- *
- * The alarm's byte rule is an OR (absolute floor OR percentage floor), so the
- * equivalent reserve is the larger threshold. Invalid totals retain the
- * absolute floor instead of manufacturing percentage headroom from bad input.
- *
- * EI-23337577023503501: that larger-of pair is then CAPPED at
- * {@link DiskAlarmPolicy.criticalFreeBytesCap}. A writer's demand is absolute and
- * does not grow with the volume it writes to, so past the cap more proportional
- * headroom buys the writer nothing and only manufactures an unreachable floor —
- * on a 7.45 TiB volume the uncapped rule demanded 149 GiB, which froze this
- * repo's green checkpoint at 32 consecutive reds with 47.9 GiB free and every
- * measured run needing single-digit GiB. The cap binds ONLY above the observed
- * demand envelope: it is above every reserve this function's own tests pin
- * (2 GiB @ 20 GiB, 10 GiB @ 500 GiB, 37.5 GiB @ 1875.7 GiB all pass through
- * unchanged), so it loosens nothing that was ever load-bearing.
- */
-export function criticalWriteHeadroomBytes(
-  totalBytes: number,
-  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
-): number {
-  const absolute =
-    Number.isFinite(policy.criticalFreeBytesMin) && policy.criticalFreeBytesMin > 0
-      ? policy.criticalFreeBytesMin
-      : 0;
-  const proportional =
-    Number.isFinite(totalBytes) &&
-    totalBytes > 0 &&
-    Number.isFinite(policy.criticalFreePctMin) &&
-    policy.criticalFreePctMin > 0
-      ? totalBytes * policy.criticalFreePctMin
-      : 0;
-  const cap =
-    Number.isFinite(policy.criticalFreeBytesCap) && policy.criticalFreeBytesCap > 0
-      ? policy.criticalFreeBytesCap
-      : Number.POSITIVE_INFINITY;
-  // Order matters: the cap bounds only the PROPORTIONAL term. The absolute floor
-  // stays a hard minimum, so a misconfigured (tiny) cap can never lower the
-  // reserve below what the alarm itself calls critical — it can only stop the
-  // percentage from inflating it past what a writer can actually use.
-  return Math.max(absolute, Math.min(proportional, cap));
-}
-
 function fmtGiB(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GiB`;
 }
@@ -357,6 +317,9 @@ export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'r
   escalate?: AlarmAttentionDeps['notify'];
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
   recentlyEscalated?: () => Promise<boolean>;
+  /** Injectable for tests. Defaults to /etc/fstab bind mounts that /proc/self/mountinfo
+   *  does not show mounted; `null` = unreadable (never resolves an open alarm). */
+  readMissingMounts?: () => Promise<DeclaredBindMount[] | null>;
 }
 
 export interface DiskAlarmContext {
@@ -601,5 +564,35 @@ export async function runDiskSpaceAlarmOnce(
   } else if (snapshots.length > 0) {
     await resolveAlarm(DISK_SPACE_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
   }
+  await checkDeclaredMounts(deps);
   return { checked: snapshots.length, breaches, escalated };
+}
+
+/**
+ * A `nofail` bind mount that did not come up sends its writers to the disk underneath
+ * without any error (P-015). Free space alone cannot see this until that disk is
+ * already full, so it is checked on the same tick under its own condition. Never throws.
+ */
+async function checkDeclaredMounts(deps: DiskAlarmDeps): Promise<void> {
+  let missing: DeclaredBindMount[] | null;
+  try {
+    missing = await (deps.readMissingMounts ?? (() => readMissingDeclaredMounts()))();
+  } catch {
+    missing = null;
+  }
+  if (missing === null) return;
+  if (missing.length === 0) {
+    await resolveAlarm(DECLARED_MOUNT_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
+    return;
+  }
+  await escalateAlarm(
+    {
+      ...formatMissingMountsEscalation(missing),
+      cooldownMs: ESCALATE_COOLDOWN_MS,
+      source: 'disk-space-alarm',
+      conditionKey: DECLARED_MOUNT_ALARM_CONDITION_KEY,
+      data: { host: hostname(), missingMounts: missing.map((mount) => ({ target: mount.target, source: mount.source })) },
+    },
+    { notify: deps.escalate, recentlyEscalated: deps.recentlyEscalated, broadcast: deps.broadcast },
+  );
 }

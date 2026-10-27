@@ -12,13 +12,37 @@ import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
+  type ReuseContribution, type ReuseProviderContext, type ReuseProviderObservation } from './reuse-brief-providers';
+import { recordReuseBriefIssued, type ReuseIssuedRecord } from './reuse-brief-ledger';
+import { boundChangeHistoryProviders, changeHistoryProviders, readCoChange, type PriorWorkReader } from './change-history';
+import { readTaskEngineeringEvidence, type TaskEngineeringEvidence } from './task-brief-engineering';
+import type { EngineeringQuery, readEngineeringEvidence } from './engineering-evidence';
+import { withBoundedTimeout } from '../bounded-timeout';
+import type { CoverageScopeData } from './test-coverage-map';
 
 export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
 const MAX_FILES = 12;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null;
-  intent?: string; paths?: readonly string[] };
+  intent?: string; paths?: readonly string[]; reuse?: ClaimBriefReuseIdentity; maxChars?: number };
+export interface ClaimBriefReuseIdentity {
+  owner: string;
+  invocation: string;
+  observe?: (outcome: { context: ReuseProviderContext; observations: ReuseProviderObservation[];
+    recover: ReuseIssuedRecord['recover']; ledger: 'not-needed' | 'recorded' | 'unknown' }) => void;
+}
+export type TaskBriefReuseAdapter = (base: TaskBrief, value: ReuseContribution) => TaskBrief;
+const reuseAdapters = pinModuleState('operator-core.task-brief-reuse-adapters.v1',
+  () => new Map<ReuseBriefDestination, TaskBriefReuseAdapter>());
+/** The upstream section owner installs a representation adapter once that slot exists. */
+export function registerTaskBriefReuseAdapter(section: ReuseBriefDestination, adapter: TaskBriefReuseAdapter): () => void {
+  if (reuseAdapters.has(section)) throw new Error(`Task brief destination already registered: ${section}`);
+  reuseAdapters.set(section, adapter);
+  return () => { if (reuseAdapters.get(section) === adapter) reuseAdapters.delete(section); };
+}
 export interface TaskFailureSignal {
   testRunId: number;
   path: string;
@@ -52,6 +76,7 @@ export interface TaskBrief {
   excerpts: { path: string; text: string }[];
   graph: { status: 'measured' | 'unknown'; consumers: string[]; relationships: string[]; reason?: string };
   incident?: TaskIncidentBrief;
+  engineering?: TaskEngineeringEvidence;
   exclusions: string[];
   recover: { tool: 'code:pack'; args: { op: 'pack'; include: string[]; rootPath: string } }
     | { tool: 'work_items:get'; args: { id: string; harness?: string } }
@@ -65,8 +90,17 @@ export interface TaskBriefDeps {
   decisions?: (ref: Ref) => Promise<ClaimTimePlanDecisionsBrief | null>;
   failures?: (scope: { workspaceId: string; harness: string; root: string; paths: string[] }) => Promise<TaskFailureSignal[]>;
   hasClaim?: (workspaceId: string, owner: string) => Promise<boolean>;
+  engineering?: typeof readEngineeringEvidence;
+  reuse?: {
+    providers?: readonly ReuseBriefProvider[];
+    adapters?: Partial<Record<ReuseBriefDestination, TaskBriefReuseAdapter>>;
+    recordIssued?: (input: ReuseIssuedRecord, signal: AbortSignal) => Promise<boolean>;
+    /** P-008: the shared prior-work reader behind the claim brief's provenance section. */
+    priorWork?: PriorWorkReader;
+  };
 }
 const defaults: TaskBriefDeps = {
+  engineering: async (query, scope) => (await import('./engineering-evidence')).readEngineeringEvidence(query, scope),
   hasClaim: async (workspaceId, owner) => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
@@ -157,7 +191,41 @@ export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHA
   while (oversized() && brief.incident?.recentChanges.length) brief.incident.recentChanges.pop();
   while (oversized() && brief.incident && brief.incident.candidates.length > 1) brief.incident.candidates.pop();
   if (oversized() && brief.incident) { delete brief.incident; brief.exclusions.push('Incident evidence omitted by the inline budget; use the test-run ledger.'); }
+  if (oversized() && brief.engineering) {
+    brief.engineering.gaps.unshift('additional-evidence-omitted');
+    for (const axis of ['validation', 'rationale', 'intent', 'execution'] as const)
+      while (oversized() && brief.engineering[axis].length) brief.engineering[axis].pop();
+    if (oversized()) brief.engineering.gaps = ['Inline evidence omitted; use the scoped graph reader.'];
+  }
   return brief;
+}
+
+function taskItemQuery(workItem?: ClaimTimeEnrichmentSubject | null): EngineeringQuery | null {
+  const payload = workItem?.payload as { plan_item?: { plan_slug?: string; item_id?: string } } | null;
+  const plan = workItem?.sourcePlanSlug ?? payload?.plan_item?.plan_slug;
+  const item = workItem?.sourcePlanItemIds?.[0] ?? payload?.plan_item?.item_id;
+  return plan && item && /^P-\d{3,}$/.test(item) ? { item: { plan, id: item } } : null;
+}
+
+async function taskEngineering(ref: Ref, root: string, paths: readonly string[], deps: Pick<TaskBriefDeps, 'engineering'>,
+  deadline: number): Promise<TaskEngineeringEvidence | undefined> {
+  if (!deps.engineering) return undefined;
+  let query = taskItemQuery(ref.workItem);
+  if (!query) {
+    const path = paths.find(path => safePath(path) && /\.[cm]?[jt]sx?$/.test(path) && kindOf(path) === 'implementation');
+    if (!path) return undefined;
+    const absolute = await realpath(join(root, path)).catch(() => null);
+    const info = absolute && await stat(absolute).catch(() => null);
+    if (!absolute || !inside(root, absolute) || !info || info.size > 64_000) return undefined;
+    const text = await readFile(absolute, 'utf8').catch(() => null);
+    if (text === null) return undefined;
+    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const declaration = source.statements.find(node => (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name);
+    if (!declaration || (!ts.isFunctionDeclaration(declaration) && !ts.isClassDeclaration(declaration)) || !declaration.name) return undefined;
+    query = { symbol: { path, name: declaration.name.text } };
+  }
+  return readTaskEngineeringEvidence(query, { workspaceId: ref.workspaceId ?? activeWorkspaceId(),
+    harness: ref.workItem?.harness ?? ref.harness!, root }, deps.engineering, Math.max(0, Math.min(1_000, deadline - Date.now())));
 }
 
 /** The capture phase in flight; a deadline fallback reports it so a timeout is diagnosable. */
@@ -166,7 +234,8 @@ export type TaskBriefPhase = 'setup' | 'repository-root' | 'plan-decisions' | 's
 
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
 export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
-  phase: { current: TaskBriefPhase } = { current: 'setup' }): Promise<TaskBrief> {
+  phase: { current: TaskBriefPhase } = { current: 'setup' },
+  deadline = Date.now() + TASK_BRIEF_BUDGET_MS): Promise<TaskBrief> {
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
@@ -200,7 +269,6 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
     brief.exclusions.push('No identified work item, registered harness, or stored payload.paths; no repository scope was inferred.');
     return finish();
   }
-  const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
   const remaining = () => {
     const ms = deadline - Date.now();
     if (ms <= 0) throw new Error('task brief deadline exceeded');
@@ -363,7 +431,8 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
 
 export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
-  if (ref.workItem?.id ? !Array.isArray(payload?.paths) || payload.paths.length === 0 : !ref.intent || !ref.paths?.length) return null;
+  if (ref.workItem?.id ? (!Array.isArray(payload?.paths) || payload.paths.length === 0) && !taskItemQuery(ref.workItem)
+    : !ref.intent || !ref.paths?.length) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Each phase transition is timed so a deadline fallback says how the window
   // was spent, not only where it ended (WI-6554700010018774: a claim-path
@@ -382,7 +451,8 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
   const phaseTimings = () => [...spent, [current, Date.now() - enteredAt] as [TaskBriefPhase, number]]
     .map(([name, ms]) => `${name} ${ms}ms`).join(', ');
   try {
-    return { taskBrief: await Promise.race([buildTaskBrief(ref, deps, phase), new Promise<TaskBrief>(resolve => {
+    const deadline = started + TASK_BRIEF_BUDGET_MS;
+    const base = await Promise.race([buildTaskBrief(ref, deps, phase, deadline), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] },
@@ -391,14 +461,97 @@ export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defa
         recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
           : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
             ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
-    })]) };
+    })]);
+    clearTimeout(timer);
+    const harness = ref.workItem?.harness ?? ref.harness;
+    let root = base.repository?.rootPath ?? null;
+    if (!root && harness && deps.engineering && Date.now() < deadline) {
+      let rootTimer: ReturnType<typeof setTimeout> | undefined;
+      try { root = await Promise.race([
+        deps.root(ref.workspaceId ?? activeWorkspaceId(), harness).catch(() => null),
+        new Promise<null>(resolve => { rootTimer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); }),
+      ]); } finally { clearTimeout(rootTimer); }
+    }
+    if (root && harness) base.engineering = await taskEngineering(ref, root, base.scope.paths, deps, deadline);
+    // Optional reuse must fit around the complete mandatory response. Adding
+    // engineering or compacting afterwards could replace base evidence and
+    // remove hints after their issuance was recorded.
+    const mandatory = compactTaskBrief(base, ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
+    return { taskBrief: await enrichTaskBriefWithReuse(mandatory, ref, deps, deadline) };
   } finally { clearTimeout(timer); }
+}
+
+/** Only additive edits to existing fields are allowed: no replacement of mandatory evidence,
+ * and no invention of top-level destinations while anchors P-008 is still upstream. */
+function preservesBriefBase(base: unknown, next: unknown): boolean {
+  if (Array.isArray(base)) return Array.isArray(next) && next.length >= base.length
+    && base.every((value, index) => JSON.stringify(value) === JSON.stringify(next[index]));
+  if (base && typeof base === 'object') return Boolean(next && typeof next === 'object'
+    && Object.keys(next).every(key => Object.hasOwn(base, key))
+    && Object.entries(base).every(([key, value]) => preservesBriefBase(value, (next as Record<string, unknown>)[key])));
+  return Object.is(base, next);
+}
+
+export async function enrichTaskBriefWithReuse(base: TaskBrief, ref: Ref, deps: TaskBriefDeps,
+  deadline: number): Promise<TaskBrief> {
+  if (!ref.reuse?.owner || !ref.reuse.invocation) return base;
+  const harness = ref.workItem?.harness ?? ref.harness;
+  const context: ReuseProviderContext = { surface: 'claim', workspaceId: ref.workspaceId ?? activeWorkspaceId(),
+    owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem?.id ?? undefined,
+    itemText: ref.intent ?? [ref.workItem?.title, ref.workItem?.summary].filter(Boolean).join('\n'),
+    plan: ref.workItem?.sourcePlanSlug ?? undefined, planItems: ref.workItem?.sourcePlanItemIds ?? [],
+    paths: base.scope.paths, sourceVersion: base.sourceFingerprint, commit: base.commit,
+    repository: base.repository ? { ...base.repository, ...(harness ? { harness } : {}) } : undefined,
+    sourceFiles: base.files.map(file => ({ path: file.path, sha256: file.sha256 })) };
+  // D011: append to the existing representation; preserve mandatory fields and
+  // never manufacture parallel top-level anchor sections.
+  const append: TaskBriefReuseAdapter = (brief, value) => ({ ...brief,
+    graph: { ...brief.graph, relationships: [...brief.graph.relationships, encodeClaimReuseContribution(brief, value)] } });
+  const adapters = deps.reuse?.adapters ?? {
+    impact: append, tests: append, coChange: append, whatChangedSincePlanning: append,
+    ...Object.fromEntries(reuseAdapters),
+  };
+  const history = harness ? boundChangeHistoryProviders({ harness,
+    root: () => deps.root(context.workspaceId, harness), priorWork: deps.reuse?.priorWork }) : [];
+  const result = await composeReuseBrief({ base, context, deadline: deadline - 150,
+    maxChars: ref.maxChars ?? TASK_BRIEF_MAX_CHARS,
+    providers: deps.reuse?.providers ?? (() => {
+      const registered = registeredReuseBriefProviders();
+      return [...registered, ...history.filter(provider => !registered.some(row => row.id === provider.id))];
+    })(),
+    available: section => base.status === 'current' && Boolean(adapters[section]),
+    append: (brief, value) => {
+      const next = adapters[value.section]!(brief, value);
+      if (!preservesBriefBase(base, next)) throw new Error('Reuse adapter replaced mandatory task evidence');
+      return next;
+    } });
+  let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
+  if (result.observations.some(row => row.status === 'issued' || row.status === 'held-out')) {
+    ledger = 'unknown';
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const remaining = Math.max(0, deadline - Date.now());
+      if (remaining) {
+        const recorded = await Promise.race([
+          Promise.resolve().then(() => (deps.reuse?.recordIssued ?? recordReuseBriefIssued)(
+            { context, observations: result.observations, recover: base.recover }, controller.signal)),
+          new Promise<false>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(false); }, remaining); }),
+        ]);
+        if (recorded) ledger = 'recorded';
+      }
+    } catch { /* Ledger outages do not remove mandatory or independently issued evidence. */ }
+    finally { clearTimeout(timer); controller.abort(); }
+  }
+  // The dispatcher persists these outcomes in tool_invocations, not the issued-only table.
+  try { ref.reuse.observe?.({ context, observations: result.observations, recover: base.recover, ledger }); } catch { /* advisory */ }
+  return result.brief;
 }
 
 /** P-039: explicit transient scope uses the same safe capture as claims. A failed
  * ownership read cannot be interpreted as a measured absence of a claim. */
 export async function getIntentTimeTaskBrief(ref: { owner: string; workspaceId: string; harness: string;
-  intent: string; paths: readonly string[] }, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
+  intent: string; paths: readonly string[]; maxChars?: number }, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   if (!ref.intent.trim() || !ref.paths.length || !deps.hasClaim) return null;
   try {
     if (await deps.hasClaim(ref.workspaceId, ref.owner)) return null;
@@ -415,11 +568,38 @@ export interface CompletionBriefDeps {
   graph?: (request: ChangeReportRequest, root: string, budgetMs: number) => Promise<CodeIntelAnswer>;
   /** The default report's non-graph effects (git, artifact writes). */
   effects?: Omit<ChangeReportEffects, 'graph'>;
+  cochange?: typeof readCoChange;
+  /** One source-qualified, close-bound test run batch, shared by SQL/coverage. */
+  coverage?: (context: Readonly<ReuseProviderContext>, signal: AbortSignal) => Promise<CoverageScopeData | null>;
+  reuse?: TaskBriefDeps['reuse'];
+  engineering?: TaskBriefDeps['engineering'];
+}
+
+/** Added lines from a complete native diff only. Context/deletions and truncated
+ * excerpts cannot establish a changed executable line. */
+function completionChangedLines(patch: string): number[] | null {
+  const added: number[] = [];
+  let line = 0, oldLeft = 0, newLeft = 0, seen = false;
+  for (const text of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
+    if (hunk) {
+      if (oldLeft || newLeft) return null;
+      oldLeft = Number(hunk[1] ?? 1); line = Number(hunk[2]); newLeft = Number(hunk[3] ?? 1); seen = true;
+    } else if (seen && (oldLeft || newLeft)) {
+      if (text.startsWith(' ')) { oldLeft--; newLeft--; line++; }
+      else if (text.startsWith('-')) oldLeft--;
+      else if (text.startsWith('+')) { newLeft--; added.push(line++); }
+      else if (text !== '\\ No newline at end of file') return null;
+      if (oldLeft < 0 || newLeft < 0 || added.length > 10_000) return null;
+    }
+  }
+  return seen && !oldLeft && !newLeft ? added : null;
 }
 
 /** P-039: reuse the pre-review report at the completion receipt, without
  * treating a declared test command or a static edge as execution evidence. */
-export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[] },
+export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[];
+  reuse?: ClaimBriefReuseIdentity; workItem?: string; subject?: ClaimTimeEnrichmentSubject; maxChars?: number },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
   const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
@@ -440,6 +620,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
       runGroupId: string | null; status: string | null }[],
     testsWithoutRunEvidence: null as string[] | null,
     executionCoverage: 'unmeasured' as const,
+    engineering: undefined as TaskEngineeringEvidence | undefined,
     limitations: ['Bounded static source reach, not complete change coverage. A recorded file run may be filtered or stale; current-source test execution is unmeasured.'],
     recover: { tool: 'code:pack' as const, args: { op: 'diff' as const, include: [] as string[],
       rootPath: '', explain: undefined as { symbol: string; file: string; phase: 'pre-review' } | undefined } },
@@ -449,7 +630,7 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     // Keep both serialized copies in the size measurement, including early
     // returns before the registry root resolves.
     result.recover.args.include = result.scope.paths;
-    const oversized = () => JSON.stringify(result).length > TASK_BRIEF_MAX_CHARS;
+    const oversized = () => JSON.stringify(result).length > (ref.maxChars ?? TASK_BRIEF_MAX_CHARS);
     if (oversized()) result.limitations.push('Additional inline records omitted by the response budget.');
     while (oversized() && result.tests.length) result.tests.pop();
     if (result.testsWithoutRunEvidence) result.testsWithoutRunEvidence = result.testsWithoutRunEvidence.filter(path => result.tests.some(test => test.path === path));
@@ -457,6 +638,12 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     while (oversized() && result.changes.length > 1) result.changes.pop();
     while (oversized() && result.scope.processed.length) result.scope.processed.pop();
     while (oversized() && result.scope.paths.length > 1) result.scope.paths.pop();
+    if (oversized() && result.engineering) {
+      result.engineering.gaps.unshift('additional-evidence-omitted');
+      for (const axis of ['validation', 'rationale', 'intent', 'execution'] as const)
+        while (oversized() && result.engineering[axis].length) result.engineering[axis].pop();
+      if (oversized()) result.engineering.gaps = ['Inline evidence omitted; use the scoped graph reader.'];
+    }
     result.recover.args.include = result.scope.paths;
     if (oversized()) { result.recover.args.rootPath = ''; result.limitations.push('Use the registered harness root for recovery; its path exceeded the inline budget.'); }
     return result;
@@ -468,8 +655,15 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     const root = await realpath(rootValue);
     if (Date.now() >= deadline) return brief;
     brief.recover.args.rootPath = root; brief.recover.args.include = brief.scope.paths;
+    const engineering = taskEngineering({ workspaceId: ref.workspaceId, harness: ref.harness, workItem: ref.subject },
+      root, brief.scope.paths, { engineering: deps.engineering ?? (!deps.root && !deps.report ? defaults.engineering : undefined) }, deadline);
+    const historyController = new AbortController();
+    const historyTimer = setTimeout(() => historyController.abort(), Math.min(750, Math.max(0, deadline - Date.now())));
+    const history = (ref.reuse ? (deps.cochange ?? readCoChange)(root, brief.scope.paths, undefined, historyController.signal)
+      .catch(() => null) : Promise.resolve(null)).finally(() => clearTimeout(historyTimer));
     const captured = new Map<string, string>();
     const tests = new Set<string>();
+    const changedLines: Record<string, readonly number[]> = {};
     const unmeasured: string[] = [];
     for (const file of brief.scope.paths) {
       if (Date.now() >= deadline || brief.changes.length >= 2) break;
@@ -496,6 +690,12 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
           const why = answer.error ?? report.limitations[report.limitations.length - 1] ?? 'no compiler input identity';
           if (unmeasured.length < 2) unmeasured.push(`${file}#${symbol}: ${why}`.slice(0, 240));
           continue;
+        }
+        for (const change of report.changed) {
+          if (!brief.scope.paths.includes(change.path)
+            || report.limitations.includes(`Diff excerpt truncated for ${change.path}.`)) continue;
+          const lines = completionChangedLines(change.patch);
+          if (lines) changedLines[change.path] = lines;
         }
         for (const input of answer.evidence?.sourceScope.supportingFiles ?? []) {
           if (input.representation !== 'full-source' || !safePath(input.path)) continue;
@@ -527,6 +727,50 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
     brief.status = brief.changes.length ? 'measured' : 'unknown';
     if (!brief.changes.length && unmeasured.length)
       brief.limitations.push(`Compiler evidence was unmeasured for ${unmeasured.join('; ')}.`);
+    brief.engineering = await engineering;
+    const cochange = await history;
+    if (ref.reuse && Date.now() < deadline - 150) {
+      const sourceFiles = [...captured].map(([path, sha256]) => ({ path, sha256 }));
+      const context: ReuseProviderContext = { surface: 'completion', workspaceId: ref.workspaceId,
+        owner: ref.reuse.owner, invocation: ref.reuse.invocation, workItem: ref.workItem, paths: brief.scope.paths,
+        sourceVersion: hash(JSON.stringify([...captured])), commit: cochange?.commit ?? null,
+        repository: { workspaceId: ref.workspaceId, rootPath: root, harness: ref.harness }, sourceFiles,
+        changedLines: Object.keys(changedLines).length ? changedLines : undefined, staticTests: paths };
+      const { coverageBriefProvider, sourceBoundCoverageSnapshots } = await import('./test-coverage-map');
+      const receipt = deps.coverage ? (await withBoundedTimeout(signal => deps.coverage!(context, signal), {
+        timeoutMs: Math.max(1, Math.min(750, deadline - Date.now() - 150)), fallback: null,
+        label: 'completion:bound-coverage',
+      })).value : null;
+      const qualified = receipt ? sourceBoundCoverageSnapshots(root, receipt.snapshots, receipt.currentHashes) : [];
+      const validReceipt = receipt && qualified.length > 0 && qualified.length === receipt.snapshots.length
+        && new Set(qualified.map(s => `${s.scopeRoot}\0${s.observedAt}`)).size === 1
+        && sourceFiles.every(file => receipt.currentHashes.get(file.path) === file.sha256);
+      if (validReceipt) context.checkedPaths = [...new Set(qualified.flatMap(s => s.sources
+        .filter(source => source.covered.length > 0).map(source => source.path)))];
+      const registered = registeredReuseBriefProviders();
+      const historyProviders = cochange ? changeHistoryProviders({ cochange: async () => cochange,
+        provenance: async () => [] }).filter(provider => provider.id === 'cochange') : [];
+      const providers = deps.reuse?.providers ?? [...registered.map(provider => deps.coverage && provider.id === 'coverage'
+        ? coverageBriefProvider(async () => validReceipt ? receipt : null) : provider),
+        ...historyProviders.filter(provider => !registered.some(row => row.id === provider.id))];
+      const result = await composeReuseBrief({ base: finish(brief), context, deadline: deadline - 150, providers,
+        append: (base, contribution) => ({ ...base, limitations: [...base.limitations, contribution.text] }) });
+      Object.assign(brief, result.brief);
+      let ledger: 'not-needed' | 'recorded' | 'unknown' = 'not-needed';
+      if (result.observations.some(row => row.status === 'issued' || row.status === 'held-out')) {
+        ledger = 'unknown';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
+        try {
+          const recorded = await Promise.race([(deps.reuse?.recordIssued ?? recordReuseBriefIssued)(
+            { context, observations: result.observations, recover: brief.recover }, controller.signal),
+          new Promise<false>(resolve => controller.signal.addEventListener('abort', () => resolve(false), { once: true }))]);
+          if (recorded) ledger = 'recorded';
+        } catch { /* Failure is observed below and cannot erase mandatory completion evidence. */ }
+        finally { clearTimeout(timeout); controller.abort(); }
+      }
+      ref.reuse.observe?.({ context, observations: result.observations, recover: brief.recover, ledger });
+    }
     return brief;
   };
   try {

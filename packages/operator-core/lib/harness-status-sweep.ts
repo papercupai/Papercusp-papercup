@@ -32,7 +32,7 @@
 import { existsSync } from 'node:fs';
 import { getResourceProfile } from './resource-profile';
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 const hl = generated.harnessLanesInHarnessShared;
@@ -130,8 +130,8 @@ async function sweepHarnessLanes(): Promise<void> {
   //   - the recorded PID is gone (definitive — caller died)
   //   - OR started_at is older than LANE_STALE_MS (no PID recorded; conservative)
   //
-  // Two-step: read lanes, decide which to drop, then DELETE the survivors.
-  // Doing the PID check inline in SQL is impossible; we have to read.
+  // Read lanes, check OS liveness, then delete only the observed generation.
+  // A replacement can upsert the same lane key while this read is in flight.
   try {
     const { db } = getOrgPg();
     const rows = await db
@@ -155,7 +155,13 @@ async function sweepHarnessLanes(): Promise<void> {
       if (!pidGone && !ageStale) continue;
       await db
         .delete(hl)
-        .where(and(eq(hl.harnessSlug, r.harness_slug), eq(hl.phase, r.phase), eq(hl.role, r.role)));
+        .where(and(
+          eq(hl.harnessSlug, r.harness_slug),
+          eq(hl.phase, r.phase),
+          eq(hl.role, r.role),
+          eq(hl.startedAt, r.started_at),
+          r.pid == null ? isNull(hl.pid) : eq(hl.pid, r.pid),
+        ));
     }
   } catch (e) {
     console.warn('[harness-status-sweep] lane sweep failed:', (e as Error)?.message ?? e);

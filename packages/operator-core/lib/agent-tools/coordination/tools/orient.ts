@@ -1362,7 +1362,6 @@ export async function composeOrient(
           (signal) => call('coord:inbox', {
             limit: inboxLimit,
             max_body_chars: args.afterCompaction ? 800 : 300,
-            __correlationId: inboxCorrelationId,
           }, signal),
           undefined,
           'orient:coord:inbox',

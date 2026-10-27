@@ -532,7 +532,7 @@ describe('R-19: a coding plan whose doc items cite artifacts ships', () => {
       coordOwnerId: BLIND_REVIEWER,
     } as never;
     const res = (await runWithWorkspace(WS, () => blindReviewTool.handler(
-      { harness: HARNESS, slug, op: 'post', gaps: [] } as never, reviewerCtx,
+      { harness: HARNESS, slug, op: 'post', outcome: 'conclusive', gaps: [] } as never, reviewerCtx,
     ))) as { content?: Array<{ text: string }> };
     const posted = JSON.parse(res.content?.[0]?.text ?? '{}') as Record<string, unknown>;
     expect(posted, brief(posted)).toMatchObject({ ok: true, counts: true, door: { satisfied: true } });

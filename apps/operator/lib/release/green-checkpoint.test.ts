@@ -24,6 +24,7 @@ import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-he
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
+  CheckpointQualificationBoundaryError,
   planCheckpointCarryAtCut,
   failingRepairLegsForRouting,
   archivePureProofCapture,
@@ -51,6 +52,7 @@ import {
   ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
+  refireRequiresUnlockedPreparation,
   describeRealRedAtTip,
   splitTipFailuresPerFile,
   TIP_SPLIT_MAX_FILES,
@@ -482,6 +484,24 @@ function stubDeps(
   };
   return { deps, calls };
 }
+
+describe('qualification boundary orchestration', () => {
+  it.each(['yielded', 'killed'] as const)('returns inconclusive without publishing a verdict after %s', async disposition => {
+    const ready = await commit('a', '1', 'ready');
+    await git(repo, ['branch', 'ready', ready]);
+    const candidate = await commit('b', '2', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    const record = vi.fn();
+    deps.recordVerdict = record;
+    deps.runGreen = async () => { throw new CheckpointQualificationBoundaryError(disposition, 'boundary-test'); };
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+    expect(result).toMatchObject({ advanced: false, green: null, reason: 'infra-inconclusive' });
+    expect(record).not.toHaveBeenCalled();
+    expect(calls).not.toContain('advance');
+    expect(calls).not.toContain('push');
+    expect(calls).not.toContain('broadcast');
+  });
+});
 
 /** P-003: the one repair-signature kind that legitimately enters the full canonical gate.
  * Orchestration tests below use it when their subject starts at `runGreen`; a workspace-less
@@ -3432,6 +3452,68 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
+  it("WI-6554700010029556: a repair-head run publishes the in-flight marker BEFORE verification, so a red re-queue still named the sha it judged", async () => {
+    // Measured 2026-10-26: `gate_health.inFlightCandidate` was null for the whole of a multi-hour
+    // repair-verification pass. Its only publish sat at candidate-FINAL time, which a red
+    // selective verification never reaches. FALSIFIER: on that code `published` stays empty.
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("b", "different", "canonical staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["@papercusp/web", "lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const published: Array<Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0]> = [];
+    deps.recordInFlightCandidate = async (info) => {
+      calls.push("recordInFlightCandidate");
+      published.push(info);
+    };
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.runTestsAtRef = async () => {
+      calls.push("runTestsAtRef");
+      return { pass: false, summary: "file failure still reproduces" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({ reason: "repair-in-progress", repairHead: repaired });
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      candidate: repaired,
+      base: ready,
+      quietCutApplied: false,
+      tipAtSelection: null,
+      pid: process.pid,
+    });
+    expect(calls.indexOf("recordInFlightCandidate")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("recordInFlightCandidate")).toBeLessThan(calls.indexOf("runTestsAtRef"));
+  });
+
   it("P-007/D-004: promotes the frozen repair head itself, in ONE full gate, without joining the moving tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -3628,6 +3710,101 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(dispatchedHeads).toEqual([repaired]);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(ready);
+  });
+
+  it("WI-6554700010029683: a red repair head whose dispatch is refused names the dispatcher's reason in the run summary", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "first forward repair");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["@papercusp/operator-vite"],
+      signature: postSuiteSignature(repaired),
+    };
+    const dispatchedHeads: string[] = [];
+    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.dispatchFrozenRepairFixer = async (next, _evidence, onSkip) => {
+      dispatchedHeads.push(next.repairHead);
+      onSkip?.({
+        code: "snapshot-mismatch",
+        reason: "release-fixer candidate snapshot changed before launch",
+        retryable: true,
+      });
+      return null;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(dispatchedHeads).toEqual([repaired]);
+    // Before the fix the note read only "dispatch returned no spawn and will retry".
+    expect(result.summary).toContain(
+      "dispatch returned no spawn (dispatcher refused: snapshot-mismatch — " +
+        "release-fixer candidate snapshot changed before launch) and will retry",
+    );
+  });
+
+  it("WI-6554700010029683: re-dispatching after a dead fixer names a non-retryable refusal in the summary", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: "dead-fixer",
+      failingTests: ["lib/still-broken.test.ts"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    let dispatches = 0;
+    deps.dispatchFrozenRepairFixer = async (_next, _evidence, onSkip) => {
+      dispatches += 1;
+      onSkip?.({
+        code: "stale-candidate",
+        reason: "candidate no longer matches the frozen lineage",
+        retryable: false,
+      });
+      return null;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(dispatches).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(0);
+    expect(result).toMatchObject({ advanced: false, reason: "repair-in-progress" });
+    expect(result.summary).toBe(
+      `frozen repair fixer dispatch did not return a spawn for ${frozen.slice(0, 8)}` +
+        " (dispatcher refused: stale-candidate — candidate no longer matches the frozen lineage;" +
+        " another dispatch cannot help until the verdict or head changes);" +
+        " queue remains unassigned for retry",
+    );
   });
 
   it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
@@ -4544,6 +4721,37 @@ describe("acquireCheckpointRunLock", () => {
       candidate: 'repair-head-sha',
       candidateSource: 'frozen-repair-queue',
     });
+  });
+  it("a joined scheduled attempt keeps its pinned candidate while the frozen policy only recovers a dead fixer (WI-6554700010010801)", async () => {
+    // Live shape (papercusp, 2026-10-26 15:23Z and 20:24Z): the queue is awaiting-fixer with a
+    // dead fixer, so the policy proceeds with `recover-dead-fixer` and names the repairHead —
+    // a recovery target, with no suite at that head. Attaching with it was refused by the
+    // reservation's pre-suite retarget guard (queue-not-ready-to-verify) on every joined fire.
+    const preflight = (queueDecision: 'recover-dead-fixer' | 'verify-repair') => ({
+      proceed: true as const,
+      reason: 'clear' as const,
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue' as const,
+      repairQueue: null,
+      frozenLineageIdentity: null,
+      queueDecision,
+      nextAttempt: null,
+      fixerSpawnId: queueDecision === 'recover-dead-fixer' ? 'dead-fixer-spawn' : null,
+      fixerAlive: queueDecision === 'recover-dead-fixer' ? false : null,
+    });
+
+    const recovering = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess: vi.fn(async () => preflight('recover-dead-fixer')),
+      root: '/checkpoint',
+    });
+    expect(recovering).toEqual({ candidate: 'frozen-candidate-sha', candidateSource: 'pinned' });
+
+    // Positive control: the same queue answer under a suite-producing decision still retargets.
+    const verifying = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess: vi.fn(async () => preflight('verify-repair')),
+      root: '/checkpoint',
+    });
+    expect(verifying).toEqual({ candidate: 'repair-head-sha', candidateSource: 'frozen-repair-queue' });
   });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(
@@ -10971,6 +11179,41 @@ describe("refire charge accounting (EI-19343532231631821)", () => {
         refireBlockedBy: "charged-budget",
       });
       expect(v.detail).toContain("refire cap reached");
+    });
+
+    // WI-6554700010029570: the refire recurses with `candidate: tip` and the run's
+    // preparedSelection, which the entry guard refuses for any other sha. The classifier must
+    // defer instead, and still report the evidence (stale) rather than a real red.
+    it("defers the refire when the tip needs an unlocked preparation, keeping the stale verdict", () => {
+      const v = classifyRedAgainstTip({ ...base, requiresUnlockedPreparation: true });
+      expect(v).toMatchObject({
+        classification: "stale-candidate",
+        autoRefire: false,
+        refireBlockedBy: "unlocked-preparation",
+      });
+      expect(v.detail).toMatch(/refire DEFERRED/);
+      expect(v.detail).toContain("unlocked preflight");
+    });
+
+    // The one predicate both in-process refires use (stale-red auto-refire and repair-admission
+    // refire): recursion keeps opts.preparedSelection, so only the prepared candidate itself is safe.
+    it("refireRequiresUnlockedPreparation: true only for a prepared run moving to a different sha", () => {
+      const prepared = { candidate: "aaaaaaaa1111" };
+      expect(refireRequiresUnlockedPreparation(prepared, "bbbbbbbb2222")).toBe(true);
+      expect(refireRequiresUnlockedPreparation(prepared, "aaaaaaaa1111")).toBe(false);
+      expect(refireRequiresUnlockedPreparation(undefined, "bbbbbbbb2222")).toBe(false);
+      expect(refireRequiresUnlockedPreparation(prepared, null)).toBe(false);
+    });
+
+    it("the charged budget outranks unlocked-preparation, so a genuinely-broken tip is still reported", () => {
+      const v = classifyRedAgainstTip({
+        ...base,
+        refireAttempts: 2,
+        priorFailing: ["old.test.ts"],
+        currentFailing: [{ workspace: "ws", file: "old.test.ts" }],
+        requiresUnlockedPreparation: true,
+      });
+      expect(v).toMatchObject({ autoRefire: false, refireBlockedBy: "charged-budget" });
     });
 
     it("reports cap-disabled distinctly from a spent budget", () => {

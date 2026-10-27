@@ -19,8 +19,9 @@ import { papercuspPath as hostPapercuspPath } from '@papercusp/host-platform/hom
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { readSuperuserToken } from './superuser-token';
+import { resolveBundledNode } from './bundled-node';
 
 import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -365,8 +366,9 @@ export async function buildConsoleEnvelope(
     // desktop-session PATH can put a different system Node ahead of the
     // operator's runtime, so checkout terminals get this one explicit
     // precedence entry; other backend PATH fallbacks remain appended.
-    const runtimeName = basename(process.execPath).replace(/\.exe$/i, '').toLowerCase();
-    if (runtimeName === 'node') env.PAPERCUSP_NODE_RUNTIME_DIR = dirname(process.execPath);
+    const retainedNode = await resolveBundledNode();
+    if (!retainedNode) throw new Error('Checkout CLI launch requires an explicit retained Node executable');
+    env.PAPERCUSP_NODE_RUNTIME_DIR = dirname(retainedNode);
   }
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".
@@ -525,11 +527,13 @@ export async function buildConsoleEnvelope(
     const bin = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';
     // WI-3882: forking a LIVE session must NOT resume it in place — that opens a
     // second CLI on the SAME transcript and collides with the still-running
-    // original. Only claude has `--fork-session`; omp/codex refuse a fork rather
-    // than silently degrade to a colliding plain resume.
+    // original. Native Codex forks use the tracked psu launcher; this bare
+    // console path cannot allocate and register a child.
     if (opts.fork && backend !== 'claude-code') {
       throw new Error(
-        `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
+        backend === 'codex'
+          ? 'Codex fork requires the tracked launcher: psu --resume=<tracked-session> --fork (native_fork_source registers the new child)'
+          : `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
     }
     // WI-6510: a model spec only reaches the CLI through psu, which is the claude

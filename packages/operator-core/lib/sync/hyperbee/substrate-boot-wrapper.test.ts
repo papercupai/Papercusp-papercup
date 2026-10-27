@@ -142,6 +142,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   stopSubstrateEvictionReaper();
+  vi.unstubAllGlobals();
 });
 
 describe('LAZY_SUBSTRATE_BOOT reaper gating', () => {
@@ -342,5 +343,35 @@ describe('bootSubstrateWithFallback', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('Bun routes native storage and networking through the existing Node sidecar even with the optional flag off', async () => {
+    vi.stubGlobal('process', { ...process, versions: { ...process.versions, bun: '1.4.4' } });
+    h.sidecarOn = false;
+
+    const result = await bootSubstrateWithFallback();
+
+    expect(spawnSidecar).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ usedSidecar: true, booted: 1 });
+    expect(ipcCalls.map(call => call.method)).toEqual(['sidecar:healthz', 'substrate:bootHarness']);
+    expect(setBootDefaults).toHaveBeenLastCalledWith(expect.objectContaining({
+      bootHarness: expect.any(Function), skipSendSideWiring: true,
+    }));
+  });
+
+  it('Bun refuses startup after Node sidecar failure instead of opening unsupported native stores in process', async () => {
+    vi.stubGlobal('process', { ...process, versions: { ...process.versions, bun: '1.4.4' } });
+    h.sidecarOn = true;
+    const cause = new Error('retained Node sidecar unavailable');
+    spawnSidecar.mockRejectedValueOnce(cause);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(bootSubstrateWithFallback()).rejects.toMatchObject({
+        message: expect.stringContaining('Bun requires the retained Node substrate sidecar'), cause,
+      });
+      expect(stopSidecar).toHaveBeenCalledOnce();
+      expect(bootAll).not.toHaveBeenCalled();
+      expect(setBootDefaults).not.toHaveBeenCalledWith(expect.objectContaining({ bootHarness: null }));
+    } finally { warning.mockRestore(); }
   });
 });

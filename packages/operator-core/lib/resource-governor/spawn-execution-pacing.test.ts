@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const beginGovernedExecutionMock = vi.fn();
 
-vi.mock('./execution', () => ({
+vi.mock('./execution', async (importOriginal) => ({
+  settleGovernedExecutionInBackground: (await importOriginal<typeof import('./execution')>()).settleGovernedExecutionInBackground,
   beginGovernedExecution: (...args: unknown[]) => beginGovernedExecutionMock(...args),
   governedExecutionRuntime: () => ({ governor: {}, driver: {} }),
 }));

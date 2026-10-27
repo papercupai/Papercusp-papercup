@@ -36,8 +36,7 @@
  * in this dir. A re-run does NOT live-arm an already-running host — the routine
  * engine (routinesTick) picks a freshly-seeded cron row up on its next tick.
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { runRoutineSeed } from './seed-routine-main';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 const SLUG =
@@ -53,45 +52,31 @@ function argNumber(flag: string): number | undefined {
   return Number.isFinite(v) && v > 0 ? v : undefined;
 }
 
-async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
-  const candidateCap = argNumber('--candidate-cap');
-  const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
-  const name = 'plan-item-reflect-orphan-reconcile';
-  const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = {
-    cron: CRON,
-    ...(candidateCap ? { candidate_cap: candidateCap } : {}),
-  };
-  await sql`
-    INSERT INTO harness_shared.routines
-      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-       concurrency, catchup, active, next_fire_at)
-    VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:plan-item-reflect-orphan-reconcile', 'skip', 'skip-old', ${active}, now())
-    ON CONFLICT (install_slug, name) DO UPDATE SET
-      target_role = EXCLUDED.target_role,
-      trigger_config = EXCLUDED.trigger_config,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
-      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
-      workspace_id = EXCLUDED.workspace_id,
-      updated_at = now()
-  `;
-  console.log(
-    `[seed-plan-item-reflect-orphan-reconcile-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `15-min data-heal of \`todo\` plan items whose linked work-items are all terminal` +
-      (candidateCap ? `, candidate_cap=${candidateCap}` : '') +
-      '.',
-  );
-}
-
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error(
-      '[seed-plan-item-reflect-orphan-reconcile-routine] FAILED:',
-      e instanceof Error ? e.message : e,
-    );
-    process.exit(1);
-  });
+void runRoutineSeed({
+  scriptTag: 'seed-plan-item-reflect-orphan-reconcile-routine',
+  prepare: () => {
+    const active = !process.argv.includes('--inactive');
+    const candidateCap = argNumber('--candidate-cap');
+    const name = 'plan-item-reflect-orphan-reconcile';
+    const triggerConfig = {
+        cron: CRON,
+        ...(candidateCap ? { candidate_cap: candidateCap } : {}),
+      };
+    return {
+      installSlug: SLUG,
+      name: name,
+      active,
+      triggerConfig: JSON.stringify(triggerConfig),
+      targetRole: 'system:plan-item-reflect-orphan-reconcile',
+      candidateCap,
+    };
+  },
+  afterSeed: async ({ active, id, workspaceId: ws, sql, candidateCap, name, triggerConfig }) => {
+    console.log(
+        `[seed-plan-item-reflect-orphan-reconcile-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
+          `15-min data-heal of \`todo\` plan items whose linked work-items are all terminal` +
+          (candidateCap ? `, candidate_cap=${candidateCap}` : '') +
+          '.',
+      );
+  },
+});

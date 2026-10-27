@@ -276,6 +276,158 @@ describe('readGateCandidateFailures', () => {
     expect(calls.filter((args) => args[0] === 'rev-parse' && args.includes('--verify'))).toHaveLength(0);
   });
 
+  describe('WI-6554700010029506 — every count covers the WHOLE failing population, never the rendered list', () => {
+    /** `n` failing files in path order; the ls-tree fake answers both refs from `blobAt`. */
+    function population(n: number, blobAt: (i: number, ref: string) => string) {
+      const failing = Array.from({ length: n }, (_, i) => ({
+        file_path: `tests/f-${String(i).padStart(4, '0')}.test.ts`,
+        status: 'fail',
+        attempts: 1,
+      }));
+      const index = new Map(failing.map((f, i) => [f.file_path, i]));
+      const calls: string[][] = [];
+      const git = async (_cwd: string, args: string[]): Promise<string | null> => {
+        calls.push(args);
+        if (args[0] === 'ls-tree') {
+          const ref = args[2];
+          return args
+            .slice(args.indexOf('--') + 1)
+            .map((path) => `100644 blob ${blobAt(index.get(path)!, ref)}\t${path}\0`)
+            .join('');
+        }
+        return null;
+      };
+      return { failing, git, calls };
+    }
+
+    it('THE FALSIFIER: 100 fixed files sorting ahead of 50 broken ones still report 50 broken, not a sample of the first 60', async () => {
+      // The measured wrong reading: the counts were taken over the first 60 rows in path order
+      // (and blob-compared for only 40 of those), so a backlog whose broken files sort late read
+      // `stillBrokenCount: 9` beside `failingFileCount: 1050`. Here the first 100 paths carry a
+      // landed fix and the last 50 do not; the old slice saw ONLY fixed rows and answered 0.
+      const { failing, git, calls } = population(150, (i, ref) =>
+        i < 100 && ref === REPAIR_HEAD ? `fixed-${i}` : `orig-${i}`,
+      );
+      const atRepairHead = [
+        // 5 of the fixed files were already re-run green at repairHead…
+        ...[0, 1, 2, 3, 4].map((i) => ({ file_path: failing[i].file_path, status: 'pass', id: 9000 + i })),
+        // …and 10 of the broken ones were re-run there and still fail.
+        ...[140, 141, 142, 143, 144, 145, 146, 147, 148, 149].map((i) => ({
+          file_path: failing[i].file_path,
+          status: 'fail',
+          id: 9000 + i,
+        })),
+      ];
+
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 7845, failing, atRepairHead }),
+        git,
+      });
+
+      expect(res.failingFileCount).toBe(150);
+      expect(res.stillBrokenCount).toBe(50);
+      expect(res.passedAtRepairHeadCount).toBe(5);
+      expect(res.alreadyFixedCount).toBe(95);
+      expect(res.unmeasuredCount).toBe(0);
+      // The buckets PARTITION the population — no file is outside every count.
+      expect(res.passedAtRepairHeadCount + res.alreadyFixedCount + res.stillBrokenCount + res.unmeasuredCount).toBe(
+        res.failingFileCount,
+      );
+      expect(res.assessment).toBe('repairs-outstanding');
+      // Ordinary paths are answered from one batched read per ref, however many there are.
+      expect(calls.filter((args) => args[0] === 'ls-tree')).toHaveLength(2);
+    });
+
+    it('caps only the RENDERED list, and fills it with the real work first', async () => {
+      const { failing, git } = population(150, (i, ref) => (i < 100 && ref === REPAIR_HEAD ? `fixed-${i}` : `orig-${i}`));
+      const atRepairHead = [140, 141, 142].map((i) => ({ file_path: failing[i].file_path, status: 'fail', id: i }));
+
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 150, failing, atRepairHead }),
+        git,
+      });
+
+      expect(res.truncated).toBe(true);
+      expect(res.distinctFailingFiles).toHaveLength(60);
+      // Measured-failing-at-repairHead rows lead, then the 47 presumed-broken ones in path order,
+      // then already-fixed rows fill what is left.
+      expect(res.distinctFailingFiles.slice(0, 3).map((f) => f.path)).toEqual(
+        [140, 141, 142].map((i) => failing[i].file_path),
+      );
+      expect(res.distinctFailingFiles.slice(3, 50).every((f) => f.atRepairHead === null && f.fixInRepairHead === false)).toBe(true);
+      expect(res.distinctFailingFiles[3].path).toBe(failing[100].file_path);
+      expect(res.distinctFailingFiles.slice(50).every((f) => f.fixInRepairHead === true)).toBe(true);
+    });
+
+    it('an UNCUT list keeps its path order exactly', async () => {
+      const { failing, git } = population(3, (i, ref) => (i === 0 && ref === REPAIR_HEAD ? 'fixed' : `orig-${i}`));
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 3, failing }),
+        git,
+      });
+      expect(res.truncated).toBe(false);
+      expect(res.distinctFailingFiles.map((f) => f.path)).toEqual(failing.map((f) => f.file_path));
+    });
+
+    it('chunks the batched read, so thousands of paths never overflow the argv or the stdout buffer', async () => {
+      const { git, calls } = population(900, (i, ref) => (ref === REPAIR_HEAD ? `fixed-${i}` : `orig-${i}`));
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 900, failing: population(900, () => '').failing }),
+        git,
+      });
+      const lsTree = calls.filter((args) => args[0] === 'ls-tree');
+      expect(lsTree).toHaveLength(6); // 3 chunks per ref
+      expect(Math.max(...lsTree.map((args) => args.length - args.indexOf('--') - 1))).toBeLessThanOrEqual(400);
+      expect(res.alreadyFixedCount).toBe(900);
+      expect(res.unmeasuredCount).toBe(0);
+    });
+
+    it('a failed batch read spends a BOUNDED spawn budget, and every row past it is COUNTED as unmeasured', async () => {
+      // The fail-soft per-path fallback is two spawns per file. Unbounded over a population of
+      // 1,000 that is the bg-host spawn storm EI-22737582656157929 profiled; dropped instead, it
+      // is a silent sample. Bounded AND counted is the only honest answer.
+      const failing = Array.from({ length: 100 }, (_, i) => ({ file_path: `tests/g-${i}.test.ts`, status: 'fail', attempts: 1 }));
+      const calls: string[][] = [];
+      const git = async (_cwd: string, args: string[]): Promise<string | null> => {
+        calls.push(args);
+        if (args[0] === 'rev-parse' && args[1] === '--verify') {
+          const [sha, path] = args[3].split(':');
+          return `${sha === CANDIDATE ? 'a' : 'b'}-${path}`;
+        }
+        return null; // every ls-tree batch is unreadable
+      };
+
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 100, failing }),
+        git,
+      });
+
+      expect(calls.filter((args) => args[0] === 'rev-parse' && args[1] === '--verify')).toHaveLength(80);
+      expect(res.alreadyFixedCount).toBe(40);
+      expect(res.unmeasuredCount).toBe(60);
+      expect(res.passedAtRepairHeadCount + res.alreadyFixedCount + res.stillBrokenCount + res.unmeasuredCount).toBe(100);
+      // Nothing is broken among what WAS measured, but 60 rows have no answer: never an all-clear.
+      expect(res.assessment).toBe('unmeasured');
+      const spent = res.distinctFailingFiles.find((f) => f.fixInRepairHead === null);
+      expect(spent?.reading).toMatch(/counted in unmeasuredCount/);
+    });
+  });
+
   it('compares a SUBMODULE-backed path by gitlink, never by blob', async () => {
     // ⚠ THE TRAP THIS EXISTS FOR: `git rev-parse <ref>:<path>` inside a submodule
     // compares content that is IDENTICAL in both refs while the gitlink moved

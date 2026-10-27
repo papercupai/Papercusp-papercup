@@ -565,6 +565,38 @@ signal_hook_ready() {
   exec 3>&-
 }
 
+# The workspace hook uses a two-way handshake around its cross-process
+# migration rendezvous. READY means this process owns the shared Kopia flock;
+# pg_dump must not start until the parent has reacquired the advisory lock and
+# rechecked whether the host dump already covered the database.
+hook_ack=
+wait_for_hook_ack() {
+  [ "${KOPIA_BACKUP_GUARD_READY_FD:-}" = 3 ] || return 0
+  [ "${KOPIA_BACKUP_GUARD_ACK_FD:-}" = 4 ] || return 0
+  local timeout_sec="${KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC:-1805}"
+  is_number "$timeout_sec" || {
+    echo "invalid KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC=$timeout_sec" >&2
+    return 1
+  }
+  awk -v value="$timeout_sec" 'BEGIN { exit !(value > 0) }' || {
+    echo "invalid KOPIA_BACKUP_GUARD_ACK_TIMEOUT_SEC=$timeout_sec" >&2
+    return 1
+  }
+  if ! IFS= read -r -t "$timeout_sec" hook_ack <&4; then
+    guard_log "result=failed mode=wait reason=ack-timeout timeout_sec=$timeout_sec"
+    return 1
+  fi
+  exec 4<&-
+  case "$hook_ack" in
+    PROCEED) return 0 ;;
+    SKIP) return 2 ;;
+    *)
+      guard_log "result=failed mode=wait reason=invalid-ack"
+      return 1
+      ;;
+  esac
+}
+
 read_full_avg10() {
   local path="$1"
   [ -r "$path" ] || return 1
@@ -973,6 +1005,18 @@ else
   fi
   write_guard_progress guard-running
   signal_hook_ready || exit 74
+  if wait_for_hook_ack; then
+    :
+  else
+    hook_ack_status=$?
+    if [ "$hook_ack_status" -eq 2 ]; then
+      rm -f "$handoff_note_path" 2>/dev/null || true
+      cleanup_priority_request
+      guard_log "result=finished mode=wait rc=0 skipped=parent-covered"
+      exit 0
+    fi
+    exit 74
+  fi
   # A note left by a sweep that yielded to this wait-mode producer is spent here.
   rm -f "$handoff_note_path" 2>/dev/null || true
   cleanup_priority_request

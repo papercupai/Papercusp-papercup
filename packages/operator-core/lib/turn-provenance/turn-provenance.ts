@@ -61,9 +61,9 @@ export function turnProvenanceDir(env: NodeJS.ProcessEnv = process.env): string 
   return env.PAPERCUSP_TURN_PROVENANCE_DIR || TURN_PROVENANCE_DIR;
 }
 
-/** Rows older than this are dead: dropped on read, compacted on write.
- *  Short by design — the ledger answers "was THIS prompt just injected?",
- *  not history (the transcript is history). */
+/** Rows older than this cannot authorize a current injection. Reclamation
+ *  additionally retains bounded history for stale-turn classification and
+ *  delayed transcript ingestion; see LEDGER_GC_GRACE_MS. */
 export const LEDGER_TTL_MS_DEFAULT = 10 * 60_000;
 
 /** Env override for the TTL, clamped to ≥30s (a sub-30s TTL would expire a
@@ -376,7 +376,7 @@ function isErrno(e: unknown, code: string): boolean {
   return (e as NodeJS.ErrnoException | null)?.code === code;
 }
 
-/** Drop expired rows from `p` once it passes LEDGER_COMPACT_BYTES. A missing
+/** Drop rows past TTL + grace once `p` passes LEDGER_COMPACT_BYTES. A missing
  *  file is not an error (first append for this sid). */
 async function compactLedgerFileIfLarge(p: string, nowMs: number, ttlMs: number): Promise<void> {
   let size: number;
@@ -387,15 +387,15 @@ async function compactLedgerFileIfLarge(p: string, nowMs: number, ttlMs: number)
     throw e;
   }
   if (size <= LEDGER_COMPACT_BYTES) return;
-  const live = parseRows(await readFile(p, 'utf8')).filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
-  await writeFile(p, live.map((r) => JSON.stringify(r)).join('\n') + (live.length ? '\n' : ''));
+  const retained = parseRows(await readFile(p, 'utf8')).filter((r) => withinLedgerRetention(r, nowMs, ttlMs));
+  await writeFile(p, retained.map((r) => JSON.stringify(r)).join('\n') + (retained.length ? '\n' : ''));
 }
 
 /**
  * Append one row. FAIL-SOFT (resolves false on any fs error): a ledger write
  * failure must never block a wake/injection — the turn then classifies as
  * unverified/owner, which is visible and diagnosable, unlike a dead wake.
- * Opportunistically compacts the file (drops expired rows) past a size
+ * Opportunistically compacts the file (drops rows past TTL + grace) past a size
  * threshold so a chatty session's ledger never grows unbounded.
  *
  * Resolves only after the row is on disk: callers must await it before typing
@@ -454,7 +454,8 @@ export function readLedgerRows(
 
 /**
  * RECLAMATION GRACE — how far PAST its own TTL a row is retained before GC may
- * delete it. Not a tuning knob: it is what keeps deletion verdict-neutral.
+ * delete it, including append-time compaction. Not a tuning knob: it is what
+ * keeps deletion verdict-neutral.
  *
  * THE INVARIANT (plan D-007): GC must never delete a row while its ABSENCE
  * would produce a MORE authoritative verdict than its PRESENCE. Expiry and
@@ -480,8 +481,18 @@ export function readLedgerRows(
  * growth problem this sweep exists to solve. Sizing it from the reachable
  * window rather than from disk pressure is the point: disk is the reason to
  * delete, the invariant is the constraint on when.
+ *
+ * Delayed native transcript ingestion also validates enrollment at submission
+ * time. Retaining the row lets that historical check succeed without extending
+ * its authority at the current time. Every reclamation path must use the same
+ * window; otherwise a size-triggered append can erase what GC preserves.
  */
 export const LEDGER_GC_GRACE_MS = 24 * 60 * 60_000;
+
+/** Storage retention only. Live readers and classification still enforce TTL. */
+function withinLedgerRetention(row: LedgerRow, nowMs: number, ttlMs: number, graceMs = LEDGER_GC_GRACE_MS): boolean {
+  return nowMs - row.ts <= (row.ttlMs ?? ttlMs) + graceMs;
+}
 
 /**
  * Directory GC (for a janitor sweep): rewrite each ledger file keeping only
@@ -517,7 +528,7 @@ export async function gcLedgerDir(
       await serializeByPath(p, async () => {
         const rows = parseRows(await readFile(p, 'utf8'));
         // Retain until TTL + grace, NOT until TTL — see LEDGER_GC_GRACE_MS.
-        const live = rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs) + graceMs);
+        const live = rows.filter((r) => withinLedgerRetention(r, nowMs, ttlMs, graceMs));
         rowsDropped += rows.length - live.length;
         if (live.length === 0) {
           await unlink(p);

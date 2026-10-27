@@ -893,7 +893,9 @@ finally {
     const started = Date.now();
     const record = (status: string, error?: unknown) => {
       const row = { stage, status, elapsedMs: Date.now() - started,
-        ...(error ? { error: String(error) } : {}) };
+        ...(error ? { error: String(error) } : {}),
+        ...(error && typeof error === 'object' && 'privateHostStop' in error
+          ? { privateHostStop: error.privateHostStop } : {}) };
       appendFileSync(join(evidence, 'roster-stop-cleanup.jsonl'), JSON.stringify(row) + '\n');
       console.log('ROSTER_STOP_HTTP_CLEANUP_PHASE ' + JSON.stringify(row));
       if (stage === 'native-shutdown' || stage === 'native-exit') retainNativeState(`${stage}:${status}`);
@@ -916,7 +918,11 @@ finally {
   });
   await cleanupPhase('native-exit', () => Promise.all(sessions.map(session => session.done)));
   await cleanupPhase('session-end-records', () => Promise.all(endings));
-  await cleanupPhase('api-stop', async () => { if (api) await stopPrivateOperatorHost(api); });
+  await cleanupPhase('api-stop', async () => {
+    if (api) await stopPrivateOperatorHost(api, undefined, undefined, observation => {
+      appendFileSync(join(evidence, 'roster-stop-host-stop.jsonl'), JSON.stringify(observation) + '\n');
+    });
+  });
   await cleanupPhase('listeners-stop', async () => {
     await inboxInvalidationListener?.unlisten();
     await cupboardCatalog?.close();

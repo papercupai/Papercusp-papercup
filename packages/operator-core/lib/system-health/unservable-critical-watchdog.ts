@@ -69,7 +69,7 @@
  */
 import type { Sql } from 'postgres';
 
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { createManagedSweepStarter } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { isStructurallyUnclaimable } from '../claim-floor-classification';
@@ -509,38 +509,22 @@ export async function runUnservableCriticalSweepOnce(
   return { scanned: rows.length, escalated, failed, skipped: false };
 }
 
-let watchdogTimer: ManagedHandle | null = null;
 
 /**
  * Start the unservable-critical watchdog: a recurring process-level sweep.
  * Idempotent. Runtime gate: FLAGS.UNSERVABLE_CRITICAL_WATCHDOG (checked per tick).
  */
-export function startUnservableCriticalWatchdog(
-  sql: Sql,
-  opts: { intervalMs?: number } = {},
-): void {
-  const intervalMs = opts.intervalMs ?? UNSERVABLE_CRITICAL_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'unservable-critical-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return; // never overlap a slow tick
-      sweeping = true;
-      void runUnservableCriticalSweepOnce(sql)
-        .catch((e) => {
+const armUnservableCriticalWatchdog = createManagedSweepStarter({
+  name: 'unservable-critical-watchdog',
+  intervalMs: UNSERVABLE_CRITICAL_SWEEP_INTERVAL_MS,
+  options: { category: 'watchdog', classification: 'timeout-reaper' },
+  onError: (e) => {
           console.warn(
             `[unservable-critical-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
           );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // The trigger is ELAPSED TIME with no state change — an item going quiet in an
-    // unservable lane emits nothing, and absence-over-a-deadline has no publisher
-    // to subscribe to.
-    { category: 'watchdog', classification: 'timeout-reaper' },
-  );
+        },
+});
+
+export function startUnservableCriticalWatchdog(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  armUnservableCriticalWatchdog(() => runUnservableCriticalSweepOnce(sql), opts.intervalMs);
 }

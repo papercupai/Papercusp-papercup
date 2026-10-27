@@ -354,6 +354,7 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     author_pubkey: string;
     ts: number;
     schema_version: number;
+    hlc?: string;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
     /** See `SnapshotPayload.ownPrefix`. */

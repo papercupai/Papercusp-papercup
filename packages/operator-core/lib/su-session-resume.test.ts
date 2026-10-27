@@ -53,7 +53,7 @@ import { prepareStructuredSuResume } from './su-session-resume';
 
 function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
   m.row.mockResolvedValue({ id: 42, workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'saved-plan',
-    agent: backend, coordOwnerId: 'saved-owner', cwd: '/project', pid: null, sessionId: 'saved-native' });
+    agent: backend, coordOwnerId: 'saved-owner', cwd: '/project', pid: null, sessionId: 'saved-native', terminalBin: `pui-structured-${backend}` });
   m.spec.mockResolvedValue({ agent: backend, workspaceId: 'workspace', harnessSlug: 'project',
     profile: 'engineer', model: 'saved-model:high', planSlug: 'saved-plan',
     headless: true,
@@ -85,6 +85,32 @@ beforeEach(() => {
 });
 
 describe('structured exact resume preparation', () => {
+  it.each(['claude', 'codex'] as const)('preserves saved PTY selection for %s before acquiring a lease or restoring credentials', async (backend) => {
+    const saved = fixture(backend);
+    saved.descriptor!.executionKind = 'pty';
+    await expect(prepareStructuredSuResume(saved)).rejects.toMatchObject({ code: 'unsupported_execution_kind' });
+    expect(m.spec).not.toHaveBeenCalled();
+    expect(m.acquire).not.toHaveBeenCalled();
+    expect(m.account).not.toHaveBeenCalled();
+  });
+
+  it('requires actual legacy runtime evidence and never treats a headless launch spec as that evidence', async () => {
+    const saved = fixture('claude');
+    m.row.mockResolvedValue({ ...await m.row(), terminalBin: 'headless' });
+    await expect(prepareStructuredSuResume(saved)).rejects.toMatchObject({ code: 'unknown_existing_execution_kind' });
+    expect(m.spec).not.toHaveBeenCalled();
+    expect(m.acquire).not.toHaveBeenCalled();
+  });
+
+  it('uses a saved programmatic choice even without the legacy launcher marker', async () => {
+    const saved = fixture('claude');
+    saved.descriptor!.executionKind = 'programmatic';
+    m.row.mockResolvedValue({ ...await m.row(), terminalBin: null });
+    const resumed = await prepareStructuredSuResume(saved);
+    expect(m.acquire).toHaveBeenCalledOnce();
+    await resumed.release();
+  });
+
   it('identifies the pending resume operation before it settles or refuses', async () => {
     const saved = fixture('codex');
     let refuse!: (error: Error) => void;

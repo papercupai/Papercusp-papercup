@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "plan": "shared-search-restart-papercusp-2026-10-22",
+  "item": "P-001",
+  "workItemId": "WI-6554700010022135",
+  "scope": "bounded actual provider-package live-search reader on disposable Postgres",
+  "protocol": {
+    "path": "docs/evidence/shared-search-restart-papercusp-2026-10-22-documents-freshness-protocol-20261025.json",
+    "sha256": "675e29f75f2fe8325af2dd79b20adc6f6ec87d8def5ec8dfa646df4e32b81f57"
+  },
+  "test": {
+    "path": "packages/operator-core/lib/data-sources/live-search-freshness.integration.test.ts",
+    "sha256": "0d8c60390647eed33f437f1d3ad3fb5bcfa68ef921e463dc9577cd53b16cfcf6",
+    "nativeTestRunId": 22051485,
+    "receiptId": "1ed7529a-fe34-4236-bac5-88334dda1c47",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "nativeExecSessionId": 6066,
+    "nativeExecExitCode": 0,
+    "startedAt": "2026-10-25T18:24:44.085Z",
+    "finishedAt": "2026-10-25T18:24:46.614Z",
+    "commitSha": "733ca299789bba5506afb223e401ea25c99aa0bf",
+    "worktreeDirty": true,
+    "runtimeEnvironmentBeforeCaptureStatus": "not-configured",
+    "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+    "priorFixtureAttempt": {
+      "testRunId": 22051472,
+      "passed": 3,
+      "failed": 1,
+      "cause": "Fixture passed null agentOwnerId: discloseDocuments correctly withheld restricted content. Corrected synthetic agent identity and asserted no-agent withholding."
+    }
+  },
+  "declaredCases": [
+    "provider-fields",
+    "content-and-candidate-update",
+    "privacy-and-grant-transition",
+    "late-binding-transition"
+  ],
+  "executedCases": [
+    "provider-fields",
+    "content-and-candidate-update",
+    "privacy-and-grant-transition",
+    "late-binding-transition"
+  ],
+  "unexecutedCases": [],
+  "fieldPopulation": [
+    "papercusp/documents:search/live/title",
+    "papercusp/documents:search/live/snippet",
+    "papercusp/documents:search/live/occurredAt",
+    "papercusp/documents:search/live/permalink",
+    "papercusp/documents:search/live/privacy"
+  ],
+  "receiptCount": 9,
+  "returnedFieldComparisons": 35,
+  "oracleResults": { "unknown": 35, "current": 0, "stale": 0 },
+  "qualifiedFieldClaims": 0,
+  "sourcePinsCheckedBeforeAndAfter": 13,
+  "database": { "cleanup": "dropped", "kind": "owned disposable fixture" },
+  "artifactRoot": "evidence/shared-search-restart-papercusp-2026-10-22/documents-live-reader-20261025-a/",
+  "artifacts": [
+    {
+      "name": "witness.json",
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/documents-live-reader-20261025-a/witness.json",
+      "bytes": 131734,
+      "sha256": "f34ce4d2e60c4bb3772b8c4a34fac2cd2855418c03b41dc2a8a3fd58dd720a72"
+    },
+    {
+      "name": "receipt.json",
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/documents-live-reader-20261025-a/receipt.json",
+      "bytes": 3514,
+      "sha256": "736418450c60e1da1612e547b0643a7921c0860b6c3d707e65b440331186a790"
+    },
+    {
+      "name": "test.log",
+      "artifactPath": "evidence/shared-search-restart-papercusp-2026-10-22/documents-live-reader-20261025-a/test.log",
+      "bytes": 857824,
+      "sha256": "6bfe3de49c2791564fc624b03eb5dfaaef179a7824d0ce8fab51a2ff1b3ac8e9"
+    }
+  ],
+  "limits": [
+    "Controlled provider package responses; no production provider contacted.",
+    "No trusted provider field revisions or clocks: fixture state, local response clocks and local authority epochs cannot establish provider currentness.",
+    "The 35 value comparisons and unknown oracles cover returned controlled fixture fields only, not the full 77-field population.",
+    "Admin client injected; host authentication, RLS, documents:search dispatch and full runtime closure remain unmeasured.",
+    "The in-flight binding mutation exercises actual enforcement, but is not an applied-preserving enforcement-bypass witness.",
+    "Quality labels, cost/budget populations, runtime closure, ledger acceptance and shipment remain open.",
+    "Original worktreeDirty=true provenance is retained; a later commit does not upgrade the original test run to clean-source proof."
+  ],
+  "qualification": { "qualifiedBaseline": false, "rankingTreatment": false, "shipped": false }
+}

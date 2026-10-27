@@ -43,6 +43,19 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     });
     await db.adminSql.unsafe(migration);
     await db.adminSql.unsafe(migration); // replacement is idempotent
+    const censusIndexMigration = await readFile(
+      new URL('../../../libs/papercusp/libs/db/sql/1593-issue-occurrence-canonical-covering-index.sql.DRAFT', import.meta.url),
+      'utf8',
+    );
+    await db.adminSql.unsafe(censusIndexMigration);
+    await db.adminSql.unsafe(censusIndexMigration); // the canonical replacement is idempotent
+    const canonicalIndex = await db.adminSql<{ indexdef: string }[]>`
+      SELECT indexdef
+        FROM pg_indexes
+       WHERE schemaname = 'harness_shared'
+         AND indexname = 'work_item_occurrences_canonical_idx'
+    `;
+    expect(canonicalIndex[0]?.indexdef).toMatch(/INCLUDE \(report_kind\)/i);
   }, 180_000);
 
   afterAll(async () => {
@@ -199,8 +212,11 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
       .toMatchObject({ canonicalClusters: 0, rawOccurrences: 0, duplicateOccurrences: 0 });
   });
 
-  it('groups the actual scoped census without heap fetches beside large evidence envelopes', async () => {
-    // Evidence size must not make a narrow census fetch the evidence heap.
+  it('uses the canonical covering index for a scoped census beside large evidence envelopes', async () => {
+    // The census projection is covered by the canonical index, including
+    // report_kind. An Index Only Scan can still report heap fetches when MVCC
+    // visibility-map bits are unset; those fetches do not indicate a missing
+    // indexed column.
     await db.adminSql`
       INSERT INTO harness_shared.work_item_occurrences
         (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool,
@@ -238,6 +254,11 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     const actualCensusQuery = censusQuery;
     const plans = await db.adminSql.begin(async (tx) => {
       await tx`SET LOCAL enable_seqscan = off`;
+      // The fixture selects most rows, so PostgreSQL may prefer a bitmap heap
+      // scan even though the reader has a covering index. Disable bitmap scans
+      // only in this physical-coverage probe to prove the index-only path exists;
+      // production plan choice and latency are measured separately.
+      await tx`SET LOCAL enable_bitmapscan = off`;
       return tx`EXPLAIN (ANALYZE, FORMAT JSON) ${actualCensusQuery}`;
     });
     type PlanNode = { 'Node Type': string; Strategy?: string; 'Index Name'?: string; 'Heap Fetches'?: number; Plans?: PlanNode[] };
@@ -245,7 +266,7 @@ describe('issue occurrence ledger (real PG, migration 831)', () => {
     const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
     visit(plans[0]['QUERY PLAN'][0].Plan);
     expect(nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Index Only Scan',
-      'Index Name': 'work_item_occurrences_flow_idx', 'Heap Fetches': 0 }));
+      'Index Name': 'work_item_occurrences_canonical_idx' }));
     // This guards the reader itself: a separate handwritten EXPLAIN could keep
     // passing after the production query regressed to a composite DISTINCT sort.
     expect(nodes).toContainEqual(expect.objectContaining({ 'Node Type': 'Aggregate',

@@ -24,6 +24,8 @@ import { provisionPinnedRubric } from '../../rubrics';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import { runToolOrchestration } from '@papercusp/agent-mcp';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { flushFallbackObservations } from '../../degradation/fallback-observations';
+import { stopInvalidationListener } from '../../sync-sse';
 
 // Fix external class/root metadata for the isolated baseline. Clause/evidence
 // reads and all three handlers use their real production SQL and file measurers.
@@ -287,9 +289,18 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
     expect(written, JSON.stringify(written)).toMatchObject({ status: 'created' });
   }, 120_000);
   afterAll(async () => {
-    await fx?.dispose();
-    if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
-    else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
+    try {
+      // Drain queued invalidations and telemetry while their private database is
+      // still pinned; delayed publishes must never resolve restored ambient URLs.
+      if (fx) {
+        await stopInvalidationListener();
+        expect(await flushFallbackObservations({ sql: fx.admin })).toMatchObject({ failed: 0 });
+      }
+    } finally {
+      await fx?.dispose();
+      if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
+    }
   }, 30_000);
   it('reads a persisted unbound clause through all three real handlers and writes no gap in default preview', async () => {
     const evaluate = vi.fn((args: Body) => call(evaluateTool, args));
@@ -321,9 +332,6 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
     const measured = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, commitSha);
     // This ledger is fixture INPUT, not a claimed test run. Production evidence
     // reads must distinguish its pass/fail outcomes and stale measured bytes.
-    await fx.admin`INSERT INTO harness_shared.work_items
-      (feature_id, workspace_id, harness_slug, title, status, item_kind, payload, created_ts)
-      VALUES ('WI-CONVERGE-PROOF', ${PAPERCUSP_WORKSPACE_ID}, 'papercusp', 'Proof fixture', 'open', 'feature', '{}', 0)`;
     for (const [specId, itemId, status, stale] of [
       ['SPEC-PASS', 'P-004', 'pass', false], ['SPEC-FAIL', 'P-005', 'fail', false],
       ['SPEC-STALE', 'P-006', 'pass', true],
@@ -331,6 +339,12 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
       await fx.admin`INSERT INTO harness_shared.plan_items
         (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
         VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${slug}, ${itemId}, ${Number(itemId.slice(2))}, ${specId}, 'todo')`;
+      const proofWorkItemId = `WI-CONVERGE-PROOF-${itemId}`;
+      await fx.admin`INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, title, status, item_kind, payload, created_ts,
+          source_plan_slug, source_plan_item_ids)
+        VALUES (${proofWorkItemId}, ${PAPERCUSP_WORKSPACE_ID}, 'papercusp', 'Proof fixture', 'open',
+          'feature', '{}', 0, ${slug}, ${[itemId]}::text[])`;
       expect(await setSpecClause({ harnessSlug: 'papercusp', planSlug: slug, specId, expectedRevision: 0,
         planItemId: itemId, behavior: `Observe ${specId} through the real evaluator.`, behaviorClass: 'boundary',
         requiredEvidence: ['integration'], requiredTestLayers: ['integration'], lifecycleStatus: 'active',
@@ -354,7 +368,7 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
       const { sourceFingerprint, testFingerprint, fixtureFingerprint } = measured;
       const fingerprints = { sourceFingerprint, testFingerprint, fixtureFingerprint };
       expect(await bindSpecEvidence({ harnessSlug: 'papercusp', planSlug: slug, specId,
-        workItemId: 'WI-CONVERGE-PROOF', evidenceKind: 'test', evidenceRef: `test-run:${run.id}:${testPath}`,
+        workItemId: proofWorkItemId, evidenceKind: 'test', evidenceRef: `test-run:${run.id}:${testPath}`,
         testRunId: Number(run.id), ...fingerprints,
         ...(stale ? { sourceFingerprint: 'deliberately-stale-source' } : {}), actorId: 'su-converge-pg',
         details: { currentMeasurement: measurement, adequacy: { fixtureCalibrated: true, falsifiable: true,
@@ -374,7 +388,7 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
         await fx.admin`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status)
           VALUES (${red.id}, 0, 'persisted proof fixture', 'fail')`;
         expect(await bindSpecEvidence({ harnessSlug: 'papercusp', planSlug: slug, specId,
-          workItemId: 'WI-CONVERGE-PROOF', evidenceKind: 'mutation', evidenceRef: `test-run:${red.id}:${testPath}`,
+          workItemId: proofWorkItemId, evidenceKind: 'mutation', evidenceRef: `test-run:${red.id}:${testPath}`,
           testRunId: Number(red.id), ...fingerprints,
           ...(stale ? { sourceFingerprint: 'deliberately-stale-source' } : {}), actorId: 'su-converge-pg',
           details: { currentMeasurement: measurement, adequacy: { fixtureCalibrated: true,

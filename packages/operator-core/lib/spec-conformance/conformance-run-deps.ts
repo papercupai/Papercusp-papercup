@@ -4,6 +4,7 @@
  *   - tests checks       → judged from the test-run ledger (latest row per named file);
  *   - probe checks       → evaluateCriterionProbeChecks through the re-score dispatcher;
  *   - instrument checks  → runInstrumentChecks (registered command instruments);
+ *   - requirements checks → the canonical activation/completion realization judge;
  *   - verdict history    → readLatestRubricCheckResults under `conformance:<harness>/<plan>`;
  *   - ledger writes      → recordRubricCheckResults (framework 'rubric-check');
  *   - drift alarms       → upsertConditionWorkItem (unique condition key = one open alarm per
@@ -18,10 +19,12 @@
  * Plan: spec-conformance-loop-2026-10-14 (P-018).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { sameBuildSha } from '../attention/bug-reproduction';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { getBuildInfo } from '../build-info';
+import { createTestContentEquivalence, type TestContentEquivalence } from './conformance-test-content';
 import { approvedDeviations } from './deviation';
 import {
   probeCheckResults,
@@ -32,9 +35,14 @@ import {
 } from '../check-results-ledger';
 import {
   evaluateCriterionProbeChecks,
+  evaluateCriterionRequirementChecks,
   loadCriterionCheckCases,
   type CriterionCaseLoader,
+  type RequirementRealizationReader,
 } from '../rubrics-criterion-checks';
+import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../plan-audits';
+import { isNonCodeAuditVerdict } from '../plan-verification-profile';
+import { runWithWorkspace } from '../workspace-als';
 import { resolveTestCaseFilter, type RecordedTestCase } from '../testing-case-filter';
 import { rescoreProbeDispatcher } from '../harness/routines/rubric-rescore-action';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
@@ -130,6 +138,10 @@ export async function judgeTestsFromLedger(
     now?: () => Date;
     /** Override only for focused tests; production uses the seven-day policy above. */
     maxAgeMs?: number;
+    /** Immutable dependency-content proof; injectable for focused selection tests. */
+    contentEquivalence?: TestContentEquivalence;
+    /** Same per-request tracker as the enclosing conformance run. */
+    phases?: PhaseTracker;
   },
   sql: Sql = getOrgPg().sql,
 ): Promise<EvaluatedConformanceCheck> {
@@ -138,8 +150,9 @@ export async function judgeTestsFromLedger(
   const matchingBuildSha = normalizedCurrentBuildSha && SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)
     ? normalizedCurrentBuildSha.toLowerCase()
     : null;
-  const rows = (await sql`
-    SELECT DISTINCT ON (file_path)
+  const candidates = (await trackPhase(input.phases, 'conformance:tests:ledger', () => sql`
+    WITH per_commit AS (
+    SELECT DISTINCT ON (file_path, commit_sha)
            id, file_path, status, finished_at, commit_sha, worktree_dirty, execution_details
       FROM harness_shared.test_runs
      WHERE file_path = ANY(${[...input.files]})
@@ -152,7 +165,11 @@ export async function judgeTestsFromLedger(
      -- Concurrent reviewers may test other commits in this same workspace.
      -- Prefer this build's newest run; retain foreign rows as a diagnostic
      -- fallback when there is no match. Unpinned errors stay fail-closed.
-     ORDER BY file_path,
+     ORDER BY file_path, commit_sha,
+              CASE WHEN status = 'pass' AND worktree_dirty IS TRUE THEN 1 ELSE 0 END,
+              finished_at DESC NULLS LAST, id DESC
+    ), ranked AS (
+      SELECT *, row_number() OVER (PARTITION BY file_path ORDER BY
               CASE WHEN ${matchingBuildSha}::text IS NULL
                      OR nullif(btrim(commit_sha), '') IS NULL
                      OR (commit_sha ~ '^[a-fA-F0-9]{7,64}$' AND (
@@ -163,8 +180,11 @@ export async function judgeTestsFromLedger(
               -- its HEAD matches. Prefer this build's committed observation;
               -- keep negative and name-filtered evidence fail-closed as before.
               CASE WHEN status = 'pass' AND worktree_dirty IS TRUE THEN 1 ELSE 0 END,
-              finished_at DESC NULLS LAST, id DESC
-  `) as Array<{
+              finished_at DESC NULLS LAST, id DESC) AS candidate_rank
+        FROM per_commit
+    ) SELECT * FROM ranked WHERE candidate_rank <= 32
+      ORDER BY file_path, candidate_rank
+  `)) as Array<{
     id: number | string;
     file_path: string;
     status: string;
@@ -173,6 +193,48 @@ export async function judgeTestsFromLedger(
     worktree_dirty: boolean | null;
     execution_details: unknown;
   }>;
+  const equivalentRows = new Set<typeof candidates[number]>();
+  const equivalenceProblems = new Map<typeof candidates[number], string>();
+  const contentEquivalence = input.contentEquivalence ?? createTestContentEquivalence();
+  // Among compatible rows preserve dirty-pass penalty, recency, then id. Walk
+  // that order until the first compatible row: no later proof can outrank it.
+  const ordered = [...candidates].sort((a, b) =>
+    Number(a.status === 'pass' && a.worktree_dirty === true) - Number(b.status === 'pass' && b.worktree_dirty === true)
+    || (finishedAtMs(b.finished_at) || 0) - (finishedAtMs(a.finished_at) || 0)
+    || Number(b.id) - Number(a.id));
+  const candidatesByFile = new Map<string, typeof candidates>();
+  for (const row of ordered) {
+    const group = candidatesByFile.get(row.file_path) ?? [];
+    group.push(row);
+    candidatesByFile.set(row.file_path, group);
+  }
+  const byFile = new Map<string, typeof candidates[number]>();
+  for (const [file, group] of candidatesByFile) {
+    // If no row is compatible, retain the same best diagnostic fallback.
+    byFile.set(file, group[0]!);
+    for (const row of group) {
+      const sha = row.commit_sha?.trim();
+      if (!matchingBuildSha || !sha || (SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha) && sameBuildSha(sha, matchingBuildSha))) {
+        byFile.set(file, row);
+        break;
+      }
+      if (!SPEC_CONFORMANCE_BUILD_SHA_RE.test(sha)) continue;
+      const details = parseTestRunExecutionDetails(row.execution_details);
+      // Content cannot recover unknown runtime identity, a dirty observation,
+      // external integration state or missing full-file/named-case coverage.
+      if (!details || details.testLayer !== 'unit' || details.filePath !== row.file_path
+        || row.worktree_dirty !== false || details.worktreeDirty || details.commitSha !== row.commit_sha) continue;
+      const proof = await trackPhase(input.phases, `conformance:tests:contentEquivalence:${row.id}:${row.file_path}`,
+        () => contentEquivalence({ file: row.file_path, recordedSha: sha, currentSha: matchingBuildSha }));
+      if (proof.equivalent) {
+        equivalentRows.add(row);
+        byFile.set(file, row);
+        break;
+      }
+      equivalenceProblems.set(row, proof.reason);
+    }
+  }
+  const rows = [...byFile.values()];
   const currentBuildProblems = rows.flatMap((row) => {
     if (row.status === 'error') return [];
     if (!normalizedCurrentBuildSha || !SPEC_CONFORMANCE_BUILD_SHA_RE.test(normalizedCurrentBuildSha)) {
@@ -184,12 +246,11 @@ export async function judgeTestsFromLedger(
         ? [`${row.file_path} (test run has no commit SHA to match the current build, test_runs #${row.id})`]
         : [];
     }
-    if (!SPEC_CONFORMANCE_BUILD_SHA_RE.test(runSha) || !sameBuildSha(runSha, normalizedCurrentBuildSha)) {
-      return [`${row.file_path} (test-run commit ${runSha} does not match current build ${normalizedCurrentBuildSha}, test_runs #${row.id})`];
+    if ((!SPEC_CONFORMANCE_BUILD_SHA_RE.test(runSha) || !sameBuildSha(runSha, normalizedCurrentBuildSha)) && !equivalentRows.has(row)) {
+      return [`${row.file_path} (test-run commit ${runSha} does not match current build ${normalizedCurrentBuildSha}, test_runs #${row.id}${equivalenceProblems.has(row) ? '; ' + equivalenceProblems.get(row) : ''})`];
     }
     return [];
   });
-  const byFile = new Map(rows.map((row) => [row.file_path, row] as const));
   const missing = input.files.filter((file) => !byFile.has(file));
   const now = input.now?.() ?? new Date();
   const nowMs = now.getTime();
@@ -265,7 +326,8 @@ export async function judgeTestsFromLedger(
         try {
           recordedByFile.set(
             selector.file,
-            await loadCases({ testRunIds: [testRunId], file: selector.file }),
+            await trackPhase(input.phases, `conformance:tests:cases:${testRunId}:${selector.file}`,
+              () => loadCases({ testRunIds: [testRunId], file: selector.file })),
           );
         } catch (error) {
           caseProblems.push(
@@ -360,10 +422,13 @@ export interface ProductionConformanceDepsInput {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
+  phases?: PhaseTracker;
   /** Injectable probe dispatcher for focused tests; production uses the palette dispatcher. */
   dispatchTool?: Parameters<typeof rescoreProbeDispatcher>[1];
   /** Injectable probe evaluator for focused tests; production uses the continuity evaluator. */
   evaluateProbes?: typeof evaluateCriterionProbeChecks;
+  /** Same realization data used by scorecard grading; injectable without replacing its judge. */
+  readRequirementRealization?: RequirementRealizationReader;
   /**
    * Requirements carrying an approved deviation (R-17, P-028). Defaults to
    * {@link planApprovedDeviations}: re-derived from the plan's CURRENT text on every
@@ -385,7 +450,27 @@ export async function planApprovedDeviations(
 export function productionConformanceDeps(input: ProductionConformanceDepsInput): ConformanceRunDeps {
   const sql = () => getOrgPg().sql;
   const nowIso = () => new Date().toISOString();
+  const contentEquivalence = createTestContentEquivalence();
+  const readRequirementRealization: RequirementRealizationReader = input.readRequirementRealization ??
+    (() => runWithWorkspace(input.workspaceId, async () => {
+      const [activationAudit, itemAudits, planItems] = await Promise.all([
+        getLatestActivationAudit(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }),
+        getEffectiveItemAudits(input.planSlug),
+        getPlanItemStatuses(input.planSlug, { harnessSlug: input.harnessSlug }),
+      ]);
+      // Reuse the scorecard reader's operational proof, without calling closure or
+      // changing item status. A code audit can therefore be measured before close.
+      const proof = itemAudits.some(({ entry }) => isNonCodeAuditVerdict(entry.verdict))
+        // notify-classification: {"id":"packages/operator-core/lib/spec-conformance/conformance-run-deps.ts#<module>/productionConformanceDeps/<callback>/<callback>:85518d4eabe604a888a1:1","classification":"durable","reason":"Lifecycle evaluation can reach grading and owner notification paths; retain their terminal delivery requirement through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+        ? await (await import('../acceptance-bar-lifecycle-evaluator')).readAndEvaluateAcceptanceBarLifecycle(
+            input.planSlug, 'pre-grading', { harnessSlug: input.harnessSlug },
+          )
+        : null;
+      return { planSlug: input.planSlug, mappings: activationAudit?.activation?.mappings ?? [],
+        itemAudits, planItems, nonCodeItemProofs: proof?.nonCodeItemProofs };
+    }));
   return {
+    phases: input.phases,
     async evaluateCheck(request: ConformanceCheckRequest) {
       const check = request.check;
       if (check.kind === 'tests') {
@@ -397,6 +482,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         return judgeTestsFromLedger({
           files: check.files,
           workspaceId: input.workspaceId,
+          phases: input.phases,
+          contentEquivalence,
           ...(cases ? { cases } : {}),
         }, sql());
       }
@@ -416,6 +503,28 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         const results = await runInstrumentChecks({ rubricRef: request.checkId, criteria: [{ key: request.checkId, check }],
           workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
         return foldResults('instrument', results, nowIso());
+      }
+      if (check.kind === 'requirements') {
+        const evaluation = await evaluateCriterionRequirementChecks({
+          criteria: [{ key: request.checkId, check }],
+          ratings: { [request.checkId]: { rating: 'unknown' } },
+          readRequirementRealization,
+        });
+        if (!evaluation.ok) return {
+          kind: 'requirements', verdict: 'error', value: null, unit: null, measuredAt: nowIso(),
+          detail: `${evaluation.error}: ${evaluation.detail}`,
+        };
+        const run = evaluation.checkRuns[request.checkId];
+        if (run?.kind !== 'requirements') return {
+          kind: 'requirements', verdict: 'error', value: null, unit: null, measuredAt: nowIso(),
+          detail: 'requirements check produced no realization measurement',
+        };
+        return { kind: 'requirements', verdict: run.verdict, value: run.unrealized,
+          unit: 'unrealized requirements', measuredAt: run.measuredAt,
+          detail: `${run.unrealized} of ${run.mappingsJudged} realizing mappings unverified; ` +
+            `${run.checkedTargets} targets checked; ${run.exemptMappings} exempt mappings; ` +
+            `${run.droppedTargets} dropped targets` +
+            (run.unrealizedRequirements?.length ? `: ${run.unrealizedRequirements.join('; ')}` : '') };
       }
       return null;
     },

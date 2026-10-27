@@ -18,16 +18,23 @@
  * live, fleet-attributed census with no reporter dimension; this is the stored,
  * per-source daily series the brief needs. Nothing existing stored it.
  *
- * Population: issue family (bug | change | task), lane distinct from
+ * Population: issue family minus cleanup (bug | change | task), lane distinct from
  * 'observation'. Source = payload.source, else 'watchdog' when reporterKinds
  * names it, else 'role:<filedByRole>', else reporterKinds[0], else 'unattributed'.
  */
 import { getOrgPg } from '@papercusp/db-org';
 
+import { CLEANUP_ITEM_KIND } from '../../code-cleanup/cleanup-item-kind';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 const DAY_MS = 86_400_000;
-export const BUG_INFLOW_KINDS = ['bug', 'change', 'task'] as const;
+/**
+ * The issue family MINUS 'cleanup' (code-cleanup-campaigns-2026-10-26 P-003, R-3): cleanup
+ * work is issue-family for routing but is excluded from bug/change backlog rollups; it
+ * has its own backlog read (issues:list { kinds:['cleanup'] }).
+ */
+export const BUG_INFLOW_KINDS = ISSUE_FAMILY_ROUTE_KINDS.filter((k) => k !== CLEANUP_ITEM_KIND);
 /** The writer recomputes this many UTC days per tick (today + yesterday). */
 export const BUG_INFLOW_REFRESH_DAYS = 2;
 export const BUG_INFLOW_DEFAULT_DAYS = 7;

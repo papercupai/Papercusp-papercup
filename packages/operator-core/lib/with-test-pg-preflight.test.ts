@@ -411,6 +411,29 @@ describe('private API bundle durable evidence preflight', () => {
 });
 
 describe('isolated PostgreSQL durable evidence preflight', () => {
+  describe.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(
+    'shared-ledger workspace admission (%s)', mode => {
+      it.each(['missing', 'blank', 'whitespace'] as const)(
+        'refuses %s caller attribution before allocating private state', kind => {
+          const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused.invalid/evidence' };
+          for (const key of ['PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE']) delete env[key];
+          if (kind !== 'missing') {
+            env.PAPERCUSP_TEST_RUN_WORKSPACE = kind === 'blank' ? '' : '  ';
+            env.PAPERCUSP_WORKSPACE_ID = 'valid-fallback-must-not-hide-invalid-pin';
+          }
+          const startedAt = performance.now();
+          const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode,
+            '--', 'papercusp-missing-workspace-preflight-child'], {
+            cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+          const diagnostic = childDiagnostic(result, startedAt);
+          expect(result.status, diagnostic).toBe(1);
+          expect(result.stderr, diagnostic).toContain('isolated shared-ledger runs require a nonblank caller workspace');
+          expect(result.stderr).not.toContain('child preflight failed');
+          expect(result.stdout).not.toContain('booting throwaway PG');
+        });
+    });
+
   describe.each([{ mode: [] }, { mode: ['--isolated-runtime'] },
     { mode: ['--isolated-runtime=operator-api'] }])('explicit sink validation ($mode)', ({ mode }) => {
     it.each(['[object Object]', 'postgresql://fixture:redact-me@[broken/evidence',
@@ -459,19 +482,53 @@ describe('isolated PostgreSQL durable evidence preflight', () => {
     expect(result.stdout).not.toContain('booting throwaway PG');
   });
 
-  it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])('refuses ledger receipts without an explicit sink before allocating PostgreSQL (%s)', mode => {
-    for (const receiptKey of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
+  describe.each([{ mode: [] }, { mode: ['--isolated-runtime'] },
+    { mode: ['--isolated-runtime=operator-api'] }])('durable receipts ($mode)', ({ mode }) => {
+    it.each(['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+      'PC_EXECUTED_SOURCE_MAP_OUT'])('requires a reporter-only sink for %s before allocating PostgreSQL', receiptKey => {
       const env = { ...process.env, [receiptKey]: '/tmp/unwritten-private-ledger-receipt' };
       delete env.PAPERCUSP_TEST_RUNS_DB_URL;
       const startedAt = performance.now();
-      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode, '--', process.execPath, '-e', 'process.exit(91)'], {
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), ...mode,
+        '--', process.execPath, '-e', 'process.exit(91)'], {
         cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
       });
       const diagnostic = childDiagnostic(result, startedAt);
       expect(result.status, diagnostic).toBe(1);
-      expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+      expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required for durable test receipts');
       expect(result.stdout).not.toContain('booting throwaway PG');
-    }
+    });
+
+    it('accepts requested receipts with an explicit sink through the next preflight', () => {
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), ...mode,
+        '--', 'papercusp-missing-durable-receipt-child'], {
+        cwd: root, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        env: { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/unwritten-private-ledger-receipt',
+          PC_EXECUTED_SOURCE_MAP_RESULT: '/tmp/unwritten-private-source-result',
+          PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/unwritten-private-source-map',
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused.invalid/evidence' },
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('child preflight failed');
+      expect(result.stderr).not.toContain('evidence preflight failed');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    });
+  });
+
+  it('allows ordinary runs without durable receipts to reach the next preflight without a sink', () => {
+    const env = { ...process.env };
+    for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT',
+      'PC_EXECUTED_SOURCE_MAP_OUT', 'PAPERCUSP_TEST_RUNS_DB_URL']) delete env[key];
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',
+      'papercusp-missing-ordinary-child'], { cwd: root, env, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.stderr, diagnostic).toContain('child preflight failed');
+    expect(result.stderr).not.toContain('evidence preflight failed');
+    expect(result.stdout).not.toContain('booting throwaway PG');
   });
 });
 

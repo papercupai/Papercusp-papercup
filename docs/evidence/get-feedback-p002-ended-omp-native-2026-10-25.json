@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Bounded normal ended OMP to Codex consult after historical transcript alias repair",
+  "framework": "operational",
+  "command": ["testing:run.nativeConsult", "gf-p002-ended-omp-codex-normal-20261025-v3-tracked-source", "canonical consult/session-port readback", "packages/operator-core/lib/session-port/render.ts:verifySessionPortSeed", "native transcript and per-call fingerprint correlation"],
+  "startedAt": "2026-10-25T06:15:57.487Z",
+  "finishedAt": "2026-10-25T06:40:26.000Z",
+  "exitCode": 0,
+  "summary": "Nine bounded checks passed for one normal consult using the exact tracked historical OMP source that previously failed preflight. Conversion reached a distinct fresh Codex answerer, its full native frame passed maintained checksum controls, and native reply/close calls matched canonical per-call fingerprints. The source had no held work-items or plan claims at the before endpoint. This observation does not prove occupied-lease preservation, exhaustive actor/ABA history, expert relevance, full matrix acceptance, independent acceptance or shipment.",
+  "assertions": [
+    { "id": "tracked-historical-omp-source-selected", "passed": true, "evidence": "Canonical nativeConsultSources selects source ADV43402, native01a133c0-8b90-7269-8d81-783b272d51fe#1, owner455b420e; snapshot131295 bytes SHA9c43ecbdc906a44650567289355017d787535298db88806ca5f17151ddd86c94." },
+    { "id": "normal-convert-dispatched-to-distinct-answerer", "passed": true, "evidence": "Canonical dispatch_attempts records operation convert, rank3 codex/sol, dispatched true at06:16:32.613Z; source455b420e differs from target04990c69, ADV52055/native01a171b4-08cd-7653-b427-072b4b62f69d." },
+    { "id": "exact-port-delivered-and-registry-agrees", "passed": true, "evidence": "Session port8c2e905e-a888-49ca-80b1-8f759fb72644 is delivered from43402 to52055; independent target registry row names the same port, source ADV and delivered status." },
+    { "id": "actual-native-frame-checksum-valid", "passed": true, "evidence": "Native target transcript line8 contains full OMP-to-Codex frame, exact cited phrase and isolated answering instruction. Maintained verifySessionPortSeed validates rendered digest82f1ec1ee24beda9d5d77b52370169d9a20e24ca34804165e53fb595bc1885ea." },
+    { "id": "native-frame-semantic-tamper-rejected", "passed": true, "evidence": "Changing source-backend: omp to source-backend: xmp in a private copy of the actual native seed is rejected by maintained verifySessionPortSeed against the canonical digest." },
+    { "id": "native-frame-missing-receipt-rejected", "passed": true, "evidence": "Removing the complete final checksum receipt from a private copy of the actual native seed is rejected by maintained verifySessionPortSeed." },
+    { "id": "typed-source-grounded-answer-recorded", "passed": true, "evidence": "Canonical substantive reply1204887 identifies exact source turn, port8c2e905e and distinct requester/source/answerer identities, and explicitly withholds exhaustive lease/ABA claims. Native successful tools:invoke item at line37 returns the same post id." },
+    { "id": "native-reply-physical-call-correlated", "passed": true, "evidence": "Native reply item at line37 has item-id SHAe1f6aaa766e3856d25398a20a347438f2d96dbc441fb05224800214456ae32ea and thread SHA19aad6d3c31b0175ef1aa3a42050e91ea583e437bf587338edd0702cbb6dba6a; canonical audit44264670 records both fingerprints, bound meta:threadId and candidate ADV52055." },
+    { "id": "native-structured-close-physical-call-correlated", "passed": true, "evidence": "Native line49 close item SHA38fc6a94e26f578866067dfafa1d53fc22331561ecd6c753f6c26bf4e2452dd8 and the same thread fingerprint match audit44264732; successful receipt1204888 and canonical conversation state are closed_answered." }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "repair": {
+    "workItemId": "EI-26927246665066338",
+    "state": "done",
+    "completionAuthority": "committed",
+    "commit": "5734baf4c861daaec7cebee76a88010b7c8e615b",
+    "verificationCommit": "8e3342bf0f3414f23561cbcd9dad5805999b3229",
+    "sourceSha256": "c973a7551161ae0c54f1fad23e208dfcd298a70ed39460b35b9e2519d49064a8",
+    "testSha256": "a3aa43a163e965a3c985741bb7973313d2f035993ca5a772e16a138966af9e23",
+    "failingBeforeFixRuns": [21976139, 21976141],
+    "passingCommittedRuns": [{ "id": 21976745, "passed": 143, "failed": 0, "skipped": 0 }, { "id": 21976744, "passed": 14, "failed": 0, "skipped": 0 }],
+    "worktreeDirty": false,
+    "collectionFailed": false,
+    "typecheck": { "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-launch-core.ts,packages/operator-core/lib/agent-launch-core.test.ts", "exitCode": 0, "logSha256": "4e008ce0e7ac7bf3856996d0fd194968395fecde946c4a1f52b18ac3c98a2f71" },
+    "testLogSha256": "830b750c5e88bde973130455e1c1b1ede6f2d25d4927a3557ce52c2ce53339ea",
+    "runtimeAtObservation": { "buildSha": "221fb15a3b003e104f3923978c5f3b5324a60077", "bundleSha256": "dbf969d5c597a91403341f17cc1330e2c83a9b5768f028714fba6e9fcaf7b997", "sourceBlob": "9464d4b15c9fcf7713ad128c4698aeccd9f8a3e3", "plane": "staging-operator", "finalReleaseCredit": false }
+  },
+  "nativeMeasurement": {
+    "conversationId": "conv-request-c67ec47e965fec4dae22ca909f7f663c71db5799d7cc8078018364e421d0e933",
+    "requestKey": "gf-p002-ended-omp-codex-normal-20261025-v3-tracked-source",
+    "sourceConstraint": { "sourceBackend": "omp", "targetBackend": "codex", "sourceState": "ended", "subject_ref": "xd:// paths works", "selectionScope": "Existing exact quoted corpus phrase isolates the previously rejected tracked source; ranking floors and backend policy were unchanged." },
+    "source": { "ownerId": "su-455b420e-24ec-4b61-a489-2906abeacdbb", "advSessionId": 43402, "nativeSessionId": "01a133c0-8b90-7269-8d81-783b272d51fe", "turnIdx": 1, "currentRowOmpThreadId": "01a13a9d-bdc7-7000-a415-0215d1a8ad0c", "snapshotSha256": "9c43ecbdc906a44650567289355017d787535298db88806ca5f17151ddd86c94", "snapshotBytes": 131295, "kind": "archive-manifest" },
+    "answerer": { "ownerId": "su-04990c69-8e8f-4518-8ef1-bd3dd2c55197", "advSessionId": 52055, "nativeSessionId": "01a171b4-08cd-7653-b427-072b4b62f69d", "endedAt": "2026-10-25T06:22:41.532050Z" },
+    "port": { "id": "8c2e905e-a888-49ca-80b1-8f759fb72644", "status": "delivered", "renderedHash": "82f1ec1ee24beda9d5d77b52370169d9a20e24ca34804165e53fb595bc1885ea", "normalizedHash": "2a8d42f39a4e21c6ea1a8ab591910eb694f44fbeb900a81b1a40713b30a51e8b", "fidelity": "full", "disclosure": { "authorityCarried": false, "newTargetSession": true }, "omissions": { "providerThinkingBlocks": 6, "providerSignatureBlocks": 6, "unsupportedBlocks": 4 } },
+    "nativeFrame": { "pathTemplate": "USER_HOME/.papercusp/su-codex-homes/session-52055/sessions/2026/10/25/rollout-2026-10-25T02-16-26-01a171b4-08cd-7653-b427-072b4b62f69d.jsonl", "line": 8, "lineSha256": "131258f47b13a8123e6ca175f1a48f1a9d53942685b7ec001de08a4e4e5994cf", "seedSha256": "0394caa3a1b99ef05f05c15cb2ddc0f9cc18ee0790fce6d94d51333aad2bbe38" },
+    "physicalCalls": [
+      { "tool": "consult:reply", "nativeLine": 37, "nativeLineSha256": "ece81ee26a2a487cd2a11823616515f92642cbaeab6b9f353c8254b52deacdf4", "auditId": 44264670, "postId": 1204887, "callIdFingerprint": "e1f6aaa766e3856d25398a20a347438f2d96dbc441fb05224800214456ae32ea" },
+      { "tool": "consult:close", "nativeLine": 49, "nativeLineSha256": "2337591454ff9a60cd62a79b0bef7fd5c408658971264d4591871e6bd9bf9fef", "auditId": 44264732, "postId": 1204888, "callIdFingerprint": "38fc6a94e26f578866067dfafa1d53fc22331561ecd6c753f6c26bf4e2452dd8" }
+    ],
+    "threadFingerprint": "19aad6d3c31b0175ef1aa3a42050e91ea583e437bf587338edd0702cbb6dba6a",
+    "beforeEndpoint": { "capturedAt": "2026-10-25T06:15:57.487Z", "completedAt": "2026-10-25T06:15:57.543Z", "heldWorkItems": [], "planClaims": [], "truncated": false, "scope": "Sequential source and claim endpoint reads, not an atomic snapshot or transition/actor/wake history." },
+    "relevance": { "via": "minimum", "score": 0.3586831092834498, "qualifiedExpertise": false }
+  },
+  "preservedAttempts": [
+    { "conversationId": "conv-request-b4546bab1177d112b8d4282d09fd266450e81a325ea9ba2f78245605877fc964", "outcome": "expired", "reason": "Before repair, every permitted Codex rank rejected the exact tracked historical source because top-level ompThreadId named the newer current incarnation." },
+    { "conversationId": "conv-request-00c337cdb1cba8bcd47fb35adb841460ee770aed0bea9618b9bc2a1d9a7350d7", "outcome": "closed_answered", "replyPostId": 1204882, "closePostId": 1204883, "operation": "brief", "scope": "Untracked OMP source quoted-turn fallback under D033; distinct from tracked session-port conversion." }
+  ],
+  "preserved": { "originalOperationalBindings": [28326, 28545], "datedSupplementalBinding": 69704, "originalNativeAssertions": 9, "completedCensusAssertions": 6, "citedTurnRepair": "EI-26923257956257886 done/b299123f29/167 clean passing tests; not replayed" },
+  "limitations": ["One tracked ended-OMP to Codex normal-consult observation; not the full native matrix.", "No occupied source lease existed at the measured before endpoint; no occupied-lease preservation claim.", "No exhaustive lease/ABA or actor/wake transition history; endpoint and native-frame receipts have bounded scope.", "Minimum-fill source selection does not establish qualified expertise or answer correctness.", "Provider thinking/signature and unsupported-block omissions remain disclosed; full is the renderer fidelity label.", "Original cohort and supplemental cohort shortfalls, custody/admission/approval, independent acceptance and exact shipment remain open.", "Claude account-capacity cascade EI-26926908996380334 remains separate and open.", "Original reporter timeout EI-26900834772734276 remains open with root cause unknown."],
+  "reobservePolicy": "Use these exact conversation, port, canonical ledger and native line references. Do not replay the native request for HEAD movement or a wake. A new observation requires a concrete missing property or changed prerequisite."
+}

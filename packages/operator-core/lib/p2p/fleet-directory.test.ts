@@ -211,7 +211,10 @@ describe('PgFleetDirectory', () => {
 });
 
 describe('GrantBackedScopeRoster + PgFleetDirectory (the P-101 widening)', () => {
-  it('widens members to owner ∪ publisher-set; strangers stay out; owner always in', async () => {
+  it('widens members to attested owner and publishers; revocations narrow the same directory', async () => {
+    const owner = { githubUserId: OWNER, deviceAttestations: [{ device_pubkey: devicePubkey }], revokedPubkeys: [] as string[] };
+    const publisher = { githubUserId: PUB, deviceAttestations: [{ device_pubkey: 'publisher-device' }], revokedPubkeys: [] };
+    listHiveMembersMock.mockResolvedValue([owner, publisher]);
     const scope = { kind: 'fleet' as const, ownerGithubUserId: OWNER, slug: 'alpha' };
     const directory = new PgFleetDirectory({
       workspaceId: WS, potSlug: HIVE,
@@ -223,9 +226,13 @@ describe('GrantBackedScopeRoster + PgFleetDirectory (the P-101 widening)', () =>
     expect(await roster.isMember(scope, 999)).toBe(false);
     expect(await roster.isMember(scope, OWNER)).toBe(true);
 
-    // No directory ⇒ tier-1 owner-only (the pre-P-101 behavior, unchanged).
+    // No directory narrows the live roster to its attested owner.
     const bare = new GrantBackedScopeRoster({ workspaceId: WS, potSlug: HIVE });
     expect(await bare.members(scope)).toEqual([OWNER]);
     expect(await bare.isMember(scope, PUB)).toBe(false);
+
+    listHiveMembersMock.mockResolvedValue([{ ...owner, revokedPubkeys: ['publisher-device'] }, publisher]);
+    expect(await roster.members(scope)).toEqual([OWNER]);
+    expect(await roster.isMember(scope, PUB)).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import {
   FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY,
   readFleetCampaign,
 } from './fleet-campaign';
+import { readWorkItemClaimHistory } from './fleet-claim-history-reader';
 
 const WS = 'fleet-campaign-ws';
 const HARNESS = 'fleet-campaign-harness';
@@ -57,7 +58,7 @@ describe('fleet campaign (real Postgres)', () => {
       VALUES
         (${WS}, ${HARNESS}, 'campaign-member-close', 'member completion', 'done', 'change',
          '{"_completionEvidence":{"verifiedHow":"unit","testsRun":"npm run test:file -- fleet-campaign.integration.test.ts","testResult":"green","addedTests":true,"filesChanged":["fleet-campaign.ts"]}}'::jsonb,
-         ${MEMBER}, 'verified member completion', 'committed',
+         ${MEMBER}, 'verified member completion', 'validated',
          (extract(epoch FROM '2026-08-13T05:00:00Z'::timestamptz) * 1000)::bigint),
         (${WS}, ${HARNESS}, 'campaign-nonmember-close', 'non-member completion', 'done', 'change',
          '{}'::jsonb, 'su-not-in-fleet', 'newer non-member completion', 'proposed',
@@ -80,7 +81,12 @@ describe('fleet campaign (real Postgres)', () => {
 
     expect(campaign.boundary).toEqual({ at: SINCE, source: 'explicit-since' });
     expect(campaign.everMembers).toMatchObject({ available: true, count: 1 });
-    expect(campaign.axes.membership).toMatchObject({ available: true, data: { total: 1 } });
+    // The one member joined and then called, so its join is not a dead launch
+    // (EI-27031443048618869: the split comes from readJoinActivation, not a raw join count).
+    expect(campaign.axes.membership).toMatchObject({
+      available: true,
+      data: { total: 1, byEvent: { join: 1 }, joinActivation: { neverActive: 0, pending: 0 } },
+    });
     expect(campaign.axes.speaking).toMatchObject({
       available: true,
       data: { calls: 2, distinctOwners: 1 },
@@ -112,13 +118,82 @@ describe('fleet campaign (real Postgres)', () => {
               addedTests: true,
               filesChanged: ['fleet-campaign.ts'],
             },
-            completionAuthority: 'committed',
+            completionAuthority: 'validated',
             countsTowardBurnDown: true,
             terminalizedAt: '2026-08-13T05:00:00.000Z',
           }],
         },
       },
     });
+  });
+
+  it('filters claim-history owners before expansion and preserves global and per-owner caps', async () => {
+    const secondMember = 'su-campaign-member-second';
+    await db.adminSql`
+      INSERT INTO harness_shared.fleet_membership_events
+        (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event, at)
+      VALUES
+        (${WS}, ${secondMember}, 'second campaign member', ${FLEET}, 'member', 'join',
+         '2026-08-13T01:15:00Z'::timestamptz)
+    `;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, worked_by_history)
+      VALUES
+        (${WS}, ${HARNESS}, 'claim-history-a', 'member history', 'open', 'change',
+         ${JSON.stringify([
+           { owner: MEMBER, at: '2026-08-13T02:00:00Z' },
+           { owner: MEMBER, at: '2026-08-13T03:00:00Z' },
+           { owner: 'su-campaign-outsider', at: '2026-08-13T04:00:00Z' },
+         ])}::jsonb),
+        (${WS}, ${HARNESS}, 'claim-history-b', 'second member history', 'open', 'change',
+         ${JSON.stringify([
+           { owner: secondMember, at: '2026-08-13T02:30:00Z' },
+         ])}::jsonb),
+        (${WS}, ${HARNESS}, 'claim-history-old', 'outside boundary', 'open', 'change',
+         ${JSON.stringify([
+           { owner: MEMBER, at: '2026-08-12T23:59:59Z' },
+         ])}::jsonb),
+        (${WS}, ${HARNESS}, 'claim-history-malformed', 'malformed history', 'open', 'change',
+         '{"owner":"su-campaign-member"}'::jsonb)
+    `;
+
+    const campaign = await readFleetCampaign({
+      workspaceId: WS,
+      fleetSlug: FLEET,
+      fleetCreatedAtMs: Date.parse('2026-08-12T00:00:00Z'),
+      since: SINCE,
+      harnessSlug: HARNESS,
+    }, db.adminSql);
+    expect(campaign.axes.claims).toMatchObject({
+      available: true,
+      data: {
+        flow: {
+          transitions: 3,
+          distinctWorkers: 2,
+          recent: {
+            total: 3,
+            rows: [
+              { workItemId: 'claim-history-a', ownerId: MEMBER, at: '2026-08-13T03:00:00Z' },
+              { workItemId: 'claim-history-b', ownerId: secondMember, at: '2026-08-13T02:30:00Z' },
+              { workItemId: 'claim-history-a', ownerId: MEMBER, at: '2026-08-13T02:00:00Z' },
+            ],
+          },
+        },
+      },
+    });
+
+    const perOwner = await readWorkItemClaimHistory(db.adminSql, {
+      workspaceId: WS,
+      ownerIds: [MEMBER, secondMember],
+      sinceAt: SINCE,
+      snapshotAt: '2026-08-13T03:30:00Z',
+      harnessSlug: HARNESS,
+    }, { mode: 'per-owner', limit: 1 });
+    expect(perOwner.rows).toEqual([
+      { ownerId: MEMBER, workItemId: 'claim-history-a', at: '2026-08-13T03:00:00Z' },
+      { ownerId: secondMember, workItemId: 'claim-history-b', at: '2026-08-13T02:30:00Z' },
+    ]);
   });
 
   it('reports member-attributed axes unavailable for an unknown fleet, never zero', async () => {
@@ -140,22 +215,8 @@ describe('fleet campaign (real Postgres)', () => {
   });
 
   it('overlaps independent database axes within the bounded read width', async () => {
-    let inFlight = 0;
-    let peakInFlight = 0;
-    const instrumentedSql = new Proxy(db.adminSql, {
-      apply(target, thisArg, args) {
-        const result = Reflect.apply(target, thisArg, args) as { then?: unknown };
-        const firstSql =
-          typeof args[0]?.[0] === 'string' ? args[0][0].trimStart().toUpperCase() : '';
-        const isReadQuery = firstSql.startsWith('SELECT') || firstSql.startsWith('WITH');
-        if (!isReadQuery || !result || typeof result.then !== 'function') return result;
-        inFlight += 1;
-        peakInFlight = Math.max(peakInFlight, inFlight);
-        return Promise.resolve(result).finally(() => {
-          inFlight -= 1;
-        });
-      },
-    });
+    let activeAxes = 0;
+    let peakActiveAxes = 0;
 
     const campaign = await readFleetCampaign(
       {
@@ -164,12 +225,21 @@ describe('fleet campaign (real Postgres)', () => {
         fleetCreatedAtMs: Date.parse('2026-08-12T00:00:00Z'),
         since: SINCE,
         harnessSlug: HARNESS,
+        // Measure the bounded unit directly. A nested SQL fragment is also a
+        // postgres.js tag call, but it is not a separately scheduled axis/read.
+        onAxisStarted: () => {
+          activeAxes += 1;
+          peakActiveAxes = Math.max(peakActiveAxes, activeAxes);
+        },
+        onAxisTiming: () => {
+          activeAxes -= 1;
+        },
       },
-      instrumentedSql,
+      db.adminSql,
     );
 
     expect(campaign.axes.membership.available).toBe(true);
-    expect(peakInFlight).toBeGreaterThan(1);
-    expect(peakInFlight).toBeLessThanOrEqual(FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY);
+    expect(peakActiveAxes).toBeGreaterThan(1);
+    expect(peakActiveAxes).toBeLessThanOrEqual(FLEET_CAMPAIGN_AXIS_READ_CONCURRENCY);
   });
 });

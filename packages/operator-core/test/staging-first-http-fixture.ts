@@ -1,16 +1,17 @@
 /** Private current-build request fixture; launched only by its integration suite. */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
+import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -68,6 +69,8 @@ async function main() {
   const scope = await resolvePlanScope({ harnessSlug: harness, workspaceId: workspace });
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
+  // Keep this shared org client live through the teardown census below. The
+  // fixture's finally block owns the single close point via _resetForTests().
   const { sql } = getOrgPg();
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hub-cleanup') ||
@@ -163,7 +166,9 @@ async function main() {
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative;
+  const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
+  const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools;
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
@@ -208,6 +213,12 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
+  if (isCodexManagedTools || isOmpManagedTools) {
+    const { randomBytes } = await import('node:crypto');
+    const { superuserTokenPath } = await import('../lib/superuser-token');
+    mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
+    writeFileSync(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+  }
   if (isCurrentSuNative || e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair')
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
@@ -243,10 +254,58 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (isCodexManagedTools || isOmpManagedTools) {
+    const backend = isOmpManagedTools ? 'omp' : 'codex';
+    const prefix = backend.toUpperCase();
+    const { readSuperuserToken } = await import('../lib/superuser-token');
+    const token = readSuperuserToken();
+    assert.ok(token, 'private operator MCP bearer is required');
+    const censusDir = join(evidenceDir, 'census');
+    mkdirSync(censusDir);
+    const env = { ...e, PAPERCUSP_TEST_RUN_GROUP:
+      (e.PAPERCUSP_TEST_RUN_GROUP ?? '') + ':' + backend + '-managed-surface-worker',
+      // The installed client's code-mode probe checks exit_code and exact output.
+      // Foreground capability:bash exposes those fields through negotiated MCP
+      // structuredContent; its default text result is intended for human readers.
+      [prefix + '_MANAGED_PRIVATE_MCP_URL']: base + '/api/mcp?superuser=1&structured=1&workspace=' +
+        encodeURIComponent(workspace) + '&client=su-private-' + backend + '-managed',
+      [prefix + '_MANAGED_PRIVATE_MCP_TOKEN']: token };
+    const child = fork(join(root, 'scripts/test-files.mjs'),
+      ['packages/operator-core/lib/' + backend + '-managed-tools.native.integration.test.ts'],
+      { cwd: root, env, execArgv: ['--import', './scripts/lib/committed-source-loader.mjs'],
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const result = await captureIsolatedWorker(child, censusDir, isolatedTestFileWorkerOptions(env, 1));
+    assert.equal(result.code, 0, result.output.slice(-12000));
+    assert.equal(result.signal, null);
+    assert.equal(result.timedOut, false);
+    assert.match(result.output, /TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed/);
+    assert.match(result.output, isOmpManagedTools ? /Tests\s+1 passed \(1\)/ : /Tests\s+5 passed \(5\)/);
+    assert.match(result.output, /skippedTests=0/);
+    const line = result.output.split('\n').find(row => row.startsWith(prefix + '_ADMITTED_LIFECYCLE '));
+    assert.ok(line, 'production MCP lifecycle receipt is required');
+    const measured = JSON.parse(line.slice((prefix + '_ADMITTED_LIFECYCLE ').length));
+    for (const row of isOmpManagedTools ? measured.removed : measured.removed.lifecycle) {
+      assert.equal(row.managedPath, 'production-capability-bash');
+      assert.equal(row.managedCalls, 1);
+      assert.equal(row.hasNativeExecution, false);
+    }
+    await stopHost();
+    const receipt = { workspace, bundleSha256, health, hostStopped: true,
+      providerForwarding: false, managedTool: 'capability:bash', surfaces: ['launch', 'resume', 'wake'] };
+    writeFileSync(join(evidenceDir, 'operator-mcp-receipt.json'), JSON.stringify(receipt));
+    console.log(result.output);
+    console.log(prefix + '_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {
+    const receipt = await (await import('./shared-chat-recovery-http-scenario')).measureSharedChatRecovery({ workspace, base });
+    await stopHost();
+    console.log('SHARED_CHAT_RECOVERY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair') {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuHomeRepairScenario({ workspace, base });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_NATIVE_HOME_REPAIR ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -255,7 +314,6 @@ async function main() {
       workspace, api: base + '/api', expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('SESSION_CAPABILITY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -265,8 +323,15 @@ async function main() {
       workspace, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('CODEX_BUDGET_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'loop-namespace-native') {
+    const receipt = await (await import('./loop-namespace-native-scenario')).measureLoopNamespaceNativeScenario({
+      workspace, base, headers, evidenceDir,
+    });
+    await stopHost();
+    console.log('LOOP_NAMESPACE_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
   if (blueprintRoute) {
@@ -274,7 +339,6 @@ async function main() {
     await stopHost();
     await blueprintRoute.dispose();
     disposeScenario = undefined;
-    await sql.end();
     const finalReceipt = { ...receipt, hostStopped: true, hostPid: host.pid, bundleSha256, sourceSha256, health };
     writeFileSync(join(evidenceDir, 'account-route.json'), JSON.stringify(finalReceipt));
     console.log('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT ' + JSON.stringify(finalReceipt));
@@ -285,7 +349,6 @@ async function main() {
       workspace, base, evidenceDir, managedCarry: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-carry',
     });
     await stopHost();
-    await sql.end();
     console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
@@ -294,7 +357,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('COMPACTION_WARM_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -304,7 +366,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir,
     });
     await stopHost();
-    await sql.end();
     console.log('REPORT_JOURNAL_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
@@ -314,7 +375,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_PG_ERROR_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -325,7 +385,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_CANCELLATION_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -336,7 +395,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_READ_DEADLINE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -347,7 +405,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_SAME_ITEM_WRITE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -358,7 +415,6 @@ async function main() {
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
     });
     await stopHost();
-    await sql.end();
     console.log('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
@@ -369,7 +425,6 @@ async function main() {
     await stopHost();
     await committedReader.dispose();
     disposeScenario = undefined;
-    await sql.end();
     console.log('COMMITTED_READER_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
       hostStopped: true, sourceSha256, bundleSha256, health, ...readerReceipt }));
     return;
@@ -437,7 +492,6 @@ async function main() {
   const rows = await sql`SELECT workspace_id FROM harness_shared.harness_plans WHERE plan_slug LIKE 'private-guard-%'`;
   assert.equal(rows.length, preparation.length + releasePlanes.length);
   assert.ok(rows.every(row => row.workspace_id === workspace), 'fixture plans escaped private workspace');
-  await sql.end();
   await stopHost();
   console.log('STAGING_FIRST_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
     hostStopped: true, sourcePath, sourceSha256, bundleSha256, health, requests }));
@@ -468,11 +522,17 @@ catch (error) {
     // hub scenario this is the only point where the shared listen-hub client
     // can be observed; stopping it first made the canonical cleanup assertion
     // contradict the fixture's own setup.
-    const { sql } = getOrgPg();
-    const pgConnections = await sql`SELECT client_port, application_name, state
-      FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
-      .catch(error => { retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable',
-        { error: String(error) }); return []; });
+    // Read through the admin-only census module: harness_app cannot see other
+    // roles' backends, and this file also drives the app-role pool above.
+    const pgConnections = await readPgBackendCensus()
+      .catch(error => {
+        retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable', { error: String(error) });
+        // A missing census is not evidence that cleanup succeeded. Keep going
+        // so every owned pool is retired, but make the integration worker fail.
+        process.exitCode = 1;
+        console.error('STAGING_FIRST_HTTP_PG_CENSUS_UNAVAILABLE ' + String(error));
+        return [];
+      });
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closing', { pgConnections });
     // pg-listen-hub owns a direct postgres-js connection outside db-org's
     // reset registry. Close it after the census, before resetting disposable

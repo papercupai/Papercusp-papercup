@@ -16,6 +16,7 @@
  * `result` is the SAME claim/convert payload the single call always returned.
  */
 import { z } from 'zod';
+import { createReuseBriefIdentity } from '../../code-intelligence/reuse-brief-providers';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity, isEphemeralMcpCallIdentity } from '../coordination/identity';
@@ -117,8 +118,10 @@ async function claimTimeContext(
   workItem: ClaimTimeEnrichmentSubject | null,
   harness: string | undefined,
   workspaceId: string,
+  reuse?: import('../../code-intelligence/task-brief').ClaimBriefReuseIdentity,
 ): Promise<ClaimTimeEnrichment> {
   return buildClaimTimeEnrichment({
+    reuse,
     planSlug,
     planItemId,
     workItem,
@@ -213,6 +216,8 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
+    const reuse = createReuseBriefIdentity(id.ownerId, ctx.dispatchCallId,
+      outcomes => ctx.metadata?.({ reuseBriefProviders: outcomes }));
     // EI-8509: this tool always claims for the CALLER's own identity (no explicit
     // assignee param) — refuse the whole batch when the caller is scripts/mcp-call.mjs's
     // auto-generated fallback (`mcp-call-<pid>`), a one-shot process with no
@@ -317,6 +322,7 @@ export default defineTool({
                 conv.workItem,
                 it.harness ?? args.harness,
                 workspaceId,
+                reuse,
               ),
             ]);
             return {
@@ -365,7 +371,7 @@ export default defineTool({
           result,
           ...(await planItemConflictAdvisory(result, it.plan, it.item, reader)),
           ...(result.status === 'claimed'
-            ? await claimTimeContext(it.plan, it.item, null, it.harness ?? args.harness, workspaceId)
+            ? await claimTimeContext(it.plan, it.item, null, it.harness ?? args.harness, workspaceId, reuse)
             : {}),
         };
       },

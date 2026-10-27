@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "kind": "idop-p001-retention-source-recovery",
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "item": "P-001",
+  "workItem": "WI-6554700010017386",
+  "driverWorkItem": "WI-6554700010020777",
+  "capturedAt": "2026-10-25T20:41:45.236967+00:00",
+  "ownerId": "su-4a84c93a-e530-450c-b01e-8beb7bdc670f",
+  "acceptance": "OPEN",
+  "canonicalAcceptance": false,
+  "purpose": "Record a bounded read of existing retention mechanisms and backup inventory for original catalog outputs; do not substitute current output for historical observations.",
+  "privateEvidence": {
+    "manifest": "~/.papercusp/evidence/idop-p001-retention-source-recovery-20261025-v1/manifest.json",
+    "sha256": "aaf17c528f7e12b364fe264f6241bb16b457a58b5db219721f20885133a404b7",
+    "bytes": 6025,
+    "frozenOutputFiles": 19,
+    "sourceHashEntries": 9
+  },
+  "method": [
+    "Read the named scratch-path-recovery, scratch-reference, scratch-gc, backup policy and hook source files, then follow the hook's host-dump references to the current producer and invocation writer.",
+    "Use the existing kopia_as_root helper for read-only snapshot list and object-directory list operations; no snapshot creation, restore, maintenance, deletion or policy change.",
+    "Freeze the returned inventory and directory outputs privately, verify exact byte readback, and preserve digests instead of repository-wide backup contents.",
+    "Use the exact original scratch addresses retained in native records identified by the separate fragment artifact. Do not guess a missing path or infer omitted catalog rows."
+  ],
+  "sourceFindings": [
+    {
+      "path": "packages/operator-core/lib/scratch-path-recovery.ts",
+      "finding": "findMistypedScratchSpill locates one existing spill matching a narrowly mistyped address; it does not reconstruct deleted output."
+    },
+    {
+      "path": "packages/operator-core/lib/scratch-reference.ts",
+      "finding": "File references carry expiry, audience and payload integrity. Volatile fallback and durable spool rescue copies expire after five minutes; durable reads still authorize the embedded manifest."
+    },
+    {
+      "path": "packages/operator-core/lib/scratch-gc.ts",
+      "finding": "The source default RETENTION_MS is 24 hours. Retention and quota deletion honor retention pins. This source policy is not evidence that any particular historical file was deleted by GC."
+    },
+    {
+      "path": "packages/backup/src/policy.ts",
+      "finding": "Workspace snapshots include completed db-dumps while excluding temporary files, logs, rebuildable artifacts and backup/restore debris; this policy alone does not prove a snapshot contains any original catalog."
+    },
+    {
+      "path": "packages/backup/src/hook.ts",
+      "finding": "Hot workspace dumps exclude transcript, invocation, archive-file and gateway-spool table data. Comments refer to host recovery, but their old path/hourly-full-dump wording conflicts with the current producer."
+    },
+    {
+      "path": "apps/operator/scripts/systemd/papercusp-db-backup.sh",
+      "finding": "The current producer uses state and transcript tiers. Transcript dump cadence has a 9000-second minimum age and the transcript tier is deliberately excluded from Kopia. The current default dump root is /mnt/cold-a/Backup/db-dumps. This does not establish the contents of an uninspected dump."
+    },
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.ts",
+      "finding": "The inspected invocation writer stores output_ref and output_size alongside args/metadata; its result-door backfill updates references and delivery metadata. Those columns do not themselves retain the missing full catalog payload."
+    }
+  ],
+  "returnedInventory": {
+    "commandPortableNotation": "kopia snapshot list --all ~/.papercusp --json",
+    "pathNotation": "Home-relative notation is used only in this publication; frozen private outputs retain the exact source paths and command results.",
+    "returnedRows": 266,
+    "sources": [
+      { "sourceHomeRelative": "~", "returnedRows": 51, "oct21Through23Rows": 0 },
+      { "sourceHomeRelative": "~/.papercusp", "returnedRows": 215, "oct21Through23Rows": 0 }
+    ],
+    "qualification": "Counts describe this frozen command output only. No repository-global history or irrecoverability claim."
+  },
+  "exactPathObservations": {
+    "localOriginalPaths": [
+      "~/.papercusp/scratch/papercusp-workspace/agent_tools:list/9b9d01b4-5ed8-46fe-bd2f-666e205a612a/result-door-1792685512270.md",
+      "~/.papercusp/scratch/papercusp-workspace/agent_tools:list/04241dbb-3d43-43ae-96fb-cbcef7587411/result-door-1792685512258.md",
+      "~/.papercusp/scratch/papercusp-workspace/agent_tools:list/facc7688-887f-4dc1-8067-16529fe493e8/result-door-1792685515594.md"
+    ],
+    "localResult": "All three exact paths were absent at inspection; no deletion cause inferred.",
+    "laterPartialSnapshotRoots": [
+      "k79a3810079ce575baa5f1bb4f89a4d77",
+      "kddf8e16e23269f8940054071f98fcdae",
+      "k76572cef2f573057f2fdd0f737409a07",
+      "k6fc4a32197cab37e17c9c1d66a2a3507",
+      "keeec4631185f171e2ef2cfbb38f11abf",
+      "kc22e3daebad6701fa9e1e840df8dd574"
+    ],
+    "snapshotResult": "Each exact catalog-directory read returned entry not found. These six snapshots are partial; the result does not prove what an uncaptured directory contained historically.",
+    "positiveControls": "Directory reads of the k76572 root and kddf8 scratch root succeeded; authenticated repository access was working."
+  },
+  "fragmentStatusAtInspection": {
+    "path": "docs/evidence/idop-p001-retained-native-catalog-fragments-2026-10-25.json",
+    "sha256": "4f5fd208f9b8f73e2db0e0b48ab7929061caedc62a54c8d2d30ce96e400cf7cd",
+    "bytes": 10718,
+    "gitStatus": "untracked",
+    "binding": "none",
+    "qualification": "Partial original annotations only; no complete catalog, schema partition or effective argument acceptance."
+  },
+  "followUp": "EI-26985292947610688 records the stale backup-recovery comments; filing it does not resolve historical coverage.",
+  "remaining": [
+    "Authentic complete historical catalogs, schema/annotation partitions and effective handler argument observations for the frozen population.",
+    "Actual legal-stack admission and observations; all 576 enumerated mode/fleet candidates remain unobserved.",
+    "The four historical vault settings remain UNKNOWN; current fixture proof is separate.",
+    "D-023 genuine-source authentication and current activation audit, canonical P001/P024 acceptance, ordered milestones and verified shipment remain open."
+  ],
+  "limits": [
+    "This is manual source and retained-output evidence, not a behavioral test result or independent acceptance.",
+    "No settled archive, prompt replay, vault, matrix or eight-case population qualification was rerun.",
+    "No new observer, unchanged consult retry, role impersonation, mode cycle, grant widening, personal payload access or live gate operation.",
+    "No global absence, backup-loss cause, recovered full catalog, or release readiness is asserted."
+  ]
+}

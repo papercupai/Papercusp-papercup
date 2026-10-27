@@ -82,14 +82,18 @@ async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
   return broadcastSevereEventResolved(input);
 }
 
-/** Resolve only after the caller successfully measured recovery; unreadable scans never clear. */
+/** Resolve only after measured recovery or explicit supersession; unreadable scans never clear. */
 export async function resolveAlarm(
   conditionKey: string,
   source: string,
   deps: AlarmAttentionDeps = {},
+  resolutionSummary?: string,
 ): Promise<boolean> {
   try {
-    return await (deps.resolve ?? defaultResolve)({ conditionKey, summary: `${source} recovered` });
+    return await (deps.resolve ?? defaultResolve)({
+      conditionKey,
+      summary: resolutionSummary?.trim() || source + ' recovered',
+    });
   } catch (err) {
     console.warn(`[${source}] condition resolution failed (non-fatal): ${String(err)}`);
     return false;

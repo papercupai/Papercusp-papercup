@@ -5,7 +5,9 @@
  * Detects a session BLOCKED ON THE OWNER purely from its transcript, with no
  * hook cooperation required: an `AskUserQuestion` / `ExitPlanMode` tool_use
  * with no later `tool_result` in the file = the session is waiting on a human
- * answer. When the matching tool_result eventually lands, the gate closes.
+ * answer. Synchronous asks close on the matching tool_result. Codex async
+ * asks close on the later per-question user reply envelope, never its immediate
+ * accepted:true submission acknowledgement.
  * This is the fallback that works even for clients with no turn-end hook
  * (Codex today — plan D-002/Background).
  *
@@ -32,7 +34,7 @@ import { ompSessionHomesRoot, ompSessionsRootForSessionKey } from '../session-tr
 import { closeGateByToolUseId, listOpenGateRefs, openOrTouchGate, type GateClient } from './gate-store';
 
 /** Tool names whose unanswered tool_use means "blocked on the owner". */
-const GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
+const GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input', 'request_user_input_async']);
 const QUESTION_MAX_CHARS = 500;
 
 export interface GateOpenEvent {
@@ -73,11 +75,70 @@ interface AskUserQuestionInput {
   }>;
 }
 
+interface AsyncQuestion {
+  title: string;
+  options?: string[];
+}
+
+/** Match the native handler's validation: an invalid request emits no question. */
+function asyncQuestions(input: unknown): AsyncQuestion[] {
+  if (!input || typeof input !== 'object') return [];
+  const qs = (input as { questions?: unknown }).questions;
+  if (!Array.isArray(qs) || !qs.length) return [];
+  return qs.every(q => q && typeof q.title === 'string' && q.title.trim() &&
+    (q.options == null || (Array.isArray(q.options) && q.options.length &&
+      q.options.every((o: unknown) => typeof o === 'string' && o.trim())))) ? qs : [];
+}
+
+/**
+ * Codex 0.163.0 tui/async_question_reply.rs: a whole user-text envelope,
+ * optionally after the standard IDE prefix. Ordinary/quoted text is not proof
+ * of an answer. Validate the whole batch before closing any of its questions.
+ */
+function asyncReplyRefs(content: unknown): string[] {
+  if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== 'input_text' ||
+    typeof content[0].text !== 'string') return [];
+  let text = content[0].text.trim();
+  if (text.startsWith('# Context from my IDE setup:\n')) {
+    const separator = '\n## My request for Codex:\n';
+    const index = text.lastIndexOf(separator);
+    if (index < 0) return [];
+    text = text.slice(index + separator.length).trim();
+  }
+  const start = '<send_user_message_question_reply>';
+  const end = '</send_user_message_question_reply>';
+  if (!text.startsWith(start) || !text.endsWith(end)) return [];
+  try {
+    const payload: unknown = JSON.parse(text.slice(start.length, -end.length));
+    const replies = Array.isArray(payload) ? payload : [payload];
+    if (!replies.length || !replies.every(r => r && typeof r === 'object' &&
+      typeof r.questionItemId === 'string' && r.questionItemId &&
+      typeof r.question === 'string' && typeof r.answer === 'string')) return [];
+    return replies.map(r => r.questionItemId);
+  } catch { return []; }
+}
+
+function isAsyncAcknowledgement(output: unknown): boolean {
+  if (typeof output !== 'string') return false;
+  try {
+    const value = JSON.parse(output);
+    return value?.accepted === true && Object.keys(value).length === 1;
+  } catch { return false; }
+}
+
 /** Best-effort human-readable question + flattened options for a gate tool_use. */
 export function extractGateQuestion(
   toolName: string,
   input: unknown,
 ): { question: string; options: Array<{ label: string; description?: string }> | null } {
+  if (toolName === 'request_user_input_async') {
+    const qs = asyncQuestions(input);
+    const options = qs.flatMap(q => q.options ?? []).map(label => ({ label })).slice(0, 20);
+    return {
+      question: qs.map(q => q.title).join(' / ').slice(0, QUESTION_MAX_CHARS) || toolName,
+      options: options.length ? options : null,
+    };
+  }
   if (toolName === 'AskUserQuestion' || toolName === 'request_user_input') {
     const inp = (input ?? {}) as AskUserQuestionInput;
     const qs = Array.isArray(inp.questions) ? inp.questions : [];
@@ -132,6 +193,16 @@ export function parseGateChunk(chunk: string): ParsedGateChunk {
     if (typeof input === 'string') {
       try { input = JSON.parse(input); } catch { return; }
     }
+    if (name === 'request_user_input_async') {
+      // This is also the desktop/TUI questionItemId. Separate refs preserve
+      // unanswered siblings when only one question in a batch is answered.
+      asyncQuestions(input).forEach((q, index) => {
+        const ref = JSON.stringify([name, id, index]);
+        stillOpen.set(ref, { toolUseId: ref, toolName: name,
+          ...extractGateQuestion(name, { questions: [q] }) });
+      });
+      return;
+    }
     stillOpen.set(id, { toolUseId: id, toolName: name, ...extractGateQuestion(name, input) });
   };
 
@@ -146,13 +217,16 @@ export function parseGateChunk(chunk: string): ParsedGateChunk {
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
     const evt = j as {
       type?: string;
-      payload?: { type?: string; call_id?: string; name?: string; arguments?: unknown };
+      payload?: { type?: string; call_id?: string; name?: string; arguments?: unknown; output?: unknown; role?: string; content?: unknown };
       message?: { role?: string; toolCallId?: string; content?: unknown };
     };
     if (evt.type === 'response_item') {
       const p = evt.payload;
       if (p?.type === 'function_call') open(p.call_id, p.name, p.arguments);
-      else if (p?.type === 'function_call_output' && p.call_id) close(p.call_id);
+      else if (p?.type === 'function_call_output' && p.call_id && !isAsyncAcknowledgement(p.output)) close(p.call_id);
+      else if (p?.type === 'message' && p.role === 'user') {
+        for (const ref of asyncReplyRefs(p.content)) close(ref);
+      }
       continue;
     }
     if (evt.type === 'message' && evt.message?.role === 'toolResult' && evt.message.toolCallId) {

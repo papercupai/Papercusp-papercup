@@ -8,6 +8,10 @@
  * drift, per the module header's contract.
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
 import { knownGoodShaOf, parseConfirmOutput, SYNC_DELTA_TIMEOUTS_MS } from './sync-batch-delta-check-deps';
 import {
@@ -25,6 +29,7 @@ import {
   SYNC_DELTA_MAX_LISTED_COMMITS,
   runSyncBatchDeltaCheck,
   STALE_BACKLOG_MS,
+  SYNC_BATCH_LOG_FORMAT,
   COVERAGE_JUDGE_DEADLINE_MS,
   unionBatchPaths,
   type AffectedProbe,
@@ -109,6 +114,37 @@ describe('parseSyncBatches', () => {
 
   it('skips malformed headers instead of inventing a batch', () => {
     expect(parseSyncBatches(`${NUL}not-a-sha 123\nfoo.ts\n`)).toEqual([]);
+  });
+
+  it('reads the agent of a real commit whose trailers are split across paragraphs (WI-6554700010029864)', () => {
+    // git-sync wrote each trailer as its own `-m` until 2026-10-27, and `%(trailers)` reads only
+    // the last paragraph, so the old format returned no agent for 323 of the last 400 commits.
+    const repo = mkdtempSync(join(tmpdir(), 'sync-batch-agent-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repo, encoding: 'utf8' });
+    try {
+      git('init', '-q');
+      git('commit', '-q', '--allow-empty', '-m', 'base');
+      const since = git('rev-parse', 'HEAD').trim();
+      writeFileSync(join(repo, 'a.ts'), 'export {};\n');
+      git('add', 'a.ts');
+      git('commit', '-q', '-m', 'sync(root): a.ts', '-m', 'Papercusp-Agent: su-legacy', '-m', 'Papercusp-Plan: p');
+      writeFileSync(join(repo, 'b.ts'), 'export {};\n');
+      git('add', 'b.ts');
+      git('commit', '-q', '-m', 'sync(root): b.ts', '-m', 'Papercusp-Agent: su-1\nPapercusp-Agent: su-2\nPapercusp-Work-Item: WI-1');
+      const log = (format: string) => git('log', `${since}..HEAD`, '--first-parent', '--name-only', `--format=${format}`);
+
+      // Positive control: the old format really does lose the legacy commit's agent.
+      expect(parseSyncBatches(log('%x00%H %ct%n%(trailers:key=Papercusp-Agent)')).map((b) => b.agent)).toEqual(['su-1', null]);
+
+      const batches = parseSyncBatches(log(SYNC_BATCH_LOG_FORMAT));
+      expect(batches.map((b) => [b.agent, b.agents, b.paths])).toEqual([
+        ['su-1', ['su-1', 'su-2'], ['b.ts']],
+        ['su-legacy', undefined, ['a.ts']],
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

@@ -28,7 +28,8 @@ export const SAVED_FLEET_LAUNCH_SPEC_SOURCE = 'fleet:headcount-target' as const;
 export const LEGACY_FLEET_LAUNCH_SPEC_SOURCE = 'adv_sessions.launch_spec' as const;
 export type SavedFleetLaunchSpecSource =
   | typeof SAVED_FLEET_LAUNCH_SPEC_SOURCE
-  | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE;
+  | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE
+  | 'adv_sessions.launch_spec.originalMemberLaunch';
 
 /**
  * A saved launch config may lack a plan: a legacy member launched through the
@@ -228,6 +229,35 @@ export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): 
 export type LegacyLaunchParseResult =
   | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec; normalizedLegacyContextSize: boolean }
   | { ok: false; message: string };
+
+export interface OriginalMemberLaunchBinding {
+  advSessionId: number;
+  ownerId: string;
+  sessionId: string;
+}
+
+/** Original means the lifecycle receipt captured before the first resume,
+ * never the owner's newest launch or the current fleet recipe. Legacy rows
+ * that already lost that provenance need independent recovery evidence. */
+export function savedOriginalMemberLaunchSpec(
+  record: AdvSessionLaunchRecord | null,
+  binding: OriginalMemberLaunchBinding,
+  workspaceId: string,
+  fleetSlug: string,
+): LegacyLaunchParseResult {
+  const spec = record?.launchSpec as Record<string, unknown> | null;
+  const original = spec?.originalMemberLaunch as Record<string, unknown> | undefined;
+  if (!record || record.workspaceId !== workspaceId || !original || original.v !== 1 ||
+      original.advSessionId !== binding.advSessionId || original.ownerId !== binding.ownerId ||
+      original.sessionId !== binding.sessionId || original.workspaceId !== workspaceId ||
+      original.agent !== record.agent) {
+    return { ok: false, message: 'Original member routing provenance is missing or its exact row/native/owner binding changed.' };
+  }
+  const parsed = savedFleetLaunchSpecFromLegacyRecord(original as unknown as AdvSessionLaunchRecord, workspaceId, fleetSlug);
+  if (parsed.ok && (!parsed.config.account || !parsed.config.model || !parsed.config.carry))
+    return { ok: false, message: 'Original member routing receipt lacks account, model or carry; refusing reconstruction.' };
+  return parsed;
+}
 
 /** Trusted values a recovery caller may supply only to fill absent legacy fields. */
 export interface LegacyLaunchSpecFallbacks {

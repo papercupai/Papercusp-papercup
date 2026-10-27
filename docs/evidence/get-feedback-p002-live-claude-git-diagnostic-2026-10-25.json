@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-consult-attempt-and-proof-reuse-assessment",
+  "observedAt": "2026-10-25T16:54:57Z",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "relatedWorkItemId": "EI-26900834772734276",
+  "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+  "scope": "One new constrained consult request and read-only review of existing evidence. No native execution, new test execution, original-history replacement, acceptance or shipment pass.",
+  "recovery": {
+    "child": "WI-6554700010028734",
+    "state": "done",
+    "artifact": "docs/evidence/get-feedback-p002-contract-fixture-repair-2026-10-25.json",
+    "sha256": "706322c1b7d7a0ba6fe2a2abbe0a37e693613e370b812f39db73f3cbd3379882",
+    "commit": "c0887a25aa604131ebc34c3ecf9b0f75066ee284",
+    "workingEqualsCommitted": true
+  },
+  "nativeAttempt": {
+    "mechanism": "testing:run.nativeConsult",
+    "servingBuild": "staging",
+    "servingSha": "37a2ce8439",
+    "request_key": "gf-p002-live-claude-git-phase-discrimination-20261025-v1",
+    "question": "For the reporter Git snapshot timeout, what is the smallest discriminating measurement that separates a top-level index refresh stall from waiting on a nested Git/submodule helper inside the mutation mount namespace? Please identify an existing source-backed diagnostic or a concrete prediction that differs between those hypotheses; do not infer root cause from load or endpoint equality.",
+    "tried": "Read libs/test-config/src/git-read-worker.mjs and admin-test-runs-reporter.ts plus retained EI-26900834772734276 diagnostics at exact a33007fa78315a38df729f32110f6735f67ae465. Direct and unchanged-subject bind both exceeded 2s. At the original 8s retry budget direct returned clean in 1.4s but bound timed out with root trace ending after index/preload. Both root-mapped and caller-mapped UIDs exceeded 2s. Completed detector correlation suite21959782 is retained; no suite replay or new namespace probe was run.",
+    "observed": "Original mutation run21936773 caught exactly two intended assertions but reporter git status timed out at2s and8s, so worktreeDirty is uncertain and old binding68733 stays active. Current worker preserves trace processId/parentProcessId, bounded last events/open regions and namespace identity. Retained root-only trace is insufficient to name the origin; rootCause remains UNKNOWN. This is distinct from earlier source-actor/lease questions.",
+    "decision_at_stake": "Choose one justified next diagnostic for the owned reporter root-cause item before any backend mutant rerun; keep the existing deadlines and fail-closed clean-provenance rule. A negative or unqualified consult result leaves the diagnostic and native cell open.",
+    "sourceBackend": "claude",
+    "targetBackend": "codex",
+    "sourceState": "live",
+    "requireSourcePlanClaims": true,
+    "conversationId": "conv-request-c8147c72c9894b6190be96c01a88f8b8ef5f2c5b5030226d945a851ab243a9d4",
+    "state": "no_qualified_responder",
+    "reason": "below_floor",
+    "wake": {
+      "attempted": false,
+      "woke": 0,
+      "queued": 0,
+      "pickupConfirmed": false
+    },
+    "posts": [],
+    "limitations": [
+      "The accepted routing request is not a launched or answered native session.",
+      "This scoped request required a live Claude source holding a nonexpired plan claim; it does not prove absence of other Claude sources or qualified sources for other questions.",
+      "No unchanged request retry or reduced relevance floor followed the terminal result."
+    ]
+  },
+  "existingProofReview": {
+    "mode": "Read existing testing:runs rows; no tests executed.",
+    "window": "Latest five passing rows per named file, default source selection; a bounded candidate window, not a census.",
+    "candidateCommit": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "currentHead": "3e7a75cbfcfc012a85f68fd14204fe6979d1bc59",
+    "cleanCandidates": [
+      {
+        "runId": 22023732,
+        "file": "apps/operator/lib/psu-pty-host.test.ts",
+        "passed": 431,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "testSha256": "f4297792760dc7d5f088d369b128b620ac4790be7cf84c7c23ac6ae62698fc77",
+        "currentTestSha256": "79d17f42b587e2f41564ba24255aab5d898ad83a35f386422dff4fa228caaad7"
+      },
+      {
+        "runId": 22023733,
+        "file": "apps/operator/lib/psu-launcher.test.ts",
+        "passed": 978,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "testSha256": "4de25202c4c7089d5b23852b81bb0604042084b68c8de369eba1d4e9f442cdcb",
+        "currentTestSha256": "2f78d985cd42825d62faef2023054f6731bad0a16ea95bedda836c0feae17c6c"
+      },
+      {
+        "runId": 22029648,
+        "file": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+        "passed": 268,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "testSha256": "4133a1949d7a67e72ce99353b3724ed50e81fb6d06aa35443a21b0635a958460",
+        "currentTestSha256": "bffbc21dda545074321395d78dbf49b5ece32c4065da2dba54082b07705b365c"
+      }
+    ],
+    "decision": "Do not bind these three historical test populations as a current equivalent replacement: each test file differs from current committed bytes. No evidence retired.",
+    "otherWindows": [
+      {
+        "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+        "latestCleanCandidateRun": 21976163,
+        "commit": "57b0cd8bf0",
+        "qualified": false
+      },
+      {
+        "file": "packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-sdk-request-url.test.ts",
+        "latestCleanCandidateRun": 21938565,
+        "commit": "a33007fa78",
+        "qualified": false
+      }
+    ]
+  },
+  "governingAssessment": {
+    "evaluatorBuild": "3e7a75cbfc",
+    "specId": "GF-P002-source",
+    "revision": 1,
+    "verdict": "fail",
+    "ratings": {
+      "traceability": "unknown",
+      "fixture-calibration": "pass",
+      "falsifiability": "pass",
+      "correct-layer": "pass",
+      "oracle-independence": "pass",
+      "execution-integrity": "unknown",
+      "freshness": "fail",
+      "plan-class-risk-floor": "pass",
+      "disclosed-gap": "fail"
+    },
+    "draggingBindingIds": {
+      "traceability": [
+        28326,
+        28545
+      ],
+      "execution-integrity": [
+        28326,
+        28545
+      ],
+      "freshness": [
+        28326,
+        28545,
+        68733,
+        69319,
+        69322,
+        69327,
+        69329,
+        69332,
+        69338,
+        69614
+      ],
+      "disclosed-gap": [
+        69704,
+        69782,
+        70065,
+        70148
+      ]
+    }
+  },
+  "preserved": {
+    "originalNativeBindings": [
+      28326,
+      28545
+    ],
+    "supplementalNativeBindings": [
+      69704,
+      69782
+    ],
+    "backendBinding": 68733,
+    "originalUncertainRun": 21936773,
+    "reporterRootCause": "unknown",
+    "completedDetectorRun": 21959782,
+    "sourceActorLeaseABA": "open",
+    "nativeMatrix": "open",
+    "independentAcceptance": "open",
+    "shipment": "open"
+  },
+  "next": "Continue existing SELF/AUTO P002. Treat this consult as terminal below-floor; do not retry unchanged. Keep the source proof open until genuinely current, calibrated proof meets the governing criteria. A new source-qualified question or a genuinely new proof unit needs its own evidence; preserve all historical limitations."
+}

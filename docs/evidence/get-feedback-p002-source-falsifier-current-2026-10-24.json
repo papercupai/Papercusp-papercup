@@ -1,0 +1,606 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "0a4ada9ab9f306007e7cf14d48d3aa162d155e3d358ab3aaa04b0693a6c76d11.supporting-original",
+      "sha256": "0a4ada9ab9f306007e7cf14d48d3aa162d155e3d358ab3aaa04b0693a6c76d11",
+      "byteLength": 18305
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "kind": "GF-P002-source-falsifier-current-qualification",
+  "actualLoopOrigin": "0f93bfc19ba2844a",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "specId": "GF-P002-source",
+  "specRevision": 1,
+  "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+  "priorArtifact": {
+    "path": "docs/evidence/get-feedback-p002-source-falsifier-requalification-2026-10-24.json",
+    "sha256": "e4f2fd603f79b8b1afed8433fc6d4d7213e62532ce93c72765d7135d440bfe13"
+  },
+  "testedCommit": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+  "refreshJustification": "Actual committed adv-sessions.ts movement; the other eight named files, exact test bytes, maintained runner SHA, mutation expression, selector, declared cases and two expected failed titles are unchanged. No HEAD-only replay.",
+  "beforeCurrentness": [
+    {
+      "id": 68221,
+      "run": 21862772,
+      "current": "stale",
+      "reasons": [
+        "source-stale"
+      ],
+      "moved": [
+        {
+          "path": "packages/operator-core/lib/adv-sessions.ts",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ],
+      "recipe": {
+        "kind": "repo-files",
+        "testPaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "sourcePaths": [
+          "packages/operator-core/lib/adv-sessions.ts",
+          "packages/operator-core/lib/agent-launch-core.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/native-consult.ts",
+          "packages/operator-core/lib/session-port/service.ts",
+          "packages/operator-core/lib/session-port/source.ts",
+          "packages/operator-core/lib/session-port/types.ts",
+          "packages/operator-core/lib/workspace-registry.ts"
+        ],
+        "fixturePaths": [
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "schemaVersion": 1
+      }
+    },
+    {
+      "id": 68220,
+      "run": 21862587,
+      "current": "stale",
+      "reasons": [
+        "source-stale"
+      ],
+      "moved": [
+        {
+          "path": "packages/operator-core/lib/adv-sessions.ts",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ]
+    },
+    {
+      "id": 68219,
+      "run": 21862542,
+      "current": "stale",
+      "reasons": [
+        "source-stale"
+      ],
+      "moved": [
+        {
+          "path": "packages/operator-core/lib/adv-sessions.ts",
+          "dimension": "source",
+          "change": "changed"
+        }
+      ]
+    }
+  ],
+  "namedByteComparison": [
+    {
+      "path": "packages/operator-core/lib/adv-sessions.ts",
+      "same": false
+    },
+    {
+      "path": "packages/operator-core/lib/agent-launch-core.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/native-consult.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/service.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/source.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/types.ts",
+      "same": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-registry.ts",
+      "same": true
+    }
+  ],
+  "probe": {
+    "argv": [
+      "--file",
+      "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "--mutate",
+      "s/\\Qif (!['claude', 'codex', 'omp'].includes(sourceAgent)) {\\E/if (sourceAgent !== 'claude') {/",
+      "--test",
+      "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts -t 'planDispatchOperation|reaches all three targets from fresh and ended'",
+      "--relocation",
+      "overlay"
+    ],
+    "runnerPath": "scripts/mutation-probe.sh",
+    "runnerSha256": "4044c24efe76946277426299fdc2c0d7f8ac39de045eae3713b76ce530a241d6",
+    "cwd": ".",
+    "result": {
+      "relocation": "overlay",
+      "mutantParse": "ok",
+      "mutantLedger": "test_runs:21878002",
+      "baselineExit": 0,
+      "baselineLedger": "test_runs:21877991",
+      "guardExit": 1,
+      "copyBaselineLedger": "test_runs:21877993",
+      "expected": "caught",
+      "verdict": "caught",
+      "target": "copy-out",
+      "assertionEvidence": "test-file-assertion-failure"
+    },
+    "schemaVersion": 1,
+    "runnerCommit": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+    "environment": {
+      "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "$HOME/papercupai-workspace/papercusp",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1
+    }
+  },
+  "probeIdentityComparison": {
+    "argvIdentical": true,
+    "runnerSha256Identical": true
+  },
+  "scope": {
+    "canonicalLedger": {
+      "total": 3,
+      "runs": [
+        {
+          "id": 21878002,
+          "sha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+          "status": "fail",
+          "dirty": false,
+          "scratch": false,
+          "passed": 9,
+          "failed": 2,
+          "skipped": 137,
+          "collectionFailed": false,
+          "caseCount": 9,
+          "detailKeys": [
+            "root",
+            "failed",
+            "passed",
+            "skipped",
+            "filePath",
+            "mutation",
+            "commitSha",
+            "testLayer",
+            "runGroupId",
+            "harnessSlug",
+            "workspaceId",
+            "runStartedAt",
+            "mutationPhase",
+            "schemaVersion",
+            "worktreeDirty",
+            "testNamePattern",
+            "collectionFailed",
+            "failedCaseTitles",
+            "passedCaseTitles",
+            "runtimeEnvironmentAfterCaptureStatus",
+            "runtimeEnvironmentBeforeCaptureStatus"
+          ]
+        },
+        {
+          "id": 21877993,
+          "sha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+          "status": "pass",
+          "dirty": false,
+          "scratch": false,
+          "passed": 11,
+          "failed": 0,
+          "skipped": 137,
+          "collectionFailed": false,
+          "caseCount": 11,
+          "detailKeys": [
+            "root",
+            "failed",
+            "passed",
+            "skipped",
+            "filePath",
+            "mutation",
+            "commitSha",
+            "testLayer",
+            "runGroupId",
+            "harnessSlug",
+            "workspaceId",
+            "runStartedAt",
+            "mutationPhase",
+            "schemaVersion",
+            "worktreeDirty",
+            "testNamePattern",
+            "collectionFailed",
+            "passedCaseTitles",
+            "runtimeEnvironmentAfterCaptureStatus",
+            "runtimeEnvironmentBeforeCaptureStatus"
+          ]
+        },
+        {
+          "id": 21877991,
+          "sha": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+          "status": "pass",
+          "dirty": false,
+          "scratch": false,
+          "passed": 11,
+          "failed": 0,
+          "skipped": 137,
+          "collectionFailed": false,
+          "caseCount": 11,
+          "detailKeys": [
+            "root",
+            "failed",
+            "passed",
+            "skipped",
+            "filePath",
+            "mutation",
+            "commitSha",
+            "testLayer",
+            "runGroupId",
+            "harnessSlug",
+            "workspaceId",
+            "runStartedAt",
+            "mutationPhase",
+            "schemaVersion",
+            "worktreeDirty",
+            "testNamePattern",
+            "collectionFailed",
+            "passedCaseTitles",
+            "runtimeEnvironmentAfterCaptureStatus",
+            "runtimeEnvironmentBeforeCaptureStatus"
+          ]
+        }
+      ]
+    },
+    "skippedMeaning": "137 cases were outside the unchanged selector; none provides evidence. Positive controls11/0/137 each; caught parse-valid mutant9/2/137.",
+    "containment": "Private post-baseline overlay writes contained; original tracked source unchanged. Maintained materialize-only snapshot and private PostgreSQL used.",
+    "native": "Launch dependencies are controlled. No native physical execution, universal actor/source immutability, lease-ABA, full filesystem/imported-graph, cohort, independent acceptance or shipment credit."
+  },
+  "newBindings": {
+    "ok": true,
+    "results": [
+      {
+        "ok": true,
+        "id": 68733,
+        "spec": "GF-P002-source",
+        "status": "created"
+      },
+      {
+        "ok": true,
+        "id": 68734,
+        "spec": "GF-P002-source",
+        "status": "created"
+      },
+      {
+        "ok": true,
+        "id": 68735,
+        "spec": "GF-P002-source",
+        "status": "created"
+      }
+    ]
+  },
+  "independentCurrentnessBeforeRetirement": [
+    {
+      "id": 68735,
+      "run": 21877991,
+      "current": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "stale": [],
+      "unknown": [],
+      "provenance": "server-measured",
+      "measuredAtCommit": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+      "old": 68219
+    },
+    {
+      "id": 68734,
+      "run": 21877993,
+      "current": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "stale": [],
+      "unknown": [],
+      "provenance": "server-measured",
+      "measuredAtCommit": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+      "old": 68220
+    },
+    {
+      "id": 68733,
+      "run": 21878002,
+      "current": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "current",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "stale": [],
+      "unknown": [],
+      "provenance": "server-measured",
+      "measuredAtCommit": "24397f513fa8532d8fa9f51fa21c9e73ca2446ce",
+      "old": 68221
+    }
+  ],
+  "retirement": {
+    "receipt": "/tmp/gf-p002-next-falsifier-retire-20261024.json",
+    "results": [
+      {
+        "bindingId": 68219,
+        "status": "retracted",
+        "reason": "Exact source baseline replacement68735 from clean committed21877991 independently server-measured CURRENT in every applicable dimension. Same11selected cases, test bytes, adequacy and nine-file source/fixture recipe; only actual adv-sessions.ts committed drift triggered refresh."
+      },
+      {
+        "bindingId": 68220,
+        "status": "retracted",
+        "reason": "Exact copy baseline replacement68734 from clean committed21877993 independently server-measured CURRENT in every applicable dimension. Same11selected cases, unchanged maintained overlay mutation probe and source/fixture scope; no native proof retired."
+      },
+      {
+        "bindingId": 68221,
+        "status": "retracted",
+        "reason": "Exact backend eligibility mutant replacement68733 from clean committed21878002 independently server-measured CURRENT. Same parse-valid mutation, selector and two expected OMP/Codex failed titles;9pass/2fail/137unselected. Native/cohort/source-isolation limits preserved."
+      }
+    ]
+  },
+  "finalAudit": {
+    "rows": [
+      {
+        "id": 68735,
+        "run": 21877991,
+        "current": "current",
+        "withdrawn": false,
+        "stale": [],
+        "unknown": []
+      },
+      {
+        "id": 68734,
+        "run": 21877993,
+        "current": "current",
+        "withdrawn": false,
+        "stale": [],
+        "unknown": []
+      },
+      {
+        "id": 68733,
+        "run": 21878002,
+        "current": "current",
+        "withdrawn": false,
+        "stale": [],
+        "unknown": []
+      },
+      {
+        "id": 68221,
+        "run": 21862772,
+        "current": "stale",
+        "withdrawn": true,
+        "stale": [
+          "source-stale"
+        ],
+        "unknown": []
+      },
+      {
+        "id": 68220,
+        "run": 21862587,
+        "current": "stale",
+        "withdrawn": true,
+        "stale": [
+          "source-stale"
+        ],
+        "unknown": []
+      },
+      {
+        "id": 68219,
+        "run": 21862542,
+        "current": "stale",
+        "withdrawn": true,
+        "stale": [
+          "source-stale"
+        ],
+        "unknown": []
+      }
+    ],
+    "scope": [
+      {
+        "old": 68219,
+        "new": 68735,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 68220,
+        "new": 68734,
+        "recipeEqual": true,
+        "adequacyEqual": true
+      },
+      {
+        "old": 68221,
+        "new": 68733,
+        "recipeEqual": true,
+        "adequacyEqual": true,
+        "failedCases": [
+          "planDispatchOperation (D-009 walk shape) > an OMP source uses the maintained isolated port on its own backend",
+          "planDispatchOperation (D-009 walk shape) > a live or ended Codex source uses the maintained isolated port on its own backend"
+        ]
+      }
+    ]
+  },
+  "governingEvaluation": {
+    "build": {
+      "sha": "92746d8842",
+      "version": "0.0.0"
+    },
+    "governing": true,
+    "rows": [
+      {
+        "spec": "AUTO-BAR-R-2-P-002",
+        "mode": "mechanical",
+        "verdict": "pass",
+        "wouldBlock": [],
+        "gaps": []
+      },
+      {
+        "spec": "GF-P002-source",
+        "mode": "judgment",
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "pass",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "pass",
+          "disclosed-gap": "fail"
+        },
+        "dragging": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28820,
+            45213,
+            45214,
+            68339,
+            68551,
+            68733,
+            68735
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28326,
+            28545,
+            28820,
+            45213,
+            45214,
+            68374,
+            68375
+          ],
+          "disclosed-gap": [
+            28820,
+            68339
+          ]
+        }
+      }
+    ]
+  },
+  "completedProofReused": [
+    "BAR68598–68603 from clean92746d three-file proof; no repeat.",
+    "Host68551/21869371 and terminal recorder proof; no repeat."
+  ],
+  "preservedHistory": [
+    "Original28326/28545 remain bound.",
+    "Originale99cohort4/8 and separatef01ccohort3/8, missing requester evidence and all dated native limits remain. No quota calls.",
+    "Residual EI-26837794414133856 stays OPEN/owned; no common six-case/finalization root cause is claimed."
+  ],
+  "remaining": [
+    "GF source clause FAIL: traceability/fixture-calibration/execution-integrity unknown; freshness and disclosed-gap fail. Falsifiability and L4 proof floor now PASS.",
+    "P002/dependent nativeP006/R5cold900/quality/independentacceptance/owner-gatedshipment remain OPEN.",
+    "Legacy fixture residue identities28205/28206/28243/28262/28820/45213/45214 were read; no equivalence or retirement inferred."
+  ],
+  "next": "Inspect exact original legacy fixture/mutant declarations and current equivalent proof before any further refresh or retirement. Preserve current source falsifier qualification by named committed bytes; do not replay tests merely for HEAD.",
+  "records": [
+    {
+      "path": "/tmp/gf-p002-next-falsifier-current-20261024.json",
+      "sha256": "f5a84d8bd3b0317e9352ab789104912ae073b8cf96507eb4ed2098833eb4c2a7"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-named-comparison-20261024.json",
+      "sha256": "2c3c7b377436d06ac57fe87d8861743ca232b9b8445bc0ea9bc957d5e26d79d8"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-ledger-20261024.json",
+      "sha256": "c64d3de4c84b072710c1c8d4e389a7f9608ba1949fd06a4c55c68d7b6bdba312"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-bind-20261024.json",
+      "sha256": "41e9d1f1c7d21a31bd5f0db7b4ff3f371a3d92efd9bcb10f34f3815e2138c6eb"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-independent-20261024.json",
+      "sha256": "9e73ec214ba59adb2627e32dd54def8c1fc9019ee7d3b0926693f38cda7a8758"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-retire-20261024.json",
+      "sha256": "5e1d8819cd8e5d289ca343fedab9cafd45d6be2006579adbb463e87255c67275"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-final-audit-20261024.json",
+      "sha256": "dbabf099af5d38855db223ad64b5864a2c44f7015a0b650d060de6015bb786c6"
+    },
+    {
+      "path": "/tmp/gf-p002-next-falsifier-governing-20261024.json",
+      "sha256": "ce356866da5f79c9929d2c56423a3ef67ff0056bfe8f64dce2a8beb0c0f15d05"
+    },
+    {
+      "path": "/dev/shm/get-feedback-p002-source-requal-next-20261024.log",
+      "sha256": "aa44b55aafe868f37349b9e1d4d9fdda6d6e51c982ac8925942a2ca2eea23243"
+    }
+  ]
+}

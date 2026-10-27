@@ -1,0 +1,255 @@
+{
+  "repository": "https://github.com/Proximal-Labs/proximus",
+  "revision": "a989f7b35c95c0fd30603290da3c923b7898cba8",
+  "tree": "c17d01f8b105710b78f24547edc6ada120bcfec3",
+  "archiveSha256": "267b0920534fdb139393bff07c99b88849c5e5fd5b02676385586a6c7ac94ed0",
+  "purpose": "Unmodified official research reference; execution and paid comparisons require the existing benchmark authorization and accounting gates.",
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "mode": "100644",
+      "gitBlobSha1": "0cee6584ee84ca907ff849b922e78c8cceb0c82c",
+      "sha256": "fd4e7194a68ab4ce9c5339b259e0841877fa4f40201e209f6b3a45da6fbf463c"
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "gitBlobSha1": "b95a4e643f95c81b54a91d2e86b4ecc17ad11533",
+      "sha256": "35568f5cc9289a342a4a74eeaaf1e725504aa4cef687d97ade0cc685c4d35f87"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "gitBlobSha1": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "NOTICE",
+      "mode": "100644",
+      "gitBlobSha1": "a902dd9dfee3b590c02a972502f6ec5b52a6c9b2",
+      "sha256": "bcbd72b7efaa705b6b5d68d4223f6bf5a3113f00be15f4b3144c88b442127989"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "gitBlobSha1": "a9ea207e5889610cff4490ed7ec0c842cfa4322b",
+      "sha256": "0794b1b6394e5594a9da9ca4cb0d68c82098b3aa16a9138e181ac6a11881fa42"
+    },
+    {
+      "path": "examples/agent.yaml",
+      "mode": "100644",
+      "gitBlobSha1": "f19920f028913b8c4ff1ba968a44dd7d12e55f22",
+      "sha256": "1425a344cc654c4b0b86ed887299ab648a8c0f82b4f66bdaee694948ad4abb41"
+    },
+    {
+      "path": "pyproject.toml",
+      "mode": "100644",
+      "gitBlobSha1": "8d8c719b8625e183b9c076feb217d8a403b39982",
+      "sha256": "bc6b7451f7605a7ce975b2884317fcbc52b41c3c1c54d7a724c958769239cce4"
+    },
+    {
+      "path": "scripts/verify_wheel.py",
+      "mode": "100644",
+      "gitBlobSha1": "d7dc00fc05ed79b5080d2cb9f389154f470a16dd",
+      "sha256": "3a196cbb2b40ec5c253c0022722bc5ebc87187376e440543bf78138cfbc78e67"
+    },
+    {
+      "path": "src/harbor_proximus/__init__.py",
+      "mode": "100644",
+      "gitBlobSha1": "b34eae57d8f3c0584027af112155bbd8d42eaa38",
+      "sha256": "18097f44c407e2af65d5a313cc14a586aa0c30570ab1a20845ed101382a28081"
+    },
+    {
+      "path": "src/harbor_proximus/config.py",
+      "mode": "100644",
+      "gitBlobSha1": "0629c0ec0b214364cfece0a48332a0864610ef68",
+      "sha256": "bc079d4559968ddedee798f70b2283ab25ec570b715090fe8505c0f4a393b8a3"
+    },
+    {
+      "path": "src/harbor_proximus/images.py",
+      "mode": "100644",
+      "gitBlobSha1": "b4c38d27e919e7bd755c2e0f98597b2c0e217a5c",
+      "sha256": "7da38e22e14e340333994f69bfa5b34a3aa010642536f0a56a3cf96240790b68"
+    },
+    {
+      "path": "src/harbor_proximus/llm.py",
+      "mode": "100644",
+      "gitBlobSha1": "846e0b5dc32ae633f082bc8f4f99d7236e89ca5f",
+      "sha256": "48637a96833fbf8e5e99832388ef16b4846f80a80ed2c24f002b0e7edd48aa04"
+    },
+    {
+      "path": "src/harbor_proximus/prompts.py",
+      "mode": "100644",
+      "gitBlobSha1": "07c274e241cf96941967ecb1e64b4509e148682f",
+      "sha256": "5268b74760e0c27b91661bdebb378d2fad4848501d8670c5a271f5e7a8eacc09"
+    },
+    {
+      "path": "src/harbor_proximus/proximus.py",
+      "mode": "100644",
+      "gitBlobSha1": "2707e8796f0ab4fad4f6cd1af8bcc64acebfff25",
+      "sha256": "87fd56811b5107bfa36c9858181440dcb5b520deb82a10b2ca6af02decf80672"
+    },
+    {
+      "path": "src/harbor_proximus/scripts/ensure_git.sh",
+      "mode": "100644",
+      "gitBlobSha1": "9747ada6ba2add5f6ec38f2be6464e7646c04199",
+      "sha256": "b8b1063733b71e4781d0c5cf59715240759497f905b1375e3686ba0c5ce41d1b"
+    },
+    {
+      "path": "src/harbor_proximus/scripts/matches_winner.sh",
+      "mode": "100644",
+      "gitBlobSha1": "58d2a078172cf4076f31bb26a61b002a96cd8c47",
+      "sha256": "2d847f2ca3284917eaddf280164102671aa692d9faae30f3e54ae09a4629b562"
+    },
+    {
+      "path": "src/harbor_proximus/scripts/reanchor_timer.sh",
+      "mode": "100644",
+      "gitBlobSha1": "3b2cf3eca7c637efb21b2fb97e68ec475067d809",
+      "sha256": "735d5ad7263f4671d5bdd392135b846a1ed9041210eb71ecef0b9cba86fe9395"
+    },
+    {
+      "path": "src/harbor_proximus/scripts/record_commit.sh",
+      "mode": "100644",
+      "gitBlobSha1": "0d8709ba1051e6704ad79c096e5f568d9927a212",
+      "sha256": "3ff0da9dd3953eff59e0bdd743a844f615080b1493a0b46c3b92ee38e991af11"
+    },
+    {
+      "path": "src/harbor_proximus/scripts/restore_winner.sh",
+      "mode": "100644",
+      "gitBlobSha1": "20d24637927477f450689a676859b22fd37f42f4",
+      "sha256": "774a9cb3aa3e19a5b0f7315460fdff4475b300e9a4a60713682cafcd42774b3d"
+    },
+    {
+      "path": "src/harbor_proximus/submissions.py",
+      "mode": "100644",
+      "gitBlobSha1": "fc6024180eb3ee4b47bacb522a7357a5cb2c3761",
+      "sha256": "4142afdfa1ad3978cb9ded77a477551a6dafeb277e2fe39a41f01cbb42376d5a"
+    },
+    {
+      "path": "src/harbor_proximus/task_config.py",
+      "mode": "100644",
+      "gitBlobSha1": "996ae87e4bceddec68c21035bb8787a4526f7a4e",
+      "sha256": "4a86c3b156129fbd8d653d03d945cefc39aef90523bd056569d1e95e9d1597bb"
+    },
+    {
+      "path": "src/harbor_proximus/templates/system.md",
+      "mode": "100644",
+      "gitBlobSha1": "e709c5edff2841cfd11fc4b4836e46680de9c2b3",
+      "sha256": "3e32be241ec82788a6d82f3da11e99725c852cd73b6ee016398cf492559665e5"
+    },
+    {
+      "path": "src/harbor_proximus/timer.py",
+      "mode": "100644",
+      "gitBlobSha1": "453fa1a40a7864b253f419c36742ea5da0044ee3",
+      "sha256": "8dc9257ff0a7dc43d565ac70108eeab96517f2ae3ea1e28fdc38e834bcd140c2"
+    },
+    {
+      "path": "src/harbor_proximus/tools.py",
+      "mode": "100644",
+      "gitBlobSha1": "078dfd08310f8f7c303d284adf4f11ea668c9e3a",
+      "sha256": "e40ad7f8bda28f2f28e5b37de75bd86fcee64166729d2716af03a9511de24a9d"
+    },
+    {
+      "path": "src/harbor_proximus/utils.py",
+      "mode": "100644",
+      "gitBlobSha1": "b20c0afc03021cfcf1b08d2e32549415f532db86",
+      "sha256": "6c292e79078dc69ed7833e8ee3e6aa3f52a321b5d883a85982e9839878539d6d"
+    },
+    {
+      "path": "tests/__init__.py",
+      "mode": "100644",
+      "gitBlobSha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tests/conftest.py",
+      "mode": "100644",
+      "gitBlobSha1": "3bea318978379bab2433addb8a7fe70b97c08525",
+      "sha256": "f9d47fdc440fe01809047d767de03c14888fa86446fcd6e25c68b1f6735ab0d4"
+    },
+    {
+      "path": "tests/test_config_roundtrip.py",
+      "mode": "100644",
+      "gitBlobSha1": "a3812b8feaf688bbd1c5449e32901399a01b2594",
+      "sha256": "9edca41096b1c04a798296c7ea6ac40432f023d27769ea4ecf67b066a94624df"
+    },
+    {
+      "path": "tests/test_context_limit.py",
+      "mode": "100644",
+      "gitBlobSha1": "6cd74126f1091b265dc6d6032230811abe850a37",
+      "sha256": "5d3006b2875c3402a8b67e25a3a721def8c05376eb8c341da2dced81d5e8abee"
+    },
+    {
+      "path": "tests/test_images.py",
+      "mode": "100644",
+      "gitBlobSha1": "ec35f37f1b9bf4e1f5f9131d0f5e5c11a458f042",
+      "sha256": "bf02c919016eb8c15ad906b2b95aa9193e83b84693de7f75959ed022ae7262d8"
+    },
+    {
+      "path": "tests/test_package_integration.py",
+      "mode": "100644",
+      "gitBlobSha1": "b069b7ba92cb11687031c2a1674bdb5b222f68ad",
+      "sha256": "edb02046dd961f06e011daf8e7fd882628f7fef8e82105d44543b9ce34843ac1"
+    },
+    {
+      "path": "tests/test_proximus_git_submissions.py",
+      "mode": "100644",
+      "gitBlobSha1": "9287ee28a59e31c8fa817cc4c4fac20811700761",
+      "sha256": "27678b0dc56858959cf8775e2c5cf79b1c58de802bb1d84e335b226617952fed"
+    },
+    {
+      "path": "tests/test_proximus_llm_retry.py",
+      "mode": "100644",
+      "gitBlobSha1": "b611c84a13875ced0af7335078a436033a9ce550",
+      "sha256": "d6a9ae371a2aaaebf5958235182de48520a604274f8a9472c48d3ca9072b622f"
+    },
+    {
+      "path": "tests/test_proximus_loop.py",
+      "mode": "100644",
+      "gitBlobSha1": "ea2961c0d06641b02d95e18e2c2fb077fa8da85e",
+      "sha256": "f57c4e403f6d2fe67ea08a4444093d856b98ef106c63cd64c1b1383adca8873a"
+    },
+    {
+      "path": "tests/test_proximus_options.py",
+      "mode": "100644",
+      "gitBlobSha1": "b783742e625adb938b2db1ad9958db02de738a85",
+      "sha256": "f16ebfcefa473f50e5e1312105254807242a7b31cbe7008daa519e08fca52de2"
+    },
+    {
+      "path": "tests/test_proximus_prompt_caching.py",
+      "mode": "100644",
+      "gitBlobSha1": "53ed9408ab714d1b60822f0a13026350e2922f78",
+      "sha256": "ec47269e8c7fd5c810e010d7db8d469bf0b7ab95b0038136706f6e4ca3e81cf6"
+    },
+    {
+      "path": "tests/test_proximus_record_commit.py",
+      "mode": "100644",
+      "gitBlobSha1": "73097243e836e3a11cc8dc0811eb1bf6db35943c",
+      "sha256": "8e91597781e107df0fcb8f95be92c3611e24d5ca54926a2080766bb4582f6fe3"
+    },
+    {
+      "path": "tests/test_proximus_submissions.py",
+      "mode": "100644",
+      "gitBlobSha1": "b132c34b789d915dd0ba9380e0f32b1614ad268a",
+      "sha256": "5080fc0a0df9317e5cc941453c868a456ff43a40c28301f6ad35e4cfc58cf74b"
+    },
+    {
+      "path": "tests/test_proximus_tools.py",
+      "mode": "100644",
+      "gitBlobSha1": "3d4df85d36a89be084977d5199e8eda48f46a8d7",
+      "sha256": "173f15dd3c4945608b2acf714b13ad517e53b8fa22809b13c08abc24ac4b08d9"
+    },
+    {
+      "path": "tests/test_task_config.py",
+      "mode": "100644",
+      "gitBlobSha1": "0aac553bd8b96e5c4421e684d1686746ab843b1b",
+      "sha256": "fb40cfbdaf3f3e10f43bf727b6d9fa4cf0ace32da66ec6f81d7af64fad7918a8"
+    },
+    {
+      "path": "uv.lock",
+      "mode": "100644",
+      "gitBlobSha1": "e9489b0b331c95589e21d1ba43892cc8e858e38f",
+      "sha256": "ae94d0ad896beba1119474c3e3182214c6dfa013d65581ff2b499031ac1bcc40"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
-import { CONSULT_DEFAULT_POLICY } from './selection-policies';
+import { CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
 import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 
 export interface GetFeedbackProdOptions {
@@ -34,6 +34,7 @@ export async function acceptFeedbackRequestProd(
   request: GetFeedbackRequest, identity: AgentIdentity,
     options: AcceptFeedbackRequestProdOptions = {},
 ) {
+    methodReviewTarget(request);
     const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
       import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
       import('../agent-tools/docs/_public-manual'), import('./relevance-router'),
@@ -69,6 +70,13 @@ export async function acceptFeedbackRequestProd(
 export async function getFeedbackProd(
   request: GetFeedbackRequest, identity: AgentIdentity, options: GetFeedbackProdOptions = {},
 ) {
+  const methodTarget = methodReviewTarget(request);
+  // Rebuilt from the durable request on recovery; an in-memory filter closure
+  // cannot carry an approval fence across the accepted-request boundary.
+  const methodScreen = methodTarget
+    ? await import('../rubrics').then(({ resolveAcceptanceBarApproverScreen }) =>
+        resolveAcceptanceBarApproverScreen({ rubricId: methodTarget, applierId: request.requesterId }))
+    : null;
   const [
     { getOrgPg }, { getFeedbackCore }, { routeConsult }, { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs },
     { resolveProseProfileSelection },
@@ -158,7 +166,12 @@ export async function getFeedbackProd(
           workspaceId: request.workspaceId,
         });
       }
-      return options.filterRoute ? options.filterRoute(constrained) : constrained;
+      if (options.filterRoute) constrained = await options.filterRoute(constrained);
+      if (methodScreen) {
+        const { filterAmendmentReviewRoute } = await import('./acceptance-bar-amendment-review');
+        constrained = await filterAmendmentReviewRoute(constrained, methodScreen.check);
+      }
+      return constrained;
     },
     open: async (input) => {
       const opened = await conversations.openConversation(identity, {

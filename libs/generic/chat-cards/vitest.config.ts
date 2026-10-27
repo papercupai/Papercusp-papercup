@@ -10,5 +10,6 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     ...gateParticipationConfig(),
+    exclude: ['**/node_modules/**', '**/*.integration.test.ts', '**/*.integration.test.tsx'],
   },
 });

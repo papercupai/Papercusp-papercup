@@ -26,6 +26,7 @@
  * gotcha: DBOS dedup'd by workflow-id; in-process does not).
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
+import { installManagedTickAlarm } from './managed-tick-alarm';
 import { observeFallback } from '../degradation/fallback-observations';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
 import nodeCluster from 'node:cluster';
@@ -1062,6 +1063,13 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     ): Promise<void> => {
       const { job } = row;
       const resolution = job.resolution;
+      // Older sweeps could persist a successor as the target of a request
+      // addressed to its predecessor. Retire those jobs before any side effect.
+      if (resolution === 'consequence-reclaim' && job.reclaimHolder !== job.holder) {
+        console.warn(`[release-request-sweep] ${row.id}: retiring reclaim aimed at a replacement holder`);
+        await settleReleaseRequestConsequence(sql, row);
+        return;
+      }
       const messageId = 'release-request-consequence:' + row.workspaceId + ':' + row.id + ':' + job.id;
       const deadlineIso = new Date(job.deadlineAt).toISOString();
       const noteBody =
@@ -1197,6 +1205,19 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
     for (const row of due) {
       const { request: req } = row;
+      // The deadline belongs to the original holder. A transfer already
+      // answered that request; a delayed tick must never retarget its successor.
+      if (row.holderNow !== req.holder) {
+        await resolveWorkItemReleaseRequest(row.id, {
+          harness: row.harness ?? undefined,
+          resolution: 'superseded',
+          expectedBy: req.by,
+          expectedHolder: req.holder,
+          expectedDeadlineAt: req.deadlineAt,
+          expectedLastProgressAt: row.lastProgressAt,
+        }).catch(() => null);
+        continue;
+      }
       const resolution: import('../work-items-release-request').ReleaseRequestConsequenceResolution =
         req.onSilence === 'reclaim' ? 'consequence-reclaim' : req.onSilence === 'escalate' ? 'consequence-escalate' : 'consequence-nothing';
       const consequenceJob = {
@@ -1208,11 +1229,11 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         onSilence: req.onSilence,
         deadlineAt: req.deadlineAt,
         requestedAt: req.requestedAt,
-        reclaimHolder: row.holderNow ?? req.holder,
+        reclaimHolder: req.holder,
         paths: row.paths,
       };
       if (req.onSilence === 'reclaim') {
-        const holder = row.holderNow ?? req.holder;
+        const holder = req.holder;
         if (holder === req.holder && hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt)) {
           const responded = await resolveWorkItemReleaseRequest(row.id, {
             harness: row.harness ?? undefined,
@@ -1392,6 +1413,19 @@ const hiveEpochKeyReconcileCheck: PeriodicCheck = {
   },
 };
 
+// Finite runtime custody: deadline, missed post/end/replacement hooks, and
+// create-before-append/restart recovery. Host-scoped, with durable lifecycle
+// locks; the OS fuse remains independent of this process and this timer.
+const blindReviewRuntimeReaperCheck: PeriodicCheck = {
+  name: 'blind-review-runtime-reaper', intervalMs: 30_000, shed: false, fireOnArm: true,
+  classification: 'timeout-reaper',
+  tick: async () => {
+    const { reconcileRuntimeNamespaces } = await import('../blind-review-runtime-recovery');
+    const result = await reconcileRuntimeNamespaces();
+    if (result.failures.length) throw new Error('runtime custody recovery failed for ' + result.failures.join(','));
+  },
+};
+
 // Every 5min: FEDERATED presence reaper (cross-machine-coord-parity-and-trust
 // P-057 / M8, audit D-013). shared_presence / shared_session_presence are
 // gossip-published liveness beats with NO retention — a crashed device's rows are
@@ -1537,6 +1571,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     steeringChurnSweepCheck,
     federationDrainReconcileCheck,
     hiveEpochKeyReconcileCheck,
+    blindReviewRuntimeReaperCheck,
     sharedPresenceReaperCheck,
     scorecardEmissionPulseCheck,
     pollSuspectScanCheck,
@@ -1600,6 +1635,7 @@ export function armInProcessPeriodicChecks(
   opts: { checks?: PeriodicCheck[]; deps?: RunCheckDeps; isPrimary?: boolean } = {},
 ): { stop: () => void } {
   if (armed) return { stop: disarmInProcessPeriodicChecks };
+  installManagedTickAlarm();
   const all = opts.checks ?? buildDefaultChecks();
   // P-018: in a node cluster, only the PRIMARY runs the host-scoped sweeps — see
   // PeriodicCheck.scope for why `backgroundWorkersEnabled()` never actually provided this.

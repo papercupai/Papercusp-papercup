@@ -21,6 +21,7 @@
  */
 import http from 'node:http';
 import { beginGatewayTrace, finishGatewayTrace } from '../observability/runtime';
+import { MODEL_REQUEST_ID_HEADER } from '../observability/tracing';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
@@ -38,6 +39,9 @@ import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
 import {
   governorForBackend,
+  governorKey,
+  modelClassOf,
+  onGovernorPause,
   snapshotGovernors,
   effectiveRpm,
   effectivePaceMs,
@@ -1200,7 +1204,7 @@ const STRIP_REQUEST = new Set([
   'transfer-encoding',
   'keep-alive',
 ]);
-const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
+const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', MODEL_REQUEST_ID_HEADER]);
 
 /** Trusted controller input for one actual, fully shaped Codex HTTP attempt.
  * Account labels and client metadata alone are not serving-scope authentication.
@@ -1210,6 +1214,9 @@ const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-
  */
 export interface GatewayCarryTrialAttempt {
   readonly attemptId: string;
+  /** Server-minted model request identity, shared by every selected-provider
+   * attempt for one incoming HTTP request. Absent only on legacy records. */
+  readonly gatewayRequestId?: string;
   readonly manifestSha256: string;
   readonly armId: string;
   readonly transport: 'oauth-http' | 'bearer-http' | 'anthropic-http';
@@ -1219,6 +1226,11 @@ export interface GatewayCarryTrialAttempt {
   readonly target: string;
   readonly body: string;
   readonly bodySha256: string;
+  /** Effective Anthropic version/beta after account-specific routing. These
+   * non-secret scalar fields bind input admission to the actual provider
+   * features, including context-window betas. Absent on other transports. */
+  readonly anthropicVersion?: string | null;
+  readonly anthropicBeta?: string | null;
   /** Caller-observed native IDs; only host/source reconciliation may attest them. */
   readonly nativeSessionId?: string;
   readonly nativeTurnId?: string;
@@ -1581,7 +1593,7 @@ export interface GatewayDeps {
    *  launch layer wires this to a LOUD escalation (severity 'blocker', meta.source 'credential-health',
    *  transition-only so it doesn't re-open every request) + a fleet broadcast. The streak resets on the
    *  next successful auth (a 2xx) for that account, which re-arms a fresh alert for a later episode. */
-  onCredentialDead?(info: { accountId: string; consecutive401s: number }): void;
+  onCredentialDead?(info: { accountId: string; consecutive401s: number; provider?: 'claude' | 'codex'; reason?: string }): void;
   /** Peer-uid gate for every connection (WI-10003621). The gateway binds 127.0.0.1 and has no
    *  caller auth, so on a hosted workspace host — where the customer account shares loopback —
    *  a non-service uid must be refused before any route (inference or `/admin/*`) runs. Returns
@@ -1986,6 +1998,14 @@ export interface GatewayStats {
   /** WI-10003306: (account, model) pairs routed around because the ChatGPT backend refused that
    *  model for that account. The accounts stay in the pool; each entry lapses or clears on a 2xx. */
   codexModelRefusals?: CodexModelRefusalEntry[];
+  /**
+   * WI-6554700010029748: `codexHealthyAccounts` is MODEL-BLIND — an account that refuses a model
+   * still counts. For every model with at least one live refusal, the number of serviceable
+   * accounts that do NOT refuse it (the same `accountHealthKey` test as the provider-wide count).
+   * A model absent from the map has no live refusal, so `codexHealthyAccounts` describes it.
+   * psu's launch preflight refuses a launch whose model reads 0 here while the provider reads > 0.
+   */
+  codexServiceableByModel?: Record<string, number>;
   /**
    * Pool-wide Codex recovery horizon: 0 while an account can serve now, an epoch-ms instant
    * when every account is out but one has a known return, or null when no return is known.
@@ -2474,11 +2494,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
+    const requestSpan = requestTelemetryByRequest.get(req)?.span;
+    if (!requestSpan) throw trialRefusal();
     const native = transport === 'anthropic-http' ? null : readGatewayNativeCorrelation(JSON.parse(body));
     const attempt: GatewayCarryTrialAttempt = Object.freeze({
-      attemptId, manifestSha256: binding.manifestSha256, armId: binding.armId,
+      attemptId, gatewayRequestId: `${gatewayProcessInstanceId}:${requestSpan.requestId}`,
+      manifestSha256: binding.manifestSha256, armId: binding.armId,
       transport, accountId, target, body,
       bodySha256: createHash('sha256').update(init.body).digest('hex'),
+      ...(transport === 'anthropic-http' ? { anthropicVersion: headers.get('anthropic-version'),
+        anthropicBeta: headers.get('anthropic-beta') } : {}),
       ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),
       credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
       clockId: processMonotonicClock.id, signal: init.signal,
@@ -2671,6 +2696,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const traceparent = req.headers.traceparent;
     beginGatewayTrace(`${gatewayProcessInstanceId}:${span.requestId}`, provider,
       typeof traceparent === 'string' ? { traceparent } : {});
+    // Server-minted identity, shared with the model span and returned to the
+    // maintained caller. Request headers never choose the expected population.
+    res.setHeader(MODEL_REQUEST_ID_HEADER, `${gatewayProcessInstanceId}:${span.requestId}`);
     requestTelemetryByRequest.set(req, state);
     const finish = (closedBeforeFinish: boolean) => {
       if (state.finished) return;
@@ -3066,6 +3094,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return g;
   };
 
+  // Order only the start permit, never the upstream response/stream. Letting
+  // every request race the governor's retry sleep discarded priority and let
+  // new arrivals repeatedly overtake requests already waiting on an account.
+  const codexAttemptQueues = new Map<RateLimitGovernor, PriorityAdmissionQueue>();
+
   /** Per-attempt Codex pacing. The governor wait is deliberately outside the
    * kernel's upstream TTFB timer and uses the kernel request signal so a client
    * abort releases the waiter without charging an upstream timeout. */
@@ -3073,14 +3106,57 @@ export function createInferenceGateway(deps: GatewayDeps) {
     model: string,
     accountId: string,
     signal: AbortSignal,
+    priorityLabel: string | undefined,
+    hardPin: boolean,
   ): Promise<() => void> => {
     const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');
-    const release = await governor.acquire({}, {
-      maxWaitMs: maxQueueWaitMs,
-      signal,
-      allowSoftPaused: true,
+    let queue = codexAttemptQueues.get(governor);
+    if (!queue) {
+      queue = new PriorityAdmissionQueue({ maxConcurrent: 1 });
+      codexAttemptQueues.set(governor, queue);
+    }
+    const deadline = new AbortController();
+    const unavailable = new AbortController();
+    const waitingSignal = AbortSignal.any([signal, deadline.signal, unavailable.signal]);
+    const checkAvailability = () => {
+      if (hardPin) return;
+      const at = Date.now();
+      const account = deps.codexPool?.entries?.().find(a => a.accountId === accountId) ??
+        codexCliPool?.entries?.().find(a => a.accountId === accountId) ??
+        codexCliHealthEntries().find(a => a.accountId === accountId);
+      if (governor.state.pausedUntil > at || account && accountHealthKey(account, at, governor) === Infinity) {
+        unavailable.abort();
+      }
+    };
+    // The route was picked before auth/queueing. A live pause must cancel
+    // every waiter on that account, including requests behind the head waiter,
+    // so the kernel can reselect before sending anything upstream.
+    const pauseKey = governorKey('openai', modelClassOf(model || SERVICEABLE_CLAMP_MODEL), accountId);
+    const unsubscribe = hardPin ? () => undefined : onGovernorPause(({ key }) => {
+      if (key === pauseKey) checkAvailability();
     });
-    if (release) return release;
+    const timer = setTimeout(() => deadline.abort(), maxQueueWaitMs);
+    try {
+      const release = await queue.run(priorityFromLabel(priorityLabel), () => {
+        checkAvailability();
+        return governor.acquire({}, {
+          maxWaitMs: maxQueueWaitMs,
+          signal: waitingSignal,
+          allowSoftPaused: true,
+          priorityTier: tierOf(priorityLabel),
+        });
+      }, { signal: waitingSignal });
+      if (release) {
+        checkAvailability();
+        if (!waitingSignal.aborted) return release;
+        release();
+      }
+    } catch (error) {
+      if (!waitingSignal.aborted) throw error;
+    } finally {
+      clearTimeout(timer);
+      unsubscribe();
+    }
     if (signal.aborted) {
       throw new GatewayRequestKernelError('codex attempt pacing aborted', {
         code: 'cancelled',
@@ -3089,8 +3165,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         retryable: false,
       });
     }
+    if (unavailable.signal.aborted) {
+      throw new GatewayRequestKernelError(`codex account '${accountId}' became unavailable during pacing`, {
+        code: 'account-unavailable', outcome: 'shed', status: 429, retryable: true,
+      });
+    }
     throw new GatewayRequestKernelError(`codex account '${accountId}' pacing wait exceeded ${maxQueueWaitMs}ms`, {
-      code: 'upstream-error',
+      code: 'admission-timeout',
       outcome: 'shed',
       status: 429,
       retryable: false,
@@ -3107,15 +3188,44 @@ export function createInferenceGateway(deps: GatewayDeps) {
     governor.recordResponse(headers);
     if (status !== 429) return;
     const parsed = parseCodexRateReset(headers);
+    const pausedBefore = governor.state.pausedUntil;
     // Only a transient/burst 429 changes learned RPM. Account quota walls are
     // isolated to the account pause and must not shrink sibling capacity.
     if (parsed.transient) {
+      // WI-6554700010029423: bound a burst 429's account pause to the failover backoff. Its
+      // retry-after (measured 42-570s on gpt-6.1-sol) is not enforced upstream — the same accounts
+      // served every request started inside it — and this pause is account-wide (the durable store
+      // copy makes accountHealthKey Infinity for EVERY model), so honouring it up to the 2-min
+      // re-probe cap kept ~6 of 8 codex accounts idle at once.
       governor.penalize({
         retryAfterMs: parsed.retryAfterMs ?? undefined,
         resetAt: parsed.resetAt ?? undefined,
+        maxPauseMs: bare429FailoverBackoffMs,
         rateLimited: true,
       });
     }
+    // WI-6554700010029423: the upstream 429's own rate evidence. Each transient 429 pauses the
+    // account (capped 2 min) and that pause is what idles the pool, so the size of the pause must be
+    // checked against what the provider actually said. Header VALUES are rate metadata only; names
+    // are filtered to the rate/retry families, never auth or request ids.
+    const at = Date.now();
+    const rateHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      const k = key.toLowerCase();
+      if (value !== undefined && (k === 'retry-after' || k.startsWith('x-ratelimit-') || k.startsWith('x-codex-'))) {
+        rateHeaders[k] = String(value).slice(0, 80);
+      }
+    }
+    log('info', `inference-gateway: codex upstream-429-evidence/v1 ${JSON.stringify({
+      accountId,
+      model,
+      transient: parsed.transient,
+      resetInMs: parsed.resetAt === null ? null : parsed.resetAt - at,
+      retryAfterMs: parsed.retryAfterMs,
+      pauseBeforeMs: Math.max(0, pausedBefore - at),
+      pauseAfterMs: Math.max(0, governor.state.pausedUntil - at),
+      headers: rateHeaders,
+    })}`);
   };
 
   const observeCodexCliGovernorFailure = (model: string, accountId: string, detail: string): void => {
@@ -3290,6 +3400,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
    *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
   const credential401Streak = new Map<string, number>();
+  /** WI-6554700010029300: CODEX credential death (OAuth `refresh_token_invalidated`, an unusable codex-cli
+   *  login) used to be LOG-ONLY — on 2026-10-26 the credits account sat dead for ~8h, silently shrinking the
+   *  Codex pool until the rest hit their 5h windows and the fleet died on 429s. It now rides the SAME loud
+   *  `onCredentialDead` escalation the Claude 401-streak path uses. Latched per account: fires once per
+   *  episode, re-armed by the account's next 2xx or after CODEX_CREDENTIAL_DEAD_REALERT_MS. */
+  const codexCredentialDeadAlertedAt = new Map<string, number>();
+  const CODEX_CREDENTIAL_DEAD_REALERT_MS = 6 * 60 * 60 * 1000;
+  const noteCodexCredentialDead = (accountId: string, reason: string): void => {
+    const now = Date.now();
+    const last = codexCredentialDeadAlertedAt.get(accountId);
+    if (last !== undefined && now - last < CODEX_CREDENTIAL_DEAD_REALERT_MS) return;
+    codexCredentialDeadAlertedAt.set(accountId, now);
+    try {
+      deps.onCredentialDead?.({ accountId, consecutive401s: 1, provider: 'codex', reason });
+    } catch {
+      /* fire-and-forget: the alert side-channel must never throw into the request path */
+    }
+  };
   /** WI-10003306: Codex (account, model) pairs the ChatGPT backend has refused. Selection routes
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
@@ -4025,8 +4153,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return { byAccount, metered: poolMetered };
   }
 
-  /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
-   *  Codex supplies the same durable capacity/burn hints plus shared transport state. Keeping the
+  const liveCodexGovernor = (accountId: string): RateLimitGovernor | undefined => {
+    const known = deps.codexPool?.entries?.().some(account => account.accountId === accountId) ||
+      codexCliAccounts().some(account => account.accountId === accountId);
+    // All supported Codex models use the registry's default model class.
+    return known ? governorForAccount('', accountId, 'codex') : undefined;
+  };
+
+  /** The ONE gateway adaptation into accountLoadKey. Both providers supply their live account governor
+   *  as well as durable capacity/burn hints and shared transport state. Keeping the
    *  adaptation here prevents the provider handlers from growing subtly different health formulas. */
   const accountHealthKey = (
     account: ActiveAccount,
@@ -4035,6 +4170,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     inFlightAdjustment = 0,
   ): number => {
     const accountId = account.accountId;
+    cgov ??= liveCodexGovernor(accountId);
     const h = accountRateHints.get(accountId);
     const unified = cgov?.snapshot().unified;
     // P-008/D-003: usage credits carry an overage account past its allowance, so the allowance walls
@@ -4090,6 +4226,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const consider = (value: number | undefined) => {
       if (value !== undefined && Number.isFinite(value) && value > at) recoverAt = Math.max(recoverAt, value);
     };
+    consider(liveCodexGovernor(accountId)?.state.pausedUntil);
     if (h) {
       consider(h.pausedUntil);
       if (h.usageCreditsAvailable !== true) {
@@ -4111,13 +4248,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     source: AccountPool | null | undefined,
     at: number,
     fallbackEntries: readonly ActiveAccount[] = [],
+    /** Count only accounts that do not hold a live refusal for this model (WI-6554700010029748). */
+    model?: string,
   ): number => {
     const entries = source?.entries?.() ?? fallbackEntries;
     if (entries.length === 0) return source?.healthyCount?.() ?? 0;
     const byId = new Map(entries.map((account) => [account.accountId, account]));
     const serviceable = (accountId: string): boolean => {
       const account = byId.get(accountId);
-      return !!account && accountHealthKey(account, at) < Infinity;
+      if (!account || (model && codexModelRefusals.isRefused(accountId, model))) return false;
+      return accountHealthKey(account, at) < Infinity;
     };
     return source?.healthyCount
       ? source.healthyCount(serviceable)
@@ -4183,6 +4323,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
     Number.isFinite(poolRecoveryAt) && poolRecoveryAt > at
       ? Math.max(poolRecoveryAt, at + 30_000)
       : Math.max(failedResetAt ?? 0, at + 30_000);
+  /** WI-6554700010029300: the ONE terminal shape for a gateway-LOCAL codex 429 — the pacing shed
+   *  (`admission-timeout` / `account-unavailable`), i.e. "no account in the pool can take this turn".
+   *  That is the same verdict as an unrescued UPSTREAM 429, so it must carry the same three things the
+   *  upstream path carries: (1) a retry-after taken from the POOL horizon and capped at
+   *  BEE_RETRY_AFTER_CAP_S — never a literal `1`, which the codex CLI burns through in seconds
+   *  ("exceeded retry limit, last status: 429"); (2) the retries-exhausted + pool-recovery headers;
+   *  (3) recordStall, so the stall-waker resumes the session when capacity returns. Commit 9a9fa87645
+   *  (2026-10-25) added the local path with `retry-after: 1` and no stall, which stranded ~80 Codex
+   *  sessions on 2026-10-26 when the pool walled. Every local codex 429 MUST go through here —
+   *  gateway-codex-local-shed.test.ts pins both the behaviour and the absence of a bypass. */
+  const codexLocalShedHeaders = (input: {
+    source: AccountPool | null | undefined;
+    ownerId: string | undefined;
+    accountId: string;
+    hardPin: boolean;
+    attempts: number;
+  }): Record<string, string> => {
+    const now = Date.now();
+    const poolRecoveryAt = codexPoolRecoveryAt(input.source, now, { accountId: input.accountId, resetAt: 0 }, input.hardPin);
+    if (input.ownerId) recordStall(input.ownerId, input.accountId, codexStallSoonestAt(poolRecoveryAt, null, now));
+    const shaped = shapeTerminalThrottle({
+      attempts: Math.max(1, input.attempts),
+      retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+      retryAfter: {
+        resetAt: Number.isFinite(poolRecoveryAt) && poolRecoveryAt > now ? poolRecoveryAt : null,
+        fallbackSec: LOADSHED_RETRY_AFTER_SEC,
+        capS: BEE_RETRY_AFTER_CAP_S,
+      },
+      now,
+    });
+    return {
+      ...shaped.headers,
+      [POOL_RECOVERY_AT_HEADER]: describePoolRecovery(poolRecoveryAt, now),
+      [ROUTED_ACCOUNT_HEADER]: input.accountId,
+    };
+  };
   /** STORE↔POOL RECONCILIATION (codex-auto-route-all-walled-fail-fast-2026-09-05 P-008; owner 2026-09-05:
    *  "auto routing should look at the same system that knows which accounts are available"). The pool's
    *  in-memory park and the durable availability store (operator_account_pool, refreshed into
@@ -4940,13 +5116,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const active = pool.peek ? pool.peek() : pool.active(); // H3: observe WITHOUT advancing the rr-cursor
     const gov = governorForAccount('claude-opus-4', active.accountId);
     const snap = gov.snapshot();
+    const now = Date.now();
     const admission = queue.snapshot();
     const codexAdmission = codexQueue.snapshot();
     // The pool-wide serviceable-account count (EI-11511): governor-narrowed so a weekly-usage-walled
     // account (util7d≈1.0, governor predictively paused) does NOT inflate the capacity denominator, matching
     // what the admission clamp already enforces + the WI-390 spawn-readiness gate reads. `null` (single-account
-    // pool) → 1.
-    const healthyAccounts = serviceableHealthyCount() ?? 1;
+    // pool) → infer the sole route from its active governor instead of reporting a paused account as healthy.
+    const serviceableClaudeAccounts = serviceableHealthyCount();
+    const healthyAccounts = serviceableClaudeAccounts ?? (snap.pausedUntil <= now ? 1 : 0);
     // Priority-tier /stats (step 5): per-tier demand from the queue + the pool-wide healthy-account
     // capacity denominator. Present only with the tier layer (admission.byTier set) → flag-OFF stays
     // byte-identical.
@@ -4962,10 +5140,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // `smoothRpm` on a per-account governor → typeof boolean uniquely selects them; the fleet
     // concurrency governor leaves it undefined). The active/bound account is added from `snap` first
     // so it is present even when a test injects governors via deps.governorFor (registry bypassed).
-    const now = Date.now();
     const codexHealthyAccounts =
       codexServiceableCount(deps.codexPool, now) +
       codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries());
+    // WI-6554700010029748: the per-model view of the same count, for every model with a live refusal.
+    let codexServiceableByModel: Record<string, number> | undefined;
+    for (const { model } of codexModelRefusals.snapshot()) {
+      if (!model || (codexServiceableByModel && model in codexServiceableByModel)) continue;
+      (codexServiceableByModel ??= {})[model] =
+        codexServiceableCount(deps.codexPool, now, [], model) +
+        codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries(), model);
+    }
     const codexRecoveryHorizons = [deps.codexPool, codexCliPool]
       .filter((candidate): candidate is AccountPool => !!candidate?.earliestAvailableAt)
       .map((candidate) =>
@@ -5132,6 +5317,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       /** WI-10003306: (account, model) pairs currently routed around because the backend refused
        *  the model for that account. In the pool, not parked; each lapses or clears on a 2xx. */
       codexModelRefusals: codexModelRefusals.snapshot(),
+      ...(codexServiceableByModel ? { codexServiceableByModel } : {}),
       codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
       codexUnserviceableCause,
       codexReachability: codexReach,
@@ -8678,7 +8864,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
           acquireAttempt: ({ route, signal }) =>
-            acquireCodexAttemptPermit(model, route.accountId ?? cli.accountId, signal),
+            acquireCodexAttemptPermit(model, route.accountId ?? cli.accountId, signal,
+              (req.headers[PRIORITY_HEADER] as string | undefined)?.trim(), routing.hardPin),
           // R-3 / P-003: hand the lane slot back once the response streams.
           ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
           observeAttempt: ({ context, error }) => {
@@ -8690,6 +8877,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // The CLI home encapsulates its own credential — there is no token to
             // resolve — so the auth stage stays the zero-width seam it was.
             if (!error) return;
+            if (error.code === 'admission-timeout' || error.code === 'account-unavailable') return;
             const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
             if (error.code === 'cancelled') {
               log('info', `inference-gateway: codex-cli downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -8730,6 +8918,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 `inference-gateway: codex-cli account '${outcome.parkedAccountId}' has an UNUSABLE CREDENTIAL (not a quota wall) — ` +
                   `quarantining for ${Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000)}s; repair with \`codex login\` in its CODEX_HOME (${cli.home})`,
               );
+            }
+            if (outcome.authClass) {
+              noteCodexCredentialDead(account, `codex-cli login unusable (repair with \`codex login\` in ${cli.home}): ${error.message.slice(0, 200)}`);
             }
             if (outcome.nextAccountId) codexFailovers++;
           },
@@ -8832,8 +9023,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const message = detail.startsWith('inference-gateway: codex-cli bridge failed')
         ? detail
         : `inference-gateway: codex-cli bridge failed: ${detail}`;
-      const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail);
-      if (rateLimited) {
+      const localAdmission = e instanceof GatewayRequestKernelError &&
+        (e.code === 'admission-timeout' || e.code === 'account-unavailable');
+      if (localAdmission) markRequestShed(req);
+      const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail) || localAdmission;
+      if (rateLimited && !localAdmission) {
         // The request ENDS on a rate limit nothing routed around. The shared
         // classifier keeps a usage/session-limit wall off the window.
         providerAdmission.recordOutcome(
@@ -9304,7 +9498,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // this seam: this transport commits its response head BEFORE the kernel call below.
             run: (context, task) => kernelAdmission.run(context, task),
             acquireAttempt: ({ route, signal }) =>
-              acquireCodexAttemptPermit(bodyModel, route.accountId ?? cli.accountId, signal),
+              acquireCodexAttemptPermit(bodyModel, route.accountId ?? cli.accountId, signal,
+                (req.headers[PRIORITY_HEADER] as string | undefined)?.trim(), routing.hardPin),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -9317,6 +9512,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (account !== lastAccountId) codexFailovers++;
               lastAccountId = account;
               if (error) {
+                if (error.code === 'admission-timeout' || error.code === 'account-unavailable') return;
                 const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
                 if (error.code === 'cancelled') {
                   log('info', `inference-gateway: codex OAuth downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -9353,6 +9549,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                       ' rejected refresh credentials; ' +
                       disposition,
                   );
+                  noteCodexCredentialDead(account, `Codex OAuth token refresh rejected: ${error.message.slice(0, 240)}`);
                 }
                 log(
                   'error',
@@ -9376,6 +9573,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 providerAdmission.recordSuccess('codex');
                 lastEgressOkAt.set(account, Date.now());
                 ipTransportFailStreak.delete(response.metadata.egressKey);
+                codexCredentialDeadAlertedAt.delete(account);
               }
             },
           },
@@ -9746,6 +9944,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           : null;
         const incompleteOAuthStream = failure.code === 'upstream-error' &&
           streamFailure?.protocol === 'openai-responses';
+        if (failure.outcome === 'shed') markRequestShed(req);
         if (incompleteOAuthStream) {
           recordOwnerOutcome(routing.ownerId, 'upstream_error', {
             account: lastAccountId, status: 502, detail: 'oauth-stream-incomplete',
@@ -9753,7 +9952,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           log('error', 'inference-gateway: codex OAuth incomplete stream on ' + lastAccountId + ': ' + failure.message);
         }
         if (res.headersSent) {
-          if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+          if ((failure.code === 'admission-timeout' || failure.code === 'account-unavailable') &&
+              !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
+            res.end('event: error\ndata: ' + JSON.stringify({ type: 'error', error: {
+              type: 'rate_limit_error', code: 'rate_limit_exceeded', message: failure.message,
+            } }) + '\n\n');
+          } else if (incompleteOAuthStream && !reqAbort.signal.aborted && !res.destroyed && !res.writableEnded) {
             // The kernel has already exposed output, so replay is unsafe. End
             // truthfully instead of making the native client diagnose a socket
             // disconnect or inventing a successful Responses completion.
@@ -9772,6 +9976,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        if (failure.code === 'admission-timeout' || failure.code === 'account-unavailable') {
+          sendJson(res, 429, { type: 'error', error: {
+            type: 'rate_limit_error', message: failure.message,
+          }, gateway: true }, codexLocalShedHeaders({
+            source: codexCliPool, ownerId: routing.ownerId, accountId: lastAccountId,
+            hardPin: routing.hardPin, attempts: attemptsSeen,
+          }));
+          return;
+        }
         if (failure.code === 'upstream-error' && failure.status === 503) {
           // OAuth resolution never produced a usable token on any account.
           sendJson(
@@ -9791,9 +10004,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           );
           return;
         }
+        const responseStatus = failure.code === 'ttfb-timeout' && failure.retryable === false
+          ? failure.status ?? 504
+          : 502;
         sendJson(
           res,
-          502,
+          responseStatus,
           {
             type: 'error',
             error: {
@@ -10294,7 +10510,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return active;
       },
       onExhausted: (exhaustedId, resetAt) => healthAwareBearerPool.onExhausted(exhaustedId, resetAt),
-      select: (accountId) => healthAwareBearerPool.select?.(accountId) ?? null,
+      select: (accountId) => {
+        const selected = healthAwareBearerPool.select?.(accountId) ?? null;
+        // A pinned initial selection consumes the replay too. Otherwise its
+        // first admission failover receives the stale initial account again.
+        if (selected) initialSelectionServed = true;
+        return selected;
+      },
     };
 
     const kernelAdapter = createCodexBearerKernelAdapter({
@@ -10448,7 +10670,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // against the slot this request already holds.
             run: (context, task) => kernelAdmission.run(context, task),
             acquireAttempt: ({ route, signal }) =>
-              acquireCodexAttemptPermit(requestModel ?? '', route.accountId ?? active.accountId, signal),
+              acquireCodexAttemptPermit(requestModel ?? '', route.accountId ?? active.accountId, signal,
+                (req.headers[PRIORITY_HEADER] as string | undefined)?.trim(), hardPin),
             // R-3 / P-003: hand the lane slot back once the response streams.
             ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
@@ -10459,6 +10682,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
               lastRouteKey = context.route.key;
               if (error) {
+                if (error.code === 'admission-timeout' || error.code === 'account-unavailable') return;
                 const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
                 if (error.code === 'cancelled') {
                   log('info', `inference-gateway: Codex bearer downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
@@ -10756,6 +10980,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return;
         }
 
+        if (failure.code === 'admission-timeout' || failure.code === 'account-unavailable') {
+          markRequestShed(req);
+          sendJson(res, 429, { type: 'error', error: {
+            type: 'rate_limit_error', message: failure.message,
+          }, gateway: true }, codexLocalShedHeaders({
+            source: bearerPool, ownerId: wantOwner, accountId: lastAccountId,
+            hardPin, attempts: attemptsSeen,
+          }));
+          return;
+        }
         if (failure.code === 'upstream-error' && failure.status === 503) {
           // Token resolution never produced a usable bearer on any account.
           sendJson(
@@ -11218,7 +11452,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // every prober. A sustained durable-path failure is a REAL not-ready condition: report it as one,
       // and 503 so the existing load-balancer/watchdog semantics apply with no new plumbing.
       const dbDown = s.db?.ok === false;
-      sendJson(res, s.pausedUntil > Date.now() || dbDown ? 503 : 200, { ok: !dbDown, ...s });
+      const providerReadiness = {
+        claude: s.healthyAccounts > 0,
+        codex: s.codexHealthyAccounts > 0,
+      };
+      const providerReady = providerReadiness.claude || providerReadiness.codex;
+      const ready = !dbDown && providerReady;
+      // A pause on the active Claude account is account-scoped. The gateway remains ready while
+      // any supported provider has a serviceable route; DB health remains an independent hard gate.
+      sendJson(res, ready ? 200 : 503, { ...s, ok: ready, providerReadiness });
       return;
     }
     if (req.method === 'GET' && (requestPath === '/stats' || requestPath === '/admin/stats')) {

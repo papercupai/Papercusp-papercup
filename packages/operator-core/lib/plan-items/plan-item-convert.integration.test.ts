@@ -21,7 +21,9 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, applyPlanItemAnchorMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { unknownAnchor } from './anchors';
+import { readPlanItemAnchors, writePlanItemAnchors } from './anchor-store';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
@@ -56,10 +58,12 @@ const h = vi.hoisted(() => ({
   plans: new Map<
     string,
     {
-      items: { id: string; status: string; text?: string; decisionRefs?: string[] }[];
+      items: { id: string; status: string; text?: string; decisionRefs?: string[]; deliverable?: string | null }[];
       now?: { state: string; next: string };
       decisions?: { id: string; title: string; body: string }[];
       title?: string;
+      planType?: string | null;
+      verificationProfile?: string | null;
     }
   >(),
 }));
@@ -87,7 +91,10 @@ vi.mock('../agent-tools/plans/source', () => ({
     return {
       archived: false,
       parsed: {
-        frontmatter: p.title ? { title: p.title } : {},
+        frontmatter: {
+          ...(p.title ? { title: p.title } : {}),
+          ...(p.planType ? { type: p.planType } : {}),
+        },
         now: p.now ?? null,
         decisions: p.decisions ?? [],
         items: p.items.map((i) => ({
@@ -95,9 +102,18 @@ vi.mock('../agent-tools/plans/source', () => ({
           storedStatus: i.status,
           text: i.text ?? '',
           decisionRefs: i.decisionRefs ?? [],
+          deliverable: i.deliverable ?? null,
         })),
       },
-      row: { items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '' })) },
+      row: {
+        verificationProfile: p.verificationProfile ?? null,
+        items: p.items.map((i) => ({
+          id: i.id,
+          status: i.status,
+          text: i.text ?? '',
+          deliverable: i.deliverable ?? null,
+        })),
+      },
     };
   },
 }));
@@ -156,6 +172,7 @@ beforeAll(async () => {
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'plan-item-convert.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
+  await applyPlanItemAnchorMigrationsForTest(db.sql);
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
@@ -195,6 +212,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.plan_item_anchors, harness_shared.plan_items`;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log, harness_shared.plan_item_assignments, harness_shared.agent_names, harness_shared.agent_name_sessions, harness_shared.plan_work_group_members, harness_shared.plan_item_claims, harness_shared.contributors  RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   liveness.resetHarnessSharedResolver();
@@ -215,14 +233,31 @@ async function implementsEdges() {
 }
 
 describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link', () => {
-  it('converts a todo item into a claimed task work_item, linked back both ways', async () => {
+  it('copies the canonical anchor payload on direct pickup without adding text-derived files', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN };
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Touch src/unlinked.ts' }] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Linked','todo')`;
+    await db.sql.begin(tx => writePlanItemAnchors(tx, scope, { itemId: 'P-001',
+      anchors: [unknownAnchor({ path: 'src/linked.ts' }, 'not-found')] }, 'author'));
+    const stored = await readPlanItemAnchors(scope);
+    const result = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(result.status).toBe('converted');
+    if (result.status !== 'converted') throw new Error('pickup refused');
+    expect(result.workItem.payload).toMatchObject({ paths: ['src/linked.ts'], anchors: stored['P-001'] });
+    expect((await wi.getWorkItem(result.workItem.id, HARNESS))!.payload)
+      .toMatchObject({ paths: ['src/linked.ts'], anchors: stored['P-001'] });
+  });
+
+  it('converts an inferred-code todo item into a claimed change work_item, linked back both ways', async () => {
     const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
     expect(r.status).toBe('converted');
     if (r.status !== 'converted') return;
 
-    // The work_item: default kind 'task', claimed by the picker, stamped.
+    // With no profile stamp, the resolver uses the coding default; this item is code work.
     expect(r.workItem.id).toBe('WI-1');
-    expect(r.workItem.kind).toBe('task');
+    expect(r.workItem.kind).toBe('change');
     expect(r.workItem.assignee).toBe('sess-A');
     expect(r.workItem.title).toContain('convert-at-pickup');
     expect((r.workItem.payload as { plan_item?: unknown })?.plan_item).toEqual({
@@ -243,6 +278,44 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
 
     // The reported plan-item snapshot (what the emits rules key the wip-flip on).
     expect(r.planItem).toMatchObject({ plan: PLAN, item: 'P-001', status: 'todo' });
+  });
+
+  it.each([
+    { name: 'coding profile default', profile: 'coding', deliverable: null, expected: 'change' },
+    { name: 'general profile default', profile: 'general', deliverable: null, expected: 'task' },
+    { name: 'declared doc under coding profile', profile: 'coding', deliverable: 'doc', expected: 'task' },
+    { name: 'declared code under general profile', profile: 'general', deliverable: 'code', expected: 'change' },
+  ])('derives the execution kind from the $name', async ({ profile, deliverable, expected }) => {
+    h.plans.set(PLAN, {
+      verificationProfile: profile,
+      items: [{ id: 'P-001', status: 'todo', text: 'Execute the plan item', deliverable }],
+    });
+    const result = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(result.status).toBe('converted');
+    if (result.status !== 'converted') return;
+    expect(result.workItem.kind).toBe(expected);
+  });
+
+  it('refuses an explicit task kind for a code-deliverable item before taking the lease', async () => {
+    const result = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', kind: 'task' });
+    expect(result).toMatchObject({ status: 'refused', reason: expect.stringContaining('resolves to code') });
+    expect(await db.sql`SELECT issue_id FROM harness_shared.engineer_issues`).toHaveLength(0);
+    expect(await db.sql`SELECT claim_id FROM harness_shared.plan_item_claims`).toHaveLength(0);
+  });
+
+  it('reclassifies a legacy task record when its code plan item is resumed', async () => {
+    await wi.createWorkItem({
+      kind: 'task',
+      title: 'legacy conversion with task default',
+      harness: HARNESS,
+      payload: { plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS } },
+      createdBy: 'legacy-session',
+    });
+    const result = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A' });
+    expect(result.status).toBe('resumed');
+    if (result.status !== 'resumed') return;
+    expect(result.workItem.kind).toBe('change');
+    expect((await wi.getWorkItem(result.workItem.id, HARNESS))?.kind).toBe('change');
   });
 
   it('P-003: compiles payload.brief from plan focus + bearing decisions when compileBriefIfMissing', async () => {

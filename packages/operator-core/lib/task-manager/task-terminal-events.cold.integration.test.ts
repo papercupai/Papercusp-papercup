@@ -86,6 +86,7 @@ describe('task terminal cold awaited-event bridge (real PG)', () => {
 
       const eventKey = taskTerminalEventKey(taskId);
       const expectedPayload = {
+        terminalEventRevision: 1,
         taskId, state: 'killed', exitCode: 137, exitReason: 'oom-kill',
         taskClass: 'bash-job', harness: 'papercusp', launchedBy: 'test-cold-owner',
       };

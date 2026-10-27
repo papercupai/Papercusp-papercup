@@ -1,8 +1,10 @@
-export interface Env {
+import type { GcsStorageBindings, ObjectStore } from '@papercusp/artifact-registry';
+
+export interface Env extends GcsStorageBindings {
   // Bindings
   DB: D1Database;
   COUNTERS: KVNamespace;
-  ARCHIVE: R2Bucket;
+  ARCHIVE: ObjectStore;
 
   // Secrets
   CF_MASTER_TOKEN: string;
@@ -22,7 +24,7 @@ export interface Env {
   DEPLOYMENT_BYTES_CAP: string;
   DEPLOYMENT_FILES_CAP: string;
   PER_FILE_BYTES_CAP: string;
-  R2_PREFIX: string;
+  ARCHIVE_PREFIX: string;
 }
 
 import { b64uDecode } from '@papercusp/publish-auth';

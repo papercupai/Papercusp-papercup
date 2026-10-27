@@ -28,6 +28,8 @@
  * work_items:claim_next / scheduler:get_next.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -818,6 +820,8 @@ export default defineTool({
             `. A count this size is NOT a workload — read admittedBreakdown before quoting it as one (WI-6673).`
           : ''),
     };
+    ctx.metadata?.({ operationalOutput: { schemaVersion: 1, observedAt: measuredAt,
+      sha256: createHash('sha256').update(canonicalJson(payload)).digest('hex') } });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });

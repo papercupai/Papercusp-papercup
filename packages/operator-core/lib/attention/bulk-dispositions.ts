@@ -23,6 +23,7 @@ import {
   type BugReproductionReceipt,
 } from './bug-reproduction';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 export const BULK_CONFIDENCE_LEVELS = [
   'high',
   'medium',
@@ -817,7 +818,7 @@ export type IntakeWorkKind = (typeof INTAKE_WORK_KINDS)[number];
 /** The storage kind an executed intake decision creates or keeps. */
 export type IntakeTargetKind = 'bug' | 'change' | 'task';
 
-const INTAKE_WORK_STORAGE_KINDS = new Set(['bug', 'change', 'task']);
+const INTAKE_WORK_STORAGE_KINDS = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * promote → bug/change (default: the candidate's own kind; observations default to a

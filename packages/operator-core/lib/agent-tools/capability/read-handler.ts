@@ -56,15 +56,28 @@ export const DEFAULT_LIMIT = 2000;
 const MAX_LINE_CHARS = 2000;
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // refuse unbounded reads outright
 export const MAX_BYTE_PAGE = 4_096;
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** Inspect bytes rather than trusting a caller-controlled extension or MIME type. */
+function rasterMimeType(bytes: Buffer): string | undefined {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
+  if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
+  if (['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return undefined;
+}
 
 const LINE_WINDOW_EXCLUSIVITY =
   'Mutually exclusive with byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
+const OPAQUE_SCRATCH_REFERENCE_MODE_NOTE =
+  'Opaque `papercusp://scratch-spool/...` and `papercusp://scratch-memory/...` references support exact byte pages only (`byte_offset` + `byte_limit`); they do not support query, view_lines, content_indexes, or evidence_class.';
 const BYTE_WINDOW_EXCLUSIVITY =
-  'Mutually exclusive with line windows (offset, limit, tail), content_indexes, and evidence_class.';
+  `Mutually exclusive with line windows (offset, limit, tail), content_indexes, and evidence_class. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`;
 const CONTENT_INDEX_EXCLUSIVITY =
-  'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class.';
+  `Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`;
 const EVIDENCE_CLASS_EXCLUSIVITY =
-  'Text or Markdown scratch spills do not support evidence selection; read them with line or byte windows. Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+  `Text or Markdown scratch spills do not support evidence selection; read them with line or byte windows. Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit). ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`;
 const SCRATCH_LINE_WINDOW_SIZE_NOTE =
   'Scratch-reference line windows can be refused when selected text exceeds the response-size limit; reduce limit/tail or use byte_offset+byte_limit for exact large text.';
 
@@ -253,18 +266,22 @@ function markScratchReferenceRead<T>(result: T, reference?: ScratchReferenceMani
 
 const readPathArgs = {
   file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
-  uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
+  uri: z.string().min(1).optional().describe(
+    `A papercusp://scratch URI alias for file_path, as emitted by result-door cursors. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`,
+  ),
 };
 
 const QUERY_EXCLUSIVITY =
-  'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
+  `Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), content_indexes, and evidence_class. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`;
 /** Present on every non-query branch so a stray `query` is rejected instead of silently stripped. */
 const notQuery = {
   query: z.never().optional().describe(`Only valid for a saved-result query. ${QUERY_EXCLUSIVITY}`),
 };
 /** Present on every branch but the view window, for the same reason (WI-6554700010008917). */
 const notView = {
-  view_lines: z.never().optional().describe('Only valid alone: reads lines of the searched view.'),
+  view_lines: z.never().optional().describe(
+    `Only valid alone: reads lines of the searched view. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`,
+  ),
 };
 
 const lineWindowArgs = z.object({
@@ -371,7 +388,7 @@ const queryArgs = z.object({
   ...readPathArgs,
   ...notView,
   query: z.string().trim().min(1).max(200).describe(
-    `Search the whole saved result for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. JSON is searched pretty-printed, multi-line strings expanded between """ fences. Read around a hit with view_lines. ${QUERY_EXCLUSIVITY}`,
+    `Search the whole saved result or readable file for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. JSON is searched pretty-printed, multi-line strings expanded between """ fences. Read around a hit with view_lines. ${QUERY_EXCLUSIVITY}`,
   ),
   query_context: z.number().int().nonnegative().max(QUERY_MAX_CONTEXT).optional().describe(`Context lines around each match (default ${QUERY_DEFAULT_CONTEXT}).`),
   query_max_matches: z.number().int().positive().max(QUERY_MAX_MATCHES).optional().describe(`Max matches returned (default ${QUERY_DEFAULT_MAX_MATCHES}); matchCount still counts all.`),
@@ -399,7 +416,7 @@ const viewWindowArgs = z.object({
       offset: z.number().int().positive().describe('1-based line of the searched view (a query match.line).'),
       limit: z.number().int().positive().max(VIEW_MAX_LIMIT).optional().describe(`Lines to read (default ${VIEW_DEFAULT_LIMIT}).`),
     })
-    .describe('Read lines of the view a query searches (pretty JSON, multi-line strings expanded); use after query. Alone only.'),
+    .describe(`Read lines of the view a query searches (pretty JSON, multi-line strings expanded); use after query. Alone only. ${OPAQUE_SCRATCH_REFERENCE_MODE_NOTE}`),
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -719,11 +736,11 @@ function renderLargeLineWindow(
 export const capabilityReadDefinition = {
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
+    `Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result or readable file for lines holding every term; view_lines reads around a hit. Opaque papercusp://scratch-spool and papercusp://scratch-memory references support exact byte pages only, not query, view_lines, content_indexes, or evidence_class. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or an opaque scratch reference URI.`,
   guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.',
+    when: `Read a file before editing it, or inspect content. A plain read of PNG/JPEG/GIF/WebP returns original image media (up to 5 MiB). Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.`,
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
-    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around).',
+    chaining: `capability:read → capability:edit (exact string replace) or capability:write (overwrite). Readable spill file: query → view_lines (follow read_around).`,
     returns:
       'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`. query returns { matches[{line,text}], matchCount, coverage, read_around, next_cursor, note? }; view_lines returns numbered text or view_window_out_of_range.',
     seeAlso: capabilityReadSeeAlso,
@@ -997,6 +1014,25 @@ export const capabilityReadDefinition = {
         return err(e.code, e.message);
       }
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    // Decode media only after scratch ownership/expiry authorization. Explicit text,
+    // byte and reference-selection requests keep their existing exact semantics.
+    const plainRead = !exactReadRequested && !boundedLineRead && args.query === undefined &&
+      args.view_lines === undefined;
+    const imageMime = plainRead ? rasterMimeType(bytes) : undefined;
+    if (imageMime) {
+      if (credentialBearingConfig) return err('sensitive_file', 'Image reads are refused for credential-bearing config files.');
+      if (bytes.length > MAX_IMAGE_BYTES) return err('image_too_large', 'Image media exceeds 5 MiB; use byte_offset+byte_limit for exact bounded bytes.');
+      const metadata = { ok: true, file_path: abs, mimeType: imageMime, byte_length: bytes.length };
+      return markScratchReferenceRead({
+        content: [
+          { type: 'text' as const, text: JSON.stringify(metadata) },
+          { type: 'image' as const, data: bytes.toString('base64'), mimeType: imageMime },
+        ],
+        ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
+          ? { structuredContent: metadata } : {}),
+      }, reference);
     }
 
     if (args.view_lines) {

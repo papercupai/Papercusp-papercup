@@ -133,6 +133,89 @@ export async function fleetEverMembers(
 }
 
 /**
+ * How long a freshly-joined owner may stay silent before its join is judged a dead launch.
+ * psu appends the `join` fact at bootstrap — BEFORE the CLI has booted — so a launch refused
+ * at boot still leaves a join behind. Ten minutes covers a cold boot plus its first orient.
+ */
+export const JOIN_ACTIVATION_GRACE_SEC = 600;
+
+/**
+ * How far BEFORE the join an owner's call may land and still count. The writePresence path
+ * appends the join DURING the agent's first call, so that call's `invoked_at` precedes `at`.
+ */
+const JOIN_ACTIVATION_LOOKBACK_SEC = 300;
+
+/** Arrivals in a window, split by whether the joining owner ever became active. */
+export interface JoinActivation {
+  /** Every `join` fact in the window — the raw arrival count the log has always reported. */
+  joined: number;
+  /**
+   * Joins older than the grace whose owner has made NO MCP call since joining: launches that
+   * died at boot (EI-27031443048618869 — 234 of 754 Luna Max joins in one week). These are
+   * not seat turnover and must not be read as churn.
+   */
+  neverActive: number;
+  /** Joins still inside the grace with no call yet — booting, not yet judgeable either way. */
+  pending: number;
+}
+
+/**
+ * The ONE definition of "did this join turn into a working member". Every churn reader
+ * (the leader brief's delta, fleet:campaign) calls this instead of counting raw `join` rows,
+ * because a raw count includes every launch the boot path refused.
+ *
+ * Activity = at least one `tool_invocations` row for the owner. That ledger misses native
+ * client calls, but a booted psu agent's first act is an MCP orient, so for a JOIN the
+ * absence of any call past the grace is a reliable dead-launch signal (measured: the 379
+ * healthy Luna Max joins of 10-19..10-22 were all active). Served by
+ * tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC).
+ */
+export async function readJoinActivation(
+  args: {
+    workspaceId: string;
+    fleetSlug: string;
+    /** Window start. Exclusive unless `sinceInclusive`. */
+    since: string;
+    sinceInclusive?: boolean;
+    /** Also count facts recorded under the legacy 'default' workspace. */
+    includeDefaultWorkspace?: boolean;
+    graceSec?: number;
+  },
+  sql?: Sql,
+): Promise<JoinActivation> {
+  const s = pg(sql);
+  const grace = args.graceSec ?? JOIN_ACTIVATION_GRACE_SEC;
+  const includeDefault = args.includeDefaultWorkspace === true;
+  const inclusive = args.sinceInclusive === true;
+  const rows = await s<Array<{ joined: string | number; never_active: string | number; pending: string | number }>>`
+    SELECT count(*)                                                                    AS joined,
+           count(*) FILTER (WHERE NOT x.active AND x.at <= now() - ${grace}::int * interval '1 second') AS never_active,
+           count(*) FILTER (WHERE NOT x.active AND x.at >  now() - ${grace}::int * interval '1 second') AS pending
+      FROM (
+        SELECT e.at,
+               EXISTS (
+                 SELECT 1 FROM harness_shared.tool_invocations t
+                  WHERE t.coord_owner_id = e.owner_id
+                    AND t.invoked_at >= e.at - ${JOIN_ACTIVATION_LOOKBACK_SEC}::int * interval '1 second'
+               ) AS active
+          FROM harness_shared.fleet_membership_events e
+         WHERE (e.workspace_id = ${args.workspaceId}
+                OR (${includeDefault}::boolean AND e.workspace_id = 'default'))
+           AND e.fleet_slug = ${args.fleetSlug}
+           AND e.event = 'join'
+           AND (e.at > ${args.since}::timestamptz
+                OR (${inclusive}::boolean AND e.at = ${args.since}::timestamptz))
+      ) x
+  `;
+  const row = rows[0];
+  return {
+    joined: Number(row?.joined ?? 0),
+    neverActive: Number(row?.never_active ?? 0),
+    pending: Number(row?.pending ?? 0),
+  };
+}
+
+/**
  * The canonical CURRENT membership for an owner: the latest fact (MAX id). Returns null
  * when the owner has no membership fact at all; a returned `{ fleetSlug: null }` means the
  * owner's latest fact was a leave (explicitly in no fleet). This is the same projection the

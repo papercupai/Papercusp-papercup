@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { assertSeedExcludedModules, assertSeedLoadedSecurityFiles, bindSeedFrozenDependencies, readSeedInstalledPackages, readSeedLoadedModulePaths, verifySeedSecurityPackage } from './seed-frozen-execution';
+import { captureToolDeliveryCleanBoundary, toolDeliveryMandatorySources, validateToolDeliveryCleanCensus } from '../../tool-delivery-clean-runtime';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'seed-d177-')); dirs.push(dir); return dir; };
@@ -50,6 +51,111 @@ describe('D178 process module census', () => {
 });
 
 describe('D177 installed dependency census', () => {
+  const cacheSecret = 'synthetic-miniflare-secret-do-not-disclose';
+  const cacheFixture = () => {
+    const root = temp(), path = 'node_modules/.mf', directory = join(root, path);
+    write(join(directory, 'cf.json'), JSON.stringify({ token: cacheSecret }));
+    return { root, path, directory, member: join(directory, 'cf.json') };
+  };
+  const refusesCache = async (root: string) => {
+    const excluded: Parameters<typeof readSeedInstalledPackages>[3] = [];
+    const error = await readSeedInstalledPackages(root, ['node_modules'], [], excluded).then(() => null, error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('invalid Miniflare tooling cache');
+    expect(String(error)).not.toContain(cacheSecret);
+    expect(excluded).toEqual([]);
+  };
+  it('excludes the identified Miniflare metadata without disclosing values', async () => {
+    const { root, path } = cacheFixture();
+    const excluded: Parameters<typeof readSeedInstalledPackages>[3] = [];
+    const rows = await readSeedInstalledPackages(root, ['node_modules'], [], excluded);
+    expect(rows).toEqual([]);
+    expect(excluded).toEqual([{ path, name: null, version: null }]);
+    expect(JSON.stringify({ rows, excluded })).not.toContain(cacheSecret);
+  });
+  it.each(['symlink', 'file', 'fifo'] as const)('refuses Miniflare directory shape %s', async kind => {
+    const f = cacheFixture();
+    renameSync(f.directory, join(f.root, 'cache-target'));
+    if (kind === 'symlink') symlinkSync(join(f.root, 'cache-target'), f.directory);
+    if (kind === 'file') write(f.directory, '{}');
+    if (kind === 'fifo') execFileSync('mkfifo', [f.directory]);
+    await refusesCache(f.root);
+  });
+  it.each(['symlink', 'directory', 'missing', 'extra', 'hardlink', 'fifo'] as const)(
+    'refuses Miniflare member shape %s', async kind => {
+      const f = cacheFixture();
+      if (kind === 'extra') write(join(f.directory, 'extra.json'), '{}');
+      else if (kind === 'hardlink') linkSync(f.member, join(f.root, 'linked-cache'));
+      else {
+        rmSync(f.member);
+        if (kind === 'symlink') { write(join(f.root, 'target.json'), '{}'); symlinkSync(join(f.root, 'target.json'), f.member); }
+        if (kind === 'directory') mkdirSync(f.member);
+        if (kind === 'fifo') execFileSync('mkfifo', [f.member]);
+      }
+      await refusesCache(f.root);
+    });
+  it.each([
+    ['malformed', `{"token":"${cacheSecret}"`], ['null', 'null'], ['array', '[]'],
+    ['string', JSON.stringify(cacheSecret)], ['number', '1'], ['boolean', 'true'],
+  ])('refuses Miniflare non-object JSON %s without leaking parser input', async (_kind, bytes) => {
+    const f = cacheFixture(); write(f.member, bytes);
+    await refusesCache(f.root);
+  });
+  it.each(['directory-before-open', 'member-before-open', 'parent-after-open', 'member-after-read', 'bytes-after-read'])(
+    'refuses Miniflare replacement identity %s', async kind => {
+      const f = cacheFixture();
+      vi.resetModules();
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      vi.doMock('node:fs/promises', () => ({ ...actual, open: async (file: string, flags: number) => {
+        expect(flags & constants.O_NOFOLLOW).not.toBe(0);
+        expect(flags & constants.O_NONBLOCK).not.toBe(0);
+        if (file === f.directory && kind === 'directory-before-open') {
+          renameSync(f.directory, join(f.root, 'old-cache')); write(f.member, '{}');
+        }
+        if (file === f.member && kind === 'member-before-open') {
+          renameSync(f.member, join(f.root, 'old-member')); write(f.member, '{}');
+        }
+        const handle = await actual.open(file, flags);
+        if (file === f.directory && kind === 'parent-after-open') {
+          renameSync(join(f.root, 'node_modules'), join(f.root, 'old-parent')); write(f.member, '{}');
+        }
+        if (file !== f.member || !kind.endsWith('after-read')) return handle;
+        return new Proxy(handle, { get(target, key) {
+          if (key === 'readFile') return async () => {
+            const bytes = await target.readFile('utf8');
+            if (kind === 'member-after-read') renameSync(f.member, join(f.root, 'old-member'));
+            write(f.member, '{"changed":true}');
+            return bytes;
+          };
+          const value = Reflect.get(target, key);
+          return typeof value === 'function' ? value.bind(target) : value;
+        } });
+      } }));
+      try {
+        const { readSeedInstalledPackages: census } = await import('./seed-frozen-execution');
+        await expect(census(f.root, ['node_modules'], [])).rejects.toThrow('invalid Miniflare tooling cache');
+      } finally { vi.doUnmock('node:fs/promises'); vi.resetModules(); }
+    });
+  it('keeps unknown hidden names and scoped Miniflare names outside the allowance', async () => {
+    const f = cacheFixture();
+    write(join(f.root, 'node_modules/@scope/.mf/cf.json'), '{}');
+    await expect(readSeedInstalledPackages(f.root, ['node_modules'], [])).rejects.toThrow('unknown hidden');
+    rmSync(join(f.root, 'node_modules/@scope'), { recursive: true });
+    write(join(f.root, 'node_modules/.mf-other/cf.json'), '{}');
+    await expect(readSeedInstalledPackages(f.root, ['node_modules'], [])).rejects.toThrow('unknown hidden');
+  });
+  it('retains committed workspace link identity checks', async () => {
+    const root = temp(); pkg(root, 'packages/a', 'a'); pkg(root, 'packages/b', 'a');
+    mkdirSync(join(root, 'node_modules'));
+    symlinkSync('../packages/a', join(root, 'node_modules/a'));
+    const locks = [{ path: 'package-lock.json', packages: {
+      'node_modules/a': { link: true, resolved: 'packages/a' },
+      'packages/a': { name: 'a', version: '1.0.0' },
+    } }];
+    expect((await readSeedInstalledPackages(root, ['node_modules'], locks)).map(row => row.name)).toEqual(['a']);
+    rmSync(join(root, 'node_modules/a')); symlinkSync('../packages/b', join(root, 'node_modules/a'));
+    await expect(readSeedInstalledPackages(root, ['node_modules'], locks)).rejects.toThrow('link mismatch');
+  });
   it('loads the workspace census from a bundled runtime without a git checkout', async () => {
     const { build } = await import('esbuild');
     const runtime = temp();
@@ -139,7 +245,28 @@ describe('D177 installed dependency census', () => {
     await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('name/version mismatch');
     pkg(root, path, '@types/node', '2.0.0');
     delete (locks[0].packages as Record<string, unknown>)[path];
-    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('no committed lock entry');
+    await expect(readSeedInstalledPackages(root, ['packages/workspace/node_modules'], locks)).rejects.toThrow('name/version mismatch');
+  });
+  it('binds materialized workspace-local dependencies omitted by the root lock without admitting drift', async () => {
+    const root = temp(), tree = 'packages/workspace/template-kit/node_modules';
+    const path = `${tree}/@types/node`;
+    pkg(root, path, '@types/node', '2.0.0');
+    const locks: Parameters<typeof readSeedInstalledPackages>[2] = [
+      { path: 'package-lock.json', packages: {
+        'packages/workspace': { name: '@fixture/workspace', version: '0.1.0' },
+      } },
+      { path: 'packages/workspace/package-lock.json', packages: {
+        'template-kit/node_modules/@types/node': { version: '2.0.0' },
+        'template-kit/node_modules/vestigial': { version: '1.0.0' },
+      } },
+    ];
+    expect((await readSeedInstalledPackages(root, [tree], locks)).map(row => [row.path, row.version]))
+      .toEqual([[path, '2.0.0']]);
+    pkg(root, path, '@types/node', '3.0.0');
+    await expect(readSeedInstalledPackages(root, [tree], locks)).rejects.toThrow('name/version mismatch');
+    pkg(root, path, '@types/node', '2.0.0');
+    delete (locks[1].packages as Record<string, unknown>)['template-kit/node_modules/@types/node'];
+    await expect(readSeedInstalledPackages(root, [tree], locks)).rejects.toThrow('no committed lock entry');
   });
   it('censuses nested and scoped packages and permits a missing optional entry', async () => {
     const root = temp();
@@ -207,7 +334,8 @@ describe('D177 security package content integrity', () => {
   });
 });
 
-async function frozen(excludedAlias = false) {
+async function frozen(excludedAlias = false, toolDelivery = false, miniflare = false,
+  internalLeftoverLink = false, crossLeftoverLink = false) {
   const base = temp(); const root = join(base, 'source'); const generationRoot = join(base, 'published');
   const generationId = 'v1-' + 'a'.repeat(64); const generation = join(generationRoot, generationId);
   const names = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'];
@@ -217,11 +345,29 @@ async function frozen(excludedAlias = false) {
     const bytes = archive(root, name); const url = `https://registry.npmjs.org/${name}/-/fixture.tgz`;
     archives.set(url, bytes); packages[`node_modules/${name}`] = { version: '1.0.0', resolved: url, integrity: sha512(bytes) };
   }
+  if (toolDelivery) {
+    const registration = { sourcePins: { files: {}, scenarioPaths: {} }, executionPolicy: { launcherPath: 'launcher.cjs' } };
+    for (const path of toolDeliveryMandatorySources(registration)) {
+      if (path === 'apps/operator/bin/release/dependency-generation.sh') continue;
+      write(join(path.startsWith('node_modules/') ? join(generation, 'tree') : root, path), 'export {};\n');
+    }
+  }
   // Tooling directories stay in the generation fingerprint, outside the npm package namespace.
   pkg(join(generation, 'tree'), 'node_modules/@fixture/.x-1234abcd', '@fixture/x');
+  if (internalLeftoverLink) {
+    const leftover = join(generation, 'tree/node_modules/@fixture/.x-1234abcd/node_modules');
+    pkg(leftover, 'tool', 'tool');
+    mkdirSync(join(leftover, '.bin'), { recursive: true });
+    if (crossLeftoverLink) pkg(join(generation, 'tree'), 'node_modules/@fixture/.y-1234abcd', '@fixture/y');
+    symlinkSync(crossLeftoverLink ? '../../../.y-1234abcd/index.js' : '../tool/index.js',
+      join(leftover, '.bin/leftover'));
+  }
+  if (miniflare) write(join(generation, 'tree/node_modules/.mf/cf.json'),
+    JSON.stringify({ token: 'synthetic-miniflare-binder-secret' }));
   if (excludedAlias) {
     mkdirSync(join(generation, 'tree/node_modules/.bin'), { recursive: true });
-    symlinkSync('../@fixture/.x-1234abcd/index.js', join(generation, 'tree/node_modules/.bin/leftover'));
+    symlinkSync(internalLeftoverLink ? '../@fixture/.x-1234abcd/node_modules/.bin/leftover'
+      : '../@fixture/.x-1234abcd/index.js', join(generation, 'tree/node_modules/.bin/leftover'));
   }
   write(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages }));
   write(join(root, '.gitignore'), 'node_modules/\n');
@@ -247,7 +393,70 @@ async function frozen(excludedAlias = false) {
   return { root, generation, generationId, selector, input, snapshot, commit };
 }
 
+describe('D177 frozen execution binding', () => {
+  it('admits internal leftover symlinks while rejecting their actual loads and external aliases', async () => {
+    const f = await frozen(false, false, false, true);
+    const result = await bindSeedFrozenDependencies(f.root, f.commit);
+    expect(result.excludedEntries).toContainEqual({ path: 'node_modules/@fixture/.x-1234abcd', name: '@fixture/x', version: '1.0.0' });
+    expect(result.installedPackages.some(row => row.path.includes('.x-1234abcd'))).toBe(false);
+    for (const path of ['node_modules/@fixture/.x-1234abcd/node_modules/.bin/leftover',
+      'node_modules/@fixture/.x-1234abcd/node_modules/tool/index.js']) {
+      await expect(bindSeedFrozenDependencies(f.root, f.commit,
+        { readLoadedModulePaths: () => [path] })).rejects.toThrow('excluded dependency');
+    }
+    const g = await frozen(true, false, false, true);
+    await expect(bindSeedFrozenDependencies(g.root, g.commit)).rejects.toThrow('excluded dependency');
+    const h = await frozen(false, false, false, true, true);
+    await expect(bindSeedFrozenDependencies(h.root, h.commit)).rejects.toThrow('excluded dependency');
+  });
+  it('propagates Miniflare exclusion and rejects loaded cache paths', async () => {
+    const f = await frozen(false, false, true);
+    const result = await bindSeedFrozenDependencies(f.root, f.commit);
+    expect(result.excludedEntries).toContainEqual({ path: 'node_modules/.mf', name: null, version: null });
+    expect(result.excludedEntryCount).toBe(result.excludedEntries.length);
+    expect(result.installedPackages.some(row => row.path.includes('/.mf'))).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('synthetic-miniflare-binder-secret');
+    for (const path of ['node_modules/.mf', 'node_modules/.mf/cf.json', 'node_modules/.mf/loaded.js']) {
+      await expect(bindSeedFrozenDependencies(f.root, f.commit,
+        { readLoadedModulePaths: () => [path] })).rejects.toThrow('excluded dependency');
+    }
+  });
+});
+
 describe('D177 maintained publication binding', () => {
+  const registration = { sourcePins: { files: {}, scenarioPaths: {} }, executionPolicy: { launcherPath: 'launcher.cjs' } };
+  const capture = (root: string) => captureToolDeliveryCleanBoundary({ sourceRoot: root, registration,
+    moduleUrls: toolDeliveryMandatorySources(registration)
+      .filter(path => path !== 'apps/operator/bin/release/dependency-generation.sh')
+      .map(path => pathToFileURL(join(root, path)).href) });
+  it('admits a real clean recorder boundary from maintained dependencies without npm hidden metadata', async () => {
+    const f = await frozen(false, true);
+    expect(existsSync(join(f.root, 'node_modules/.package-lock.json'))).toBe(false);
+    const before = await capture(f.root), after = await capture(f.root);
+    expect(before.commit).toBe(f.commit);
+    expect(before.porcelain).toBe('');
+    expect(after.porcelain).toBe('');
+    expect(after.untracked).toEqual([]);
+    expect(after.disallowedIgnoredFiles).toEqual([]);
+    expect(before.installSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(after.installSha256).toBe(before.installSha256);
+    expect(validateToolDeliveryCleanCensus(before, registration)).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+    const file = join(f.root, 'node_modules/tsx/dist/loader.mjs');
+    chmodSync(file, 0o644); write(file, 'export const changed = true;\n');
+    await expect(capture(f.root)).rejects.toThrow('materialized dependency tree drift');
+  });
+  it.each(['missing', 'malformed', 'selector', 'input'] as const)(
+    'refuses %s maintained dependency proof at the real recorder boundary', async mode => {
+      const f = await frozen(false, true);
+      const marker = join(f.root, 'node_modules/.papercusp-dependency-generation');
+      if (mode === 'missing') rmSync(marker);
+      if (mode === 'malformed') write(marker, 'identity=broken\n');
+      if (mode === 'selector') write(f.selector, readFileSync(f.selector, 'utf8').replace(f.generationId, 'v1-' + 'f'.repeat(64)));
+      if (mode === 'input') write(join(f.root, 'package-lock.json'), '{}');
+      await expect(capture(f.root)).rejects.toThrow(mode === 'missing' ? /ENOENT/ : mode === 'malformed'
+        ? /invalid frozen dependency generation/ : mode === 'selector' ? /input\/generation mismatch/ : /committed dependency input changed/);
+    });
   it('refuses loaded excluded modules and symlink targets even with matching generation bytes', async () => {
     const f = await frozen();
     await expect(bindSeedFrozenDependencies(f.root, f.commit,

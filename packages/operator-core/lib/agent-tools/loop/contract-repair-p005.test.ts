@@ -66,9 +66,19 @@ describe('P-005 loop family — argument contract repairs', () => {
 
   describe('loop:status accepts `owner` as an alias for `ownerId` (EI-21206535634211412)', () => {
     it('accepts owner', () => {
+      // WI-6554700010029664 folds the `owner` synonym into `ownerId` BEFORE parse, so the
+      // accepted value arrives as `ownerId` and `owner` itself is gone from the parsed args.
       const parsed = parseArgs(loopStatus, { owner: 'su-abc' });
       expect(parsed.success).toBe(true);
-      expect((parsed.data as { owner?: string }).owner).toBe('su-abc');
+      const data = parsed.data as { owner?: string; ownerId?: string };
+      expect(data.ownerId).toBe('su-abc');
+      expect(data.owner).toBeUndefined();
+    });
+
+    it('an explicit ownerId wins over the owner synonym', () => {
+      const parsed = parseArgs(loopStatus, { owner: 'su-abc', ownerId: 'su-def' });
+      expect(parsed.success).toBe(true);
+      expect((parsed.data as { ownerId?: string }).ownerId).toBe('su-def');
     });
 
     it('still refuses a key that is neither', () => {

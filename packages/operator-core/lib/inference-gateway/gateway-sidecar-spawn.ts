@@ -20,7 +20,7 @@
  * Spawn target mirrors the substrate P-006 finding: esbuild bundles EVERYTHING into the
  * single serve.mjs, so in a PACKAGED build we re-exec that artifact under the bundled
  * node with PAPERCUSP_GATEWAY_SIDECAR_MODE=1 (serve.ts diverts to runGatewaySidecarMain);
- * in DEV (tsx, real source tree) we `npx tsx` the sibling bin.ts.
+ * in DEV (real source tree) we run the sibling bin.ts under retained Node with tsx.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -104,7 +104,7 @@ export interface GatewaySpawnPlan {
  * Decide HOW to spawn the gateway process — pure, exported for tests.
  * `selfPath` = this module's resolved file (import.meta). In a packaged build esbuild has
  * inlined this module into serve.mjs, so selfPath IS the bundle (not .ts) → re-exec it in
- * gateway mode under the bundled node. In dev it's the real .ts → `npx tsx bin.ts`.
+ * gateway mode under retained Node. In dev the explicit Node loads tsx and bin.ts.
  */
 export function buildGatewaySpawnPlan(opts?: {
   selfPath?: string;
@@ -283,7 +283,10 @@ async function spawnGatewayChild(port: number): Promise<void> {
     respawnTimer = null;
   }
 
-  const plan = buildGatewaySpawnPlan();
+  const nodeExecutable = process.versions.bun
+    ? await (await import('../bundled-node')).resolveBundledNode() : process.execPath;
+  if (!nodeExecutable) throw new Error('Retained Node is required for the gateway sidecar');
+  const plan = buildGatewaySpawnPlan({ execPath: nodeExecutable });
   const child = spawn(plan.cmd, plan.args, {
     env: { ...process.env, ...plan.env, PAPERCUSP_GATEWAY_PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe'],

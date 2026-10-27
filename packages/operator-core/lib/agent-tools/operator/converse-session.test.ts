@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let fakeHome: string;
+let previousPapercuspHome: string | undefined;
 
 vi.mock('node:os', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:os')>();
@@ -35,10 +36,16 @@ const SYS = 'you are the operator persona v1';
 
 beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'converse-session-test-'));
+  // papercuspPath prefers the explicit home pin over homedir(). Isolate the
+  // writer too, so a managed test environment cannot leak sessions across cases.
+  previousPapercuspHome = process.env.PAPERCUSP_HOME;
+  process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
 });
 
 afterEach(() => {
   try { rmSync(fakeHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  if (previousPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+  else process.env.PAPERCUSP_HOME = previousPapercuspHome;
 });
 
 // WI-10006465 — a caller under its own retention policy (phone calls, D-022's
@@ -146,6 +153,60 @@ describe('invalidateChatBrainSession', () => {
     const second = getChatBrainSession(CONV, h);
     expect(second.resumed).toBe(false);
     expect(second.sessionId).not.toBe(first.sessionId);
+  });
+});
+
+describe('P010 native session continuity', () => {
+  it.each(['marker', 'directory', 'corrupt-marker'] as const)(
+    'cold-starts after local %s loss while preserving an unrelated resumable session',
+    (loss) => {
+      const hash = hashSystemPrompt(SYS);
+      const original = getChatBrainSession(CONV, hash);
+      const unrelated = getChatBrainSession('p010-unrelated', hash);
+      recordChatBrainTurn(CONV);
+      recordChatBrainTurn('p010-unrelated');
+      expect(getChatBrainSession(CONV, hash)).toMatchObject({
+        sessionId: original.sessionId, resumed: true,
+      });
+
+      if (loss === 'directory') rmSync(original.dir, { recursive: true });
+      else if (loss === 'marker') rmSync(join(original.dir, 'session.json'));
+      else writeFileSync(join(original.dir, 'session.json'), '{incomplete', 'utf8');
+
+      const recovered = getChatBrainSession(CONV, hash);
+      expect(recovered.resumed).toBe(false); // caller must supply full context
+      expect(recovered.sessionId).not.toBe(original.sessionId);
+      expect(JSON.parse(readFileSync(join(recovered.dir, 'session.json'), 'utf8')))
+        .toMatchObject({ sessionId: recovered.sessionId, turnCount: 0 });
+      expect(getChatBrainSession('p010-unrelated', hash)).toMatchObject({
+        sessionId: unrelated.sessionId, resumed: true,
+      });
+    },
+  );
+
+  it.each([39, 40, 41])('honors the existing reuse turn limit at %i completed turns', (turns) => {
+    const hash = hashSystemPrompt(SYS);
+    const original = getChatBrainSession(CONV, hash);
+    for (let i = 0; i < turns; i += 1) recordChatBrainTurn(CONV);
+    const next = getChatBrainSession(CONV, hash);
+    expect(next.resumed).toBe(turns < 40);
+    expect(next.sessionId === original.sessionId).toBe(turns < 40);
+  });
+
+  it.each([-1, 0, 1])('honors the existing 24-hour reuse boundary at offset %ims', (offset) => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const hash = hashSystemPrompt(SYS);
+      const original = getChatBrainSession(CONV, hash);
+      recordChatBrainTurn(CONV);
+      clock.mockReturnValue(now + 24 * 60 * 60 * 1000 + offset);
+      const next = getChatBrainSession(CONV, hash);
+      expect(next.resumed).toBe(offset < 0);
+      expect(next.sessionId === original.sessionId).toBe(offset < 0);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

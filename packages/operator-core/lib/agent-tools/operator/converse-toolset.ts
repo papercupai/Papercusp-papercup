@@ -26,6 +26,7 @@
  * selector unit-tests without the projected-tool registry.
  */
 import { ALL_AGENT_MCP_TOOLS, INTERACTIVE_CHAT_TOOLS } from '../../operator-mcp-tools';
+import { compactInputSchema } from '@papercusp/tooldef';
 
 export type ConverseHostTrust = 'owner' | 'public';
 export const CONVERSE_HOST_TRUSTS = ['owner', 'public'] as const;
@@ -85,6 +86,20 @@ export function selectConverseTools(input: SelectConverseToolsInput): readonly s
   return voice.filter((name) => !/^(rubrics|scorecards|calibration|autonomy|decision_ledger|improvements):/.test(name.replace(AGENT_MCP_TOOL_PREFIX, '')));
 }
 
+/**
+ * The converse MCP mount compacts every selected tool schema. Admission must
+ * measure that same projection before constructing the mount; checking the
+ * full registry schemas rejects a set that the compact mount can serve.
+ */
+export function compactConverseSchemasForAdmission(
+  tools: readonly { name: string; inputSchema?: unknown }[],
+): Array<{ name: string; inputSchema: unknown }> {
+  return tools.map(({ name, inputSchema }) => ({
+    name,
+    inputSchema: compactInputSchema(inputSchema ?? {}),
+  }));
+}
+
 export interface ConverseMcpMountInput {
   hostTrust: ConverseHostTrust;
   /** selfUrl() — the operator host base. */
@@ -123,6 +138,7 @@ export function buildConverseMcpMount(input: ConverseMcpMountInput): ConverseMcp
   const common =
     `workspace=${encodeURIComponent(input.workspaceId)}` +
     `&tools=${encodeURIComponent(toolsParam)}` +
+    `&tools_compact=${encodeURIComponent(toolsParam)}` +
     (input.uiClientId ? `&client=${encodeURIComponent(input.uiClientId)}` : '');
   if (input.hostTrust === 'owner') {
     if (input.agentRunsAsCustomer) {

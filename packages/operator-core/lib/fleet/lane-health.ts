@@ -3,6 +3,7 @@ import { claimSpecReferencesField, formatSpecRef, type ClaimSpec, type FilterNod
 import { matchesClaimSpecFilter, type ClaimSpecSubject } from '../scheduler/claim-spec-match';
 import type { ClaimSpecRecord } from '../scheduler/claim-spec-store';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
 export interface ClaimSpecFamilyReachability { issue: boolean; feature: boolean }
 
 export type FleetClaimabilityState =
@@ -294,7 +295,7 @@ function definedCounts(counts: Record<string, number | undefined>): Record<strin
 
 /** PURE: which storage families can this validated claim-spec possibly admit? */
 export function claimSpecFamilyReachability(spec: ClaimSpec): ClaimSpecFamilyReachability {
-  const issueKinds = ['bug', 'change', 'task'];
+  const issueKinds: readonly string[] = ISSUE_FAMILY_ROUTE_KINDS;
   const featureKinds = [...new Set([
     'feature', 'chunk', '__non_issue_kind__',
     ...[...kindLiterals(spec.view.filter)].filter((kind) => !issueKinds.includes(kind)),

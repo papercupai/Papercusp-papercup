@@ -51,10 +51,26 @@ export async function listPlansAwaitingAcceptance(input: {
   rubricTemplateName: string;
   limit?: number | null;
   workspaceId?: string | null;
+  /** Rotate the complete ordered population, including rows beyond the first page. */
+  after?: AwaitingAcceptancePlanRow | null;
 }): Promise<AwaitingAcceptancePlanRow[]> {
   const { sql, rubricTemplateName } = input;
   const limit = input.limit ?? null;
   const workspaceId = input.workspaceId ?? null;
+  const after = input.after ?? null;
+  const { isHarnessInScope, workScopePolicy, isWorkScopeEnforced } = await import('./work-scope-policy');
+  if (workScopePolicy() === null) {
+    const { refreshPotControlPolicy } = await import('./pot-control-policy');
+    await refreshPotControlPolicy();
+  }
+  // Apply the existing JS scope predicate before a limited page is selected. A
+  // full page of excluded harnesses must not hide eligible plans behind it.
+  let allowedHarnesses: string[] | null = null;
+  if (limit !== null && isWorkScopeEnforced()) {
+    const harnesses = await sql<Array<{ harness_slug: string | null }>>`
+      SELECT DISTINCT harness_slug FROM harness_shared.harness_plans WHERE archived = FALSE`;
+    allowedHarnesses = harnesses.filter(r => isHarnessInScope(r.harness_slug)).map(r => r.harness_slug ?? '');
+  }
 
   const rows = await sql<
     Array<{
@@ -98,7 +114,13 @@ export async function listPlansAwaitingAcceptance(input: {
        AND p.status NOT IN ('shipped', 'superseded')
        AND p.template IS DISTINCT FROM ${rubricTemplateName}
        AND (${workspaceId}::text IS NULL OR p.workspace_id = ${workspaceId}::text)
-     ORDER BY GREATEST(r.rubric_since, a.audited_since) ASC
+       AND (${allowedHarnesses}::text[] IS NULL OR COALESCE(p.harness_slug, '') = ANY(${allowedHarnesses}::text[]))
+     ORDER BY CASE WHEN ${after !== null} AND
+       (GREATEST(r.rubric_since, a.audited_since), p.workspace_id, COALESCE(p.harness_slug, ''), p.plan_slug)
+       <= (to_timestamp(${(after?.gradeableSinceMs ?? 0) / 1000}), ${after?.workspaceId ?? ''}::text,
+           ${after?.harnessSlug ?? ''}::text, ${after?.planSlug ?? ''}::text)
+       THEN 1 ELSE 0 END,
+       GREATEST(r.rubric_since, a.audited_since) ASC, p.workspace_id, COALESCE(p.harness_slug, ''), p.plan_slug
      LIMIT ${limit}`;
 
   // ⚠ The scope policy must be LOADED before it can filter. `workScopePolicy()` is a
@@ -118,11 +140,6 @@ export async function listPlansAwaitingAcceptance(input: {
   // Awaiting the refresh when the cache is cold makes the predicate depend on the policy
   // rather than on how old the calling process happens to be. It is paid once per process:
   // `refreshPotControlPolicy` populates the same cache `workScopePolicy()` reads.
-  const { isHarnessInScope, workScopePolicy } = await import('./work-scope-policy');
-  if (workScopePolicy() === null) {
-    const { refreshPotControlPolicy } = await import('./pot-control-policy');
-    await refreshPotControlPolicy();
-  }
   return rows.filter((r) => isHarnessInScope(r.harness_slug)).map((r) => ({
     planSlug: r.plan_slug,
     harnessSlug: r.harness_slug,

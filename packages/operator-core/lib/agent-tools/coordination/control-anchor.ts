@@ -322,6 +322,16 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
       }
     : input.route;
   const released = input.lifecycle?.released;
+  const lifecycle: SessionBriefLifecycle = {
+    ...(input.lifecycle?.shutdown ? { shutdown: input.lifecycle.shutdown } : {}),
+    ...(input.lifecycle?.poisoned ? { poisoned: input.lifecycle.poisoned } : {}),
+    ...(input.lifecycle && Object.prototype.hasOwnProperty.call(input.lifecycle, 'assumeCaller')
+      ? { assumeCaller: input.lifecycle.assumeCaller } : {}),
+    ...(released?.fleet && released.at && released.by ? { released: {
+      fleet: released.fleet.slice(0, MAX_ID_CHARS), at: released.at.slice(0, MAX_ID_CHARS),
+      by: released.by.slice(0, MAX_ID_CHARS),
+    } } : {}),
+  };
   const goalAuthority = input.goalAuthority?.status === 'superseded' && input.goalAuthority.goalId
     ? {
         status: 'superseded' as const,
@@ -350,17 +360,7 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
     ...(input.wakeSource ? { wakeSource: input.wakeSource } : {}),
     carry: input.carry === 'cold' ? 'cold' : 'warm',
     ...(goalAuthority ? { goalAuthority } : {}),
-    ...(released?.fleet && released.at && released.by
-      ? {
-          lifecycle: {
-            released: {
-              fleet: released.fleet.slice(0, MAX_ID_CHARS),
-              at: released.at.slice(0, MAX_ID_CHARS),
-              by: released.by.slice(0, MAX_ID_CHARS),
-            },
-          },
-        }
-      : {}),
+    ...(Object.keys(lifecycle).length ? { lifecycle } : {}),
     route,
     scope: {
       workspace: input.scope.workspace.slice(0, MAX_ID_CHARS),
@@ -601,6 +601,13 @@ export async function persistControlAnchor(
     resync: TRANSITION_RESYNC,
   };
   const transitionJson = JSON.stringify(initialTransition);
+  // Lifecycle writers own their durable fences. A reconciliation can have
+  // started before a pause/shutdown write (or its clear); preserve the LIVE
+  // database value here, rather than overwriting it from that stale snapshot.
+  const persistedStateSql = sql`((EXCLUDED.control_state - 'lifecycle') ||
+    CASE WHEN harness_shared.session_briefs.control_state ? 'lifecycle'
+      THEN jsonb_build_object('lifecycle', harness_shared.session_briefs.control_state->'lifecycle')
+      ELSE '{}'::jsonb END)`;
   const rows = await sql<Array<{
     control_generation: number | string;
     control_state: ControlAnchorState;
@@ -613,10 +620,10 @@ export async function persistControlAnchor(
     ON CONFLICT (owner_id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
       control_transition = CASE
-        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
+        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM ${persistedStateSql}
           THEN jsonb_set(
             jsonb_set(
-              jsonb_set(EXCLUDED.control_transition, '{previousGeneration}', to_jsonb(harness_shared.session_briefs.control_generation), true),
+              jsonb_set(jsonb_set(EXCLUDED.control_transition, '{state}', ${persistedStateSql}, true), '{previousGeneration}', to_jsonb(harness_shared.session_briefs.control_generation), true),
               '{generation}', to_jsonb(harness_shared.session_briefs.control_generation + 1), true
             ),
             '{stackBefore}', COALESCE(harness_shared.session_briefs.control_state->'stack', '[]'::jsonb), true
@@ -624,16 +631,16 @@ export async function persistControlAnchor(
         ELSE harness_shared.session_briefs.control_transition
       END,
       control_generation = CASE
-        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
+        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM ${persistedStateSql}
           THEN harness_shared.session_briefs.control_generation + 1
         ELSE harness_shared.session_briefs.control_generation
       END,
       control_updated_at = CASE
-        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
+        WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM ${persistedStateSql}
           THEN now()
         ELSE harness_shared.session_briefs.control_updated_at
       END,
-      control_state = EXCLUDED.control_state
+      control_state = ${persistedStateSql}
     RETURNING control_generation, control_state, control_updated_at, control_transition
   `;
   const row = rows[0];
@@ -655,10 +662,10 @@ export async function persistControlAnchor(
   // `generation` equals `control_generation` in BOTH cases.
   const persistedAt = row.control_transition?.provenance?.recordedAt;
   if (persistedAt === provenance.recordedAt) await notifyAgentOrdersChanged(input.ownerId);
-  const persistedState = normalizeControlAnchorState(row.control_state);
+  const persistedAnchorState = normalizeControlAnchorState(row.control_state);
   return {
     generation: Number(row.control_generation),
-    state: persistedState,
+    state: persistedAnchorState,
     updatedAt: new Date(row.control_updated_at).toISOString(),
     transition: row.control_transition ?? null,
     // EI-23770243810745552: attest the CONSUMER's read, not just the write. RETURNING
@@ -668,7 +675,7 @@ export async function persistControlAnchor(
     consumerView: buildConsumerView({
       readPath: ACTIVATION_CONSUMER_READ_PATH,
       written: state.activation ?? null,
-      consumed: persistedState.activation ?? null,
+      consumed: persistedAnchorState.activation ?? null,
     }),
   };
 }

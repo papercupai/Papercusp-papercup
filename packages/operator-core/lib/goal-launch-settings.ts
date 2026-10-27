@@ -334,6 +334,7 @@ export {
 // calls the resolver — so it is imported as well as re-exported.
 import { resolveGoalHolderPolicy } from './goal-launch-settings-shared';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 /**
  * The holder policy a goal declares (P-002 of
  * goal-live-holder-guarantee-2026-08-18).
@@ -2135,7 +2136,7 @@ async function assembleGoalPortfolioBrief(args: {
                            OR COALESCE((wi.payload->>'needsOwnerAction')::boolean, false)
                            OR COALESCE((wi.payload->>'needsHuman')::boolean, false))),
                        'issueCandidates', COALESCE(jsonb_agg(jsonb_build_object('id', wi.feature_id, 'harness', wi.harness_slug))
-                         FILTER (WHERE wi.item_kind IN ('bug','change','task') AND wi.taken_by IS NULL AND wi.status IN ('open','failing','todo')), '[]'::jsonb)
+                         FILTER (WHERE wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}) AND wi.taken_by IS NULL AND wi.status IN ('open','failing','todo')), '[]'::jsonb)
                      )
                 FROM harness_shared.work_items wi
                WHERE wi.workspace_id = g.workspace_id AND wi.goal_id = g.id) AS queue,

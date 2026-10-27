@@ -328,4 +328,48 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     });
     expect(rubricCheckLedgerPath(RUBRIC, 'disk-latest:instrument')).toBe(`rubric-check/${RUBRIC}/disk-latest:instrument`);
   }, 120_000);
+
+  it("crm D-049: a subject's card rates from that subject's row; another subject is unrecorded, never borrowed", async () => {
+    const leadA = { ref: 'PER-emit-ledger-lead-a' };
+    const base = row('probe-recorded', 'probe', 1, null, 'pass', '2026-10-13T02:00:00.000Z');
+    const [leadRow] = await recordRubricCheckResults(
+      [{ ...base, check: { ...base.check, subject: leadA } }],
+      { workspaceId, harnessSlug: 'papercusp', root: '/repo' }, sql(),
+    );
+    const [{ file_path: leadPath }] = (await db.adminSql`
+      SELECT file_path FROM harness_shared.test_runs WHERE id = ${leadRow!}
+    `) as unknown as Array<{ file_path: string }>;
+    expect(leadPath).toBe(`rubric-check/${RUBRIC}/probe-recorded:0@subject/-/PER-emit-ledger-lead-a`);
+    // The rubric-wide read is unchanged by a subject row.
+    const { readLatestRubricCheckResults } = await import('../../check-results-ledger');
+    const rubricWide = await readLatestRubricCheckResults({ rubricRef: RUBRIC, workspaceId }, sql());
+    expect(rubricWide.get('probe-recorded:0')!.testRunId).toBe(ids.probe);
+
+    const emitFor = (subject: { ref: string }) => emit({
+      subject,
+      ratings: { 'manual-judgement': MANUAL_RATING },
+      ledgerDispositions: {
+        'cpu-threshold': { remediation: CPU_REMEDIATION },
+        'query-cost': { disregard: 'Intermediate fixture band is recorded without a separate remediation.' },
+      },
+      instrumentSnapshots: {
+        'host:df-root-used-pct': { verdict: 'pass', measuredAt: '2026-10-13T01:30:00.000Z', value: 42, provenance: 'self-reported' },
+      },
+    });
+    const a = await emitFor(leadA);
+    expect(a.ok ? 'ok' : a).toBe('ok');
+    if (!a.ok || !('issueId' in a)) return;
+    const ratingsA = (await persistedObservation(a.issueId as string)).ratings as Record<string, Record<string, unknown>>;
+    expect(ratingsA['probe-recorded']).toMatchObject({ ratedFrom: 'ledger', ledgerResult: { testRunId: leadRow } });
+    // Rubric-wide checks never recorded per subject still rate from their rubric-wide row.
+    expect(ratingsA['disk-latest']).toMatchObject({ ledgerResult: { testRunId: ids.diskNewer } });
+
+    const b = await emitFor({ ref: 'PER-emit-ledger-lead-b' });
+    expect(b.ok ? 'ok' : b).toBe('ok');
+    if (!b.ok || !('issueId' in b)) return;
+    expect(b).toMatchObject({ ledgerFill: { unrecorded: expect.arrayContaining(['probe-recorded']) } });
+    const ratingsB = (await persistedObservation(b.issueId as string)).ratings as Record<string, Record<string, unknown>>;
+    expect(ratingsB['probe-recorded']).toMatchObject({ rating: 'unknown', unknownReason: 'not-exercised' });
+    expect(dispatched).toEqual([]);
+  }, 120_000);
 });

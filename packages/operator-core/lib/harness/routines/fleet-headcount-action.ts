@@ -36,11 +36,14 @@ import {
   composeModelSpec,
   composeMemberLaunchContext,
   injectLaunchedByArg,
+  launchModeFromFleetRecipe,
   memberLaunchCommand,
   modelEffortFromSpec,
   verifyFreshLaunchStarted,
   type FreshLaunchExpectedAttestation,
+  type LaunchMode,
 } from '../../agent-launch-core';
+import { getModes } from '../../modes/store';
 import killTool from '../../agent-tools/fleet/kill';
 import { countedMemberSet, readFleetMemberSilence } from '../../agent-tools/fleet_registry/silent-member';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
@@ -69,6 +72,85 @@ export function nextHeadcountBackoff(currentMs: number): number {
   return Math.min(15 * 60_000, Math.max(60_000, Math.max(0, currentMs) * 2));
 }
 
+/**
+ * WI-6554700010029299: consecutive governor waves in which EVERY member died at boot
+ * with the SAME failure fingerprint before the governor holds relaunching. A
+ * deterministic boot refusal (on 10-24/25 it was psu's account-route check) makes
+ * every replacement die the same way. The 15-minute backoff cap alone kept minting
+ * up to FLEET_HEADCOUNT_BULK_WAVE_SIZE dead members per wave, about 232 over two
+ * days in nonp2p-bug-drain-luna-max-0930.
+ */
+export const FLEET_HEADCOUNT_BOOT_FAILURE_STREAK = 3;
+/** How long the governor waits once that streak is reached. One probe wave runs after it. */
+export const FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS = 6 * 60 * 60_000;
+
+/**
+ * PURE. A stable fingerprint for a boot-death failure reason, or null when the
+ * reason is not a boot death. The boot-death text comes from console-spawn
+ * ("… agent command died at boot (exit N) … log tail: …"). The fingerprint is the
+ * last substantive line of that log tail, lowercased, with digit runs normalized,
+ * so session ids and ports do not split one cause into many.
+ */
+export function bootFailureFingerprint(reason: string | null | undefined): string | null {
+  if (!reason || !/died at boot/i.test(reason)) return null;
+  // eslint-disable-next-line no-control-regex
+  const clean = reason.replace(/\u001b\][^\u0007]*\u0007/g, '').replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
+  const tailAt = clean.toLowerCase().lastIndexOf('log tail:');
+  const lines = (tailAt >= 0 ? clean.slice(tailAt + 'log tail:'.length) : '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('[papercusp]'));
+  const basis = lines.length > 0
+    ? lines[lines.length - 1]
+    : (clean.match(/died at boot \(exit [^)]*\)/i)?.[0] ?? 'died at boot');
+  return basis.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').slice(0, 160);
+}
+
+/**
+ * PURE. The fingerprint of a wave in which every requested member failed with one
+ * boot-death cause, or null when any member did not fail that way (a mixed or
+ * partial wave says nothing deterministic about the launch path).
+ */
+export function bootFailureWaveFingerprint(
+  failed: ReadonlyArray<{ ownerId: string; reason: string }>,
+  requestedOwnerIds: readonly string[],
+): string | null {
+  if (requestedOwnerIds.length === 0) return null;
+  let fingerprint: string | null = null;
+  for (const ownerId of requestedOwnerIds) {
+    const prints = failed
+      .filter((entry) => entry.ownerId === ownerId)
+      .map((entry) => bootFailureFingerprint(entry.reason))
+      .filter((print): print is string => print != null);
+    if (prints.length === 0) return null;
+    if (fingerprint == null) fingerprint = prints[0];
+    if (!prints.includes(fingerprint)) return null;
+  }
+  return fingerprint;
+}
+
+/**
+ * PURE. The trailing run of identical `boot-failure` waves in governor history.
+ * Only `boot-failure` / `boot-ok` events count. Ticks that launch nothing (wait,
+ * observe, terminal) neither extend nor break the run. A `boot-ok` wave or a
+ * different fingerprint ends it.
+ */
+export function bootFailureStreak(
+  history: ReadonlyArray<{ action: string; reason: string }>,
+): { fingerprint: string; count: number } | null {
+  let fingerprint: string | null = null;
+  let count = 0;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const event = history[i];
+    if (event.action === 'boot-ok') break;
+    if (event.action !== 'boot-failure') continue;
+    if (fingerprint == null) fingerprint = event.reason;
+    else if (event.reason !== fingerprint) break;
+    count += 1;
+  }
+  return fingerprint == null ? null : { fingerprint, count };
+}
+
 export function resolveProductiveCapacityFloor(target: number, configured?: number): number {
   const boundedTarget = Math.max(1, Math.floor(target));
   const raw = Number.isFinite(configured) ? Math.floor(configured as number) : 1;
@@ -81,6 +163,13 @@ export interface FleetHeadcountGovernorAssessment {
   liveMemberIds: string[];
   workerReadyMemberIds: string[];
   unreadyMemberIds: string[];
+  /**
+   * WI-6554700010029353: the subset of `unreadyMemberIds` outside the governor's
+   * current probe cohort. Their attestation is never re-taken, so they never hold the
+   * `wait` (only probed unready members do). Refill proceeds against the deficit
+   * instead. They are surfaced so a spawn past a non-empty unready set can be explained.
+   */
+  frozenUnreadyMemberIds: string[];
   unverifiedMemberIds: string[];
   pendingOpenedMemberIds: string[];
   /**
@@ -138,8 +227,26 @@ export function assessFleetHeadcountGovernor(args: {
   const workerReadyMemberIds = liveMemberIds.filter(
     (ownerId) => !retired.has(ownerId) && attestationByOwner.get(ownerId)?.ready === true,
   );
+  const attempts = transaction?.governor?.attestationAttempts ?? {};
+  const retryLimit = Math.max(1, Math.floor(args.retryLimit ?? FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT));
+  const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
+  // WI-6554700010029346: a not-ready attestation is live evidence only while the
+  // governor is still re-taking it — a current probe owner inside its retry budget.
+  // Outside that window it is a frozen snapshot that will never be refreshed, and
+  // for a member that is DEMONSTRABLY EXECUTING the stronger productivity proof
+  // (recent agent-origin execution, WI-2034624) supersedes it. Counting such a
+  // member as unready wedged a live fleet: it is never a prune candidate
+  // (executing), never retryable (not a probe owner / budget spent), so it fell
+  // through to `wait: prune is unsafe` on EVERY tick and the deficit below was
+  // never reached (Luna Max sat at 42/50 for hours with zero spawns).
+  const attestationStillProbed = (ownerId: string): boolean =>
+    currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit;
   const unreadyMemberIds = liveMemberIds.filter(
-    (ownerId) => !retired.has(ownerId) && attestationByOwner.has(ownerId) && attestationByOwner.get(ownerId)?.ready !== true,
+    (ownerId) =>
+      !retired.has(ownerId) &&
+      attestationByOwner.has(ownerId) &&
+      attestationByOwner.get(ownerId)?.ready !== true &&
+      (attestationStillProbed(ownerId) || !args.executingMemberIds?.has(ownerId)),
   );
   const unverifiedMemberIds = liveMemberIds.filter(
     (ownerId) => !retired.has(ownerId) && !attestationByOwner.has(ownerId),
@@ -150,8 +257,6 @@ export function assessFleetHeadcountGovernor(args: {
       .map((failure) => failure.ownerId),
   );
   const verified = new Set(transaction?.verifiedMemberIds ?? []);
-  const attempts = transaction?.governor?.attestationAttempts ?? {};
-  const retryLimit = Math.max(1, Math.floor(args.retryLimit ?? FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT));
   const pruneCandidateIds = unreadyMemberIds.filter(
     (ownerId) =>
       !args.executingMemberIds?.has(ownerId) &&
@@ -188,10 +293,23 @@ export function assessFleetHeadcountGovernor(args: {
   // governor fall through to the deficit path and spawn replacements, instead of returning
   // `wait` on every tick for the life of the transaction.
   const launchDeadlineExceededMemberIds = withinLaunchWindow ? [] : openedButNotLive;
-  const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
+  // WI-6554700010029353: only an unready member the governor is STILL PROBING may hold
+  // refill. A probe owner is re-attested every tick (refreshGovernorWorkerAttestation),
+  // so its evidence can still move to ready, to verified-and-prunable, or to a terminal
+  // failure, and waiting for that is bounded. An unready member OUTSIDE probeOwnerIds is a
+  // frozen snapshot: nothing re-takes its attestation and its attempt count never grows,
+  // so it can never become a prune candidate either. Letting it gate the deficit branch
+  // made the wait unbounded by construction. It also contradicted the headcount itself:
+  // such a member is not executing, so it is already excluded from the productive count.
+  // An ordinary idle member gets replaced through that deficit, while one with a stale
+  // ready:false stalled every spawn (Luna Max, 2026-10-26 10:15Z: one member silent 28m
+  // held a 42/50 fleet at `wait`). Frozen members still never get pruned. They are only
+  // treated like every other non-productive member.
+  const probedUnreadyMemberIds = unreadyMemberIds.filter((ownerId) => currentProbeOwners.has(ownerId));
+  const frozenUnreadyMemberIds = unreadyMemberIds.filter((ownerId) => !currentProbeOwners.has(ownerId));
   const headcountMeasurement = measureFleetProductiveHeadcount(
     transaction,
     liveMemberIds,
@@ -208,6 +326,7 @@ export function assessFleetHeadcountGovernor(args: {
     liveMemberIds,
     workerReadyMemberIds,
     unreadyMemberIds,
+    frozenUnreadyMemberIds,
     unverifiedMemberIds,
     pendingOpenedMemberIds,
     launchDeadlineExceededMemberIds,
@@ -254,7 +373,7 @@ export function assessFleetHeadcountGovernor(args: {
       reason: 'worker stages are observed but not yet terminal; retry after durable backoff',
     };
   }
-  if (unreadyMemberIds.length > 0) {
+  if (probedUnreadyMemberIds.length > 0) {
     return {
       ...common,
       action: 'wait',
@@ -291,6 +410,11 @@ export function assessFleetHeadcountGovernor(args: {
     const launchFailedPrefix = launchDeadlineExceededMemberIds.length > 0
       ? `${launchDeadlineExceededMemberIds.length} opened member(s) never became live within the ${Math.round(FLEET_HEADCOUNT_LAUNCH_WINDOW_MS / 1000)}s launch window and are classified launch-failed; `
       : '';
+    // WI-6554700010029353: same observability duty for a refill that proceeds past
+    // frozen unready members, which used to hold `wait` here. Empty otherwise.
+    const frozenUnreadyPrefix = frozenUnreadyMemberIds.length > 0
+      ? `${frozenUnreadyMemberIds.length} unready member(s) outside the probe cohort hold frozen non-ready evidence; they are not pruned and do not count as productive, so the deficit is refilled; `
+      : '';
     return {
       ...common,
       action: 'spawn',
@@ -298,7 +422,7 @@ export function assessFleetHeadcountGovernor(args: {
       spawnCount: floorMet
         ? Math.min(deficit, FLEET_HEADCOUNT_BULK_WAVE_SIZE)
         : 1,
-      reason: launchFailedPrefix + (floorMet
+      reason: launchFailedPrefix + frozenUnreadyPrefix + (floorMet
         ? hasUnverifiedSeats
           ? 'productive-capacity floor is evidenced; preserve unverified live seats and open a capacity-clamped bounded refill wave'
           : 'productive-capacity floor is evidenced; a bounded refill wave is safe'
@@ -567,6 +691,39 @@ export function resolveFleetHeadcountProfile(
   config: FleetHeadcountConfig,
 ): FleetHeadcountConfig & { headless: boolean } {
   return { ...config, headless: config.headless ?? true };
+}
+
+/**
+ * WI-6554700010029298: the mode a governor top-up member launches in. Before this,
+ * a top-up passed no mode at all, so every replacement in a drain fleet booted
+ * AUTO-only (Luna Max: 721 joiners in 7 days, 0 with a DRAIN row). The recipe's
+ * declared mode wins; a legacy recipe without one falls back to the launching
+ * leader's live DRAIN row, the same caller-overlay rule launch-on-plan applies.
+ */
+export function resolveGovernorMemberLaunchMode(args: {
+  config: { mode?: unknown };
+  launcherModes: ReadonlyArray<{ mode?: unknown }>;
+}): LaunchMode | null {
+  const fromRecipe = launchModeFromFleetRecipe(args.config);
+  if (fromRecipe) return fromRecipe;
+  return args.launcherModes.some((row) => row?.mode === 'drain')
+    ? launchModeFromFleetRecipe({ mode: 'drain' })
+    : null;
+}
+
+/** Read the launcher's modes only when the recipe does not already decide; a mode
+ * read outage degrades to the recipe's answer instead of refusing the top-up. */
+async function readGovernorMemberLaunchMode(
+  workspaceId: string,
+  launcherOwnerId: string,
+  config: { mode?: unknown },
+): Promise<LaunchMode | null> {
+  if (launchModeFromFleetRecipe(config)) return resolveGovernorMemberLaunchMode({ config, launcherModes: [] });
+  try {
+    return resolveGovernorMemberLaunchMode({ config, launcherModes: await getModes(workspaceId, launcherOwnerId) });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1314,6 +1471,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     } = resolveGovernorMemberLaunchProfile(goalLaunch.effective, config);
     const modelSpec = composeModelSpec(effectiveModel, effectiveEffort) ?? null;
     const newMemberIds = Array.from({ length: waveCount }, () => `su-${randomUUID()}`);
+    const memberLaunchMode = await readGovernorMemberLaunchMode(workspaceId, launcherOwnerId, config);
     const commands = newMemberIds.map((ownerId) => injectLaunchedByArg(memberLaunchCommand({
       fleetSlug,
       agent: effectiveAgent,
@@ -1321,6 +1479,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       headless: config.headless,
       ownerId,
       workspace: workspaceId,
+      launchMode: memberLaunchMode,
       // The goal's profile applies to a governor top-up exactly as it does to the
       // leader's own launches — otherwise a replaced member silently comes back
       // on a different model/account than the one the goal pinned.
@@ -1559,6 +1718,31 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       launchTransaction.state = 'partial';
     }
 
+    // WI-6554700010029299: record this wave's boot outcome in governor history, which
+    // later transactions carry forward. A deterministic boot refusal is then recognised
+    // across ticks instead of being retried every 15 minutes indefinitely.
+    const governorState = ensureGovernorState(launchTransaction);
+    const waveBootFailure = bootFailureWaveFingerprint(launchTransaction.failed, newMemberIds);
+    if (waveBootFailure != null) {
+      appendGovernorHistory(governorState, {
+        at: Date.now(),
+        action: 'boot-failure',
+        transactionId: launchTransaction.transactionId,
+        reason: waveBootFailure,
+      });
+    } else if (newMemberIds.some((ownerId) => verified.has(ownerId))) {
+      appendGovernorHistory(governorState, {
+        at: Date.now(),
+        action: 'boot-ok',
+        transactionId: launchTransaction.transactionId,
+        reason: 'wave verified at least one member',
+      });
+    }
+    const bootStreak = waveBootFailure != null ? bootFailureStreak(governorState.history) : null;
+    const bootFailureHold = bootStreak != null && bootStreak.count >= FLEET_HEADCOUNT_BOOT_FAILURE_STREAK
+      ? bootStreak
+      : null;
+
     let rosterError: string | null = null;
     try {
       liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
@@ -1615,12 +1799,38 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         reason: capacitySnapshot.wall,
       },
     });
-    await recordFleetHeadcountAttempt({
-      workspaceId,
-      fleetSlug,
-      succeeded: terminalVerdict.outcome === 'productive',
-      ...(terminalVerdict.outcome === 'productive' ? {} : { error: terminalVerdict.reason }),
-    });
+    const productive = terminalVerdict.outcome === 'productive';
+    if (!productive && bootFailureHold) {
+      const holdReason = `boot-failure hold: the last ${bootFailureHold.count} governor waves all died at boot with `
+        + `'${bootFailureHold.fingerprint}'; relaunch held for ${Math.round(FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS / 3_600_000)}h `
+        + '(one probe wave after the hold). Fix the boot refusal, then a verified wave clears this.';
+      await emitFleetHeadcountEvent({
+        workspaceId,
+        fleetSlug,
+        kind: 'refusal',
+        summary: `fleet ${fleetSlug}: ${holdReason}`,
+        payload: {
+          reason: 'boot-failure-hold',
+          fingerprint: bootFailureHold.fingerprint,
+          consecutiveWaves: bootFailureHold.count,
+          holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+        },
+      });
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: false,
+        error: holdReason,
+        holdMs: FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS,
+      });
+    } else {
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: productive,
+        ...(productive ? {} : { error: terminalVerdict.reason }),
+      });
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (claimedLaunchSlotAt != null && !spawnAttempted) {

@@ -196,6 +196,9 @@ args = {
     'session_id': ev.get('session_id') or ev.get('sessionId') or '',
     'cwd': ev.get('cwd') or '',
 }
+task_id = os.environ.get('PAPERCUSP_AGENT_TASK_ID') or ''
+if len(task_id) == 19 and all('0' <= char <= '9' or 'a' <= char <= 'z' for char in task_id):
+    args['agent_task_id'] = task_id
 native_session_id = args['session_id'] or os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or ''
 # Codex hooks receive a minimal environment, so managed homes bake the stable
 # adv_sessions row id into this command. Claude normally inherits the same

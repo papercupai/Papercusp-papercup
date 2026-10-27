@@ -86,6 +86,9 @@ export function createHiveEpochCrypto(opts: HiveEpochCryptoOpts = {}): HiveEpoch
         }
         return asEpochKey(Uint8Array.from(loaded.value));
       }
+      if (loaded.error.kind !== 'not_found') {
+        throw new Error(`cannot load epoch key for ${id}: ${loaded.error.kind}`, { cause: loaded.error });
+      }
       // Mint a fresh random key for this epoch (the epoch-advancer path) + persist.
       const s = await traceStageAwait('native-loader', sodium);
       const key = Buffer.allocUnsafe(EPOCH_KEY_BYTES);

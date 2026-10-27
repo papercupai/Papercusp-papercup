@@ -1,0 +1,609 @@
+/** P013/R9: bounded commit co-change and edit-time ledger provenance.
+ * Commit authorship is intentionally never read. Counts concern eligible commits,
+ * and Edit provenance requires a unique session and assignment at the edit instant.
+ */
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import type { Sql } from 'postgres';
+import * as ts from 'typescript';
+import { getOrgPg } from '@papercusp/db-org';
+import { eligibleHistoryPath, safeHistoryPath as safe } from './history-path';
+import { hunksFromToolCall } from '../release/frozen-repair-edit-ledger';
+import { measureCodeHealth } from './code-health';
+import { symbolSpans } from './edited-symbols';
+import type { ReuseBriefProvider, ReuseProviderContext } from './reuse-brief-providers';
+import { registerReuseBriefProvider } from './reuse-brief-providers';
+
+const run = promisify(execFile);
+const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const DAY = 86_400_000;
+const COMMIT_CAP = 1000;
+export const PROVENANCE_EDIT_CAP = 50;
+export const CHANGE_HISTORY_VERSION = 'history/first-parent-90d-v1';
+export { eligibleHistoryPath } from './history-path';
+export interface HistoryCommit {
+  sha: string; parents: string[]; at: string;
+  files: { status: string; path: string; from?: string }[];
+}
+export interface CoChangePair { path: string; partner: string; shared: number; union: number; score: number }
+export interface CoChangeReport {
+  status: 'measured' | 'unknown'; version: string; commit: string | null;
+  window: { start: string; end: string; lineage: 'first-parent' };
+  pairs: CoChangePair[]; unknownPaths: string[]; eligibleCommits: number;
+  complete: boolean; limitations: string[]; error: string | null;
+}
+
+/** One 90-day first-parent window, prepared once: the commits, rename identity and per-path
+ * commit populations every co-change query reads. Building it is the expensive part (a sort,
+ * the rename and reused-path scans, a digest over every commit), so a caller asking about many
+ * path sets (cleanup triage, one family at a time) builds it once and queries it per scope. */
+export interface CoChangeIndex {
+  readonly end: string;
+  readonly start: number;
+  readonly commit: string | null;
+  readonly complete: boolean;
+  readonly version: string;
+  readonly eligibleCommits: number;
+  readonly unknown: ReadonlySet<string>;
+  readonly populations: ReadonlyMap<string, ReadonlySet<string>>;
+  canonical(path: string): string;
+}
+
+/** Rename chains are evidence; conflicting endpoints/copies are not identity. */
+export function buildCoChangeIndex(input: {
+  commits: readonly HistoryCommit[]; end: string; commit: string | null; complete: boolean;
+}): CoChangeIndex {
+  const end = Date.parse(input.end);
+  if (!Number.isFinite(end)) throw new Error('Invalid history scope/window');
+  const start = end - 90 * DAY;
+  const at = new Map<HistoryCommit, number>();
+  for (const c of input.commits) at.set(c, Date.parse(c.at));
+  const commits = [...new Map(input.commits.filter(c => c.parents.length <= 1
+    && at.get(c)! >= start && at.get(c)! < end).map(c => [c.sha, c])).values()]
+    .sort((a, b) => at.get(a)! - at.get(b)! || a.sha.localeCompare(b.sha));
+  const renames = new Map<string, string>();
+  const renameSources = new Map<string, Set<string>>();
+  const unknown = new Set<string>();
+  for (const c of commits) for (const f of c.files) {
+    if (f.status.startsWith('C')) { unknown.add(f.path); if (f.from) unknown.add(f.from); }
+    if (!f.status.startsWith('R')) continue;
+    if (!f.from || !safe(f.from) || !safe(f.path) || !/^R\d{1,3}$/.test(f.status) || Number(f.status.slice(1)) < 50 || Number(f.status.slice(1)) > 100
+      || (renames.has(f.from) && renames.get(f.from) !== f.path)
+      || [...(renameSources.get(f.path) ?? [])].some(from => from !== f.from)) {
+      unknown.add(f.path); if (f.from) unknown.add(f.from);
+    } else {
+      renames.set(f.from, f.path);
+      const sources = renameSources.get(f.path) ?? new Set<string>(); sources.add(f.from); renameSources.set(f.path, sources);
+    }
+  }
+  const canonical = (path: string) => {
+    const seen = new Set<string>();
+    while (renames.has(path)) {
+      if (seen.has(path)) { for (const p of seen) unknown.add(p); break; }
+      seen.add(path); path = renames.get(path)!;
+    }
+    return path;
+  };
+  // Reusing a retired pathname breaks identity even when a rename was recorded.
+  const renamedAway = new Map<string, number>();
+  for (const c of commits) for (const f of c.files) if (f.from && f.status.startsWith('R'))
+    renamedAway.set(f.from, Math.min(renamedAway.get(f.from) ?? Infinity, at.get(c)!));
+  for (const c of commits) for (const f of c.files) if (f.status === 'A' && renames.has(f.path)
+    && (renamedAway.get(f.path) ?? Infinity) < at.get(c)!) unknown.add(f.path);
+  for (const path of [...unknown]) unknown.add(canonical(path));
+  const populations = new Map<string, Set<string>>();
+  let eligibleCommits = 0;
+  for (const c of commits) {
+    const files = [...new Set(c.files.flatMap(f => [f.path, ...(f.from ? [f.from] : [])]).filter(eligibleHistoryPath).map(canonical))];
+    if (files.length > 100) continue;
+    const paths = files.filter(path => !unknown.has(path));
+    if (!paths.length) continue;
+    eligibleCommits++;
+    for (const path of paths) {
+      const set = populations.get(path) ?? new Set<string>(); set.add(c.sha); populations.set(path, set);
+    }
+  }
+  return { end: input.end, start, commit: input.commit, complete: input.complete,
+    version: digest(JSON.stringify([CHANGE_HISTORY_VERSION, input.commit, commits])),
+    eligibleCommits, unknown, populations, canonical };
+}
+
+/** Co-change pairs for `paths` from a prepared window. `partners` restricts the partner side
+ * (triage asks only whether a family's own files change together, so a member file with many
+ * stronger outside partners cannot push its in-family links out of the result); `limit`
+ * bounds the sorted pairs (default 100). */
+export function coChangeFromIndex(index: CoChangeIndex, paths: readonly string[],
+  options: { partners?: readonly string[]; limit?: number } = {}): CoChangeReport {
+  if (paths.length > 50 || !paths.every(safe)) throw new Error('Invalid history scope/window');
+  const limit = options.limit ?? 100;
+  if (!(limit >= 0)) throw new Error('Co-change limit must be non-negative');
+  const scope = options.partners
+    ? [...new Set(options.partners.map(index.canonical))].flatMap(p => {
+      const population = index.populations.get(p);
+      return population ? [[p, population] as const] : [];
+    })
+    : index.populations;
+  const pairs: CoChangePair[] = [];
+  for (const requested of [...new Set(paths)]) {
+    const path = index.canonical(requested), own = index.populations.get(path);
+    if (index.unknown.has(requested) || index.unknown.has(path) || !own) continue;
+    for (const [partner, other] of scope) {
+      if (partner === path) continue;
+      const [small, large] = own.size <= other.size ? [own, other] : [other, own];
+      let shared = 0;
+      for (const sha of small) if (large.has(sha)) shared++;
+      const union = own.size + other.size - shared;
+      if (shared >= 3) pairs.push({ path: requested, partner, shared, union, score: shared / union });
+    }
+  }
+  pairs.sort((a, b) => b.score - a.score || a.partner.localeCompare(b.partner) || a.path.localeCompare(b.path));
+  return { status: index.complete ? 'measured' : 'unknown', version: index.version,
+    commit: index.commit, window: { start: new Date(index.start).toISOString(), end: index.end, lineage: 'first-parent' },
+    pairs: pairs.slice(0, limit), unknownPaths: [...index.unknown].sort(), eligibleCommits: index.eligibleCommits,
+    complete: index.complete,
+    limitations: ['90-day first-parent eligible commits only; generated/vendor/retired and >100-file changes excluded.',
+      'Jaccard = shared eligible commits / union eligible commits; minimum three shared; association does not prove dependency.',
+      ...(!index.complete ? ['History is truncated/unavailable; scores are not complete-window measurements.'] : []),
+      ...(index.unknown.size ? ['Conflicting rename/copy/reused-path identity remains unknown.'] : []),
+      ...(options.partners ? ['Partners restricted to the requested scope.'] : [])], error: null };
+}
+
+export function coChangeFromCommits(input: {
+  commits: readonly HistoryCommit[]; paths: readonly string[]; end: string;
+  commit: string | null; complete: boolean;
+}): CoChangeReport {
+  if (!Number.isFinite(Date.parse(input.end)) || input.paths.length > 50 || !input.paths.every(safe)) {
+    throw new Error('Invalid history scope/window');
+  }
+  return coChangeFromIndex(buildCoChangeIndex(input), input.paths);
+}
+
+/** How much of the window a read may take: commit cap, git timeout and output buffer. */
+export interface HistoryReadBounds { cap: number; timeoutMs: number; maxBufferBytes: number }
+/** In-process reads (reuse briefs, graph:query) must stay cheap. On a repository that commits
+ * every few minutes the window outgrows the cap, and such a read honestly reports incomplete. */
+export const IN_PROCESS_HISTORY_BOUNDS: HistoryReadBounds = { cap: COMMIT_CAP, timeoutMs: 3000, maxBufferBytes: 4 * 1024 * 1024 };
+/** For a managed child with its own heap and budget (the cleanup-campaign round), never the
+ * operator host. Sized from the Papercusp tree on 2026-10-27: 36,851 first-parent commits in the
+ * 90-day window, a 26.7 MB name-status log, read in 41 s. */
+export const FULL_WINDOW_HISTORY_BOUNDS: HistoryReadBounds = { cap: 250_000, timeoutMs: 300_000, maxBufferBytes: 512 * 1024 * 1024 };
+
+const NAME_STATUS = /^[ACDMRTUXB]\d{0,3}$/;
+
+/** Parse `git log -z --name-status --format=%x1e%H%x09%P%x09%cI`. Each field ends in NUL and a
+ * path is printed raw (no C-quoting), so a path may hold any byte but NUL. A token is therefore
+ * read as a header, a status or a path by its POSITION, never by its content: the first status
+ * of a commit carries a leading newline, a rename or copy is followed by two paths, every other
+ * status by one. `malformed` means the record structure itself did not parse. */
+export function parseHistoryLog(log: string): { commits: HistoryCommit[]; malformed: boolean } {
+  const tokens = log.split('\0');
+  const commits: HistoryCommit[] = [];
+  let current: HistoryCommit | null = null;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.startsWith('\x1e')) {
+      const fields = token.slice(1).split('\t');
+      if (fields.length !== 3) return { commits, malformed: true };
+      const [sha, parents, at] = fields as [string, string, string];
+      current = { sha, parents: parents ? parents.split(' ') : [], at, files: [] };
+      commits.push(current);
+      continue;
+    }
+    if (!token && i === tokens.length - 1) break;
+    const status = current?.files.length ? token : token.replace(/^\n/, '');
+    if (!current || !NAME_STATUS.test(status)) return { commits, malformed: true };
+    const arity = /^[RC]/.test(status) ? 2 : 1;
+    const paths = tokens.slice(i + 1, i + 1 + arity);
+    if (paths.length < arity || paths.some(path => !path)) return { commits, malformed: true };
+    i += arity;
+    current.files.push(arity === 2 ? { status, from: paths[0]!, path: paths[1]! } : { status, path: paths[0]! });
+  }
+  return { commits, malformed: false };
+}
+
+/** The 90-day first-parent window ending at `end`, as full commit file lists — never a
+ * pathspec-pruned log, which would hide co-change partners. `complete` is false when the
+ * window was truncated at the commit cap, a record was malformed, or the clone is shallow.
+ * Paths are raw (`-z`). A path that is not a safe history path (a backslash, a newline) is
+ * kept as recorded and is ineligible downstream; it never voids the window. Before `-z`, git
+ * C-quoted such a name and one junk file voided all 36,620 commits of the Papercusp window. */
+export async function readHistoryCommits(root: string, end = new Date().toISOString(), signal?: AbortSignal,
+  bounds: HistoryReadBounds = IN_PROCESS_HISTORY_BOUNDS): Promise<{
+  commits: HistoryCommit[]; commit: string; complete: boolean;
+}> {
+  if (!Number.isInteger(bounds.cap) || bounds.cap < 1 || !(bounds.timeoutMs > 0) || !(bounds.maxBufferBytes > 0)) {
+    throw new Error('History read bounds need a positive integer cap, timeout and buffer');
+  }
+  const start = new Date(Date.parse(end) - 90 * DAY).toISOString();
+  const git = async (args: string[], limits = IN_PROCESS_HISTORY_BOUNDS) => (await run('git', ['-C', root, ...args],
+    { encoding: 'utf8', timeout: limits.timeoutMs, maxBuffer: limits.maxBufferBytes, signal })).stdout;
+  const commit = (await git(['rev-parse', 'HEAD'])).trim();
+  const shallow = (await git(['rev-parse', '--is-shallow-repository'])).trim() !== 'false';
+  const log = await git(['log', commit, '--first-parent', '--no-merges', '-z',
+    '--name-status', '-M50%', '--format=%x1e%H%x09%P%x09%cI', `--since=${start}`, `--until=${end}`, `-n${bounds.cap + 1}`], bounds);
+  const parsed = parseHistoryLog(log);
+  const commits = parsed.commits;
+  const malformed = parsed.malformed
+    || commits.some(c => !/^[a-f0-9]{40,64}$/.test(c.sha) || !Number.isFinite(Date.parse(c.at)));
+  return { commits: commits.slice(0, bounds.cap), commit, complete: commits.length <= bounds.cap && !malformed && !shallow };
+}
+
+/** Full commit file lists, never a pathspec-pruned log (which would hide partners). */
+export async function readCoChange(root: string, paths: readonly string[], end = new Date().toISOString(), signal?: AbortSignal): Promise<CoChangeReport> {
+  const empty = () => coChangeFromCommits({ commits: [], paths, end, commit: null, complete: false });
+  try {
+    if (!paths.length || paths.length > 50 || !paths.every(safe)) throw new Error('History requires 1–50 exact repo-relative paths');
+    const { commits, commit, complete } = await readHistoryCommits(root, end, signal);
+    return coChangeFromCommits({ commits, paths, end, commit, complete });
+  } catch (error) { return { ...empty(), error: error instanceof Error ? error.message : 'Commit history unavailable' }; }
+}
+export interface ProvenanceAssignment { workItem: string; owner: string; start: string; end: string | null; complete: boolean }
+export interface ProvenanceEdit {
+  invocation: string; at: string; owner: string | null; session: string | null;
+  sessionOwners: string[]; tool: string; input: unknown; status: string;
+}
+export interface SymbolProvenance {
+  path: string; symbol: string; contentHash: string; start: number; end: number;
+  status: 'measured' | 'unknown'; workItem: string | null;
+  edits: { invocation: string; session: string; owner: string; workItem: string; at: string }[];
+  reason: string;
+  /** Historical label evidence does not establish continuity with the current range. */
+  recordedHistory?: RecordedSymbolHistory;
+}
+export interface LedgerProvenanceEdit {
+  id: string; at: string; owner: string; session: string | null;
+  workItem: string | null; symbols: string[] | null;
+  /** Session context recorded for an edit with no work item. Never a work-item attribution. */
+  fallback?: { intent: string | null; planSlug: string | null };
+}
+export interface RecordedSymbolHistory {
+  symbol: string; status: 'measured' | 'unknown'; workItems: string[];
+  edits: LedgerProvenanceEdit[]; currentIdentity: 'unknown';
+}
+export interface SymbolProvenanceReport {
+  status: 'measured' | 'unknown'; symbols: SymbolProvenance[];
+  history: RecordedSymbolHistory[]; fileEdits: LedgerProvenanceEdit[];
+  truncated: boolean; symbolStatus: 'measured' | 'unknown'; limitations: string[];
+}
+const normalizedPath = (root: string, path: string) => {
+  const rel = isAbsolute(path) ? relative(root, path) : path;
+  return safe(rel) ? rel : null;
+};
+
+/** Match an edit's resulting bytes to one unique current range. Never guess from name alone. */
+export function symbolProvenance(input: { root: string; path: string; source: string; name?: string;
+  edits: readonly ProvenanceEdit[]; assignments: readonly ProvenanceAssignment[]; complete: boolean }): SymbolProvenance[] {
+  const sf = ts.createSourceFile(input.path, input.source, ts.ScriptTarget.Latest, true,
+    input.path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const health = measureCodeHealth(ts, sf, input.path);
+  return health.functions.filter(fn => !input.name || fn.name === input.name).map(fn => {
+    const evidence: SymbolProvenance['edits'] = [];
+    let ambiguous = !input.complete || health.status !== 'measured';
+    for (const edit of input.edits) {
+      if (edit.status !== 'ok') continue;
+      const hunks = hunksFromToolCall(edit.tool.replace(':', '_'), edit.input);
+      for (const h of hunks) {
+        if (normalizedPath(input.root, h.path) !== input.path) continue;
+        const text = h.hunk.kind === 'write' ? h.hunk.body : h.hunk.kind === 'edit' ? h.hunk.new : null;
+        if (!text) { ambiguous = true; continue; }
+        const start = input.source.indexOf(text);
+        if (start < 0 || input.source.indexOf(text, start + 1) >= 0) { ambiguous = true; continue; }
+        if (start >= fn.end || start + text.length <= fn.start) continue;
+        const at = Date.parse(edit.at);
+        const assignments = input.assignments.filter(a => a.owner === edit.owner && a.complete
+          && Date.parse(a.start) <= at && (!a.end || at < Date.parse(a.end)));
+        const items = [...new Set(assignments.map(a => a.workItem))];
+        const owners = [...new Set(edit.sessionOwners)];
+        if (!edit.owner || !edit.session || owners.length !== 1 || owners[0] !== edit.owner || items.length !== 1) {
+          ambiguous = true; continue;
+        }
+        if (!evidence.some(e => e.invocation === edit.invocation)) evidence.push({ invocation: edit.invocation,
+          session: edit.session, owner: edit.owner, workItem: items[0]!, at: edit.at });
+      }
+    }
+    evidence.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || a.invocation.localeCompare(b.invocation));
+    const status = evidence.length && !ambiguous ? 'measured' as const : 'unknown' as const;
+    return { path: input.path, symbol: fn.name, contentHash: fn.contentHash, start: fn.start, end: fn.end,
+      status, workItem: status === 'measured' ? evidence[0]!.workItem : null, edits: evidence,
+      reason: status === 'measured' ? 'Successful edit → exact session owner → unique assignment interval → current blob/range.'
+        : 'Missing, stale, ambiguous or partial edit/session/assignment evidence; git authorship is not a substitute.' };
+  });
+}
+
+/** Read labels as recorded, never reconstruct historical identity from today's AST. */
+export function ledgerSymbolProvenance(input: { path: string; source: string; name?: string;
+  rows: readonly LedgerProvenanceEdit[]; complete: boolean }): SymbolProvenanceReport {
+  const sf = ts.createSourceFile(input.path, input.source, ts.ScriptTarget.Latest, true,
+    input.path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const health = measureCodeHealth(ts, sf, input.path);
+  const rows = input.rows.slice(0, PROVENANCE_EDIT_CAP);
+  const truncated = input.rows.length > PROVENANCE_EDIT_CAP || !input.complete;
+  const complete = !truncated && health.status === 'measured';
+  const labels = [...new Set(rows.flatMap(row => row.symbols ?? []))]
+    .filter(label => !input.name || label === input.name).sort();
+  const history: RecordedSymbolHistory[] = labels.map(symbol => {
+    const edits = rows.filter(row => row.symbols?.includes(symbol));
+    return { symbol, status: complete && edits.every(row => Boolean(row.workItem)) ? 'measured' : 'unknown',
+      workItems: [...new Set(edits.flatMap(row => row.workItem ? [row.workItem] : []))], edits, currentIdentity: 'unknown' };
+  });
+  const symbols = health.functions.filter(fn => !input.name || fn.name === input.name).map(fn => ({
+    path: input.path, symbol: fn.name, contentHash: fn.contentHash, start: fn.start, end: fn.end,
+    status: 'unknown' as const, workItem: null, edits: [],
+    recordedHistory: history.find(record => record.symbol === fn.name),
+    reason: 'Edit-time labels are historical evidence only; current blob/range continuity is unknown.' }));
+  return { status: complete ? 'measured' : 'unknown', symbols, history, fileEdits: rows, truncated,
+    symbolStatus: complete && rows.every(row => row.symbols !== null && Boolean(row.workItem)) ? 'measured' : 'unknown',
+    limitations: ['Work items and symbol labels were recorded at edit time, independently of current claims.',
+      'Labels do not prove current identity across rename, move, overload, nesting or later edits.',
+      'NULL symbol capture is unknown file-level evidence; [] means measured top-level only.',
+      'An edit with no work item stays unattributed; its fallback intent/plan is session context only.',
+      ...(truncated ? ['Provenance is truncated at 50 edit rows; history is incomplete.'] : []),
+      ...(health.status !== 'measured' ? health.limitations : [])] };
+}
+
+/** Indexed, bounded ledger read; no invocation scan or current-holder join. */
+export async function readSymbolProvenance(input: { workspaceId: string; harness: string; root: string; path: string;
+  name?: string; since?: string }, sql: Sql = getOrgPg().sql): Promise<SymbolProvenanceReport> {
+  if (!input.workspaceId || !input.harness || !safe(input.path)) throw new Error('Exact workspace/harness/path required');
+  try {
+    const root = await realpath(input.root), file = await realpath(resolve(root, input.path));
+    if (normalizedPath(root, file) !== input.path) throw new Error('Path escapes registered repository');
+    const source = await readFile(file, 'utf8');
+    const since = input.since ?? new Date(Date.now() - 90 * DAY).toISOString();
+    if (!Number.isFinite(Date.parse(since))) throw new Error('Invalid provenance window');
+    const rows = await sql.begin(async tx => {
+      await tx`SELECT set_config('statement_timeout', '500ms', true)`;
+      return tx<{ id: string; ts: string; agent_id: string; session_id: string | null;
+        work_item_id: string | null; symbols: string[] | null; intent: string | null; plan_slug: string | null }[]>`
+        SELECT id::text, ts, agent_id, session_id, work_item_id, symbols, intent, plan_slug
+        FROM harness_shared.edit_attribution_ledger
+        -- harness_slug is stamped only when the writer resolves a work item, so an
+        -- unattributed edit carries NULL; repo_root + file already scope the row.
+        WHERE workspace_id = ${input.workspaceId}
+          AND (harness_slug = ${input.harness} OR harness_slug IS NULL)
+          AND repo_root = ${root} AND file = ${input.path} AND ts >= ${since}::timestamptz
+          AND (${input.name ?? null}::text IS NULL OR symbols IS NULL OR symbols @> ${input.name ? [input.name] : []}::text[])
+        ORDER BY ts DESC, id DESC LIMIT ${PROVENANCE_EDIT_CAP + 1}`;
+    });
+    return ledgerSymbolProvenance({ path: input.path, source, name: input.name,
+      rows: rows.map(row => ({ id: row.id, at: new Date(row.ts).toISOString(), owner: row.agent_id,
+        session: row.session_id, workItem: row.work_item_id, symbols: row.symbols,
+        // SPEC-P-010-B: an unattributed edit shows the session's recorded intent/plan as
+        // context beside workItem: null; it never enters workItems or the measured status.
+        ...(!row.work_item_id && (row.intent || row.plan_slug)
+          ? { fallback: { intent: row.intent, planSlug: row.plan_slug } } : {}) })),
+      complete: source === await readFile(file, 'utf8') });
+  } catch (error) { return { status: 'unknown', symbols: [], history: [], fileEdits: [], truncated: false, symbolStatus: 'unknown', limitations: [
+    error instanceof Error ? error.message : 'Provenance ledger unavailable'] }; }
+}
+
+/** code-intel-delivery-and-outcomes-2026-10-26 P-008: prior work on the functions a
+ * session touches, from the edit-time ledger's `symbols` (P-007). One reader serves the
+ * first-touch push note and the claim brief's provenance section. Ranking: bugs and
+ * decisions first, then the most recent edit of the symbol, ties by most recent close. */
+export const PRIOR_WORK_CAP = 3;
+export const PRIOR_WORK_WINDOW_DAYS = 90;
+/** Distinct (work item, capture) groups read per query; beyond this the total is a floor. */
+export const PRIOR_WORK_GROUP_CAP = 200;
+const PRIORITY_KINDS = new Set(['bug', 'decision']);
+export interface PriorWorkItem {
+  workItem: string; title: string; state: string; kind: string | null;
+  lastEditAt: string; closedAt: string | null; symbols: readonly string[];
+}
+/** One grouped ledger read row. `visible` = the reader's workspace holds the item;
+ * `measured` = the edits carried symbol capture (NULL capture is file-level evidence). */
+export interface PriorWorkLedgerRow extends PriorWorkItem { visible: boolean; measured: boolean }
+export interface PriorWorkReport {
+  status: 'measured' | 'unknown'; path: string;
+  /** Touched symbols; `null` = the touched symbol could not be resolved. */
+  names: readonly string[] | null;
+  items: PriorWorkItem[]; total: number;
+  /** Items whose edits to this file predate symbol capture, so may or may not touch `names`. */
+  fileLevel: PriorWorkItem[]; fileLevelTotal: number;
+  truncated: boolean; error: string | null;
+}
+export interface PriorWorkQuery {
+  workspaceId: string; root: string; path: string; names: readonly string[] | null;
+  /** The reader's own claimed item, which is current work, not prior work. */
+  excludeWorkItem?: string | null; since?: string;
+}
+export type PriorWorkReader = (query: PriorWorkQuery) => Promise<PriorWorkReport>;
+
+/** One entry per work item however many ledger rows name it, ranked and capped. */
+export function rankPriorWork(rows: readonly PriorWorkItem[], cap = PRIOR_WORK_CAP): { items: PriorWorkItem[]; total: number } {
+  const merged = new Map<string, PriorWorkItem>();
+  for (const row of rows) {
+    const prev = merged.get(row.workItem);
+    const item: PriorWorkItem = { workItem: row.workItem, title: row.title, state: row.state, kind: row.kind,
+      lastEditAt: row.lastEditAt, closedAt: row.closedAt, symbols: [...new Set(row.symbols)].sort() };
+    merged.set(row.workItem, !prev ? item : { ...prev,
+      lastEditAt: Date.parse(item.lastEditAt) > Date.parse(prev.lastEditAt) ? item.lastEditAt : prev.lastEditAt,
+      symbols: [...new Set([...prev.symbols, ...item.symbols])].sort() });
+  }
+  const closed = (row: PriorWorkItem) => row.closedAt ? Date.parse(row.closedAt) : -1;
+  const ordered = [...merged.values()].sort((a, b) =>
+    Number(PRIORITY_KINDS.has(b.kind ?? '')) - Number(PRIORITY_KINDS.has(a.kind ?? ''))
+    || Date.parse(b.lastEditAt) - Date.parse(a.lastEditAt)
+    || closed(b) - closed(a) || a.workItem.localeCompare(b.workItem));
+  return { items: ordered.slice(0, Math.max(0, cap)), total: ordered.length };
+}
+
+/** Items the reader may not see are dropped before ranking, so they are in neither the list nor the count. */
+export function priorWorkReport(input: { path: string; names: readonly string[] | null;
+  rows: readonly PriorWorkLedgerRow[]; truncated: boolean }): PriorWorkReport {
+  const visible = input.rows.filter(row => row.visible && row.workItem);
+  const measured = input.names === null ? [] : visible.filter(row => row.measured);
+  const ranked = rankPriorWork(measured);
+  const measuredItems = new Set(measured.map(row => row.workItem));
+  const file = rankPriorWork(visible.filter(row => !measuredItems.has(row.workItem)));
+  return { status: input.names === null || (!ranked.total && file.total) ? 'unknown' : 'measured',
+    path: input.path, names: input.names, items: ranked.items, total: ranked.total,
+    fileLevel: file.items, fileLevelTotal: file.total, truncated: input.truncated, error: null };
+}
+
+const clipTitle = (title: string) => title.length > 60 ? `${title.slice(0, 59)}…` : title;
+function priorWorkAge(iso: string, now: number): string {
+  const ms = Math.max(0, now - Date.parse(iso));
+  return ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))}m`
+    : ms < DAY ? `${Math.round(ms / 3_600_000)}h` : `${Math.round(ms / DAY)}d`;
+}
+export function priorWorkPointer(path: string, names: readonly string[] | null, harness: string): string {
+  return `graph:query ${JSON.stringify({ op: 'provenance', file_path: path,
+    ...(names?.length === 1 ? { name: names[0] } : {}), harnesses: [harness] })}`;
+}
+
+/** The single prior-work line, or null when there is nothing to say: zero prior rows,
+ * no named symbol touched, or a failed read (a failed read never renders as absence). */
+export function formatPriorWorkLine(report: PriorWorkReport, opts: { harness: string; now?: number }): string | null {
+  if (report.error || (report.names !== null && !report.names.length)) return null;
+  const now = opts.now ?? Date.now();
+  const label = report.names === null ? `\`${report.path}\``
+    : report.names.length <= 3 ? report.names.map(name => `\`${name}\``).join(', ')
+      : `\`${report.path}\` (${report.names.length} functions)`;
+  const list = (items: readonly PriorWorkItem[]) => items.map(item =>
+    `${item.workItem} (${clipTitle(item.title)}, ${item.state}, ${priorWorkAge(item.lastEditAt, now)})`).join('; ');
+  const more = `more: ${priorWorkPointer(report.path, report.names, opts.harness)}`;
+  const floor = report.truncated ? '+' : '';
+  // The total and the recovery pointer are printed only when the line omits something: the
+  // note shares a bounded brief/push budget, so a complete list carries no tail.
+  if (report.total) {
+    const omitted = report.total > report.items.length || report.truncated || report.fileLevelTotal > 0;
+    const fileLevel = report.fileLevelTotal ? `; +${report.fileLevelTotal}${floor} file-level without symbol capture` : '';
+    return `Prior work on ${label}: ${list(report.items)}.`
+      + (omitted ? ` ${report.total}${floor} total${fileLevel}; ${more}` : '');
+  }
+  if (!report.fileLevelTotal) return null;
+  const why = report.names === null ? 'touched symbol not resolved' : 'earlier edits have no symbol capture';
+  const omitted = report.fileLevelTotal > report.fileLevel.length || report.truncated;
+  return `Prior work on ${label}: unknown (${why}); file-level: ${list(report.fileLevel)}.`
+    + (omitted ? ` ${report.fileLevelTotal}${floor} total; ${more}` : '');
+}
+
+/** Indexed, bounded read: one grouped row per (work item, capture), visibility by workspace join. */
+export async function readPriorWork(query: PriorWorkQuery, sql: Sql = getOrgPg().sql): Promise<PriorWorkReport> {
+  const failed = (error: string): PriorWorkReport => ({ status: 'unknown', path: query.path, names: query.names,
+    items: [], total: 0, fileLevel: [], fileLevelTotal: 0, truncated: false, error });
+  if (!query.workspaceId || !query.root || !safe(query.path)) return failed('Exact workspace/root/path required');
+  if (query.names && !query.names.length) return priorWorkReport({ path: query.path, names: [], rows: [], truncated: false });
+  try {
+    const root = await realpath(query.root);
+    const since = query.since ?? new Date(Date.now() - PRIOR_WORK_WINDOW_DAYS * DAY).toISOString();
+    if (!Number.isFinite(Date.parse(since))) throw new Error('Invalid prior-work window');
+    const names = query.names ? [...query.names] : null;
+    const rows = await sql.begin(async tx => {
+      await tx`SELECT set_config('statement_timeout', '75ms', true)`;
+      return tx<{ work_item: string; visible: boolean; title: string | null; state: string | null; kind: string | null;
+        closed_at: Date | string | null; last_edit_at: Date | string; measured: boolean; symbols: string[] }[]>`
+        SELECT e.work_item_id AS work_item, (w.feature_id IS NOT NULL) AS visible, left(w.title, 120) AS title,
+          w.status AS state, COALESCE(w.item_kind, w.kind) AS kind, w.closed_ts AS closed_at,
+          max(e.ts) AS last_edit_at, (e.symbols IS NOT NULL) AS measured,
+          COALESCE(array_agg(DISTINCT s.name) FILTER (WHERE s.name IS NOT NULL), '{}') AS symbols
+        FROM harness_shared.edit_attribution_ledger e
+        LEFT JOIN harness_shared.work_items w ON w.workspace_id = e.workspace_id AND w.feature_id = e.work_item_id
+        LEFT JOIN LATERAL unnest(e.symbols) AS s(name) ON s.name = ANY(${names}::text[])
+        WHERE e.workspace_id = ${query.workspaceId} AND e.repo_root = ${root} AND e.file = ${query.path}
+          AND e.ts >= ${since}::timestamptz AND e.work_item_id IS NOT NULL
+          AND e.work_item_id IS DISTINCT FROM ${query.excludeWorkItem ?? null}
+          AND (${names}::text[] IS NULL OR e.symbols IS NULL OR e.symbols && ${names}::text[])
+        GROUP BY e.work_item_id, w.feature_id, w.title, w.status, w.item_kind, w.kind, w.closed_ts, (e.symbols IS NOT NULL)
+        ORDER BY max(e.ts) DESC, e.work_item_id
+        LIMIT ${PRIOR_WORK_GROUP_CAP + 1}`;
+    });
+    const iso = (value: Date | string) => new Date(value).toISOString();
+    return priorWorkReport({ path: query.path, names: query.names, truncated: rows.length > PRIOR_WORK_GROUP_CAP,
+      rows: rows.slice(0, PRIOR_WORK_GROUP_CAP).map(row => ({ workItem: row.work_item, visible: row.visible,
+        title: row.title ?? '', state: row.state ?? 'unknown', kind: row.kind, measured: row.measured,
+        lastEditAt: iso(row.last_edit_at), closedAt: row.closed_at ? iso(row.closed_at) : null, symbols: row.symbols ?? [] })) });
+  } catch (error) { return failed(error instanceof Error ? error.message : 'Prior-work ledger unavailable'); }
+}
+
+/** Every function/class name in a file, derived from its current source (the claim brief's symbols). */
+export function fileSymbolNames(path: string, source: string): string[] | null {
+  const spans = symbolSpans(path, source);
+  return spans ? [...new Set(spans.map(span => span.name))].sort() : null;
+}
+
+export function coChangeOverlap(report: CoChangeReport, tasks: readonly { itemId: string; paths: readonly string[] }[]) {
+  return { status: report.status, pairs: report.pairs.flatMap(pair => tasks.flatMap(a => tasks.filter(b => a.itemId < b.itemId
+    && (a.paths.includes(pair.path) && b.paths.includes(pair.partner) || a.paths.includes(pair.partner) && b.paths.includes(pair.path)))
+    .map(b => ({ items: [a.itemId, b.itemId], paths: [pair.path, pair.partner], shared: pair.shared, union: pair.union })))),
+  unanchored: report.pairs.filter(p => !tasks.some(task => task.paths.includes(p.partner))).map(p => p.partner),
+  limitations: report.limitations };
+}
+
+/** P009 provider seam: the caller supplies the shared registered repository resolver.
+ * P-008: the provenance section is the prior-work reader the first-touch note uses. */
+export function changeHistoryProviders(deps: {
+  harness?: string;
+  cochange(context: Readonly<ReuseProviderContext>, signal: AbortSignal): Promise<CoChangeReport>;
+  provenance(context: Readonly<ReuseProviderContext>, signal: AbortSignal): Promise<PriorWorkReport[]>;
+}): ReuseBriefProvider[] {
+  return [{ id: 'cochange', read: async (ctx, signal) => {
+    const report = await deps.cochange(ctx, signal);
+    const measured = report.status === 'measured' && report.commit !== null && report.commit === ctx.commit && Boolean(ctx.sourceVersion);
+    return { status: measured ? 'measured' : 'unknown', sourceVersion: measured ? ctx.sourceVersion : null,
+      indexVersion: report.version.slice(0, 12), citedPaths: report.pairs.flatMap(p => [p.path, p.partner]),
+      lines: measured ? report.pairs.filter(p => !ctx.paths.includes(p.partner)).slice(0, 3)
+        .map(p => `${ctx.surface === 'completion' ? 'Untouched' : 'Unanchored'} ${p.partner} (${p.shared}/${p.union};90d)`) : [] };
+  } }, { id: 'provenance', read: async (ctx, signal) => {
+    const reports = await deps.provenance(ctx, signal);
+    // A completed read is measured even when a file's line is an explicit unknown; a failed one never is.
+    const measured = Boolean(ctx.sourceVersion) && reports.length > 0 && reports.every(report => !report.error);
+    const harness = deps.harness ?? ctx.repository?.harness ?? 'unknown';
+    return { status: measured ? 'measured' : 'unknown', sourceVersion: measured ? ctx.sourceVersion : null,
+      indexVersion: digest(JSON.stringify(reports)).slice(0, 12), citedPaths: reports.map(report => report.path),
+      lines: measured ? reports.flatMap(report => formatPriorWorkLine(report, { harness }) ?? []).slice(0, 3) : [] };
+  } }];
+}
+
+/** P010 owns authoring/completion delivery; install these producers at its P009 seam. */
+export function registerChangeHistoryProviders(deps: Parameters<typeof changeHistoryProviders>[0]): () => void {
+  const remove: (() => void)[] = [];
+  try { for (const provider of changeHistoryProviders(deps)) remove.push(registerReuseBriefProvider(provider)); }
+  catch (error) { for (const dispose of remove.reverse()) dispose(); throw error; }
+  return () => { for (const dispose of remove.reverse()) dispose(); };
+}
+
+/** Production binding to the same source fingerprint used by task-brief. No side index. */
+export function boundChangeHistoryProviders(input: {
+  root: () => Promise<string | null>; harness: string;
+  /** Injectable for tests; production reads the edit-attribution ledger. */
+  priorWork?: PriorWorkReader;
+}): ReuseBriefProvider[] {
+  const current = async (ctx: Readonly<ReuseProviderContext>, signal: AbortSignal) => {
+    const root = await input.root();
+    if (!root || signal.aborted || !ctx.paths.length || !ctx.paths.every(safe)) throw new Error('History source unavailable');
+    const sources: [string, string][] = [];
+    for (const path of ctx.paths) {
+      const file = await realpath(resolve(root, path));
+      if (normalizedPath(await realpath(root), file) !== path) throw new Error('History source escapes repository');
+      sources.push([path, digest(await readFile(file, 'utf8'))]);
+    }
+    if (signal.aborted || digest(JSON.stringify(sources)) !== ctx.sourceVersion) throw new Error('History source fingerprint changed');
+    return root;
+  };
+  const priorWork = input.priorWork ?? (query => readPriorWork(query));
+  return changeHistoryProviders({
+    harness: input.harness,
+    cochange: async (ctx, signal) => {
+      const root = await current(ctx, signal);
+      const report = await readCoChange(root, ctx.paths, undefined, signal);
+      await current(ctx, signal);
+      return report;
+    },
+    // Symbols come from the item's files as they are at claim time, never from a declared list.
+    provenance: async (ctx, signal) => {
+      const root = await current(ctx, signal);
+      const reports = await Promise.all(ctx.paths.filter(path => /\.[cm]?[jt]sx?$/.test(path)).slice(0, 4).map(async path => {
+        const names = fileSymbolNames(path, await readFile(resolve(root, path), 'utf8'));
+        return priorWork({ workspaceId: ctx.workspaceId, root, path, names, excludeWorkItem: ctx.workItem ?? null });
+      }));
+      await current(ctx, signal);
+      if (signal.aborted) throw new Error('Prior-work read aborted');
+      return reports;
+    },
+  });
+}

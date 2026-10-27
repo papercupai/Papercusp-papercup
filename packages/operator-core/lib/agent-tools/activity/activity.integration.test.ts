@@ -42,12 +42,21 @@ const { default: reportTool } = await import('./report');
 const { default: recentTool } = await import('./recent');
 const { toolCallRowsFor } = await import('../../tool-call-log-store');
 
-// A worker ctx (role session) — not superuser, so owner falls back to the explicit
-// arg the hook passes. workspaceId pins the row's workspace.
+// A principal-only worker exercises the omitted-owner fallback. Positive hook
+// reports below each get their own attributed session, as real worker hooks do.
 const WORKER_CTX = { isSuperuser: false, role: 'worker', principal: { workspaceId: 'ws-test', slug: 'agent:worker' } } as never;
 
+function attributedWorkerCtx(owner: string) {
+  return {
+    isSuperuser: true, uiClientId: owner, clientId: owner,
+    principal: { workspaceId: 'ws-test', slug: 'system:operator' },
+  } as never;
+}
+
 const HARNESS_CONTEXT_CTX = {
-  isSuperuser: false,
+  isSuperuser: true,
+  uiClientId: 'su-context-harness',
+  clientId: 'su-context-harness',
   role: 'worker',
   harnessSlug: 'papercup',
   principal: { workspaceId: 'ws-test', slug: 'agent:worker' },
@@ -58,6 +67,8 @@ const HARNESS_CONTEXT_CTX = {
 // persist the latter so concrete readers and the workspace-leading index agree.
 const WILDCARD_PRINCIPAL_CTX = {
   isSuperuser: true,
+  uiClientId: 'su-concrete',
+  clientId: 'su-concrete',
   role: 'operator',
   workspaceId: 'ws-concrete',
   principal: { workspaceId: '*', slug: 'system:operator' },
@@ -87,7 +98,10 @@ const DDL = `
     FOR EACH ROW EXECUTE FUNCTION harness_shared.notify_agent_activity();
 `;
 
-async function report(args: Record<string, unknown>, ctx: never = WORKER_CTX) {
+async function report(
+  args: Record<string, unknown>,
+  ctx: never = typeof args.owner === 'string' ? attributedWorkerCtx(args.owner) : WORKER_CTX,
+) {
   const res = (await reportTool.handler(args as never, ctx)) as { content: { text: string }[]; isError?: boolean };
   return { parsed: JSON.parse(res.content[0]!.text), isError: res.isError };
 }
@@ -123,6 +137,18 @@ beforeEach(async () => {
 });
 
 describe('activity:report — write + server-side summary', () => {
+  it('refuses an attributed caller reporting another owner before inserting a row', async () => {
+    const res = await reportTool.handler({
+      owner: 'su-victim', tool_name: 'Read', phase: 'post',
+    }, attributedWorkerCtx('su-caller'));
+    expect(res).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: expect.stringContaining('owner_mismatch') }],
+    });
+    const rows = await db.sql`SELECT * FROM harness_shared.agent_activity`;
+    expect(rows).toHaveLength(0);
+  });
+
   it('inserts an edit with a derived ✎ summary + {file} detail', async () => {
     const { parsed } = await report({
       owner: 'su-w1', agent: 'claude', phase: 'post',
@@ -176,7 +202,7 @@ describe('activity:report — write + server-side summary', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.hook_bundle).toMatchObject({ generation: 'integration-generation' });
     expect(h.hookBundle).toHaveBeenCalledWith(
-      'su-hook-compat', { generation: 'previous-generation', glance_stale: true }, WORKER_CTX,
+      'su-hook-compat', { generation: 'previous-generation', glance_stale: true }, attributedWorkerCtx('su-hook-compat'),
     );
     const rows = await db.sql<Array<{ owner_id: string; tool_name: string }>>`
       SELECT owner_id, tool_name FROM harness_shared.agent_activity

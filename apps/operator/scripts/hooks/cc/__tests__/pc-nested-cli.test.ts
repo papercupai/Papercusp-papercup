@@ -617,6 +617,9 @@ const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
   // Its wake is delivered to the nested CLI, whose provenance hook skips it; the row could
   // only ever misclassify a real owner turn in the su.
   "pretooluse-schedule-wakeup-provenance.mjs": "skip-cached",
+  // Would write the nested CLI's tool/turn failures into the fleet view as the su's.
+  "posttooluse-failure-record.mjs": "skip-cached",
+  "stop-failure-record.mjs": "skip-cached",
   // Thin shims over the inject dispatcher, which skips a nested CLI per PORT
   // (inject/index.mjs NESTED_CLI_SKIP_PORTS): CTRL transition, delivery ledger, recall
   // dedup, identity hook turn. The census checks each shim's port is in that set.
@@ -646,6 +649,14 @@ const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
   "posttooluse-tsc-verdict-stale-nudge.mjs": "as-owner",
   "pc_nested_cli.sh": "helper",
   "pc_nested_cli.mjs": "helper",
+  // Keys the su's dialog ticket on the SID, but runs only from ask-gate-mirror.sh AFTER
+  // that hook's nested-CLI guard (pinned below); psu-pty-host imports it as the su itself.
+  "dialog-answer-provenance.mjs": "helper",
+};
+
+/** Helpers a hook runs on the inherited SID: each caller must skip a nested CLI first. */
+const GUARDED_HELPER_CALLERS: Record<string, string[]> = {
+  "dialog-answer-provenance.mjs": ["ask-gate-mirror.sh"],
 };
 
 /** Where each skip-cached hook first acts as the su, when it is not the default marker. */
@@ -653,6 +664,8 @@ const FIRST_SU_ACTION: Record<string, string> = {
   "posttooluse-objective-title.sh": 'python3 - "${PAPERCUSP_SID:-fixture}"',
   "statusline-fleet.sh": 'python3 - "$OPERATOR_URL"',
   "pretooluse-schedule-wakeup-provenance.mjs": "return ledgerRowForScheduleWakeup(",
+  "posttooluse-failure-record.mjs": "await postActivityReport(",
+  "stop-failure-record.mjs": "await postStopFailureReport(",
 };
 
 describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945, WI-10004953)", () => {
@@ -684,7 +697,8 @@ describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945, W
       if (policy !== "skip-cached") continue;
       const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
       if (name.endsWith(".mjs")) {
-        const guard = src.search(/if \(isNested\(\)\) return\b/);
+        // The injectable `isNested()` seam, or the cached helper called directly.
+        const guard = src.search(/if \((?:isNested\(\)|nestedCliCached\(\{ env \}\))\) return\b/);
         const work = src.indexOf(FIRST_SU_ACTION[name] ?? "await fetchImpl(");
         expect(guard, `${name}: no isNested() guard`).toBeGreaterThan(-1);
         expect(work, `${name}: su action not found (instrument broken)`).toBeGreaterThan(-1);
@@ -697,6 +711,27 @@ describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945, W
       expect(guard, `${name}: no cached pc_nested_cli.sh guard`).toBeGreaterThan(-1);
       expect(work, `${name}: no SID use found (instrument broken)`).toBeGreaterThan(-1);
       expect(guard, `${name}: guard must run before the SID is used`).toBeLessThan(work);
+    }
+  });
+
+  it("a guarded helper runs only from hooks that skip a nested CLI first", () => {
+    for (const [helper, callers] of Object.entries(GUARDED_HELPER_CALLERS)) {
+      expect(NESTED_CLI_POLICY[helper], `${helper}: not a helper`).toBe("helper");
+      // Every hook naming the helper is a caller: a new, unguarded one fails here.
+      const actual = fs
+        .readdirSync(HOOK_DIR, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name !== helper && /\.(sh|mjs)$/.test(e.name))
+        .filter((e) => fs.readFileSync(join(HOOK_DIR, e.name), "utf8").includes(helper))
+        .map((e) => e.name)
+        .sort();
+      expect(actual, `${helper}: callers`).toEqual([...callers].sort());
+      for (const caller of callers) {
+        const src = fs.readFileSync(join(HOOK_DIR, caller), "utf8");
+        const guard = src.indexOf('pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached');
+        const call = src.indexOf(helper);
+        expect(guard, `${caller}: no cached pc_nested_cli.sh guard`).toBeGreaterThan(-1);
+        expect(guard, `${caller}: guard must run before ${helper}`).toBeLessThan(call);
+      }
     }
   });
 

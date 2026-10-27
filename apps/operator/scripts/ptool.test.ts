@@ -39,10 +39,13 @@ import {
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
+  resolveLauncherManagedStagingDirectCandidate,
+  hasCurrentPtoolServingGeneration,
   canDispatchOnFallbackOperator,
   resolvePtoolRecoveryTool,
   isReadOnlyPtoolRecoveryRequest,
   shouldAttemptManagedReadRecovery,
+  shouldAttemptManagedCatalogRecovery,
   canDispatchPtoolOnFallback,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
@@ -112,6 +115,7 @@ import {
   toolNotOkReason,
   unwrapOutputEnvelope,
   withPtoolConnectionPhaseTrace,
+  createPtoolHttpTraceFetch,
 } from './ptool.mjs';
 import {
   AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
@@ -184,6 +188,107 @@ describe('ptool post-connect phase diagnostics', () => {
       log.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it.each([false, true])('reports the catalog wrapper outcome when discovery fails=%s', async (failed) => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = { privateClient: 'private-client' };
+    const tools = [{ name: 'private-tool' }];
+    const failure = Object.assign(new Error('private-catalog-error'), { code: -32001 });
+    let resolve!: (value: typeof tools) => void;
+    let reject!: (error: Error) => void;
+    const listing = new Promise<typeof tools>((ok, fail) => { resolve = ok; reject = fail; });
+    const list = vi.fn(() => listing);
+    const reconnect = vi.fn();
+    try {
+      const pending = withPtoolConnectionPhaseTrace(trace, 'tools-list', route, () =>
+        listToolsWithNativeSessionFallback(client, {
+          discoverTools: (target: unknown) => listToolsWithTokenFallback(
+            target, ['private-token-path'], 'private-token-path', reconnect, list,
+          ),
+        }));
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      if (failed) reject(failure); else resolve(tools);
+      const result = await pending;
+      expect(result.client).toBe(client);
+      expect(result.tools).toBe(failed ? null : tools);
+      expect(result.error).toBe(failed ? failure : null);
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(reconnect).not.toHaveBeenCalled();
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event: failed ? 'phase-attempt-failed' : 'phase-complete',
+        stage: 'tools-list', elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS });
+      if (failed) expect(events[1].failureKind).toBe('transport');
+      else expect(events[1]).not.toHaveProperty('failureKind');
+      expect(JSON.stringify(events)).not.toMatch(/private-/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      log.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ptool HTTP request correlation', () => {
+  const trace = { traceId: 'connection-test', operatorConnectSequence: 2 };
+
+  it('sends distinct server trace IDs across discovery retries while preserving the request and response', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = new Response('private-response');
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
+    const signal = new AbortController().signal;
+    const url = 'http://127.0.0.1:3271/api/mcp?native_session=private-session';
+    const init = { method: 'POST', signal, body: 'private-arguments',
+      headers: { Authorization: 'Bearer private-token', 'x-papercusp-mcp-trace-id': 'old-request' } };
+    try {
+      await expect(send(url, init)).resolves.toBe(response);
+      await expect(send(url, init)).resolves.toBe(response);
+      const ids = fetchImpl.mock.calls.map(([input, options]) => {
+        expect(input).toBe(url);
+        expect(options).toMatchObject({ method: 'POST', signal, body: init.body });
+        const headers = new Headers(options?.headers);
+        expect(headers.get('authorization')).toBe(init.headers.Authorization);
+        return headers.get('x-papercusp-mcp-trace-id');
+      });
+      expect(new Set(ids).size).toBe(2);
+      for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events.map(event => event.requestTraceId)).toEqual(ids);
+      for (const event of events) expect(event).toMatchObject({ ...trace, event: 'http-request-start',
+        route: { host: '127.0.0.1', port: 3271 } });
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-|old-request/);
+      expect(init.headers['x-papercusp-mcp-trace-id']).toBe('old-request');
+    } finally { log.mockRestore(); }
+  });
+
+  it('correlates a stalled request and preserves Request headers and the original rejection', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = new Error('private-error');
+    let reject!: (error: Error) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((_, fail) => { reject = fail; }));
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
+    try {
+      const request = new Request('http://127.0.0.1:3271/api/mcp', {
+        headers: { Authorization: 'Bearer private-token' },
+      });
+      const pending = send(request);
+      const rejected = expect(pending).rejects.toBe(failure);
+      await vi.advanceTimersByTimeAsync(PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS);
+      const headers = new Headers(fetchImpl.mock.calls[0][1]?.headers);
+      expect(headers.get('authorization')).toBe('Bearer private-token');
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event: 'phase-pending', stage: 'http-response-headers',
+        requestTraceId: headers.get('x-papercusp-mcp-trace-id') });
+      reject(failure);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+    } finally { log.mockRestore(); vi.useRealTimers(); }
   });
 });
 
@@ -638,6 +743,28 @@ describe('ptool operator routing', () => {
     expect(canDispatchOnFallbackOperator({ annotations: { readOnlyHint: false } }, true)).toBe(false);
   });
 
+  it('derives direct staging recovery only for an unpinned managed legacy-proxy route', () => {
+    const managed = {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    };
+
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', managed))
+      .toBe('http://127.0.0.1:3170');
+    expect(resolveLauncherManagedStagingDirectCandidate(
+      'http://127.0.0.1:9071', managed, 'http://127.0.0.1:3170',
+    )).toBeNull();
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', {
+      ...managed,
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'caller',
+    })).toBeNull();
+    expect(resolveLauncherManagedStagingDirectCandidate('http://127.0.0.1:9071', {
+      ...managed,
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    })).toBeNull();
+  });
+
   it('uses psu-launcher’s default staging proxy when the child omits its port override', () => {
     expect(resolvePtoolOperatorCandidates({
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
@@ -676,6 +803,36 @@ describe('ptool operator routing', () => {
     )).toBe(false);
   });
 
+  it('validates the exact direct or nested target generation before managed recovery', () => {
+    const generation = 'serving-generation-v1:current';
+    const catalog = [
+      { name: 'tools:invoke', _meta: { 'papercusp/servingGeneration': generation } },
+      { name: 'coord:declare-intent', _meta: { 'papercusp/servingGeneration': generation } },
+      { name: 'work_items:complete', _meta: { 'papercusp/servingGeneration': '  ' } },
+    ];
+
+    expect(hasCurrentPtoolServingGeneration('coord:declare-intent', {}, catalog)).toBe(true);
+    expect(hasCurrentPtoolServingGeneration(
+      'tools:invoke', { name: 'coord:declare-intent', args: {} }, catalog,
+    )).toBe(true);
+    expect(hasCurrentPtoolServingGeneration(
+      'tools:invoke', { name: 'missing:tool', args: {} }, catalog,
+    )).toBe(false);
+    expect(hasCurrentPtoolServingGeneration('work_items:complete', {}, catalog)).toBe(false);
+  });
+
+  it('allows a mutating fallback only after direct managed catalog validation', () => {
+    const writeTool = { name: 'coord:declare-intent', annotations: { readOnlyHint: false } };
+    const catalog = [writeTool];
+
+    expect(canDispatchPtoolOnFallback(
+      'coord:declare-intent', {}, writeTool, catalog, true,
+    )).toBe(false);
+    expect(canDispatchPtoolOnFallback(
+      'coord:declare-intent', {}, writeTool, catalog, true, true,
+    )).toBe(true);
+  });
+
   it('tries the current managed candidate when the legacy catalog mislabels a read', () => {
     expect(shouldAttemptManagedReadRecovery({
       toolName: 'loop:status',
@@ -700,6 +857,24 @@ describe('ptool operator routing', () => {
       operatorUrl: 'http://127.0.0.1:9071',
       operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:9171'],
     })).toBe(false);
+  });
+
+  it('attempts direct catalog recovery only when the initial named target lacks a generation', () => {
+    const options = {
+      toolName: 'coord:declare-intent',
+      tool: { name: 'coord:declare-intent', annotations: { readOnlyHint: false } },
+      recoveryIndex: 1,
+      operatorUrl: 'http://127.0.0.1:9071',
+      operatorCandidates: ['http://127.0.0.1:9071', 'http://127.0.0.1:3170'],
+    };
+
+    expect(shouldAttemptManagedCatalogRecovery(options)).toBe(true);
+    expect(shouldAttemptManagedCatalogRecovery({
+      ...options,
+      initialGeneration: 'serving-generation-v1:current',
+    })).toBe(false);
+    expect(shouldAttemptManagedCatalogRecovery({ ...options, toolName: 'tools:find' })).toBe(false);
+    expect(shouldAttemptManagedCatalogRecovery({ ...options, tool: null })).toBe(false);
   });
 
   it('does not infer a staging recovery route when the launcher supplied a target hint', () => {
@@ -842,7 +1017,7 @@ describe('ptool bearer-token resolution', () => {
       .toEqual(['/run/papercusp/explicit-token']);
   });
 
-  it('falls back to the shared host token when an isolated workspace token is absent', () => {
+  it('prefers the shared host token for a workspace-scoped PAPERCUSP_HOME', () => {
     const env: NodeJS.ProcessEnv = {
       NODE_ENV: 'test',
       PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
@@ -850,10 +1025,36 @@ describe('ptool bearer-token resolution', () => {
     const paths = resolveTokenPaths({ env, home: '/home/tester' });
 
     expect(paths).toEqual([
+      '/home/tester/.papercusp/superuser-token',
       '/home/tester/.papercusp-workspaces/demo/.papercusp/superuser-token',
+    ]);
+    expect(resolveTokenPath({ env, home: '/home/tester' })).toBe('/home/tester/.papercusp/superuser-token');
+  });
+
+  it('uses PAPERCUSP_OPERATOR_HOME when the session home is workspace-scoped', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
+      PAPERCUSP_OPERATOR_HOME: '/tmp/operator-home',
+    };
+
+    expect(resolveTokenPaths({ env, home: '/home/tester' })).toEqual([
+      '/tmp/operator-home/.papercusp/superuser-token',
+      '/home/tester/.papercusp/superuser-token',
+      '/home/tester/.papercusp-workspaces/demo/.papercusp/superuser-token',
+    ]);
+  });
+
+  it('keeps an isolated operator PAPERCUSP_HOME ahead of the shared host token', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_HOME: '/tmp/isolated/.papercusp',
+    };
+
+    expect(resolveTokenPaths({ env, home: '/home/tester' })).toEqual([
+      '/tmp/isolated/.papercusp/superuser-token',
       '/home/tester/.papercusp/superuser-token',
     ]);
-    expect(resolveTokenPath({ env, home: '/home/tester' })).toBe(paths[0]);
   });
 
   it('tries the next implicit token only after the operator rejects the first bearer', async () => {
@@ -1129,7 +1330,40 @@ describe('ptool call deadlines', () => {
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
-  it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
+  it('keeps release-cut calls alive beyond the declared handler budget on direct and deferred routes', () => {
+    const source = readFileSync(new URL('../../../packages/operator-core/lib/agent-tools/release/cut.ts', import.meta.url), 'utf8');
+    const timeoutSec = Number(source.match(/timeoutSec:\s*(\d+)/)?.[1]);
+    expect(timeoutSec).toBeGreaterThan(0);
+    for (const args of [
+      { op: 'preflight', deferTag: true },
+      { op: 'run', confirm: true },
+      { op: 'run-leg', platform: 'windows', confirm: true },
+      { op: 'status' },
+      { op: 'reclaim', confirm: true },
+    ]) {
+      const deadline = (timeoutSec + 5) * 1000;
+      expect(timeoutForTool('release:cut', args)).toBeGreaterThan(deadline);
+      expect(timeoutForTool('tools:invoke', { name: 'release:cut', args }))
+        .toBeGreaterThan(deadline);
+    }
+    expect(timeoutForTool('unrelated:tool', { op: 'preflight' })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps storage prune calls alive beyond the maintenance handler and settlement budget', () => {
+    const source = readFileSync(new URL('../../../packages/operator-core/lib/agent-tools/storage/prune.ts', import.meta.url), 'utf8');
+    const timeoutSec = Number(source.match(/timeoutSec:\s*(\d+)/)?.[1]);
+    expect(timeoutSec).toBeGreaterThan(0);
+    const deadline = (timeoutSec + 5) * 1000;
+    for (const dryRun of [true, false]) {
+      const args = { category: 'agent-sessions', olderThanDays: 3, dryRun };
+      expect(timeoutForTool('storage:prune', args)).toBeGreaterThan(deadline);
+      expect(timeoutForTool('tools:invoke', { name: 'storage:prune', args }))
+        .toBeGreaterThan(deadline);
+    }
+    expect(timeoutForTool('unrelated:tool')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('preserves the existing release-cut reclaim preview allowance', () => {
     const preview = { op: 'reclaim', confirm: false };
     expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
@@ -1137,14 +1371,6 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('release:cut', { op: 'reclaim' }))
       .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
 
-    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
-      name: 'release:cut',
-      args: { op: 'reclaim', confirm: true },
-    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('release:cut', { op: 'status' }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: false }))
       .toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
@@ -2784,6 +3010,131 @@ describe('ptool result formatting', () => {
 });
 
 describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
+  it.each(['scratch-memory', 'scratch-spool'])(
+    'recovers a release response from %s byte pages after the primary spill failed', async (scheme) => {
+      const uri = `papercusp://${scheme}/release-result`;
+      const release = { ok: true, results: [{ ok: true, released: ['tests/café.ts'] }], counts: { ok: 1, failed: 0 } };
+      const prefix = '# scratch recovery body\n';
+      const payload = Buffer.from(prefix + JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(release) }] }));
+      const split = payload.indexOf(Buffer.from('é')) + 1;
+      const readReference = vi.fn(async (args: { uri: string; byte_offset: number }) => {
+        const start = args.byte_offset;
+        const end = start === 0 ? split : payload.length;
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: true, encoding: 'base64', data: payload.subarray(start, end).toString('base64'),
+          byte_offset: start, byte_length: end - start, total_bytes: payload.length,
+          eof: end === payload.length, reference: { bodyOffsetInPayload: Buffer.byteLength(prefix) },
+          next_cursor: end === payload.length ? null : {
+            tool: 'capability:read', args: { uri, byte_offset: end, byte_limit: 3072 },
+          },
+        }) }] };
+      });
+      const envelope = {
+        schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+        content: [{ kind: 'evidence-reference', uri, preview: '{"ok":false,"reason":"never trust preview"}' }],
+        _projection: { cursor: { args: { uri, byte_offset: 0, byte_limit: 3072 } } },
+      };
+      const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(await printResult({ content: [{ type: 'text', text: JSON.stringify(envelope) }] }, {
+          raw: true, readReference,
+        })).toBe(0);
+        expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual(release);
+        expect(readReference.mock.calls.map(([args]) => args)).toEqual([
+          { uri, byte_offset: 0, byte_limit: 3072 },
+          { uri, byte_offset: split, byte_limit: 3072 },
+        ]);
+      } finally {
+        printed.mockRestore();
+      }
+    },
+  );
+
+  it('keeps a recovered release refusal as a refusal', async () => {
+    const uri = 'papercusp://scratch-spool/refused-release';
+    const payload = Buffer.from(JSON.stringify({ content: [{ type: 'text', text: '{"ok":false,"reason":"not_owner"}' }] }));
+    const readReference = vi.fn(async () => ({
+      ok: true, encoding: 'base64', data: payload.toString('base64'), byte_offset: 0,
+      byte_length: payload.length, total_bytes: payload.length, eof: true, next_cursor: null,
+    }));
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1', content: [{ kind: 'reference', uri }],
+      }) }] };
+      expect(await printResult(result, { raw: true, readReference })).toBe(PTOOL_TOOL_NOT_OK_EXIT);
+      expect(JSON.parse(String(printed.mock.calls.at(-1)?.[0]))).toEqual({ ok: false, reason: 'not_owner' });
+      expect(readReference).toHaveBeenCalledTimes(1);
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it.each([true, false])('refuses an unavailable reference in raw=%s output without treating its preview as proof', async (raw) => {
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        content: [{ kind: 'reference', uri: 'papercusp://scratch-spool/expired', preview: '{"ok":true}' }],
+      }) }] };
+      const readReference = vi.fn(async () => ({ ok: false, reason: 'expired' }));
+      expect(await printResult(result, { raw, readReference })).toBe(1);
+      expect(errors.mock.calls.flat().join(' ')).toContain('may have executed');
+      expect(readReference).toHaveBeenCalledTimes(1);
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('rejects recovered bytes that differ from the reference digest', async () => {
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const payload = Buffer.from('{"ok":true}');
+      const result = { content: [{ type: 'text', text: JSON.stringify({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        content: [{ kind: 'reference', uri: 'papercusp://scratch-memory/corrupt', sha256: '0'.repeat(64) }],
+      }) }] };
+      const readReference = vi.fn(async () => ({
+        ok: true, encoding: 'base64', data: payload.toString('base64'), byte_offset: 0,
+        byte_length: payload.length, total_bytes: payload.length, eof: true, next_cursor: null,
+      }));
+      expect(await printResult(result, { raw: true, readReference })).toBe(1);
+      expect(errors.mock.calls.flat().join(' ')).toContain('outcome unknown');
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  it('reports an unavailable or inconsistent recovery as unknown outcome, never successful JSON', async () => {
+    const uri = 'papercusp://scratch-memory/unavailable-release';
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const page of [
+        { ok: false, reason: 'expired' },
+        { ok: true, encoding: 'base64', data: 'e30=', byte_offset: 9, byte_length: 2, total_bytes: 2, eof: true },
+      ]) {
+        const readReference = vi.fn(async () => page);
+        const result = { content: [{ type: 'text', text: JSON.stringify({
+          schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete',
+          content: [{ kind: 'reference', uri, preview: '{"ok":true}' }],
+        }) }] };
+        expect(await printResult(result, { raw: true, readReference })).not.toBe(0);
+        expect(errors.mock.calls.flat().join(' ')).toContain('may have executed');
+        expect(readReference).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      printed.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
   it('is a no-op on a plain result (same reference)', async () => {
     const result = { ok: true, value: 7 };
     expect(await unwrapOutputEnvelope(result)).toBe(result);
@@ -3743,6 +4094,51 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
       expect.objectContaining({ timeoutMs: expect.any(Number), onWaiting: expect.any(Function) }),
     );
     expect(withFsMutexRead.mock.calls[0]?.[2]?.timeoutMs).toBeGreaterThan(330_000);
+  });
+
+  it('returns to scripted recovery before an active installer releases its lease', async () => {
+    let releaseInstaller!: () => void;
+    const installer = new Promise<void>((resolve) => { releaseInstaller = resolve; });
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      options: { onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => {
+      options.onWaiting({ owner: 'active install:safe', elapsedMs: 0 });
+      await installer;
+      return run();
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let outcome: { status: string; error?: Error } = { status: 'pending' };
+    try {
+      await withoutOuterInstallReader(async () => {
+        const importing = importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+          doImport,
+          recoverOnInstallWait: true,
+          loadInstallMutex: vi.fn().mockResolvedValue([
+            { withFsMutexRead },
+            { repoLockName: () => 'npm-install-scripted-recovery' },
+          ]),
+        }).then(
+          () => { outcome = { status: 'imported' }; },
+          (error: Error) => { outcome = { status: 'declined', error }; },
+        );
+        try {
+          // Drain promise reactions without releasing the installer or advancing a timeout.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(outcome.status).toBe('declined');
+          expect(isSdkBootstrapInstallWait(outcome.error)).toBe(true);
+          expect(doImport).not.toHaveBeenCalled();
+        } finally {
+          releaseInstaller();
+          await importing;
+        }
+      });
+    } finally {
+      releaseInstaller();
+      consoleError.mockRestore();
+    }
   });
 
   it('preserves a non-module import error from inside the reader lease', async () => {

@@ -71,6 +71,7 @@ async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hoste
           population: { classCounts: [1, 2, 3, 4], stranded: AGENT_STRANDED_ALARM_THRESHOLD,
             severityControls: ['wedged-only', 'stranded-only', 'both'], unknownControls: ['wedged', 'stranded'],
             genericPopulationPages: 0, independentPanelPage: true,
+            independentPanelControl: { key: 'infra', status: 'crit', gatewayReachable: false, alarms: 1 },
             episodes: { 'agents-wedged': { alarms: 4, attentionIntents: 3 },
               'agents-stranded': { alarms: 4, attentionIntents: 3 } },
             quietBoundary: { persistedHistoryAdvanced: true, durationMs: 1_800_001 } },

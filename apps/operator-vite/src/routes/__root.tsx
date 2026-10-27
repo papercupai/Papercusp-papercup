@@ -164,6 +164,12 @@ const DevAdminRail =
     ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
     : null;
 
+// Build-owned private selection. The legacy graph resolves the virtual entry
+// to a no-op and never imports the external portal source. Runtime URLs cannot
+// switch a public build to the candidate.
+const DesktopPortalRoot = typeof __PAPERCUSP_DESKTOP_PORTAL__ !== 'undefined' && __PAPERCUSP_DESKTOP_PORTAL__
+  ? lazy(() => import('../components/DesktopPortalRoot')) : null;
+
 // Left sidebar (left-sidebar-tauri-2026-06-07) — first-class app chrome, not a
 // deferred panel. Its shell is eager so the first React commit reserves the
 // rail's width; the individual tab bodies remain lazy inside LeftSidebar.
@@ -270,7 +276,7 @@ function RootComponent() {
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
               <ReportProblemDialog />
-              {!chromeless && !portalEmbed && !wslGateBlocking && <PresenceRail />}
+              {!DesktopPortalRoot && !chromeless && !portalEmbed && !wslGateBlocking && <PresenceRail />}
               {/* Far-left steering/settings sidebar (D-009). Inside NuqsAdapter
                   (its open/tab/selection state is URL-backed) + RootSyncProvider
                   (its panels use useSyncQuery); docked via
@@ -282,7 +288,7 @@ function RootComponent() {
                   self-suppress because LeftSidebar treats chromeless routes as
                   bare documents. Skipped while the WSL onboarding gate is
                   blocking (WI-2749 item #2) — see useWslGateBlocking. */}
-              {routeHasSteeringSidebar(pathname, searchParams.toString()) && !wslGateBlocking && (
+              {!DesktopPortalRoot && routeHasSteeringSidebar(pathname, searchParams.toString()) && !wslGateBlocking && (
                 <Suspense fallback={null}>
                   <LeftSidebar />
                 </Suspense>
@@ -302,7 +308,7 @@ function RootComponent() {
                           faces. Those panes live in THIS tree and the sidebar
                           cannot import up-layer to reach them, so the wrapper
                           composes them here and passes them down. */}
-                      {!chromeless && <ChromeShellWithChatFaces />}
+                      {!DesktopPortalRoot && !chromeless && <ChromeShellWithChatFaces />}
                       {/* WI-6601: the ONE mount of the chat ref-pill popups
                           (`wpop`/`wppop`). Deliberately OUTSIDE the
                           `!chromeless` gate — /quick-panel is chromeless, and
@@ -325,7 +331,9 @@ function RootComponent() {
                             shell — and because /adv is one route, one tab's
                             crash latched every tab. */}
                         <RouteErrorBoundary>
-                          <Outlet />
+                          {DesktopPortalRoot && !chromeless && !portalEmbed
+                            ? <Suspense fallback={null}><DesktopPortalRoot /></Suspense>
+                            : <Outlet />}
                         </RouteErrorBoundary>
                         {/* plan-visibility-revamp-2026-08-23 P-003 (D-002):
                             the plan-dashboard app-pane takeover. A SIBLING of

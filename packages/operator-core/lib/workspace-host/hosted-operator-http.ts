@@ -86,6 +86,8 @@ export interface OperatorHttpRoute {
  * portal surface that needs it, or it answers 403 `route_not_relayed`.
  */
 export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
+  // Native WebViews use the existing public liveness probe during boot.
+  { method: 'GET', pattern: /^\/api\/health$/, surface: 'native operator liveness' },
   // Sync transport behind useSyncQuery (chat lists, session rosters).
   { method: 'GET', pattern: /^\/api\/zero-harness\/rest-query$/, surface: 'sync read' },
   { method: 'GET', pattern: /^\/api\/zero-harness\/sse$/, surface: 'sync stream' },
@@ -227,7 +229,7 @@ export function decideRelayRoute(
 /** Filter caller headers to the forwardable set and stamp the channel's principal. */
 export function operatorHttpRequestHeaders(
   input: unknown,
-  principal: { userId: string; hostedSessionId: string },
+  principal: { userId: string; hostedSessionId: string; workspaceId?: string },
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   if (input && typeof input === 'object' && !Array.isArray(input)) {
@@ -240,6 +242,10 @@ export function operatorHttpRequestHeaders(
   }
   headers[HOSTED_PRINCIPAL_USER_HEADER] = principal.userId;
   headers[HOSTED_PRINCIPAL_SESSION_HEADER] = principal.hostedSessionId;
+  // Workspace authority travels with the authenticated channel, never with
+  // the caller's forwardable headers. This also binds workspace ALS on the
+  // receiving operator before its handlers resolve any workspace data.
+  if (principal.workspaceId) headers['x-papercusp-workspace'] = principal.workspaceId;
   return headers;
 }
 
@@ -267,7 +273,7 @@ export interface OperatorHttpChannelOptions {
    * `requestHeaders` supplies the whole header policy: the `app-http` plane has no
    * ticket user, because the app's own key is the credential (hosted-app-relay.ts).
    */
-  principal?: { userId: string; hostedSessionId: string };
+  principal?: { userId: string; hostedSessionId: string; workspaceId?: string };
   send: OperatorHttpSend;
   audit: OperatorHttpAudit;
   origin?: string;
@@ -451,7 +457,13 @@ export class OperatorHttpChannel {
     const ownsRequest = () => !this.closed && !controller.signal.aborted
       && this.inflight.get(requestId) === controller;
     try {
-      const url = `${this.origin}${decision.path}`;
+      const target = new URL(`${this.origin}${decision.path}`);
+      // The broker already bound this operator channel to one authorized host.
+      // Consume its stream routing hint just like the header policy consumes
+      // x-papercusp-machine, so a receiving operator cannot route it again.
+      // App/device channels keep their separate header/route policies.
+      if (this.options.principal) target.searchParams.delete('desktopHost');
+      const url = target.toString();
       const init: RequestInit = {
         method: decision.method,
         headers: this.requestHeaders(payload.headers),

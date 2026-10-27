@@ -7,7 +7,16 @@
  * acquire the freed path through grant_cascade. A second case covers the
  * goal_ref association used when the reclaimed item declared no paths.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// WI-6554700010029304: the reaper records fallback decisions via observeFallback, whose
+// deferred flush opens the protected live org-admin pool (WI-10006585 rail), which warns
+// and fails this suite under vitest-fail-on-console. Stub the observer exactly as the
+// sibling reaper suites do; this file asserts lock cleanup, not fallback telemetry.
+vi.mock('./degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';

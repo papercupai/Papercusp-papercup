@@ -2889,6 +2889,22 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
     ).toBeNull();
   });
 
+  it.each([
+    ['IN list', `p.workspace_id IN ('papercusp-workspace', 'default')`],
+    ['OR equalities', `p.workspace_id = 'papercusp-workspace' OR p.workspace_id = 'default'`],
+    ['ANY array', `p.workspace_id = ANY(ARRAY['papercusp-workspace', 'default'])`],
+  ])('is silent for a full-corpus literal predicate (%s)', (_shape, predicate) => {
+    expect(buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} p WHERE ${predicate}`)).toBeNull();
+  });
+
+  it('still warns when a corpus IN list contains only tenant ids', () => {
+    const advisory = buildCorpusNamespaceAdvisory(
+      `SELECT * FROM ${PARTS} p WHERE p.workspace_id IN ('papercusp-workspace', 'another-workspace')`,
+    );
+    expect(advisory).toContain('matches ZERO rows');
+    expect(advisory).toContain("'another-workspace'");
+  });
+
   /** An UNSCOPED read is the correct one for these tables — never warn about a right answer. */
   it('is silent for an unscoped read', () => {
     expect(buildCorpusNamespaceAdvisory(`SELECT count(*) FROM ${PARTS}`)).toBeNull();

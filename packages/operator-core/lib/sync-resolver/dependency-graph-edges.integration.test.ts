@@ -26,6 +26,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { EVENT_AWAITS_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { fireCertifiesCondition } from '../external-condition-reachability';
 import {
   resolveDependencyGraphEdges,
   resolveDependencyGraphWaits,
@@ -461,6 +462,34 @@ describe('resolveDependencyGraphWaits — event waits on items', () => {
     // An announced key is producer-declared, so one fire of it proves the condition.
     expect(gate).toMatchObject({ announced: true, certification: 'proving', subscriberId: null, stale: false });
     expect(got.find((w) => w.blockerKind === 'event')).toMatchObject({ announced: false, since: '2026-10-21T00:00:00.000Z' });
+  });
+
+  it('AUTO-BAR-R-17-P-009: labels each wait proving exactly when fireCertifiesCondition holds for its key, and names why otherwise', async () => {
+    await heldItem('WI-1', 'su-holder', {
+      blockers: [
+        blocker('event', 'release:deployed:abc123def'),
+        blocker('event', 'work-item:status:WI-5'),
+        blocker('event', 'git-sync:committed'),
+        blocker('gate', 'waiting on the vendor reply'),
+      ],
+    });
+    await awaitRow('su-holder', 'work-item:status:WI-6', { bound: { kind: 'work-item-blocked', ref: 'WI-1' } });
+    await awaitRow('su-holder', 'work-item:done:WI-7', { bound: { kind: 'work-item-blocked', ref: 'WI-1' } });
+
+    const got = (await waits(states({ 'su-holder': 'live' }))).filter((w) => w.itemId === 'WI-1');
+    const label = (kind: string, key: string) => got.find((w) => w.waitKind === kind && w.eventKey === key)?.certification;
+    // A change-notification wait is never labelled proving, on either leg; a proving wait always is.
+    expect(label('item-blocker', 'release:deployed:abc123def')).toBe('proving');
+    expect(label('item-blocker', 'work-item:status:WI-5')).toBe('change-notification');
+    expect(label('item-blocker', 'git-sync:committed')).toBe('broad');
+    expect(label('item-blocker', 'waiting on the vendor reply')).toBe('uncatalogued');
+    expect(label('session-await', 'work-item:status:WI-6')).toBe('change-notification');
+    expect(label('session-await', 'work-item:done:WI-7')).toBe('proving');
+    // The label is the shared predicate's answer, never a second classification.
+    expect(got).toHaveLength(6);
+    for (const w of got) {
+      expect(w.certification === 'proving', w.eventKey).toBe(fireCertifiesCondition(w.eventKey, w.announced === true));
+    }
   });
 
   it('AUTO-BAR-R-19-P-009: answers in at most four SQL statements and one liveness batch, inside a tight statement timeout at volume', async () => {

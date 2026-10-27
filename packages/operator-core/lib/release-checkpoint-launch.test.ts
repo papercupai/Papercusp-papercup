@@ -181,6 +181,21 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
 });
 
 describe('buildCheckpointSystemdArgv', () => {
+  it('transports one launch-anchored cutoff and cannot extend an earlier caller deadline', () => {
+    const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+    vi.stubEnv(key, '9000000');
+    try {
+      const args: Parameters<typeof buildCheckpointSystemdArgv> = ['/tree', '/tmp/cp.log', '/usr/bin'];
+      args[14] = 1000;
+      let argv = buildCheckpointSystemdArgv(...args);
+      expect(argv.filter(value => value.startsWith(`--setenv=${key}=`)))
+        .toEqual([`--setenv=${key}=${1000 + MANUAL_CHECKPOINT_WATCHDOG_MS}`]);
+      args[11] = { [key]: '200000' };
+      argv = buildCheckpointSystemdArgv(...args);
+      expect(argv.filter(value => value.startsWith(`--setenv=${key}=`))).toEqual([`--setenv=${key}=200000`]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('targets the manual unit, bounds runtime, and runs the green-checkpoint CLI in the tree root', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
     expect(argv).toContain(`--unit=${checkpointUnitForRoot('/tree')}`); // per-root (2026-07-01): cross-root manual gates no longer serialize

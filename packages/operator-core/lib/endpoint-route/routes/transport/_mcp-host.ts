@@ -964,6 +964,7 @@ export interface BuiltSpawnContext {
   featureId: string | null;
   chunkId: string | null;
   runId: string;
+  chatParent?: UnifiedToolContext['chatParent'];
   spawnId: string;
   parentSpawnId: string | null;
   /** Verified adv_sessions row for this caller's native CLI incarnation. */
@@ -1211,7 +1212,12 @@ async function applyScopedSuperuserTransportClamp(
     }
   }
 
-  if (scopedSuperuserClamp && spawnCtx.harnessSlug !== '*') {
+  // An argument-free local call has no harness, hive or roster selector to
+  // validate. Cross-harness tools still need the implicit hive boundary even
+  // without arguments. Avoid a redundant home lookup for calls such as the
+  // nested mode:get used by session tool restoration.
+  if (scopedSuperuserClamp && spawnCtx.harnessSlug !== '*' &&
+      (Object.keys(args).length > 0 || toolName.startsWith('cross_harness:'))) {
     const { potHomeSlugForHarness } = await import('../../../hive-federation');
     const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
     const scopeHive = await potHomeSlugForHarness(spawnCtx.workspaceId, spawnCtx.harnessSlug);
@@ -1648,6 +1654,32 @@ export function pinVerifiedMcpRequest(
  *      of re-rolling out a new signing scheme.
  */
 export async function tryBuildSpawnContext(
+  extra: unknown,
+  options: { allowStalePlanRecovery?: boolean } = {},
+): Promise<TrySpawnContextResult> {
+  const result = await tryBuildUnboundSpawnContext(extra, options);
+  const bindings = urlFromExtra(extra)?.searchParams.getAll('chat_binding') ?? [];
+  if (bindings.length === 0 || result.kind !== 'ok') return result;
+  if (bindings.length !== 1 || result.ctx.isPowerUser
+    || (!result.ctx.isSuperuser && result.ctx.authenticatedPrincipal?.kind !== 'pi')) {
+    return { kind: 'failed', reason: 'chat_parent_invalid_transport' };
+  }
+  try {
+    const { verifyConverseChatBinding } = await import('../../../agent-tools/operator/converse-chat-binding');
+    const parent = await verifyConverseChatBinding(bindings[0], {
+      workspaceId: result.ctx.workspaceId, bearer: bearerFromExtra(extra) ?? '',
+    });
+    if (!parent) return { kind: 'failed', reason: 'chat_parent_invalid_binding' };
+    // The verified converse association proves an interactive parent surface.
+    // A generic SU/MCP mount has no responder; its authority alone must never
+    // enable a human wait. Capability/role checks remain separate below.
+    return { kind: 'ok', ctx: { ...result.ctx, chatParent: parent, interactiveCardCapability: true } };
+  } catch {
+    return { kind: 'failed', reason: 'chat_parent_verifier_unavailable' };
+  }
+}
+
+async function tryBuildUnboundSpawnContext(
   extra: unknown,
   options: { allowStalePlanRecovery?: boolean } = {},
 ): Promise<TrySpawnContextResult> {
@@ -3088,6 +3120,7 @@ async function buildMcpToolContext(
     featureId: spawn.featureId,
     chunkId: spawn.chunkId,
     runId: spawn.runId,
+    chatParent: spawn.chatParent,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     advSessionId: spawn.advSessionId,
@@ -3996,6 +4029,7 @@ registerSuNativeToolDispatcher(dispatchNativeMcpTargetOnOwner);
 
 export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) =>
+    // notify-classification: {"classification":"durable","reason":"The tools-list phase wrapper reaches send consequences through its callback; required notices retain custody independently of this request wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     withMcpToolsListPhaseTrace(extra, async (phases) => {
     const listStartedAt = Date.now();
     // Shared visibility walk — see resolveVisibleToolListings above
@@ -4045,7 +4079,12 @@ export function registerMcpHost(server: McpServer): void {
         // adding the effect-derived hint to the standard field.
         const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
         const registryRevision = listingRegistryRevision(t);
-        const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
+        // MCP can advertise the lossless discovery schema instead of the
+        // flattened model schema. Both are original FULL definitions. A compact
+        // or otherwise derived schema must not share a cache slot with either.
+        const listingVariant = projected && tt.inputSchema === projected.discoveryInputSchema
+          ? 'discovery'
+          : projected && tt.inputSchema === projected.inputSchema ? 'model' : null;
         if (projected?.effect) {
           const existingAnnotations =
             out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
@@ -4083,11 +4122,15 @@ export function registerMcpHost(server: McpServer): void {
             // deep-clone/GC burst without serving a stale vocabulary.
             await applyEntityRefEnums(def!.args, advertised);
             out.inputSchema = sanitizeToolSchema(advertised);
-          } else {
+          } else if (listingVariant) {
             out.inputSchema = sanitizeToolSchemaCached(
               `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
               advertised,
             );
+          } else {
+            // A shared "derived" key aliases compact, pinned and wrapped
+            // schemas. Their identity is not proven by the registry revision.
+            out.inputSchema = sanitizeToolSchema(advertised);
           }
         }
         // outputSchema (P-010) gets the same boolean-subschema objectification,
@@ -4195,6 +4238,7 @@ export function registerMcpHost(server: McpServer): void {
           idempotencyReplayPhaseTimings.errors[event.phase] = event.error;
         }
       };
+      const transportScopePhases = createPhaseTracker({ historyCap: 32 });
       const trace = (
         stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
         details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
@@ -4204,6 +4248,9 @@ export function registerMcpHost(server: McpServer): void {
           toolName: toolName.slice(0, 120),
           stage,
           elapsedMs: Math.max(0, Date.now() - callStartedAt),
+          ...(transportScopePhases.toMetadata()
+            ? { transportScopePhases: transportScopePhases.toMetadata() }
+            : {}),
           ...details,
           ...(idempotencyReplayPhaseTraceEnabled
             ? {
@@ -4401,11 +4448,11 @@ export function registerMcpHost(server: McpServer): void {
         // context is the original ambient scope, while dispatch gets the
         // verified read target.
         let effectiveHarnessSlug = spawnRes.ctx.harnessSlug;
-        const boundary = await applyScopedSuperuserTransportBoundary(
+        const boundary = await transportScopePhases.track('scopedSuperuserBoundary', () => applyScopedSuperuserTransportBoundary(
           { name: toolName, crossWorkspace: projected.crossWorkspace, profile: projected.profile },
           spawnRes.ctx,
           { readForAllTools: true },
-        );
+        ));
         if (!boundary.ok) return boundary.result;
         const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
         // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
@@ -4472,10 +4519,13 @@ export function registerMcpHost(server: McpServer): void {
               ? ((args as Record<string, unknown>).harness as string).trim()
               : '';
           if (ah && ah !== 'all' && ah !== '*') {
-            const { resolveWorkspaceForHarnessSlugIn } = await import('../../../harness-core');
+            const { resolveWorkspaceForHarnessSlugIn } = await transportScopePhases.track(
+              'harnessWorkspaceModule', () => import('../../../harness-core'),
+            );
             let harnessWs: string | null = null;
             try {
-              harnessWs = await resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah);
+              harnessWs = await transportScopePhases.track('harnessWorkspaceResolution',
+                () => resolveWorkspaceForHarnessSlugIn(spawnRes.ctx.workspaceId, ah));
             } catch {
               // Ambiguous cross-workspace collision (resolver throws) or an infra error:
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
@@ -4507,15 +4557,21 @@ export function registerMcpHost(server: McpServer): void {
         // scopeHive (the hive home AND each member resolve to the home; D-006).
         // The harder half — confining the workspace-global coord/fleet/search/
         // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
-        if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
-          const { potHomeSlugForHarness } = await import('../../../hive-federation');
+        if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*' &&
+            (Object.keys(args ?? {}).length > 0 || toolName.startsWith('cross_harness:'))) {
+          const { potHomeSlugForHarness } = await transportScopePhases.track(
+            'hiveFederationModule', () => import('../../../hive-federation'),
+          );
           // EI-21910110662818467: the generic harness-arg sweep below. Kept in its
           // own module so the SAME predicate that decides "this arg names a
           // harness" is what the coverage detector
           // (scripts/check-harness-arg-coverage.ts) audits the registry with —
           // clamp and detector cannot drift apart into two opinions.
-          const { collectHarnessSlugArgs } = await import('../../hive-harness-arg-coverage');
-          const scopeHive = await potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug);
+          const { collectHarnessSlugArgs } = await transportScopePhases.track(
+            'harnessArgCoverageModule', () => import('../../hive-harness-arg-coverage'),
+          );
+          const scopeHive = await transportScopePhases.track('callerHiveResolution',
+            () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug));
           if (scopeHive) {
             if (toolName.startsWith('cross_harness:')) {
               return {
@@ -4570,7 +4626,8 @@ export function registerMcpHost(server: McpServer): void {
                 !isSelfOwnedCheckpointRead &&
                 (argHarness === 'all' ||
                   argHarness === '*' ||
-                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
+                  (await transportScopePhases.track('harnessArgumentHiveResolution',
+                    () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness))) !== scopeHive);
               // A resumed fleet leader can retain an ambient Hive while
               // naming the owning harness of one exact plan. Verify the row
               // in this workspace BEFORE rebinding dispatch. Keep this
@@ -4584,9 +4641,11 @@ export function registerMcpHost(server: McpServer): void {
                 (toolName === 'plans:get' ||
                   toolName === 'plans:add-decision' ||
                   toolName === 'coord:declare-intent') &&
-                (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
+                (await transportScopePhases.track('explicitPlanHarnessVerification',
+                  () => verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args)));
               const goalLocalPlacement =
-                escapes && (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
+                escapes && (await transportScopePhases.track('goalLocalPlacementVerification',
+                  () => mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness)));
               if (verifiedExactPlanRebind || goalLocalPlacement) {
                 effectiveHarnessSlug = argHarness;
               } else if (escapes) {
@@ -4647,7 +4706,8 @@ export function registerMcpHost(server: McpServer): void {
               const escapes =
                 argHarnessSlug === 'all' ||
                 argHarnessSlug === '*' ||
-                (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug)) !== scopeHive;
+                (await transportScopePhases.track('harnessSlugArgumentHiveResolution',
+                  () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarnessSlug))) !== scopeHive;
               if (escapes) {
                 return {
                   isError: true,
@@ -4706,7 +4766,8 @@ export function registerMcpHost(server: McpServer): void {
                 const escapes =
                   scopeNamedHarness === 'all' ||
                   scopeNamedHarness === '*' ||
-                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, scopeNamedHarness)) !== scopeHive;
+                  (await transportScopePhases.track('scopeArgumentHiveResolution',
+                    () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, scopeNamedHarness))) !== scopeHive;
                 if (escapes) {
                   return {
                     isError: true,
@@ -4782,7 +4843,8 @@ export function registerMcpHost(server: McpServer): void {
               const escapesHive =
                 slug === 'all' ||
                 slug === '*' ||
-                (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, slug)) !== scopeHive;
+                (await transportScopePhases.track('namedHarnessArgumentHiveResolution',
+                  () => potHomeSlugForHarness(spawnRes.ctx.workspaceId, slug))) !== scopeHive;
               if (escapesHive) {
                 return {
                   isError: true,
@@ -5053,15 +5115,58 @@ export function registerMcpHost(server: McpServer): void {
                     (err instanceof Error ? err.message : String(err)),
                 );
               }
-              const storedResult = normalizeStructuredReplayResult(stored, requestedStructured);
-              // P-006 / D-014: a replay is still model-facing output. Stored
-              // outcomes were already per-result-doored before persistence,
-              // but this request must consume the CURRENT aggregate cohort or
-              // retry fan-out can bypass the one-budget invariant entirely.
-              const preservePaths = resultDoorPreservePathsForDispatch(storedResult, toolName, dispatchArgs, projectionSpec?.pick);
-              const replayedResult = projected.skipResultDoor
-                ? storedResult
-              : await applyResultDoorAsync(storedResult, {
+              const { replaySource: storedReplaySource, ...storedClientResult } = stored;
+              if (
+                !storedReplaySource &&
+                stored._meta?.replaySourceUnavailable &&
+                (projectionSpec || namedView)
+              ) {
+                return withMcpDiagnosticWarnings({
+                  isError: true,
+                  content: [{
+                    type: 'text',
+                    text: 'idempotency_replay_source_unavailable: the prior write result is retained, but its original source was too large to keep for a new projection. Do not re-execute this write with a fresh key.',
+                  }],
+                  _meta: { replayed: true, replaySourceUnavailable: stored._meta.replaySourceUnavailable },
+                }, dispatchSpawnCtx);
+              }
+              // The replay marker and error state belong to the durable receipt
+              // wrapper. Rebuilding from the pre-door source must carry them
+              // forward or clients can mistake a replay for a fresh success.
+              const replaySourceResult = storedReplaySource
+                ? {
+                    ...storedReplaySource,
+                    ...(storedClientResult.isError === true ? { isError: true } : {}),
+                    ...(storedClientResult._meta?.replayed === true
+                      ? { _meta: { ...(storedReplaySource._meta ?? {}), replayed: true } }
+                      : {}),
+                  }
+                : undefined;
+              const storedResult = normalizeStructuredReplayResult(
+                (replaySourceResult ?? storedClientResult) as StoredMcpResult,
+                requestedStructured,
+              );
+              const hasReplaySource = storedReplaySource !== undefined;
+              const projectedReplayResult = hasReplaySource
+                ? applyResultProjection(storedResult, projectionSpec, { toolName, effect: effectiveCallEffect })
+                : storedResult;
+              const viewedReplayResult = hasReplaySource && namedView
+                ? applyNamedViewToResult(projectedReplayResult, namedView)
+                : projectedReplayResult;
+              const doorInput = hasReplaySource
+                ? stripImplicitProjectionFullRequest(viewedReplayResult, projectionNeedsFullSource, baseCtx)
+                : viewedReplayResult;
+              const replayDoorSkipReason =
+                hasReplaySource && (projectionSpec || namedView)
+                  ? undefined
+                  : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
+              // P-006 / D-014: rebuild from a retained source when available;
+              // legacy receipts keep their original shaped outcome. Every replay
+              // still consumes the CURRENT aggregate cohort without rerunning the write.
+              const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
+              const replayedDoorResult = replayDoorSkipReason
+                ? doorInput
+              : await applyResultDoorAsync(doorInput, {
                   toolName,
                   nestedTargetToolName,
                   effect: effectiveCallEffect,
@@ -5087,7 +5192,11 @@ export function registerMcpHost(server: McpServer): void {
                     aggregateScope,
                     ...(preservePaths ? { preservePaths } : {}),
                   });
-              return withMcpDiagnosticWarnings(stripNestedResultDoorControls(replayedResult), dispatchSpawnCtx);
+              const cleanReplayResult = stripNestedResultDoorControls(replayedDoorResult);
+              const replayedResult = hasReplaySource
+                ? annotateStoreIdentitySuspectResult(cleanReplayResult, mayAnnotateResultText(replayDoorSkipReason))
+                : cleanReplayResult;
+              return withMcpDiagnosticWarnings(replayedResult, dispatchSpawnCtx);
             }
           } catch (err) {
             console.warn(
@@ -5135,6 +5244,9 @@ export function registerMcpHost(server: McpServer): void {
            * outcome.
           */
           toolOutcome: Promise<McpCallResult> | null;
+          /** Handler result before caller projection/result-door shaping. */
+          replaySourceResult: McpCallResult | null;
+          deliverySourceResult?: McpCallResult;
           /**
            * Set when the deadline branch wins the race — the caller has already been
            * answered, so the receipt must be persisted in the BACKGROUND rather than
@@ -5153,6 +5265,7 @@ export function registerMcpHost(server: McpServer): void {
           preDispatchPhaseTimingsMs: McpPreDispatchPhaseTimingsMs | null;
         } = {
           toolOutcome: null,
+          replaySourceResult: null,
           deadlineFired: requestDeadline?.didExpire ?? false,
           innerDispatchStarted: false,
           innerDispatchSettled: false,
@@ -5344,6 +5457,7 @@ export function registerMcpHost(server: McpServer): void {
                   return runLocalTarget();
                 },
               }).then((result) => {
+                raced.replaySourceResult = result;
                 const usedToolNames = nestedTargetToolName && nestedTargetToolName !== toolName
                   ? [toolName, nestedTargetToolName]
                   : [toolName];
@@ -5376,6 +5490,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
+            raced.deliverySourceResult = doorInput;
             const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
@@ -5501,7 +5616,7 @@ export function registerMcpHost(server: McpServer): void {
                     }
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
                       count: 0, perSpill: [], quotaWaitMs: 0, refreshWaitMs: 0,
-                      quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
+                      quotaRecoveryMs: 0, dataLeaseWaitMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
                       markerProbeMs: 0, localMutexWaitMs: 0, fsMutexAdmissionMs: 0,
                       writeMs: 0, totalMs: 0,
                     };
@@ -5519,6 +5634,7 @@ export function registerMcpHost(server: McpServer): void {
                       'quotaWaitMs',
                       'refreshWaitMs',
                       'quotaRecoveryMs',
+                      'dataLeaseWaitMs',
                       'quotaStateReadMs',
                       'quotaStatePublishMs',
                       'markerProbeMs',
@@ -5557,7 +5673,14 @@ export function registerMcpHost(server: McpServer): void {
                         runsConsidered: 0,
                         fallbackRunSizes: 0,
                         deletionMs: 0,
+                        deletePreflightMs: 0,
+                        pinProtectionMs: 0,
+                        rmAsyncMs: 0,
                         deleteAttempts: 0,
+                        deletePreflightSkips: 0,
+                        lastDeletePreflightErrorCode: null,
+                        deleteErrors: 0,
+                        lastDeleteErrorCode: null,
                         runsDeleted: 0,
                         deletedBytes: 0,
                       };
@@ -5577,11 +5700,19 @@ export function registerMcpHost(server: McpServer): void {
                         'runsConsidered',
                         'fallbackRunSizes',
                         'deletionMs',
+                        'deletePreflightMs',
+                        'pinProtectionMs',
+                        'rmAsyncMs',
                         'deleteAttempts',
+                        'deletePreflightSkips',
+                        'deleteErrors',
                         'runsDeleted',
                         'deletedBytes',
                       ] as const) {
                         recoveryTotal[field] += recovery[field];
+                      }
+                      if (recovery.lastDeletePreflightErrorCode != null) {
+                        recoveryTotal.lastDeletePreflightErrorCode = recovery.lastDeletePreflightErrorCode;
                       }
                       if (recovery.maxOperationMs > recoveryTotal.maxOperationMs) {
                         recoveryTotal.maxOperationMs = recovery.maxOperationMs;
@@ -5589,6 +5720,9 @@ export function registerMcpHost(server: McpServer): void {
                       }
                       recoveryTotal.currentOperationKind = recovery.currentOperationKind;
                       recoveryTotal.currentOperationElapsedMs = recovery.currentOperationElapsedMs;
+                      if (recovery.lastDeleteErrorCode != null) {
+                        recoveryTotal.lastDeleteErrorCode = recovery.lastDeleteErrorCode;
+                      }
                     }
                     if (raced.innerDispatchSettled) {
                       trace('scratch_write_settled', {
@@ -5909,6 +6043,7 @@ export function registerMcpHost(server: McpServer): void {
                 const planeHint = maybeStatePlaneNudge({
                   sessionKey: nudgeSessionKey,
                   toolName,
+                  args,
                 });
                 if (planeHint && canAttachAdvisory && (await readAdvisoryFlag(FLAGS.STATE_PLANE_NUDGE))) {
                   result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${planeHint}` }];
@@ -6051,6 +6186,7 @@ export function registerMcpHost(server: McpServer): void {
                 toolName,
                 workspaceId: dispatchSpawnCtx.workspaceId,
                 result: result as StoredMcpResult,
+                replaySource: raced.replaySourceResult as StoredMcpResult | null,
               });
             })
             .catch((err: unknown) => {
@@ -6068,7 +6204,19 @@ export function registerMcpHost(server: McpServer): void {
           // re-blocking the response we just raced to send.
           if (!raced.deadlineFired) await persist;
         }
-        return withMcpDiagnosticWarnings(dispatched, dispatchSpawnCtx);
+        const finalResult = withMcpDiagnosticWarnings(dispatched, dispatchSpawnCtx);
+        const deliveryTool = nestedTargetToolName ?? toolName;
+        if (!raced.deadlineFired && (deliveryTool === 'reports:get' || deliveryTool === 'capability:read')) {
+          const { reportResultDeliveryMetadata } = await import('../../../report-result-delivery');
+          // Exact request correlation only: dispatch success precedes the result door.
+          await backfillToolInvocationMetadataByMcpRequestTraceId({
+            workspaceId: dispatchSpawnCtx.workspaceId,
+            toolName: deliveryTool,
+            mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+            metadataJson: reportResultDeliveryMetadata(deliveryTool, raced.deliverySourceResult ?? finalResult, finalResult),
+          });
+        }
+        return finalResult;
       }
 
       // Legacy bearer-only fallback (no spawn ctx supplied).

@@ -47,6 +47,24 @@ describe('native execution observations', () => {
     }
   });
 
+  it.each([
+    { info: { response_too_many_failed_attempts: { http_status_code: 429 } },
+      code: 'response_too_many_failed_attempts', retryable: false },
+    { info: { server_overloaded: {} }, code: 'server_overloaded', retryable: true },
+    { info: { invalid_request: {} }, code: 'invalid_request', retryable: false },
+    { info: { first: {}, second: {} }, code: 'task_complete', retryable: false },
+  ])('preserves structured Codex error classification as $code', ({ info, code, retryable }) => {
+    const observed = nativeExecutionFromRows([
+      { type: 'event_msg', timestamp, payload: { type: 'task_started' } },
+      { type: 'response_item', timestamp, payload: { type: 'function_call', call_id: 'unresolved-effect' } },
+      { type: 'event_msg', timestamp, payload: { type: 'task_complete',
+        error: { codex_error_info: info, message: 'exceeded retry limit, last status: 429 Too Many Requests' } } },
+    ], { agent: 'codex', ...ctx });
+    expect(observed).toMatchObject({ phase: 'failed', pendingTools: 1,
+      failure: { code, retryable, retryAfterMs: retryable ? 60_000 : null, atMs: 1000 } });
+    expect(nativeExecutionBlocksInjection(observed)).toBe(true);
+  });
+
   it('scopes failure metadata to the current turn and submission floor', () => {
     const failure = { type: 'event_msg', timestamp, payload: { type: 'task_complete', turn_id: 'failed',
       error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity. Try again in 2 minutes.' } } };

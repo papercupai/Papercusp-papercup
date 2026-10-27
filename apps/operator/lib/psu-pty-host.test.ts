@@ -1148,7 +1148,10 @@ describe('EI-16685 pending inbox-wake cancellation', () => {
     });
 
     const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
-    expect(source).toMatch(/caps:\s*\[[^\]]*'delivery-cancel'/);
+    // The caps array may contain a nested conditional spread
+    // (`...(x ? ['pending-carry-fence-v1'] : [])`), so allow one level of
+    // inner brackets instead of stopping at the first `]`.
+    expect(source).toMatch(/caps:\s*\[(?:[^[\]]|\[[^\]]*\])*'delivery-cancel'/);
     expect(source).toContain("if (msg.mode === 'delivery-cancel')");
   });
 
@@ -1381,6 +1384,17 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
     expect(finalGuard).toBeGreaterThan(-1);
     expect(finalGuard).toBeLessThan(chunks);
     expect(chunks).toBeLessThan(byteWrite);
+  });
+
+  it('limits rearm-expiry cleanup to turn wakes, leaving carry-respawn policy separate', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const expiryCallback = src.indexOf('getRearmExpiryReason: (msg) => {');
+    const modeFence = src.indexOf("if (msg?.mode !== 'turn') return null;", expiryCallback);
+    const provenanceCheck = src.indexOf('wakeProvenanceRejection(msg)?.rejection ?? null;', modeFence);
+
+    expect(expiryCallback).toBeGreaterThan(-1);
+    expect(modeFence).toBeGreaterThan(expiryCallback);
+    expect(provenanceCheck).toBeGreaterThan(modeFence);
   });
 });
 
@@ -5313,7 +5327,7 @@ describe("resume finalization uses concrete initial pty spawn evidence", () => {
     const spawn = initialSpawn.indexOf("child = spawnChild();");
     const spawnFailure = initialSpawn.indexOf("} catch (e) {", spawn);
     const acknowledgement = initialSpawn.indexOf(
-      "const acknowledgement = onSpawn();",
+      "const acknowledgement = onSpawn({ ptyPid: child.pid });",
     );
 
     expect(spawn).toBeGreaterThan(-1);
@@ -5322,7 +5336,7 @@ describe("resume finalization uses concrete initial pty spawn evidence", () => {
   });
 
   it("does not re-finalize on later recycle spawns", () => {
-    expect(initialSpawn.match(/onSpawn\(\)/g)).toHaveLength(1);
+    expect(initialSpawn.match(/onSpawn\(/g)).toHaveLength(1);
   });
 });
 
@@ -5550,6 +5564,27 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
       return value;
     };
     expect(resolveLinuxCodexStartupPid(100, { readFile: read })).toBe(200);
+  });
+
+  it('selects the exact Codex child forked by a nonleader launcher thread', () => {
+    const counters = new Map([
+      [100, { pid: 100, comm: 'node-MainThread' }],
+      [200, { pid: 200, comm: 'codex' }],
+    ]);
+    const readFile = (path: string) => {
+      if (path === '/proc/100/task/100/children') return '';
+      if (path === '/proc/100/task/101/children') throw new Error('thread exited');
+      if (path === '/proc/100/task/102/children') return '200 200\n';
+      throw new Error(`unexpected proc path: ${path}`);
+    };
+    expect(resolveLinuxCodexStartupPid(100, {
+      readCounters: (pid: number) => counters.get(pid) ?? null,
+      readFile,
+      readDir: (path: string) => {
+        expect(path).toBe('/proc/100/task');
+        return ['100', '101', '102'];
+      },
+    })).toBe(200);
   });
 
   it('samples only Codex on Linux, ends at the bound and stops on child replacement', () => {
@@ -7474,6 +7509,59 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
   });
 
+  it.each(['first attempt', 'rearmed retry'])(
+    'a superseded carry stops blocking fresh wakes during its %s',
+    async (phase) => {
+      let lastRespawnAtMs = 100;
+      let lastRespawnRequest: object | null = null;
+      let releasePrompt: ((result: { deferred: boolean }) => void) | undefined;
+      const waitAtPrompt = vi.fn(() => new Promise<{ deferred: boolean }>((resolve) => {
+        releasePrompt = resolve;
+      }));
+      const recycle = vi.fn(async () => {});
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt,
+        recycle,
+        emitEvent: () => {},
+        isSuperseded: (message) => message !== lastRespawnRequest &&
+          isCarryRespawnSuperseded(message.receivedAtMs, lastRespawnAtMs),
+      });
+      const carry = { mode: 'carry-respawn', data: 'older carry', receivedAtMs: 110 };
+      try {
+        if (phase === 'first attempt') controller.beginFirstAttempt(carry);
+        else {
+          expect(controller.schedule(carry)).toBe('queued');
+          await vi.waitFor(() => expect(waitAtPrompt).toHaveBeenCalledOnce());
+        }
+        const turn = { mode: 'turn', data: 'pending wake', receivedAtMs: 110 };
+        controller.beginFirstAttempt(turn);
+        expect(controller.pendingCount('carry-respawn')).toBe(1);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(true);
+
+        // This request's own cut must retain its delivery priority.
+        lastRespawnRequest = carry;
+        lastRespawnAtMs = 120;
+        expect(controller.pendingCount('carry-respawn')).toBe(1);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(true);
+
+        // A different request's newer child makes this waiting carry obsolete.
+        // Admission must stop counting it before its old gate can resolve.
+        lastRespawnRequest = {};
+        lastRespawnAtMs = 130;
+        expect(controller.pendingCount('carry-respawn')).toBe(0);
+        expect(shouldDeferWakeForPendingRespawn('turn', controller.pendingCount('carry-respawn'))).toBe(false);
+        expect(controller.pendingCount('turn')).toBe(1);
+        expect(controller.pendingCount()).toBe(1);
+      } finally {
+        controller.dispose('host-ending');
+        releasePrompt?.({ deferred: false });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(recycle).not.toHaveBeenCalled();
+    },
+  );
+
   it('carry-only arbitration excludes turn retries while counting accepted and re-armed carries', () => {
     const h = makeHarness({ promptResults: [] });
     expect(h.controller.schedule({ mode: 'turn', data: 'wake' })).toBe('queued');
@@ -8521,6 +8609,50 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
       expect.objectContaining({ kind: 'wake-rearm-dropped', reason: 'exhausted', deliveryIds: ['d-2'] }),
     ]);
     expect(unjoined(h.events)).toEqual([]);
+  });
+
+  it('drops a turn re-arm that expires during a prompt wait before another safe-boundary wait', async () => {
+    let nowMs = 1_000_000;
+    const issuedAtMs = nowMs;
+    const events: Ev[] = [];
+    const waitAtPrompt = vi.fn(async () => {
+      nowMs = issuedAtMs + WAKE_PROVENANCE_MAX_AGE_MS + 1;
+      return { deferred: true };
+    });
+    const deliver = vi.fn(async () => ({ delivered: true }));
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt,
+      recycle: async () => {},
+      performDelivery: deliver,
+      getRearmExpiryReason: (message) => {
+        const freshness = checkWakeProvenanceAge(message, { nowMs });
+        if (!freshness.checked || !freshness.expired) return null;
+        return freshness.ageMs != null && freshness.ageMs < 0
+          ? 'provenance-future-timestamp'
+          : freshness.ageMs == null ? 'provenance-invalid-timestamp' : 'provenance-expired';
+      },
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      capMs: 10,
+    });
+
+    expect(controller.schedule({
+      mode: 'turn', data: 'wake', deliveryId: 'd-expired', provenanceIssuedAtMs: issuedAtMs,
+    })).toBe('queued');
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+
+    expect(waitAtPrompt).toHaveBeenCalledTimes(1);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(events.filter((event) => TERMINAL.has(event.kind))).toEqual([
+      expect.objectContaining({
+        kind: 'wake-rearm-dropped',
+        reason: 'provenance-expired',
+        attempts: 1,
+        deliveryIds: ['d-expired'],
+      }),
+    ]);
+    expect(unjoined(events)).toEqual([]);
+    expect(controller.pendingCount()).toBe(0);
   });
 
   it('keeps a loop delivery pending when a carry-respawn temporarily owns the next write', async () => {

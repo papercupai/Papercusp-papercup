@@ -11,6 +11,9 @@ import {
   buildLeaderBlockerStallBriefView,
   buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
+  computeClaimabilitySupervision,
+  computeParkedMemberCapacity,
+  readParkedMemberAdmission,
   computeDarkFleetAlert,
   computeDormantAlert,
   computeFleetBlockVerdict,
@@ -51,7 +54,10 @@ import {
   recoverFleetRecordForLeaderControl,
   boundedLeaderBriefFleetMetricsRead,
   boundedLeaderBriefFleetCampaignRead,
+  projectFleetCampaignInvocationDiagnostics,
+  recordFleetCampaignInvocationDiagnostics,
   readLeaderBriefFleetMetrics,
+  startLeaderBriefFleetMetricsRead,
   leaderBriefFleetMetricsUnavailable,
   readLeaderBriefLaneHealth,
   readLeaderAnnouncedGates,
@@ -60,6 +66,7 @@ import {
   runBoundedLeaderBriefReads,
   runLeaderBriefWithinDeadline,
   bindLeaderBriefResult,
+  createLeaderBriefMetadataRecorder,
   runLeaderBriefReads,
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
@@ -89,27 +96,121 @@ import type { AgentObligationAgenda } from '../../agent-obligations';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import * as fallbackObservations from '../../degradation/fallback-observations';
 import type { FleetLaneHealth } from '../../fleet/lane-health';
+import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { shapeLeaderBrief } from './leader-brief-shape';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('parked member capacity beside a partially working fleet', () => {
+  const member: Parameters<typeof computeParkedMemberCapacity>[0]['member'] = { sessionState: 'parked', wakeable: true, fleetRole: 'member', contextPressure: null, parkedOn: ['work-item:claimable'] };
+  const concurrency: ClaimConcurrencyVerdict = { blocked: false, activeClaims: 0, maxConcurrentClaims: 2, heldIds: [], blockerParkedIds: ['WI-blocked'] };
+  const evidence = { concurrency, claimable: 3, specRef: 'member-override@4' };
+  const assess = (m = member, e: typeof evidence | null = evidence, paused: boolean | null = false) => computeParkedMemberCapacity({ member: m, evidence: e, fleetPaused: paused });
+
+  it('finds an eligible parked seat while distinguishing working, capped, restricted and unread seats', () => {
+    const mixed = [
+      assess(),
+      assess({ ...member, sessionState: 'live' }),
+      assess(member, { ...evidence, concurrency: { ...concurrency, blocked: true, activeClaims: 2, heldIds: ['WI-1', 'WI-2'] } }),
+      assess(member, { ...evidence, claimable: 0 }),
+      assess(member, null),
+    ];
+    expect(mixed.map((m) => m.status)).toEqual(['eligible', 'protected', 'at-capacity', 'no-work', 'unknown']);
+    expect(mixed[0]).toMatchObject({ activeClaims: 0, maxConcurrentClaims: 2, blockerParkedIds: ['WI-blocked'], specRef: 'member-override@4' });
+    expect(mixed[2].heldIds).toEqual(['WI-1', 'WI-2']);
+    expect(mixed[4].claimable).toBeNull();
+  });
+
+  it('retains genuine and owner gates, fleet pauses, context recovery, and historical holders', () => {
+    expect(assess({ ...member, parkedOn: ['fleet:alpha:owner-only'] }).status).toBe('protected');
+    expect(assess({ ...member, parkedOn: ['work-item:claimable', 'composed-root:42'] }).status).toBe('protected');
+    expect(assess(member, evidence, true).status).toBe('protected');
+    expect(assess(member, evidence, null).status).toBe('unknown');
+    expect(assess({ ...member, wakeable: false }).status).toBe('protected');
+    expect(assess({ ...member, contextPressure: 'critical' }).status).toBe('protected');
+    expect(assess({ ...member, parkedOn: ['work-item:done:WI-blocked'] }).status).toBe('eligible');
+    expect(assess({ ...member, parkedOn: ['work-item:done:WI-untyped'] }).status).toBe('protected');
+    expect(assess({ ...member, intent: 'Resume only held WI-blocked; do not pull new work.', parkedOn: ['work-item:done:WI-blocked'] }).status).toBe('protected');
+    expect(assess({ ...member, intent: 'Owner-only approval is pending.' }).status).toBe('protected');
+  });
+
+  it('uses the member override and assignee in the shared floor reader, including its own cap', async () => {
+    const record = { source: 'cup', harnessSlug: 'fixture', revision: 4, spec: { specId: 'restricted', limits: { maxConcurrentClaims: 1 }, view: { filter: { field: 'kind', op: 'eq', value: 'bug' } } } } as any;
+    const getSpec = vi.fn().mockResolvedValue(record);
+    const capacity = vi.fn().mockResolvedValue({ ...concurrency, maxConcurrentClaims: 1 });
+    const lane = vi.fn().mockResolvedValue({ laneHealth: { effective: { claimable: 0 }, spec: { ref: 'restricted@4' } }, unavailable: null });
+    const input = { member: 'member-owner', fleet: 'alpha', workspaceId: 'workspace' };
+    const result = await readParkedMemberAdmission(input, { getSpec, concurrency: capacity, lane });
+    expect(getSpec).toHaveBeenCalledWith('member-owner');
+    expect(capacity).toHaveBeenCalledWith(1);
+    expect(lane).toHaveBeenCalledWith(expect.objectContaining({ spec: record.spec, record, assignee: 'member-owner', harness: 'fixture', issueFamilyTotalBudgetMs: 12000 }));
+    expect(result.claimable).toBe(0);
+    capacity.mockResolvedValueOnce({ ...concurrency, blocked: true, activeClaims: 1, maxConcurrentClaims: 1 });
+    lane.mockClear();
+    expect((await readParkedMemberAdmission(input, { getSpec, concurrency: capacity, lane })).concurrency.blocked).toBe(true);
+    expect(lane).not.toHaveBeenCalled();
+  });
+});
+
+describe('claimability supervision when idle alerts cannot be evaluated', () => {
+  const unavailable = () => buildClaimableNowAggregate({
+    fleet: 'alpha',
+    requestedHarness: 'papercusp',
+    laneHealth: null,
+    unavailable: leaderBriefLaneHealthUnavailable({ fleet: 'alpha', harness: 'papercusp' }).unavailable,
+    fleetPaused: false,
+  });
+
+  it('reports degraded supervision and a scoped recovery read instead of a healthy zero', () => {
+    const result = computeClaimabilitySupervision(unavailable());
+    expect(result).toMatchObject({ status: 'degraded', fleet: 'alpha', harness: 'papercusp', value: null });
+    expect(result.reason).toBeTruthy();
+    expect(result.recoverVia).toContain('work_items:claimable');
+    expect(result.recoverVia).toContain('alpha');
+  });
+
+  it('distinguishes a measured empty lane from an unread lane', () => {
+    const input = unavailable();
+    input.value = 0;
+    input.interpretation.exactness = { status: 'exact', reason: 'the complete lane is empty' };
+    delete input.unknown;
+    expect(computeClaimabilitySupervision(input)).toMatchObject({ status: 'measured', value: 0, recoverVia: null });
+  });
+
+  it('keeps a positive partial measurement degraded until the scope is fully measured', () => {
+    const input = unavailable();
+    input.value = 4;
+    input.interpretation.exactness = { status: 'partial', reason: 'one family was unavailable' };
+    expect(computeClaimabilitySupervision(input)).toMatchObject({ status: 'degraded', value: 4 });
+  });
+});
 
 describe('P-004 identity binding at the existing fleet brief sink', () => {
   it('uses the one producer result unchanged and records its compiled contribution in existing metadata', async () => {
     const data = { ok: true, summary: { fleet: 'alpha', members: 2 } };
     const producer = vi.fn(async () => ({ data }));
     const metadata = vi.fn();
+    const recordMetadata = createLeaderBriefMetadataRecorder(metadata);
+    const metricTiming = {
+      schemaVersion: 'fleet-metric-read-timing-v1',
+      phases: { readFleetMetricSource: { status: 'failed', elapsedMs: 5001 } },
+    };
+    recordMetadata({ fleetMetricReadTiming: metricTiming });
     const binder = vi.fn(async () => ({ identityId: 'su.fleet-leader', status: 'bound',
       specificationRevision: 'a'.repeat(64) })) as never;
     const produced = await runLeaderBriefWithinDeadline(producer, { data: {
       ok: false, summary: { fleet: 'alpha', members: 0 },
     } });
-    const delivered = await bindLeaderBriefResult(produced, { fleet: 'alpha', workspace: 'ws' }, metadata, binder);
+    const delivered = await bindLeaderBriefResult(produced, { fleet: 'alpha', workspace: 'ws' }, recordMetadata, binder);
     expect(producer).toHaveBeenCalledTimes(1);
     expect(delivered).toBe(produced);
     expect(delivered.data).toBe(data);
-    expect(metadata).toHaveBeenCalledTimes(1);
-    expect(metadata).toHaveBeenCalledWith({ identityContribution: expect.objectContaining({ status: 'bound' }) });
+    expect(metadata).toHaveBeenCalledTimes(2);
+    expect(metadata).toHaveBeenLastCalledWith({
+      fleetMetricReadTiming: metricTiming,
+      identityContribution: expect.objectContaining({ status: 'bound' }),
+    });
   });
 });
 
@@ -406,6 +507,32 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     );
   });
 
+  it('starts the bounded queue metrics read immediately when its harness is available', async () => {
+    const fallback = leaderBriefFleetMetricsUnavailable({
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
+      recoverVia: "work_items:burn_down { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' }",
+    });
+    let releaseRead: ((value: typeof fallback) => void) | undefined;
+    const read = vi.fn(() => new Promise<typeof fallback>((resolve) => { releaseRead = resolve; }));
+    const pending = startLeaderBriefFleetMetricsRead({
+      workspaceId: 'ws',
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      assignee: 'su-leader',
+    }, read);
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      assignee: 'su-leader',
+    }));
+    releaseRead?.(fallback);
+    await expect(pending).resolves.toBe(fallback);
+  });
+
   it('fixes scope before hydrating selected items and overlaps the occurrence census', async () => {
     const resolution = {
       ok: true,
@@ -443,10 +570,11 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       });
       return items;
     });
-    const occurrencePromise = new Promise<never>(() => {});
+    const occurrenceCounts = new Map([['WI-1', 2]]);
+    const occurrencePromise = Promise.resolve(occurrenceCounts);
     const readOccurrences = vi.fn(() => occurrencePromise);
     const build = vi.fn(async (_resolution, _items, opts) => {
-      expect(opts.issueOccurrences).toBe(occurrencePromise);
+      await expect(opts.issueOccurrences).resolves.toBe(occurrenceCounts);
       return unavailable;
     });
 
@@ -454,11 +582,13 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp' },
       { resolveScope, listItems, readOccurrences, build },
     );
-    await Promise.resolve();
+    await vi.waitFor(() => expect(scopeStarted).toBe(true));
     const itemsStartedBeforeScope = itemsStarted;
     releaseScope?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(itemsStarted).toBe(true);
+      expect(readOccurrences).toHaveBeenCalledTimes(1);
+    });
     const occurrenceStartedBeforeItemsReleased = readOccurrences.mock.calls.length === 1;
     releaseItems?.();
 
@@ -609,13 +739,29 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
 
   it('correlates a timed-out campaign leg with its diagnostic read', async () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
     const correlationId = '8dd90cee-69ac-4fd3-b747-00f8fc7f3b3b';
     const fallback = { campaign: null as string | null };
+    const metadata = vi.fn();
     const read = vi.fn((_correlationId: string) => new Promise<typeof fallback>(() => {}));
     try {
-      const pending = boundedLeaderBriefFleetCampaignRead(read, fallback, correlationId);
+      // The adjacent timeout test owns console.warn coverage. Silence it here so
+      // this test isolates the correlation contract under vitest-fail-on-console.
+      const startedAtByAxis = new Map([['claims' as const, Date.now() - 100]]);
+      const elapsedByAxis = new Map([['membership' as const, 80]]);
+      const pending = boundedLeaderBriefFleetCampaignRead(read, fallback, correlationId, {
+        warn: false,
+        onResult: (result) => recordFleetCampaignInvocationDiagnostics(metadata,
+          projectFleetCampaignInvocationDiagnostics({
+            correlationId,
+            elapsedMs: result.elapsedMs,
+            degraded: result.degraded,
+            reason: result.reason,
+            nowMs: Date.now(),
+            startedAtByAxis,
+            elapsedByAxis,
+          })),
+      });
       await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS);
       await expect(pending).resolves.toBe(fallback);
       expect(read).toHaveBeenCalledWith(correlationId, expect.any(AbortSignal));
@@ -624,12 +770,20 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
         { eligible: 1, applied: 0, reason: 'timeout', scope: 'leader-brief:fleet-campaign' },
         expect.objectContaining({ correlationId }),
       );
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader-brief:fleet-campaign exceeded 5000ms'));
+      expect(metadata).toHaveBeenCalledWith({
+        fleetCampaignRead: expect.objectContaining({
+          correlationId,
+          status: 'timed-out',
+          elapsedMs: LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS,
+          completedAxisTimingsMs: { membership: 80 },
+          pendingAxisTimingsMs: { claims: LEADER_BRIEF_FLEET_CAMPAIGN_TIMEOUT_MS + 100 },
+          notStartedAxes: expect.arrayContaining(['corrections']),
+        }),
+      });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
       observe.mockRestore();
-      warn.mockRestore();
     }
   });
 

@@ -5,6 +5,7 @@
 // hands ONLY the admission client an explicit operator target.
 import { describe, expect, it } from "vitest";
 import { GOVERNED_ADMISSION_DATABASE_URL_ENV as GOVERNOR_KEY } from "@papercusp/operator-core/lib/resource-governor/execution";
+import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import {
   buildGreenCheckpointEnv,
   GOVERNED_ADMISSION_DATABASE_URL_ENV,
@@ -14,6 +15,27 @@ const OPERATOR_URL = "postgresql://harness_admin:secret@localhost:5432/papercusp
 const BASE_SOURCE = { PATH: "/usr/bin", HOME: "/home/x" } as const;
 
 describe("buildGreenCheckpointEnv governed-admission target (WI-6554700010018666)", () => {
+  it.each([
+    ["detached manual launch", undefined],
+    ["scheduled launch with inherited auditing", "1"],
+  ])("keeps valid unchanged passes out of audit reruns for %s", (_launch, auditRate) => {
+    const source = { ...BASE_SOURCE, AFFECTED_TEST_REUSE_AUDIT_RATE: auditRate };
+    const env = buildGreenCheckpointEnv(null, source);
+    expect(env.AFFECTED_TEST_REUSE_AUDIT_RATE).toBe("0");
+    expect(env.AFFECTED_TEST_REUSE).toBeUndefined();
+    expect(source.AFFECTED_TEST_REUSE_AUDIT_RATE).toBe(auditRate);
+  });
+
+  it("binds native completion to the logical attempt and the gate's own physical run", () => {
+    const source = { ...BASE_SOURCE, [CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]: 'logical-attempt',
+      PAPERCUSP_TEST_RUN_GROUP: 'host-leaked-group' };
+    const env = buildGreenCheckpointEnv(null, source, 'physical-run');
+    expect(env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBe('logical-attempt');
+    expect(env.PAPERCUSP_TEST_RUN_GROUP).toBe('physical-run');
+    expect(buildGreenCheckpointEnv(null, source)[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBeUndefined();
+    expect(buildGreenCheckpointEnv(null, BASE_SOURCE, 'physical-run')[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]).toBeUndefined();
+  });
+
   it("uses the same key the governed-admission client reads", () => {
     expect(GOVERNED_ADMISSION_DATABASE_URL_ENV).toBe(GOVERNOR_KEY);
   });

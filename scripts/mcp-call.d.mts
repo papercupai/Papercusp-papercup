@@ -4,11 +4,10 @@
 // scripts/mcp-call.mjs and regenerate.
 /**
  * Why a parsed tool result reports failure, or null when it does not. It fails
- * when its top-level `ok` is false or any entry of a `results` batch has
- * `ok: false`. Only an explicit `false` counts: a body with no `ok` field (a
- * projection that picked other fields, prose, an array) is not a refusal. This
- * is the same rule as ptool's toolNotOkReason, applied to the value mcp-call
- * already parsed.
+ * when its top-level `ok` is false, any entry of a `results` batch has
+ * `ok: false`, or the canonical output envelope reports `state: 'error'`.
+ * Other bodies without `ok` (projections, prose, arrays, application states)
+ * are not refusals. The ok:false rules match ptool's toolNotOkReason.
  * @param {unknown} result
  * @returns {string | null}
  */
@@ -381,7 +380,7 @@ export function callToolViaAgentMcpUds({ ports, tokens, query, params, connect, 
  */
 export function isInvokedDirectly(argv1: string | undefined, moduleUrl: string | URL, resolveRealpath?: (path: string) => string): boolean;
 /**
- * Exit status when the call was delivered and the tool ANSWERED ok:false: a
+ * Exit status when the delivered result reports a refusal or output error: a
  * refused write, a missing id, or a partially failed batch. The result is still
  * printed in full on stdout. This matches ptool's PTOOL_TOOL_NOT_OK_EXIT, so a
  * script can tell "refused" (5) from "failed or unreachable" (1-4) with either

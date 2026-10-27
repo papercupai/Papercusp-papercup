@@ -80,8 +80,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // tables push the single provider-neutral projection. workspace_host_logs
   // is intentionally absent because appendWorkspaceHostLogs emits one scoped
   // producer invalidation after each batch instead of one PG NOTIFY per line.
-  'harness_shared.workspace_host_connections': ['workspaceHosts.control'],
-  'harness_shared.workspace_hosts': ['workspaceHosts.control'],
+  // remoteAccess.overview also renders the workspace's hosts and their live
+  // connections (it declares both as backing tables), so a host or connection
+  // change must refresh an open Remote access screen too.
+  'harness_shared.workspace_host_connections': ['workspaceHosts.control', 'remoteAccess.overview'],
+  'harness_shared.workspace_hosts': ['workspaceHosts.control', 'remoteAccess.overview'],
   'harness_shared.workspace_host_operations': ['workspaceHosts.control'],
   'harness_shared.workspace_host_resources': ['workspaceHosts.control'],
   'harness_shared.workspace_host_events': ['workspaceHosts.control'],
@@ -429,6 +432,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'dev.coordFeed',
     'coord.history',
     'coord.inbox',
+    // EI-25579142918093536: the attention reader derives coord-message state
+    // from this log, so ack/resolution writes must refresh the list and its projections.
+    'plans.attention',
+    'plans.attentionItem',
+    'plans.attentionCounts',
+    'plans.attentionRefs',
     // EI-19304902443341820: `sidebar.cupMail` reads this same log (readInbox/readOutbox) for the
     // Swarm view's per-agent mailbox, but was never listed — so a coord message pushed to
     // coord.inbox and dev.coordFeed while the mailbox beside them stayed stale until remount.

@@ -272,7 +272,9 @@ export async function captureWorkItemFlightRecordsForItems(input: {
       try {
         await setWorkItemCheckpointWithPrior(
           { harness: item.harness, workItemId: item.id, workspaceId },
-          formatWorkItemFlightRecord(base),
+          // This is system activity, not a new authored instruction. Undefined
+          // keeps the prior hash-bound latestUpdate while the transform adds it.
+          undefined,
           {
             // Compose INSIDE the transform: `prior` is reachable only under the store's
             // lock, so this is the only non-racy way to state whether the authored prose

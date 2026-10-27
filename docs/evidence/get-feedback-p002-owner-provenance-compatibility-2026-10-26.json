@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "parent": "WI-10005889",
+  "repair": "EI-27007718704640207",
+  "decision": "D-006",
+  "priorArtifact": "docs/evidence/get-feedback-p002-owner-provenance-local-2026-10-26.json",
+  "scope": "Attributed-caller owner consistency and activity-report compatibility; native actor history, lease ABA, acceptance and shipment remain open.",
+  "rootCause": "The report sink accepted an explicit owner without checking its attributable caller before telemetry and lifecycle effects.",
+  "sourcePins": {
+    "packages/operator-core/lib/agent-tools/activity/report.ts": "93e72cc78d8feaec8b3106d435f780947ee53898a3fab578259d65c15a193fdf",
+    "packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts": "d40aa0fa6d3c9f6f645497717d8f635bbb5117fae4d75265c948fb4c191caa97",
+    "packages/operator-core/lib/agent-tools/activity/activity.integration.test.ts": "e981ee302d40d0b2c9be170a2f1c1686a538d484b8688773a26f3ac1b306ce03"
+  },
+  "compatibility": {
+    "units": {
+      "paths": ["report-lifecycle.test.ts", "report-contention.test.ts", "report-args-contract.test.ts", "report-session-end-release.test.ts"],
+      "passed": 47,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/tmp/gf-p002-owner-provenance-compatibility-20261026.log",
+      "logSha256": "2fb1c9d084d66626ea81daad255fce4b7f5d120f92f8e930ea9e132c161cb2cd"
+    },
+    "firstIntegrationAttempt": "Shared PostgreSQL global setup refused its measured storage headroom; no cases ran.",
+    "privateIntegrationBeforeFixtureRepair": {
+      "testRunId": 22100268,
+      "passed": 5,
+      "failed": 16,
+      "cause": "Positive fixtures used an unrelated agent:worker principal for several explicit worker owners. Refusal was correct under the new contract."
+    },
+    "fixtureRepair": "Use matching attributable worker sessions for positive reports, retain the principal-only omitted-owner check, and add a direct foreign-owner refusal with zero database rows. Typecheck then exposed two fixture type errors, both corrected before final verification.",
+    "finalIntegration": {
+      "testRunId": 22103109,
+      "receiptId": "84c7dff7-37dd-4e84-b5d6-68a695c2303a",
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0,
+      "exit": 0,
+      "worktreeDirty": true,
+      "commitSha": "3bea28d963eba2beb7654cc90911dafe6fc2cff4",
+      "driver": "node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/agent-tools/activity/activity.integration.test.ts",
+      "reporterSink": "Explicit resolveScriptPgUrl().url; credentials are not retained.",
+      "receipt": "/tmp/gf-p002-owner-provenance-private-final-20261026.receipt.json",
+      "log": "/tmp/gf-p002-owner-provenance-private-final-20261026.log",
+      "logSha256": "a3c9acfc7fe4a04410b30016c2b787c76ff53999c519aea3a80a14f3469c44b3"
+    },
+    "typecheck": {
+      "command": "node scripts/lint-tsc.mjs --files=packages/operator-core/lib/agent-tools/activity/report.ts,packages/operator-core/lib/agent-tools/activity/report-foreign-session.test.ts,packages/operator-core/lib/agent-tools/activity/activity.integration.test.ts",
+      "exit": 0,
+      "scope": "The three named files only; unrelated compile diagnostics are excluded from this scoped verdict.",
+      "log": "/tmp/gf-p002-owner-provenance-typecheck-fixed-20261026.log",
+      "logSha256": "02ef12a976ed950b10bbb13b4d9829927e647d600b22887d918e2ce0304b3323"
+    }
+  },
+  "committedQualification": {
+    "status": "not-run",
+    "measuredHead": "3bea28d963eba2beb7654cc90911dafe6fc2cff4",
+    "guardAndForeignSessionTestMatchCommittedBytes": true,
+    "integrationFixtureMatchesCommittedBytes": false,
+    "nextIndependentAction": "Run the guard plus four existing report unit suites through lint-as-committed at the exact matching commit, with an explicit durable reporter sink. No need to await integration-fixture publication to qualify the already-committed guard.",
+    "remainingAction": "Once git-sync includes the final integration fixture, run its clean committed private-PG verification before closing the repair."
+  },
+  "publicationBlocker": {
+    "backgroundGitSyncFire": "Fired through sanctioned ptool route at :3271; returned in_progress without a commit. Do not blindly refire.",
+    "routineEvidence": "Submodule fetch headroom refusal at approximately 37.27GB available against 40.28GB reserve, plus a separate existing content exclusion.",
+    "rootRecoveryItem": "EI-26925507003255681",
+    "rootRecoveryOwner": "su-7eaf5682-aa4c-4e6e-ae3b-8e296433993b",
+    "contentItem": "WI-6554700010028546",
+    "coordEvidence": "coord-send-7aabb21f0c6ac99b9d5f45e4e260030072e6b1dd46bdadace82663196507f8ef",
+    "disposition": "Existing live recovery owner informed once; no parallel ROOT or LIVE_GATE_OPS work."
+  },
+  "repairState": "open",
+  "limitations": ["Final integration proof is local dirty proof", "No new canonical parent-spec binding", "No native matrix or exhaustive ABA history", "No runtime deployment or shipment claim"],
+  "preserved": ["Original local red2/green16 evidence without replay", "Original native bindings28326/28545", "Completed P002 source proof and host632 without replay"]
+}

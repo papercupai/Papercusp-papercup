@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "get-feedback P-006 native receipt + answering matrix on staging build bf1055224b (live plane, DB-state claim)",
+  "framework": "operational",
+  "command": [
+    "node scripts/mcp-call.mjs consult:get_feedback --port 3170 nativeConsult per cell (request keys gf-r6-20261027c-claudeended-claude-v1, gf-r6-20261027c-claudeended-codex-v1, gf-r6-20261027c-codexlive-codex-v1)",
+    "SELECT harness_shared.consult_state.dispatch_attempts + coord_thread_posts per conversation; session_ports for port cells",
+    "python3 .papercusp/scratch/gf-r6-live-a876-gen.py bf1055224b 2026-10-27T07:20:00Z (this generator)"
+  ],
+  "startedAt": "2026-10-27T07:20:00Z",
+  "finishedAt": "2026-10-27T07:31:05.658558Z",
+  "exitCode": 0,
+  "summary": "All three defined matrix cells (Claude ended source to Claude fork, Claude ended source to Codex conversion, Codex live source to Codex session port) dispatched natively and received a substantive answer from the dispatched session, distinct from the requester and the source, on staging build bf1055224b.",
+  "assertions": [
+    {
+      "id": "matrix-claude-ended-to-claude-fork-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-73bd1473b2748537966a532dedeb09c0868107e80bf0c36f3f1faebdbc410ca7 (request key gf-r6-20261027c-claudeended-claude-v1): native fork su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 -> claude/fable as su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c at 2026-10-27T07:25:13.754Z (no session_ports row: same-backend fork path, EI-27110821654149363); consult state active source/responder su-3ad5b251-04d1-47ff-ad97-a7ca58524d67; answer post 1207948 by su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c at 2026-10-27T03:30:43.354-04:00 (6800 chars). checks={\"native_fork_dispatched\": true, \"fork_backend_matches_cell\": true, \"distinct_answering_session\": true, \"requester_is_me\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true}"
+    },
+    {
+      "id": "matrix-claude-ended-to-codex-conversion-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-f5861187993fd704f8654b62b11141094cb17514043d843f55cf6da9d1a174b9 (request key gf-r6-20261027c-claudeended-codex-v1): port 6c05fbd9-b252-4032-b9b1-d75bdbfa1baa claude->codex model gpt-5.6-sol status delivered prepared 2026-10-27T03:21:08.986365-04:00 delivered 2026-10-27T03:21:21.205841-04:00 adv 53032->53181; convert as su-c7b0173b-19de-482a-841f-25e25554c7cf; consult state closed_answered source/responder su-54c1cdaa-0386-4043-9825-b2e2797787a8; answer post 1207934 by su-c7b0173b-19de-482a-841f-25e25554c7cf at 2026-10-27T03:22:51.615-04:00 (2880 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"requester_is_me\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true}"
+    },
+    {
+      "id": "matrix-codex-live-to-codex-session-port-dispatched-and-answered",
+      "passed": true,
+      "evidence": "conv-request-26fef86bd10024c59f1cea9d58ede68e2ecd972c33ce52cfef4f16e0f0df3180 (request key gf-r6-20261027c-codexlive-codex-v1): port 99435d74-7cdb-482f-ae31-3ad3f95f8ff0 codex->codex model gpt-5.6-sol status delivered prepared 2026-10-27T03:20:49.976328-04:00 delivered 2026-10-27T03:21:02.142469-04:00 adv 51658->53180; convert as su-29fd796b-c7b8-403e-a26a-89c3e32a12e4; consult state closed_answered source/responder su-637d70bf-567e-4ee9-ab87-88d69ca99dc9; answer post 1207935 by su-29fd796b-c7b8-403e-a26a-89c3e32a12e4 at 2026-10-27T03:22:52.347-04:00 (1876 chars). checks={\"port_delivered\": true, \"backends_match_cell\": true, \"distinct_target_session\": true, \"requester_is_me\": true, \"substantive_answer_posted\": true, \"answer_author_distinct_from_requester_and_source\": true, \"answer_author_is_dispatched_session\": true}"
+    },
+    {
+      "id": "all-three-defined-cells-checked",
+      "passed": true,
+      "evidence": "checked cells ['claude-ended-to-claude-fork', 'claude-ended-to-codex-conversion', 'codex-live-to-codex-session-port']; missing []"
+    },
+    {
+      "id": "db-state-claim-runtime-scope",
+      "passed": true,
+      "evidence": "Claim is durable DB state (consult_state dispatch attempts, delivered session_ports rows where the mechanism uses one, answer posts in coord_thread_posts by sessions distinct from requester and source). Per consult answer post 1207200 the binding pins postgres:5432, not hono-host:3170."
+    }
+  ],
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-10005891",
+  "requesterId": "su-2fde89b1-645a-4d95-832b-2ad86e206ca1",
+  "runtime": {
+    "consultRoute": "staging operator :3170 build bf1055224b",
+    "healthAtGeneration": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "a6f0177ac8",
+      "version": "0.0.0",
+      "claimSpec": {
+        "specVersion": "1.0",
+        "revisionAdoption": [
+          "first"
+        ]
+      },
+      "ts": "2026-10-27T07:31:05.657Z"
+    },
+    "boundRuntimeUnits": [
+      "postgres:5432"
+    ],
+    "launcher": "psu-launcher on psu-pty-host, canonical staging tree"
+  },
+  "matrix": {
+    "definition": "Three cells: Claude ended source to Claude fork; Claude ended source to Codex conversion; non-Claude (Codex) live source to Codex session port.",
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "fork",
+        "status": "checked",
+        "requestKey": "gf-r6-20261027c-claudeended-claude-v1",
+        "conversationId": "conv-request-73bd1473b2748537966a532dedeb09c0868107e80bf0c36f3f1faebdbc410ca7",
+        "portId": null,
+        "port": null,
+        "dispatchAttempt": {
+          "at": "2026-10-27T07:25:13.754Z",
+          "agent": "claude",
+          "model": "fable",
+          "detail": "fork of su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 \u2192 claude/fable as su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-e6ae698e-b6e0-2684932-1793085888728.log).",
+          "attempts": [
+            {
+              "rank": 1,
+              "agent": "claude",
+              "model": "fable",
+              "detail": "fork of su-3ad5b251-04d1-47ff-ad97-a7ca58524d67 \u2192 claude/fable as su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c: live host registered after 2ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-e6ae698e-b6e0-2684932-1793085888728.log).",
+              "outcome": "dispatched",
+              "operation": "fork"
+            }
+          ],
+          "verified": true,
+          "operation": "fork",
+          "dispatched": true,
+          "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+          "answeringOwnerId": "su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c"
+        },
+        "consultState": "active",
+        "sourceOwnerId": "su-3ad5b251-04d1-47ff-ad97-a7ca58524d67",
+        "answeringOwnerId": "su-e6ae698e-b6e0-4b3b-9733-0aa414d4287c",
+        "answerPostIds": [
+          1207948
+        ],
+        "checks": {
+          "native_fork_dispatched": true,
+          "fork_backend_matches_cell": true,
+          "distinct_answering_session": true,
+          "requester_is_me": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true
+        }
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "port",
+        "status": "checked",
+        "requestKey": "gf-r6-20261027c-claudeended-codex-v1",
+        "conversationId": "conv-request-f5861187993fd704f8654b62b11141094cb17514043d843f55cf6da9d1a174b9",
+        "portId": "6c05fbd9-b252-4032-b9b1-d75bdbfa1baa",
+        "port": {
+          "id": "6c05fbd9-b252-4032-b9b1-d75bdbfa1baa",
+          "logical_request_key": "e090a83716cf4c4b3a00a8f2605c2093200de54258dfd33407e305ff3f39df4e",
+          "source_backend": "claude",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 53032,
+          "target_adv_session_id": 53181,
+          "prepared_at": "2026-10-27T03:21:08.986365-04:00",
+          "pending_at": "2026-10-27T03:21:12.447821-04:00",
+          "delivered_at": "2026-10-27T03:21:21.205841-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "dispatchAttempt": {
+          "at": "2026-10-27T07:21:41.438Z",
+          "agent": "codex",
+          "model": "sol",
+          "detail": "convert of su-54c1cdaa-0386-4043-9825-b2e2797787a8 \u2192 codex/sol as su-c7b0173b-19de-482a-841f-25e25554c7cf: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-c7b0173b-19de-2684932-1793085662872.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection.",
+          "attempts": [
+            {
+              "rank": 3,
+              "agent": "codex",
+              "model": "sol",
+              "detail": "convert of su-54c1cdaa-0386-4043-9825-b2e2797787a8 \u2192 codex/sol as su-c7b0173b-19de-482a-841f-25e25554c7cf: live host registered after 1ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-c7b0173b-19de-2684932-1793085662872.log). First reply not written 20003ms after kickoff, so it was not checked for a provider rejection.",
+              "outcome": "dispatched",
+              "operation": "convert"
+            }
+          ],
+          "verified": true,
+          "operation": "convert",
+          "dispatched": true,
+          "sourceOwnerId": "su-54c1cdaa-0386-4043-9825-b2e2797787a8",
+          "answeringOwnerId": "su-c7b0173b-19de-482a-841f-25e25554c7cf"
+        },
+        "consultState": "closed_answered",
+        "sourceOwnerId": "su-54c1cdaa-0386-4043-9825-b2e2797787a8",
+        "answeringOwnerId": "su-c7b0173b-19de-482a-841f-25e25554c7cf",
+        "answerPostIds": [
+          1207934,
+          1207940
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "requester_is_me": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "port",
+        "status": "checked",
+        "requestKey": "gf-r6-20261027c-codexlive-codex-v1",
+        "conversationId": "conv-request-26fef86bd10024c59f1cea9d58ede68e2ecd972c33ce52cfef4f16e0f0df3180",
+        "portId": "99435d74-7cdb-482f-ae31-3ad3f95f8ff0",
+        "port": {
+          "id": "99435d74-7cdb-482f-ae31-3ad3f95f8ff0",
+          "logical_request_key": "b74717a116fb15d7c956303b5a16551533c5da16d5c869edeebeab3bc61f2476",
+          "source_backend": "codex",
+          "target_backend": "codex",
+          "target_model": "gpt-5.6-sol",
+          "status": "delivered",
+          "source_adv_session_id": 51658,
+          "target_adv_session_id": 53180,
+          "prepared_at": "2026-10-27T03:20:49.976328-04:00",
+          "pending_at": "2026-10-27T03:20:53.72435-04:00",
+          "delivered_at": "2026-10-27T03:21:02.142469-04:00",
+          "failed_at": null,
+          "error": null
+        },
+        "dispatchAttempt": {
+          "at": "2026-10-27T07:21:22.137Z",
+          "agent": "codex",
+          "model": "sol",
+          "detail": "convert of su-637d70bf-567e-4ee9-ab87-88d69ca99dc9 \u2192 codex/sol as su-29fd796b-c7b8-403e-a26a-89c3e32a12e4: live host registered after 13ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-29fd796b-c7b8-2684932-1793085642302.log). First reply not written 20005ms after kickoff, so it was not checked for a provider rejection.",
+          "attempts": [
+            {
+              "rank": 3,
+              "agent": "codex",
+              "model": "sol",
+              "detail": "convert of su-637d70bf-567e-4ee9-ab87-88d69ca99dc9 \u2192 codex/sol as su-29fd796b-c7b8-403e-a26a-89c3e32a12e4: live host registered after 13ms (log ~/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-29fd796b-c7b8-2684932-1793085642302.log). First reply not written 20005ms after kickoff, so it was not checked for a provider rejection.",
+              "outcome": "dispatched",
+              "operation": "convert"
+            }
+          ],
+          "verified": true,
+          "operation": "convert",
+          "dispatched": true,
+          "sourceOwnerId": "su-637d70bf-567e-4ee9-ab87-88d69ca99dc9",
+          "answeringOwnerId": "su-29fd796b-c7b8-403e-a26a-89c3e32a12e4"
+        },
+        "consultState": "closed_answered",
+        "sourceOwnerId": "su-637d70bf-567e-4ee9-ab87-88d69ca99dc9",
+        "answeringOwnerId": "su-29fd796b-c7b8-403e-a26a-89c3e32a12e4",
+        "answerPostIds": [
+          1207935,
+          1207936
+        ],
+        "checks": {
+          "port_delivered": true,
+          "backends_match_cell": true,
+          "distinct_target_session": true,
+          "requester_is_me": true,
+          "substantive_answer_posted": true,
+          "answer_author_distinct_from_requester_and_source": true,
+          "answer_author_is_dispatched_session": true
+        }
+      }
+    ]
+  },
+  "eightThreadReview": {
+    "retainedIn": "binding 71412 / test-run 22258824",
+    "artifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json"
+  },
+  "details": {
+    "launcherProvenance": "The dispatching :3170 host ran bf1055224b (apps/operator/scripts/psu-launcher.mjs blob ca748339). The responder launchers spawned for the trials (cell 1 fork at 2026-10-27T07:24:48Z, cell 2 Codex conversion target at about 07:21Z) executed the canonical-tree apps/operator/scripts/psu-launcher.mjs. From 06:37Z that file carried the then-uncommitted WI-6554700010030031 edit (blob aa43927d, +12/-2, respawn-report childLaunchSessionId only, touching no consult, fork, conversion or session-port path), committed at 07:35:16Z in 48543b4dcb. Observed: the cell 1 responder process runs the canonical staging tree's apps/operator/scripts/psu-launcher.mjs.",
+    "residue": [
+      "Round B (05:42-06:01Z, build a876f44cc1): the Codex-target trials failed during a Codex pool usage wall (conv-request-7488592ca5bc: convert target routed to the free-plan account, model_not_found, EI-27111739698817170; conv-request-ad5b23e3616c: every Codex rank launch-failed) and were closed cant_help; not bound. Round C re-ran all three cells on build bf1055224b after the walls cleared."
+    ]
+  }
+}

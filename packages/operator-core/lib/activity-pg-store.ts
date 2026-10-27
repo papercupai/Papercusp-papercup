@@ -16,9 +16,10 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { ActivityRecord, TelemetryStore } from '@papercusp/activity-bridge';
+import type { Sql } from 'postgres';
 
 /** A Postgres-backed `TelemetryStore` over harness_shared.agent_activity. */
-export function createPgTelemetryStore(): TelemetryStore {
+export function createPgTelemetryStore(sqlOverride?: Sql): TelemetryStore {
   return {
     async append(record: ActivityRecord): Promise<{ id: string | null }> {
       // `${json}::text::jsonb` (NOT `::jsonb`) — postgres-js JSON-encodes a string
@@ -26,7 +27,7 @@ export function createPgTelemetryStore(): TelemetryStore {
       // gotcha; same form tui/dispatch.ts uses).
       const detailJson = record.detail ? JSON.stringify(record.detail) : null;
       const workspaceId = record.workspaceId ?? '*';
-      const { sql } = getOrgPg();
+      const sql = sqlOverride ?? getOrgPg().sql;
       const inserted = await sql<Array<{ id: string }>>`
         INSERT INTO harness_shared.agent_activity
           (workspace_id, owner_id, agent, session_id, harness_slug, kind, tool_name, phase, tool_use_id, summary, status, detail, cwd)

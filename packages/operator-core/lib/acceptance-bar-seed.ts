@@ -7,6 +7,10 @@
  * R-N → P-NNN relation. No semantic inference and no second requirements store.
  */
 import { createHash } from 'node:crypto';
+import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
+import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
+import { selectCriterionCheckRoot, validateCriterionTestCaseCitations,
+  type CheckedCriterion } from './rubrics-criterion-checks';
 import { parsePlan } from '@papercusp/plan-parser';
 import { isNonAutomatedBehaviorClass } from './plan-verification-profile';
 import { resolveNewPlanVerificationProfile } from './agent-tools/plans/plan-verification-profile-stamp';
@@ -960,6 +964,24 @@ export function acceptanceBarRubricSlug(planSlug: string): string {
   return `acceptance-${planSlug}`;
 }
 
+/** The direct activation writer must not bypass proposal's named-case preflight.
+ * Only named citations are checked here; this does not add a new whole-file seed
+ * policy. Preimplementation files remain planned, and execution remains the grader's job.
+ */
+export function acceptanceBarTestCitationProblems(
+  criteria: ReadonlyArray<CheckedCriterion>,
+  root: string = resolveAgentWorkspaceRoot({}),
+): AcceptanceBarSeedProblem[] {
+  const named = criteria.filter(c => c.check?.kind === 'tests' && (c.check.testName || c.check.cases));
+  if (named.length === 0) return [];
+  const validation = selectCriterionCheckRoot(named, root, REPO_ROOT, { allowPlannedPaths: true }).validation;
+  return [...validation.failures, ...validateCriterionTestCaseCitations(named, validation)].map(failure => ({
+    code: 'bar_contract_check_invalid',
+    barKey: failure.criterionKey,
+    detail: `${failure.path}: ${failure.reason}`,
+  }));
+}
+
 interface RubricRow {
   workspace_id: string;
   harness_slug: string;
@@ -1302,6 +1324,11 @@ export async function seedAcceptanceBarsInTransaction(
     });
     if (!built.ok) return built;
   }
+
+  // All seed paths (including previews) share this pre-write guard. Do not run
+  // source validation in the pure builder or after the first persisted mutation.
+  const citationProblems = acceptanceBarTestCitationProblems(built.criteria);
+  if (citationProblems.length > 0) return refusal(citationProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
 
   const date = input.now.toISOString().slice(0, 10);
   const title = existing?.title ?? `Acceptance BAR — ${input.planTitle ?? input.planSlug}`;

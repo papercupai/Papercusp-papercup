@@ -68,6 +68,7 @@ export default defineTool({
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const specs = await listSpecClauses({
       harnessSlug,
+      ...(sctx.workspaceId && sctx.workspaceId !== '*' ? { workspaceId: sctx.workspaceId } : {}),
       planSlug: args.slug,
       specIds: args.specIds,
       sourceValIds: args.sourceValIds,

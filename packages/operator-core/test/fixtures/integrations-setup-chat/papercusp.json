@@ -17,8 +17,8 @@
     "id": "integrations-setup-chat",
     "contractVersion": 1,
     "displayName": "Setup Fixture Chat",
-    "datatypes": ["chat-message"],
-    "capabilities": ["chat.channels", "ticket.containers"],
+    "datatypes": ["chat-message", "ticket"],
+    "capabilities": ["chat.channels", "ticket.containers", "ticket.create"],
     "egressHosts": ["integrations-setup.example"],
     "setup": {
       "credentials": [

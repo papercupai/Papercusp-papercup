@@ -17,6 +17,8 @@ import type { BlindReviewBrief } from './blind-review-brief';
 import { BLIND_REVIEW_TOOL } from './blind-review-gate';
 import {
   BLIND_GAP_REVIEW_ACCOUNT,
+  BLIND_REVIEWER_BACKENDS,
+  launchProvablyNotStarted,
   BLIND_GAP_REVIEW_ACTOR,
   BLIND_REVIEWER_TOOL_CEILING,
   blindReviewerConfinement,
@@ -25,8 +27,112 @@ import {
   resumeBlindGapReviewer,
 } from './blind-reviewer-mint';
 import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
+import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
 
 const REPO = resolve(__dirname, '../../..');
+
+describe('recruiter replacement protocol', () => {
+  const fixture = () => replacementFixture(REPO, 'packages/operator-core/lib/blind-reviewer-mint.test.ts');
+  it('unauthorized-caller: ignores forged owner fields and refuses the original reviewer itself', async () => {
+    const f = fixture();
+    for (const caller of ['su-stranger', 'su-original']) {
+      expect(await f.run({ ctx: { workspaceId: 'ws-unit', principal: { kind: 'agent', slug: caller, workspaceId: 'ws-unit' }, ownerId: 'su-author' } }))
+        .toMatchObject({ ok: false, error: 'recruiter_only' });
+    }
+    expect(f.launch).not.toHaveBeenCalled();
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'ready' } });
+  });
+  it('missing-product-test and exact-manifest: corrected nominations are immutable and reach confinement exactly', async () => {
+    const f = fixture();
+    expect(await f.run({ productReads: { testFiles: ['missing-product.test.ts'] } })).toMatchObject({ ok: false, error: 'invalid_product_reads' });
+    const result = await f.run();
+    expect(result).toMatchObject({ ok: true, attempt: { status: 'ready' } });
+    const manifest = f.state.attempts[0].request_snapshot;
+    const confinement = (f.launch.mock.calls[0][1] as Record<symbol, { denyProductReadsOutside: unknown }>)[f.key];
+    expect(confinement.denyProductReadsOutside).toEqual((manifest as { productReads: unknown }).productReads);
+    for (const files of [[], ['packages/operator-core/lib/blind-review-replacement.test.ts'],
+      ['packages/operator-core/lib/blind-reviewer-mint.test.ts', 'packages/operator-core/lib/blind-review-replacement.test.ts']]) {
+      expect(await f.run({ productReads: { testFiles: files } })).toMatchObject({ ok: false, error: 'request_conflict' });
+    }
+    expect(f.state.attempts[0].request_snapshot).toEqual(manifest);
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+  it.each(['conclusive', 'live', 'resuming', 'reserved'])('protected-state-%s: refuses changed eligibility before selecting an attempt', async kind => {
+    const f = fixture();
+    if (kind === 'conclusive') { f.state.material.outcome = 'conclusive'; f.state.material.summary = 'CONCLUSIVE: reviewed'; }
+    if (kind === 'live') f.state.ended = false;
+    if (kind === 'resuming') f.state.sourceStatus = 'resuming';
+    if (kind === 'reserved') f.state.resumeClaim = 'resume-active';
+    expect(await f.run()).toMatchObject({ ok: false, error: 'review_protected' });
+    expect(f.launch).not.toHaveBeenCalled();
+  });
+  it('independent-replacement-identity: rejects related native receipts without releasing their reservation', async () => {
+    const f = fixture(); f.deps.lineageRelated = async () => true;
+    expect(await f.run()).toMatchObject({ ok: false, error: 'reviewer_not_independent' });
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.state.attempts[0]).toMatchObject({ status: 'uncertain', reviewer_owner_id: null });
+  });
+  it('recover-failed-launch: records no-process failures, preserves them, then succeeds on a new ordered request', async () => {
+    const f = fixture();
+    // A definite failure is every backend rung refusing before spawn (EI-27127088253419654).
+    for (const _rung of BLIND_REVIEWER_BACKENDS) {
+      f.launch.mockResolvedValueOnce({ isError: true, data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    }
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { attemptSeq: 1, status: 'failed' } });
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { attemptSeq: 1 } });
+    expect(await f.run({ requestKey: 'after-definite-failure' })).toMatchObject({ ok: true, attempt: { attemptSeq: 2, status: 'ready' } });
+    expect(f.state.attempts.map(a => [a.attempt_seq, a.status])).toEqual([[1, 'failed'], [2, 'ready']]);
+    expect(f.launch).toHaveBeenCalledTimes(BLIND_REVIEWER_BACKENDS.length + 1);
+  });
+  it('retry-one-active: an interleaved equivalent request observes the same attempt and launches only once', async () => {
+    const f = fixture();
+    let release!: () => void; const gate = new Promise<void>(r => { release = r; });
+    let entered!: () => void; const started = new Promise<void>(r => { entered = r; });
+    f.launch.mockImplementationOnce(async () => { entered(); await gate; return { data: { launch: f.launchSummary } }; });
+    const first = f.run(); await started;
+    const duplicate = await f.run({ requestKey: 'equivalent-other-request' });
+    expect(duplicate).toMatchObject({ ok: true, deduped: true, attempt: { id: 100, status: 'launching' } });
+    release(); expect(await first).toMatchObject({ ok: true, attempt: { id: 100, status: 'ready' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+  it('uncertain-launch-reconciliation: a lost reply stays excluded until the original ledger supplies exact native identity', async () => {
+    const f = fixture(); f.launch.mockRejectedValueOnce(new Error('reply lost'));
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    expect(await f.run({ requestKey: 'must-not-launch' })).toMatchObject({ ok: true, deduped: true, attempt: { status: 'uncertain' } });
+    f.state.ledger = f.launchSummary;
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { status: 'ready', nativeSessionId: 'native-new' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+  it('reconciles a delayed native id without requiring the frozen launch summary to change', async () => {
+    const f = fixture();
+    f.state.ledger = { ...f.launchSummary,
+      freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 30, sessionId: null }] } };
+    f.launch.mockResolvedValueOnce({ data: { launch: f.state.ledger } });
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    f.state.delayedNative = { id: 30, workspace_id: 'ws-unit', coord_owner_id: 'su-new', session_id: null };
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true, attempt: { status: 'uncertain' } });
+    f.state.delayedNative.session_id = 'native-delayed';
+    expect(await f.run()).toMatchObject({ ok: true, deduped: true,
+      attempt: { status: 'ready', reviewerOwnerId: 'su-new', advSessionId: 30, nativeSessionId: 'native-delayed' } });
+    expect(f.launch).toHaveBeenCalledTimes(1);
+    expect(f.bind).toHaveBeenCalledTimes(1);
+    expect(f.state.ledger).toMatchObject({ freshVerdict: { sessions: [{ sessionId: null }] } });
+  });
+  it.each([
+    { id: 31, workspace_id: 'ws-unit', coord_owner_id: 'su-new', session_id: 'foreign-native' },
+    { id: 30, workspace_id: 'another-workspace', coord_owner_id: 'su-new', session_id: 'foreign-native' },
+    { id: 30, workspace_id: 'ws-unit', coord_owner_id: 'su-other', session_id: 'foreign-native' },
+  ])('keeps the reservation when delayed identity belongs to another launch: %j', async native => {
+    const f = fixture();
+    const summary = { ...f.launchSummary,
+      freshVerdict: { sessions: [{ ownerId: 'su-new', advSessionId: 30, sessionId: null }] } };
+    f.launch.mockResolvedValueOnce({ data: { launch: summary } });
+    f.state.delayedNative = native;
+    expect(await f.run()).toMatchObject({ ok: true, attempt: { status: 'uncertain' } });
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.launch).toHaveBeenCalledTimes(1);
+  });
+});
 
 /** Static discovery, as in capability-envelope/session-confinement.test.ts: importing the
  * registry would pull ~950 modules with side effects into a unit test. Accepts both quote
@@ -68,6 +174,7 @@ const BRIEF: BlindReviewBrief = {
   planSlug: SLUG,
   activationAuditSeq: 7,
   ownerTurns: [{ ref: 'claude:s1:3', text: 'Make the export button produce a CSV.' }],
+  unverifiedTurns: [],
   excludedRefs: [],
   text: 'Owner turn claude:s1:3:\nMake the export button produce a CSV.',
 };
@@ -101,6 +208,19 @@ describe('blind reviewer tool ceiling — catalog truth', () => {
 });
 
 describe('blind reviewer confinement — gate decisions', () => {
+  it('permits guarded self-shutdown without opening coordination, plan, or proof reads', () => {
+    expect(evaluate('session:end').allowed).toBe(true);
+    for (const tool of ['coord:inbox', 'coord:send', 'session:request-compaction',
+      'plans:get', 'rubrics:get', 'scorecards:get', 'work_items:get']) {
+      expect(evaluate(tool).allowed, tool).toBe(false);
+    }
+
+    // Existing review bindings keep their frozen ceiling; a new mint must not
+    // retroactively widen an already-launched reviewer's access.
+    const legacy = { ...CONFINEMENT, denyOutside: CONFINEMENT.denyOutside!.filter(name => name !== 'session:end') };
+    expect(evaluateSessionConfinement({ toolName: 'session:end', confinement: legacy }).allowed).toBe(false);
+  });
+
   it('allows only nominated product docs and bounded raw test-file history, never plan or bound-proof selectors', () => {
     const confinement = blindReviewerConfinement(SLUG, { harness: 'papercusp', docsHarness: 'engineering',
       docsSlugs: ['agent-insights/proving-a-guard-is-falsifiable'], testFiles: ['lib/probe.test.ts'] });
@@ -210,6 +330,39 @@ describe('blind reviewer scratch plans (D-050)', () => {
     for (const [tool, args] of ADMITTED) expect(plan(tool, args).allowed, tool).toBe(true);
   });
 
+  it('admits product registry reads and pack browsing without opening plan artifacts', () => {
+    for (const [tool, args] of [
+      ['plan-types:list', { harness: 'papercusp', kind: 'item-type' }],
+      ['plan-types:get', { harness: 'papercusp', kind: 'plan-type', typeId: 'acme/checklist', revision: 1 }],
+      ['cupboard:search', { kind: 'pack', q: 'checklist', limit: 10 }],
+    ] as const) expect(plan(tool, args).allowed, tool).toBe(true);
+
+    for (const [tool, args] of [
+      ['plan-types:list', {}],
+      ['plan-types:list', { harness: 'other' }],
+      ['plan-types:get', { harness: 'papercusp', kind: 'plan-type', typeId: 'acme/checklist', slug: SLUG }],
+      ['plan-types:list', { harness: 'papercusp', workItemId: 'WI-1' }],
+      ['cupboard:search', {}],
+      ['cupboard:search', { kind: 'all' }],
+      ['cupboard:search', { kind: 'plan' }],
+      ['cupboard:search', { kind: 'rubric' }],
+      ['cupboard:search', { kind: 'pack', q: SLUG }],
+      ['cupboard:search', { kind: 'pack', workspaceId: 'other' }],
+    ] as const) expect(plan(tool, args).allowed, `${tool} ${JSON.stringify(args)}`).toBe(false);
+
+    for (const tool of ['plan-types:define', 'plan-types:pin', 'plan-types:retire', 'cupboard:install-plugin'])
+      expect(plan(tool, {}).allowed, tool).toBe(false);
+  });
+
+  it('allows duplicate-detection bypass only when creating its own isolated scratch plan', () => {
+    const create = { slug: MINE, title: 'Independent product rehearsal', harness: 'papercusp', force: true };
+    expect(plan('plans:new', create).allowed).toBe(true);
+    for (const args of [{ ...create, slug: SLUG }, { ...create, slug: 'other-plan' },
+      { ...create, harness: 'other' }, { ...create, force: 'true' }, { ...create, force: {} },
+      { ...create, force: false }]) expect(plan('plans:new', args).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'plans:new', args: create, confinement: CONFINEMENT }).allowed).toBe(false);
+  });
+
   it('refuses the reviewed plan, an unprefixed slug, a bare prefix and a missing slug on every scratch verb', () => {
     for (const [tool, args] of ADMITTED) {
       for (const slug of [SLUG, 'other-plan-2026-10-20', PREFIX, `${PREFIX}${SLUG}`, `x${MINE}`, undefined]) {
@@ -235,7 +388,6 @@ describe('blind reviewer scratch plans (D-050)', () => {
       ['plans:get', { slug: MINE, decisionId: 'other-plan#D-001' }],
       ['plans:get', { slug: MINE, harness: 'other' }],
       ['plans:new', { slug: MINE, title: 'x', workspaceId: 'default' }],
-      ['plans:new', { slug: MINE, title: 'x', force: true }],
       ['plans:add-item', { slug: MINE, text: 'x', items: [{ slug: 'other-plan-2026-10-20', text: 'y' }] }],
       ['plans:add-item', { slug: MINE, text: 'x', items: [{ text: 'y', harness: 'other' }] }],
       ['plans:add-item', { slug: MINE, text: 'x', blockedBy: ['other#P-001'] }],
@@ -298,6 +450,10 @@ describe('buildBlindReviewerKickoff', () => {
     expect(kickoff).toContain('Make the export button produce a CSV.');
     expect(kickoff).toContain('Boot it with scripts/verify-tauri-headless.sh');
     expect(kickoff).toContain(`${BLIND_REVIEW_TOOL} { op: 'post', slug: '${SLUG}'`);
+    expect(kickoff).toContain("outcome: 'conclusive'");
+    expect(kickoff).toContain("outcome: 'inconclusive'");
+    expect(kickoff).toContain('Empty gaps alone do not complete a review.');
+    expect(kickoff).toContain('After posting your review, call session:end');
   });
 
   it('falls back to a discovery hint when no run hint is given', () => {
@@ -310,7 +466,8 @@ describe('mintBlindGapReviewer', () => {
   const KEY = Symbol('test-confinement-key');
 
   function deps(brief: BlindReviewBrief | null = BRIEF) {
-    const handler = vi.fn(async () => ({ data: { launch: {
+    // Returns unknown, like the real launcher envelope, so a case can install a refusal.
+    const handler = vi.fn(async (): Promise<unknown> => ({ data: { launch: {
       ownerIds: ['su-reviewer-1'],
       freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
     } } }));
@@ -328,9 +485,29 @@ describe('mintBlindGapReviewer', () => {
     }));
     const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
     const releaseSessionResume = vi.fn(async () => true);
+    const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume,
-      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume } };
+      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume, knownTools } };
   }
+
+  // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
+  it('refuses a howToRun naming a registered tool outside the ceiling before launching', async () => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      howToRun: 'Create a scratch item with work_items:create, then do not call coord:send.', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'how_to_run_outside_ceiling', refusedTools: ['coord:send', 'work_items:create'] });
+    expect(result.ok === false && result.message).toContain('capability:bash');
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  it('launches a howToRun naming only admitted tools and unregistered event keys', async () => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp',
+      howToRun: 'Use capability:bash; a park on work-item:done:WI-1 or events:custom-thing must clear.', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+  });
 
   it('attaches the nominated product read boundary before launch and supplies executable read hints', async () => {
     const d = deps();
@@ -351,6 +528,56 @@ describe('mintBlindGapReviewer', () => {
     expect(d.handler).not.toHaveBeenCalled();
   });
 
+  // launch-agent's err(): every refusal before the spawn loop carries this proof.
+  const preSpawnRefusal = () => ({ isError: true, content: [{ type: 'text', text: 'account_walled' }],
+    data: { ok: false, error: 'account_walled', launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+
+  it('falls through to the next backend only when a launch is refused, and stops at the first that spawns', async () => {
+    const d = deps();
+    // First backend (claude opus) refused before spawn — e.g. every Claude account walled.
+    d.handler.mockImplementationOnce(async () => preSpawnRefusal());
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(2);
+    const agents = d.handler.mock.calls.map(c => (c as unknown as [{ agent: string; model?: string }])[0]);
+    expect(agents.map(a => a.agent)).toEqual(BLIND_REVIEWER_BACKENDS.map(b => b.agent));
+    expect(agents[0]).toMatchObject({ agent: 'claude', model: 'opus', effort: 'xhigh' });
+    expect(agents[1]).toMatchObject({ agent: 'codex' });
+    expect(agents[1]).not.toHaveProperty('model');
+  });
+
+  it('returns the last refusal when every backend refuses, without spawning past the ladder', async () => {
+    const d = deps();
+    const refusal = preSpawnRefusal();
+    d.handler.mockImplementation(async () => refusal);
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(d.handler).toHaveBeenCalledTimes(BLIND_REVIEWER_BACKENDS.length);
+    expect(result).toMatchObject({ ok: true, launch: refusal, binding: null });
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it('never falls through on an isError that does not prove no process started (it may follow a spawn)', async () => {
+    const d = deps();
+    const unproven = { isError: true, content: [{ type: 'text', text: 'verifier timed out after spawn' }] };
+    d.handler.mockImplementation(async () => unproven);
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(d.handler).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, launch: unproven, binding: null });
+  });
+
+  it.each([
+    [{ data: { launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } }, true],
+    [{ data: { launch: { opened: 0, partial: false, tasks: [] } } }, true],
+    [{ isError: true }, false],
+    [{ data: { launchFailure: { stage: 'pre-spawn', processesOpened: 1 } } }, false],
+    [{ data: { launch: { mode: 'deduped', opened: 0, partial: false, tasks: [] } } }, false],
+    [{ data: { launch: { opened: 0, partial: true, tasks: [] } } }, false],
+    [{ data: { launch: { opened: 1, ownerIds: ['su-x'] } } }, false],
+    [null, false],
+  ])('launchProvablyNotStarted(%j) is %s', (receipt, expected) => {
+    expect(launchProvablyNotStarted(receipt)).toBe(expected);
+  });
+
   it('launches headless under the system actor with the confinement on the launcher key', async () => {
     const d = deps();
     const result = await mintBlindGapReviewer(
@@ -363,11 +590,14 @@ describe('mintBlindGapReviewer', () => {
     expect(d.loadBrief).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, harnessSlug: 'papercusp' });
     expect(d.handler).toHaveBeenCalledTimes(1);
     const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
+    // The first backend on the ladder launches: Claude Opus at xhigh (owner directive #2503).
     expect(args).toEqual({
       brief: result.kickoff,
       harness: 'papercusp',
       headless: true,
-      agent: 'codex',
+      agent: 'claude',
+      model: 'opus',
+      effort: 'xhigh',
       account: 'auto',
       mcpTarget: 'spawn-host',
     });
@@ -468,18 +698,32 @@ describe('mintBlindGapReviewer', () => {
     expect(d.handler).not.toHaveBeenCalled();
   });
 
-  it.each(['no mapped sources', 'only excluded sources'] as const)('refuses an empty owner brief with %s before loading the launcher', async sourceCase => {
+  it.each(['no mapped sources', 'only excluded sources'] as const)('refuses a brief with no user turns (%s) before loading the launcher', async sourceCase => {
     const d = deps({
       ...BRIEF,
       ownerTurns: [],
+      unverifiedTurns: [],
       excludedRefs: sourceCase === 'only excluded sources'
-        ? [{ ref: 'codex:unenrolled:1', reason: 'not-owner' }]
+        ? [{ ref: 'codex:assistant:1', reason: 'not-owner' }]
         : [],
     });
     const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
-    expect(result).toMatchObject({ ok: false, code: 'no_owner_turns' });
+    expect(result).toMatchObject({ ok: false, code: 'no_source_turns' });
     expect(d.loadBrief).toHaveBeenCalledTimes(1);
     expect(d.launcher).not.toHaveBeenCalled();
     expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  // Owner directive #2499 (2026-10-27): the mint no longer demands an authenticated owner
+  // turn. A brief carrying only unverified-origin user turns launches a reviewer.
+  it('mints from a brief whose only turns are unverified-origin user turns', async () => {
+    const d = deps({
+      ...BRIEF,
+      ownerTurns: [],
+      unverifiedTurns: [{ ref: 'codex:pre-stamp:1', text: 'Make the export button produce a CSV.' }],
+    });
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    expect(d.handler).toHaveBeenCalledTimes(1);
   });
 });

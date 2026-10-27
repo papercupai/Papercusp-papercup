@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,21 @@ beforeEach(() => { host = createHost(); });
 const root = () => defaultEvidenceRoot('proof', env, host);
 
 describe('verification evidence placement (P-009)', () => {
+  it('loads the evidence-root package entry without a host runner or retention scripts', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'vh-standalone-root-'));
+    try {
+      const packageRoot = join(fixture, 'node_modules/@papercusp/verification-harness');
+      mkdirSync(join(packageRoot, 'src'), { recursive: true });
+      copyFileSync(new URL('../package.json', import.meta.url), join(packageRoot, 'package.json'));
+      copyFileSync(new URL('./evidence-root.ts', import.meta.url), join(packageRoot, 'src/evidence-root.ts'));
+      const result = spawnSync(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e',
+        'const {defaultEvidenceRoot}=await import("@papercusp/verification-harness/evidence-root");' +
+        'process.stdout.write(defaultEvidenceRoot("proof",{VH_EVIDENCE_ROOT_BASE:"/chosen"}));'],
+      { cwd: fixture, encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('/chosen/proof');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
   it.skipIf(platform() !== 'linux')('checks the resolved shell device for a symlink back to root', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'vh-device-'));
     try {

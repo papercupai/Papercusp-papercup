@@ -35,6 +35,7 @@ import {
   PAPERCUP_CHAT_CSS,
   PapercupChat,
   type PapercupChatController,
+  type PapercupChatProps,
 } from "@papercusp/operator-ui/papercup-chat";
 import type { WorkRefKind } from "./chat/parse-work-refs";
 import {
@@ -64,6 +65,8 @@ type ChatIconComponent = ComponentType<{ className?: string }>;
 interface Props {
   /** Conversation messages, oldest first. */
   messages: ChatMessage[];
+  /** Current authenticated result resolver/activation boundary supplied by the host. */
+  resultContext?: PapercupChatProps['resultContext'];
   /** True while the operator is composing/streaming. */
   busy: boolean;
   /** Peer-window generation in flight (multi-window P-009) — thinking row only. */
@@ -259,12 +262,14 @@ function toChatTurn(message: ChatMessage, index: number): ChatTurn {
     createdAt: messageCreatedAt(message),
     ...(message.tools ? { tools: message.tools } : {}),
     ...(message.report ? { report: message.report } : {}),
+    ...(message.results ? { results: message.results } : {}),
     ...(message.planSlug !== undefined ? { planSlug: message.planSlug } : {}),
   };
 }
 
 export function OperatorChat({
   messages,
+  resultContext,
   busy,
   peerBusy,
   passive,
@@ -608,6 +613,7 @@ export function OperatorChat({
       <style>{PAPERCUP_CHAT_CSS}</style>
       <PapercupChat
         chat={chat}
+        resultContext={resultContext}
         hostTrust="owner"
         assistantLabel={agentName}
         userLabel="You"

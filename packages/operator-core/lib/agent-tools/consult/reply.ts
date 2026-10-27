@@ -43,6 +43,20 @@ export function isConfirmedDeadConsultResponder(
   );
 }
 
+/** Delivery counts cannot replace a fresh verdict for the answering identity. */
+export async function measureConsultFollowupReach(
+  responder: string,
+  notify: () => Promise<{ woke: number }>,
+  readLiveness: () => Promise<{
+    report: Parameters<typeof isConfirmedDeadConsultResponder>[0];
+    endedSessions: ReadonlyMap<string, string | null>;
+  }>,
+): Promise<{ woke: number; confirmedDead: boolean }> {
+  const delivery = await notify();
+  const { report, endedSessions } = await readLiveness();
+  return { woke: delivery.woke, confirmedDead: isConfirmedDeadConsultResponder(report, responder, endedSessions) };
+}
+
 /**
  * The handler writes the consult post before finishing its remaining work. If the
  * handler returns after the tool deadline, preserve the completed reply identity so
@@ -164,15 +178,15 @@ export default defineTool({
         // session ALREADY answering this consult (consult-verbs-core resolves
         // the answering identity). That session is our own worker, so this is
         // the ONE consult delivery that legitimately notifies a live agent.
-        reach: async (opts) => {
-          const r = await notifyAgents(identity, {
+        reach: (opts) => measureConsultFollowupReach(opts.responder, () => notifyAgents(identity, {
             addressees: [opts.responder],
             objectRef: { kind: 'conversation', ref: opts.conversationId },
             summary: opts.summary,
             body: opts.body,
             wake: true,
-          });
-          if (r.woke !== 0) return { woke: r.woke };
+          }), async () => {
+          // A queued wake is not pickup. Even a positive count may address an
+          // ended answering session; measure its current liveness separately.
           const [report, endedSessions] = await Promise.all([
             reportIdleRecipients([opts.responder], {
               workspaceId: identity.workspaceId ?? undefined,
@@ -183,11 +197,8 @@ export default defineTool({
             // roster, so preserve the terminal record as an independent signal.
             lookupEndedSessions([opts.responder], identity.workspaceId),
           ]);
-          return {
-            woke: r.woke,
-            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder, endedSessions),
-          };
-        },
+          return { report, endedSessions };
+        }),
         // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT
         // in this conversation — fork/convert a fresh answering session from
         // their transcript, never a wake.

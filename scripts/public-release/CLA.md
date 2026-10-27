@@ -21,7 +21,7 @@ You grant us, and recipients of software we distribute, a perpetual, worldwide,
 non-exclusive, no-charge, royalty-free, irrevocable copyright license to reproduce,
 prepare derivative works of, publicly display, publicly perform, sublicense, and
 distribute your Contributions and derivative works of them, **under any licence terms,
-including terms other than the Elastic License 2.0**.
+including terms other than the Sustainable Use License**.
 
 You keep the copyright to your Contributions. Nothing in this agreement stops you from
 using your own Contributions however you like.
@@ -46,7 +46,7 @@ You represent that:
    behalf, or your employer has waived those rights for your Contributions.
 2. Each Contribution is your original creation. Where it includes third-party material,
    you identify that material and its licence in the Contribution itself, and that
-   licence is compatible with the Elastic License 2.0 (so not GPL, AGPL, SSPL, or a
+   licence is compatible with the Sustainable Use License (so not GPL, AGPL, SSPL, or a
    non-commercial licence).
 3. To your knowledge, your Contributions do not violate anyone else's rights.
 

@@ -42,6 +42,7 @@ import {
   type FrozenCandidateRepairQueueRead,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
+  FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX,
 } from '../../release/frozen-candidate-repair-queue';
 import {
   parseFrozenRepairEditHunk,
@@ -66,7 +67,7 @@ import {
   AdmissionOffthreadTimeoutUnavailableError,
   runAdmissionJob,
 } from '../../release/admission-offthread';
-import type { AdmissionJobKind, AdmissionJobOf } from '../../release/admission-jobs';
+import { ADMISSION_RADIUS_CAP, type AdmissionJobKind, type AdmissionJobOf } from '../../release/admission-jobs';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PRECHECK_MAX_FILES,
@@ -79,9 +80,13 @@ import {
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
 import { ratchetAllowsPublication } from '../../release/admission-ratchet';
+import { canonicalJson } from '@papercusp/hash-chain';
 import {
+  admissionPrecheckMeasurementIdentity,
+  ADMISSION_TEST_ENVIRONMENT,
   settleAdmissionPrecheck,
   startAdmissionPrecheckWorker,
+  validateAdmissionPrecheckResults,
   type AdmissionPrecheckWorkerInput,
 } from '../../release/admission-fix-precheck-managed';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
@@ -350,6 +355,8 @@ const argsSchema = z.preprocess(
           .string()
           .regex(/^[0-9a-f]{40,64}$/)
           .optional(),
+        /** Ordered reviewed deltas for dependent fixes; every selected path must change in each commit. */
+        patchCommits: z.array(z.string().regex(FULL_COMMIT_SHA)).min(1).max(20).optional(),
         /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
@@ -373,6 +380,7 @@ const argsSchema = z.preprocess(
           .string()
           .regex(/^[0-9a-f]{40,64}$/)
           .optional(),
+        patchCommits: z.array(z.string().regex(FULL_COMMIT_SHA)).min(1).max(20).optional(),
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
         retryPrecheck: z.boolean().optional(),
@@ -421,8 +429,10 @@ const argsSchema = z.preprocess(
     .superRefine((value, refinementCtx) => {
       if (value.op !== 'admit' && value.op !== 'converge') return;
       if (
-        value.patchCommit !== undefined &&
+        (value.patchCommit !== undefined || value.patchCommits !== undefined) &&
         (value.wholeBlob === true ||
+          (value.patchCommit !== undefined && value.patchCommits !== undefined) ||
+          (value.patchCommits !== undefined && new Set(value.patchCommits).size !== value.patchCommits.length) ||
           value.sourceCommit !== undefined ||
           value.includeHunksFrom !== undefined ||
           value.ledgerRowIds !== undefined ||
@@ -432,7 +442,7 @@ const argsSchema = z.preprocess(
         refinementCtx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['patchCommit'],
-          message: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
+          message: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes (wholeBlob, sourceCommit, includeHunksFrom, ledgerRowIds), and give a reason of at least 8 characters',
         });
       }
       if (value.sourceCommit !== undefined && value.wholeBlob !== true) {
@@ -821,8 +831,8 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
         : `R6 pre-check launcher host process ${pending.runnerPid} ended or was replaced before ` +
           `managed task ${pending.runnerTaskId ?? '(legacy runner)'} was registered; no verdict exists for ${pending.builtCommit.slice(0, 12)}.`;
       const verdict = evaluateFixPrecheck(
-        precheckPopulation({ signature: queue.signature, admittedPaths: pending.files }),
-        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.` },
+        precheckPopulation({ signature: queue.signature, admittedPaths: pending.files, ...(pending.radius ? { radius: pending.radius } : {}) }),
+        { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true resumes matching durable evidence or starts a fresh measurement.` },
       );
       try {
         await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
@@ -909,9 +919,26 @@ function sameAdmissionPrecheck(
     builtTree: string;
     files: readonly string[];
     actor: string;
+    sourceCommit: string;
+    radius: FixPrecheckPopulation['radius'];
+    signature: FrozenCandidateRepairQueue['signature'];
   },
 ): state is FrozenRepairAdmissionPrecheck {
-  if (!state) return false;
+  if (!state || state.testEnvironment !== ADMISSION_TEST_ENVIRONMENT) return false;
+  // Resume retains the original measured commit. A rebuilt synthetic commit may
+  // have a new message/time but must prove the same TREE (checked below).
+  // WI-6554700010030176: the source commit is NOT part of that proof. For a path
+  // admission input.sourceCommit is the staging tip at admit time, which git-sync
+  // advances every few minutes; requiring it to match discarded a passed 151-file
+  // pre-check whose built tree was byte-identical, so any pre-check spanning one
+  // git-sync commit could never be confirmed. The measured tree is the content that
+  // was tested, and the identity hash below still binds the stored measurement to
+  // its own operation (including the source it was measured from).
+  if (state.measurement && (
+    // EI-27114233692780034: state.radius is a jsonb read-back (keys re-ordered), so compare canonically.
+    canonicalJson(state.radius) !== canonicalJson(input.radius) ||
+    state.measurement.identity !== admissionPrecheckMeasurementIdentity(state, input.signature)
+  )) return false;
   const measuredTree = (() => {
     if (state.builtTree !== undefined) return state.builtTree;
     if (state.builtCommit === input.builtCommit) return input.builtTree;
@@ -989,7 +1016,7 @@ export default defineTool({
     notWhen:
       'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
+      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. Retire only with `retireAllowed` and exact identity.',
     returns:
       '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
@@ -1417,11 +1444,17 @@ export default defineTool({
       // reason) is the explicit, ledgered widening; `includeHunksFrom` replays named peers.
       let wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
+      const hasPatchSource = args.patchCommit !== undefined || args.patchCommits !== undefined;
       let mode: 'committed-patch' | 'whole-blob' | 'hunk-exact' =
-        args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
+        hasPatchSource ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
       if (
-        args.patchCommit !== undefined &&
+        hasPatchSource &&
         (wholeBlob ||
+          (args.patchCommit !== undefined && args.patchCommits !== undefined) ||
+          (args.patchCommits !== undefined &&
+            (!Array.isArray(args.patchCommits) || args.patchCommits.length < 1 || args.patchCommits.length > 20 ||
+              args.patchCommits.some((sha) => typeof sha !== 'string' || !FULL_COMMIT_SHA.test(sha)) ||
+              new Set(args.patchCommits).size !== args.patchCommits.length)) ||
           args.sourceCommit !== undefined ||
           args.includeHunksFrom !== undefined ||
           args.ledgerRowIds !== undefined ||
@@ -1437,7 +1470,7 @@ export default defineTool({
           verdict: 'refused',
           mode,
           reason: 'invalid-patch-source',
-          detail: 'patchCommit requires a review reason and cannot combine with wholeBlob or includeHunksFrom',
+          detail: 'Use one reviewed patch source: patchCommit or distinct ordered patchCommits, without other source modes (wholeBlob, sourceCommit, includeHunksFrom, ledgerRowIds), and give a reason of at least 8 characters',
         });
       }
       if (args.sourceCommit !== undefined && !wholeBlob) {
@@ -1541,36 +1574,55 @@ export default defineTool({
       let sourceRef = branch;
       let hunkExact: HunkExactSuccess | null = null;
       let patch: FrozenRepairAdmission['patch'];
+      let patches: FrozenRepairAdmission['patches'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
-      if (args.patchCommit !== undefined) {
-        const patchCommit = args.patchCommit;
-        const built = await runJob('committed-patch', {
+      if (hasPatchSource) {
+        const commits = args.patchCommits ?? [args.patchCommit!];
+        for (let i = 1; i < commits.length; i++) {
+          const order = await runJob('committed-patch-order', {
+            kind: 'git', argv: ['merge-base', '--is-ancestor', commits[i - 1]!, commits[i]!], cwd: root,
+          });
+          if (order.status !== 0) return json({
+            ...base, ok: false, admitted: false, refused: true, dryRun, verdict: 'refused', mode,
+            reason: 'invalid-patch-source',
+            detail: 'patchCommits must follow integration ancestry; no admission was built or published',
+            judgedSha: queue.repairHead,
+          });
+        }
+        const replayed: NonNullable<FrozenRepairAdmission['patch']>[] = [];
+        let replayHead = queue.repairHead;
+        for (const patchCommit of commits) {
+          const built = await runJob('committed-patch', {
             kind: 'committed-patch',
             input: {
               root,
-              repairHead: queue.repairHead,
+              repairHead: replayHead,
               patchCommit,
               integrationRef: branch,
               paths,
               reason: effectiveReason!,
             },
           });
-        if (!built.ok) {
-          return json({
-            ...base,
-            ok: false,
-            admitted: false,
-            refused: true,
-            dryRun,
-            verdict: 'refused',
-            mode,
-            reason: built.code,
-            detail: built.detail,
-            judgedSha: queue.repairHead,
-          });
+          if (!built.ok) {
+            return json({
+              ...base,
+              ok: false,
+              admitted: false,
+              refused: true,
+              dryRun,
+              verdict: 'refused',
+              mode,
+              reason: built.code,
+              detail: built.detail,
+              judgedSha: queue.repairHead,
+            });
+          }
+          replayed.push(built.patch);
+          replayHead = built.sourceCommit;
         }
-        patch = built.patch;
-        sourceRef = built.sourceCommit;
+        patch = replayed.at(-1)!;
+        if (replayed.length > 1) patches = replayed;
+        sourceRef = replayHead;
       } else if (wholeBlob) {
         if (!effectiveReason || effectiveReason.trim().length < 8) {
           return json({
@@ -1810,32 +1862,8 @@ export default defineTool({
         });
       }
       let precheck: FixPrecheckVerdict | null = null;
-      // WI-6554700010019443: never launch a pre-check the one-file-at-a-time runner cannot
-      // finish. An admitted gitlink expands to its submodule's whole test population (6614
-      // files measured), which used to start anyway and measured nothing before it was abandoned.
-      if (precheckApplies && outcome.ok && population.files.length > ADMISSION_PRECHECK_MAX_FILES) {
-        return json({
-          ...base,
-          ok: false,
-          admitted: false,
-          refused: true,
-          dryRun: false,
-          verdict: 'refused',
-          reason: 'admission-precheck-unavailable',
-          cause: 'population-over-bound',
-          populationSize: population.files.length,
-          populationBound: ADMISSION_PRECHECK_MAX_FILES,
-          detail:
-            `REFUSED before launch: the R6 pre-check population is ${population.files.length} test file(s), above the ` +
-            `${ADMISSION_PRECHECK_MAX_FILES}-file bound the one-file-at-a-time runner can finish. Nothing was published and no pre-check started. ` +
-            'Split the admission into narrower ones (an admitted gitlink pulls in every test under its submodule), ' +
-            'or opt out deliberately with skipPrecheck:true + precheckReason; the queue verify still judges the new repairHead over the full suite.',
-          builtCommit: outcome.commit,
-          judgedSha: queue.repairHead,
-          containment: await containmentAt(queue.repairHead),
-          mode,
-        });
-      }
+      // The complete inventory is immutable; only each native execution group is
+      // bounded. The managed worker persists per-file evidence between groups.
       if (precheckApplies && outcome.ok) {
         const builtCommit = outcome.commit;
         // The serving host's root may be a LINKED worktree (`:3170` runs from papercusp-staging);
@@ -1849,6 +1877,9 @@ export default defineTool({
           builtTree: outcome.tree,
           files: population.files,
           actor: identity.ownerId,
+          sourceCommit: outcome.entry.source.sha,
+          radius: population.radius,
+          signature: queue.signature,
         })
           ? queue.admissionPrecheck
           : undefined;
@@ -1880,7 +1911,21 @@ export default defineTool({
         if (
           matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran
         ) {
-          precheck = matchingPrecheck.verdict;
+          if (matchingPrecheck.files.length > ADMISSION_RADIUS_CAP || matchingPrecheck.measurement) {
+            try {
+              const measured = matchingPrecheck.measurement;
+              if (!measured || measured.identity !== admissionPrecheckMeasurementIdentity(matchingPrecheck, queue.signature))
+                throw new Error('missing or stale immutable aggregate identity');
+              validateAdmissionPrecheckResults(population.files, measured.results, true);
+              // D-004 ruling 1: re-judge against the SAME persisted paired baseline, never an implied one.
+              precheck = evaluateFixPrecheck(population, { ran: true, commit: matchingPrecheck.builtCommit,
+                results: measured.results }, { actor: identity.ownerId,
+                ...(measured.previousHead ? { previousHead: measured.previousHead } : {}),
+                ...(measured.confirmation ? { confirmation: measured.confirmation } : {}) });
+            } catch (error) {
+              precheck = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail: String(error) });
+            }
+          } else precheck = matchingPrecheck.verdict;
         } else if (
           matchingPrecheck?.status === 'failed' &&
           matchingPrecheck.verdict?.ok === false &&
@@ -1891,12 +1936,19 @@ export default defineTool({
           const startedAtMs = Date.now();
           const runnerTaskId = newTaskId(startedAtMs);
           const runnerPidIdentity = checkpointPidIdentity(process.pid);
+          const resume = matchingPrecheck?.measurement && args.retryPrecheck === true &&
+            (matchingPrecheck.status === 'running' ||
+              (matchingPrecheck.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
+                matchingPrecheck.verdict.reason === 'runner-failed'))
+            ? matchingPrecheck : undefined;
           const operationId =
-            `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
+            resume?.operationId ??
+            `${FROZEN_REPAIR_PRECHECK_RESERVATION_PREFIX}${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
             `${startedAtMs.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-          const operation: FrozenRepairAdmissionPrecheck = {
+          const freshOperation: FrozenRepairAdmissionPrecheck = {
             schemaVersion: 1,
             operationId,
+            testEnvironment: ADMISSION_TEST_ENVIRONMENT,
             status: 'running',
             candidate: queue.candidate,
             repairHead: queue.repairHead,
@@ -1922,6 +1974,13 @@ export default defineTool({
             // partition keeps report-only radius files from becoming refusable admitted ones.
             ...(population.radius ? { radius: population.radius } : {}),
           };
+          const operation: FrozenRepairAdmissionPrecheck = resume ? {
+            ...resume, status: 'running', verdict: undefined, runnerPid: process.pid,
+            runnerPidIdentity: runnerPidIdentity ?? undefined, runnerTaskId, updatedAtMs: startedAtMs,
+            expiresAtMs: admissionPrecheckDeadline(startedAtMs,
+              resume.files.filter(file => !resume.measurement!.results.some(result => result.path === file))),
+            heartbeatAtMs: startedAtMs,
+          } : freshOperation;
           const pendingQueue: FrozenCandidateRepairQueue = {
             ...queue,
             admissionPrecheck: operation,
@@ -2144,7 +2203,7 @@ export default defineTool({
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
         : null;
       const provenance = patch
-        ? { mode, patch, source: { ref: sourceRef, root }, ...carriedRecord }
+        ? { mode, patch, ...(patches ? { patches } : {}), source: { ref: sourceRef, root }, ...carriedRecord }
         : hunkExact
           ? {
               mode,
@@ -2215,7 +2274,7 @@ export default defineTool({
         mode,
         precheck: precheckEntry,
         ...(patch
-          ? { patch, ...carriedRecord }
+          ? { patch, ...(patches ? { patches } : {}), ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
             : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),
@@ -2241,6 +2300,8 @@ export default defineTool({
             populationSize: population.files.length,
             populationBound: ADMISSION_PRECHECK_MAX_FILES,
             populationOverBound: population.files.length > ADMISSION_PRECHECK_MAX_FILES,
+            executionGroupSize: Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES),
+            executionGroups: Math.ceil(population.files.length / Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES)),
           } : {}),
           ...(dependencyGeneration ? { dependencyGeneration } : {}),
           containment: await containmentAt(queue.repairHead),
@@ -2249,9 +2310,8 @@ export default defineTool({
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
             'the commit carries exactly proof.diff and nothing else from the tip.' +
             (!skipPrecheck && population.files.length > ADMISSION_PRECHECK_MAX_FILES
-              ? ` A confirmed admit will be REFUSED (population-over-bound): the R6 pre-check population is ` +
-                `${population.files.length} test file(s), above the ${ADMISSION_PRECHECK_MAX_FILES}-file bound. ` +
-                'Split the admission, or opt out deliberately with skipPrecheck:true + precheckReason.'
+              ? ` The complete ${population.files.length}-file population will run in resumable groups of at most ` +
+                `${Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES)} files under the unchanged ${ADMISSION_PRECHECK_MAX_FILES}-file execution bound.`
               : '') +
             (dependencyGeneration?.verdict === 'refused'
               ? ` ⚠ A confirmed admit will be REFUSED (dependency-generation-unbuildable):${dependencyNote ?? ''}`
@@ -2362,7 +2422,7 @@ export default defineTool({
         precheckRadius: population.radius ?? null,
         mode,
         ...(patch
-          ? { patch, ...carriedRecord }
+          ? { patch, ...(patches ? { patches } : {}), ...carriedRecord }
           : hunksRecord
             ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
             : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, ...carriedRecord }),

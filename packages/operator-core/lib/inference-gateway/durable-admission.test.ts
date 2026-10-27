@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AdmissionPersistenceError, Governor } from '../resource-governor/admission';
 // The in-memory store used to be a ~130-line copy inline here, and near-identical
 // copies still live in resource-governor/{queue,execution}.test.ts. P-014 needed a
@@ -17,6 +17,28 @@ function request() {
 }
 
 describe('DurableGatewayAdmissionDriver', () => {
+  it.each(['throw', 'rejected'] as const)('fences stale cleanup when markRunning is %s after another owner takes over', async failure => {
+    const store = new MemoryAdmissionQueueStore();
+    const original = createDurableGatewayAdmissionGovernor({ store, namespace: 'gateway-test',
+      now: () => 1_000, leaseIdFactory: () => 'lease-original' });
+    const replacement = createDurableGatewayAdmissionGovernor({ store, namespace: 'gateway-test',
+      now: () => 1_000, leaseIdFactory: () => 'lease-replacement' });
+    let replacementContext: Parameters<typeof replacement.release>[0] | undefined;
+    vi.spyOn(original.driver.queue, 'markRunning').mockImplementationOnce(async (receiptId, leaseId) => {
+      await original.driver.queue.releaseLease(receiptId, leaseId);
+      const outcome = await replacement.admit(request());
+      expect(outcome.kind).toBe('admitted');
+      replacementContext = outcome.context;
+      if (failure === 'throw') throw new AdmissionPersistenceError('lost transition response');
+      return null;
+    });
+    await expect(original.admit(request())).rejects.toBeInstanceOf(AdmissionPersistenceError);
+    expect(store.state('gateway-test', request().idempotencyKey)).toBe('running');
+    expect(replacementContext?.leaseId).toBe('lease-replacement');
+    expect((await replacement.release(replacementContext!)).released).toBe(true);
+    expect(store.state('gateway-test', request().idempotencyKey)).toBe('completed');
+  });
+
   it('persists, leases, marks running, and releases one synchronous request', async () => {
     const store = new MemoryAdmissionQueueStore();
     const driver = new DurableGatewayAdmissionDriver({

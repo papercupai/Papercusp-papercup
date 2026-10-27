@@ -4,14 +4,16 @@
  * needs checked, and rendering API diagnostics in the CLI's own `--pretty false` text so the gate's
  * existing parser reads service output unchanged.
  */
-import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { build } from 'esbuild';
 const nativeDir = dirname(createRequire(import.meta.url).resolve('@typescript/native/package.json'));
 const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.js')).href);
 // eslint-disable-next-line import/no-relative-packages
@@ -22,6 +24,8 @@ import {
   baselineWithinScope,
   checkedSetFor,
   checkedSetForCooperatively,
+  closeTscServiceCompiler,
+  takeTscServiceProjectBatch,
   formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
@@ -35,6 +39,7 @@ import {
   systemdEscapePath,
   tscServiceEligibility,
   tscServiceRequestId,
+  tscServiceIdentity,
   tscServiceSocketPath,
   tscServiceTemplateSocket,
   tscServiceTemplateSocketUnit,
@@ -43,6 +48,338 @@ import {
 } from '../../../scripts/lib/tsc-service.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors } from '../../../scripts/lib/tsc-baseline-gate.mjs';
+
+describe('bundled typecheck service identity', () => {
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const clientSource = join(repoRoot, 'scripts/lib/tsc-service.mjs');
+  const serverSource = join(repoRoot, 'scripts/tsc-service/server.mjs');
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+  async function bundled(withSources: boolean, withCompiler = true,
+    outputRelative = 'apps/operator/dist-host/host.mjs') {
+    const root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'tsc-bundled-identity-'));
+    roots.push(root);
+    const output = join(root, outputRelative);
+    mkdirSync(dirname(output), { recursive: true });
+    if (withCompiler) symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+    else {
+      mkdirSync(join(root, 'node_modules'), { recursive: true });
+      symlinkSync(dirname(createRequire(import.meta.url).resolve('typescript/package.json')),
+        join(root, 'node_modules/typescript'), 'dir');
+    }
+    if (withSources) {
+      for (const [relativePath, source] of [
+        ['scripts/lib/tsc-service.mjs', clientSource],
+        ['scripts/tsc-service/server.mjs', serverSource],
+      ]) {
+        const destination = join(root, relativePath!);
+        mkdirSync(dirname(destination), { recursive: true });
+        writeFileSync(destination, readFileSync(source!));
+      }
+    }
+    await build({
+      stdin: { contents: `export { tscServiceIdentity, tscServiceSocketPath } from ${JSON.stringify(clientSource)}`,
+        resolveDir: repoRoot, sourcefile: 'tsc-identity-entry.mjs' },
+      outfile: output, bundle: true, format: 'esm', platform: 'node', packages: 'external',
+    });
+    return { root, output };
+  }
+
+  it('imports a relocated host bundle and captures its own source identity once', async () => {
+    const { root, output } = await bundled(true);
+    const expected = createHash('sha256').update(readFileSync(clientSource)).update(readFileSync(serverSource)).digest('hex');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { writeFileSync } from 'node:fs';
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      const before = service.tscServiceIdentity({});
+      writeFileSync(${JSON.stringify(join(root, 'scripts/lib/tsc-service.mjs'))}, 'changed after module load');
+      console.log(JSON.stringify({ before, after: service.tscServiceIdentity({}) }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    const result = JSON.parse(child.stdout);
+    expect(result.before.serviceSourceSha256).toBe(expected);
+    expect(result.after).toEqual(result.before);
+    expect(result.before.compilerVersion).toBe(JSON.parse(readFileSync(join(nativeDir, 'package.json'), 'utf8')).version);
+    expect(result.before.compilerInstall).toBe(nativeDir);
+    expect(result.before.compilerArtifactsSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each(['source', 'host bundle'])('keeps %s metadata usable with source assets but no optional native compiler', async layout => {
+    const { root, output } = await bundled(true, false);
+    const entry = layout === 'source' ? join(root, 'scripts/lib/tsc-service.mjs') : output;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { createRequire } from 'node:module';
+      let missingCompiler;
+      try { createRequire(${JSON.stringify(pathToFileURL(entry).href)}).resolve('@typescript/native/package.json'); }
+      catch (error) { missingCompiler = error.code; }
+      const service = await import(${JSON.stringify(pathToFileURL(entry).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ missingCompiler, socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ missingCompiler: 'MODULE_NOT_FOUND',
+      socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it.each(['unreadable', 'invalid JSON'])('keeps source metadata usable when optional compiler metadata is %s', async fault => {
+    const { root } = await bundled(true, false);
+    const metadata = join(root, 'compiler-metadata.json');
+    if (fault === 'unreadable') mkdirSync(metadata);
+    else writeFileSync(metadata, '{');
+    const entry = join(root, 'scripts/lib/tsc-service.mjs');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      let resolutions = 0;
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier === '@typescript/native/package.json') {
+          resolutions++;
+          return { url: ${JSON.stringify(pathToFileURL(metadata).href)}, shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      } });
+      const service = await import(${JSON.stringify(pathToFileURL(entry).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ resolutions, socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ resolutions: 1,
+      socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it('keeps metadata imports usable without source assets and refuses identity certification', async () => {
+    const { output } = await bundled(false);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it.each([
+    { sources: false, outputRelative: 'apps/operator/dist-host/host.mjs' },
+    { sources: true, outputRelative: 'papercusp-desktop/src-tauri/sidecar.tmp.fixture/serve.mjs' },
+    { sources: true, outputRelative: 'papercusp-desktop/src-tauri/sidecar.tmp.fixture/tsc-service.mjs' },
+  ])('boots metadata without native compiler resolution for $outputRelative (parent sources: $sources)', async ({ sources, outputRelative }) => {
+    const { output } = await bundled(sources, false, outputRelative);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { registerHooks } from 'node:module';
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier.startsWith('@typescript/native')) throw new Error('ESCAPED_BUNDLE: ' + specifier);
+        return nextResolve(specifier, context);
+      } });
+      const service = await import(${JSON.stringify(pathToFileURL(output).href)});
+      let failure;
+      try { service.tscServiceIdentity({}); } catch (error) { failure = error.code; }
+      console.log(JSON.stringify({ socket: service.tscServiceSocketPath({ XDG_RUNTIME_DIR: '/private' }), failure }));
+    `], { cwd: tmpdir(), encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 20_000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ socket: '/private/papercusp-tsc-service.sock', failure: 'service-identity-unavailable' });
+  });
+
+  it.each([
+    { release: 'client cancellation', faultPhase: 'diagnostic', serviceTimeoutMs: 30_000, clientTimeoutMs: 1_000, expectedReason: 'timed-out' },
+    { release: 'server deadline', faultPhase: 'diagnostic', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+    { release: 'server deadline', faultPhase: 'initialize', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+    { release: 'server deadline', faultPhase: 'snapshot', serviceTimeoutMs: 4_000, clientTimeoutMs: 15_000, expectedReason: 'request-deadline-exceeded' },
+  ])('recovers from orphaned compiler RPCs and refuses same-version compiler replacement on a live daemon ($release, $faultPhase)', async ({ serviceTimeoutMs, clientTimeoutMs, expectedReason, faultPhase }) => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-compiler-replacement-'));
+    roots.push(root);
+    const scoped = join(root, 'node_modules/@typescript');
+    mkdirSync(scoped, { recursive: true });
+    cpSync(nativeDir, join(scoped, 'native'), { recursive: true });
+    const nativePackage = JSON.parse(readFileSync(join(nativeDir, 'package.json'), 'utf8'));
+    const platformName = `${nativePackage.name.split('/').pop()}-${process.platform}-${process.arch}`;
+    cpSync(dirname(createRequire(import.meta.url).resolve(`@typescript/${platformName}/package.json`)), join(scoped, platformName), { recursive: true });
+    symlinkSync(dirname(createRequire(import.meta.url).resolve('typescript/package.json')), join(root, 'node_modules/typescript'), 'dir');
+    for (const [relativePath, source] of [['scripts/lib/tsc-service.mjs', clientSource], ['scripts/tsc-service/server.mjs', serverSource]]) {
+      const destination = join(root, relativePath!);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(source!));
+    }
+    const project = join(root, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, types: [] }, files: ['a.ts', 'hang.ts'] }));
+    writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
+    writeFileSync(join(root, 'hang.ts'), 'export const hang = 1;');
+    const entry = join(scoped, 'native/dist/api/async/api.js');
+    // cpSync preserves the immutable dependency snapshot's read-only mode.
+    // Fault injection owns this independent copy, never the donor inode.
+    chmodSync(entry, 0o644);
+    // Fault injection stays inside this private compiler copy. Refresh and
+    // normal checks use the real native API. Stall exactly one operation after
+    // a clean control, until the service disposes its unobserved connection.
+    const originalApi = readFileSync(entry, 'utf8');
+    expect(originalApi).toContain('async getSemanticDiagnostics(file) {');
+    expect(originalApi).toContain('async updateSnapshot(params) {');
+    expect(originalApi).toContain('async ensureInitialized() {');
+    const faultMarker = join(root, 'stall-rpc-once');
+    const stallOnce = `
+      const fs = await import('node:fs');
+      if (fs.existsSync(${JSON.stringify(faultMarker)})) {
+        fs.unlinkSync(${JSON.stringify(faultMarker)});
+        console.log('HUNG_OPERATION_READY');
+        return new Promise((resolve, reject) => this.client.connection.onDispose(() => reject(new Error('orphan ${faultPhase} disposed'))));
+      }
+    `;
+    writeFileSync(entry, originalApi.replace('async ensureInitialized() {', `async ensureInitialized() {
+      ${faultPhase === 'initialize' ? stallOnce : ''}
+    `).replace('async updateSnapshot(params) {', `async updateSnapshot(params) {
+      if (this.activeSnapshots.size > 0) throw new Error('previous native snapshot still retained');
+      ${faultPhase === 'snapshot' ? stallOnce : ''}
+    `).replace('async getSemanticDiagnostics(file) {', `async getSemanticDiagnostics(file) {
+      ${faultPhase === 'diagnostic' ? stallOnce : ''}
+    `));
+    const socketPath = join(root, 'compiler.sock');
+    const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], { cwd: root,
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath,
+        PAPERCUSP_TSC_SERVICE_TIMEOUT_MS: String(serviceTimeoutMs) },
+      stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    child.stderr.on('data', data => { output += data; });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(output)), 10_000);
+        child.stdout.on('data', () => { if (output.includes('listening on')) { clearTimeout(timer); resolve(); } });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('exit', () => { clearTimeout(timer); reject(new Error(output)); });
+      });
+      const runCaller = (files = ['a.ts'], timeoutMs = 10000, operation?: string) => new Promise<any>((resolve, reject) => {
+        const caller = spawn(process.execPath, ['--input-type=module', '-e', `
+          const service = await import(${JSON.stringify(pathToFileURL(join(root, 'scripts/lib/tsc-service.mjs')).href)});
+          const request = { requestId: crypto.randomUUID(), root: ${JSON.stringify(root)}, project: ${JSON.stringify(project)}, files: ${JSON.stringify(files)}, scope: 'named', operation: ${JSON.stringify(operation)} };
+          const result = await service.requestTscService({ socketPath: ${JSON.stringify(socketPath)}, request, timeoutMs: ${timeoutMs} })
+            .catch(error => ({ ok: false, reason: error.code }));
+          console.log(JSON.stringify({ requestId: request.requestId, result, identity: service.tscServiceIdentity(request) }));
+        `], { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '', stderr = '';
+        caller.stdout.on('data', data => { stdout += data; });
+        caller.stderr.on('data', data => { stderr += data; });
+        caller.once('error', reject);
+        caller.once('close', code => { if (code === 0) resolve(JSON.parse(stdout)); else reject(new Error(stderr)); });
+      });
+      const before = await runCaller();
+      expect(before.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      writeFileSync(faultMarker, 'stall once');
+      const hanging = runCaller(['hang.ts'], clientTimeoutMs);
+      await expect.poll(() => output, { timeout: 5000 }).toContain('HUNG_OPERATION_READY');
+      const observed = await runCaller(['a.ts'], 1000, 'identity');
+      expect(observed.result).toMatchObject({ ok: true, identityOnly: true, checked: [],
+        runtime: { pid: child.pid }, identity: before.identity });
+      expect((await runCaller(['a.ts'], 1000, 'unsupported')).result.ok).toBe(false);
+      const queued = runCaller();
+      const expired = await hanging;
+      const recovered = await queued;
+      expect(expired.result).toMatchObject({ ok: false, reason: expectedReason });
+      expect(recovered.result).toMatchObject({ ok: true, kind: 'result', errorCount: 0 });
+      expect(output).toContain(`orphan ${faultPhase} disposed`);
+      const prefix = `requestId=${expired.requestId} project=tsconfig.json named=1 phase=`;
+      expect(output).toContain(`${prefix}compiler-initialize`);
+      if (faultPhase === 'initialize') {
+        expect(output).not.toContain(`${prefix}compiler-initialized`);
+        expect(output).not.toContain(`${prefix}snapshot-update`);
+      } else {
+        expect(output).toContain(`${prefix}compiler-initialized`);
+        expect(output).toContain(`${prefix}snapshot-update`);
+        if (faultPhase === 'snapshot') expect(output).not.toContain(`${prefix}snapshot-updated`);
+        else expect(output).toContain(`${prefix}snapshot-updated`);
+      }
+      // Exercise a previously loaded caller's identity, after the API has
+      // already reset once. Alter only the PRIVATE executable, preserving its
+      // version/path and executable format (ELF permits trailing data).
+      const baseName = nativePackage.name.split('/').pop();
+      const executable = join(scoped, platformName, 'lib', `${baseName === 'typescript' ? 'tsc' : 'tsgo'}${process.platform === 'win32' ? '.exe' : ''}`);
+      writeFileSync(executable + '.replacement', Buffer.concat([readFileSync(executable), Buffer.from('\nprivate-replacement\n')]), { mode: 0o755 });
+      renameSync(executable + '.replacement', executable);
+      const stale = await new Promise<any>((resolve, reject) => {
+        const socket = createConnection(socketPath);
+        let buffer = '';
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error(output)); }, 10_000);
+        socket.on('connect', () => socket.write(JSON.stringify({ v: 2, requestId: 'old-caller-after-reset',
+          root, project, files: ['a.ts'], scope: 'named', identity: before.identity }) + '\n'));
+        socket.on('data', data => {
+          buffer += String(data);
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const response = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+            if (response.kind === 'result') { clearTimeout(timer); socket.destroy(); resolve(response); }
+          }
+        });
+        socket.once('error', error => { clearTimeout(timer); reject(error); });
+      });
+      expect(stale).toMatchObject({ ok: false, reason: 'refresh-failed', detail: expect.stringContaining('compiler artifacts changed') });
+      writeFileSync(entry, readFileSync(entry, 'utf8') + '\n// replacement without version bump\n');
+      const after = await runCaller();
+      expect(after.identity.compilerVersion).toBe(before.identity.compilerVersion);
+      expect(after.identity.compilerInstall).toBe(before.identity.compilerInstall);
+      expect(after.identity.compilerArtifactsSha256).not.toBe(before.identity.compilerArtifactsSha256);
+      expect(after.result).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+      if (expectedReason === 'request-deadline-exceeded') {
+        console.info('TSC_SERVICE_RECOVERY_RECEIPT ' + JSON.stringify({ runtime: before.result.runtime,
+          serviceSourceSha256: before.identity.serviceSourceSha256, serviceTimeoutMs, clientTimeoutMs, faultPhase,
+          terminalReason: expired.result.reason, recoveryOk: recovered.result.ok,
+          recoveryChecked: recovered.result.checked, recoveryErrorCount: recovered.result.errorCount }));
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await closed;
+    }
+  }, 30_000);
+});
+
+describe('native compiler ownership during reset', () => {
+  it.each([false, true])('reaps the child after client disposal rejects (ignores EOF=%s)', async ignoresEof => {
+    const child = spawn(process.execPath, ['-e', ignoresEof
+      ? "process.on('SIGTERM', () => {}); process.stdin.resume(); process.stdin.on('end', () => {}); console.log('ready'); setInterval(() => {}, 1000);"
+      : "process.stdin.resume(); console.log('ready');"], {
+      env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', data => { stderr = (stderr + String(data)).slice(-1_000); });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`compiler fixture did not start: ${stderr}`)), 5_000);
+        child.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('exit', (code, signal) => {
+          clearTimeout(timer);
+          reject(new Error(`compiler fixture exited before readiness: code=${code} signal=${signal}: ${stderr}`));
+        });
+      });
+      const api = { client: { process: child, close: async () => { throw new Error('snapshot connection already disposed'); } },
+        clearSourceFileCache: vi.fn() };
+      await closeTscServiceCompiler(api, { graceMs: 50, killWaitMs: 5_000 });
+      expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+      expect(child.stdin.writableEnded).toBe(true);
+      expect(api.clearSourceFileCache).toHaveBeenCalledOnce();
+      if (ignoresEof) expect(child.signalCode).toBe('SIGKILL');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+    }
+  });
+});
+
+describe('shared compiler project admission', () => {
+  it('coalesces one project while preserving other callers and dropping cancelled requests', () => {
+    const request = (project: string, cancelled = false) => ({ request: { project }, cancelled });
+    const cancelled = request('cancelled', true);
+    const a1 = request('a'), b1 = request('b'), a2 = request('a'), c1 = request('c'), b2 = request('b');
+    const queue = [cancelled, a1, b1, a2, c1, b2];
+    expect(takeTscServiceProjectBatch(queue)).toEqual([a1, a2]);
+    expect(queue).toEqual([b1, c1, b2]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([b1, b2]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([c1]);
+    expect(takeTscServiceProjectBatch(queue)).toEqual([]);
+  });
+});
 
 describe('serviceProjectFromTscCommand', () => {
   it('accepts every leg shape in use today', () => {
@@ -208,9 +545,14 @@ describe('bounded shared-service timeout', () => {
     const socketPath = join(dir, 'service.sock');
     const sockets = new Set<import('node:net').Socket>();
     const receivedIds: string[] = [];
+    let requestReceived!: () => void;
+    const receivedRequest = new Promise<void>(resolve => { requestReceived = resolve; });
     const server = createServer((socket) => {
       sockets.add(socket);
-      socket.on('data', (data) => receivedIds.push(JSON.parse(String(data)).requestId));
+      socket.on('data', (data) => {
+        receivedIds.push(JSON.parse(String(data)).requestId);
+        requestReceived();
+      });
       socket.on('error', () => {});
       socket.on('close', () => sockets.delete(socket));
     });
@@ -219,9 +561,15 @@ describe('bounded shared-service timeout', () => {
       server.listen(socketPath, resolve);
     });
     const lines: string[] = [];
+    const setRealTimeout = globalThis.setTimeout;
+    const clearRealTimeout = globalThis.clearTimeout;
+    let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const startedAt = Date.now();
-      const result = await typecheckViaService({
+      // Socket delivery is real I/O; advance only the client deadline after
+      // the fixture has received the request. A busy poll phase must not race
+      // this guard's assertion that the request reached the silent server.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const pending = typecheckViaService({
         root: '/repo',
         project: '/repo/tsconfig.json',
         files: ['src/a.ts'],
@@ -230,14 +578,24 @@ describe('bounded shared-service timeout', () => {
         log: (line) => lines.push(line),
         env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
       });
+      await Promise.race([receivedRequest, new Promise<never>((_resolve, reject) => {
+        deliveryTimer = setRealTimeout(() => reject(new Error('fixture socket did not receive the request')), 5_000);
+      })]);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(lines).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await pending;
 
       expect(result).toBeNull();
       expect(lines.join('\n')).toContain('no answer within 50 ms');
       expect(receivedIds).toHaveLength(1);
+      expect(lines.join('\n')).toContain(`TSC_SERVICE request failed at ${socketPath}`);
+      expect(lines.join('\n')).not.toContain('unreachable');
       expect(receivedIds[0]).toMatch(/^[0-9a-f-]{36}$/);
       expect(lines.join('\n')).toContain(`requestId=${receivedIds[0]}`);
-      expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
+      if (deliveryTimer) clearRealTimeout(deliveryTimer);
+      vi.useRealTimers();
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
@@ -256,7 +614,9 @@ describe('service request phase correlation', () => {
     writeFileSync(join(dir, 'caller.ts'), "import { a } from './a.js';\nexport const caller = a;\n");
     const serverPath = fileURLToPath(new URL('../../../scripts/tsc-service/server.mjs', import.meta.url));
     const child = spawn(process.execPath, [serverPath], {
-      env: { ...process.env, PAPERCUSP_TSC_SERVICE_ROOT: dir, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      // The test:file loader pins spawned scripts to HEAD; this child must exercise the local
+      // service implementation under test.
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: dir, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -296,18 +656,270 @@ describe('service request phase correlation', () => {
         expect(refreshed.errorCount).toBe(0);
         expect(refreshed.checked.sort()).toEqual(['caller.ts', 'other.ts']);
       }
+      // A timeout destroys the caller's socket. Node also ends the server's writable side
+      // after the peer FIN, which must not be mistaken for a reply sent by this service.
+      await new Promise<void>((resolve, reject) => {
+        const socket = createConnection(socketPath);
+        const prefix = 'requestId=trace-test-disconnect project=tsconfig.json named=1 phase=';
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          child.stdout.off('data', observe);
+          socket.destroy();
+          if (error) reject(error);
+          else resolve();
+        };
+        const observe = () => {
+          if (output.includes(`${prefix}refresh-abort-no-clients`)) finish();
+          else if (output.includes(`${prefix}complete`)) finish(new Error('disconnected request completed instead of cancelling'));
+        };
+        const timer = setTimeout(() => finish(new Error(`disconnect was not observed: ${output}`)), 5_000);
+        child.stdout.on('data', observe);
+        socket.on('error', finish);
+        // Send the full request then FIN immediately, without racing child stdout delivery.
+        const request = { v: 2, requestId: 'trace-test-disconnect', root: dir, project, files: ['other.ts'] };
+        socket.on('connect', () => socket.end(`${JSON.stringify({ ...request, identity: tscServiceIdentity(request) })}\n`));
+      });
+      const recovered = await requestTscService({
+        socketPath,
+        request: { v: 1, requestId: 'trace-test-after-abort', root: dir, project, files: ['other.ts'] },
+        timeoutMs: 10_000,
+      });
+      expect(recovered.ok).toBe(true);
       // Drain stdout before inspecting the trace and assert that the compiler child also exits.
       child.kill('SIGTERM');
       await closed;
-      for (const phase of ['queued', 'refresh', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
+      expect(output).not.toContain('COMMITTED_SOURCE substituted scripts/tsc-service/server.mjs');
+      for (const phase of ['queued', 'refresh', 'compiler-initialize', 'compiler-initialized', 'snapshot-update', 'snapshot-updated', 'project-roots-refresh', 'project-roots-refreshed', 'refreshed', 'program-files', 'scope', 'program-diagnostics', 'file-diagnostics', 'render-diagnostics', 'complete']) {
         expect(output).toContain(`requestId=trace-test-123 project=tsconfig.json named=1 phase=${phase}`);
       }
+      expect(output).not.toContain('requestId=trace-test-123 project=tsconfig.json named=1 phase=client-disconnected');
+      expect(output).not.toContain('requestId=trace-test-refresh project=tsconfig.json named=1 phase=client-disconnected');
+      expect(output).toContain('requestId=trace-test-disconnect project=tsconfig.json named=1 phase=refresh-abort-no-clients');
+      expect(output).not.toContain('requestId=trace-test-disconnect project=tsconfig.json named=1 phase=complete');
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       await closed;
       rmSync(dir, { recursive: true, force: true });
     }
   }, 25_000);
+});
+
+describe('focused service protocol', () => {
+  type Request = Record<string, any>;
+  async function withSocket(
+    handle: (request: Request, socket: import('node:net').Socket) => void,
+    check: (args: { socketPath: string; request: Request; lines: string[]; call: (timeoutMs?: number) => ReturnType<typeof typecheckViaService> }) => Promise<void>,
+  ) {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-protocol-'));
+    const socketPath = join(root, 'service.sock');
+    const project = join(root, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true }, files: ['a.ts'] }));
+    writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
+    const request = { v: 1, root, project, files: ['a.ts'], requestId: 'protocol-test' };
+    const sockets = new Set<import('node:net').Socket>();
+    const server = createServer(socket => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.on('close', () => sockets.delete(socket));
+      let buffer = '';
+      socket.on('data', chunk => {
+        buffer += chunk;
+        if (buffer.includes('\n')) handle(JSON.parse(buffer.split('\n')[0]!), socket);
+      });
+    });
+    const lines: string[] = [];
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+    try {
+      await check({ socketPath, request, lines, call: timeoutMs => typecheckViaService({ root, project, files: request.files,
+        label: 'test', timeoutMs, env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath }, log: line => lines.push(line) }) });
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  const frame = (request: Request, value: Request) => JSON.stringify({ kind: 'result', requestId: request.requestId,
+    identity: request.identity, runtime: { pid: process.pid, startedAt: Date.now() }, ...value }) + '\n';
+
+  async function withCompiler(check: (args: { root: string; request: Request; socketPath: string; child: ReturnType<typeof spawn>; output: () => string }) => Promise<void>) {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-protocol-live-'));
+    const socketPath = join(root, 'service.sock');
+    const project = join(root, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['a.ts'] }));
+    writeFileSync(join(root, 'a.ts'), 'export const a = 1;');
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/tsc-service/server.mjs', import.meta.url))],
+      { env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+        stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout!.on('data', data => { output += data; });
+    child.stderr!.on('data', data => { output += data; });
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`service did not start: ${output}`)), 10_000);
+        child.stdout!.on('data', () => { if (output.includes('listening on')) { clearTimeout(timer); resolve(); } });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('exit', () => { clearTimeout(timer); reject(new Error(`service exited: ${output}`)); });
+      });
+      await check({ root, socketPath, child, output: () => output,
+        request: { v: 1, root, project, files: ['a.ts'], requestId: 'live-protocol' } });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await closed;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('reports queued progress without treating it as a terminal result', async () => {
+    let finish: () => void = () => {};
+    await withSocket((request, socket) => {
+      socket.write(frame(request, { kind: 'progress', phase: 'queued' }));
+      finish = () => socket.end(frame(request, { ok: false, reason: 'test-terminal' }));
+    }, async ({ socketPath, request }) => {
+      const phases: string[] = [];
+      let settled = false;
+      const response = requestTscService({ socketPath, request, timeoutMs: 1000,
+        onProgress: progress => { phases.push(progress.phase); expect(settled).toBe(false); finish(); } });
+      const result = await response;
+      settled = true;
+      expect(phases).toEqual(['queued']);
+      expect(result).toMatchObject({ kind: 'result', ok: false, reason: 'test-terminal' });
+    });
+  });
+
+  it('distinguishes unavailable, unsupported and timed-out requests', async () => {
+    await expect(requestTscService({ socketPath: join(tmpdir(), `absent-${Date.now()}.sock`), request: {} }))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    // A normal refusal may arrive after the timeout-specific case's short deadline.
+    await withSocket((request, socket) => setTimeout(() => socket.end(frame(request, { ok: false, reason: 'declaration-emit-project' })), 100),
+      async ({ call, lines }) => { expect(await call()).toBeNull(); expect(lines.join('\n')).toContain('state=declaration-emit-project'); });
+    await withSocket(() => {}, async ({ call, lines }) => {
+      expect(await call(50)).toBeNull();
+      expect(lines.join('\n')).toContain('state=timed-out');
+    });
+  });
+
+  it('refuses response identity mismatches', async () => {
+    const success = { ok: true, output: '', errorCount: 0, checked: ['a.ts'], namedNotInProgram: [], counts: {} };
+    // Calibrate the complete terminal result before changing only its correlation.
+    await withSocket((request, socket) => socket.end(frame(request, success)),
+      async ({ socketPath, request }) => {
+        await expect(requestTscService({ socketPath, request })).resolves.toMatchObject(success);
+      });
+    await withSocket((request, socket) => socket.end(frame(request, { ...success, requestId: 'another-request' })),
+      async ({ socketPath, request }) => {
+        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({
+          code: 'identity-mismatch',
+          message: expect.stringContaining('expectedRequestId="protocol-test" actualRequestId="another-request" changedIdentityFields=[]'),
+        });
+      });
+  });
+
+  it('reports full-compile fallback as accountable fallback rather than focused success', async () => {
+    await withSocket((request, socket) => socket.end(frame(request, { ok: false, reason: 'scope-too-wide' })),
+      async ({ call, lines }) => {
+        expect(await call()).toBeNull();
+        expect(lines.join('\n')).toContain('resultOrigin=full-compile-required');
+        expect(lines.join('\n')).not.toContain('used=1');
+      });
+  });
+
+  it('refuses compiler and source identity mismatches', async () => {
+    for (const key of ['compilerVersion', 'compilerArtifactsSha256', 'serviceSourceSha256', 'projectConfigSha256', 'namedSources']) {
+      await withSocket((request, socket) => socket.end(frame(request, { ok: true,
+        identity: { ...request.identity, [key]: 'different' } })), async ({ socketPath, request }) => {
+        await expect(requestTscService({ socketPath, request })).rejects.toMatchObject({
+          code: 'identity-mismatch',
+          message: expect.stringContaining(`expectedRequestId="protocol-test" actualRequestId="protocol-test" changedIdentityFields=["${key}"]`),
+        });
+      });
+    }
+  });
+
+  it('identifies a real compiler source-drift refusal without blaming request correlation', async () => {
+    await withCompiler(async ({ root, socketPath, request }) => {
+      const identity = tscServiceIdentity(request);
+      await expect(requestTscService({ socketPath, request: { ...request, identity } }))
+        .resolves.toMatchObject({ ok: true, checked: ['a.ts'], errorCount: 0 });
+      writeFileSync(join(root, 'a.ts'), 'export const a = 2;');
+      await expect(requestTscService({ socketPath, request: { ...request, identity } })).rejects.toMatchObject({
+        code: 'identity-mismatch',
+        message: expect.stringContaining('expectedRequestId="live-protocol" actualRequestId="live-protocol" changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch"'),
+      });
+      const phases: string[] = [];
+      await expect(requestTscService({ socketPath, request,
+        onProgress: progress => {
+          phases.push(progress.phase);
+          writeFileSync(join(root, 'a.ts'), 'export const a = 3;');
+        },
+      })).rejects.toMatchObject({
+        code: 'identity-mismatch',
+        message: expect.stringContaining('changedIdentityFields=["namedSources"] responseKind="result" serverReason="identity-mismatch" serverDetail="source or config changed during the request"'),
+      });
+      expect(phases).toEqual(['accepted']);
+    });
+  }, 15_000);
+
+  it('refuses oversized scopes with an explicit full-compile fallback', async () => {
+    await withCompiler(async ({ socketPath, request, root }) => {
+      const lines: string[] = [];
+      const result = await typecheckViaService({ root, project: request.project, files: Array(501).fill('a.ts'),
+        label: 'test', env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath }, log: line => lines.push(line) });
+      expect(result).toBeNull();
+      expect(lines.join('\n')).toContain('state=scope-too-wide resultOrigin=full-compile-required');
+      expect(lines.join('\n')).not.toContain('used=1');
+    });
+  }, 15_000);
+
+  it('refuses a wrong checkout without falling back when the caller requires its service', async () => {
+    await withCompiler(async ({ socketPath, request, root }) => {
+      const lines: string[] = [];
+      await expect(typecheckViaService({ root: join(root, 'another-checkout'), project: request.project,
+        files: ['a.ts'], label: 'native-readiness',
+        env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, PAPERCUSP_TSC_SERVICE_REQUIRED: '1' },
+        log: line => lines.push(line) })).rejects.toThrow('TSC_SERVICE_REQUIRED');
+      expect(lines.join('\n')).not.toContain('running the full');
+    });
+  }, 15_000);
+
+  it('preserves cross-project selection and delegated diagnostic correctness', async () => {
+    await withCompiler(async ({ root, socketPath, request }) => {
+      writeFileSync(join(root, 'b.ts'), 'export const b: number = "wrong";');
+      const project = join(root, 'second.json');
+      writeFileSync(project, JSON.stringify({ compilerOptions: { noEmit: true, strict: true, types: [] }, files: ['b.ts'] }));
+      const first = await requestTscService({ socketPath, request: { ...request, files: ['a.ts', 'b.ts'] } });
+      const delegated = await requestTscService({ socketPath, request: { ...request, project, files: ['b.ts'] } });
+      expect(first).toMatchObject({ ok: true, namedNotInProgram: ['b.ts'], checked: ['a.ts'], errorCount: 0 });
+      expect(delegated).toMatchObject({ ok: true, checked: ['b.ts'], errorCount: 1, output: expect.stringContaining('TS2322') });
+      if (first.ok) expect(formatTscServiceBanner(first, { routedAway: ['b.ts'] }).join('\n')).toContain('judged by its own leg');
+    });
+  }, 15_000);
+
+  it('cancels orphaned refreshes without cancelling live callers', async () => {
+    await withCompiler(async ({ socketPath, request, child, output }) => {
+      let live: ReturnType<typeof requestTscService> | undefined;
+      await new Promise<void>((resolve, reject) => {
+        const orphan = createConnection(socketPath);
+        const timer = setTimeout(() => { orphan.destroy(); reject(new Error(`no accepted request: ${output()}`)); }, 5_000);
+        orphan.on('error', reject);
+        orphan.on('connect', () => orphan.write(JSON.stringify({ ...request, v: 2, requestId: 'orphan', identity: tscServiceIdentity(request) }) + '\n'));
+        orphan.once('data', () => {
+          // The next caller remains live while the first refresh loses its only observer.
+          live = requestTscService({ socketPath, request: { ...request, requestId: 'live-after-orphan' }, timeoutMs: 10_000 });
+          orphan.destroy();
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      expect(await live).toMatchObject({ ok: true, kind: 'result', requestId: 'live-after-orphan' });
+      // Child stdout is drained on shutdown before checking the cancellation observation.
+      const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+      child.kill('SIGTERM');
+      await closed;
+      expect(output()).toContain('requestId=orphan project=tsconfig.json named=1 phase=refresh-abort-no-clients');
+      expect(output()).not.toContain('requestId=live-after-orphan project=tsconfig.json named=1 phase=client-disconnected');
+    });
+  }, 20_000);
 });
 
 describe('line/column from UTF-16 offsets', () => {

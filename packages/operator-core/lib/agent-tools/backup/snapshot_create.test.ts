@@ -89,11 +89,40 @@ describe('backup:snapshot_create handler — deadline race', () => {
     expect(body(out)).toMatchObject({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
   });
 
-  it('does not restart an already terminal receipt even with producer resume requested', async () => {
+  it('does not restart an already successful receipt even with producer resume requested', async () => {
     const receipt = { snapshotId: 99, stillRunning: false, status: 'ok', kopiaSnapshotId: 'existing', dbDumpOk: true };
     h.reconcileSnapshotReceipt.mockResolvedValue(receipt);
     expect(body(await call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true }))).toEqual(receipt);
     expect(h.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('routes an explicitly resumed terminal failure through guarded producer recovery', async () => {
+    h.reconcileSnapshotReceipt.mockResolvedValue({
+      snapshotId: 99,
+      stillRunning: false,
+      status: 'failed',
+      kopiaSnapshotId: null,
+      dbDumpOk: null,
+      error: "orphan-sweep: status='running' for >60min",
+    });
+    h.snapshot.mockResolvedValue({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
+
+    const out = await call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true });
+
+    expect(h.reconcileSnapshotReceipt).toHaveBeenCalledWith(99);
+    expect(h.snapshot).toHaveBeenCalledWith('pre_destructive', undefined,
+      expect.objectContaining({ resumeSnapshotId: 99, onStarted: expect.any(Function) }));
+    expect(body(out)).toMatchObject({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
+  });
+
+  it('preserves lower-level rejection for a protected terminal failure', async () => {
+    h.reconcileSnapshotReceipt.mockResolvedValue({ snapshotId: 99, stillRunning: false, status: 'failed' });
+    h.snapshot.mockRejectedValue(new Error('snapshot 99 has a protected terminal receipt; refusing to overwrite it'));
+
+    await expect(call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true }))
+      .rejects.toThrow('protected terminal receipt; refusing to overwrite it');
+    expect(h.snapshot).toHaveBeenCalledWith('pre_destructive', undefined,
+      expect.objectContaining({ resumeSnapshotId: 99, onStarted: expect.any(Function) }));
   });
 
   it('returns stillRunning + the durable snapshotId (never a bare timeout) when the snapshot outlives the deadline', async () => {

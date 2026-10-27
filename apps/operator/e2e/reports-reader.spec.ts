@@ -2,9 +2,14 @@
 import { test, expect } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src/components/reports/reports-test-fixture';
-import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
+import { captureReportClipboard, configurePublishedReportSession, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
 import type { Page } from '@playwright/test';
 import { runInNewContext } from 'node:vm';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { POSTHOG_PUBLIC_DEFAULTS } from '../../../packages/operator-core/lib/posthog-public-defaults';
 
 const report = {
   ...reportFullFixture,
@@ -17,7 +22,9 @@ const summary = { ...reportSummaryFixture, title: report.title, summary: report.
 
 const finishReadiness = new WeakMap<Page, () => Promise<void>>();
 test.beforeEach(async ({ page }, testInfo) => { finishReadiness.set(page, await observeReportReadiness(page, testInfo)); });
-test.afterEach(async ({ page }) => { await finishReadiness.get(page)?.(); });
+test.afterEach(async ({ page }) => {
+  await finishReadiness.get(page)?.();
+});
 
 async function stubReportFlags(page: Page) {
   await page.route('**/api/flags/bootstrap', route => route.fulfill({ contentType: 'application/json',
@@ -46,7 +53,7 @@ for (const width of [1440, 900, 390]) {
     await page.goto('/reports?sel=edition-2');
     await sync.waitForServed(['reports.list', 'reports.get', 'reports.lineage']);
     await expect(page.locator('.reports-article-main > h2')).toHaveText(report.title);
-    await waitForReportRenderer(page);
+    await waitForReportRenderer(page, testInfo.project.use.navigationTimeout ?? 30_000);
     await expect(page.locator('.reports-body h2').first()).toHaveText('Finding 1');
     await expect(page.getByRole('navigation', { name: 'On this page' }).getByRole('link')).toHaveCount(8);
     const geometry = await page.locator('.reports-page').evaluate(root => {
@@ -103,6 +110,68 @@ test('report clipboard capture initializes without Node transpiler globals', asy
   expect(window.reportProofMarkdown).toBe(markdown);
 });
 
+test('published report session scopes credentials and initializes local machine routing', async ({ page }) => {
+  const observed: Array<{ path: string; auth?: string; workspace?: string; client?: string }> = [];
+  const operator = createServer((request, response) => {
+    if (request.url !== '/favicon.ico') observed.push({ path: request.url || '', auth: request.headers.authorization,
+      workspace: request.headers['x-papercusp-workspace'] as string | undefined,
+      client: request.headers['x-papercusp-client'] as string | undefined });
+    response.setHeader('content-type', 'text/html');
+    response.end('<!doctype html><title>Report authentication control</title>');
+  });
+  await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
+  try {
+    await configurePublishedReportSession(page, {
+      origin, token: 'proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client',
+    });
+    await page.goto(origin + '/reports');
+    await page.evaluate(async () => {
+      await (await fetch('/api-other')).text();
+      await (await fetch('/api/zero-harness/rest-query?name=reports.get')).text();
+    });
+    expect(observed).toEqual([
+      { path: '/reports', auth: undefined, workspace: undefined, client: undefined },
+      { path: '/api-other', auth: undefined, workspace: undefined, client: undefined },
+      { path: '/api/zero-harness/rest-query?name=reports.get', auth: 'Bearer proof-token', workspace: 'proof-workspace', client: 'proof-client' },
+    ]);
+    expect(await page.evaluate(() => sessionStorage.getItem('pc:selected-machine'))).toBe('local');
+  } finally {
+    operator.closeAllConnections();
+    await new Promise<void>(resolve => operator.close(() => resolve()));
+  }
+});
+
+test('published report session keeps credentials off a redirected foreign origin', async ({ page }) => {
+  const observed: Array<string | undefined> = [];
+  const receiver = createServer((request, response) => {
+    observed.push(request.headers.authorization);
+    response.end('redirect target');
+  });
+  await new Promise<void>(resolve => receiver.listen(0, '127.0.0.1', resolve));
+  const receiverPort = (receiver.address() as { port: number }).port;
+  const operator = createServer((request, response) => {
+    if (!request.url?.startsWith('/api/')) { response.end('<!doctype html><title>Redirect control</title>'); return; }
+    observed.push(request.headers.authorization);
+    response.writeHead(302, { location: `http://127.0.0.1:${receiverPort}/api/report` });
+    response.end();
+  });
+  await new Promise<void>(resolve => operator.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(operator.address() as { port: number }).port}`;
+  try {
+    await configurePublishedReportSession(page, { origin, token: 'redirect-proof-token', workspaceId: 'proof-workspace', clientId: 'proof-client' });
+    await page.goto(`${origin}/reports`);
+    expect(await page.evaluate(async () => {
+      try { await fetch('/api/report'); return 'followed'; } catch { return 'refused'; }
+    })).toBe('refused');
+    expect(observed).toEqual(['Bearer redirect-proof-token']);
+  } finally {
+    operator.closeAllConnections(); receiver.closeAllConnections();
+    await Promise.all([new Promise<void>(resolve => operator.close(() => resolve())),
+      new Promise<void>(resolve => receiver.close(() => resolve()))]);
+  }
+});
+
 test('report query readiness uses the navigation budget beyond the action timeout', async ({ page }) => {
   const endpoint = `/api/zero-harness/rest-query?name=reports.get&args=${encodeURIComponent(JSON.stringify({ reportId: report.report_id }))}`;
   await page.route('**/api/zero-harness/rest-query?*', route => route.fulfill({
@@ -123,10 +192,49 @@ test('report query readiness still enforces the navigation deadline', async ({ p
   await expect(navigateToPublishedReport(page, report, 250)).rejects.toThrow('page.waitForResponse: Timeout 250ms');
 });
 
+test('report renderer readiness uses its navigation budget beyond the action timeout', async ({ page }) => {
+  await page.route('**/vditor/**', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await page.route('**/renderer-readiness', route => route.fulfill({ contentType: 'text/html', body: `
+    <script>setTimeout(() => {
+      for (const id of ['vditorLuteScript', 'vditorI18nScripten_US', 'vditorIconScript']) {
+        const script = document.createElement('script');
+        script.id = id; script.src = '/vditor/' + id + '.js'; document.head.appendChild(script);
+      }
+    }, 500);</script>`,
+  }));
+  page.setDefaultTimeout(200);
+  await page.goto('/renderer-readiness');
+  await waitForReportRenderer(page, 3_000);
+});
+
+test('report renderer readiness still enforces its deadline when a script is missing', async ({ page }) => {
+  await page.route('**/vditor/**', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
+  await page.route('**/renderer-readiness', route => route.fulfill({ contentType: 'text/html', body: `
+    <script id="vditorLuteScript" src="/vditor/lute.js"></script>
+    <script id="vditorI18nScripten_US" src="/vditor/en_US.js"></script>`,
+  }));
+  page.setDefaultTimeout(3_000);
+  await page.goto('/renderer-readiness');
+  await expect(waitForReportRenderer(page, 250)).rejects.toThrow('page.waitForFunction: Timeout 250ms');
+});
+
+test.describe('published report proof', () => {
+// The real owner session retains its consented first-party flag client. Declare
+// that exact maintained origin; fixture runs still forbid every foreign origin.
+test.use({ serviceWorkers: 'block', egressAllowedOrigins: process.env.OPERATOR_REPORT_PROOF_JSON
+  ? [new URL(POSTHOG_PUBLIC_DEFAULTS.host).origin] : [] });
+
 test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
   const input = process.env.OPERATOR_REPORT_PROOF_JSON;
   const expected = input ? await readPublishedReportProof(input) : report;
   await captureReportClipboard(page);
+  if (input) {
+    const origin = process.env.OPERATOR_E2E_BASE_URL;
+    const clientId = process.env.PAPERCUSP_SID;
+    if (!origin || !clientId) throw new Error('Live report proof requires OPERATOR_E2E_BASE_URL and PAPERCUSP_SID');
+    const token = (await readFile(join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token'), 'utf8')).trim();
+    await configurePublishedReportSession(page, { origin, token, workspaceId: expected.workspace_id, clientId });
+  }
   if (!input) {
     await stubReportFlags(page);
     await stubSyncQueries(page, name => {
@@ -136,8 +244,10 @@ test('published report text and standalone HTML stay identical', async ({ page }
       return undefined;
     });
   }
-  await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
+  const selectedQuery = await navigateToPublishedReport(page, expected, testInfo.project.use.navigationTimeout ?? 30_000);
+  if (input) expect(selectedQuery.request().headers()['x-papercusp-machine']).toBe('local');
   await verifyPublishedReportAndOfflineExport(page, expected, testInfo);
+});
 });
 
 test('report proof rejects a successful HTTP response with an unrelated route', async ({ page }, testInfo) => {

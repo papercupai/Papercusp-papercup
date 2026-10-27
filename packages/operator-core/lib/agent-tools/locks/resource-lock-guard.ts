@@ -20,7 +20,9 @@ import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identi
 import { readIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import {
-  tryAcquireResource,
+  acquireSharedResourceAtomic,
+  releaseSharedResourceAtomic,
+  readResourceQueue,
   tryReleaseResource,
   assertResourceFenceCurrent,
   getTxPool,
@@ -135,27 +137,28 @@ export async function guardResource<T>(
   let fenceSeq = 0;
   let preserveSharedLease = false;
   if (mode === 'shared') {
-    let r: Awaited<ReturnType<typeof tryAcquireResource>>;
+    let r: Awaited<ReturnType<typeof acquireSharedResourceAtomic>>;
     try {
-      r = await inWorkspaceTxn(cd, ownerId, (tx) =>
-        tryAcquireResource(tx, {
-          coordinationDomain: cd,
-          resource,
-          mode: 'shared',
-          owner: ownerId,
-          ownerLabel,
-          reason,
-          ttlSec,
-        }),
-      );
+      // Keep the domain gate only for the server-side statement. A generic
+      // transaction holds the exclusive domain lock across client waits.
+      r = await acquireSharedResourceAtomic({
+        coordinationDomain: cd,
+        resource,
+        owner: ownerId,
+        ownerLabel,
+        reason,
+        ttlSec,
+      });
     } catch (error) {
       const holder = hostGlobalConflictHolder(error, resource, cd);
       if (holder) return { acquired: false, reason: 'held_in_other_domain', holders: [holder] };
       throw error;
     }
-    if (!r.ok) return { acquired: false, reason: r.reason, holders: r.holders };
+    if (!r.ok) {
+      const { holders } = await readResourceQueue(getTxPool(), { coordinationDomain: cd, resource });
+      return { acquired: false, reason: r.reason, holders };
+    }
     lockId = r.lock_id;
-    fenceSeq = r.fence_seq;
     preserveSharedLease = r.reused === true;
   } else {
     // The lower-level acquisition API preserves a draining reservation so
@@ -228,9 +231,12 @@ export async function guardResource<T>(
     return { acquired: true, result, lock_id: lockId };
   } finally {
     if (!preserveSharedLease) {
-      const released = await inWorkspaceTxn(cd, ownerId, (tx) =>
-        tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId }),
-      ).catch(() => null);
+      const released = mode === 'shared'
+        ? await releaseSharedResourceAtomic({ coordinationDomain: cd, resource, owner: ownerId, lockId })
+          .then(() => null).catch(() => null)
+        : await inWorkspaceTxn(cd, ownerId, (tx) =>
+          tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId }),
+        ).catch(() => null);
       if (mode === 'exclusive') {
         // A4: notify just the waiters on this resource, not ['*'].
         await broadcastResourceBackUp({

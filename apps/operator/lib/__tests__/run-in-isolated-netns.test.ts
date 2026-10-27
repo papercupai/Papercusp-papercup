@@ -7,7 +7,7 @@
  * AppArmor userns grant for bwrap; they are skipped (not passed) where the namespace
  * cannot be built, and the skip reason says so.
  */
-import { mkdtempSync, rmSync, symlinkSync, existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -95,6 +95,79 @@ describe('run-in-isolated-netns.sh — modes and fallback', () => {
     expect(r.stderr).toContain('reason=bwrap-missing');
     expect(existsSync(marker)).toBe(false);
   });
+});
+
+describe('run-in-isolated-netns.sh — supervisor cleanup', () => {
+  it.each([0, 7, 'fragmented-info'] as const)('closes a blocked helper output pipe for %s', async (exitCode) => {
+    const dir = mkdtempSync(join(tmpdir(), 'netns-supervisor-'));
+    dirs.push(dir);
+    const childPidFile = join(dir, 'child.pid');
+    const bwrap = join(dir, 'bwrap');
+    // Model the launcher exiting while its announced helper remains blocked.
+    // The helper inherits stdout, so leaving it alive prevents pipeline EOF.
+    writeFileSync(bwrap, `#!/usr/bin/env node
+const { spawn } = require('node:child_process');
+const { readSync, writeFileSync, writeSync } = require('node:fs');
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+writeFileSync(process.env.NETNS_FIXTURE_PID, String(child.pid));
+if (${JSON.stringify(exitCode)} === 'fragmented-info') {
+  writeSync(8, '{\\n  "child-pid": ' + child.pid + ',\\n');
+  setTimeout(() => {
+    // The reader must stay open for the complete record, even between writes.
+    writeSync(8, '  "fixture": true\\n}\\n');
+    require('node:fs').closeSync(8);
+    readSync(9, Buffer.alloc(2), 0, 2, null);
+    child.once('exit', () => process.exit(0));
+    child.kill('SIGTERM');
+  }, 100);
+} else {
+  writeSync(8, JSON.stringify({ 'child-pid': child.pid }) + '\\n');
+  child.unref();
+  process.exit(${typeof exitCode === 'number' ? exitCode : 0});
+}
+`);
+    const pasta = join(dir, 'pasta');
+    writeFileSync(pasta, '#!/usr/bin/env bash\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -P ]; then : > "$2"; break; fi; shift; done\n');
+    const ip = join(dir, 'ip');
+    writeFileSync(ip, '#!/usr/bin/env bash\nexit 0\n');
+    for (const path of [bwrap, pasta, ip]) chmodSync(path, 0o755);
+    const wrapper = spawn(WRAPPER, ['--', 'true'], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PAPERCUSP_E2E_NETNS: 'required',
+        NETNS_FIXTURE_PID: childPidFile, VERIFY_TAURI_PID: undefined },
+    });
+    let stderr = '';
+    wrapper.stderr.on('data', chunk => { stderr += chunk; });
+    // Consume both pipes: close, rather than exit, proves inherited FDs closed.
+    wrapper.stdout.resume();
+    const closed = new Promise<number | null>((done, reject) => {
+      wrapper.once('close', done);
+      wrapper.once('error', reject);
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        closed.then(code => ({ timedOut: false, code })),
+        new Promise<{ timedOut: boolean; code: null }>(done => {
+          timer = setTimeout(() => done({ timedOut: true, code: null }), 5_000);
+        }),
+      ]);
+      expect(result.timedOut, stderr).toBe(false);
+      expect(result.code, stderr).toBe(exitCode === 'fragmented-info' ? 0 : exitCode === 0 ? 97 : exitCode);
+      if (exitCode === 'fragmented-info') {
+        expect(stderr).not.toContain('supervisor exited with its sandbox helper still alive');
+      } else {
+        expect(stderr).toContain('supervisor exited with its sandbox helper still alive');
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      // Reap only this fixture's known child on the intentionally failing baseline.
+      if (existsSync(childPidFile)) {
+        try { process.kill(Number(readFileSync(childPidFile, 'utf8')), 'SIGKILL'); } catch { /* exited */ }
+      }
+      wrapper.kill('SIGKILL');
+      await closed;
+    }
+  }, 15_000);
 });
 
 describe.skipIf(!ISOLATION_AVAILABLE)(`run-in-isolated-netns.sh — isolation ${isolationSkipReason}`, () => {

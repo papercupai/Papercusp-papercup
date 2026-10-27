@@ -6,19 +6,52 @@
  * sweep-hang class).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const discoveryReads = vi.hoisted(() => ({ enabled: false, active: 0, peak: 0 }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readdir: async (...args: Parameters<typeof actual.readdir>) => {
+    if (!discoveryReads.enabled) return actual.readdir(...args);
+    discoveryReads.active++;
+    discoveryReads.peak = Math.max(discoveryReads.peak, discoveryReads.active);
+    try { return await actual.readdir(...args); }
+    finally { discoveryReads.active--; }
+  } };
+});
 import { codexTranscriptMeta, jsonlAtDepth } from './session-ingest';
 
 let root: string | null = null;
 afterEach(async () => {
+  discoveryReads.enabled = false;
   if (root) await rm(root, { recursive: true, force: true });
   root = null;
 });
 
 describe('jsonlAtDepth', () => {
+  it('overlaps discovery reads with a bounded fanout while preserving every transcript', async () => {
+    root = await mkdtemp(join(tmpdir(), 'walker-bounded-'));
+    const expected: string[] = [];
+    for (let i = 0; i < 48; i++) {
+      const day = join(root, `session-${i}`);
+      await mkdir(day);
+      const file = join(day, 'rollout.jsonl');
+      await writeFile(file, 'a\n');
+      await writeFile(join(day, 'ignore.txt'), 'not a transcript');
+      expected.push(file);
+    }
+    discoveryReads.active = discoveryReads.peak = 0;
+    discoveryReads.enabled = true;
+    const found = await jsonlAtDepth(root, 1);
+    expect(found.sort()).toEqual(expected.sort());
+    expect(discoveryReads.peak).toBeGreaterThan(1);
+    expect(discoveryReads.peak).toBeLessThanOrEqual(16);
+    expect(discoveryReads.active).toBe(0);
+  });
+
   it('descend filter prunes non-sessions subtrees of per-session codex homes', async () => {
     root = await mkdtemp(join(tmpdir(), 'walker-'));
     // the real payload

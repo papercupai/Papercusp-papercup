@@ -110,6 +110,7 @@ import {
   improvementsStatus,
   infraStatus,
   infraSummary,
+  infraMcpProxyMetric,
   evaluateHostPressure,
   diskBandWithHysteresis,
   isReaperWedged,
@@ -125,8 +126,6 @@ import {
   reconcilePausedQueen,
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
-  MCP_PROXY_HARD_FAIL_CRIT,
-  MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS,
   DISK_USED_CRIT_PCT,
   DISK_USED_WARN_PCT,
   ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
@@ -2502,11 +2501,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
     const toolsCrit = toolFailures?.rating === 'broken';
-    const mcpHard = mcpProxy?.hardFailures ?? 0;
-    const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
-    const mcpQueueStalls = mcpProxy?.criticalContinuationQueueStalls ?? 0;
-    const mcpQueueCrit = mcpQueueStalls > 0;
-    const mcpWarn = mcpHard > 0 && !mcpCrit;
+    const mcpProxyMetric = infraMcpProxyMetric(mcpProxy);
     const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
     const hostPressureTone =
       hostPressure?.status === 'crit' ? 'crit' : hostPressure?.status === 'warn' ? 'warn' : undefined;
@@ -2520,7 +2515,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('pg pool', pool ? (pool.band === 'ok' ? `${pool.probeMs}ms` : `${pool.band} (${pool.probeMs}ms)`) : 'n/a', pool?.band === 'critical' ? 'warn' : undefined),
         m('dns', dns ? (dns.ok ? `${dns.probeMs}ms` : `${dns.names.filter((n) => !n.ok).length}/${dns.names.length} canaries failing`) : 'n/a', dns && !dns.ok ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
-        m('mcp-proxy', mcpProxy ? (mcpQueueCrit ? `${mcpQueueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m observed in the last hour (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)` : mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit || mcpQueueCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
+        m('mcp-proxy', mcpProxyMetric.value, mcpProxyMetric.tone),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),

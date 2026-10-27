@@ -837,6 +837,47 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool conformance run preserves the server response window (EI-26805770709325993)', () => {
+  it.each([
+    ['plans:conformance', { op: 'run', slug: 'receipt-window' }],
+    ['tools:invoke', { name: 'plans:conformance', args: { op: 'run', slug: 'receipt-window' } }],
+  ])('receives a result beyond the flat client deadline through %s', async (name, args) => {
+    vi.useFakeTimers();
+    try {
+      const receipt = { content: [{ type: 'text', text: '{"ok":true,"runReceipt":{"attemptId":"one-run"}}' }] };
+      const client = {
+        callTool: vi.fn((_params, _schema, options) => new Promise((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error('client deadline expired')), options.timeout);
+          setTimeout(() => {
+            clearTimeout(deadline);
+            resolve(receipt);
+          }, MCP_TRANSPORT_CAP_MS - 1_000);
+        })),
+      };
+      const result = callToolWithPressureRetry(client, buildCallToolParams(name, args), {
+        timeoutMs: timeoutForTool(name, args),
+      }).catch((error) => error);
+
+      await vi.advanceTimersByTimeAsync(MCP_TRANSPORT_CAP_MS);
+
+      expect(await result).toEqual(receipt);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      expect(client.callTool.mock.calls[0][2]).toEqual({
+        timeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+        maxTotalTimeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['report', 'propose-deviation', 'approve-deviation'])('preserves the existing budget for %s', (op) => {
+    expect(timeoutForTool('plans:conformance', { op })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'plans:conformance', args: { op } }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758754)', () => {
   it('keeps dry-run reclaim beyond the declared 120s handler deadline', () => {
     expect(timeoutForTool('release:cut', { op: 'reclaim' })).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
@@ -845,8 +886,10 @@ describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758
     expect(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
   });
 
-  it('does not widen confirmed reclaim writes', () => {
-    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  it('keeps confirmed reclaim beyond the same declared handler deadline', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: { op: 'reclaim', confirm: true } }))
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
   });
 });
 

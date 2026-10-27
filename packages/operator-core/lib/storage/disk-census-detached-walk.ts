@@ -75,7 +75,8 @@ export interface WalkLaunch {
 export type WalkLauncher = (
   cmd: string,
   args: string[],
-  meta: { root: string; dir: string; attempt: number; runtimeMaxSec: number },
+  meta: { root: string; dir: string; attempt: number; runtimeMaxSec: number;
+    attribution?: { launchedBy: string; workItemId: string; title: string } },
 ) => Promise<WalkLaunch>;
 
 /** Thrown when `signal` stops the wait; the walk itself keeps running. */
@@ -87,6 +88,8 @@ export class DetachedWalkAbandoned extends Error {
 }
 
 export interface DetachedWalkOptions {
+  /** The shared transport also serves other maintained read-only collectors. */
+  attribution?: { launchedBy: string; workItemId: string; title: string };
   /** Directory owning this walk (one per run and device): state.json plus per-attempt out/err/exit. */
   dir: string;
   floorBytes?: number;
@@ -183,10 +186,10 @@ export const managedWalkLauncher: WalkLauncher = async (cmd, args, meta) => {
     args,
     {
       class: 'other',
-      title: `disk census du ${meta.root} (attempt ${meta.attempt})`,
+      title: meta.attribution?.title ?? `disk census du ${meta.root} (attempt ${meta.attempt})`,
       argv: [cmd, ...args],
-      launchedBy: 'system:disk-consumer-census',
-      workItemId: 'WI-6554700010009855',
+      launchedBy: meta.attribution?.launchedBy ?? 'system:disk-consumer-census',
+      workItemId: meta.attribution?.workItemId ?? 'WI-6554700010009855',
       planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
       runtimeMaxSec: meta.runtimeMaxSec,
       detail: { subsystem: 'storage', operation: 'disk-census-walk', root: meta.root, dir: meta.dir },
@@ -223,6 +226,7 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
       (exitCode !== null && exitCode >= 125 && exitCode <= 127 ? `walk command could not run (exit ${exitCode})` : undefined);
     return {
       summary, deniedCount: parser.deniedCount, deniedSample: parser.deniedSample,
+      ...(parser.stderrSample.length ? { stderrSample: parser.stderrSample } : {}),
       timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, exitCode, privileged,
       walkNote: walkNote(state), ...(error ? { error } : {}),
     };
@@ -230,7 +234,7 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
 }
 
 /** Shared launch/adopt/timeout transport; each reader owns its output contract. */
-async function runDetachedWalk<T>(
+export async function runDetachedWalk<T>(
   root: string, opts: DetachedWalkOptions, duArgs: string[],
   read: (state: DetachedWalkState, exitCode: number | null, overdue: boolean, failure?: string) => Promise<T>,
   requestKey?: string,
@@ -320,6 +324,7 @@ async function runDetachedWalk<T>(
       dir,
       attempt,
       runtimeMaxSec: timeoutSec + Math.ceil(graceMs / 1000),
+      attribution: opts.attribution,
     });
     await writeWalkState(dir, {
       ...pending,

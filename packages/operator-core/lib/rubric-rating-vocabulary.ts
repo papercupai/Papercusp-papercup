@@ -102,6 +102,16 @@ function isGradeArtifactNounPhrase(text: string, directiveStart: number, input: 
   return precedingWord !== undefined && GRADE_ARTIFACT_NOUN_MODIFIERS.has(precedingWord);
 }
 
+function isRatingAllowanceNounPhrase(text: string, directiveStart: number, input: string): boolean {
+  // "no healthy rating is allowed unless ..." restricts an already named
+  // rating. "allowed" is its predicate, not the value to emit. Require the
+  // qualified noun phrase too: "Rating is allowed" remains an explicit label,
+  // and "the correct rating is partial" must still reject an off-scale value.
+  if (!/^\s+is\s+(?:not\s+)?(?:allowed|permitted)\b/i.test(input)) return false;
+  const prefix = text.slice(Math.max(0, directiveStart - 180), directiveStart);
+  return /\b(?:no|a|an|any)\s+(?:[A-Za-z0-9][A-Za-z0-9_./-]*|`[^`]+`|'[^']+'|"[^"]+")\s+$/i.test(prefix);
+}
+
 function normalizeRating(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -307,6 +317,9 @@ export function extractRubricRatingInstructions(
       (isInspectedGradeMetadata(text, directiveStart, input) ||
         isGradeArtifactNounPhrase(text, directiveStart, input))
     ) {
+      continue;
+    }
+    if (directive.toLowerCase() === 'rating' && isRatingAllowanceNounPhrase(text, directiveStart, input)) {
       continue;
     }
     const target = parseDirectiveTarget(input, directive);

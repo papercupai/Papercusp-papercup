@@ -81,9 +81,8 @@ function start(sqlText = 'CREATE TABLE proof_first(id int);', check = assertCurr
   const file = join(directory, 'fixture.sql');
   writeFileSync(file, sqlText);
   const marker = `PAPERCUSP_MIGRATION_FENCE_${randomUUID().replace(/-/g, '')}`;
-  const url = new URL(targetUrl);
-  url.searchParams.set('application_name', marker);
-  pending = runPsql('psql', [url.toString(), '-X', '-v', 'ON_ERROR_STOP=1'], {
+  // Exercise production backend binding; the test must not add the marker.
+  pending = runPsql('psql', [targetUrl, '-X', '-v', 'ON_ERROR_STOP=1'], {
     encoding: 'utf8',
     input: migrationPsqlScript({ sqlText, resolvedFile: file, filenameLiteral: 'fixture.sql', sha256: 'test',
       lockTimeoutSec: 1, guardPreamble: migrationBackupAdvisoryLockSql(1), fenceMarker: marker }),
@@ -122,7 +121,11 @@ describe('db:migrate exact fence through backup waits', () => {
     await waitForBackupWait(marker);
     expect(await hasTable('proof_first')).toBe(false);
     await backup`SELECT pg_advisory_unlock_all()`;
-    expect(await pending).toMatchObject({ status: 0 });
+    expect(await pending).toMatchObject({ status: 0, diagnostics: { backendApplicationName: marker } });
+    expect((await pending)?.diagnostics?.phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'sql-guards', state: 'fulfilled' }),
+      expect.objectContaining({ phase: 'fence', state: 'fulfilled' }),
+    ]));
     expect(check).toHaveBeenCalled();
     expect(await hasTable('proof_first')).toBe(true);
     expect(await target`SELECT filename FROM harness_shared.schema_migrations`).toHaveLength(1);
@@ -146,6 +149,8 @@ describe('db:migrate exact fence through backup waits', () => {
     const result = await pending;
     expect(result?.staleFence).toMatchObject({ current: false, reason: kind === 'expired' ? 'expired_or_released' : 'superseded' });
     expect(result?.status).not.toBe(0);
+    expect(result?.diagnostics).toMatchObject({ backendApplicationName: marker });
+    expect(result?.diagnostics?.phases).toContainEqual(expect.objectContaining({ phase: 'fence', state: 'rejected' }));
     expect(await hasTable('proof_first')).toBe(false);
     expect(await target`SELECT filename FROM harness_shared.schema_migrations`).toHaveLength(0);
     // Child exit and PostgreSQL backend cleanup are separate transitions.

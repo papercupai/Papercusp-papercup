@@ -298,6 +298,12 @@ describe('parseSuLaunchSpecRecord', () => {
     expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
   });
 
+  it('retains the launch-selected provenance directory without inventing a legacy binding', () => {
+    const record = { ...good, turnProvenanceDir: '/launch-state/workspace-a/turn-provenance' };
+    expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
+    expect(parseSuLaunchSpecRecord(good)).not.toHaveProperty('turnProvenanceDir');
+  });
+
   it('retains an exact named selection pin and rejects malformed pins', () => {
     const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
     expect(parseSuLaunchSpecRecord({ ...good, stack: ['domain:review-domain'], selectedIdentity }))
@@ -360,6 +366,15 @@ describe('pinnedSuRecoveryPrompt', () => {
     expect(pinnedSuRecoveryPrompt(record!)).toEqual({
       promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: launch.specificationRevision,
     });
+    const ordinary = { ...record!, selectedIdentity: undefined };
+    expect(pinnedSuRecoveryPrompt(ordinary)).toBeNull();
+    expect(pinnedSuRecoveryPrompt(ordinary, { allowUnselected: true })).toEqual({
+      promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: launch.specificationRevision,
+    });
+    expect(pinnedSuRecoveryPrompt({ ...ordinary, specificationArtifact: undefined },
+      { allowUnselected: true })).toBeNull();
+    expect(() => pinnedSuRecoveryPrompt({ ...ordinary, specificationRevision: 'b'.repeat(64) },
+      { allowUnselected: true })).toThrow('does not match the launch receipt');
     expect(() => pinnedSuRecoveryPrompt({
       ...record!, specificationArtifact: {
         ...launch.specificationArtifact,

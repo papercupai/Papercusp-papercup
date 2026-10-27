@@ -13,9 +13,14 @@ import { createServer, Socket } from 'node:net';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import postgres from 'postgres';
 import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { readProcessIdentity } from './process-identity';
+import { privateBundleRuntimeEnv, stopPrivateOperatorHost, type PrivateHostStopObservation } from '../test/private-http-workspace-preflight';
 
 // A workspace-local install can give the server its own embedded-postgres copy.
 // Inject failures into that exact constructor, not the root test dependency.
@@ -115,6 +120,70 @@ async function boot(prefix: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('embedded-PG postmaster supervision (WI-10003688)', () => {
+  it.skipIf(process.platform !== 'linux')('reaps real PostgreSQL after a deadline-exited private host closes redirected output', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-pg-parent-exit-'));
+    const port = await freePort();
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import EmbeddedPostgres from ${JSON.stringify(serverRequire.resolve('embedded-postgres'))};
+      import {spawn} from 'node:child_process';
+      import {once} from 'node:events';
+      const pg = new EmbeddedPostgres({databaseDir:${JSON.stringify(dataDir)},port:${port},
+        persistent:true,user:'postgres',password:'private-fixture',
+        initdbFlags:['--locale=C','--encoding=UTF8'],onLog:()=>{},onError:()=>{}});
+      await pg.initialise(); await pg.start();
+      // Reproduce a parent deadline while PG is still alive, independently of
+      // the product's schema, MCP, or P536 artifact. Redirect both PG streams.
+      const binary=pg.process.spawnfile,args=pg.process.spawnargs.slice(1);
+      await pg.stop();
+      const native=spawn(binary,args,{stdio:'ignore'});
+      await once(native,'spawn');
+      process.on('SIGTERM',()=>process.kill(process.pid,'SIGKILL'));
+      process.stdout.write(JSON.stringify({pid:native.pid})+'\\n');
+      setInterval(()=>{},1000);
+    `], { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
+    const closed = once(child, 'close');
+    let pid: number | undefined, identity: string | null = null;
+    let stderr = '';
+    child.stderr!.on('data', chunk => { stderr += String(chunk); });
+    try {
+      const ready = await Promise.race([
+        once(child.stdout!, 'data'),
+        closed.then(() => { throw new Error('private PG fixture exited before readiness: ' + stderr); }),
+      ]);
+      pid = JSON.parse(String(ready[0])).pid;
+      identity = readProcessIdentity(pid!);
+      expect(identity).toBeTruthy();
+      const sql = postgres({host:'127.0.0.1',port,user:'postgres',password:'private-fixture',
+        database:'postgres',max:1,connect_timeout:2});
+      try { await waitFor('native private postmaster readiness', async () => {
+        try { return (await sql`SELECT 1 AS one`)[0]?.one === 1; }
+        catch { return false; }
+      }, 10_000); }
+      finally { await sql.end({timeout:1}); }
+      const observations: PrivateHostStopObservation[] = [];
+      await stopPrivateOperatorHost(child, undefined, 5000, o => observations.push(o));
+      // A reparented zombie is no longer executable even if PID 1 has not
+      // reaped it yet; the maintained helper checks the exact kernel state.
+      expect(observations.at(-1)?.postgres?.every(p => p.state === null || p.state === 'Z' || p.state === 'X')).toBe(true);
+      expect(await portAccepting(port)).toBe(false);
+      await expect(readFile(join(dataDir, 'postmaster.pid'), 'utf8')).rejects.toMatchObject({code:'ENOENT'});
+      expect(observations).toEqual(expect.arrayContaining([
+        expect.objectContaining({phase:'postgres captured'}),
+        expect.objectContaining({phase:'postgres stopped'}),
+        expect.objectContaining({phase:'complete'}),
+      ]));
+      expect(observations.find(o => o.phase === 'postgres captured')?.postgres?.length).toBeGreaterThan(1);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (pid && identity && readProcessIdentity(pid) === identity) {
+        try { process.kill(pid, 'SIGINT'); } catch { /* already stopped */ }
+        await waitFor('original private postmaster cleanup', () => !isAlive(pid!) || !existsSync(join(dataDir,'postmaster.pid')), 10_000);
+      }
+      await closed;
+      await rm(dataDir, {recursive:true,force:true});
+    }
+  }, 120_000);
+
   it('gracefully stops the postmaster when boot fails before returning a handle', async () => {
     const workDir = await mkdtemp(join(tmpdir(), 'papercusp-pg-startup-failure-'));
     cleanups.push(() => rm(workDir, { recursive: true, force: true }));

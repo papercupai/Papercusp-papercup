@@ -1,0 +1,7 @@
+---
+rel_path: "evidence/identity-assume/recovery28/assume-recovery28-adequacy-final-selected.json.gz.b64"
+updated_at: 1792886911905
+_body: "content"
+---
+
+H4sIAAAAAAAC/+WSQUvEMBCF7/0VIefNSU/easnKYmmXbndVZA/ZNJHQkFknqXVZ9r8bq1YQFUEQ1MsQ3nvMzMdknxBCEXpPT8h1fBOyH2pU/VbJWRN1mqV5zitW8axc8eqKTl4idwobI8NjpnOtg969ej10tjm1INux9aBrYb3RRmyMNWE35qOj7pXsggHHjAvqBt/YWysck1Z4z9D4lmkLgPTZX49zUd12BlUzRwA9HTJxPXv8lDxMPoKs0+qM14xfpln9LqEWxn4HTwKikoFZsVP4Y9xHX+TOZyseLzxdLtL8Tx94kZXz/0G6LM6L8qL4lPV3f+pY18kheQBZWaHhxQQAAA==

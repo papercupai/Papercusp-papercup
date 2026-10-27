@@ -93,8 +93,14 @@ export async function listProviderOptions(
 
   const registry = await requestRegistry(deps);
   const answering = new Map<string, RegisteredProvider>();
+  // Arming and ticket:file require a writer for a create destination. Do not
+  // offer a read-only provider's containers as choices that cannot be used.
+  const createsTicket = source.capability === 'ticket.containers' && source.args?.purpose === 'create';
   for (const entry of registry.list()) {
-    if (entry.descriptor.capabilities.includes(source.capability)) answering.set(entry.descriptor.id, entry);
+    if (entry.descriptor.capabilities.includes(source.capability)
+      && (!createsTicket || entry.descriptor.capabilities.includes('ticket.create'))) {
+      answering.set(entry.descriptor.id, entry);
+    }
   }
 
   const owned = await (deps.listSources ?? listOwnedExternalTriggerSources)(sql, input.workspaceId, input.ownerUserId);
@@ -105,7 +111,7 @@ export async function listProviderOptions(
     if (!answering.has(named.kind)) {
       throw new TicketIntegrationError(
         'provider_capability_unsupported',
-        `provider '${named.kind}' does not declare '${source.capability}'`,
+        `provider '${named.kind}' does not declare '${source.capability}'${createsTicket ? ' with ticket.create' : ''}`,
         409,
       );
     }

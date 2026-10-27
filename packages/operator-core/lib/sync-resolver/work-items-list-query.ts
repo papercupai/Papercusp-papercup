@@ -34,6 +34,7 @@ import { activeWorkItemDependencyRefsSql } from '../dbos/work-item-deps-store';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { withNamedQueryDiagnosticLeg } from '../agent-tools/db-diagnostic-correlation-wiring';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST } from '../work-nature/agent-work-predicate';
 export const WORK_ITEMS_CURSOR_PAGE_LIMIT = 500;
 export const WORK_ITEMS_FAIR_STATE_LIMIT = 200;
 
@@ -284,7 +285,7 @@ function predicateSql(
 
 /** Issue-family kinds carry `_ei` severity / assigned_by in payload. */
 const issueKindSql = (sql: OrgSql) =>
-  sql`wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`;
+  sql`wi.item_kind = ANY(ARRAY[${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}]::text[])`;
 
 type SqlFragment = ReturnType<typeof issueKindSql>;
 
@@ -608,7 +609,7 @@ export async function readWorkItemPresentations(
       FROM harness_shared.work_items wi
       JOIN unnest(${selected.map(r => r.id)}::text[], ${selected.map(r => r.harnessSlug)}::text[])
         AS requested(id, harness) ON wi.feature_id = requested.id AND wi.harness_slug = requested.harness
-     WHERE wi.workspace_id = ${workspaceId} AND wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`);
+     WHERE wi.workspace_id = ${workspaceId} AND wi.item_kind = ANY(ARRAY[${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}]::text[])`);
   return new Map(rows.map((row): [string, WorkItemPresentation] => {
     const decision = deriveWorkItemPresentationStage(row);
     const readiness = readImplementationReadiness(row.payload);

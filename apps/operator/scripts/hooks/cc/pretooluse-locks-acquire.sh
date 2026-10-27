@@ -161,6 +161,10 @@ compatibility_advisory = None
 # told. Otherwise a fail-open looks exactly like a healthy grant, and every edit
 # of the session goes unprotected without a word.
 fail_open_advisory = None
+# P-010 (code-intel-delivery-and-outcomes-2026-10-26, SPEC-P-010): a grant carries
+# `attribution_nudge` when the editor holds no work item. The edit still proceeds; the
+# model is told the edit will be recorded unattributed.
+attribution_advisory = None
 
 
 def _note_fail_open(detail, ambiguous=False):
@@ -186,12 +190,13 @@ def allow():
     # model that the first request hit a stale operator. Otherwise a successful
     # retry is indistinguishable from a healthy first attempt and the runtime
     # skew keeps widening silently.
+    attribution_suffix = ('\n' + attribution_advisory) if attribution_advisory else ''
     if compatibility_advisory:
         json.dump({'hookSpecificOutput': {
             'hookEventName': 'PreToolUse',
             'permissionDecision': 'allow',
             'permissionDecisionReason': 'file-lock compatibility fallback (non-blocking)',
-            'additionalContext': compatibility_advisory,
+            'additionalContext': compatibility_advisory + attribution_suffix,
         }}, sys.stdout)
         sys.exit(0)
     if fail_open_advisory:
@@ -200,6 +205,14 @@ def allow():
             'permissionDecision': 'allow',
             'permissionDecisionReason': 'file-lock fail-open (non-blocking)',
             'additionalContext': fail_open_advisory,
+        }}, sys.stdout)
+        sys.exit(0)
+    if attribution_advisory:
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow',
+            'permissionDecisionReason': 'file-lock granted; editor holds no work item (non-blocking)',
+            'additionalContext': attribution_advisory,
         }}, sys.stdout)
         sys.exit(0)
     # Exit 0, no stdout → no decision, client proceeds with normal flow.
@@ -1899,6 +1912,10 @@ def _grant(granted):
     the actual fix for the shared-lock_id case. The server now returns
     ``newly_held``; an empty list means this automatic edit was covered by an
     existing deliberate hold, so it must not create a release token at all."""
+    global attribution_advisory
+    nudge = granted.get('attribution_nudge')
+    if isinstance(nudge, str) and nudge.strip():
+        attribution_advisory = nudge.strip()[:600]
     lock_id = granted.get('lock_id')
     newly_held = granted.get('newly_held')
     if isinstance(newly_held, list):

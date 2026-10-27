@@ -9,6 +9,7 @@ import { prepareSupportOperationNativeLaunch, stopSupportOperationNativeLaunch, 
 import { supportOperationReservationId } from './support-workflow-budget';
 import { createInferenceGateway } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
+import { summarizeProviderOutcomeCounts } from '../inference-gateway/gateway-request-outcome-store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { currentRequestWorkspaceId } from '../workspace-als';
 import type { AcceptedOperationWorkerBinding } from './operation-worker-binding';
@@ -79,7 +80,7 @@ it.each(['omitted', 'spoofed', 'foreign-claim', 'replaced-worker'] as const)(
             rows: [], total: 0, byOutcome: { ok: 0, 'client-error': 0, 'upstream-429': 0,
               'upstream-error': 0, shed: 0, cancelled: 0, 'gateway-error': 0, unclassified: 0 },
             firstRequestTimestampMs: null, lastFinalizedAtMs: null, truncated: false, retentionMs: 0,
-          }) },
+          }), providerSummary: async q => summarizeProviderOutcomeCounts(q.provider, { fromMs: q.fromMs, toMs: q.toMs ?? q.fromMs }, []) },
           requestAbsorbMs: 0, selfHeal: { enabled: false } });
         const port = await gateway.listen(0);
         return { port, stop: () => gateway!.close() } as RunningGatewayService;
@@ -194,7 +195,8 @@ it.each(['socket-boundary', 'installed-codex'] as const)(
           requestOutcomeStore: { record: async () => {}, report: async () => ({ rows: [], total: 0,
             byOutcome: { ok: 0, 'client-error': 0, 'upstream-429': 0, 'upstream-error': 0,
               shed: 0, cancelled: 0, 'gateway-error': 0, unclassified: 0 },
-            firstRequestTimestampMs: null, lastFinalizedAtMs: null, truncated: false, retentionMs: 0 }) },
+            firstRequestTimestampMs: null, lastFinalizedAtMs: null, truncated: false, retentionMs: 0 }),
+          providerSummary: async q => summarizeProviderOutcomeCounts(q.provider, { fromMs: q.fromMs, toMs: q.toMs ?? q.fromMs }, []) },
           requestAbsorbMs: 0, selfHeal: { enabled: false } });
         return { port: await gateway.listen(0), stop: () => gateway!.close() } as RunningGatewayService;
       });

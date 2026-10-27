@@ -11,6 +11,7 @@
  * one as inert. The row classifier itself is pinned purely below.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { recordActivity } from '@papercusp/activity-bridge';
 
 const h = vi.hoisted(() => ({
   arm: vi.fn(),
@@ -67,6 +68,7 @@ const START = { owner: OWNER, kind: 'lifecycle', summary: '▶ session started',
 const END = { owner: OWNER, kind: 'lifecycle', summary: '■ session ended', agent: 'claude' };
 
 beforeEach(() => {
+  vi.mocked(recordActivity).mockClear();
   for (const f of Object.values(h)) f.mockReset();
   h.arm.mockResolvedValue({ awaitId: 1, eventKey: 'coord:inbox-wake:x', handleNote: 'ok' });
   h.cancel.mockResolvedValue(1);
@@ -84,6 +86,34 @@ beforeEach(() => {
       ? { binding: 'bound', boundSessionId: LIVE, advSessionId: 31412 }
       : { binding: 'foreign', boundSessionId: LIVE, advSessionId: 31412 },
   );
+});
+
+describe('activity:report caller owner provenance', () => {
+  const caller = 'su-isolated-answerer';
+  const callerCtx = {
+    isSuperuser: true, uiClientId: caller, clientId: caller,
+    workspaceId: 'ws-activity-report',
+  } as unknown as Parameters<typeof tool.handler>[1];
+  const report = { owner: OWNER, kind: 'tool', tool_name: 'fixture', phase: 'post' };
+
+  it.each([undefined, LIVE])('refuses a foreign owner before telemetry, with session %s', async (sessionId) => {
+    const result = await run({ ...report, session_id: sessionId }, callerCtx);
+    expect(result).toMatchObject({ isError: true });
+    expect(recordActivity).not.toHaveBeenCalled();
+    expect(h.classify).not.toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
+    expect(h.heal).not.toHaveBeenCalled();
+  });
+
+  it('accepts a hook reporting its own attributed owner', async () => {
+    await run({ ...report, owner: caller }, callerCtx);
+    expect(recordActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ owner: caller }));
+  });
+
+  it('preserves explicit owner ingestion for a transport-only caller', async () => {
+    await run(report, { isSuperuser: true, workspaceId: 'ws-activity-report' } as Parameters<typeof tool.handler>[1]);
+    expect(recordActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ owner: OWNER }));
+  });
 });
 
 describe('activity:report — a FOREIGN native session never acts as the owner (WI-10003957)', () => {

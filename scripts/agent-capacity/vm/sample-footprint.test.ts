@@ -104,6 +104,7 @@ print(json.dumps(sf.cgroup_sample(os.path.join(d, "cg"))))`);
       zswap: 0,
       psi: { some_us: 123456, full_us: 65432 },
       cpu_usec: 5000,
+      memory_events: expect.objectContaining({ status: 'unreadable', counters: null }),
     });
   });
 
@@ -111,7 +112,7 @@ print(json.dumps(sf.cgroup_sample(os.path.join(d, "cg"))))`);
     const cg = py(`${FIXTURES}
 w("cg/memory.current", "1000\\n")
 print(json.dumps(sf.cgroup_sample(os.path.join(d, "cg"))))`);
-    expect(cg).toEqual({ mem: 1000 });
+    expect(cg).toEqual({ mem: 1000, memory_events: expect.objectContaining({ status: 'unreadable', counters: null }) });
   });
 
   it('host_sample reads swap traffic, swap space, machine PSI and every zram device', () => {
@@ -137,5 +138,42 @@ print(json.dumps(sf.host_sample(os.path.join(d, "proc"), os.path.join(d, "block"
 
   it('host_sample is empty rather than raising when /proc and /sys/block are absent', () => {
     expect(py(`${FIXTURES}\nprint(json.dumps(sf.host_sample(os.path.join(d, "nope"), os.path.join(d, "nope2"))))`)).toEqual({});
+  });
+});
+
+describe('sample-footprint.py direct OOM and writer receipts', () => {
+  it('preserves the direct counter bytes, cgroup identity and current measurement writer digest', () => {
+    const result = py(`${FIXTURES}
+w("cg/memory.events", "low 0\\noom 2\\noom_kill 1\\noom_group_kill 0\\n")
+print(json.dumps({"events": sf.cgroup_sample(os.path.join(d, "cg"))["memory_events"], "writers": sf.writer_identity()}))`) as any;
+    expect(result.events).toMatchObject({ status: 'read', raw: 'low 0\noom 2\noom_kill 1\noom_group_kill 0\n', counters: { oom: 2, oom_kill: 1, oom_group_kill: 0 } });
+    expect(result.events.path).toMatch(/cg\/memory.events$/);
+    expect(result.events.cgroupIdentity.inode).toBeGreaterThan(0);
+    expect(result.events.capturedAt).toBeGreaterThan(0);
+    expect(result.writers.files['scripts/agent-capacity/vm/sample-footprint.py']).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each(['', 'low 0\n', 'oom 0\noom_kill bad\n', 'oom 0\noom_kill -1\n', 'oom 0\noom_kill 0\noom_kill 1\n'])(
+    'keeps malformed or incomplete counter input unknown (%j)', (raw) => {
+      const result = py(`${FIXTURES}\nw("cg/memory.events", ${JSON.stringify(raw)})\nprint(json.dumps(sf.memory_events(os.path.join(d, "cg"))))`) as any;
+      expect(result.status).toBe('invalid');
+      expect(result.counters).toBeNull();
+      expect(result.raw).toBe(raw);
+    },
+  );
+
+  it('retains staging hashes separately and detects a runtime writer that changed after staging', () => {
+    const result = py(`${FIXTURES}
+import hashlib
+w("scripts/agent-capacity/vm/writer.py", "before\\n")
+digest = hashlib.sha256(b"before\\n").hexdigest()
+w("stage-writers.sha256", digest + "  scripts/agent-capacity/vm/writer.py\\n")
+before = sf.writer_identity(d)
+w("scripts/agent-capacity/vm/writer.py", "after\\n")
+print(json.dumps([before, sf.writer_identity(d)]))`) as any[];
+    expect(result[0].staging.status).toBe('verified');
+    expect(result[1].staging.status).toBe('mismatch');
+    expect(result[1].staging.manifestSha256).toBe(result[0].staging.manifestSha256);
+    expect(result[1].files).not.toEqual(result[0].files);
   });
 });

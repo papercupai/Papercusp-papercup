@@ -1,0 +1,594 @@
+{
+  "schemaVersion": 1,
+  "portablePaths": "Client home prefixes in archived runtime receipts are normalized to $HOME. Resolve runtime task paths from authoritative records before use; proof IDs and outcomes are unchanged.",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-6554700010020902",
+  "recordedAt": "2026-10-23T05:33:09.736150+00:00",
+  "status": "acceptance-and-shipment-open",
+  "r2Preserved": {
+    "artifact": "docs/evidence/get-feedback-r2-proof-refresh-2026-10-23.json",
+    "sha256": "592e6874d44be6b074466948728ce21614506809cd4937cf0df812090b63ee85",
+    "scope": "Saved passing mechanical proof reused; no R2 test or overlay probe replayed this continuation."
+  },
+  "p004": {
+    "workItemId": "WI-10007524",
+    "initialAdequacy": {
+      "evaluatorBuild": {
+        "sha": "811b4febec",
+        "version": "0.0.0"
+      },
+      "governing": false,
+      "rows": [
+        {
+          "specId": "AUTO-BAR-R-4-P-004",
+          "revision": 4,
+          "verdict": "fail",
+          "mechanicalProof": {
+            "applicable": true,
+            "verdict": "fail",
+            "requiredFiles": [
+              "packages/operator-core/lib/agent-obligation-reader.test.ts",
+              "packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts",
+              "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+              "packages/operator-core/lib/consult/consult-routing-health.test.ts"
+            ],
+            "passingTestBindingIds": {},
+            "caughtMutantBindingIds": [],
+            "gaps": [
+              "packages/operator-core/lib/agent-obligation-reader.test.ts: no ledger-backed test run is bound (autobind binds its next passing run at a committed tree)",
+              "packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts: no ledger-backed test run is bound (autobind binds its next passing run at a committed tree)",
+              "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts: no ledger-backed test run is bound (autobind binds its next passing run at a committed tree)",
+              "packages/operator-core/lib/consult/consult-routing-health.test.ts: the passing run is no longer current — binding 35668 stale (source-stale, test-stale)",
+              "no bound mutant was caught with verified calibration linkage (bindings 37758, 37745); re-run scripts/mutation-probe.sh against a named test"
+            ]
+          },
+          "criterionRatings": {},
+          "wouldBlock": [
+            "mechanical-test-adequacy"
+          ]
+        },
+        {
+          "specId": "GF-P004-agenda-absence",
+          "revision": 1,
+          "verdict": "fail",
+          "mechanicalProof": null,
+          "criterionRatings": {
+            "traceability": "pass",
+            "fixture-calibration": "unknown",
+            "falsifiability": "unknown",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "fail",
+            "plan-class-risk-floor": "unknown",
+            "disclosed-gap": "not-applicable"
+          },
+          "wouldBlock": [
+            "fixture-calibration",
+            "falsifiability",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "GF-P004-callable-absence",
+          "revision": 1,
+          "verdict": "fail",
+          "mechanicalProof": null,
+          "criterionRatings": {
+            "traceability": "pass",
+            "fixture-calibration": "unknown",
+            "falsifiability": "unknown",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "fail",
+            "plan-class-risk-floor": "unknown",
+            "disclosed-gap": "not-applicable"
+          },
+          "wouldBlock": [
+            "fixture-calibration",
+            "falsifiability",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "GF-P004-disposition",
+          "revision": 1,
+          "verdict": "fail",
+          "mechanicalProof": null,
+          "criterionRatings": {
+            "traceability": "pass",
+            "fixture-calibration": "unknown",
+            "falsifiability": "unknown",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "fail",
+            "plan-class-risk-floor": "unknown",
+            "disclosed-gap": "not-applicable"
+          },
+          "wouldBlock": [
+            "fixture-calibration",
+            "falsifiability",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        }
+      ]
+    },
+    "cleanVerification": {
+      "commit": "db6e2a889b2bfb1685376592d3738c56b62181d8",
+      "log": "/dev/shm/get-feedback-p004-refresh-20261023.log",
+      "reader": {
+        "run": 21802584,
+        "passed": 52,
+        "failed": 0,
+        "skipped": 0
+      },
+      "requesterInterestBeforeRepair": "four continuation assertions failed",
+      "planStart": "pre-assertion refusal by shared PostgreSQL storage guard; no passing integration evidence"
+    },
+    "fixtureRepair": {
+      "workItemId": "WI-6554700010022421",
+      "file": "packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts",
+      "change": "Add missing continueCascadeDispatchProd to Vitest consult-dispatch mock. Production code, assertions and timing budgets unchanged.",
+      "fileSha256": "8e90b7d0ef8bb2e981b906e565c5de845bbc173d0947eaf8cbb3891e5b400624",
+      "localRun": 21802625,
+      "result": {
+        "passed": 17,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": true
+      },
+      "completionReceipt": {
+        "ok": true,
+        "results": [
+          {
+            "id": "WI-6554700010022421",
+            "ok": true,
+            "appliedState": "done",
+            "completionAuthority": "proposed",
+            "finish": {
+              "idempotent": true,
+              "retrySafe": true,
+              "authorityChanged": false,
+              "complete": true,
+              "workItemState": "done",
+              "completionEvidenceStored": true,
+              "checkpointCleared": true,
+              "planItem": "not-linked",
+              "claimRelease": "not-linked"
+            }
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    },
+    "readerProbe": {
+      "log": "/dev/shm/get-feedback-p004-reader-probe-protected-20261023.log",
+      "baselineRun": 21802599,
+      "copyBaselineRun": 21802621,
+      "mutantRun": 21802627,
+      "target": "packages/operator-core/lib/agent-obligation-reader.ts",
+      "measuredCase": "consultation reporting retirement > does not query consult follow-through or put reporting obligations on the agenda",
+      "result": "caught by intended assertion; source-byte integrity verified",
+      "qualification": "UNKNOWN: recorded mutant worktreeDirty; do not credit as current mechanical mutation proof. Containment was partial and outside .mcp.json changes were reported without writer attribution."
+    },
+    "bindingWrite": {
+      "firstAttempt": "schema refused missing fixturePaths; no write",
+      "secondAttempt": "request_timeout with unknown outcome; reconciled authoritative rows before retry; no duplicate retry",
+      "idempotencyKey": "336cbca3-6435-4e69-b16d-e0bfd63f128a"
+    },
+    "baselineCurrentness": {
+      "ok": true,
+      "count": 4,
+      "evidence": [
+        {
+          "id": 66010,
+          "specId": "GF-P004-agenda-absence",
+          "testRunId": 21802584,
+          "currentness": {
+            "overall": "current",
+            "staleReasons": [],
+            "unknownReasons": []
+          },
+          "evidenceRef": "packages/operator-core/lib/agent-obligation-reader.test.ts"
+        },
+        {
+          "id": 66008,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21802584,
+          "currentness": {
+            "overall": "current",
+            "staleReasons": [],
+            "unknownReasons": []
+          },
+          "evidenceRef": "packages/operator-core/lib/agent-obligation-reader.test.ts"
+        },
+        {
+          "id": 37744,
+          "specId": "GF-P004-agenda-absence",
+          "testRunId": 21101187,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "packages/operator-core/lib/agent-obligation-reader.test.ts"
+        },
+        {
+          "id": 37743,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21101187,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "packages/operator-core/lib/agent-obligation-reader.test.ts"
+        }
+      ]
+    },
+    "mutationCurrentness": {
+      "ok": true,
+      "count": 8,
+      "evidence": [
+        {
+          "id": 66013,
+          "specId": "GF-P004-agenda-absence",
+          "testRunId": 21802627,
+          "currentness": {
+            "overall": "unknown",
+            "staleReasons": [],
+            "unknownReasons": [
+              "test-run-worktree-not-clean"
+            ]
+          },
+          "evidenceRef": "test-run 21802627 mutation-probe mutant fail packages/operator-core/lib/agent-obligation-reader.test.ts @db6e2a889b2b+dirty"
+        },
+        {
+          "id": 66012,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21802627,
+          "currentness": {
+            "overall": "unknown",
+            "staleReasons": [],
+            "unknownReasons": [
+              "test-run-worktree-not-clean"
+            ]
+          },
+          "evidenceRef": "test-run 21802627 mutation-probe mutant fail packages/operator-core/lib/agent-obligation-reader.test.ts @db6e2a889b2b+dirty"
+        },
+        {
+          "id": 37758,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21105016,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21105016 mutation-probe mutant fail packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts @cd86779cba4d"
+        },
+        {
+          "id": 37756,
+          "specId": "GF-P004-callable-absence",
+          "testRunId": 21105016,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21105016 mutation-probe mutant fail packages/operator-core/lib/agent-tools/consult/get-feedback.interest.test.ts @cd86779cba4d"
+        },
+        {
+          "id": 37746,
+          "specId": "GF-P004-agenda-absence",
+          "testRunId": 21101190,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21101190 mutation-probe mutant fail packages/operator-core/lib/agent-obligation-reader.test.ts @cd86779cba4d"
+        },
+        {
+          "id": 37745,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21101190,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21101190 mutation-probe mutant fail packages/operator-core/lib/agent-obligation-reader.test.ts @cd86779cba4d"
+        },
+        {
+          "id": 35709,
+          "specId": "GF-P004-disposition",
+          "testRunId": 21016614,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21016614 mutation-probe mutant fail packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts @c3451c17b13a"
+        },
+        {
+          "id": 35708,
+          "specId": "AUTO-BAR-R-4-P-004",
+          "testRunId": 21016614,
+          "currentness": {
+            "overall": "stale",
+            "staleReasons": [
+              "source-stale",
+              "test-stale",
+              "fixture-stale"
+            ],
+            "unknownReasons": []
+          },
+          "evidenceRef": "test-run 21016614 mutation-probe mutant fail packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts @c3451c17b13a"
+        }
+      ]
+    },
+    "privateIntegrationAttempt": {
+      "log": "/dev/shm/get-feedback-p004-lifecycle-clean-20261023.log",
+      "result": "CANCELLED exit143 before tests; no passing proof",
+      "reason": "Owned dependency snapshot reader blocked peer security reify. SIGTERM to verified own with-test-pg supervisor; PG shutdown and COPY_CANCELLED observed; supervisor2554911 and reader3030032 absent.",
+      "peerFixRef": "WI-6554700010016277",
+      "peer": "su-f9dd6b51-766b-4428-9ead-7cef3459f49e"
+    }
+  },
+  "rubric9": {
+    "rubricRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "revision": 9,
+    "criteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+    "repairReceipt": {
+      "ok": true,
+      "requestedTargetIds": [
+        "EI-25814119302252123"
+      ],
+      "receipts": [
+        {
+          "issueId": "EI-25814119302252123",
+          "rubricRef": "meta-acceptance-rubric",
+          "state": "launched",
+          "idempotencyKey": "grading-audit:EI-25814119302252123:recovery:a92796f803931811",
+          "launch": {
+            "deduped": false,
+            "goalAdmission": null,
+            "finalGoalAdmissions": [
+              {
+                "memberIndex": 0,
+                "ownerId": "su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46",
+                "receiptId": "RG-9b365168-a44a-4e4f-ae3c-edba7392aed6",
+                "admission": null,
+                "outcome": "opened"
+              }
+            ],
+            "opened": 1,
+            "failed": 0,
+            "failures": [],
+            "partial": false,
+            "command": "psu --launched-by=system:grading-audit-dispatch --no-picker --account=auto --agent=codex --owner-id=su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46 --harness=papercusp --headless --model=gpt-5.6-sol:high --model-source=explicit --role=judge --stack=domain:judge-domain --stack=practice:judge-grading-integrity",
+            "fleet": null,
+            "independent": true,
+            "goalVerifier": null,
+            "verifierCoupling": null,
+            "headcountProfile": null,
+            "mode": "fresh",
+            "resumedOwnerId": null,
+            "ownerIds": [
+              "su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46"
+            ],
+            "launchEvidence": {
+              "version": 1,
+              "processOpened": 1,
+              "sessionRegistered": 1,
+              "firstTurn": true,
+              "taskDisposition": {
+                "claimed": 0,
+                "noClaim": 0,
+                "unknown": 1
+              }
+            },
+            "tasks": [
+              {
+                "taskId": "0mvkhwf8amz0u6t1ehq",
+                "logPath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/grading-audit-EI-25814119302252123-1848906-1792731251379.log",
+                "normalizedLogPath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/grading-audit-EI-25814119302252123-1848906-1792731251379.normalized.log",
+                "pid": 1112991,
+                "terminalPid": null,
+                "label": "grading-audit:EI-25814119302252123",
+                "ownerId": "su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46",
+                "headless": true,
+                "kickoffProof": {
+                  "persisted": true,
+                  "nativeRef": "$HOME/.papercusp/su-codex-homes/session-50494/sessions/2026/10/23/rollout-2026-10-23T00-54-19-01a1671c-205e-7580-82af-265d520e8210.jsonl",
+                  "reason": null
+                },
+                "nativeSession": {
+                  "backend": "codex",
+                  "source": "adv_sessions",
+                  "ownerId": "su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46",
+                  "codexHome": "$HOME/.papercusp/su-codex-homes/session-50494",
+                  "rolloutId": "01a1671c-205e-7580-82af-265d520e8210",
+                  "exactResumeSupported": true,
+                  "missingReason": null
+                }
+              }
+            ],
+            "agentStarted": true,
+            "freshVerdict": {
+              "agentStarted": true,
+              "sessions": [
+                {
+                  "ownerId": "su-fc24b0c7-205a-4dda-aa3a-d4b50cebbc46",
+                  "sessionId": "01a1671c-205e-7580-82af-265d520e8210",
+                  "advSessionId": 50494
+                }
+              ]
+            }
+          },
+          "routingFallback": "generation-bound card requires a fresh judge launched from this compatible dispatcher build",
+          "terminalRecovery": {
+            "retiredTaskIds": [
+              "0mvkhv4uq19is7e9116"
+            ],
+            "attempts": 2,
+            "codes": [
+              "inference_gateway_error"
+            ],
+            "fallback": {
+              "agent": "codex",
+              "model": "gpt-5.6-sol",
+              "effort": "high",
+              "account": "auto"
+            },
+            "routedTo": "codex"
+          }
+        }
+      ]
+    },
+    "failedAudit": "EI-26745944290018307",
+    "failure": "Two evidence strings assert a historical plan version/hash while invoking an unversioned live plans:get read. Independent audit found no substantive contradiction of six ratings.",
+    "correctedRequest": {
+      "rubricRef": "meta-acceptance-rubric",
+      "sourceHive": "papercusp",
+      "targetHive": "papercusp",
+      "subject": {
+        "kind": "rubric",
+        "ref": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03"
+      },
+      "title": "Revision 9 author meta review with reproducible live-plan semantic probes",
+      "body": "Corrects only the mutable-plan identity assertion rejected by independent audit EI-26745944290018307 of EI-25814119302252123. The auditor reran all six criteria and found no substantive contradiction, but live plans:get cannot reproduce a historical version/hash. The two affected evidence strings now assert the named Goal/decision meanings without asserting any version/hash; immutable rubric9, source commits, frozen fixture hashes and exact detector probes remain unchanged. This supersedes author evidence, preserves the failed audit, and requires a new independent grading-integrity verdict. It is not implementation, native, usefulness or shipment acceptance.",
+      "ratings": {
+        "outcomes-not-diff-restatements": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].model/bar (r-1..r-10), not file changes: native kickoff proof; exact isolated expertise; honest request cohorts; no reporting chores/history retention; focused consult guidance; native/usefulness population; exact shipped artifact; attributed shared-router calls; problem-specific precision; durable retry identity. Each describes observable behavior requiring evidence. Revision9 adds only a separately pinned helper edition to r-9.method; it does not assert implementation acceptance."
+        },
+        "traces-to-goal-or-decision": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The named plans:get probes read the current Goal and D-001/D-002/D-008..D-020 content. Their assertion is semantic: each mapped requirement remains supported by the named owner goal or governing decision. They do not assert any plan version or contentHash and accept later plan revisions with the same mapped meaning. Historical version/hash values from earlier reads are not part of this probe or its expected observation. Mapping: R1/R2 Goal/D001/D017/D020 exact-source isolation; R3/R6 Goal/D001 honest delivery/usefulness and preserved capacity/shortfalls; R4/R5 D008/D009 retirement/history and no quotas; R7 D014 exact artifact; R8 D010/D011 telemetry; R9 D010/D012/D013/D016/D018/D019 precision, failed calibration, action contrasts and unmeasured equality; R10 D010/D020 recoverable key and preflight. D002 changes execution route only. D015 adds existing detector bindings. No new owner outcome is inferred from the helper metrics."
+        },
+        "falsifiable-with-evidence": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect criteria[].method/driftMarkers. Criterion-specific falsifiers: R1 negative/unanswered kickoff accepted; R2 source mutation or wrong transcript/answer identity; R3 failed dispatch hidden or attempt denominator substituted; R4 callable retirement reversed/history removed or agenda reporting reintroduced; R5 quota or creation/read advice confusion; R6 omitted failure/cell/requester decision; R7 different deployed blob/unreadable runtime accepted; R8 untagged caller or swallowed thrown/degraded outcome; R9 false friend, omitted case, unavailable score, changed label population or pending real scorer evidence treated healthy; R10 key conflict ignored/duplicate dispatch or missing served request_key. R9 revision9 explicitly keeps missing/fresh-population validation unknown and preserves threshold0.5, precision/recall>=2/3, no-expert0/unavailable0. Detector contents are immutable selectors listed in prefer-structured-check. This is rubric-quality grading, not a claim that these implementation checks currently pass."
+        },
+        "failure-mode-coverage": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The named plans:get probes read the current Goal and D-001/D-002/D-008..D-020 content. Their assertion is semantic: each mapped requirement remains supported by the named owner goal or governing decision. They do not assert any plan version or contentHash and accept later plan revisions with the same mapped meaning. Historical version/hash values from earlier reads are not part of this probe or its expected observation. Inspect all ten method/driftMarkers plus r-6/r-7 replication text: they cover pre-row throws/degraded evidence, account-walled and silent first turns, bounded pickup/cascade recovery, exact live-source preservation, request-vs-attempt partitions, CAS/concurrency/restart/key conflict, historical records/negative-removal positives, no-expert/unavailable/full-population semantics, D013 failed calibration, D018 retained-menu false alternatives, and unreadable or different release artifact. R9 helper edition preserves the frozen labels and original failure; no fresh generalization is claimed. Native delivery and the R6 eight-thread shortfall remain open observations. Re-read outside critique/label controls via conversations:get {\"ids\":[\"thread-post:1165890\",\"thread-post:1165983\",\"thread-post:1166036\"]}; those posts include independent criticism, ten label verdicts and a bounded textual disjointness conclusion."
+        },
+        "non-overlapping": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Pairwise discriminator families, inspect the named model/bar fields: R1 successful parent receipt can coexist with R2 wrong expert source; R2 correct exact source can coexist with R3 incorrect cohort classification; R3 correct cohorts can coexist with R8 missing caller tags; R4 retired reporting/retained history can coexist with R5 stale creation/read guidance; R5 focused guidance can coexist with R6 absent usefulness sample; R6 complete current-build cohort can coexist with R7 wrong final deployed artifact; R8 complete telemetry can coexist with R9 false expertise; R9 precise responder menu can coexist with R10 retry identity conflict/duplicate launch. R1-R5/R8-R10 individual tree guarantees, R6 bounded live matrix/sample, and R7 exact deployed evidence are distinct acceptance observations."
+        },
+        "prefer-structured-check": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].check: tree/test bindings for R1-R5/R8-R10; R6/R7 explicitly use instrumentKey:none with named manual provenance/replication, not fabricated automated instruments. Every bound test path resolves in immutable a27723ae80ab407d49ef357107d432708469f7be (git cat-file -e a27723ae80ab407d49ef357107d432708469f7be:<each check.files path>). Re-run detector reads with git show a27723ae80ab407d49ef357107d432708469f7be:<path> | nl -ba; the following file+line selectors name assertions, not pass counts. R1 apps/operator/lib/psu-pty-host.test.ts:327-366 checks parent-proof replacement, unavailable native proof and symlink refusal; R2 packages/operator-core/lib/consult/consult-dispatch.test.ts:263-313 supported/live-source adapters and :622-675 failed-rank persistence/cleanup; R3 consult/consult-routing-health.test.ts:217 onward partitions explicit intent and terminal outcomes. R4 agent-tools/consult/get-feedback.interest.test.ts:252-254 and :267-269 positively require lookupByMcpName('consult:get_feedback') to be defined; :260-263 negatively forbid reconcile registration/source; :292-299 asserts useful advice plus quota/retired-call guidance. agent-obligation-reader.test.ts:960-971 requires legacy reader not called/agenda not recreated; :144-164 is the same bound file’s surviving goal-agenda positive control. R5 get-feedback.interest.test.ts:273-299 checks creation vs reading, isolated advice and no quotas. R8 consult/relevance-router.test.ts:187-237 derives import aliases/call sites and asserts the positive get-feedback-prod caller and empty attribution gaps; historical baseline/mutant receipts are reproducible with testing:runs {\"testRunIds\":[20939097,20939270],\"latestPerFile\":false}, also corroborated by scorecards:get {\"issueId\":\"EI-25765308504994480\",\"criterionKey\":\"instrument-split\"}; these are historical, not current-runtime proof. R9 consult/subject-evidence.test.ts:8-15 separates positive/no-expert denominators; :18-27 catches irrelevant retained alternatives despite perfect top-choice; :30-37 rejects omitted/duplicate/undeclared population; :40-51 preserves null/invalid/shape failures. subject-evidence.integration.test.ts:96-110 checks actual registry/scorer preflight and :200-219 scores the complete frozen population and asserts unavailable0, precision/recall>=2/3, falseExpertSelections0/empty no-expert selections. Fixture selector a27723ae80ab407d49ef357107d432708469f7be:packages/operator-core/lib/consult/subject-evidence.fixtures.ts (blob efadc3de1d2ff3a2ea17a125e815dab34fff81ec, SHA256 ddc1c6c8a84ef5f206a316f240681ceb52c188dd35a402297dbd7f55431b9585). Original 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 blob f80f59f1b8dde158cf73a4ea7fb9fb17b6acf47e SHA be1a33dd4851058db156cf1cb67e5aca7daa2237c92a58792ee836f950642686 preserves the independent posts1165983/1166036. Re-run git diff 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 a27723ae80ab407d49ef357107d432708469f7be -- packages/operator-core/lib/consult/subject-evidence.fixtures.ts. The complete diff changes only evaluateSubjectCases helper metrics and does not modify HELD_OUT_SUBJECT_CASES; read both immutable blobs to check all declared labels and passages against posts1165983/1166036. Re-run git show <each full commit>:packages/operator-core/lib/consult/subject-evidence.fixtures.ts | sha256sum to recover the two file hashes above. These exact reads/diff/hash commands were executed in this correction. The calculated population-serialization hash is not used as evidence on this card. D018 helper-only change is recorded in EI-25773062042831705. R10 agent-tools/consult/get-feedback.interest.test.ts:194-249 checks200/201/empty keys, exact forwarding, durable pending and refusal without route/watch; consult/get-feedback-core.integration.test.ts:1124-1149 checks concurrent identity/CAS/conflict partition; :1151-1229 restart/lease/stale-worker/response-loss controls. All shortened paths above are under packages/operator-core/lib/. This attests the bound detector contents and their falsifiers; it does not claim a new test run, full dynamic source graph, native delivery, R6 completion or shipment."
+        }
+      },
+      "vettingConsult": "conv-muzytplr-0000-12c48f3b23b242a686661be7369d2137",
+      "supersedes": "EI-25814119302252123",
+      "acknowledgeExisting": true,
+      "terminal": true
+    },
+    "correctedEmit": {
+      "ok": true,
+      "created": true,
+      "issueId": "EI-26746750949539896",
+      "evidenceFingerprint": "fa883285206f90ea337257a1800f02179715502e0adb5e8669471eedc7afa23d",
+      "gradedGeneration": {
+        "deployedSha": "811b4febec",
+        "hostStartedAt": "2026-10-23T04:57:09.000Z",
+        "bootHeadSha": "811b4febecdd34c3ff452c840f54f4605dbd2ffc",
+        "scoutCodeHash": null,
+        "staleHost": false
+      },
+      "staleHost": false,
+      "deployedSha": "811b4febec",
+      "gradingAuditPending": true,
+      "gradingAuditNextStep": "Audit dispatch for this card was requested. The existing router automatically selects an independent auditor; declines and expiry advance its cascade, with a bounded fresh-judge fallback when no candidate is available. If no dispatch reservation is present, use scorecards:repair { targetIds:['EI-26746750949539896'] }. This card does not satisfy a gate until a NON-AUTHOR audits it. A DIFFERENT agent must emit { rubricRef:'grading-integrity', terminal:true, subject:{ kind:'scorecard', ref:'EI-26746750949539896' }, ratings:{...} }. Self-audits are refused, and re-emitting this card yourself files a duplicate pending card instead of settling this one.",
+      "supersedes": "EI-25814119302252123",
+      "canonicalRatings": {
+        "outcomes-not-diff-restatements": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].model/bar (r-1..r-10), not file changes: native kickoff proof; exact isolated expertise; honest request cohorts; no reporting chores/history retention; focused consult guidance; native/usefulness population; exact shipped artifact; attributed shared-router calls; problem-specific precision; durable retry identity. Each describes observable behavior requiring evidence. Revision9 adds only a separately pinned helper edition to r-9.method; it does not assert implementation acceptance."
+        },
+        "traces-to-goal-or-decision": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The named plans:get probes read the current Goal and D-001/D-002/D-008..D-020 content. Their assertion is semantic: each mapped requirement remains supported by the named owner goal or governing decision. They do not assert any plan version or contentHash and accept later plan revisions with the same mapped meaning. Historical version/hash values from earlier reads are not part of this probe or its expected observation. Mapping: R1/R2 Goal/D001/D017/D020 exact-source isolation; R3/R6 Goal/D001 honest delivery/usefulness and preserved capacity/shortfalls; R4/R5 D008/D009 retirement/history and no quotas; R7 D014 exact artifact; R8 D010/D011 telemetry; R9 D010/D012/D013/D016/D018/D019 precision, failed calibration, action contrasts and unmeasured equality; R10 D010/D020 recoverable key and preflight. D002 changes execution route only. D015 adds existing detector bindings. No new owner outcome is inferred from the helper metrics."
+        },
+        "falsifiable-with-evidence": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect criteria[].method/driftMarkers. Criterion-specific falsifiers: R1 negative/unanswered kickoff accepted; R2 source mutation or wrong transcript/answer identity; R3 failed dispatch hidden or attempt denominator substituted; R4 callable retirement reversed/history removed or agenda reporting reintroduced; R5 quota or creation/read advice confusion; R6 omitted failure/cell/requester decision; R7 different deployed blob/unreadable runtime accepted; R8 untagged caller or swallowed thrown/degraded outcome; R9 false friend, omitted case, unavailable score, changed label population or pending real scorer evidence treated healthy; R10 key conflict ignored/duplicate dispatch or missing served request_key. R9 revision9 explicitly keeps missing/fresh-population validation unknown and preserves threshold0.5, precision/recall>=2/3, no-expert0/unavailable0. Detector contents are immutable selectors listed in prefer-structured-check. This is rubric-quality grading, not a claim that these implementation checks currently pass."
+        },
+        "failure-mode-coverage": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Re-run plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"heading\":\"Goal\",\"includeEnrichments\":false} and plans:get {\"slug\":\"get-feedback-reliability-usefulness-adoption-2026-10-03\",\"harness\":\"papercusp\",\"decisions\":[\"D-001\",\"D-002\",\"D-008\",\"D-009\",\"D-010\",\"D-011\",\"D-012\",\"D-013\",\"D-014\",\"D-015\",\"D-016\",\"D-017\",\"D-018\",\"D-019\",\"D-020\"],\"includeEnrichments\":false}; The named plans:get probes read the current Goal and D-001/D-002/D-008..D-020 content. Their assertion is semantic: each mapped requirement remains supported by the named owner goal or governing decision. They do not assert any plan version or contentHash and accept later plan revisions with the same mapped meaning. Historical version/hash values from earlier reads are not part of this probe or its expected observation. Inspect all ten method/driftMarkers plus r-6/r-7 replication text: they cover pre-row throws/degraded evidence, account-walled and silent first turns, bounded pickup/cascade recovery, exact live-source preservation, request-vs-attempt partitions, CAS/concurrency/restart/key conflict, historical records/negative-removal positives, no-expert/unavailable/full-population semantics, D013 failed calibration, D018 retained-menu false alternatives, and unreadable or different release artifact. R9 helper edition preserves the frozen labels and original failure; no fresh generalization is claimed. Native delivery and the R6 eight-thread shortfall remain open observations. Re-read outside critique/label controls via conversations:get {\"ids\":[\"thread-post:1165890\",\"thread-post:1165983\",\"thread-post:1166036\"]}; those posts include independent criticism, ten label verdicts and a bounded textual disjointness conclusion."
+        },
+        "non-overlapping": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Pairwise discriminator families, inspect the named model/bar fields: R1 successful parent receipt can coexist with R2 wrong expert source; R2 correct exact source can coexist with R3 incorrect cohort classification; R3 correct cohorts can coexist with R8 missing caller tags; R4 retired reporting/retained history can coexist with R5 stale creation/read guidance; R5 focused guidance can coexist with R6 absent usefulness sample; R6 complete current-build cohort can coexist with R7 wrong final deployed artifact; R8 complete telemetry can coexist with R9 false expertise; R9 precise responder menu can coexist with R10 retry identity conflict/duplicate launch. R1-R5/R8-R10 individual tree guarantees, R6 bounded live matrix/sample, and R7 exact deployed evidence are distinct acceptance observations."
+        },
+        "prefer-structured-check": {
+          "rating": "pass",
+          "evidence": "Re-run rubrics:get {\"rubricRef\":\"acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03\",\"revision\":9,\"detail\":\"full\"}; expected criteriaHash b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4, ten keys r-1..r-10, barSetHash e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15. Follow a result-door full-detail/scratch cursor rather than grading clipped text. Inspect each criteria[].check: tree/test bindings for R1-R5/R8-R10; R6/R7 explicitly use instrumentKey:none with named manual provenance/replication, not fabricated automated instruments. Every bound test path resolves in immutable a27723ae80ab407d49ef357107d432708469f7be (git cat-file -e a27723ae80ab407d49ef357107d432708469f7be:<each check.files path>). Re-run detector reads with git show a27723ae80ab407d49ef357107d432708469f7be:<path> | nl -ba; the following file+line selectors name assertions, not pass counts. R1 apps/operator/lib/psu-pty-host.test.ts:327-366 checks parent-proof replacement, unavailable native proof and symlink refusal; R2 packages/operator-core/lib/consult/consult-dispatch.test.ts:263-313 supported/live-source adapters and :622-675 failed-rank persistence/cleanup; R3 consult/consult-routing-health.test.ts:217 onward partitions explicit intent and terminal outcomes. R4 agent-tools/consult/get-feedback.interest.test.ts:252-254 and :267-269 positively require lookupByMcpName('consult:get_feedback') to be defined; :260-263 negatively forbid reconcile registration/source; :292-299 asserts useful advice plus quota/retired-call guidance. agent-obligation-reader.test.ts:960-971 requires legacy reader not called/agenda not recreated; :144-164 is the same bound file’s surviving goal-agenda positive control. R5 get-feedback.interest.test.ts:273-299 checks creation vs reading, isolated advice and no quotas. R8 consult/relevance-router.test.ts:187-237 derives import aliases/call sites and asserts the positive get-feedback-prod caller and empty attribution gaps; historical baseline/mutant receipts are reproducible with testing:runs {\"testRunIds\":[20939097,20939270],\"latestPerFile\":false}, also corroborated by scorecards:get {\"issueId\":\"EI-25765308504994480\",\"criterionKey\":\"instrument-split\"}; these are historical, not current-runtime proof. R9 consult/subject-evidence.test.ts:8-15 separates positive/no-expert denominators; :18-27 catches irrelevant retained alternatives despite perfect top-choice; :30-37 rejects omitted/duplicate/undeclared population; :40-51 preserves null/invalid/shape failures. subject-evidence.integration.test.ts:96-110 checks actual registry/scorer preflight and :200-219 scores the complete frozen population and asserts unavailable0, precision/recall>=2/3, falseExpertSelections0/empty no-expert selections. Fixture selector a27723ae80ab407d49ef357107d432708469f7be:packages/operator-core/lib/consult/subject-evidence.fixtures.ts (blob efadc3de1d2ff3a2ea17a125e815dab34fff81ec, SHA256 ddc1c6c8a84ef5f206a316f240681ceb52c188dd35a402297dbd7f55431b9585). Original 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 blob f80f59f1b8dde158cf73a4ea7fb9fb17b6acf47e SHA be1a33dd4851058db156cf1cb67e5aca7daa2237c92a58792ee836f950642686 preserves the independent posts1165983/1166036. Re-run git diff 64e6e8cf1403d218eff6f3a406ab1dd41287e2c6 a27723ae80ab407d49ef357107d432708469f7be -- packages/operator-core/lib/consult/subject-evidence.fixtures.ts. The complete diff changes only evaluateSubjectCases helper metrics and does not modify HELD_OUT_SUBJECT_CASES; read both immutable blobs to check all declared labels and passages against posts1165983/1166036. Re-run git show <each full commit>:packages/operator-core/lib/consult/subject-evidence.fixtures.ts | sha256sum to recover the two file hashes above. These exact reads/diff/hash commands were executed in this correction. The calculated population-serialization hash is not used as evidence on this card. D018 helper-only change is recorded in EI-25773062042831705. R10 agent-tools/consult/get-feedback.interest.test.ts:194-249 checks200/201/empty keys, exact forwarding, durable pending and refusal without route/watch; consult/get-feedback-core.integration.test.ts:1124-1149 checks concurrent identity/CAS/conflict partition; :1151-1229 restart/lease/stale-worker/response-loss controls. All shortened paths above are under packages/operator-core/lib/. This attests the bound detector contents and their falsifiers; it does not claim a new test run, full dynamic source graph, native delivery, R6 completion or shipment."
+        }
+      },
+      "warning": "vetting for acceptance rubric 'acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03' records a sole critic 'su-cae45aa2-5037-490d-b911-61b887a8544e'. That party cannot later emit the independent acceptance grade; the sole-vetting-critic rail will refuse it. Use another lineage-independent grader or obtain a second independent critic before grading.",
+      "completionReceipt": {
+        "status": "recorded",
+        "effectRef": "EI-26746750949539896"
+      }
+    },
+    "state": "independent grading audit pending; no vetting pass claimed"
+  },
+  "preservedShortfalls": {
+    "original_e99": "4 of 8 historical quality threads; shortfall4",
+    "supplement_f01c": "3 of 8 supplementary quality threads; shortfall5; first requester decision unknown",
+    "noQuotaCalls": true,
+    "noCohortRewrite": true
+  },
+  "next": [
+    "Verify corrected card independent audit and current rubric9 vetting; retain failure if rejected.",
+    "Obtain committed fixture bytes and clean current P004 tests/mutation; do not reuse dirty21802627 as current.",
+    "Continue original native source-isolation matrix and independent acceptance; verify exact shipment last."
+  ],
+  "scopeLimits": [
+    "P004 acceptance is open.",
+    "Native R2/R6 acceptance and R7 shipment remain open.",
+    "No peer AST, live gate or peer-loop monitoring performed."
+  ]
+}

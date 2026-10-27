@@ -32,6 +32,7 @@ import {
   zReportVisibility,
   zGoalOwnerReportSnapshot,
 } from './_shared';
+import { REPORT_DEFAULT_VISIBILITY } from '../../report-library';
 
 export default defineTool({
   name: 'reports:publish',
@@ -78,7 +79,7 @@ export default defineTool({
     subject: zReportSubject.optional().describe('what it is ABOUT — use `external` for subjects outside this workspace'),
     visibility: zReportVisibility
       .optional()
-      .describe('who may READ it: `owner` (default) | `pot` | `workspace`'),
+      .describe(`who may READ it: \`workspace\` (public within this workspace; default ${REPORT_DEFAULT_VISIBILITY}) | \`pot\` | \`owner\` (private; opt in explicitly)`),
     supersedes: z
       .string()
       .min(1)

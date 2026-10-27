@@ -548,8 +548,17 @@ export function evaluateServingRuntime(probe: ServingRuntimeProbe): ServingRunti
   // ExecStartPre has left a different bundle on disk; matching the boot SHA to
   // the source therefore does not prove that the loaded bundle contains it.
   if (probe.buildShaSource === 'health') {
-    if (probe.blobContains !== null) {
-      return { ...base, containsChange: probe.blobContains, method: 'blob', unknownReason: null };
+    if (probe.blobContains === true) {
+      return { ...base, containsChange: true, method: 'blob', unknownReason: null };
+    }
+    if (probe.blobContains === false) {
+      // The baked SHA names HEAD at build time, not every input's bytes.
+      // Canonical builds can include uncommitted source absent from that SHA.
+      // A mismatch cannot establish absence without an artifact input identity.
+      return unknown(
+        'insufficient-data',
+        `${spec.label}'s baked commit differs from this source, but its bundle may include uncommitted source; artifact input identity is required to establish absence.`,
+      );
     }
     return unknown(
       probe.blobUnknown?.code ?? 'resolver-failed',

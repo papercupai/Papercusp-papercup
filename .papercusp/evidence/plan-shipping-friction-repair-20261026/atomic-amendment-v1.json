@@ -1,0 +1,815 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010029270",
+  "plan": "plan-shipping-friction-repair-2026-10-26",
+  "patch": {
+    "rubricRef": "acceptance-plan-shipping-friction-repair-2026-10-26",
+    "criteria": [
+      {
+        "key": "r-1",
+        "title": "Runtime read failure",
+        "barKey": "R-1",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit",
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+        "bar": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+        "driftMarkers": "A present malformed rubric is reported as missing or produces an unhandled decode error.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-acceptance-gate.test.ts",
+            "packages/operator-core/lib/rubrics.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-2",
+        "title": "Repair follows failed phase",
+        "barKey": "R-2",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+        "bar": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+        "driftMarkers": "A pre-grading refusal returns the ship-phase repair or a contradictory next verb.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/set-plan-status-repair.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-3",
+        "title": "Blocker age survives builds",
+        "barKey": "R-3",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+        "bar": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+        "driftMarkers": "Changing only buildProvenance resets an overdue blocker to fresh.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/acceptance-drain-filing.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-4",
+        "title": "Accountable recovery receipts",
+        "barKey": "R-4",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Each affected recovery filing records an accountable executor's next concrete action.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Each affected recovery filing records an accountable executor's next concrete action.",
+        "bar": "Each affected recovery filing records an accountable executor's next concrete action.",
+        "driftMarkers": "A cited recovery filing has no current accountable owner or no actionable continuation.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-5",
+        "title": "Current-build verification",
+        "barKey": "R-5",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+        "bar": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+        "driftMarkers": "Pre-release evidence is attributed to a build whose loaded code lacks the repair.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-6",
+        "title": "Guarded independent recruitment",
+        "barKey": "R-6",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+        "bar": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+        "driftMarkers": "A grader launches while implementation, structural contract or required proof remains incomplete.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-acceptance-gate.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-7",
+        "title": "Actionable BAR diagnosis",
+        "barKey": "R-7",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+        "bar": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+        "driftMarkers": "A missing proof, stale proof or wrong-runtime refusal directs an unrelated or unavailable repair.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/acceptance-bar-lifecycle-evaluator.test.ts",
+            "packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-8",
+        "title": "Completion actor carry",
+        "barKey": "R-8",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+        "bar": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+        "driftMarkers": "The completion reaction loses the real finishing actor or assigns a payload-selected, system or transport-only actor.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-items/plan-drain-rule.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-9",
+        "title": "Preserve active owner",
+        "barKey": "R-9",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An acceptance carry refresh preserves an existing executor's claim.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An acceptance carry refresh preserves an existing executor's claim.",
+        "bar": "An acceptance carry refresh preserves an existing executor's claim.",
+        "driftMarkers": "A repeated carry or observation refresh overwrites a currently held acceptance claim.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/acceptance-carry.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-10",
+        "title": "Safe ended-author succession",
+        "barKey": "R-10",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An accountable successor's author verdict retains the original author's independence boundary.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An accountable successor's author verdict retains the original author's independence boundary.",
+        "bar": "An accountable successor's author verdict retains the original author's independence boundary.",
+        "driftMarkers": "An ended author's seat stays permanently unreachable despite an accountable successor, or successor identity launders a related grader.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/acceptance-seat-succession.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-11",
+        "title": "Honest shipment status",
+        "barKey": "R-11",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Final shipment is reported only from evidence on the shipped release artifact.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Final shipment is reported only from evidence on the shipped release artifact.",
+        "bar": "Final shipment is reported only from evidence on the shipped release artifact.",
+        "driftMarkers": "A local or staging pass is reported as deployed shipment without release-artifact evidence.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-12",
+        "title": "Registered regression evidence",
+        "barKey": "R-12",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Every changed behavior has a passing regression in the canonical project test ledger.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Every changed behavior has a passing regression in the canonical project test ledger.",
+        "bar": "Every changed behavior has a passing regression in the canonical project test ledger.",
+        "driftMarkers": "A repair relies solely on a typecheck, disposable script, or unrecorded claimed test pass.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      }
+    ],
+    "expectedRubricRevision": 1,
+    "expectedSubjectPlanRevision": 4,
+    "idempotencyKey": "shipping-friction-atomic-20261026-v1",
+    "reason": "Split original compound R1-R4 into atomic outcomes, preserving every original obligation through explicit source mapping in Requirements/Design. R1->R1,R5,R11; R2->R2,R6,R7; R3->R3,R8,R9,R10; R4->R4,R11,R12. Retain no-self-grading, existing live claims, currentness/proof/runtime requirements and final release evidence. This repairs the plan activation atomicity refusal, not a weakening to obtain acceptance."
+  },
+  "reviewArgs": {
+    "rubricRef": "acceptance-plan-shipping-friction-repair-2026-10-26",
+    "criteria": [
+      {
+        "key": "r-1",
+        "title": "Runtime read failure",
+        "barKey": "R-1",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit",
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+        "bar": "A present acceptance rubric that the serving reader cannot decode returns acceptance_rubric_revision_unreadable.",
+        "driftMarkers": "A present malformed rubric is reported as missing or produces an unhandled decode error.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-acceptance-gate.test.ts",
+            "packages/operator-core/lib/rubrics.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-2",
+        "title": "Repair follows failed phase",
+        "barKey": "R-2",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+        "bar": "A pre-grading refusal selects the repair belonging to its blocking lifecycle phase.",
+        "driftMarkers": "A pre-grading refusal returns the ship-phase repair or a contradictory next verb.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/set-plan-status-repair.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-3",
+        "title": "Blocker age survives builds",
+        "barKey": "R-3",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+        "bar": "An unchanged acceptance blocker keeps its original firstObservedAt across a serving-build refresh.",
+        "driftMarkers": "Changing only buildProvenance resets an overdue blocker to fresh.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/acceptance-drain-filing.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-4",
+        "title": "Accountable recovery receipts",
+        "barKey": "R-4",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Each affected recovery filing records an accountable executor's next concrete action.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Each affected recovery filing records an accountable executor's next concrete action.",
+        "bar": "Each affected recovery filing records an accountable executor's next concrete action.",
+        "driftMarkers": "A cited recovery filing has no current accountable owner or no actionable continuation.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-5",
+        "title": "Current-build verification",
+        "barKey": "R-5",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+        "bar": "Pre-release repair evidence identifies a serving current build that contains the changed source.",
+        "driftMarkers": "Pre-release evidence is attributed to a build whose loaded code lacks the repair.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-6",
+        "title": "Guarded independent recruitment",
+        "barKey": "R-6",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+        "bar": "Automatic independent-grader recruitment remains gated by implementation and author prerequisites.",
+        "driftMarkers": "A grader launches while implementation, structural contract or required proof remains incomplete.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-acceptance-gate.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-7",
+        "title": "Actionable BAR diagnosis",
+        "barKey": "R-7",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+        "bar": "Each failed acceptance BAR exposes its phase-specific corrective action.",
+        "driftMarkers": "A missing proof, stale proof or wrong-runtime refusal directs an unrelated or unavailable repair.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/acceptance-bar-lifecycle-evaluator.test.ts",
+            "packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-8",
+        "title": "Completion actor carry",
+        "barKey": "R-8",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+        "bar": "A content-driven plan completion assigns an unheld acceptance carry to the authenticated finishing session.",
+        "driftMarkers": "The completion reaction loses the real finishing actor or assigns a payload-selected, system or transport-only actor.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/plan-items/plan-drain-rule.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-9",
+        "title": "Preserve active owner",
+        "barKey": "R-9",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An acceptance carry refresh preserves an existing executor's claim.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An acceptance carry refresh preserves an existing executor's claim.",
+        "bar": "An acceptance carry refresh preserves an existing executor's claim.",
+        "driftMarkers": "A repeated carry or observation refresh overwrites a currently held acceptance claim.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/acceptance-carry.integration.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-10",
+        "title": "Safe ended-author succession",
+        "barKey": "R-10",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "unit"
+        ],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "An accountable successor's author verdict retains the original author's independence boundary.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "An accountable successor's author verdict retains the original author's independence boundary.",
+        "bar": "An accountable successor's author verdict retains the original author's independence boundary.",
+        "driftMarkers": "An ended author's seat stays permanently unreachable despite an accountable successor, or successor identity launders a related grader.",
+        "method": "Run testing:run for the named canonical suites on the changed source. Read the terminal testing:run-status and requested/executed file receipt; compare the failing case with its safety controls. Preserve all original independence, currentness and evidence-plane requirements.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/acceptance-seat-succession.test.ts"
+          ]
+        }
+      },
+      {
+        "key": "r-11",
+        "title": "Honest shipment status",
+        "barKey": "R-11",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Final shipment is reported only from evidence on the shipped release artifact.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Final shipment is reported only from evidence on the shipped release artifact.",
+        "bar": "Final shipment is reported only from evidence on the shipped release artifact.",
+        "driftMarkers": "A local or staging pass is reported as deployed shipment without release-artifact evidence.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-12",
+        "title": "Registered regression evidence",
+        "barKey": "R-12",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [],
+        "passRatings": [
+          "healthy"
+        ],
+        "intent": {
+          "request": "Every changed behavior has a passing regression in the canonical project test ledger.",
+          "sourceRefs": [
+            "session_turn:codex:01a1766c-2828-75c3-aa1b-f4dd11f1fe0e:1"
+          ]
+        },
+        "model": "Every changed behavior has a passing regression in the canonical project test ledger.",
+        "bar": "Every changed behavior has a passing regression in the canonical project test ledger.",
+        "driftMarkers": "A repair relies solely on a typecheck, disposable script, or unrecorded claimed test pass.",
+        "method": "Inspect the exact current recovery work-item receipts, named test-run evidence and runtime containment evidence. Record inspected references and any unresolved dependency; do not infer deployment from local or staging results.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      }
+    ],
+    "expectedRubricRevision": 1,
+    "expectedSubjectPlanRevision": 4,
+    "idempotencyKey": "shipping-friction-atomic-20261026-v1",
+    "reason": "Split original compound R1-R4 into atomic outcomes, preserving every original obligation through explicit source mapping in Requirements/Design. R1->R1,R5,R11; R2->R2,R6,R7; R3->R3,R8,R9,R10; R4->R4,R11,R12. Retain no-self-grading, existing live claims, currentness/proof/runtime requirements and final release evidence. This repairs the plan activation atomicity refusal, not a weakening to obtain acceptance.",
+    "dryRun": true,
+    "requestReview": {
+      "workItemId": "WI-6554700010029270",
+      "harness": "papercusp"
+    },
+    "projection": {
+      "pick": [
+        "ok",
+        "code",
+        "error",
+        "pending",
+        "receipt",
+        "review",
+        "preview.approvalRequired",
+        "preview.changes",
+        "next"
+      ]
+    }
+  },
+  "receipt": {
+    "rubricRef": "acceptance-plan-shipping-friction-repair-2026-10-26",
+    "idempotencyKey": "review-88fe7a385c73ad49e4cf2e1fd6d832149f0578181a88e2f191df56468d239b31"
+  },
+  "previewPost": "thread-post:1206452",
+  "route": "http://127.0.0.1:3170",
+  "transportIdempotencyKey": "2d455e16-f237-4352-8ee3-619d33cef3f1",
+  "note": "Full mandatory scope retained through original-to-atomic mapping. Dry-run requestReview is pending; read amend-status and preserve routed review. No approval or apply claimed."
+}

@@ -14,6 +14,7 @@
  * `unreviewed` and measures the promoter's successful-run watermark.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import type { ComponentScreeningSelection } from './work-item-admission-recovery';
 import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
@@ -21,6 +22,7 @@ import { z } from 'zod';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { isTransientNetworkError } from './loopback-fetch';
 import { activeExternalBlockers } from './external-blockers';
+import { assertDurableParkReleaseContract, releaseContractContradiction } from './durable-park-release-contract';
 import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
 import {
@@ -67,11 +69,12 @@ import {
   recordWorkScopeDecision,
   workScopeSqlTerms,
 } from './work-scope-policy';
-import type { OrgSql } from './work-items';
+import { looksLikePolicyGate, type OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 import { readProcessIdentity } from './process-identity';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
+import { ISSUE_FAMILY_KINDS_SQL_LIST, ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 /** Announce the pending→admitted edge only after its write commits. The lifecycle
  * emitter applies the same state, claim-hold, observation and plan-lane floors as
  * every other return to the claimable pool. A reviewed unreviewed→admitted row was
@@ -200,6 +203,8 @@ export interface AdmissionMergeSnapshot {
    * fingerprint of every other snapshot is unchanged.
    */
   ownNode?: true;
+  /** Server-read durable-park audit, never taken from caller payload metadata. */
+  agentParkAudit?: { id: string; atMs: number; actor: string; action: string; details: unknown };
   assignee: string | null;
   payload: unknown;
   completionRef: unknown;
@@ -895,7 +900,7 @@ export interface WorkItemReadinessProjection {
   scope: {
     workspaceId: string;
     harnessSlug: string | null;
-    itemKinds: readonly ['bug', 'change', 'task'];
+    itemKinds: typeof ISSUE_FAMILY_ROUTE_KINDS;
     population: 'root issue-family rows excluding observation-lane records';
   };
   headline: Record<WorkItemReadinessHeadline, number> & {
@@ -1397,6 +1402,22 @@ export async function readAdmissionMergeSnapshots(
      ORDER BY wi.feature_id
      ${endpointLock}`;
 
+  // D-340: attribution strings can be supplied at creation. Only the latest
+  // canonical hold-writer audit can qualify this separate read-only exception.
+  const parkedIds = rows.filter(row => String(recordValue(row.payload)._claimHold) === 'true').map(row => row.feature_id);
+  const parkAudits = parkedIds.length ? await sql<{
+    subject: string; id: string; ts: string | number; actor: string; action: string; details: unknown;
+  }[]>`
+    SELECT DISTINCT ON (subject) subject, id, ts, actor, action, details
+      FROM harness_shared.audit_log
+     WHERE workspace_id = ${input.workspaceId}
+       AND subject = ANY(${parkedIds}::text[])
+       AND action IN ('work_items:claim_hold:set', 'work_items:claim_hold:clear')
+     ORDER BY subject, ts DESC, id DESC` : [];
+  const parkAuditById = new Map(parkAudits.map(row => [row.subject, {
+    id: row.id, atMs: Number(row.ts), actor: row.actor, action: row.action, details: row.details,
+  }]));
+
   const incoming = await sql<IncomingReferenceRow[]>`
     SELECT target.target_id, source.feature_id AS source_id,
            source.updated_ts AS source_updated_ts
@@ -1493,6 +1514,7 @@ export async function readAdmissionMergeSnapshots(
       updatedAtMs: finiteMs(row.updated_ts),
       origin: row.origin ?? null,
       ...(ownNodeIds.has(row.feature_id) ? { ownNode: true as const } : {}),
+      ...(parkAuditById.has(row.feature_id) ? { agentParkAudit: parkAuditById.get(row.feature_id)! } : {}),
       assignee: row.taken_by?.trim() || null,
       payload: row.payload ?? null,
       completionRef: row.completion_ref ?? null,
@@ -2186,11 +2208,19 @@ export async function readPendingBatch(
   // claimed rows behind ~1,800 unclaimed ones it otherwise never reached the head. Every judged
   // outcome advances lastRetryAt, so the lead lasts one turn per bound. Each fragment is built
   // fresh per use because a postgres.js fragment is bound to one query position.
-  const otherGuardBlocked = () => sql`COALESCE(
+  const otherGuardBlocked = (allowOverdueBlockedReview = false) => sql`COALESCE(
           origin = 'remote'
           OR COALESCE(claim_hold, FALSE)
           OR COALESCE(payload ->> '_claimHold', '') = 'true'
-          OR status IN ('blocked', 'needs-human')
+          OR (
+            status IN ('blocked', 'needs-human')
+            AND NOT (
+              ${allowOverdueBlockedReview}
+              AND status = 'blocked'
+              AND ${claimed()}
+              AND ${overdueReReview()}
+            )
+          )
           OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
           OR harness_shared.work_item_status_is_terminal(status),
           FALSE)`;
@@ -2214,13 +2244,28 @@ export async function readPendingBatch(
           CASE WHEN pg_input_is_valid(wi.payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
                THEN (wi.payload #>> '{admissionReview,lastRetryAt}')::timestamptz END,
           rotated.rotated_at)`;
+  // WI-6554700010029586: a JUDGED hold on a still-`pending` row also advances nothing. The hold
+  // UPDATE stamps admissionReview.lastRetryAt only for `unreviewed` rows, and keeps a pending
+  // row's write to a reason change (the no-churn rule above). It is not a prescreen rotation
+  // either. So the same oldest model-held rows led every scheduled window. Live 2026-10-26: held
+  // on 15-20 ticks each in 24h, ~210k tokens a tick, 0-1 promotions, while ~1,800 candidate
+  // rows behind them were never reviewed. Every tick already records its holds in
+  // detail.heldReasons. Reading those ids from the same run ledger rotates judged holds too,
+  // without writing to work_items.
   const rows = await sql<WorkItemRow[]>`
     WITH rotated AS (
       SELECT x.rotated_id, max(ar.started_at) AS rotated_at
         FROM harness_shared.admission_runs ar
-        CROSS JOIN LATERAL jsonb_array_elements_text(
-          CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
-               THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS x(rotated_id)
+        CROSS JOIN LATERAL (
+          SELECT skipped.id FROM jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
+                 THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS skipped(id)
+          UNION
+          SELECT judged.hold ->> 'itemId' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(ar.detail -> 'heldReasons') = 'array'
+                 THEN ar.detail -> 'heldReasons' ELSE '[]'::jsonb END) AS judged(hold)
+           WHERE jsonb_typeof(judged.hold) = 'object' AND judged.hold ->> 'itemId' IS NOT NULL
+        ) AS x(rotated_id)
        WHERE ${rotate}
          AND ar.workspace_id = ${workspaceId}
          AND ar.harness_slug = ${harnessSlug}
@@ -2246,12 +2291,12 @@ export async function readPendingBatch(
           AND NOT ${otherGuardBlocked()}
           AND NOT (${claimed()} AND NOT ${overdueReReview()})) DESC,
        (${demote} AND NOT ${modelFree}
-          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked()}
+          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked(true)}
           AND COALESCE(
             ${reviewWatermark()} < now() - make_interval(mins => ${turnBoundMinutes}::int),
             TRUE)) DESC,
        (${demote} AND (
-          ${otherGuardBlocked()}
+          ${otherGuardBlocked(true)}
           OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
@@ -2526,7 +2571,42 @@ export function applyClaimedReReviewHolds(
   snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
   pendingIds: ReadonlySet<string>,
   nowMs: number,
+  componentScreeningItemIds: readonly string[] = [],
 ): PromoterPlan {
+  // Authenticated ordinary screening may READ a claimed neighbour, never write it.
+  const comparisons = plan.adjudications.flatMap((row) => {
+    const comparisonId = readOnlyComparisonEndpoint(row.a, row.b, snapshots, componentScreeningItemIds);
+    return comparisonId ? [{ row, comparisonId, itemId: row.a === comparisonId ? row.b : row.a }] : [];
+  });
+  if (comparisons.length > 0) {
+    const readOnlyIds = new Set(comparisons.map((entry) => entry.comparisonId));
+    const blocked = new Map<string, string>();
+    for (const { row, comparisonId, itemId } of comparisons) {
+      if (row.verdict !== 'distinct') blocked.set(itemId, `claimed comparison ${comparisonId}: ${row.verdict}; held without neighbour mutations`);
+      if (row.verdict === 'r-finding-merge') blocked.set(comparisonId, `claimed comparison ${comparisonId}: duplicate component held`);
+    }
+    // A claimed endpoint can be connected through several duplicate edges.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const row of plan.adjudications) {
+        if (row.verdict !== 'r-finding-merge' || (!blocked.has(row.a) && !blocked.has(row.b))) continue;
+        for (const id of [row.a, row.b]) {
+          if (!blocked.has(id)) { blocked.set(id, blocked.get(row.a) ?? blocked.get(row.b)!); changed = true; }
+        }
+      }
+    }
+    plan = {
+      dispositions: plan.dispositions.filter((row) => !readOnlyIds.has(row.itemId)).map((row) => {
+        const reason = blocked.get(row.itemId);
+        return reason ? { itemId: row.itemId, action: 'hold' as const, reason } : row;
+      }),
+      adjudications: plan.adjudications.filter((row) =>
+        !blocked.has(row.a) && !blocked.has(row.b)),
+      relatedPairs: plan.relatedPairs.filter((row) =>
+        !readOnlyIds.has(row.a) && !readOnlyIds.has(row.b) && !blocked.has(row.a) && !blocked.has(row.b)),
+    };
+  }
   const claimed = new Set(
     [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs)).map((s) => s.id),
   );
@@ -2694,12 +2774,14 @@ export async function captureAdmissionProducingRuntime(
 
 async function beginRun(
   sql: OrgSql,
-  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
+  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode;
+    componentScreening?: ComponentScreeningSelection },
 ): Promise<void> {
   const producingRuntime = await captureAdmissionProducingRuntime(sql, input.workspaceId);
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,
+    ...(input.componentScreening ? { componentScreening: input.componentScreening } : {}),
     // Persist the process-matched boot witness now; never resolve a historical
     // producer from a later runtime row or the checkout's current HEAD.
     producingRuntime,
@@ -2837,6 +2919,9 @@ async function failRun(
            tokens_out = ${usage?.tokensOut ?? 0},
            latency_ms = ${latencyMs},
            detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'componentScreening'
+               THEN jsonb_build_object('componentScreening', detail->'componentScreening')
+               ELSE '{}'::jsonb END ||
              CASE WHEN detail ? 'producingRuntime'
                THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
                ELSE '{}'::jsonb END
@@ -3128,7 +3213,7 @@ export async function readWorkItemReadinessProjection(opts: {
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = ${opts.workspaceId}
            AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
-           AND wi.item_kind IN ('bug', 'change', 'task')
+           AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
            AND (wi.parent_id IS NULL OR wi.parent_id = '')
            AND wi.lane IS DISTINCT FROM 'observation'
       ), scoped AS MATERIALIZED (
@@ -3386,7 +3471,7 @@ export async function readWorkItemReadinessProjection(opts: {
     scope: {
       workspaceId: opts.workspaceId,
       harnessSlug,
-      itemKinds: ['bug', 'change', 'task'],
+      itemKinds: ISSUE_FAMILY_ROUTE_KINDS,
       population: 'root issue-family rows excluding observation-lane records',
     },
     headline,
@@ -3758,6 +3843,8 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
 }
 
 interface EndpointProtectionOptions {
+  /** Internal exact-subject review purpose, renewed transactionally; never merge authority. */
+  admissionReview?: boolean;
   requireImplementationReadiness?: boolean;
   reviewedEvidenceReady?: boolean;
   /**
@@ -3766,6 +3853,10 @@ interface EndpointProtectionOptions {
    * Every other protection still applies. Absent: every claimed row is refused, as before.
    */
   claimedReReviewAtMs?: number;
+  /** Only authenticated pair comparisons use this; never a mutation role. */
+  readOnlyClaimedComparison?: boolean;
+  /** D-340: audited, unassigned local agent parks only; never combines with a claim. */
+  readOnlyAgentParkComparison?: boolean;
 }
 
 function endpointProtection(
@@ -3791,21 +3882,31 @@ function endpointProtection(
   // the terminal rules below instead: terminal-loser, or terminal-canonical-without-completion
   // (permanent), or — with applicable completion evidence — an ordinary judgeable twin.
   const terminalTwin = role !== 'promote' && ALL_TERMINAL_STATUSES.has(snapshot.state);
+  const overdueClaimedReview = options.claimedReReviewAtMs !== undefined &&
+    CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
+    isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs);
+  const explicitReview = options.admissionReview === true &&
+    (role === 'promote' || role === 'hold' || role === 'reference') &&
+    admissionReviewCustodyEligible(snapshot);
   if (
     !terminalTwin &&
     snapshot.assignee &&
-    !(
-      options.claimedReReviewAtMs !== undefined &&
-      CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
-      isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs)
-    )
+    !explicitReview &&
+    !overdueClaimedReview &&
+    !(role === 'reference' && options.readOnlyClaimedComparison)
   ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
-  if (!terminalTwin && String(payload._claimHold) === 'true') {
+  if (!terminalTwin && String(payload._claimHold) === 'true' &&
+      !explicitReview &&
+      !(role === 'reference' && options.readOnlyAgentParkComparison && qualifiedAgentPark(snapshot))) {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
-  if (snapshot.state === 'blocked' || snapshot.state === 'needs-human') {
+  if (
+    (snapshot.state === 'blocked' || snapshot.state === 'needs-human') &&
+    !(snapshot.state === 'blocked' && overdueClaimedReview)
+    && !explicitReview
+  ) {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
   const review = terminalTwin ? null : readAgentReviewState(snapshot.payload);
@@ -3857,8 +3958,16 @@ function endpointProtection(
   // dependencies on a terminal twin cannot defer its pending counterpart forever;
   // classify the twin by its completion below. Keep owner/policy blockers and the
   // stored history intact, and continue enforcing every blocker on open endpoints.
+  // EI-26720509885145560: an overdue claimed review can carry a blocker for that
+  // very review. Let the existing review-only roles resolve their own debt without
+  // removing the marker or reopening the work; other dependencies and merge roles
+  // retain their protections.
   const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
-    !terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency',
+    (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
+    !((overdueClaimedReview || explicitReview) && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+      blocker.capabilitySource === 'explicit' &&
+      (blocker.ref === ADMISSION_REVIEW_ALERT_KEY || blocker.ref === `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}` ||
+        explicitReview && blocker.ref === `admission-review:${snapshot.id}`)),
   );
   if (blockers.length > 0) {
     return {
@@ -4048,6 +4157,126 @@ export function admissionEndpointBlock(
   return { ...problem, permanent: PERMANENT_ENDPOINT_PROTECTIONS.has(problem.reason) };
 }
 
+/** Return only a claimed, otherwise unprotected neighbour of an eligible authenticated original. */
+function claimedComparisonEndpoint(
+  a: string,
+  b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
+  componentScreeningItemIds: readonly string[] = [],
+): string | undefined {
+  for (const [itemId, comparisonId] of [[a, b], [b, a]] as const) {
+    if (!componentScreeningItemIds.includes(itemId)) continue;
+    const item = snapshots.get(itemId);
+    const comparison = snapshots.get(comparisonId);
+    if (!item || item.assignee || endpointProtection(item, 'promote')) continue;
+    if (!comparison?.assignee || ALL_TERMINAL_STATUSES.has(comparison.state)) continue;
+    if (!endpointProtection(comparison, 'reference', { readOnlyClaimedComparison: true })) return comparisonId;
+  }
+  return undefined;
+}
+
+function agentParkMetadata(value: unknown) {
+  const payload = recordValue(value), metadata = recordValue(payload._ei);
+  const actor = payload.claim_hold_by;
+  const reason = payload.claim_hold_reason;
+  const atMs = typeof payload.claim_hold_at === 'string' ? Date.parse(payload.claim_hold_at) : Number.NaN;
+  if (String(payload._claimHold) !== 'true' || typeof actor !== 'string' ||
+      !/^su-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(actor) ||
+      metadata.created_by !== actor || metadata.source !== 'su' ||
+      typeof reason !== 'string' || !reason.trim() || looksLikePolicyGate(reason) || !Number.isFinite(atMs) ||
+      Object.keys(payload).some(key => key.startsWith('held_open_'))) return undefined;
+  return { payload, actor, reason, atMs };
+}
+
+function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
+  const park = agentParkMetadata(snapshot.payload), audit = snapshot.agentParkAudit;
+  if (!park || !audit || snapshot.origin !== 'local' || snapshot.assignee || snapshot.state !== 'open') return false;
+  const details = recordValue(audit.details);
+  return audit.action === 'work_items:claim_hold:set' && audit.actor === park.actor &&
+    details.mode === 'claim_hold' && details.by === park.actor && details.reason === park.reason &&
+    audit.atMs >= park.atMs && audit.atMs - park.atMs <= 60_000 && park.atMs >= snapshot.createdAtMs &&
+    JSON.stringify(canonicalJsonValue(details.releaseContract ?? null)) ===
+      JSON.stringify(canonicalJsonValue(park.payload.claim_hold_release ?? null));
+}
+
+/** Exact admission-only parks require the canonical hold audit and a complete
+ * release contract. A matching phrase in caller-controlled prose grants nothing. */
+function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boolean {
+  if (snapshot.origin !== 'local' || !['pending', 'unreviewed'].includes(snapshot.admission ?? '') ||
+      !['open', 'todo', 'failing', 'wip', 'in_progress', 'validating', 'blocked'].includes(snapshot.state)) return false;
+  const payload = recordValue(snapshot.payload);
+  if (Object.keys(payload).some(key => key.startsWith('held_open_')) || payload.needsOwnerAction === true) return false;
+  const exactBlocker = (blocker: ReturnType<typeof activeExternalBlockers>[number]) =>
+    blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+    blocker.capabilitySource === 'explicit' &&
+    [ `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`, `admission-review:${snapshot.id}` ].includes(blocker.ref);
+  const blockers = activeExternalBlockers(snapshot.payload);
+  if (payload.externalBlockers !== undefined) {
+    if (!Array.isArray(payload.externalBlockers)) return false;
+    const raw = payload.externalBlockers.map(recordValue);
+    if (raw.some(blocker => blocker.status !== 'active' && blocker.status !== 'cleared')) return false;
+    const active = raw.filter(blocker => blocker.status === 'active');
+    if (active.length !== blockers.length || active.some(blocker =>
+      blocker.kind !== 'runtime' || blocker.capability !== 'live-dependency' ||
+      blocker.capabilitySource !== 'explicit' ||
+      ![ `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`, `admission-review:${snapshot.id}` ].includes(String(blocker.ref)))) return false;
+  }
+  if (blockers.some(blocker => !exactBlocker(blocker))) return false;
+  if (String(payload._claimHold) !== 'true') return snapshot.state !== 'blocked';
+  if (snapshot.assignee || blockers.length !== 1 || !exactBlocker(blockers[0]!)) return false;
+  // The creator, authenticated parker and release owner are distinct roles.
+  // Do not widen the older read-only comparison exception to admit these parks.
+  const actor = payload.claim_hold_by, metadata = recordValue(payload._ei);
+  const agentId = /^su-(?:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|respawn-[a-f0-9]{32})$/i;
+  const atMs = typeof payload.claim_hold_at === 'string' ? Date.parse(payload.claim_hold_at) : NaN;
+  const audit = snapshot.agentParkAudit, details = recordValue(audit?.details);
+  if (typeof actor !== 'string' || !agentId.test(actor) || metadata.source !== 'su' ||
+      typeof metadata.created_by !== 'string' || !agentId.test(metadata.created_by) ||
+      typeof payload.claim_hold_reason !== 'string' || !payload.claim_hold_reason.trim() ||
+      looksLikePolicyGate(payload.claim_hold_reason) || !Number.isFinite(atMs) || atMs < snapshot.createdAtMs ||
+      !audit || audit.action !== 'work_items:claim_hold:set' || audit.actor !== actor ||
+      details.mode !== 'claim_hold' || details.by !== actor || details.reason !== payload.claim_hold_reason ||
+      audit.atMs < atMs || audit.atMs - atMs > 60_000 ||
+      JSON.stringify(canonicalJsonValue(details.releaseContract ?? null)) !==
+        JSON.stringify(canonicalJsonValue(payload.claim_hold_release ?? null))) return false;
+  const contract = recordValue(payload.claim_hold_release);
+  try { assertDurableParkReleaseContract(contract); } catch { return false; }
+  return typeof contract.owner === 'string' && agentId.test(contract.owner) &&
+    /^work-item:done:[^\s]+$/.test(String(contract.trigger)) &&
+    contract.reachability === 'reachable' &&
+    !releaseContractContradiction(String(contract.condition), String(contract.trigger), snapshot.id) &&
+    !looksLikePolicyGate(String(contract.condition));
+}
+
+export function admissionReviewSubjectEligible(snapshot: AdmissionMergeSnapshot): boolean {
+  return admissionReviewCustodyEligible(snapshot) &&
+    endpointProtection(snapshot, 'promote', { admissionReview: true }) === null;
+}
+
+/** Independent of D-338: neither exception can compose with the other's protection. */
+function agentParkComparisonEndpoint(a: string, b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[]) {
+  for (const [itemId, comparisonId] of [[a, b], [b, a]] as const) {
+    if (!componentScreeningItemIds.includes(itemId)) continue;
+    const item = snapshots.get(itemId), comparison = snapshots.get(comparisonId);
+    if (!item || !comparison || item.origin !== 'local' || item.assignee || endpointProtection(item, 'promote') ||
+        item.workspaceId !== comparison.workspaceId || item.harnessSlug !== comparison.harnessSlug ||
+        !qualifiedAgentPark(comparison)) continue;
+    if (!endpointProtection(comparison, 'reference', { readOnlyAgentParkComparison: true })) return comparisonId;
+  }
+  return undefined;
+}
+
+function readOnlyComparisonEndpoint(a: string, b: string,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>, componentScreeningItemIds: readonly string[] = []) {
+  return claimedComparisonEndpoint(a, b, snapshots, componentScreeningItemIds) ??
+    agentParkComparisonEndpoint(a, b, snapshots, componentScreeningItemIds);
+}
+
+function readOnlyComparisonOptions(snapshot: AdmissionMergeSnapshot | undefined): EndpointProtectionOptions {
+  return snapshot?.assignee ? { readOnlyClaimedComparison: true } : { readOnlyAgentParkComparison: true };
+}
+
 /**
  * Select this tick's batch from an over-read window WITHOUT spending model time on work the
  * persistence guard is certain to refuse (WI-10004724). Before this, the oldest re-review rows —
@@ -4085,10 +4314,17 @@ export function prescreenPromoterWindow(input: {
   };
   const block = (snapshot: AdmissionMergeSnapshot | undefined) => admissionEndpointBlock(snapshot, input.nowMs);
   const windowIds = new Set(input.window.map((item) => item.id));
+  const claimedComparisons = new Map(input.pairs.flatMap((pair) => {
+    const id = readOnlyComparisonEndpoint(pair.a.id, pair.b.id, input.snapshots, input.componentScreeningItemIds);
+    return id ? [[pair.pairKey, id] as const] : [];
+  }));
+  const readOnlyComparisonIds = new Set(claimedComparisons.values());
   const selfBlocked = new Set<string>();
   for (const item of input.window) {
     const snapshot = input.snapshots.get(item.id);
-    const problem = snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
+    const problem = readOnlyComparisonIds.has(item.id)
+      ? { reason: 'claimed' as const, detail: `comparison ${item.id} is read-only` }
+      : snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
     if (!problem) continue;
     selfBlocked.add(item.id);
     sample({ itemId: item.id, class: 'self-blocked', reason: problem.reason, blockedBy: null });
@@ -4112,7 +4348,7 @@ export function prescreenPromoterWindow(input: {
   let protectedPairs = 0;
   for (const pair of input.pairs) {
     const blocks = [pair.a.id, pair.b.id]
-      .map((id) => ({ id, block: block(input.snapshots.get(id)) }))
+      .map((id) => ({ id, block: claimedComparisons.get(pair.pairKey) === id ? null : block(input.snapshots.get(id)) }))
       .filter((entry) => entry.block !== null);
     if (blocks.length === 0) continue;
     blockedPairKeys.add(pair.pairKey);
@@ -4172,8 +4408,8 @@ export function prescreenPromoterWindow(input: {
       (pair) =>
         !blockedPairKeys.has(pair.pairKey) &&
         windowEndpoints(pair).some((id) => batchIds.has(id)) &&
-        !pendingOutside.has(pair.a.id) &&
-        !pendingOutside.has(pair.b.id),
+        (!pendingOutside.has(pair.a.id) || claimedComparisons.get(pair.pairKey) === pair.a.id) &&
+        (!pendingOutside.has(pair.b.id) || claimedComparisons.get(pair.pairKey) === pair.b.id),
     )
     .map((pair) => ({ ...pair, pendingIds: windowEndpoints(pair).filter((id) => batchIds.has(id)).sort() }));
 
@@ -4889,6 +5125,11 @@ async function persistApprovedAdmissionMerge(
 }
 
 interface PersistAdmissionPlanInput {
+  reviewOnly?: {
+    itemId: string;
+    beforeWrite: (sql: OrgSql) => Promise<void>;
+    afterWrite: (sql: OrgSql) => Promise<void>;
+  };
   workspaceId: string;
   harnessSlug: string;
   runId: string;
@@ -4900,6 +5141,8 @@ interface PersistAdmissionPlanInput {
   snapshots: readonly AdmissionMergeSnapshot[];
   /** A restriction, not an authorization grant. Neighbours still participate in screening. */
   mutationItemIds?: readonly string[];
+  /** Internal authenticated ordinary selection; authorizes read-only comparison only. */
+  componentScreeningItemIds?: readonly string[];
   /** Bulk already owns the encompassing transaction (including its post-write census). */
   withinTransaction?: boolean;
   /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
@@ -5085,6 +5328,7 @@ async function persistAdmissionPlanInTransaction(
   const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   const reviewedReadyIds = new Set(input.reviewedReadyIds ?? []);
   const protectionOptions = (itemId: string): EndpointProtectionOptions => ({
+    admissionReview: input.reviewOnly?.itemId === itemId,
     requireImplementationReadiness: input.requireImplementationReadiness,
     reviewedEvidenceReady: reviewedReadyIds.has(itemId),
     claimedReReviewAtMs: input.nowMs,
@@ -5102,9 +5346,12 @@ async function persistAdmissionPlanInTransaction(
   const liveById = await readAdmissionMergeSnapshots(sql, {
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,
-    ids: relevantIds,
+    ids: input.reviewOnly ? [...new Set([...relevantIds, ...capturedById.keys()])].sort() : relevantIds,
     lockRows: true,
   });
+  // All endpoint rows are locked; renew the real WRITE policy and compare the
+  // signed request/custody before the first adjudication or admission write.
+  await input.reviewOnly?.beforeWrite(sql);
 
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];
   const refusalKeys = new Set<string>();
@@ -5124,6 +5371,20 @@ async function persistAdmissionPlanInTransaction(
     }
     heldById.set(itemId, `merge guard ${problem.reason}: ${problem.detail}`);
   };
+
+  if (input.reviewOnly) {
+    for (const [id, captured] of capturedById) {
+      if (id === input.reviewOnly.itemId) continue;
+      const problem = snapshotIdentityProblem(captured, liveById.get(id), 'reference', {
+        readOnlyClaimedComparison: true, readOnlyAgentParkComparison: true,
+      });
+      if (problem) {
+        registerRefusal(input.reviewOnly.itemId, null, problem);
+        return { promotedIds: [], mergedIds: [], held: [...heldById].map(([itemId, reason]) => ({ itemId, reason })),
+          replayedIds: [], adjudications: [], adjudicationsInserted: 0, uniqueRowsChanged: 0, guardRefusals };
+      }
+    }
+  }
 
   const approvedDispositionIds = new Set<string>();
   const replayedIds = new Set<string>();
@@ -5167,8 +5428,43 @@ async function persistAdmissionPlanInTransaction(
       });
     }
   }
+  const claimedComparisons = new Map<string, string>();
+  const comparisonBlocked = new Set<string>();
+  for (const row of input.plan.adjudications) {
+    const comparisonId = readOnlyComparisonEndpoint(row.a, row.b, capturedById, input.componentScreeningItemIds);
+    if (!comparisonId) continue;
+    const itemId = row.a === comparisonId ? row.b : row.a;
+    // Distinct is the only outcome that requires no mutation of the neighbour.
+    const problem = row.verdict !== 'distinct'
+      ? { reason: 'claimed' as const, detail: `comparison ${comparisonId} requires a distinct verdict` }
+      : snapshotIdentityProblem(capturedById.get(comparisonId), liveById.get(comparisonId), 'reference',
+        readOnlyComparisonOptions(capturedById.get(comparisonId)));
+    if (problem) {
+      registerRefusal(itemId, null, problem);
+      comparisonBlocked.add(itemId);
+    } else {
+      claimedComparisons.set(admissionPairKey(row.a, row.b), comparisonId);
+    }
+  }
+  // A merge writes both loser and canonical. Comparator drift must therefore
+  // refuse the connected duplicate component, including out-of-batch losers.
+  let comparisonComponentChanged = true;
+  while (comparisonComponentChanged) {
+    comparisonComponentChanged = false;
+    for (const row of input.plan.dispositions) {
+      if (row.action !== 'merge') continue;
+      if (!comparisonBlocked.has(row.itemId) && !comparisonBlocked.has(row.canonicalId)) continue;
+      for (const id of [row.itemId, row.canonicalId]) {
+        if (comparisonBlocked.has(id)) continue;
+        comparisonBlocked.add(id);
+        registerRefusal(id, null, { reason: 'snapshot-drift',
+          detail: 'duplicate component depends on a claimed comparison that changed after judging' });
+        comparisonComponentChanged = true;
+      }
+    }
+  }
   for (const disposition of input.plan.dispositions) {
-    if (scopeBlocked.has(disposition.itemId)) continue;
+    if (scopeBlocked.has(disposition.itemId) || comparisonBlocked.has(disposition.itemId)) continue;
     if (disposition.action === 'hold') {
       heldById.set(disposition.itemId, disposition.reason);
       const problem = snapshotIdentityProblem(
@@ -5238,12 +5534,15 @@ async function persistAdmissionPlanInTransaction(
   const approvedNonMergePairs = new Set<string>();
   for (const adjudication of input.plan.adjudications) {
     if (scopeBlocked.has(adjudication.a) || scopeBlocked.has(adjudication.b)) continue;
+    if (comparisonBlocked.has(adjudication.a) || comparisonBlocked.has(adjudication.b)) continue;
     if (adjudication.verdict === 'r-finding-merge') continue;
+    const comparisonId = claimedComparisons.get(admissionPairKey(adjudication.a, adjudication.b));
     const aProblem = snapshotIdentityProblem(
       capturedById.get(adjudication.a),
       liveById.get(adjudication.a),
       'reference',
-      protectionOptions(adjudication.a),
+      { ...protectionOptions(adjudication.a), ...(comparisonId === adjudication.a
+        ? readOnlyComparisonOptions(capturedById.get(adjudication.a)) : {}) },
     );
     if (aProblem) {
       registerRefusal(adjudication.a, null, aProblem);
@@ -5253,7 +5552,8 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.b),
       liveById.get(adjudication.b),
       'reference',
-      protectionOptions(adjudication.b),
+      { ...protectionOptions(adjudication.b), ...(comparisonId === adjudication.b
+        ? readOnlyComparisonOptions(capturedById.get(adjudication.b)) : {}) },
     );
     if (bProblem) {
       registerRefusal(adjudication.b, null, bProblem);
@@ -5301,7 +5601,8 @@ async function persistAdmissionPlanInTransaction(
       (disposition) => approvedDispositionIds.has(disposition.itemId) && !replayedIds.has(disposition.itemId),
     ),
     adjudications: safeAdjudications,
-    relatedPairs: input.plan.relatedPairs.filter((pair) => safePairKeys.has(admissionPairKey(pair.a, pair.b))),
+    relatedPairs: input.plan.relatedPairs.filter((pair) =>
+      safePairKeys.has(admissionPairKey(pair.a, pair.b)) && !claimedComparisons.has(admissionPairKey(pair.a, pair.b))),
   };
 
   await persistAdmissionPlanUnchecked(sql, {
@@ -5318,6 +5619,9 @@ async function persistAdmissionPlanInTransaction(
     actor,
     mergeSnapshots: liveById,
   });
+  if (input.reviewOnly && safePlan.dispositions.some(row => row.itemId === input.reviewOnly!.itemId)) {
+    await input.reviewOnly.afterWrite(sql);
+  }
 
   const postRows = relevantIds.length
     ? await sql<Array<{ feature_id: string; status: string | null; admission: string | null; payload: unknown }>>`
@@ -5625,6 +5929,7 @@ export async function applyReviewedAdmissionCleanup(
 }
 
 export async function runWorkItemAdmissionPromoter(opts: {
+  reviewOnly?: PersistAdmissionPlanInput['reviewOnly'];
   workspaceId: string;
   harnessSlug: string;
   llmCall: PromoterLlmCall;
@@ -5634,6 +5939,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
   targetItemIds?: readonly string[];
   /** Internal ordinary-selection hint; never a mutation scope or authority grant. */
   componentScreeningItemIds?: readonly string[];
+  /** Bounded ordinary selection receipts, retained by the existing run ledger. */
+  componentScreening?: ComponentScreeningSelection;
   recentTerminalDays?: number;
   model?: string;
   now?: () => number;
@@ -5699,7 +6006,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
       writerCoverageGap: [],
     };
   }
-  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode });
+  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode,
+    ...(targetItemIds === undefined ? { componentScreening: opts.componentScreening } : {}) });
   let runModelId: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -5758,16 +6066,19 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems.set(pair.a.id, pair.a);
       recurrenceItems.set(pair.b.id, pair.b);
     }
-    const fullPlan = applyClaimedReReviewHolds(
-      applyPrescreenHolds(
+    const screenedPlan = applyPrescreenHolds(
         selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
           onConflict: 'hold',
         }),
         forcedHolds,
-      ),
+      );
+    // Explicit review carries its own renewable authority and custody fence.
+    const fullPlan = opts.reviewOnly ? screenedPlan : applyClaimedReReviewHolds(
+      screenedPlan,
       snapshotsById,
       new Set(pending.map((item) => item.id)),
       startedAt,
+      targetItemIds === undefined && !noModel ? opts.componentScreeningItemIds : undefined,
     );
     // A no-model pass has no judgement for any pair, so every paired row plans as a hold. That
     // hold means "awaits the model", not "reviewed and ambiguous", so it is deferred, not
@@ -5776,9 +6087,19 @@ export async function runWorkItemAdmissionPromoter(opts: {
     const deferredToModel = noModel
       ? fullPlan.dispositions.filter((disposition) => disposition.action === 'hold').length
       : 0;
-    const plan: PromoterPlan = noModel
+    const ordinaryPlan: PromoterPlan = noModel
       ? { ...fullPlan, dispositions: fullPlan.dispositions.filter((disposition) => disposition.action !== 'hold') }
       : fullPlan;
+    // Review cannot mutate twins, merge endpoints or links. A duplicate finding
+    // stays held for a later independently authorized workflow.
+    const plan: PromoterPlan = opts.reviewOnly ? {
+      dispositions: ordinaryPlan.dispositions.filter(row => row.itemId === opts.reviewOnly!.itemId).map(row =>
+        row.action === 'merge' || ordinaryPlan.adjudications.some(judgement =>
+          judgement.verdict === 'r-finding-merge' &&
+          (judgement.a === row.itemId || judgement.b === row.itemId)) ? { itemId: row.itemId, action: 'hold' as const,
+          reason: 'review-only purpose cannot merge endpoints' } : row),
+      adjudications: [], relatedPairs: [],
+    } : ordinaryPlan;
     await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
@@ -5790,9 +6111,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
       plan,
       snapshots: [...snapshotsById.values()],
       mutationItemIds: targetItemIds,
+      reviewOnly: opts.reviewOnly,
+      componentScreeningItemIds: targetItemIds === undefined && !noModel ? opts.componentScreeningItemIds : undefined,
     });
     const pendingIds = new Set(pending.filter((item) => item.admission === 'pending').map((item) => item.id));
-    await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
+    if (!opts.reviewOnly) await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
       persisted.promotedIds.filter((id) => pendingIds.has(id)).map((id) => ({ id, harness: opts.harnessSlug })),
     );
     const promoted = persisted.promotedIds.length;
@@ -5833,6 +6156,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         // No-model pass only: paired rows left for the model promoter, not written as holds.
         ...(noModel ? { deferredToModel } : {}),
         ...(targetItemIds === undefined ? {} : { targetItemIds }),
+        ...(targetItemIds === undefined && opts.componentScreening ? { componentScreening: opts.componentScreening } : {}),
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
         // Null is explicit unpriced coverage, never a fabricated zero-dollar call.

@@ -1,0 +1,465 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "261bce868e9f860a795238622ecf4cfda3967a0db3c4642d522c4c53ebe0c4ab.supporting-original",
+      "sha256": "261bce868e9f860a795238622ecf4cfda3967a0db3c4642d522c4c53ebe0c4ab",
+      "byteLength": 15945
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "kind": "GF-P002-source-backend-falsifier-refresh",
+  "observedAt": "2026-10-24T01:15:31.681308+00:00",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "parentWorkItemId": "WI-6554700010020902",
+  "specId": "GF-P002-source",
+  "specRevision": 1,
+  "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+  "priorArtifact": {
+    "path": "docs/evidence/get-feedback-p002-source-falsifier-2026-10-23.json",
+    "sha256": "c9f497fb853bf9baf7fc91e9028d771a5693c7f3e3400ffd20fe41a1c512be1a"
+  },
+  "testedCommit": "3e51fb5533f22a10adb7c2d129984c98cb4e3835",
+  "comparisonHead": "924695edbf1e4b2feaf360cfcbaf1f8d55b07d05",
+  "namedByteComparison": [
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "previousSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+      "testedSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+      "headSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+      "workingSha256": "b5c0963ea0266700c4fcbace1ab9312de48db1dd3e8763cf61685c183fda7abb",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/native-consult.ts",
+      "previousSha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "testedSha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "headSha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "workingSha256": "a2637c5b1f27620fc777ae5d0bc5feea4f61774c85e73cdfb14188729f305218",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-launch-core.ts",
+      "previousSha256": "d9efae7f3a67e27d2e5fefc03fe29725d432a37d66383b6a5a06fde41efcacc3",
+      "testedSha256": "d9efae7f3a67e27d2e5fefc03fe29725d432a37d66383b6a5a06fde41efcacc3",
+      "headSha256": "d9efae7f3a67e27d2e5fefc03fe29725d432a37d66383b6a5a06fde41efcacc3",
+      "workingSha256": "6563f733c7a320fa4169b86b44cac5aa309014bd0ffdb6dd1700c33c069b8be4",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": false
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/service.ts",
+      "previousSha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+      "testedSha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+      "headSha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+      "workingSha256": "027f64531696c84b918e4daf628022d62edbe1e715d8a54d59d3fd106303ab84",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/source.ts",
+      "previousSha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+      "testedSha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+      "headSha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+      "workingSha256": "d3146adf1e7b05a0f9856aa1df597ab6629771c85b964483d6084412fcbe773e",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-port/types.ts",
+      "previousSha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+      "testedSha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+      "headSha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+      "workingSha256": "561ee586fc4b75f108eb7192bf7719764e66fc751188b5b2e83a2fc064a975a5",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/adv-sessions.ts",
+      "previousSha256": "a03229266247b798d27e702b8e7e5e8203d642903930cfceac1c174c8bde8f6f",
+      "testedSha256": "b16b2a8f51c6f20a2c08aad1d17a16ed77efc2a527b6c338f7bccf5459e69789",
+      "headSha256": "b16b2a8f51c6f20a2c08aad1d17a16ed77efc2a527b6c338f7bccf5459e69789",
+      "workingSha256": "b16b2a8f51c6f20a2c08aad1d17a16ed77efc2a527b6c338f7bccf5459e69789",
+      "changedSincePreviousProof": true,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-registry.ts",
+      "previousSha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+      "testedSha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+      "headSha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+      "workingSha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "previousSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "testedSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "headSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "workingSha256": "f13fe5508e1395e3b7768c2b08dca38a107b76e030e6e2bd2ebeb41d9280f22f",
+      "changedSincePreviousProof": false,
+      "headMatchesTested": true,
+      "workingMatchesHead": true
+    }
+  ],
+  "probe": {
+    "result": {
+      "verdict": "caught",
+      "mutantLedger": "test_runs:21856284",
+      "expected": "caught",
+      "baselineExit": 0,
+      "guardExit": 1,
+      "assertionEvidence": "test-file-assertion-failure",
+      "relocation": "overlay",
+      "mutantParse": "ok",
+      "copyBaselineLedger": "test_runs:21855567",
+      "baselineLedger": "test_runs:21855561",
+      "target": "copy-out"
+    },
+    "argv": [
+      "--file",
+      "packages/operator-core/lib/consult/consult-dispatch.ts",
+      "--mutate",
+      "s/\\Qif (!['claude', 'codex', 'omp'].includes(sourceAgent)) {\\E/if (sourceAgent !== 'claude') {/",
+      "--test",
+      "PROBE_SOURCE={} PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/consult/consult-dispatch.test.ts -t 'planDispatchOperation|reaches all three targets from fresh and ended'",
+      "--relocation",
+      "overlay"
+    ],
+    "environment": {
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1,
+      "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "$HOME/papercupai-workspace/papercusp",
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto"
+    },
+    "schemaVersion": 1,
+    "runnerSha256": "4044c24efe76946277426299fdc2c0d7f8ac39de045eae3713b76ce530a241d6",
+    "cwd": ".",
+    "runnerPath": "scripts/mutation-probe.sh",
+    "runnerCommit": "3e51fb5533f22a10adb7c2d129984c98cb4e3835"
+  },
+  "probeInvocationId": "58e99018-d4ae-4fe0-b74f-8643859aa8cc",
+  "log": {
+    "path": "/tmp/gf-source-falsifier-refresh-20261024.log",
+    "sha256": "db7fe154079d3f8e4c2e01f784fd92cbc023df301137be3765cd92fe6a10469f",
+    "exitCode": 0,
+    "containment": "private overlay; post-baseline writes contained; original tracked subject unchanged"
+  },
+  "observedControls": {
+    "baseline": {
+      "testRunId": 21855561,
+      "passed": 11,
+      "failed": 0,
+      "unselected": 137
+    },
+    "unchangedCopy": {
+      "testRunId": 21855567,
+      "passed": 11,
+      "failed": 0,
+      "unselected": 137
+    },
+    "mutant": {
+      "testRunId": 21856284,
+      "passed": 9,
+      "failed": 2,
+      "unselected": 137,
+      "exactFailedCases": [
+        "planDispatchOperation (D-009 walk shape) > an OMP source uses the maintained isolated port on its own backend",
+        "planDispatchOperation (D-009 walk shape) > a live or ended Codex source uses the maintained isolated port on its own backend"
+      ]
+    },
+    "worktreeDirty": false,
+    "isScratchConfig": false
+  },
+  "replacementBindings": [
+    {
+      "id": 68131,
+      "run": 21855561,
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 68130,
+      "run": 21855567,
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 68129,
+      "run": 21856284,
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "current",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    }
+  ],
+  "retirementReceipt": {
+    "ok": true,
+    "counts": {
+      "ok": 3,
+      "failed": 0
+    },
+    "results": [
+      {
+        "ok": true,
+        "status": "retracted"
+      },
+      {
+        "ok": true,
+        "status": "retracted"
+      },
+      {
+        "ok": true,
+        "status": "retracted"
+      }
+    ]
+  },
+  "finalAudit": [
+    {
+      "id": 68131,
+      "run": 21855561,
+      "withdrawn": false,
+      "current": "current",
+      "counts": [
+        11,
+        0,
+        137
+      ],
+      "calibrated": true
+    },
+    {
+      "id": 68130,
+      "run": 21855567,
+      "withdrawn": false,
+      "current": "current",
+      "counts": [
+        11,
+        0,
+        137
+      ],
+      "calibrated": true
+    },
+    {
+      "id": 68129,
+      "run": 21856284,
+      "withdrawn": false,
+      "current": "current",
+      "counts": [
+        9,
+        2,
+        137
+      ],
+      "calibrated": true
+    },
+    {
+      "id": 66895,
+      "run": 21822811,
+      "withdrawn": true,
+      "current": "stale",
+      "counts": [
+        9,
+        2,
+        137
+      ],
+      "calibrated": true
+    },
+    {
+      "id": 66894,
+      "run": 21822784,
+      "withdrawn": true,
+      "current": "stale",
+      "counts": [
+        11,
+        0,
+        137
+      ],
+      "calibrated": true
+    },
+    {
+      "id": 66893,
+      "run": 21822750,
+      "withdrawn": true,
+      "current": "stale",
+      "counts": [
+        11,
+        0,
+        137
+      ],
+      "calibrated": true
+    }
+  ],
+  "governingEvaluation": {
+    "ok": true,
+    "rows": [
+      {
+        "specId": "GF-P002-source",
+        "verdict": "fail",
+        "wouldBlock": [
+          "traceability",
+          "fixture-calibration",
+          "execution-integrity",
+          "freshness",
+          "disclosed-gap"
+        ],
+        "ratings": {
+          "traceability": "unknown",
+          "fixture-calibration": "unknown",
+          "falsifiability": "pass",
+          "correct-layer": "pass",
+          "oracle-independence": "pass",
+          "execution-integrity": "unknown",
+          "freshness": "fail",
+          "plan-class-risk-floor": "pass",
+          "disclosed-gap": "fail"
+        },
+        "draggingBindingIds": {
+          "traceability": [
+            28326,
+            28545
+          ],
+          "fixture-calibration": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28264,
+            28820,
+            38683,
+            45213,
+            45214,
+            68129,
+            68131
+          ],
+          "execution-integrity": [
+            28326,
+            28545
+          ],
+          "freshness": [
+            28205,
+            28206,
+            28243,
+            28262,
+            28264,
+            28326,
+            28545,
+            28820,
+            38683,
+            45213,
+            45214,
+            45261,
+            66844,
+            67056
+          ],
+          "disclosed-gap": [
+            28820,
+            38682,
+            38683,
+            45261
+          ]
+        },
+        "floor": "l4"
+      }
+    ],
+    "build": {
+      "sha": "3c1f46d559",
+      "version": "0.0.0"
+    }
+  },
+  "currentnessSemantics": {
+    "writer": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:measurementCommitFor",
+    "rule": "Each repository measurement resolves HEAD once and hashes git objects. Uncommitted edits do not stale a committed binding; committed named-byte changes do.",
+    "correction": "An uncommitted agent-launch-core.ts edit was observed after qualification. It differs from the tested bytes but had not entered the committed measurement population. A follow-up current staging read still measured all three replacements CURRENT. The earlier caution is prospective, not a stale verdict."
+  },
+  "unchanged": {
+    "testBytes": true,
+    "selection": "planDispatchOperation|reaches all three targets from fresh and ended",
+    "mutationExpression": "s/\\Qif (!['claude', 'codex', 'omp'].includes(sourceAgent)) {\\E/if (sourceAgent !== 'claude') {/",
+    "sourceBoundary": "The same eight named source files plus exact test/inline-fixture file are preserved. No transitive-import coverage claim.",
+    "originalNativeBindingIds": [
+      28326,
+      28545
+    ],
+    "completedProofNotReplayed": [
+      "retained-history21851833",
+      "SDK21852042/binding67832",
+      "gating-matrix21852325/binding68088"
+    ]
+  },
+  "limitations": [
+    "Only source/backend eligibility and fixture assertions are exercised; native launches are fake.",
+    "The 137 collected but unselected tests produce no evidence in these runs.",
+    "No native actor attribution, source-lease ABA, full filesystem noninterference, quality-cohort, independent-acceptance or shipment claim.",
+    "Full GF-P002-source verdict remains FAIL; traceability/fixture-calibration/execution-integrity UNKNOWN, freshness/disclosed-gap FAIL.",
+    "Falsifiability, correct-layer, oracle-independence and required L4 proof floor PASS on the recorded committed evaluation."
+  ],
+  "transportDiagnosis": {
+    "existingOwnedItem": "EI-26763974137058364",
+    "causeObserved": "Result spill cleanup EACCES removing unrelated owner-question-r5-replay-sp2qoz5s/compressed; fresh target parent is writable.",
+    "evidenceInvocationIds": [
+      43825845,
+      43826685
+    ],
+    "workaround": "Use current staging code:run with a compact returned summary. Reconcile and replay settled reads using their original idempotency key.",
+    "disposition": "Additional evidence attached to existing issue and sent to its assignee; no permissions or peer fixture evidence changed."
+  },
+  "next": "Compare exact remaining historical fixture/source claims to existing committed candidates before any additional refresh or retirement. Keep original native evidence and all outstanding acceptance gaps."
+}

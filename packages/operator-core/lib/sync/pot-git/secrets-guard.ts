@@ -118,10 +118,22 @@ function mask(secret: string): string {
  *  the AKIAI44QH8DHBEXAMPLE family) — a real issued access-key id never ends in
  *  "EXAMPLE", so skipping them costs no real-secret recall while it stops a doc
  *  that merely CITES the example key from wedging the entire publish plane. */
-function isDocumentedExample(ruleId: string, match: string): boolean {
+function isDocumentedExample(ruleId: string, match: string, rest = ''): boolean {
   if (ruleId === 'aws-access-key-id') return match.endsWith('EXAMPLE');
+  if (ruleId === 'private-key-pem') return PEM_PLACEHOLDER_BODY_RE.test(rest);
   return false;
 }
+
+/** A `private-key-pem` header whose body, ON THE SAME LINE, is a run of X's is a
+ *  documented example, not a key: npm's own config docs (the `key` definition in
+ *  lib/utils/config/definitions.js) show the header, an escaped newline and
+ *  `XXXX`. A native-process evidence capture of that file was quarantined from
+ *  the commit for 53+ ticks (WI-6554700010028546). `rest` is the text after the
+ *  header on that line. A real key body is base64 DER/OpenSSH/armor that never
+ *  opens with four X's followed by a non-base64 character, so this costs no
+ *  recall; a header that ENDS its line (every real multi-line key) has an empty
+ *  `rest` and still flags. */
+const PEM_PLACEHOLDER_BODY_RE = /^(?:\s|\\+n)*[Xx]{4,}(?![A-Za-z0-9+/=])/;
 
 /** Lines longer than this are skipped: minified/one-line blobs carry no line-secrets. */
 const MAX_SCANNED_LINE_LENGTH = 4096;
@@ -216,7 +228,9 @@ function scanLineForSecrets(path: string, line: string, lineNo: number, findings
         // The shape rules are otherwise placeholder-blind, so without this a doc
         // that merely CITES the example key wedges the whole publish plane
         // (canonical stall root-caused in the P-402 soak, 2026-07-19).
-        if (isDocumentedExample(rule.id, m[0])) continue;
+        // Same reasoning for a private-key-pem header whose same-line body is an
+        // XXXX placeholder (npm's config docs; WI-6554700010028546).
+        if (isDocumentedExample(rule.id, m[0], line.slice(m.index + m[0].length))) continue;
         findings.push({ path, line: lineNo, rule: rule.id, excerpt: mask(m[0]) });
       }
       if (m.index === rule.re.lastIndex) rule.re.lastIndex++; // guard zero-width

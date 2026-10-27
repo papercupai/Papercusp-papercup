@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { resolveEscalation } from '../escalations';
-import { unblockLinkedCard } from '../card-link';
+import { commitLinkedConverseCard, unblockLinkedCard } from '../card-link';
 import { COORD_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
 
@@ -82,7 +82,7 @@ export default defineTool({
           choice: it.choice,
           note: it.note,
           resolver: identity.ownerId,
-        });
+        }, { beforeResolve: open => commitLinkedConverseCard(open, it.choice, ctx) });
         if (out === 'not_found') {
           return { ok: false as const, msg_id: it.msg_id, error: 'not_found', detail: `no escalation with msg_id=${it.msg_id}` };
         }

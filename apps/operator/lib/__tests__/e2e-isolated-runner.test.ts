@@ -13,6 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TAURI_VERIFIER_INPUTS } from '../../../../scripts/source-preview.mjs';
+import { parseJobLogEndMarker } from '../../../../packages/operator-core/lib/task-manager/job-log-terminal';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const RUNNER = join(REPO_ROOT, 'scripts/run-operator-e2e-isolated.sh');
@@ -76,6 +77,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       '#!/usr/bin/env bash',
       'set -eu',
       'pwd > "$E2E_FIXTURE_VITE_CWD"',
+      'printf "%s" "${NODE_ENV:-}" > "$E2E_FIXTURE_VITE_CWD.node-env"',
       'if [ "${E2E_FIXTURE_VITE_FAIL:-0}" = "1" ]; then echo "fixture Vite bootstrap failure"; exit 74; fi',
       '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
       'vite_port=',
@@ -108,6 +110,18 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     [
       '#!/usr/bin/env bash',
       'set -e',
+      'for arg in "$@"; do',
+      '  if [ "$arg" = "--list" ]; then',
+      '    case "${E2E_FIXTURE_SELECTION:-pass}" in',
+      '      error) echo "fixture collection failed" >&2; exit 63 ;;',
+      '      zero) echo \'{"suites":[]}\'; exit 0 ;;',
+      '      malformed) echo "invalid collection JSON"; exit 0 ;;',
+      '    esac',
+      '    node -e \'const fs=require("node:fs");fs.writeFileSync(process.env.E2E_FIXTURE_VITE_CWD+".selection.json",JSON.stringify({argv:process.argv.slice(1),cwd:process.cwd()}));process.stdout.write(JSON.stringify({suites:[{title:"fixture.spec.ts",specs:[{title:"fixture selected",tests:[{projectName:"chromium"}]}]}]}))\' -- "$@"',
+      '    exit 0',
+      '  fi',
+      'done',
+      'printf "%s" "${NODE_ENV:-}" > "$E2E_FIXTURE_VITE_CWD.playwright-node-env"',
       'artifact_dir=test-results',
       'for arg in "$@"; do case "$arg" in --output=*) artifact_dir="${arg#--output=}" ;; esac; done',
       'if [ "${E2E_FIXTURE_WRITE_ARTIFACTS:-0}" = "1" ]; then',
@@ -173,6 +187,7 @@ function run(
     'OPERATOR_SOURCE_ROOT',
     'VH_PHASE_DIR',
     'PAPERCUSP_FAKE_LLM',
+    'PAPERCUSP_DEV_BACKGROUND_WORKERS',
     'VERIFY_TAURI_ISOLATED_SEED',
     'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE',
@@ -194,6 +209,12 @@ function run(
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
+      ...(!args.some(arg => /\.(?:spec|test)\./.test(arg)) ? {
+        VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+        PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'full-suite-acceptance.json'),
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'full-suite-reporter.jsonl'),
+      } : {}),
       ...env,
     },
     encoding: 'utf8',
@@ -213,6 +234,29 @@ function run(
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it.each(['zero', 'error', 'malformed'])('refuses %s test selection before starting the native rig', selection => {
+    const f = fixture(0);
+    const started = join(f.dir, 'rig-started');
+    writeFileSync(f.rig, `#!/usr/bin/env bash\nprintf started > '${started}'\nexit 72\n`);
+    const result = run(f, ['e2e/chat-streaming.spec.ts', '--grep', '^P010 title$'], { E2E_FIXTURE_SELECTION: selection });
+    expect(result.status, result.out).toBe(2);
+    expect(result.out).toContain('refusing native rig');
+    expect(existsSync(started), result.out).toBe(false);
+    expect(existsSync(f.viteCwd), result.out).toBe(false);
+    expect(result.recorded).toBeNull();
+  });
+
+  it('collects the same files and grep before boot and preserves execution reporters', () => {
+    const f = fixture(0);
+    const args = ['e2e/chat-streaming.spec.ts', '--grep', 'P010 current-build conformance journey', '--workers=1'];
+    const result = run(f, args);
+    expect(result.status, result.out).toBe(0);
+    const selected = JSON.parse(readFileSync(`${f.viteCwd}.selection.json`, 'utf8'));
+    expect(selected.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
+    expect(selected.argv).toEqual([...args, '--list', '--reporter=json']);
+    expect(result.out).toContain('OPERATOR_E2E_SELECTION count=1');
+    expect(result.recorded.argv).toEqual(args);
+  });
   it('admits its maintained assertion through the real native preflight', () => {
     const f = fixture(0);
     const result = run(f, ['e2e/content-reading.spec.ts', '--workers=1']);
@@ -278,10 +322,11 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(blockEnd).toBeGreaterThan(blockStart);
     const sourceSelection = runner.slice(blockStart, blockEnd);
 
-    const exercise = (dir: string, sourceRef?: string) => {
+    const exercise = (dir: string, sourceRef?: string, args = ['e2e/ongoing-work-ui.spec.ts']) => {
       mkdirSync(dir, { recursive: true });
       const refFile = join(dir, 'source-ref.txt');
       const inputsPathFile = join(dir, 'inputs-path.txt');
+      const inlineInputsFile = join(dir, 'inline-inputs.txt');
       const script = [
         'set -uo pipefail',
         'ROOT=' + JSON.stringify(REPO_ROOT),
@@ -289,16 +334,17 @@ describe('run-operator-e2e-isolated.sh', () => {
         sourceSelection,
         'printf "%s" "$VERIFY_TAURI_SOURCE_REF" > ' + JSON.stringify(refFile),
         'printf "%s" "${VERIFY_TAURI_SOURCE_INPUTS_FILE-}" > ' + JSON.stringify(inputsPathFile),
+        'printf "%s" "${VERIFY_TAURI_SOURCE_INPUTS-}" > ' + JSON.stringify(inlineInputsFile),
       ].join('\n');
       const env: NodeJS.ProcessEnv = { ...process.env };
       delete env.VERIFY_TAURI_SOURCE_REF;
       delete env.VERIFY_TAURI_SOURCE_INPUTS;
       delete env.VERIFY_TAURI_SOURCE_INPUTS_FILE;
       if (sourceRef !== undefined) env.VERIFY_TAURI_SOURCE_REF = sourceRef;
-      const result = spawnSync('bash', ['-c', script, 'source-selection', 'e2e/ongoing-work-ui.spec.ts'], {
+      const result = spawnSync('bash', ['-c', script, 'source-selection', ...args], {
         cwd: REPO_ROOT, encoding: 'utf8', env, timeout: 15_000,
       });
-      return { result, refFile, inputsPathFile };
+      return { result, refFile, inputsPathFile, inlineInputsFile };
     };
 
     const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' });
@@ -313,6 +359,25 @@ describe('run-operator-e2e-isolated.sh', () => {
       'apps/operator/playwright.config.mts',
       'apps/operator/playwright.config.ts',
     ]);
+
+    const explicitHead = exercise(join(f.dir, 'explicit-head'), 'HEAD');
+    expect(explicitHead.result.status, explicitHead.result.stderr).toBe(0);
+    expect(readFileSync(explicitHead.refFile, 'utf8')).toBe(head.stdout.trim());
+
+    for (const [index, args] of [[], ['--workers=1'], ['--workers', '1']].entries()) {
+    const fullSuite = exercise(join(f.dir, 'full-suite-' + index), undefined, args);
+    expect(fullSuite.result.status, fullSuite.result.stderr).toBe(0);
+    const fullSuiteInputs = JSON.parse(readFileSync(readFileSync(fullSuite.inputsPathFile, 'utf8'), 'utf8'));
+    expect(readFileSync(fullSuite.inlineInputsFile, 'utf8').split(',')).toEqual(fullSuiteInputs);
+    expect(fullSuiteInputs).toEqual(expect.arrayContaining([
+      'apps/operator/e2e/ongoing-work-native-collection.spec.mts',
+      'apps/operator/e2e/_ongoing-work-native-fixture.ts',
+      'apps/operator/e2e/ticket-integrations.native.spec.mts',
+      'scripts/tauri-surface-verify-ticket-integrations.sh',
+      'apps/operator/app/_components/inbox/use-inbox-pending.ts',
+      'apps/operator/app/admin/plans/plans-api.ts',
+    ]));
+    }
 
     const workingTree = exercise(join(f.dir, 'working-tree'), '');
     expect(workingTree.result.status, workingTree.result.stderr).toBe(0);
@@ -351,6 +416,8 @@ describe('run-operator-e2e-isolated.sh', () => {
       'args=("$@")',
       'for ((i=0; i<${#args[@]}; i++)); do',
       '  if [ "${args[i]}" = "--repo" ]; then args[i+1]="$E2E_FIXTURE_GUARD_REPO"; fi',
+      // Keep the selected ref paired with the synthetic repo after redirecting --repo.
+      '  if [ "${args[i]}" = "--ref" ]; then args[i+1]="HEAD"; fi',
       'done',
       'exec "$E2E_FIXTURE_NODE" "${args[@]}"',
     ].join('\n'));
@@ -383,6 +450,23 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.out).toContain('invalid tested input: ../outside-source');
     expect(existsSync(marker)).toBe(false);
     expect(result.recorded).toBeNull();
+  });
+
+  it('preflights default full-suite native prerequisites before starting the desktop', () => {
+    for (const args of [[], ['--workers=1'], ['--workers', '1']]) {
+    for (const env of [
+      { VERIFY_TAURI_ISOLATED_SEED: 'fresh' },
+      { PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: '' },
+      { PAPERCUSP_TEST_RUN_RECEIPT_FILE: '' },
+    ]) {
+      const f = fixture(0);
+      const marker = join(f.dir, 'rig-started');
+      writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+      const result = run(f, args, env);
+      expect(result.status, result.out).toBe(2);
+      expect(existsSync(marker)).toBe(false);
+    }
+    }
   });
 
   it('preflights native Inbox seed and receipt inputs before starting the desktop', () => {
@@ -424,6 +508,30 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.recorded.env.ledgerReceipt).toBe(reporterReceipt);
   });
 
+  it('refuses native support acceptance without an isolated worker runtime before boot', () => {
+    for (const args of [['e2e/support-workflow-native.spec.mts'], []]) {
+      for (const env of [
+        { VERIFY_TAURI_ISOLATED_SEED: 'fresh', PAPERCUSP_DEV_BACKGROUND_WORKERS: '1' },
+        { VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '0' },
+        { VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '' },
+      ]) {
+        const f = fixture(0);
+        const marker = join(f.dir, 'rig-started');
+        writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+        const result = run(f, args, env);
+        expect(result.status, result.out).toBe(2);
+        expect(existsSync(marker)).toBe(false);
+        if (args.length) expect(result.out).toContain('isolated worker placement');
+      }
+    }
+    const f = fixture(0);
+    const result = run(f, ['e2e/support-workflow-native.spec.mts'], {
+      VERIFY_TAURI_ISOLATED_SEED: 'ready', PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+    });
+    expect(result.status, result.out).toBe(0);
+    expect(result.recorded).not.toBeNull();
+  });
+
   it.each([['SIGINT', 130, false], ['SIGTERM', 143, false], ['SIGHUP', 129, false], ['SIGTERM', 143, true]] as const)(
     'records failure and reaps the rig when interrupted by %s (exit: %s, whole group: %s)', async (signal, code, wholeGroup) => {
       const f = fixture(0);
@@ -437,12 +545,17 @@ describe('run-operator-e2e-isolated.sh', () => {
       ].join('\n'));
       const child = spawn('bash', [RUNNER], { detached: wholeGroup, env: {
         ...process.env,
+        VERIFY_TAURI_ISOLATED_SEED: 'ready',
+        PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+        PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
         VERIFY_TAURI_SOURCE_REF: '',
         VERIFY_TAURI_SOURCE_INPUTS: '',
         VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
         HARNESS_ADMIN_DATABASE_URL: SHARED,
         OPERATOR_E2E_RIG: f.rig,
         OPERATOR_E2E_PLAYWRIGHT: f.pw,
+        E2E_FIXTURE_VITE_CWD: f.viteCwd,
         OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
         VH_TSX: f.harnessTsx,
       } });
@@ -487,10 +600,16 @@ describe('run-operator-e2e-isolated.sh', () => {
     writeFileSync(f.rig, '#!/usr/bin/env bash\nkill -USR1 "$PPID"\nsleep 0.1\n');
     const res = spawnSync('bash', [RUNNER], { env: {
       ...process.env,
+      VERIFY_TAURI_ISOLATED_SEED: 'ready',
+      PAPERCUSP_DEV_BACKGROUND_WORKERS: '1',
+      PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: join(f.dir, 'acceptance.json'),
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(f.dir, 'reporter.jsonl'),
       VERIFY_TAURI_SOURCE_REF: '',
       VERIFY_TAURI_SOURCE_INPUTS: '',
       VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
       OPERATOR_E2E_RIG: f.rig,
+      OPERATOR_E2E_PLAYWRIGHT: f.pw,
+      E2E_FIXTURE_VITE_CWD: f.viteCwd,
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,
     }, encoding: 'utf8', timeout: 15_000 });
@@ -504,10 +623,11 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(phases.find(phase => phase.phase === 'isolated-suite')?.status).toBe('failed');
   });
 
-  it('exits with the playwright exit code when a spec fails', () => {
+  it('emits a task-manager-compatible failed terminal marker when a spec fails', () => {
     const r = run(fixture(1), []);
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain('OPERATOR_E2E_ISOLATED exit=1');
+    expect(parseJobLogEndMarker(r.out)).toEqual({ status: 'failed', exitCode: 1 });
     expect(r.out).toContain('HARNESS_RESULT');
     expect(r.out).toContain('verdict=fail');
   });
@@ -515,6 +635,7 @@ describe('run-operator-e2e-isolated.sh', () => {
   it('exits 0 when the suite passes', () => {
     const r = run(fixture(0), []);
     expect(r.status, r.out).toBe(0);
+    expect(parseJobLogEndMarker(r.out)).toEqual({ status: 'completed', exitCode: 0 });
     expect(r.out).toContain('HARNESS_RESULT');
     expect(r.out).toContain('verdict=pass');
   });
@@ -589,6 +710,15 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
     expect(r.recorded.env.reuse).toBe('1');
     expect(r.recorded.viteStatus).toBe(200);
+  });
+
+  it('starts the Vite dev server in development mode when the caller is production', () => {
+    const f = fixture(0);
+    const r = run(f, [], { NODE_ENV: 'production' });
+    expect(r.status, r.out).toBe(0);
+    expect(r.recorded.viteStatus).toBe(200);
+    expect(readFileSync(`${f.viteCwd}.node-env`, 'utf8')).toBe('development');
+    expect(readFileSync(`${f.viteCwd}.playwright-node-env`, 'utf8')).toBe('production');
   });
 
   it.each(['arrow', 'color'] as const)('recognizes the %s Vite readiness line and reaches Playwright', (style) => {

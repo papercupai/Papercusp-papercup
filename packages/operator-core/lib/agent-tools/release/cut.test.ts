@@ -7,7 +7,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/cut.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
@@ -25,7 +27,7 @@ vi.mock('../../release-cut-launch', async (importOriginal) => ({
   launchDetachedCut: vi.fn(),
   readCutStatus: vi.fn(),
   collectHandoff: vi.fn(),
-  preflightCut: vi.fn(),
+  preflightCutAsync: vi.fn(),
   abortLeg: vi.fn(),
   readOrCreateGate: vi.fn(),
 }));
@@ -74,7 +76,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   execFile: vi.fn(),
 }));
 
-import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
+import { launchDetachedCut, readCutStatus, collectHandoff, preflightCutAsync, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
@@ -87,7 +89,7 @@ const provenanceM = vi.mocked(resolveBashTaskProvenance);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
-const preflightM = vi.mocked(preflightCut);
+const preflightM = vi.mocked(preflightCutAsync);
 
 describe('release:cut transport budget (EI-26107428212758754)', () => {
   it('declares a handler budget above the flat MCP deadline for reclaim scans', async () => {
@@ -173,7 +175,7 @@ beforeEach(() => {
   });
   auditSqlM.mockResolvedValue([]);
   registryM.mockResolvedValue({ projects: [] });
-  preflightM.mockReturnValue(mkPreflight());
+  preflightM.mockResolvedValue(mkPreflight());
   launchM.mockResolvedValue({
     launched: true,
     unit: 'pc-task1.service',
@@ -381,6 +383,28 @@ describe('release:cut — constrained root selector', () => {
       listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
     });
     expect(outside).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_registered/) });
+  });
+
+  it('admits an independent clone only through exact-source verification against the registry', async () => {
+    const sourceSha = 'a'.repeat(40);
+    const cloneRoot = '/isolated/source-clone';
+    const projects = [{ slug: 'source', path: '/registered/source' }];
+    const verifySourceClone = vi.fn(async () => ({ ok: true as const, path: cloneRoot }));
+    const result = await resolveCutRoot(`${cloneRoot}/papercusp-desktop`, {
+      loadRegistry: async () => ({ projects }), listWorktrees: () => [],
+      canonicalPath: (candidate) => candidate, status: () => '', verifySourceClone,
+    }, { sourceSha });
+    expect(result).toMatchObject({ ok: true, worktreeRoot: cloneRoot });
+    expect(verifySourceClone).toHaveBeenCalledWith(cloneRoot, projects, sourceSha, { sourceSha });
+  });
+
+  it('propagates clone verification failure without falling through to cut preflight', async () => {
+    const result = await resolveCutRoot('/isolated/source-clone', {
+      loadRegistry: async () => ({ projects: [] }), listWorktrees: () => [],
+      canonicalPath: (candidate) => candidate,
+      verifySourceClone: async () => ({ ok: false, reason: 'root_clone_invalid — pin mismatch' }),
+    }, { sourceSha: 'a'.repeat(40) });
+    expect(result).toEqual({ ok: false, reason: 'root_clone_invalid — pin mismatch' });
   });
 
   it('rejects a selected worktree with uncommitted changes', async () => {
@@ -782,13 +806,13 @@ describe('release:cut — explicit registered root routing', () => {
 
 describe('release:cut — preflight (read-only)', () => {
   it('returns the go/no-go, never launches', async () => {
-    preflightM.mockReturnValue(mkPreflight());
+    preflightM.mockResolvedValue(mkPreflight());
     const b = body(await tool.handler({ op: 'preflight' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'preflight', go: true });
     expect(launchM).not.toHaveBeenCalled();
   });
   it('surfaces blockers when not ready', async () => {
-    preflightM.mockReturnValue(mkPreflight({ go: false, blockers: ['signing-key: missing'] }));
+    preflightM.mockResolvedValue(mkPreflight({ go: false, blockers: ['signing-key: missing'] }));
     const b = body(await tool.handler({ op: 'preflight' } as never, { role: 'operator' } as never));
     expect(b.go).toBe(false);
     expect(b.note).toMatch(/signing-key: missing/);
@@ -1076,6 +1100,45 @@ describe('release:cut — run (operator-gated write)', () => {
     }
     expect(beginOpM).not.toHaveBeenCalled(); expect(launchM).not.toHaveBeenCalled();
   });
+  it('transports a validated releaseHostEnv through the schema, preview and runtime, and refuses a bad one before any operation (WI-6554700010029602)', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cut-release-host-'));
+    vi.stubEnv('HOME', home);
+    try {
+      mkdirSync(path.join(home, '.papercusp'));
+      const hostEnv = path.join(home, '.papercusp', 'release-host-gcs.env');
+      writeFileSync(hostEnv, 'PAPERCUSP_RELEASE_HOST=https://cupboard.example.test/releases/SECRETPATHSEGMENT\n');
+      expect(tool.args.safeParse({ ...runArgs, releaseHostEnv: hostEnv }).success).toBe(true);
+      const preview = body(await tool.handler({ ...runArgs, releaseHostEnv: hostEnv } as never, { role: 'operator' } as never));
+      expect(preview).toMatchObject({ ok: true, dry_run: true, releaseHostEnv: hostEnv });
+      expect(preview.wouldRun).toContain(`PAPERCUSP_RELEASE_HOST_ENV='${hostEnv}'`);
+      expect(JSON.stringify(preview)).not.toContain('SECRETPATHSEGMENT');
+      await tool.handler({ ...runArgs, releaseHostEnv: hostEnv, confirm: true } as never, { role: 'operator' } as never);
+      expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+        runtime: expect.objectContaining({ releaseHostEnv: hostEnv }),
+      }));
+
+      // Omitted ⇒ the canonical file, so the allowlist adds nothing.
+      const canonical = body(await tool.handler(runArgs as never, { role: 'operator' } as never));
+      expect(canonical.releaseHostEnv).toBeNull();
+      expect(canonical.wouldRun).not.toContain('PAPERCUSP_RELEASE_HOST_ENV');
+
+      vi.clearAllMocks();
+      const missing = path.join(home, '.papercusp', 'release-host-absent.env');
+      const outside = path.join(home, 'release-host-gcs.env');
+      for (const op of [{ op: 'run' }, { op: 'run-leg', platform: 'linux' }]) {
+        for (const [releaseHostEnv, code] of [[missing, 'release_host_env_unreadable'], [outside, 'release_host_env_invalid']]) {
+          const refused = body(await tool.handler(
+            { ...runArgs, ...op, releaseHostEnv, confirm: true } as never, { role: 'operator' } as never));
+          expect(refused).toMatchObject({ ok: false, refused: true, reason: expect.stringContaining(code) });
+        }
+      }
+      expect(beginOpM).not.toHaveBeenCalled();
+      expect(launchM).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it('binds the whole-cut task, detached tests, and preview to the same caller harness', async () => {
     const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
     const preview = body(await tool.handler(runArgs as never, ctx));
@@ -1193,7 +1256,7 @@ describe('release:cut — run (operator-gated write)', () => {
   });
 
   it('refuses to start a second cut when one is already in flight', async () => {
-    preflightM.mockReturnValue(mkPreflight({}, /* inFlight */ true));
+    preflightM.mockResolvedValue(mkPreflight({}, /* inFlight */ true));
     const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);
@@ -1353,7 +1416,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     expect(launchM).not.toHaveBeenCalled();
   });
   it('refuses to start a leg already in flight (checks its OWN unit, via preflightCut)', async () => {
-    preflightM.mockReturnValue(mkPreflight({}, /* inFlight */ true));
+    preflightM.mockResolvedValue(mkPreflight({}, /* inFlight */ true));
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);

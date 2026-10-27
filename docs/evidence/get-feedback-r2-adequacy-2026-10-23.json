@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "kind": "exact-clause-adequacy-read",
+  "workItemId": "WI-10005889",
+  "invocationId": 43363244,
+  "endpoint": "http://127.0.0.1:3170",
+  "args": {
+    "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "harness": "papercusp",
+    "classRef": "plan-class-feature-ship",
+    "specIds": [
+      "AUTO-BAR-R-2-P-002"
+    ],
+    "detail": "full",
+    "limit": 500
+  },
+  "sourceScratchManifest": {
+    "schemaVersion": "papercusp.scratch-reference/v1",
+    "createdAt": "2026-10-23T04:13:22.374Z",
+    "expiresAt": "2026-10-24T04:13:22.374Z",
+    "workspaceId": "papercusp-workspace",
+    "ownerId": "su-e25eacde-e8fc-4927-b3c6-74766d34696e",
+    "audience": "owner",
+    "mediaType": "application/json",
+    "byteCount": 8723,
+    "sha256": "ee8d15e6bdf1e9fbc041d55745e9b04d3606d3447ca0c347aa55b49f44e99b1d",
+    "content": [
+      {
+        "index": 0,
+        "type": "text",
+        "byteCount": 7706
+      },
+      {
+        "index": 1,
+        "type": "text",
+        "byteCount": 82
+      },
+      {
+        "index": 2,
+        "type": "text",
+        "byteCount": 292
+      }
+    ],
+    "bodyOffsetInPayload": 0
+  },
+  "response": {
+    "ok": true,
+    "evaluatorBuild": {
+      "sha": "811b4febec",
+      "version": "0.0.0"
+    },
+    "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "harnessSlug": "papercusp",
+    "classRef": "plan-class-feature-ship",
+    "declaredClassRef": "plan-class-feature-ship",
+    "classRefSource": "active-acceptance-rubric",
+    "rubricRef": "spec-test-adequacy",
+    "governing": true,
+    "includeDraft": false,
+    "excludedDraftCount": 0,
+    "excludedDraftSpecIds": [],
+    "excludedClauses": [],
+    "detail": "full",
+    "rows": [
+      {
+        "evaluationMode": "mechanical",
+        "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "specId": "AUTO-BAR-R-2-P-002",
+        "specRevision": 3,
+        "specFingerprint": "303150bcfd1bdf5fda39cc3ec030c7e6e7719f31ff2c862a2258dad8a186620d",
+        "planItemId": "P-002",
+        "verdict": "fail",
+        "wouldBlock": [
+          "mechanical-test-adequacy"
+        ],
+        "mechanicalProof": {
+          "applicable": true,
+          "verdict": "fail",
+          "requiredFiles": [
+            "apps/operator/lib/psu-launcher.test.ts",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+            "packages/operator-core/lib/session-port/service.test.ts",
+            "packages/operator-core/lib/session-port/store.integration.test.ts"
+          ],
+          "passingTestBindingIds": {
+            "packages/operator-core/lib/session-port/store.integration.test.ts": 65106
+          },
+          "caughtMutantBindingIds": [],
+          "gaps": [
+            "apps/operator/lib/psu-launcher.test.ts: the passing run is no longer current \u2014 binding 65111 stale (source-stale, test-stale, fixture-stale)",
+            "packages/operator-core/lib/consult/consult-dispatch.test.ts: the passing run is no longer current \u2014 binding 50797 stale (source-stale, test-stale)",
+            "packages/operator-core/lib/session-port/service.test.ts: the passing run is no longer current \u2014 binding 65108 stale (source-stale, test-stale, fixture-stale)",
+            "no bound mutant was caught with verified calibration linkage (bindings 38681); re-run scripts/mutation-probe.sh against a named test"
+          ]
+        },
+        "measurementEvidence": {
+          "status": "measured",
+          "selectedBindings": 18,
+          "measuredBindings": 18,
+          "unavailableBindings": [],
+          "withoutMeasurementBasis": [],
+          "bindings": [
+            {
+              "bindingId": 37830,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+            },
+            {
+              "bindingId": 37836,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+            },
+            {
+              "bindingId": 37985,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+            },
+            {
+              "bindingId": 38009,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:c58615549ad67d88f287e373a0362d2ba0a5a2c57803eb5e24552632bc8f878c"
+            },
+            {
+              "bindingId": 38597,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+            },
+            {
+              "bindingId": 38598,
+              "evidenceKind": "mutation",
+              "evidenceRef": "test-run 21136797 mutation-probe mutant fail packages/operator-core/lib/endpoint-route/__tests__/mcp-handler-gating-matrix.test.ts @fc8692c1b4fc",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:99447b6b0522bd84d374bf694c7e101704b0b1b8f386ebdbc14459a4ff523dd0"
+            },
+            {
+              "bindingId": 38625,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+            },
+            {
+              "bindingId": 38626,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:db22d1f587d25e6d947dcf6be240590d64d38bf963d59b6afc2f75de2182fd9e"
+            },
+            {
+              "bindingId": 38680,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:ccf4c2b48b95889d0ba2eae99b245bef0606ab1f39048311c6044236f407da96"
+            },
+            {
+              "bindingId": 38681,
+              "evidenceKind": "mutation",
+              "evidenceRef": "test-run 21137208 mutation-probe mutant fail packages/operator-core/lib/consult/consult-dispatch.test.ts @b4cafebbb387",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:9c7908d4b80f6e3828fdc7c7bb5eceb35cbe3acdb648899f8a3015f030605b0c"
+            },
+            {
+              "bindingId": 45194,
+              "evidenceKind": "test",
+              "evidenceRef": "test-run-group:3ce81757-1f16-4c77-b08e-569728bb6ffb:0",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:33816b8f4deeb09d46ee5c8ca6ae5fc3623867ead02eb0cdb11674d1e73b94a3"
+            },
+            {
+              "bindingId": 45258,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:87ebf7d22fe77b2f8ea5bdffa5e8f57e917ac2052ae25278ce9206be68df11bd"
+            },
+            {
+              "bindingId": 45259,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/get-feedback-contract.integration.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:7931f58316b234a3bf257e286421de85f1184dfbd555ed9ee4c2351bbab94e77"
+            },
+            {
+              "bindingId": 50797,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:29cab9f84265ea11ae565c008fac558b365314038684c359b7b3d423f80bf450"
+            },
+            {
+              "bindingId": 50798,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:585ec02c4ae5158dc02cf1d681bdec28e25338f58d58128f5938970414500177"
+            },
+            {
+              "bindingId": 65106,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/store.integration.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:6b4105e4491aedd98670e8e953fba6f4cba21e58001c1c4adeb8580c2837a512"
+            },
+            {
+              "bindingId": 65108,
+              "evidenceKind": "test",
+              "evidenceRef": "packages/operator-core/lib/session-port/service.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:38e6b3158f491911c3a487ef41c68eedf174a95e1b1043a7e3c7999de28216c2"
+            },
+            {
+              "bindingId": 65111,
+              "evidenceKind": "test",
+              "evidenceRef": "apps/operator/lib/psu-launcher.test.ts",
+              "status": "measured",
+              "measuredAtCommit": "f302c8ad0873e63cd266bd87675ddb84275b84ac",
+              "measurementFingerprint": "sha256:7b1c778f456115f8ba187817ad7c2bd8a1d1e7f1d46e724d61b410c3f4842f9a"
+            }
+          ]
+        }
+      }
+    ],
+    "count": 1,
+    "verdicts": {
+      "pass": 0,
+      "fail": 1,
+      "unknown": 0
+    },
+    "wouldBlock": [
+      {
+        "specId": "AUTO-BAR-R-2-P-002",
+        "revision": 3,
+        "criteria": [
+          "mechanical-test-adequacy"
+        ]
+      }
+    ],
+    "uncoveredWorkItemSelection": null
+  },
+  "scope": "Original complete failing measurement retained. No acceptance, certification or shipment. Later refreshes must not overwrite this verdict."
+}

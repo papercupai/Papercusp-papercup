@@ -58,7 +58,7 @@ describe('public desktop interface hold at real release entrypoints', () => {
     expect(assertPublicDesktopArtifacts([f.file], {})).toEqual([f.identity]);
   });
 
-  it('refuses candidate upload before any installer, signature or feed write', () => {
+  it('refuses candidate upload before storage configuration or any public write', () => {
     const f = artifactFixture('portal-candidate');
     const version = `${f.version}-${randomUUID()}`;
     const tag = `desktop-v${version}-alpha`;
@@ -72,11 +72,17 @@ describe('public desktop interface hold at real release entrypoints', () => {
     fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
     fs.mkdirSync(tools);
     fs.writeFileSync(path.join(home, '.papercusp/release-host.env'), 'PAPERCUSP_UPDATE_BASE_URL=https://downloads.example.test/test-prefix\n');
-    fs.writeFileSync(path.join(home, '.papercusp/r2.env'), 'R2_ACCOUNT_ID=fixture\nR2_BUCKET=fixture\nAWS_ACCESS_KEY_ID=fixture\nAWS_SECRET_ACCESS_KEY=fixture\n');
     const writes = path.join(f.root, 'outward-calls');
-    fs.writeFileSync(path.join(tools, 'aws'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$OUTWARD_CALLS"\nexit 99\n', { mode: 0o755 });
+    for (const tool of ['gcloud', 'aws']) {
+      fs.writeFileSync(path.join(tools, tool), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$OUTWARD_CALLS"\nexit 99\n', { mode: 0o755 });
+    }
     const result = spawnSync('bash', [path.join(bin, 'upload-release.sh'), version, 'alpha'], {
-      env: { ...process.env, HOME: home, PATH: `${tools}:${process.env.PATH}`, OUTWARD_CALLS: writes, PAPERCUSP_DESKTOP_INTERFACE: 'legacy', DRY_RUN: '1' },
+      env: {
+        ...process.env, HOME: home, PATH: `${tools}:${process.env.PATH}`, OUTWARD_CALLS: writes,
+        PAPERCUSP_DESKTOP_INTERFACE: 'legacy', DRY_RUN: '1',
+        PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp/release-storage.env'),
+        PAPERCUSP_RELEASE_GCS_BUCKET: '',
+      },
       encoding: 'utf8', timeout: 30_000,
     });
     expect(result.status, result.stderr).toBe(4);

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
   getFleetHeadcountTarget: vi.fn(),
+  governorFlagOn: vi.fn(),
   listFleetRosterDiagnosed: vi.fn(),
   liveFleetMemberIds: vi.fn(),
   countRunningWorkspaceBees: vi.fn(),
@@ -51,6 +52,16 @@ vi.mock('../../agent-fleets-store', async () => {
     ...actual,
     getFleet: (...a: unknown[]) => h.getFleet(...a),
     getFleetHeadcountTarget: (...a: unknown[]) => h.getFleetHeadcountTarget(...a),
+  };
+});
+vi.mock('../../fleet/fleet-staffing-read', async () => {
+  const actual = await vi.importActual<typeof import('../../fleet/fleet-staffing-read')>('../../fleet/fleet-staffing-read');
+  return {
+    ...actual,
+    defaultFleetStaffingReadDeps: () => ({
+      ...actual.defaultFleetStaffingReadDeps(),
+      governorFlagOn: () => h.governorFlagOn(),
+    }),
   };
 });
 // Real split helpers (pure) + a mocked roster/bee-count IO seam. status.ts now calls
@@ -175,6 +186,7 @@ beforeEach(() => {
   h.countRunningWorkspaceBees.mockResolvedValue(0);
   h.countRunningFleetBees.mockResolvedValue(0);
   h.getFleetHeadcountTarget.mockResolvedValue(null);
+  h.governorFlagOn.mockResolvedValue(true);
   h.liveFleetMemberIds.mockResolvedValue([]);
   // Matches the real helper: an empty id list short-circuits to an empty Set —
   // a MEASURED zero, never the `null` that means the telemetry leg failed.
@@ -296,6 +308,49 @@ describe('fleet:status', () => {
       },
     });
     expect(h.liveFleetMemberIds).toHaveBeenCalledWith('rocket', 'ws', 'launch');
+  });
+
+  it('retains an in-force no-top-up rule in the fleet status read', async () => {
+    const now = Date.now();
+    const rule = {
+      kind: 'supervise-revoked', ratifiedBy: 'su-leader', ratifiedAt: now,
+      reason: 'Independent source admission is still closed', until: now + 3_600_000,
+      suspendedTarget: 3, suspendedSupervise: true,
+    };
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws', fleetSlug: 'rocket', enabled: true, target: 3,
+      config: { supervise: false, topUpRule: rule },
+      nextAttemptAt: null, backoffMs: 0, lastError: null,
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toMatchObject({
+      held: false,
+      notHeldBecause: 'top-up-rule',
+      topUpRule: {
+        status: 'in-force', inherited: false, kind: rule.kind,
+        ratifiedBy: rule.ratifiedBy, reason: rule.reason, until: rule.until,
+      },
+    });
+  });
+
+  it.each([true, false, null])('reports governor eligibility with flag %s', async (governorFlagOn) => {
+    h.governorFlagOn.mockResolvedValueOnce(governorFlagOn);
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws', fleetSlug: 'rocket', enabled: true, target: 3,
+      config: { supervise: true },
+      nextAttemptAt: null, backoffMs: 0, lastError: null,
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toMatchObject({
+      held: governorFlagOn,
+      notHeldBecause: governorFlagOn === false ? 'governor-flag-off' : null,
+      topUpRule: { status: 'none' },
+    });
+    expect(out.degradedLegs ?? []).toEqual(governorFlagOn === null ? ['headcountGovernorFlag'] : []);
   });
 
   it('keeps a disabled saved launch recipe from masquerading as an active target', async () => {

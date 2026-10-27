@@ -16,7 +16,7 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
-import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
+import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, preserveWorkbenchSessionLog, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
 import { assertPuiBinaryUnchanged, resolvePuiWorkbenchZellij, snapshotCurrentPuiBinary } from './pui-binary';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
@@ -654,6 +654,7 @@ const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
 const agentChatsListDiagnostics: Array<{
   slug: string;
+  database?: string;
   searchPath?: string[];
   relation?: string | null;
   error?: string;
@@ -2192,10 +2193,12 @@ beforeAll(async () => {
           // from a wrong caller slug.
           const { getHarnessPg } = await import('@papercusp/db-org');
           const [probe] = await getHarnessPg(slug).sql`
-            SELECT current_schemas(true) AS search_path,
+            SELECT current_database() AS database,
+                   current_schemas(true) AS search_path,
                    to_regclass('agent_chats')::text AS relation`;
           agentChatsListDiagnostics.push({
             slug,
+            database: probe?.database as string | undefined,
             searchPath: probe?.search_path as string[] | undefined,
             relation: probe?.relation as string | null | undefined,
           });
@@ -4709,12 +4712,24 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   };
   const startChatWorkbench = (cols: number, rows: number) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
+    const timingDirectory = process.env.PUI_TIMING_DIR ? path.resolve(process.env.PUI_TIMING_DIR) : undefined;
+    if (timingDirectory) {
+      const relativeTimingDirectory = path.relative(launchDir, timingDirectory);
+      const outsidePrefix = '..' + path.sep;
+      const isInsideLaunch = relativeTimingDirectory === ''
+        || (relativeTimingDirectory !== '..' && !relativeTimingDirectory.startsWith(outsidePrefix)
+          && !path.isAbsolute(relativeTimingDirectory));
+      if (isInsideLaunch) {
+        rmSync(launchDir, { recursive: true, force: true });
+        throw new Error('PUI_TIMING_DIR must be outside the P-030 launch cleanup directory');
+      }
+    }
     // Zellij derives its log from TMPDIR, independently of ZELLIJ_SOCKET_DIR.
     // Isolate both so a shutdown diagnostic can never read another session's log.
     const privateTmp = path.join(launchDir, 'tmp');
     mkdirSync(privateTmp);
     const logPath = path.join(privateTmp, `zellij-${process.getuid!()}`, 'zellij-log', 'zellij.log');
-    const psTrace = process.env.PUI_TIMING_DIR && process.platform === 'linux' ? installWorkbenchPsTrace(launchDir) : undefined;
+    const psTrace = timingDirectory && process.platform === 'linux' ? installWorkbenchPsTrace(launchDir) : undefined;
     // The workbench layout starts every pane (the chat included) as `pui …`
     // from PATH. Put the binary under test first, or the panes run whatever
     // `pui` is installed (~/.cargo/bin) and the test judges a stale build.
@@ -4738,9 +4753,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // the only evidence that distinguishes a product hang from teardown.
       preCleanupEvidence ??= await captureEvidence();
       console.info('PUI_P030_PRE_CLEANUP', JSON.stringify({ session, ...preCleanupEvidence }));
-      if (process.env.PUI_TIMING_DIR) {
-        mkdirSync(process.env.PUI_TIMING_DIR, { recursive: true });
-        writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${pane.pty.pid}.json`),
+      if (timingDirectory) {
+        mkdirSync(timingDirectory, { recursive: true });
+        writeFileSync(path.join(timingDirectory, `workbench-${pane.pty.pid}.json`),
           JSON.stringify({ session, ...preCleanupEvidence }));
       }
       await pane.stop();
@@ -4754,8 +4769,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const result = await paneZellij([...args]);
         shutdown.commands.push({ args, startedAt: new Date(started).toISOString(), elapsedMs: Date.now() - started, ...result });
       }
-      if (process.env.PUI_TIMING_DIR) {
-        writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${pane.pty.pid}-shutdown.json`), JSON.stringify(shutdown));
+      const retainedSessionLog = timingDirectory
+        ? preserveWorkbenchSessionLog(logPath, timingDirectory, 'workbench-' + pane.pty.pid)
+        : undefined;
+      if (timingDirectory) {
+        writeFileSync(path.join(timingDirectory, `workbench-${pane.pty.pid}-shutdown.json`),
+          JSON.stringify({ ...shutdown, retainedSessionLog }));
       }
       rmSync(launchDir, { recursive: true, force: true });
     };
@@ -4920,6 +4939,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       const network = wb.pane.screen();
       console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, opened, hidden, hud, wake, network }));
     } finally { await wb.cleanup(); }
+    if (process.env.PUI_TIMING_DIR) {
+      const retainedLogPath = path.join(path.resolve(process.env.PUI_TIMING_DIR),
+        'workbench-' + wb.pane.pty.pid + '-zellij.log');
+      expect(existsSync(retainedLogPath), 'exact private Zellij session log must survive fixture cleanup').toBe(true);
+    }
   }, 180_000);
 
   // pui-chat-first-ux-2026-09-28 P-016 (D-004 / D-005 for Codex and OMP): the
@@ -8295,10 +8319,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           }),
         );
       } catch (error) {
+        const nativeState = await readOmpDiagnosticState?.().catch((stateError: Error) => ({ stateReadError: stateError.message }));
         console.info(
           'PUI_INSTALLED_NATIVE_QUESTION_FAILURE',
           JSON.stringify({
             ...pane.failureEvidence(), cardReplies, timeoutDegradations,
+            nativeState,
             // The screen can show a completed answer even when Claude routed
             // the question through a deferred MCP wrapper. Keep only event
             // identifiers here: the raw tool input may contain the owner's

@@ -13,7 +13,9 @@ import {
 import {
   estimatePortableTokens,
   fitPortableTurns,
+  inspectPortableTurnFit,
   SESSION_PORT_SUMMARY_PROMPT_VERSION,
+  type PortableTurnFitInspection,
   type SessionPortSummarizer,
 } from './fit';
 import {
@@ -95,6 +97,7 @@ export interface SessionPortInspection {
   fullPayloadEstimatedTokens: number;
   tokenEstimator: typeof SESSION_PORT_TOKEN_ESTIMATOR;
   requiresSummary: boolean;
+  fit: PortableTurnFitInspection;
   stats: PortableSessionPort['stats'];
   warnings: string[];
   disclosure: {
@@ -436,6 +439,19 @@ export function inspectAcquiredSessionPort(input: {
     authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
     currentInstruction: currentInstruction.present ? currentInstruction.text : null,
   }).seed);
+  const fit = inspectPortableTurnFit({
+    turns: safe.turns,
+    availableTokens: target.availableInputTokens,
+    renderPayload: (transcript, fidelity) => renderSessionPortSeed({
+      portId: BUDGET_PORT_ID,
+      sourceBackend,
+      targetBackend: target.backend,
+      fidelity,
+      transcript,
+      authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
+      currentInstruction: currentInstruction.present ? currentInstruction.text : null,
+    }).seed,
+  });
   const stats: PortableSessionPort['stats'] = {
     ...adapted.stats,
     redactions: safe.redactions + currentInstruction.redactions,
@@ -460,7 +476,8 @@ export function inspectAcquiredSessionPort(input: {
     fullHistoryEstimatedTokens,
     fullPayloadEstimatedTokens,
     tokenEstimator: SESSION_PORT_TOKEN_ESTIMATOR,
-    requiresSummary: fullPayloadEstimatedTokens > target.availableInputTokens,
+    requiresSummary: fit.fidelity === 'summary-tail',
+    fit,
     stats,
     warnings: [
       ...adapted.warnings,
@@ -473,7 +490,7 @@ export function inspectAcquiredSessionPort(input: {
       sourceUntouched: true,
       authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
       targetEgress: `${target.provider}/${target.account}`,
-      summarizerEgress: fullPayloadEstimatedTokens > target.availableInputTokens
+      summarizerEgress: fit.fidelity === 'summary-tail'
         ? (input.summarizerProvider ?? 'papercusp inference gateway')
         : null,
     },

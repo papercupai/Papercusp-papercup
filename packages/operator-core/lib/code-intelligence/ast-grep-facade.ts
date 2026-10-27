@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { astGrepIdentity as pinnedAstGrepIdentity, assertIsAstGrep as pinnedAssertIsAstGrep, resolveAstGrepBin as pinnedResolveAstGrepBin } from './ast-grep-process.mjs';
 /**
  * `ast-grep` — the STRUCTURAL leg of the code-intelligence triad
  * (plan `code-intelligence-routing-lsp-gitnexus-2026-08-20`, P-014).
@@ -58,9 +59,8 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -93,8 +93,7 @@ export const AST_GREP_VENDOR_DIR = papercuspPath('vendor', 'ast-grep');
  * avoid (P-007).
  */
 export function resolveAstGrepBin(): string | null {
-  const bin = join(AST_GREP_VENDOR_DIR, 'node_modules', '.bin', 'ast-grep');
-  return existsSync(bin) ? bin : null;
+  return pinnedResolveAstGrepBin();
 }
 
 /**
@@ -105,19 +104,7 @@ export function resolveAstGrepBin(): string | null {
  * control in the test can feed it real shadow-utils output.
  */
 export function assertIsAstGrep(versionOutput: string): { ok: true; version: string } | { ok: false; reason: string } {
-  const text = versionOutput.trim();
-  const m = /^ast-grep\s+(\d+\.\d+\.\d+)/.exec(text);
-  if (!m) {
-    return {
-      ok: false,
-      reason:
-        `the resolved binary does not identify as ast-grep (it printed ${JSON.stringify(
-          text.slice(0, 80),
-        )}). On Linux \`sg\` is shadow-utils' substitute-group command, which exits 0 for ` +
-        `--version — so an exit-code check would have passed here.`,
-    };
-  }
-  return { ok: true, version: m[1] };
+  return pinnedAssertIsAstGrep(versionOutput);
 }
 
 export interface AstGrepIdentity {
@@ -129,23 +116,7 @@ export interface AstGrepIdentity {
 export async function astGrepIdentity(): Promise<
   { ok: true; identity: AstGrepIdentity } | { ok: false; reason: string }
 > {
-  const bin = resolveAstGrepBin();
-  if (!bin) {
-    return {
-      ok: false,
-      reason:
-        `pinned ast-grep is not provisioned. Expected it under ${AST_GREP_VENDOR_DIR}. ` +
-        `Provision it (P-014) rather than falling back to a PATH lookup — on Linux that ` +
-        `resolves shadow-utils' \`sg\`, not ast-grep.`,
-    };
-  }
-  try {
-    const { stdout } = await runExecFile(bin, ['--version'], { timeout: 10_000 });
-    const verdict = assertIsAstGrep(stdout);
-    return verdict.ok ? { ok: true, identity: { bin, version: verdict.version } } : verdict;
-  } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
-  }
+  return pinnedAstGrepIdentity();
 }
 
 /** The languages we let callers name, mapped to ast-grep's own `-l` values. */

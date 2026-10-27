@@ -1,0 +1,102 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "618da5f5697307c73e4191f061429684e9f707a8a447989df7788e7dace4d010.supporting-original",
+      "sha256": "618da5f5697307c73e4191f061429684e9f707a8a447989df7788e7dace4d010",
+      "byteLength": 7751
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "workItemId": "EI-26842368936683990",
+  "planSlug": "identity-definitions-own-policy-2026-10-17",
+  "scope": "Committed-source qualification of restricted-role resume, host adoption, and default wake-home repair. Actual production caller and runtime activation remain separate acceptance steps.",
+  "commitSha": "add0b97d27586b32e2b124cd6629979580a79b35",
+  "rootCause": "defaultEnsureCodexHomeForWake built an SU launch specification and called the SU home writer for every recorded role. Resume environment and host adoption had separately dropped the recorded role; those two earlier repairs are included in the qualified commit.",
+  "fix": "Restricted wake recovery now calls the same repairRoleCodexHome implementation as interactive recovery. Missing or conflicting owner/role provenance refuses before either writer. Incomplete restricted repair cannot fall through to the SU writer.",
+  "sourceFiles": [
+    { "path": "packages/operator-core/lib/events/await/wake-executor.ts", "sha256": "95ad82b0de475b6603f268f48bdac5c260a615276bb32bda82faac163ad95db5" },
+    { "path": "packages/operator-core/lib/events/await/wake-executor-codex-home-repair.test.ts", "sha256": "6a2496833cf77399ba1b3db9640dd766c3e3379a5be7dd63e0a32c792779f141" },
+    { "path": "apps/operator/scripts/psu-launcher.mjs", "sha256": "e16210991304372fa9e25419cf5af55e58ddd6b0a7fb1ee986e2851e6b8185d8" },
+    { "path": "apps/operator/scripts/psu-pty-host.mjs", "sha256": "bf6595d80453d3bc0ab695f24503ce6da2f4beab05216758833f3dc0e8c8596e" },
+    { "path": "apps/operator/lib/psu-launcher.test.ts", "sha256": "2f78d985cd42825d62faef2023054f6731bad0a16ea95bedda836c0feae17c6c" },
+    { "path": "apps/operator/lib/psu-host-handoff-env.test.ts", "sha256": "8d4ab22efc51ae0a8528b3f9c076bdd4824892530040924d5c776d5c50f49228" },
+    { "path": "apps/operator/lib/psu-pty-host-role-authority.integration.test.ts", "sha256": "4f19844a94b11d16fcbac0648a36127391b0336d113f160daade26ff31e574b6" }
+  ],
+  "distinguishingVerification": {
+    "hypothesis": "The production wake helper bypasses the restricted writer.",
+    "alternativeHypothesis": "The restricted writer is already selected and only native transport exposure is broken.",
+    "procedure": "Run the existing wake-executor-codex-home-repair suite before and after the source change; inspect restricted-writer, SU-writer and refusal assertions. Then run the existing launcher, serialized handoff and real PTY cases from the committed snapshot.",
+    "predictedObservations": {
+      "hypothesis": "The six role/route cases and provenance/incomplete-repair refusals fail before the change and pass after it.",
+      "alternativeHypothesis": "Those source-level cases pass before the change; native exposure can fail independently."
+    },
+    "baseline": { "testRunIds": [21934734, 21934735], "passed": 11, "failed": 11, "skipped": 0, "commitSha": "886c87f54cb65372e242db31a81b979e4505b998", "worktreeDirty": true },
+    "fixed": { "testRunId": 21935254, "passed": 22, "failed": 0, "skipped": 0, "worktreeDirty": false }
+  },
+  "committedVerification": {
+    "runner": "maintained with-test-pg -> lint:as-committed test:file --any --ref=add0b97d27586b32e2b124cd6629979580a79b35",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-add0b97d27-bH60Jw",
+    "nativeCommandSessionId": 31516,
+    "exitCode": 0,
+    "requestedFiles": 4,
+    "executedFiles": 4,
+    "matchedFiles": 4,
+    "passed": 1263,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "testRuns": [
+      { "id": 21935254, "path": "packages/operator-core/lib/events/await/wake-executor-codex-home-repair.test.ts", "passed": 22, "worktreeDirty": false },
+      { "id": 21935259, "path": "apps/operator/lib/psu-host-handoff-env.test.ts", "passed": 30, "worktreeDirty": false },
+      { "id": 21935260, "path": "apps/operator/lib/psu-launcher.test.ts", "passed": 1209, "worktreeDirty": false },
+      { "id": 21935261, "path": "apps/operator/lib/psu-pty-host-role-authority.integration.test.ts", "passed": 2, "worktreeDirty": false }
+    ],
+    "typecheck": { "nativeCommandSessionId": 12202, "exitCode": 0, "scope": "Explicit wake-executor source and resolved importer checks; not a whole-project typecheck." }
+  },
+  "actualCaller": {
+    "ownerId": "su-72c0b278-2103-44c1-b614-92c72f4e91a5",
+    "advSessionId": 51319,
+    "nativeSessionId": "01a16c98-4cb1-7ad2-8f99-3c2113dcbe0e",
+    "status": "VERIFIED: one normal native caller probe; full acceptance remains open",
+    "probe": "Canonical tagTurnForInjection nonce389f2a938e9ed200 was ledger-written, accepted by the verified original host and read back from the exact native transcript with VERIFIED AGENT-ORIGIN provenance.",
+    "terminalResult": "2026-10-24T21:50:41.876Z: usage_limit_exceeded, duration305469ms, no assistant message or caller probe result.",
+    "terminalEvent": { "offset": 1248693, "bytes": 510, "sha256": "4caeff41d4195ef7454c1286f5ba571c2b7983139476a56cd257501fcd9a5c3e" },
+    "recovery": "Supported idle shutdown with force:false and exact host binding returned sent. Subsequent read verified no host, free original native writer and recorded ended_at. Exact non-fork account:auto resume verified the same native identity. A real assistant turn and the following native tool call prove pickup separately from the launch receipt.",
+    "normalNativeCall": {
+      "callId": "call_faa9469769bb4f63aca50ec94c1ecaba",
+      "at": "2026-10-24T22:00:10.581Z",
+      "offset": 1291700,
+      "bytes": 628,
+      "sha256": "b82337726e8058acc56627a6bed3c65f4098da33d8aba795bb1c8c0f0eeba3b8",
+      "wrapper": "mcp__papercusp__tools_invoke",
+      "target": "agent_tools:list",
+      "args": { "filter": "agent_tools", "limit": 1 },
+      "authorityOverrides": false,
+      "sdkFallback": false
+    },
+    "normalNativeResult": {
+      "at": "2026-10-24T22:00:11.961Z",
+      "offset": 1294483,
+      "bytes": 3105,
+      "sha256": "ffe45e8b778b1273dd290c7b4779843f9c5db84b35eebf0a9c2fe201440047a8",
+      "parentDigestMatched": true,
+      "callerRole": "scoper",
+      "isSuperuser": false
+    },
+    "gatewayConfig": { "provider": "papercusp-codex-gateway", "baseUrl": "http://127.0.0.1:8788/v1", "accountPinPresent": false, "actualPoolAccountSelection": "not measured" },
+    "placementFollowup": "EI-26899826966868939: ordinary resume unexpectedly selected visible placement when headless was omitted. Filed and assigned to the parent. After the bounded probe stopped, the exact host refused the supported idle shutdown as not-agent-launched. That guard was preserved. The subsequent exact non-fork headless request refused the live source before opening any process. Original headless placement restoration remains blocked; the visible host remains."
+  },
+  "archiveManifest": "$HOME/.papercusp/evidence/idop-p001-wake-role-recovery-20261024-v1/archive-manifest.json",
+  "limits": [
+    "The source qualification applies to the exact frozen commit and listed hashes. Later host edits are not covered.",
+    "Private-database qualification preserves durable shared-ledger rows; the shared database storage precondition was not bypassed.",
+    "Synthetic role signatures and real PTY fixture results are not authenticated production caller evidence.",
+    "The one verified current native caller does not establish the full permission partition or prove a production wake executed the newly committed helper. SDK listTools remains transport-only evidence.",
+    "Runtime activation, full P-001 census and argument coverage, source-conversation approval, P-024 dependency, milestones and shipment remain open.",
+    "No grant widening, new measurement observer, forced shutdown, manual custody mutation or LIVE_GATE_OPS was used."
+  ]
+}

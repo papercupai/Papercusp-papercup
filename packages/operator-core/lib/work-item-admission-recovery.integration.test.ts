@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { AdmissionAuthorityUnavailable } from './work-item-admission-authority';
+import { AdmissionAuthorityRefused, AdmissionAuthorityUnavailable } from './work-item-admission-authority';
 import {
   AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
-  readAuthorizedComponentScreeningIds,
+  readAuthorizedComponentScreeningIds, readAuthorizedComponentScreening,
   type AdmissionRecoveryDeps,
 } from './work-item-admission-recovery';
 
@@ -13,7 +13,7 @@ const scope = { workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId
 const input = { ...scope, caller: 'requester', target: 'reviewer' };
 const authorize = vi.fn(async () => {});
 beforeAll(async () => {
-  db = await createFreshPgDb('admission-recovery');
+  db = await createFreshPgDb('admission_recovery');
   await db.sql.unsafe(`
     CREATE SCHEMA IF NOT EXISTS harness_shared;
     CREATE TABLE harness_shared.operator_secrets(name text PRIMARY KEY, value_b64 text);
@@ -26,7 +26,7 @@ beforeAll(async () => {
     );
     CREATE TABLE harness_shared.routines (
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
-      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
+      active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz, metadata jsonb
     );
   `);
 }, 60_000);
@@ -79,11 +79,45 @@ describe('original-item durable admission recovery', () => {
 
   it('reads authenticated scope-held component priority without modifying or dispatching its request', async () => {
     const before = await heldComponentRequest();
-    expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([scope.workItemId]);
+    expect(await readAuthorizedComponentScreening(scope, { authorize }, db.sql)).toEqual({
+      itemIds: [scope.workItemId], receipts: [{ itemId: scope.workItemId, stage: 'recheck', reason: 'selected' }],
+    });
     expect(authorize).toHaveBeenCalledWith(scope, expect.objectContaining({ requestId: before._admissionRecovery.requestId }));
     expect((await current()).payload).toEqual(before);
     expect((await current()).taken_by).toBeNull();
   });
+
+  it.each(['eligible', 'invalid-signature'] as const)(
+    'eventually visits a later request beyond a saturated %s component window', async (earlier) => {
+      const original = await heldComponentRequest();
+      for (let index = 0; index < 20; index++) {
+        const workItemId = `WI-earlier-${String(index).padStart(2, '0')}`;
+        await db.sql`INSERT INTO harness_shared.work_items(workspace_id,harness_slug,feature_id,payload)
+          VALUES (${scope.workspaceId},${scope.harnessSlug},${workItemId},'{}')`;
+        const result = await requestAdmissionRecovery({ ...input, workItemId, authority: {
+          kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, credentialSha256: 'a'.repeat(64),
+        } }, { authorize }, db.sql);
+        const request = { ...result.request, state: 'held', stage: 'screen',
+          reason: 'outside-mutation-scope: component endpoints',
+          ...(earlier === 'invalid-signature' ? { signature: '0'.repeat(64) } : {}),
+        };
+        await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_build_object('_admissionRecovery',
+          ${db.sql.json(request)}) WHERE feature_id = ${workItemId}`;
+      }
+      const first = await readAuthorizedComponentScreening(scope, { authorize }, db.sql);
+      expect(first.itemIds).not.toContain(scope.workItemId);
+      expect(first.receipts).toHaveLength(20);
+      expect(new Set(first.receipts.map((receipt) => receipt.itemId)).size).toBe(20);
+      const second = await readAuthorizedComponentScreening(scope, { authorize }, db.sql);
+      expect(second.itemIds).toContain(scope.workItemId);
+      expect(second.receipts).toHaveLength(20);
+      expect(first.itemIds.length).toBeLessThanOrEqual(20);
+      expect(second.itemIds.length).toBeLessThanOrEqual(20);
+      expect((await current()).payload).toEqual(original);
+      expect((await current()).admission).toBe('pending');
+      expect((await current()).taken_by).toBeNull();
+    },
+  );
 
   it.each(['pending', 'unreviewed'] as const)(
     'preserves the screening opportunity after an unjudged twin hold on a %s row', async (admission) => {
@@ -140,7 +174,50 @@ describe('original-item durable admission recovery', () => {
       if (failure === 'claim-during-authorization') authorize.mockImplementationOnce(async () => {
         await db.sql`UPDATE harness_shared.work_items SET taken_by = 'new-peer'`;
       });
-      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([]);
+      const beforeSelection = await current();
+      const result = await readAuthorizedComponentScreening(scope, { authorize }, db.sql);
+      expect(result.itemIds).toEqual([]);
+      // The owning-routine query never observes inactive/foreign candidates.
+      if (failure === 'routine' || failure === 'foreign') expect(result.receipts).toEqual([]);
+      else {
+        const expected = {
+          signature: ['provenance', 'recovery-refused'], authority: ['authority', 'recovery-refused'],
+          peer: ['eligibility', 'recovery-refused'], malformed: ['request', 'recovery-refused'],
+          changed: ['recheck', 'request-changed'], 'claim-during-authorization': ['recheck', 'recovery-refused'],
+          reviewed: ['freshness', 'already-reviewed'], 'held-after-screen': ['freshness', 'already-held'],
+        }[failure]!;
+        expect(result.receipts).toEqual([{ itemId: scope.workItemId, stage: expected[0], reason: expected[1] }]);
+      }
+      const afterSelection = await current();
+      expect(afterSelection.admission).toBe('pending');
+      if (failure !== 'changed' && failure !== 'claim-during-authorization') {
+        expect(afterSelection).toEqual(beforeSelection);
+      }
+    },
+  );
+
+  it('bounds refusal receipts and never copies authority exception secrets', async () => {
+    const before = await heldComponentRequest();
+    const neverEmitMarker = 'never-emit-me';
+    authorize.mockRejectedValue(new AdmissionAuthorityRefused(neverEmitMarker));
+    const result = await readAuthorizedComponentScreening(scope, { authorize }, db.sql);
+    expect(result).toEqual({ itemIds: [], receipts: [
+      { itemId: scope.workItemId, stage: 'authority', reason: 'authority-refused' },
+    ] });
+    expect(JSON.stringify(result)).not.toContain(neverEmitMarker);
+    expect(JSON.stringify(result)).not.toContain(before._admissionRecovery.signature);
+    expect((await current()).payload).toEqual(before);
+    expect((await current()).taken_by).toBeNull();
+  });
+
+  it.each([new Error('policy store failed'), new AdmissionAuthorityUnavailable('policy temporarily unreadable')])(
+    'propagates unavailable or unexpected component authority failures: %s', async (error) => {
+      const before = await heldComponentRequest();
+      authorize.mockRejectedValue(error);
+      await expect(readAuthorizedComponentScreening(scope, { authorize }, db.sql)).rejects.toBe(error);
+      expect((await current()).payload).toEqual(before);
+      expect((await current()).admission).toBe('pending');
+      expect((await current()).taken_by).toBeNull();
     },
   );
 

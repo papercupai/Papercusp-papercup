@@ -108,6 +108,79 @@ describe('papercusp database-backup progress watchdog', () => {
     );
   });
 
+  it.each([
+    ['growing', 9, 'absolute watchdog ceiling'],
+    ['stalled-after-floor', 6, 'killing stalled producer'],
+    ['stalled-from-start', 4, 'killing stalled producer'],
+  ] as const)('observes liveness before and termination at the %s boundary', (mode, due, reason) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-watchdog-boundary-'));
+    try {
+      const clock = join(root, 'clock');
+      const observations = join(root, 'observations');
+      const progress = join(root, 'archive.tmp');
+      const harness = join(root, 'boundary.sh');
+      writeFileSync(clock, '0');
+      // The injected clock and growth schedule drive the real watchdog. Its
+      // privileged du still measures an actual directory and compressed-named
+      // member. Only the fixture's wait/clock are synthetic (D-005).
+      writeFileSync(harness, `#!/usr/bin/env bash
+set -uo pipefail
+PC_BACKUP_WATCH_SEC=1
+PC_BACKUP_MIN_FREE_GB=0
+PROGRESS_STALE_SEC=2
+KILL_GRACE_SEC=0
+mkdir -p "$PROGRESS_PATH"
+: > "$PROGRESS_PATH/1.dat.zst"
+fs_avail_gb() { echo 999999; }
+log() { printf '%s\\n' "$*" >&2; }
+reap_own_stragglers() { :; }
+sudo() { shift 3; command "$@"; }
+date() {
+  local now
+  now=$(cat "$CLOCK")
+  if [[ -v dump_pid ]] && builtin kill -0 "$dump_pid" 2>/dev/null; then
+    printf 'alive %s\\n' "$now" >> "$OBSERVATIONS"
+  fi
+  printf '%s\\n' "$now"
+}
+sleep() {
+  [ "$1" != 0 ] || return 0
+  local tick
+  tick=$(( $(cat "$CLOCK") + 1 ))
+  printf '%s\\n' "$tick" > "$CLOCK"
+  if [ "$MODE" = growing ] || { [ "$MODE" = stalled-after-floor ] && [ "$tick" -le 4 ]; }; then
+    printf x >> "$PROGRESS_PATH/1.dat.zst"
+  fi
+}
+kill() {
+  if [ "$1" = -TERM ]; then
+    printf 'terminate %s\\n' "$(cat "$CLOCK")" >> "$OBSERVATIONS"
+  fi
+  builtin kill "$@"
+}
+${watchdogSource()}
+run_bounded_watched 4 9 "$PROGRESS_PATH" /bin/sleep 30
+`);
+      const run = spawnSync('bash', [harness], {
+        encoding: 'utf8', timeout: 5_000,
+        env: { ...process.env, MODE: mode, CLOCK: clock, OBSERVATIONS: observations, PROGRESS_PATH: progress },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect([137, 143], run.stderr).toContain(run.status);
+      expect(run.stderr).toContain(reason);
+      const observed = readFileSync(observations, 'utf8').trim().split('\n');
+      expect(observed).toEqual([
+        ...Array.from({ length: due }, (_, i) => `alive ${i + 1}`),
+        `terminate ${due}`,
+      ]);
+      // The complete ordered trace falsifies an early kill even when a later
+      // "dead by ceiling" assertion would pass. Production defaults are pinned
+      // separately above; this fixture preserves the same predicate ordering.
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('extends a growing archive past the floor but stops a stalled producer and a forever-growing one', () => {
     const root = mkdtempSync(join(tmpdir(), 'backup-progress-watchdog-'));
     try {

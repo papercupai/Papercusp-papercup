@@ -20,8 +20,11 @@
  */
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
-import { resolve } from 'node:path';
+import { resolve, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { join } from 'node:path';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
@@ -98,6 +101,26 @@ export function sessionId(env = process.env) {
   return typeof sid === 'string' && sid.length > 0 ? sid : null;
 }
 
+/** Shared CTRL parser for the owner fence and emission receipt metadata.
+ * @param {string} text
+ */
+function controlTransitionBlock(text) {
+  // The server renders CTRL as one marker + one JSON line, then separates the
+  // following orientation/memory blocks with a blank line. Keep this parser
+  // deliberately narrow: an unrecognisable first block is not control we can
+  // safely trust, so it is dropped rather than guessed at.
+  const match = /^⟦CTRL:(?:transition|full-resync)⟧[ \t]*([^\r\n]*)(?:\r?\n\r?\n|$)/.exec(text);
+  if (!match) return null;
+
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+  } catch {
+    payload = null;
+  }
+  return { header: match[0], payload };
+}
+
 /**
  * Keep a returned CTRL block bound to the session that requested it.
  *
@@ -115,23 +138,11 @@ export function sessionId(env = process.env) {
 export function fenceControlTransition(text, owner) {
   if (typeof text !== 'string' || !text) return null;
   if (!text.startsWith('⟦CTRL:')) return text;
+  const block = controlTransitionBlock(text);
+  if (!block) return null;
+  if (block.payload && typeof block.payload === 'object' && block.payload.targetOwnerId === owner) return text;
 
-  // The server renders CTRL as one marker + one JSON line, then separates the
-  // following orientation/memory blocks with a blank line. Keep this parser
-  // deliberately narrow: an unrecognisable first block is not control we can
-  // safely trust, so it is dropped rather than guessed at.
-  const match = /^⟦CTRL:(?:transition|full-resync)⟧[ \t]*([^\r\n]*)(?:\r?\n\r?\n|$)/.exec(text);
-  if (!match) return null;
-
-  let payload;
-  try {
-    payload = JSON.parse(match[1]);
-  } catch {
-    payload = null;
-  }
-  if (payload && typeof payload === 'object' && payload.targetOwnerId === owner) return text;
-
-  const remainder = text.slice(match[0].length);
+  const remainder = text.slice(block.header.length);
   return remainder || null;
 }
 
@@ -176,15 +187,16 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  *
  * @param {InjectionPort} port
  * @param {InjectionRequest} body
- * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} [opts]
+ * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number }} [opts]
  * @returns {Promise<{ text: string, deliveryToken: string | null } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
  */
 export async function postInjection(port, body, opts = {}) {
-  const { env = process.env, fetchImpl = globalThis.fetch } = opts;
+  const { env = process.env, fetchImpl = globalThis.fetch, now = Date.now } = opts;
   const spec = specFor(port);
   if (!spec) return null;
+  const startedAt = now();
 
   const { off, mode } = killSwitchState(port, env);
   if (off && mode === 'suppress') return null;
@@ -201,14 +213,19 @@ export async function postInjection(port, body, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
   try {
-    // wallMs: this hook's own wall, so the operator spends only what is left of
-    // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
-    // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn') await collectInterfaceEdits(body, undefined, env);
+    if (port === 'mid-turn') await Promise.all([collectInterfaceEdits(body, undefined, env), collectAntipatternEdits(body), collectCloneEdits(body)]);
     if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
-    const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
+    // wallMs: what is LEFT of this hook's own wall when the request leaves, so the
+    // operator spends only that (the Jev memory filter's wait, WI-10004485). The
+    // wall timer above started before local collection, which measured 0.75-0.8 s
+    // cold on the mid-turn port (code-intel-delivery-and-outcomes-2026-10-26#P-002).
+    // Sending the full spec value told the server it had time the hook had already
+    // spent, so a slow server answer was aborted here and nothing was injected.
+    // Derived from the spec, never a second copy of the number on the server.
+    const wallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
+    const payloadBody = JSON.stringify({ ...body, wallMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
     // reached at all (the fetch rejected before the wall fired — refused, reset,
@@ -280,6 +297,56 @@ export async function collectInterfaceEdits(body, collect = async path => {
     return state.recentEdits.filter(row => row.workspace === body.workspace && row.harness === body.harness);
   });
   if (recent?.length) body.incidentAttribution = { status: 'measured', recentEdits: recent };
+}
+
+/** Async preparation shared by native Edit/Write/MultiEdit and apply_patch.
+ * The push registry receives only bounded findings; it never scans source. */
+export async function collectCloneEdits(body, digest = async path => {
+  if ((await stat(path)).size > 1_500_000) return null;
+  const source = await readFile(path);
+  return source.length <= 1_500_000 ? createHash('sha256').update(source).digest('hex') : null;
+}) {
+  const seen = new Set();
+  const pending = [];
+  for (const call of (body.toolCalls ?? []).slice(-20)) {
+    if (!/(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? '')) continue;
+    for (const path of (call.editedPaths ?? []).slice(0, 20)) {
+      if (typeof path !== 'string' || !/\.tsx?$/.test(path)) continue;
+      const abs = resolve(body.cwd || process.cwd(), path);
+      const rel = relative(body.cwd || process.cwd(), abs).replaceAll('\\', '/');
+      if (rel.startsWith('../') || seen.has(rel) || seen.size >= 20) continue;
+      seen.add(rel);
+      pending.push(Promise.resolve().then(() => digest(abs)).then(sha256 => {
+        if (sha256) (call.cloneEdits ??= []).push({ path: rel, sha256 });
+      }, () => {}));
+    }
+  }
+  await Promise.all(pending);
+}
+
+export async function collectAntipatternEdits(body, prepare = async (path, root) => new Promise(resolveResult => {
+  const worker = join(root, 'packages/operator-core/lib/code-intelligence/agent-antipatterns-worker.ts');
+  execFile(process.execPath, [worker, path], { cwd: root, timeout: 600, maxBuffer: 100_000 }, (error, stdout) => {
+    try { resolveResult(error || !stdout ? null : JSON.parse(stdout)); } catch { resolveResult(null); }
+  });
+})) {
+  const { findRepoRoot } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
+  const paths = new Set();
+  const pending = [];
+  for (const call of body.toolCalls ?? []) {
+    if (!/(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? '')) continue;
+    for (const path of call.editedPaths ?? []) {
+      const abs = resolve(body.cwd || process.cwd(), path);
+      if (paths.has(abs) || paths.size >= 4 || !/\.tsx?$/.test(abs)) continue;
+      paths.add(abs);
+      const root = findRepoRoot(abs);
+      if (!root) continue;
+      pending.push(Promise.resolve().then(() => prepare(abs, root)).then(result => {
+        if (result) (call.antipatternEdits ??= []).push(result);
+      }, () => {}));
+    }
+  }
+  await Promise.all(pending);
 }
 
 function mergeCodeIntel(body, delivered, env) {
@@ -368,20 +435,51 @@ export function buildDigest(calls) {
   const spec = PORTS['mid-turn'];
   if (!Array.isArray(calls)) return [];
   const digest = [];
-  for (const call of calls.slice(0, spec.maxCalls)) {
-    if (!call || typeof call !== 'object') continue;
+  for (const rawCall of calls.slice(0, spec.maxCalls)) {
+    if (!rawCall || typeof rawCall !== 'object') continue;
+    // Classify the call a `tools:invoke` wrapper dispatched, not the wrapper. The
+    // server normalizes too, but only the client holds the unclamped input and
+    // response, so incidentResult/editedPaths must be derived from the inner call here.
+    const call = { ...rawCall, ...unwrapInvokedCall(rawCall.tool, rawCall.toolInput) };
+    const incidentResult = incidentResultFor(call.tool, call.toolResponse);
+    const editedPaths = editedPathsFor(call.tool, call.toolInput);
     digest.push({
       tool: typeof call.tool === 'string' ? call.tool : '',
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
-      ...(incidentResultFor(call.tool, call.toolResponse) ? { incidentResult: incidentResultFor(call.tool, call.toolResponse) } : {}),
+      ...(incidentResult ? { incidentResult } : {}),
       // Preserve the path independently of the 400-char recall digest. Edits often
       // exceed it, and a truncated JSON input cannot safely recover this field.
-      ...(editedPathsFor(call.tool, call.toolInput).length
-        ? { editedPaths: editedPathsFor(call.tool, call.toolInput), editedPath: editedPathsFor(call.tool, call.toolInput)[0] } : {}),
+      ...(editedPaths.length ? { editedPaths, editedPath: editedPaths[0] } : {}),
     });
   }
   return digest;
+}
+
+/** `tools:invoke` and its MCP-mangled form (`mcp__…_tools_invoke`); the same
+ * pattern as the server's TOOLS_INVOKE_RE (push-channel.ts). */
+const TOOLS_INVOKE_RE = /(?:^|_|:)tools[_:]invoke$/;
+
+/**
+ * The inner call of a `tools:invoke { name, args }` dispatch, one level only.
+ * Returns the original `{ tool, toolInput }` for any other call, or when the
+ * wrapper's input carries no usable name. About half of all `testing:run` calls
+ * arrive wrapped (measured 2026-10-27: 392 of 772 in 36h), and the incident leg
+ * matches on the inner tool name.
+ * @param {unknown} tool
+ * @param {unknown} input
+ * @returns {{ tool: unknown, toolInput: unknown }}
+ */
+export function unwrapInvokedCall(tool, input) {
+  if (typeof tool !== 'string' || !TOOLS_INVOKE_RE.test(tool)) return { tool, toolInput: input };
+  let outer = input;
+  if (typeof outer === 'string') {
+    if (outer.length > 2_000_000) return { tool, toolInput: input };
+    try { outer = JSON.parse(outer); } catch { return { tool, toolInput: input }; }
+  }
+  const name = outer && typeof outer === 'object' && !Array.isArray(outer) ? outer.name : undefined;
+  if (typeof name !== 'string' || !name) return { tool, toolInput: input };
+  return { tool: name, toolInput: outer.args };
 }
 
 /** Preserve observed failing-file identities outside the lossy recall prefix.
@@ -394,7 +492,10 @@ export function incidentResultFor(tool, response, depth = 0) {
   }
   if (!response || typeof response !== 'object') return null;
   if (response.structuredContent) return incidentResultFor(tool, response.structuredContent, depth + 1);
-  for (const block of (Array.isArray(response.content) ? response.content.slice(0, 8) : [])) {
+  // A client may hand the hook the MCP content-block array itself rather than
+  // `{ content: [...] }`; read both shapes the same way.
+  const blocks = Array.isArray(response) ? response : response.content;
+  for (const block of (Array.isArray(blocks) ? blocks.slice(0, 8) : [])) {
     if (block?.type !== 'text') continue;
     const found = incidentResultFor(tool, block.text, depth + 1);
     if (found) return found;
@@ -509,7 +610,13 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
 
     const payload = adapter.render(port, safeText, event);
     if (typeof payload !== 'string' || payload.length === 0) return null;
-    if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken);
+    if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken, {
+      payload: payload + '\n',
+      client: adapter.client,
+      nativeSessionId: typeof event?.session_id === 'string' ? event.session_id
+        : adapter.client === 'codex' ? env.CODEX_THREAD_ID : null,
+      control: controlTransitionBlock(safeText)?.payload ?? null,
+    });
     return payload;
   } catch {
     // Invariant 1, final backstop: an adapter bug must cost silence, not a turn.

@@ -59,7 +59,8 @@ import {
   type PlanLaneSyncStatus,
 } from './plan-items/reconcile-linked-work-items';
 import { planItemTextHash } from './plan-items/text-drift';
-import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
+import { readPlanItemAnchors } from './plan-items/anchor-store';
+import { codePayloadForPlanItems, computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
 import { listObjectTags } from './topics-feed';
 import {
@@ -76,7 +77,10 @@ import {
   readAndEvaluateAcceptanceBarLifecycle,
   type AcceptanceBarLifecycleVerdict,
 } from './acceptance-bar-lifecycle-evaluator';
-import { ensureWorkItemSpecRevisionEdges } from './agent-tools/plans/spec-evidence-store';
+import {
+  carryForwardCurrentSpecEvidence,
+  ensureWorkItemSpecRevisionEdges,
+} from './agent-tools/plans/spec-evidence-store';
 
 export interface PromotePlanResult {
   /** new work-items minted this call */
@@ -669,11 +673,23 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       reservationsRebound++;
   }
 
+  const anchorsByItem = await readPlanItemAnchors(opts);
+  const needsRepoRoot = openItems.some(item => {
+    const payload = codePayloadForPlanItems([item.id], anchorsByItem, item.text);
+    return payload !== undefined && payload.anchors === undefined;
+  });
+  let repoRoot: string | undefined;
+  if (needsRepoRoot) {
+    const { resolveProject } = await import('./harness-core');
+    repoRoot = (await resolveProject(opts.harnessSlug, opts.workspaceId))?.path;
+  }
   const specs = computePromotions({
     planSlug: opts.planSlug,
     harness: opts.harnessSlug,
     openItems,
     existingPromotedItemIds: alreadyIds,
+    anchorsByItem,
+    repoRoot,
   });
   const allRunSpecsByPlanItem = opts.planRun
     ? new Map(
@@ -682,6 +698,8 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
           harness: opts.harnessSlug,
           openItems,
           existingPromotedItemIds: [],
+          anchorsByItem,
+          repoRoot,
         }).map((spec) => [spec.sourcePlanItemIds[0], spec]),
       )
     : new Map<string, ReturnType<typeof computePromotions>[number]>();
@@ -748,6 +766,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
    * so translation is order-independent.
    */
   const mintedByPlanItem = new Map<string, string>();
+  const promotionHarnessByPlanItem = new Map<string, string>();
   const newlyPromotedPlanItemIds = new Set<string>();
   const rawByPlanItem = new Map(rawItems.map((item) => [item.id, item]));
   for (const spec of specs) {
@@ -790,6 +809,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         ...designProvenance,
         topics: planTopics,
         payload: {
+          ...spec.payload,
           plan_item: stamp,
           ...(opts.planRun ? { plan_run: opts.planRun } : {}),
           // EI-21574373783224719: reserve the minted lane for the fleet it was minted FOR
@@ -821,7 +841,8 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // home slug (see condition-upsert.ts's header), and the pre-D-046 code linked with
     // the created row's own `wi.harness` for exactly that reason.
     const wi = (await getWorkItem(minted.id, spec.harness)) ?? (await getWorkItem(minted.id));
-    const winnerHarness = wi?.harness ?? spec.harness;
+    const winnerHarness = wi?.harness ?? spec.harness ?? opts.harnessSlug;
+    promotionHarnessByPlanItem.set(itemId, winnerHarness);
     await stampPromotedLaneGoal(minted.id, winnerHarness);
     await linkWorkItem(minted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) }, IMPLEMENTS_REL, {
       harness: winnerHarness ?? undefined,
@@ -834,7 +855,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // the completion gate and BAR snapshot classify that old edge as stale.
     await ensureWorkItemSpecRevisionEdges({
       workspaceId: opts.workspaceId,
-      harnessSlug: winnerHarness ?? spec.harness,
+      harnessSlug: winnerHarness,
       planSlug: opts.planSlug,
       planItemIds: [itemId],
       workItemId: minted.id,
@@ -894,6 +915,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     const existing = await findConvertedWorkItemByStamp(opts.planSlug, item.id, opts.harnessSlug);
     if (existing?.id) {
       workItemByPlanItem.set(item.id, existing.id);
+      promotionHarnessByPlanItem.set(item.id, existing.harness ?? opts.harnessSlug);
       continue;
     }
     if (!opts.planRun) continue;
@@ -926,6 +948,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         ...designProvenance,
         topics: planTopics,
         payload: {
+          ...spec.payload,
           plan_item: stampForPlanItem(item.id),
           plan_run: opts.planRun,
           // EI-21574373783224719: same fleet reservation as the mint path above — an
@@ -946,17 +969,35 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       newlyPromotedPlanItemIds.add(item.id);
     }
     const wi = (await getWorkItem(adopted.id, spec.harness)) ?? (await getWorkItem(adopted.id));
-    await stampPromotedLaneGoal(adopted.id, wi?.harness ?? spec.harness);
+    const winnerHarness = wi?.harness ?? spec.harness ?? opts.harnessSlug;
+    promotionHarnessByPlanItem.set(item.id, winnerHarness);
+    await stampPromotedLaneGoal(adopted.id, winnerHarness);
     await linkWorkItem(adopted.id,{ kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
-      harness: wi?.harness ?? spec.harness,
+      harness: winnerHarness,
       by: opts.createdBy,
     });
     await ensureWorkItemSpecRevisionEdges({
       workspaceId: opts.workspaceId,
-      harnessSlug: wi?.harness ?? spec.harness,
+      harnessSlug: winnerHarness,
       planSlug: opts.planSlug,
       planItemIds: [item.id],
       workItemId: adopted.id,
+      actorId: opts.createdBy,
+    });
+  }
+
+  // A copy can fail after the canonical row is minted and linked. Re-run the
+  // idempotent transfer for every resolved mapping so a promotion retry heals
+  // that partial state instead of treating the row as complete and skipping it.
+  for (const item of openItems) {
+    const workItemId = workItemByPlanItem.get(item.id);
+    if (!workItemId) continue;
+    await carryForwardCurrentSpecEvidence({
+      workspaceId: opts.workspaceId,
+      harnessSlug: promotionHarnessByPlanItem.get(item.id) ?? opts.harnessSlug,
+      planSlug: opts.planSlug,
+      planItemId: item.id,
+      workItemId,
       actorId: opts.createdBy,
     });
   }

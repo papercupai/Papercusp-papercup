@@ -67,6 +67,18 @@ beforeEach(() => {
 });
 
 describe('routines:revert MCP boundary', () => {
+  it('restores a Git routine whose install slug contains a managed submodule path', async () => {
+    sqlMock
+      .mockResolvedValueOnce([{ action: 'gateway-control.routines:set', subject: 'papercusp/libs/generic/cache/git-sync', details: { prev: previous, next } }])
+      .mockResolvedValueOnce([rowFor(next)])
+      .mockResolvedValueOnce([rowFor(next)])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([rowFor(previous)]);
+    expect(body(await tool.handler({ auditId: 'gwc-nested' } as never, { role: 'operator' } as never))).toMatchObject({ applied: true });
+    expect(sqlMock.mock.calls.flat()).toContain('papercusp/libs/generic/cache');
+    expect(sqlMock.mock.calls.flat()).toContain('git-sync');
+    expect(sqlMock.mock.calls.flat()).not.toContain('libs/generic/cache/git-sync');
+  });
   it('finishes a partial safety restore and keeps the completed trial metadata', () => {
     const before = { ...previous, active: false, payloadTemplate: { mode: 'manual' }, metadata: {} };
     const configured = { ...next, active: true, payloadTemplate: { mode: 'manual', pilot: { pin: 'frozen' } }, metadata: {} };

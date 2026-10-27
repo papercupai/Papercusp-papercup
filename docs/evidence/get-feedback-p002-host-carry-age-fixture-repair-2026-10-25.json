@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItemId": "P-002",
+  "parentWorkItemId": "WI-10005889",
+  "repairWorkItemId": "EI-26974944312914718",
+  "scope": "Source and controlled fixture evidence only.",
+  "repair": {
+    "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+    "commitSha": "9a9fa87645b0d7d39677c27d4b3d85f38c9408ca",
+    "sha256": "901fa48934b3429b3a1407f5ce78365a1d4d8b39eec44f7adda28d6c8ca290fa",
+    "productionSourceEdited": false,
+    "rootCause": "The carry-age fixture inferred a busy and aged-message precondition from timed PTY output. The failing clean run recycled approximately 3 ms after the receipt, below its 50 ms age limit, so the drill expiry assertion did not exercise an aged message.",
+    "durableChange": "Use an isolated native task_started row, wait for the canonical receipt to age beyond 50 ms while asserting the original child is still present, then release with task_complete. Distinct source and successor native IDs and an explicit fixture onRespawn acknowledgement satisfy the host reanchor seam.",
+    "detectorRepair": "The maintained test now asserts the receipt, actual elapsed age and unchanged initial BOOT count before releasing its busy barrier.",
+    "preservedLimits": {
+      "carryStaleMs": 50,
+      "deliveryDeadlineMs": 8000,
+      "testTimeoutMs": 25000
+    },
+    "preservedOracles": [
+      "An aged drill drops with carry-stale, keeps the original child and never echoes CARRIED.",
+      "An aged production carry reaches a successor and echoes CARRIED without carry-stale.",
+      "The synthetic successor lacks native turn-start proof: it records turn-start-unverified and never claims respawn-carry-delivered."
+    ]
+  },
+  "verification": {
+    "failingBaseline": {
+      "testRunId": 22046694,
+      "commitSha": "0f9e16607008b5c7f930091a836a80d786268b5a",
+      "worktreeDirty": false,
+      "passed": 136,
+      "failed": 1,
+      "skipped": 0,
+      "failedCase": "carry-respawn STALENESS guard — only drills expire; production carries remain must-deliver > preserves the age policy at the first prompt boundary (drill=true)"
+    },
+    "focusedRepair": {
+      "testRunId": 22048847,
+      "worktreeDirty": true,
+      "passed": 2,
+      "failed": 0,
+      "unselected": 135,
+      "reusedWithoutReplay": true
+    },
+    "committedFullFile": {
+      "testRunId": 22051655,
+      "commitSha": "9a9fa87645b0d7d39677c27d4b3d85f38c9408ca",
+      "runGroupId": "gf-p002-host-age-repair-20261025-1792953502124",
+      "command": "node scripts/lint-as-committed.mjs test:file --ref=9a9fa87645b0d7d39677c27d4b3d85f38c9408ca --any -- apps/operator/lib/psu-pty-host.integration.test.ts",
+      "worktreeDirty": false,
+      "collectionFailed": false,
+      "passed": 137,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "runtimeEnvironmentBeforeCaptureStatus": "not-configured",
+      "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+      "runnerState": "/tmp/gf-p002-host-age-repair-20261025.state.json",
+      "runnerLog": "/tmp/gf-p002-host-age-repair-20261025.log",
+      "parentReceiptFile": "absent; verification uses the independently read canonical test_runs record and maintained runner result",
+      "temporaryCloneRemoved": true
+    },
+    "casePopulation": {
+      "previousTestRunId": 21938560,
+      "previousPassingCases": 136,
+      "missingPreviousTitles": [],
+      "missingDeclaredCases": [],
+      "declaredCaseCount": 11,
+      "addedTitle": "acknowledges startup with the exact initial live PTY PID",
+      "changedFixtureCaseCount": 2,
+      "historicalFixtureMechanicsUnchanged": false
+    }
+  },
+  "bindingQualification": {
+    "specId": "GF-P002-source",
+    "specRevision": 1,
+    "previousBindingId": 69329,
+    "replacementBindingId": 70362,
+    "independentCurrentness": "current",
+    "applicableDimensions": {
+      "spec": "current",
+      "source": "current",
+      "test": "current",
+      "fixture": "current",
+      "testRun": "current"
+    },
+    "staleReasons": [],
+    "unknownReasons": [],
+    "adequacyEqual": true,
+    "measurementRecipeEqual": true,
+    "retainedSourcePathCount": 11,
+    "retainedFixturePathCount": 6,
+    "previousBindingWithdrawnAfterIndependentQualification": true,
+    "withdrawnAt": "2026-10-25T18:44:02.734Z",
+    "sourcePaths": [
+      "apps/operator/package.json",
+      "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
+      "apps/operator/scripts/psu-launcher.mjs",
+      "apps/operator/scripts/psu-pty-host.mjs",
+      "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/operator-core/lib/child-output.ts",
+      "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "packages/operator-core/lib/process-identity.ts",
+      "packages/operator-core/package.json"
+    ],
+    "fixturePaths": [
+      "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "apps/operator/package.json",
+      "apps/operator/vitest-shims/psu-pty-temp-dir.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/operator-core/package.json"
+    ]
+  },
+  "limitations": [
+    "This is fixture and source proof; it does not establish original native execution or current native acceptance.",
+    "Original native bindings 28326 and 28545 are preserved.",
+    "Actor, lease ABA, custody, cohort quality, independent acceptance and verified shipment remain open on the parent work item.",
+    "The reporter provenance incident EI-26900834772734276 remains open with root cause unknown; this successful run does not resolve it.",
+    "The whole GF-P002-source clause and acceptance bar are not claimed complete.",
+    "A build-position read confirmed only a local commit for this repair; no deployment is claimed."
+  ]
+}

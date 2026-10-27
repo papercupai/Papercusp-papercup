@@ -301,14 +301,15 @@ CC_POST_BATCH_LOCKS_HOOK="${CC_HOOK_DEST_DIR}/posttoolbatch-locks-release.sh"
 # ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
 # fail-open, psu-gated.
 CC_TURN_JOURNAL_HOOK="${CC_HOOK_DEST_DIR}/stop-turn-journal.sh"
-# PreToolUse+PostToolUse+Notification+Stop hook (owner-inbox-single-pane-2026-07-17
+# PreToolUse+PostToolUse+Notification+Stop+StopFailure hook (owner-inbox-single-pane-2026-07-17
 # P-001): the owner-gate CAPTURE + MIRROR layer. PreToolUse/PostToolUse (matcher
 # "AskUserQuestion|ExitPlanMode") open/close a client-agnostic blocked-session gate
 # (sessions:ingest-gate-event, P-002) around the two Claude-native dialogs;
 # Notification captures a permission-wait; Stop parses the turn's final text for a
 # structured `<ask>` block (mirrors it to coord:escalate) or BOUNCES a bare
 # question-shaped ending with no structured mirror (loop-guarded via
-# stop_hook_active). Own settings entries (4 — see the script's own header).
+# stop_hook_active). StopFailure also clears permission waits after an API/runtime
+# error replaces Stop. Own settings entries (5 — see the script's own header).
 CC_ASK_GATE_HOOK="${CC_HOOK_DEST_DIR}/ask-gate-mirror.sh"
 CC_GUARD_OPERATOR_DESKTOP_HOOK="${CC_HOOK_DEST_DIR}/guard-operator-desktop.mjs"
 # PreToolUse hook (git-sync-dx-hardening-2026-06-17 P-013, wired WI-5543): advisory
@@ -972,9 +973,10 @@ PYEOF
 }
 
 # Merge the owner-gate mirror hook (owner-inbox-single-pane-2026-07-17 P-001) as
-# FOUR entries — one script, four hook_event_name branches (see the script's own
+# FIVE entries — one script, five hook_event_name branches (see the script's own
 # header): PreToolUse + PostToolUse scoped to the two Claude-native dialog tools
 # (matcher "AskUserQuestion|ExitPlanMode"), plus matcher-less Notification + Stop
+# + StopFailure
 # entries (those fire for every notification/turn-end; the script itself narrows
 # what it acts on). Idempotent per event, same command-level drop_ours pattern as
 # every sibling merge_* function.
@@ -1007,8 +1009,8 @@ for event in ('PreToolUse', 'PostToolUse'):
     arr.append({'matcher': 'AskUserQuestion|ExitPlanMode',
                 'hooks': [{'type': 'command', 'command': hook}]})
     hooks[event] = arr
-# Notification + Stop: no tool matcher — the script's own event-name branch narrows.
-for event in ('Notification', 'Stop'):
+# Notification + Stop + StopFailure: no tool matcher — the script's own event-name branch narrows.
+for event in ('Notification', 'Stop', 'StopFailure'):
     arr = [e for e in (drop_ours(x) for x in hooks.get(event, [])) if e]
     arr.append({'hooks': [{'type': 'command', 'command': hook}]})
     hooks[event] = arr

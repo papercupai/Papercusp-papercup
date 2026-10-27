@@ -26,7 +26,8 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
-import { appendDispatchRecord } from './consult-dispatch';
+import { appendDispatchRecord, makeConsultReachDispatcher } from './consult-dispatch';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 import {
   resolveProseProfileSelection,
   type ProseProfileSelection,
@@ -408,6 +409,78 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       confirmReservation: async () => true,
     })).rejects.toThrow(/plan creator provenance is missing or ambiguous/);
     expect(feedback).not.toHaveBeenCalled();
+  });
+
+  it('retires a consult from an older reservation epoch and dedupes the current epoch', async () => {
+    const issueId = 'EI-stale-reservation-epoch-' + randomBytes(5).toString('hex');
+    const reservationKey = 'grading-audit:' + issueId;
+    const priorReservedAt = '2026-08-15T23:45:00.000Z';
+    const currentReservedAt = SOURCE_AUDIT_RESERVED_AT;
+    const conversationId = 'conv-stale-reservation-epoch-' + randomBytes(5).toString('hex');
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, routing, outcome)
+      VALUES (
+        ${WS}, ${conversationId}, 'audit-requester', 'prior-epoch-auditor', 'awaiting_responder',
+        'stale reservation epoch regression',
+        ${rootSql.json({
+          cascade: { flavor: 'grading-integrity', reservationKey, reservationReservedAt: priorReservedAt, issueId },
+        } as never)}, NULL
+      )`;
+
+    const fixture = makeDeps(routeOf([cand('fresh-epoch-auditor')]));
+    const feedback = vi.fn(async (
+      req: GetFeedbackRequest,
+      _identity: unknown,
+      options: {
+        harnessSlug?: string | null;
+        filterRoute?: (route: RouteResult) => Promise<RouteResult>;
+      } = {},
+    ) =>
+      getFeedbackCore(req, {
+        ...fixture.deps,
+        route: async (params) => {
+          const routed = await fixture.deps.route(params);
+          return options.filterRoute ? options.filterRoute(routed) : routed;
+        },
+      }),
+    );
+    const input = {
+      card: { issueId, createdBy: 'source-author' } as ScorecardRow,
+      reservationKey,
+      reservationReservedAt: currentReservedAt,
+      brief: 'Audit the current reservation epoch',
+      ctx: { workspaceId: WS, uiClientId: 'current-epoch-requester', isSuperuser: true },
+    };
+    const routeDeps = {
+      getSql: () => rootSql,
+      feedback,
+      confirmReservation: async () => true,
+      resolveParties: async (ids: readonly (string | null | undefined)[]) => new Map(
+        ids.filter((id): id is string => Boolean(id)).map((id) => [id, id]),
+      ),
+      resolveResponderLiveness: async () => ({ sessionState: 'live' as const }),
+    };
+
+    const first = await routeSourceGradingAudit(input, routeDeps);
+    if (first.state !== 'routed') throw new Error('expected current epoch to route, got ' + first.state);
+    expect(feedback).toHaveBeenCalledOnce();
+
+    const oldRow = await stateRow(conversationId);
+    expect(oldRow.state).toBe('expired');
+    expect(oldRow.outcome).toMatchObject({
+      dispatch: 'stale-reservation-epoch',
+      priorReservedAt,
+      currentReservedAt,
+    });
+    expect((await stateRow(first.conversationId)).routing).toMatchObject({
+      cascade: { reservationKey, reservationReservedAt: currentReservedAt },
+    });
+
+    const replay = await routeSourceGradingAudit(input, routeDeps);
+    if (replay.state !== 'deduped') throw new Error('expected same-epoch replay to dedupe, got ' + replay.state);
+    expect(replay.conversationId).toBe(first.conversationId);
+    expect(feedback).toHaveBeenCalledOnce();
   });
 
   it.each(['ended', 'recorded'] as const)(
@@ -948,6 +1021,45 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('requires explicit METHOD context, fingerprints it, and retains it through durable recovery', async () => {
+    const fixture = makeDeps(routeOf([cand('method-context-expert')]));
+    const request = { ...baseReq, requestKey: 'method-context', policy: 'method-review',
+      methodReviewRubricRef: 'acceptance-method-context' };
+    await expect(acceptFeedbackRequestCore({ ...request, methodReviewRubricRef: undefined }, fixture.deps))
+      .rejects.toThrow('method_review_requires_acceptance_rubric');
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    expect(await acceptFeedbackRequestCore({ ...request, methodReviewRubricRef: 'acceptance-other' }, fixture.deps))
+      .toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }) });
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ policy: 'method-review',
+      methodReviewRubricRef: request.methodReviewRubricRef,
+      request: { payload: { methodReviewRubricRef: request.methodReviewRubricRef } },
+    });
+    // Read the REAL persisted JSON through the production deferred dispatcher.
+    // A system sweep launcher must not replace the saved applier/target. The
+    // denied source must return before resolving a session or spending capacity.
+    const dbOrg = await import('@papercusp/db-org');
+    const spy = vi.spyOn(dbOrg, 'getOrgPg');
+    mockOrgPgSql(spy, rootSql);
+    const checkApprover = vi.fn(async (input: { rubricId: string; ownerId: string; applierId?: string }) => ({
+      ...input, subjectPlan: 'method-context-subject', eligible: false as const,
+      reason: 'related_to_plan_implementer' as const, eligibleWithUnrelatedApplier: false,
+    }));
+    const resolveResumeTarget = vi.fn();
+    try {
+      const result = await makeConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp',
+        launchedBy: 'system:consult-expiry-sweep' }, {
+        checkApprover, resolveResumeTarget, recordDispatchAttempts: async () => {},
+      })({ conversationId: accepted.conversation_id, responder: 'method-context-expert', summary: 'method', body: 'current method' });
+      expect(result.queued).toBe(0);
+      expect(checkApprover).toHaveBeenCalledWith({ rubricId: request.methodReviewRubricRef,
+        applierId: baseReq.requesterId, ownerId: 'method-context-expert' });
+      expect(resolveResumeTarget).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
   it('round-trips native constraints through durable request recovery and rejects retry/tamper changes', async () => {
     const nativeConsult = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } as const;
     const fixture = makeDeps(routeOf([cand('native-persisted-expert')]));
@@ -1236,9 +1348,10 @@ describe('recoverable interactive feedback requests', () => {
     expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { leaseToken: 'new-worker' } });
   });
 
-  it('recovers initial delivery after process loss at selected-row commit without re-routing or duplicate launch', async () => {
+  it.each([undefined, 'method-review'])('recovers initial delivery for %s after process loss without re-routing or duplicate launch', async (policy) => {
     const fixture = makeDeps(routeOf([cand('durable-initial-expert')]));
-    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'durable-initial' }, fixture.deps);
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: `durable-initial-${policy ?? 'default'}`, policy,
+      ...(policy === 'method-review' ? { methodReviewRubricRef: 'acceptance-durable-method' } : {}) }, fixture.deps);
     const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
         resumeInitialDispatch: () => { throw new Error('process stopped before initial continuation'); } }));
@@ -1250,6 +1363,14 @@ describe('recoverable interactive feedback requests', () => {
       version: 1, cursor: 0, responder: 'durable-initial-expert', leaseToken: null, leaseUntil: null,
       body: expect.stringContaining(baseReq.question),
     } });
+    if (policy === 'method-review') {
+      expect(selected.routing).toMatchObject({ policy, cascadeDispatch: {
+        body: expect.stringContaining('CURRENT METHOD'),
+      } });
+      expect(selected.routing).not.toMatchObject({ cascadeDispatch: {
+        body: expect.stringContaining('Answer FROM the transcript'),
+      } });
+    }
     expect(fixture.reached).toHaveLength(0);
     expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, requestDeps)).toBe(false);
     expect(execute).toHaveBeenCalledTimes(1);
@@ -1260,6 +1381,7 @@ describe('recoverable interactive feedback requests', () => {
     const started = new Promise<void>(resolve => { entered = resolve; });
     const dispatch = vi.fn(async (opts: Parameters<GetFeedbackDeps['reach']>[0]) => {
       expect(opts.body).toContain(baseReq.question);
+      if (policy === 'method-review') expect(opts.body).toContain('CURRENT METHOD');
       await opts.onAnsweringOwner?.('durable-initial-answerer');
       entered();
       await held;
@@ -1279,6 +1401,57 @@ describe('recoverable interactive feedback requests', () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(selectionFromRouting((await stateRow(accepted.conversation_id)).routing)[0])
       .toMatchObject({ answeringOwnerId: 'durable-initial-answerer' });
+  });
+
+  it('persists a native target capacity stop through deferred recovery and expiry without trying another source', async () => {
+    const fixture = makeDeps(routeOf([cand('capacity-first'), cand('capacity-next')]));
+    const request = { ...baseReq, requestKey: 'native-capacity-recovery', maxResponders: 2 };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
+        ...fixture.deps, acceptedRequest, resumeInitialDispatch: () => {},
+      }),
+    });
+    const detail = 'native target claude capacity unavailable: all accounts walled';
+    const dispatch = vi.fn(async () => ({ woke: 0, answeringOwnerId: null, targetCapacityUnavailable: detail }));
+    expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW, dispatch: () => dispatch,
+    })).toBe(true);
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ targetCapacityUnavailable: detail });
+    const next = vi.fn(async () => ({ woke: 1, answeringOwnerId: 'unwanted-answerer' }));
+    await sweepExpiredConsults({ getSql: () => rootSql, now: () => NOW,
+      dispatch: next, emitReplyEvent: async () => {}, notifyRequester: async () => {} });
+    expect(next).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const row = await stateRow(accepted.conversation_id);
+    expect(row.state).toBe('expired');
+    expect(row.cascade_cursor).toBe(0);
+    expect(row.cascade_digest).toEqual([expect.objectContaining({ kind: 'dispatch_failed', excerpt: detail })]);
+  });
+
+  it('does not persist a target-capacity stop after its deferred dispatch lease is replaced', async () => {
+    const fixture = makeDeps(routeOf([cand('capacity-stale')]));
+    const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'capacity-stale-lease' }, fixture.deps);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
+        ...fixture.deps, acceptedRequest, resumeInitialDispatch: () => {},
+      }),
+    });
+    await continueCascadeDispatchCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async () => {
+        await rootSql`UPDATE harness_shared.consult_state
+          SET routing = jsonb_set(routing, '{cascadeDispatch,leaseToken}', '"replacement"'::jsonb)
+          WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+        return { woke: 0, targetCapacityUnavailable: 'stale capacity refusal' };
+      },
+    });
+    const row = await stateRow(accepted.conversation_id);
+    expect(row.routing).not.toHaveProperty('targetCapacityUnavailable');
+    expect(row.routing).toMatchObject({ cascadeDispatch: { leaseToken: 'replacement' } });
+    expect(row.expires_at instanceof Date && row.expires_at.getTime() > NOW.getTime()).toBe(true);
   });
 
   it.each(['routed', 'retrieval', 'empty'] as const)('reports accepted initial %s delivery without inventing a launch', async kind => {
@@ -1323,6 +1496,7 @@ describe('getFeedbackCore — routed', () => {
     ['acceptance-bar-amendment-review', 'floor'], ['acceptance-bar-amendment-review', 'minimum'],
     ['acceptance-bar-amendment-review', 'lexical'], ['rubric-vetting', 'floor'],
     ['rubric-vetting', 'minimum'], ['rubric-vetting', 'lexical'],
+    ['method-review', 'floor'], ['method-review', 'minimum'], ['method-review', 'lexical'],
   ] as const)(
     'delivers the complete current review request for %s on the initial %s route',
     async (policy, selection) => {
@@ -1338,10 +1512,12 @@ describe('getFeedbackCore — routed', () => {
         all: [candidate],
         ...(selection === 'lexical' ? { degraded: 'embed-unavailable', fallback: 'lexical' } : {}),
       }));
-      const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2 }, fixture.deps));
+      const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2,
+        ...(policy === 'method-review' ? { methodReviewRubricRef: 'acceptance-current-method' } : {}) }, fixture.deps));
       expect(fixture.reached).toHaveLength(1);
       expect(fixture.reached[0].body).toContain(question);
-      expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting' ? 'CURRENT RUBRIC' : 'CURRENT AMENDMENT');
+      expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting'
+        ? 'CURRENT RUBRIC' : policy === 'method-review' ? 'CURRENT METHOD' : 'CURRENT AMENDMENT');
       expect(fixture.reached[0].body).toContain('results[0].conversation.body');
       expect(fixture.reached[0].body).toContain('do not decline solely');
       expect(fixture.reached[0].body).not.toContain('Answer FROM the transcript');
@@ -2245,6 +2421,18 @@ async function seedClosedConsult(opts: {
 describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
   const qv = vecAt(0);
 
+  it('routes a new method review even when an identical archived answer exists and archive_floor is lowered', async () => {
+    const ws = 'ws-arch-current-method';
+    await seedClosedConsult({ ws, conv: 'old-method-answer', vec: vecAt(0), responder: 'old-reviewer' });
+    const fixture = makeDeps(routeOf([cand('current-method-reviewer')], { queryVec: qv }));
+    const result = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws,
+      policy: 'method-review', methodReviewRubricRef: 'acceptance-current-method', archiveFloor: 0 }, fixture.deps));
+    expect(result.verdict).toBe('routed');
+    expect(fixture.reached).toHaveLength(1);
+    expect(fixture.reached[0].body).toContain('CURRENT METHOD');
+    expect((await stateRow(result.conversation_id, ws)).routing).toMatchObject({ policy: 'method-review' });
+  });
+
   it('a closed_answered consult with a highly similar question serves from the archive: instant close, no wake, provenance cited', async () => {
     const ws = 'ws-arch-serve';
     await seedClosedConsult({
@@ -3091,6 +3279,39 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
       { ownerId: 'dead-x', kind: 'dispatch_failed' },
       { ownerId: 'expert-b', kind: 'dispatch_failed' },
     ]);
+  });
+
+  it('stops initial source failover and refill when the native target has no capacity', async () => {
+    const second = cand('capacity-second', { score: 0.65 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second], { all: [deadExpert, second, liveLow] }));
+    deps.reach = async opts => {
+      reached.push(opts);
+      return { queued: 0, woke: 0, answeringOwnerId: null,
+        targetCapacityUnavailable: 'native target claude capacity unavailable: all accounts walled' };
+    };
+    const result = asOk(await getFeedbackCore({ ...baseReq, minResponders: 2, maxResponders: 2 }, deps));
+    expect(reached.map(entry => entry.responder)).toEqual(['dead-x']);
+    expect(result.verdict).toBe('no_launchable_responder');
+    expect(await stateRow(result.conversation_id)).toMatchObject({
+      state: 'no_launchable_responder', responder_id: null, cascade_cursor: 0, expires_at: null,
+    });
+  });
+
+  it('stops a later source failure walk before its next candidate or refill when target capacity is unavailable', async () => {
+    const second = cand('capacity-second', { score: 0.65 });
+    const third = cand('capacity-third', { score: 0.6 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second, third], { all: [deadExpert, second, third, liveLow] }));
+    deps.reach = async opts => {
+      reached.push(opts);
+      return { queued: 0, woke: 0, answeringOwnerId: null,
+        ...(opts.responder === 'capacity-second' ? { targetCapacityUnavailable: 'native target codex capacity unavailable' } : {}) };
+    };
+    const result = asOk(await getFeedbackCore({ ...baseReq, minResponders: 3, maxResponders: 3 }, deps));
+    expect(reached.map(entry => entry.responder)).toEqual(['dead-x', 'capacity-second']);
+    expect(result.verdict).toBe('no_launchable_responder');
+    const row = await stateRow(result.conversation_id);
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.routing).toMatchObject({ targetCapacityUnavailable: 'native target codex capacity unavailable' });
   });
 
   it('an expert whose whole allowlist is exhausted fails over to the next selectee, digesting dispatch_failed', async () => {

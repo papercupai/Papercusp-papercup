@@ -38,6 +38,7 @@ const goodStatus = () => ({
   ok: true,
   lastSuccessEpoch: NOW - 600,
   dumped: ['postgres', 'papercusp', 'restart'],
+  artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch: NOW - 600, systemIdentifier: SYSID }],
   systemIdentifier: SYSID,
 });
 
@@ -78,6 +79,7 @@ describe('evaluateHostDumpCoverage', () => {
         ok: true,
         lastSuccessEpoch: NOW - 600,
         dumped: ['papercusp-state', 'papercusp-transcript', 'restart'],
+        artifactReceipts: [{ artifact: 'papercusp-state', dumpStartEpoch: NOW - 600, systemIdentifier: SYSID }],
         tiersEnabled: true,
         systemIdentifier: SYSID,
       },
@@ -104,9 +106,57 @@ describe('evaluateHostDumpCoverage', () => {
   });
 
   it('does not cover when the host run reported failure and carries no run timing', () => {
-    const r = evaluate({ status: { ...goodStatus(), ok: false } });
+    const { artifactReceipts: _receipts, ...legacy } = goodStatus();
+    const r = evaluate({ status: { ...legacy, ok: false } });
     expect(r.covered).toBe(false);
     expect(r.reason).toContain('run timing');
+  });
+
+  it('requires a matching per-artifact receipt when the new receipt field is present', () => {
+    const r = evaluate({
+      status: {
+        ...goodStatus(),
+        artifactReceipts: [{ artifact: 'restart', dumpStartEpoch: NOW - 10, systemIdentifier: SYSID }],
+      },
+    });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('no artifact receipt for papercusp');
+  });
+
+  it('rejects malformed modern per-artifact receipt collections', () => {
+    const r = evaluate({ status: { ...goodStatus(), artifactReceipts: { papercusp: NOW - 1 } } });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('malformed artifact receipts');
+  });
+
+  it('dates an artifact from its own dump start, not the overall successful run end', () => {
+    const status = {
+      ...goodStatus(),
+      lastSuccessEpoch: NOW - 1,
+      artifactReceipts: [{
+        artifact: 'papercusp',
+        dumpStartEpoch: NOW - HOST_DUMP_MAX_AGE_SEC - 1,
+        systemIdentifier: SYSID,
+      }],
+    };
+    const r = evaluate({ status });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('stale');
+  });
+
+  it('uses run start conservatively for a legacy successful receipt', () => {
+    const r = evaluate({
+      status: {
+        ok: true,
+        lastSuccessEpoch: NOW - 1,
+        lastRunEpoch: NOW - 1,
+        elapsedSec: HOST_DUMP_MAX_AGE_SEC + 1,
+        dumped: ['papercusp'],
+        systemIdentifier: SYSID,
+      },
+    });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('legacy run start');
   });
 
   describe('a partially failed host run (EI-24018312041976584)', () => {
@@ -133,7 +183,7 @@ describe('evaluateHostDumpCoverage', () => {
       const r = evaluate({ status: towerReceipt, nowEpoch: HOOK_FIRED_AT });
       expect(r.covered).toBe(true);
       expect(r.reason).toContain('artifact papercusp-state');
-      expect(r.reason).toContain('partially failed run');
+      expect(r.reason).toContain('legacy run start');
     });
 
     it('dates the artifact from the run START, so the age is measured conservatively', () => {
@@ -181,8 +231,13 @@ describe('evaluateHostDumpCoverage', () => {
     ['empty', ''],
     ['whitespace', '   '],
     ['non-string', 12345],
-  ])('does not cover when the receipt cluster identity is %s', (_label, systemIdentifier) => {
-    const r = evaluate({ status: { ...goodStatus(), systemIdentifier } });
+  ])('does not cover when the artifact receipt cluster identity is %s', (_label, systemIdentifier) => {
+    const r = evaluate({
+      status: {
+        ...goodStatus(),
+        artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch: NOW - 600, systemIdentifier }],
+      },
+    });
     expect(r.covered).toBe(false);
     expect(r.reason).toContain('cluster identity');
   });
@@ -216,29 +271,39 @@ describe('evaluateHostDumpCoverage', () => {
   });
 
   it('does not cover a stale receipt, so a wedged host job cannot suppress dumps forever', () => {
-    const r = evaluate({ status: { ...goodStatus(), lastSuccessEpoch: NOW - HOST_DUMP_MAX_AGE_SEC - 1 } });
+    const r = evaluate({ status: {
+      ...goodStatus(),
+      artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch: NOW - HOST_DUMP_MAX_AGE_SEC - 1, systemIdentifier: SYSID }],
+    } });
     expect(r.covered).toBe(false);
     expect(r.reason).toContain('stale');
   });
 
-  it('still covers a receipt exactly at the freshness boundary', () => {
-    expect(
-      evaluate({ status: { ...goodStatus(), lastSuccessEpoch: NOW - HOST_DUMP_MAX_AGE_SEC } }),
-    ).toMatchObject({ covered: true });
+  it('still covers an artifact receipt exactly at the freshness boundary', () => {
+    expect(evaluate({ status: {
+      ...goodStatus(),
+      artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch: NOW - HOST_DUMP_MAX_AGE_SEC, systemIdentifier: SYSID }],
+    } })).toMatchObject({ covered: true });
   });
 
   it.each([
     ['zero', 0],
     ['missing', undefined],
     ['non-numeric', 'yesterday'],
-  ])('does not cover when lastSuccessEpoch is %s', (_label, lastSuccessEpoch) => {
-    expect(evaluate({ status: { ...goodStatus(), lastSuccessEpoch } })).toMatchObject({
+  ])('does not cover when artifact dump-start epoch is %s', (_label, dumpStartEpoch) => {
+    expect(evaluate({ status: {
+      ...goodStatus(),
+      artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch, systemIdentifier: SYSID }],
+    } })).toMatchObject({
       covered: false,
     });
   });
 
   it('treats a future-dated receipt as a clock fault, not as coverage', () => {
-    const r = evaluate({ status: { ...goodStatus(), lastSuccessEpoch: NOW + 3600 } });
+    const r = evaluate({ status: {
+      ...goodStatus(),
+      artifactReceipts: [{ artifact: 'papercusp', dumpStartEpoch: NOW + 3600, systemIdentifier: SYSID }],
+    } });
     expect(r.covered).toBe(false);
     expect(r.reason).toContain('future');
   });

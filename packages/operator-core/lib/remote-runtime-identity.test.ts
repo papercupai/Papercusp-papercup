@@ -41,6 +41,31 @@ const describing = (doc: unknown): RemoteDescribe & { calls: string[][] } => {
   return fn;
 };
 
+describe('installed focused compiler identity', () => {
+  const unit = 'focused-tsc:installed';
+  const doc = { identity: { root: '/installed', compilerInstall: '/installed/compiler', compilerVersion: '1',
+    serviceSourceSha256: 'a'.repeat(64), compilerArtifactsSha256: 'b'.repeat(64), projectConfigSha256: 'c'.repeat(64),
+    namedSources: [{ path: 'scripts/tsc-service/server.mjs', sha256: 'd'.repeat(64) }] },
+    runtime: { pid: process.pid, startedAt: 1 }, processIdentity: readProcessIdentity(process.pid) };
+  it('independently remeasures source, compiler and process lifetime', async () => {
+    const baseline = await measureRuntimeEnvironment([], [unit], { describe: describing(doc) });
+    expect(baseline).toMatch(/^[a-f0-9]{64}$/);
+    for (const identity of [{ ...doc.identity, serviceSourceSha256: 'e'.repeat(64) },
+      { ...doc.identity, compilerArtifactsSha256: 'e'.repeat(64) }])
+      expect(await measureRuntimeEnvironment([], [unit], { describe: describing({ ...doc, identity }) })).not.toBe(baseline);
+    expect(await measureRuntimeEnvironment([], [unit], { describe: describing({ ...doc,
+      runtime: { ...doc.runtime, startedAt: 2 } }) })).not.toBe(baseline);
+  });
+  it('refuses missing identity, a replaced PID and arbitrary installed selectors', async () => {
+    for (const invalid of [null, {}, { ...doc, processIdentity: 'replaced' },
+      { ...doc, identity: { ...doc.identity, compilerArtifactsSha256: null } }])
+      expect(await measureRuntimeEnvironment([], [unit], { describe: describing(invalid) })).toBeNull();
+    const reader = describing(doc);
+    expect(await measureRemoteRuntimeIdentity('focused-tsc:/foreign/socket', reader)).toBeNull();
+    expect(reader.calls).toEqual([]);
+  });
+});
+
 describe('configured PostHog project identity', () => {
   const unit = 'posthog-project:flags.example.test/1';
   const project = { id: 1, uuid: 'project-uuid', organization: 'organization-uuid', created_at: '2026-07-09T00:00:00Z',

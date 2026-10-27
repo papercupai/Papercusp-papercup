@@ -1,0 +1,204 @@
+{
+  "sourceSummary": {
+    "kind": "portable-derived-view",
+    "originalArtifact": {
+      "pathBase": "$HOME/.papercusp/evidence/EI-26918633941260915/originals",
+      "ref": "23c1041723d694ee077eafea4727a4619ace7381056fcf0fb904cb1a595c4d16.supporting-original",
+      "sha256": "23c1041723d694ee077eafea4727a4619ace7381056fcf0fb904cb1a595c4d16",
+      "byteLength": 8612
+    },
+    "originalBytesChanged": false,
+    "note": "Home paths and build-host identity strings in this source view are templates. The pinned original retains the exact executed evidence."
+  },
+  "schemaVersion": 1,
+  "kind": "independent-product-review-evidence",
+  "planSlug": "conclusive-blind-review-recovery-2026-10-23",
+  "workItemId": "WI-6554700010022152",
+  "specId": "AUTO-BAR-R-3-P-002",
+  "specRevision": 3,
+  "parentPlanSlug": "plan-item-types-registry-cupboard-2026-10-20",
+  "activationAuditSeq": 5,
+  "evidencePlane": "live",
+  "evidenceRuntime": "staging-operator",
+  "review": {
+    "id": "66",
+    "activation_audit_seq": 5,
+    "record_kind": "review",
+    "protocol_version": 2,
+    "outcome": "conclusive",
+    "created_by": "su-e3a15d86-90da-446d-981f-1b47b94fd53d",
+    "created_at": "2026-10-24 02:57:55.161077+00",
+    "summary": "Completed the permitted live registry/Cupboard reads, isolated general and coding scratch-plan rehearsals, completion-audit dry-run, and all three nominated maintained test runs. ItemTypeCompletionForm: 6 passed (run 9e583de2-a7b0-4761-bacd-6885cb6d129f); PlanItemTypeBadge: 5 passed (run a776de06-b9e3-417a-9912-a6c9766504b3); two-pot production publish/install/registry/ship workflow: detached recovery bfce88fd-a91e-4578-bf3a-e30749c768dd reached status pass, exitCode 0. Both built-in plan types reference the same namespaced item types. Public pack searches returned no matching listings; that absence is not treated as a distribution defect. The general scratch status-change probe was correctly held for its missing activation audit; no attempt was made to bypass it. One reproducible readback-summary gap is recorded. No reviewed plan/specification/rubric/scorecard/acceptance/proof was read.",
+    "gaps": [
+      {
+        "id": "G-1",
+        "text": "The public plans:get verification summary does not resolve a namespaced built-in item type consistently with its short alias. In scratch plan blind-review-scratch-43c0d8a82037-coding-2026-10-24, plans:add-item accepted P-001 with deliverable:'papercusp/doc' and P-002 with deliverable:'doc'. plan-types:get identifies papercusp/doc as the Document type with modules:['generic-core']. Reading the scratch plan shows both deliverables stored correctly, but verification.overrides contains only P-002/doc with generic-core; verification.itemTypes is empty and the plan default remains generic-core+code. Thus the namespaced, reusable identity is missing from the public effective-verification summary. Generalizing item types is only partly reflected in this product read surface. This finding concerns the returned summary; the review did not establish that the completion or ship gate applies incorrect modules."
+      }
+    ],
+    "dispositions": []
+  },
+  "disposition": {
+    "id": "68",
+    "activation_audit_seq": 5,
+    "record_kind": "disposition",
+    "protocol_version": 2,
+    "outcome": null,
+    "created_by": "su-c6c4e5f3-f42b-41a8-9eb6-98ed4484dbd5",
+    "created_at": "2026-10-24 06:36:30.520975+00",
+    "summary": null,
+    "gaps": [],
+    "dispositions": [
+      {
+        "gapId": "G-1",
+        "itemId": "P-004",
+        "reviewId": 66
+      }
+    ]
+  },
+  "replacement": {
+    "id": "6",
+    "activation_audit_seq": 5,
+    "reviewer_owner_id": "su-e3a15d86-90da-446d-981f-1b47b94fd53d",
+    "status": "posted",
+    "review_id": "66",
+    "replacement_of": "5",
+    "request_hash": "3e967c069ba6597ce9312d4dffd1ea710f8a53d0716ade8b3079d336302bd105",
+    "product_reads": {
+      "harness": "papercusp",
+      "docsSlugs": [],
+      "testFiles": [
+        "apps/operator/app/_components/plans/ItemTypeCompletionForm.test.tsx",
+        "apps/operator/app/_components/plans/PlanItemTypeBadge.test.tsx",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/item-type-cupboard-e2e.integration.test.ts"
+      ],
+      "docsHarness": "papercusp"
+    }
+  },
+  "reviewServingBuilds": [
+    {
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0"
+    }
+  ],
+  "reviewProductInvocations": [
+    {
+      "id": "43877649",
+      "tool_name": "plans:get",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": "blind-review-scratch-43c0d8a82037-coding-2026-10-24"
+    },
+    {
+      "id": "43877578",
+      "tool_name": "plans:add-item",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": "blind-review-scratch-43c0d8a82037-coding-2026-10-24"
+    },
+    {
+      "id": "43876961",
+      "tool_name": "plans:add-item",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": "blind-review-scratch-43c0d8a82037-coding-2026-10-24"
+    },
+    {
+      "id": "43876791",
+      "tool_name": "plans:get",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": "blind-review-scratch-43c0d8a82037-general-2026-10-24"
+    },
+    {
+      "id": "43876292",
+      "tool_name": "plans:add-item",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": "blind-review-scratch-43c0d8a82037-general-2026-10-24"
+    },
+    {
+      "id": "43875082",
+      "tool_name": "plan-types:get",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": null
+    },
+    {
+      "id": "43875069",
+      "tool_name": "plan-types:get",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": null
+    },
+    {
+      "id": "43875060",
+      "tool_name": "plan-types:get",
+      "status": "ok",
+      "serving_host": "port-3170",
+      "serving_build_sha": "038caf5ae0",
+      "op": null,
+      "slug": null
+    }
+  ],
+  "sourceAtReview": "038caf5ae096cef14015342c64dc713e0b803eb1",
+  "sourceAtBinding": "a8b484e0b1e4eee6756484af8f0aeb34558d3007",
+  "unchangedRecoverySourceBlobs": [
+    {
+      "path": "packages/operator-core/lib/blind-review-replacement.ts",
+      "reviewBlob": "e3f0be5d78d5baba7becdda908c745353e683ae4",
+      "bindingBlob": "e3f0be5d78d5baba7becdda908c745353e683ae4"
+    },
+    {
+      "path": "packages/operator-core/lib/blind-review-session-bindings.ts",
+      "reviewBlob": "51511b76b4b02f22c8111f5c681ce59ce3f116f7",
+      "bindingBlob": "51511b76b4b02f22c8111f5c681ce59ce3f116f7"
+    },
+    {
+      "path": "packages/operator-core/lib/blind-review-gate.ts",
+      "reviewBlob": "d4e69d4153cd0fb5aeeebdf4eaacc592137fb3e8",
+      "bindingBlob": "d4e69d4153cd0fb5aeeebdf4eaacc592137fb3e8"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/blind-review.ts",
+      "reviewBlob": "8d10991a8880f9775b8a9ec4fbb335ab0795ab73",
+      "bindingBlob": "8d10991a8880f9775b8a9ec4fbb335ab0795ab73"
+    }
+  ],
+  "receiptReadRuntime": [
+    {
+      "unit": "hono-host:3170",
+      "host": "<build-host-build-hostname>",
+      "tree_sha": "92746d8842",
+      "pid": 4141567,
+      "reported_at": "2026-10-24 06:41:28.407141+00"
+    }
+  ],
+  "verificationProcedure": [
+    "Read exact immutable review66 and disposition68 from harness_shared.plan_blind_reviews under workspace papercusp-workspace and the parent plan slug.",
+    "Read review66 session6, its replacement_of5 and exact corrected productReads request snapshot from harness_shared.plan_blind_review_sessions.",
+    "Resolve reviewer su-e3a15d86-90da-446d-981f-1b47b94fd53d product interactions via tool_invocations ids below; serving_host and serving_build_sha are per-call serving observations.",
+    "Compare the four recovery source blobs between recorded review build038caf5ae0 and the current binding checkout.",
+    "Read current hono-host:3170 runtime identity independently; preserve the original review build separately.",
+    "Evaluate the normal parent blind-review door after disposition68, without replacing historical reviews60/64/65/66/67."
+  ],
+  "boundaries": [
+    "Review66 records its original product execution on build038caf5ae0; the later receipt read does not re-date that execution.",
+    "The independent reviewer used the exact three nominated product tests and isolated scratch plans. This evidence preserves their conclusive material statement and product invocation ledger, rather than fabricating a new test run.",
+    "Review66 soleG1 is scoped to public verification-summary readback; disposition68 maps it to repaired parentP004. WI-6554700010025674 has a separate committed completion receipt.",
+    "Final plan certification, independent grading, author verdict and normal shipment remain separate acceptance steps."
+  ]
+}

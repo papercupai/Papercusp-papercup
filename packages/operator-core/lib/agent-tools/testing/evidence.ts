@@ -891,10 +891,17 @@ export async function buildTestEvidenceRemeasure(remeasure: Remeasure,
   // The caller must re-run in THAT checkout; more than one distinct value cannot share a
   // run (EI-25203154942838341).
   const rowById = new Map(rows.map((row) => [row.id, row]));
-  const rootHarnessSlugs = [...new Set(plan.selected.map((entry) => {
+  const measuredRoots = plan.selected.map((entry) => {
     const measured = repoFilesEvidenceMeasurementSchema.safeParse(rowById.get(entry.bindingId)?.details?.currentMeasurement);
     return measured.success ? measured.data.rootHarnessSlug ?? null : null;
-  }))];
+  });
+  // The rows were listed for scope.harnessSlug, so an unstamped root (null) and an explicit
+  // scope.harnessSlug root name the SAME checkout. Counting them as two refused a clause whose
+  // proofs were simply stamped at different times (WI-6554700010029987). Keep the explicit slug
+  // when one is present; a genuinely different checkout still yields two roots.
+  const sessionRootSpelledExplicitly = measuredRoots.includes(scope.harnessSlug);
+  const rootHarnessSlugs = [...new Set(measuredRoots.map((slug) =>
+    slug === null && sessionRootSpelledExplicitly ? scope.harnessSlug : slug))];
   return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan, rootHarnessSlugs,
     abandonedPendingBindingIds: [...abandoned].sort((a, b) => a - b),
     summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length,

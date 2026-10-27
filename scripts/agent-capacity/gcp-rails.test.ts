@@ -283,7 +283,7 @@ describe('attached disks (WI-10005475 swap-tier test)', () => {
 });
 
 function census(instances: Census['instances'], orphanDisks: Census['orphanDisks'] = []): Census {
-  return { instances, orphanDisks, staticAddresses: [], buckets: [] };
+  return { instances, orphanDisks, staticAddresses: [], buckets: [], resources: [] };
 }
 
 describe('admission', () => {
@@ -356,7 +356,7 @@ const vm = (name: string, run: string, zone = 'us-central1-a') => ({
   name,
   zone: zoneUrl(zone),
   status: 'RUNNING',
-  labels: { [LABEL_RUN]: run, [LABEL_MAXCOST]: '60' },
+  labels: { [LABEL_RUN]: run, [LABEL_MAXCOST]: '60', 'papercusp-plan': PLAN_SLUG },
 });
 const bootDisk = (name: string, zone = 'us-central1-a') => ({ name, zone: zoneUrl(zone), users: [`.../instances/${name}`] });
 
@@ -366,6 +366,7 @@ describe('readCensus', () => {
       instances: [vm('r1-a', 'r1')],
       disks: [bootDisk('r1-a'), { name: 'orphan', zone: zoneUrl('us-central1-b'), users: [] }],
       addresses: [{ name: 'reserved-ip' }],
+      snapshots: [{ name: 'retained-snapshot', labels: { [LABEL_RUN]: 'r1', 'papercusp-plan': PLAN_SLUG } }],
       buckets: [{ name: 'artifacts' }],
     };
     const calls: string[][] = [];
@@ -388,12 +389,19 @@ describe('readCensus', () => {
     expect(peakActive).toBe(1);
     expect(active).toBe(0);
     expect(census).toEqual({
-      instances: [{ name: 'r1-a', zone: 'us-central1-a', status: 'RUNNING', runId: 'r1', maxCostCents: 60 }],
+      instances: [{ name: 'r1-a', zone: 'us-central1-a', status: 'RUNNING', runId: 'r1', maxCostCents: 60, planSlug: PLAN_SLUG }],
       orphanDisks: [{ name: 'orphan', zone: 'us-central1-b' }],
       staticAddresses: ['reserved-ip'],
       buckets: ['artifacts'],
+      resources: [
+        { kind: 'disks', name: 'r1-a', runId: null, planSlug: null },
+        { kind: 'disks', name: 'orphan', runId: null, planSlug: null },
+        { kind: 'snapshots', name: 'retained-snapshot', runId: 'r1', planSlug: PLAN_SLUG },
+        { kind: 'addresses', name: 'reserved-ip', runId: null, planSlug: null },
+        { kind: 'buckets', name: 'artifacts', runId: null, planSlug: null },
+      ],
     });
-    expect(calls).toEqual(['instances', 'disks', 'addresses', 'buckets'].map((kind) => [
+    expect(calls).toEqual(['instances', 'disks', 'snapshots', 'addresses', 'buckets'].map((kind) => [
       kind === 'buckets' ? 'storage' : 'compute', kind, 'list', `--project=${TEST_PROJECT}`, '--format=json',
     ]));
   });
@@ -455,10 +463,55 @@ describe('teardownRun', () => {
     expect(result.deleted).toEqual(['r1-a']);
   });
 
-  it.each(['instances', 'disks', 'addresses', 'buckets'])('throws instead of reporting a partial census when %s listing fails', async (failedKind) => {
+  it.each(['disks', 'snapshots', 'addresses', 'buckets'])('refuses verification while a run-labelled %s resource remains', async (kind) => {
+    const g = fakeGcloud({ instances: [], disks: [] });
+    const resource = { name: 'retained', labels: { [LABEL_RUN]: 'r1', 'papercusp-plan': PLAN_SLUG }, users: ['.../instances/other'] };
+    const exec: Exec = async (argv) => argv[1] === kind && argv[2] === 'list'
+      ? { code: 0, stdout: JSON.stringify([resource]), stderr: '' }
+      : g.exec(argv);
+    const result = await teardownRun('r1', exec, fastConverge().opts);
+    expect(result.verified).toBe(false);
+    expect(result.remainingResources).toEqual([{ kind, name: 'retained', runId: 'r1', planSlug: PLAN_SLUG }]);
+    expect(g.calls.some(argv => argv[2] === 'delete')).toBe(false);
+  });
+
+  it('preserves other runs and reports shared plan resources without claiming programme teardown', async () => {
+    const foreign = vm('foreign', 'r1');
+    foreign.labels['papercusp-plan'] = 'another-plan';
+    const g = fakeGcloud({ instances: [foreign], disks: [bootDisk('foreign')] });
+    const exec: Exec = async (argv) => argv[1] === 'snapshots'
+      ? { code: 0, stdout: JSON.stringify([
+        { name: 'other-run', labels: { [LABEL_RUN]: 'r2', 'papercusp-plan': PLAN_SLUG } },
+        { name: 'foreign-plan', labels: { [LABEL_RUN]: 'r1', 'papercusp-plan': 'another-plan' } },
+        { name: 'shared', labels: { 'papercusp-plan': PLAN_SLUG } },
+      ]), stderr: '' }
+      : g.exec(argv);
+    const result = await teardownRun('r1', exec, fastConverge().opts);
+    expect(result.verified).toBe(true);
+    expect(result.remainingResources).toEqual([]);
+    expect(result.sharedResources).toEqual([{ kind: 'snapshots', name: 'shared', runId: null, planSlug: PLAN_SLUG }]);
+    expect(result.verificationScope).toBe('run-labelled-resources-and-project-orphan-disks');
+    expect(result.checkedResourceKinds).toEqual(['instances', 'disks', 'snapshots', 'addresses', 'buckets']);
+    expect(g.calls.some(argv => argv[2] === 'delete')).toBe(false);
+    expect(g.state.instances).toEqual([foreign]);
+  });
+
+  it('checks legacy run labels even when their plan label is missing', async () => {
+    const exec: Exec = async argv => ({ code: 0, stdout: JSON.stringify(argv[1] === 'addresses'
+      ? [{ name: 'legacy-address', labels: { [LABEL_RUN]: 'r1' } }] : []), stderr: '' });
+    expect((await teardownRun('r1', exec, fastConverge().opts)).verified).toBe(false);
+  });
+
+  it.each(['instances', 'disks', 'snapshots', 'addresses', 'buckets'])('throws instead of reporting a partial census when %s listing fails', async (failedKind) => {
     const exec: Exec = async (argv) => argv[1] === failedKind
       ? { code: 1, stdout: '', stderr: `permission denied: ${failedKind}` }
       : { code: 0, stdout: '[]', stderr: '' };
     await expect(readCensus(exec)).rejects.toThrow(`permission denied: ${failedKind}`);
+    await expect(teardownRun('r1', exec, fastConverge().opts)).rejects.toThrow(`permission denied: ${failedKind}`);
+  });
+
+  it.each(['', 'null', '{}', '[null]', '[{}]'])('rejects an unreadable snapshot listing %j rather than proving absence', async (stdout) => {
+    const exec: Exec = async argv => ({ code: 0, stdout: argv[1] === 'snapshots' ? stdout : '[]', stderr: '' });
+    await expect(teardownRun('r1', exec, fastConverge().opts)).rejects.toThrow();
   });
 });

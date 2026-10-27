@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
-import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDiagnosticArtifacts, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, retainIsolatedLifecycleBeforeSourceCheck } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDiagnosticArtifacts, isolatedIntegrationProofSourcePaths, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, retainIsolatedLifecycleBeforeSourceCheck } from '../test/isolated-integration-proof';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
 import { PANEL_ORDER } from './system-health/types';
@@ -257,6 +257,47 @@ it('rejects a successful, unrelated or uncorrelated Insights denial receipt', ()
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], status: 200 }, ...records.slice(1)])).toThrow();
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], body: '{"error":{"code":"unrelated"}}' }, ...records.slice(1)])).toThrow();
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], control: 'unknown' }, ...records.slice(1)])).toThrow('intended UI control');
+});
+
+it('retains the recorder and private runtime support in every original source census', () => {
+  const filePath = 'packages/operator-core/lib/example.integration.test.ts';
+  const fixture = 'packages/operator-core/test/__fixtures__/example.ts';
+  const paths = isolatedIntegrationProofSourcePaths(filePath, [fixture, filePath, fixture]);
+  expect(paths).toEqual([
+    filePath, fixture,
+    'packages/operator-core/test/isolated-integration-proof.ts',
+    'packages/operator-core/test/private-http-workspace-preflight.ts',
+    'scripts/lib/isolated-runtime-start.mjs', 'scripts/with-test-pg.mjs',
+  ].sort());
+  expect(new Set(paths).size).toBe(paths.length);
+});
+
+it('pins direct calibrated fixture imports before recording an original lifetime', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-calibration-source-'));
+  const test = 'claim.e2e.test.ts', support = '__fixtures__/scoped-contracts.e2e.test.ts';
+  const testBytes = "import './__fixtures__/scoped-contracts.e2e.test';\n";
+  const supportBytes = 'export const fixture = "original";\n';
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const git = (...args: string[]) => execFileSync('git', ['-C', root,
+    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    mkdirSync(join(root, '__fixtures__'));
+    writeFileSync(join(root, test), testBytes);
+    writeFileSync(join(root, support), supportBytes);
+    git('init', '-q'); git('add', '.'); git('commit', '-qm', 'original calibrated fixture');
+    const commit = git('rev-parse', 'HEAD');
+    expect(await isolatedIntegrationSourceFiles(root, commit, [test])).toEqual([
+      { path: test, sha256: digest(testBytes), gitSha256: digest(testBytes) },
+      { path: support, sha256: digest(supportBytes), gitSha256: digest(supportBytes) },
+    ]);
+    const changed = 'export const fixture = "changed";\n';
+    writeFileSync(join(root, support), changed);
+    expect(await isolatedIntegrationSourceFiles(root, commit, [test, support, support])).toEqual([
+      { path: test, sha256: digest(testBytes), gitSha256: digest(testBytes) },
+      { path: support, sha256: digest(changed), gitSha256: digest(supportBytes) },
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it('pins an imported private cleanup helper even when the caller lists only the launcher', async () => {
@@ -831,8 +872,12 @@ it('refuses to run command code when the original observer disconnects', async (
 it('composes the nested router budgets without spending execution time on bootstrap', () => {
   const options = isolatedTestFileWorkerOptions({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000', PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '180000' }, 2);
   expect(options.phaseTimeouts).toMatchObject({ bootstrapMs: 180_000, executeMs: 1_082_000 });
-  expect(options.phaseTimeouts.bootstrapMaxMs).toBe(900_000);
-  expect(options.phaseTimeouts.teardownMaxMs).toBe(900_000);
+  // Widening the encompassing router must not inflate either inner ceiling.
+  expect(options.phaseTimeouts.bootstrapMaxMs).toBe(600_000);
+  expect(options.phaseTimeouts.teardownMaxMs).toBe(600_000);
+  const widened = isolatedTestFileWorkerOptions({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1200000', PAPERCUSP_TEST_FILE_LIST_TIMEOUT_MS: '180000' }, 2);
+  expect(widened.phaseTimeouts.bootstrapMaxMs).toBe(options.phaseTimeouts.bootstrapMaxMs);
+  expect(widened.phaseTimeouts.teardownMaxMs).toBe(options.phaseTimeouts.teardownMaxMs);
   expect(options.killGraceMs).toBeGreaterThanOrEqual(10_000 + 5_000);
   expect(options.testTimeoutMs).toBeGreaterThan(options.phaseTimeouts.bootstrapMs + options.phaseTimeouts.executeMaxMs! + options.phaseTimeouts.teardownMs);
 });

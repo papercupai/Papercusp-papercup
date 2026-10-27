@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "r2gcs-p002-maintained-delivery-v1",
+  "workItem": "WI-6554700010025561",
+  "startedAt": "2026-10-24T15:47:32.198939+00:00",
+  "observedAt": "2026-10-24T15:50:09.208230+00:00",
+  "runtime": "isolated current-source Wrangler Workerd with real private GCS",
+  "runtimeTaskId": "0mvmkfeqp90eu3z4ol3",
+  "baseUrl": "http://127.0.0.1:18879/artifacts/workspace-host/sha256/7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948/",
+  "checks": [
+    {
+      "name": "manifest.json",
+      "status": 200,
+      "sha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+      "sizeBytes": 12555,
+      "head": {
+        "status": 200,
+        "contentLength": "12555",
+        "sha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+        "cacheControl": "public, max-age=31536000, immutable"
+      },
+      "ok": true
+    },
+    {
+      "name": "server.tgz.minisig",
+      "status": 200,
+      "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+      "sizeBytes": 295,
+      "head": {
+        "status": 200,
+        "contentLength": "295",
+        "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+        "cacheControl": "public, max-age=31536000, immutable"
+      },
+      "ok": true
+    },
+    {
+      "name": "sbom.cdx.json",
+      "status": 200,
+      "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+      "sizeBytes": 800554,
+      "head": {
+        "status": 200,
+        "contentLength": "800554",
+        "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+        "cacheControl": "public, max-age=31536000, immutable"
+      },
+      "ok": true
+    },
+    {
+      "name": "server.tgz",
+      "status": 200,
+      "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+      "sizeBytes": 2118168717,
+      "head": {
+        "status": 200,
+        "contentLength": "2118168717",
+        "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+        "cacheControl": "public, max-age=31536000, immutable"
+      },
+      "ok": true
+    },
+    {
+      "name": "raw-bucket-anonymous-denied",
+      "status": 403,
+      "ok": true
+    }
+  ],
+  "result": "pass",
+  "productionDeployed": false,
+  "independentAcceptance": false,
+  "originalJournal": {
+    "schemaVersion": 1,
+    "taskId": "0mvkl22i0febmllzn1h",
+    "operationId": "c146597b-1daf-4033-8e3b-e48c5805dd7f",
+    "sourceSha": "eeed52c58803fdf2bac550c046c17843061e52f6",
+    "version": "0.0.21-p544q20261023r2"
+  },
+  "originalSourcePublication": "/mnt/data/tmp/p544-managed-host-20261023-patched/publication",
+  "sourcePublicationPathBase": "Operating account home directory",
+  "sourcePublication": ".papercusp/release-artifacts/p544-7a9e83f6-restore20261024",
+  "sourceSummary": {
+    "kind": "portable-path-summary",
+    "originalPathBytesChanged": false,
+    "originalReport": {
+      "pathBase": "historical-proof-custody.json archive.root plus archive.retainedArtifactDirectory",
+      "ref": "29fdc55ff2182c2c3505f3a81d8255b923aef358f62c77b7de50a78b82caac0c.supporting-original",
+      "sha256": "29fdc55ff2182c2c3505f3a81d8255b923aef358f62c77b7de50a78b82caac0c",
+      "byteLength": 6677
+    }
+  },
+  "retentionPinId": "672e54f0-b3bf-4b14-ac2e-d9c3832865a7",
+  "custodyIssue": "EI-26875969820074880",
+  "sourceHashesBeforeCheck": {
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "a351d5c184e212e4347af06c2463a5b26baacb6bc2f020f0af5063d721679633",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa",
+    "scripts/lib/workspace-host-gcs-publication.mjs": "690419670be2935b05e8f4da2dd79a57616a5d0a6d41a7e900aaef5f8d320582",
+    "scripts/publish-workspace-host-artifacts.mjs": "96c81bf54b27cb817687f5b22a1082d3650e0b353a26ab56afead65e7397f589",
+    "apps/operator-public/wrangler.toml": "d2222364b70203ab5957080a51d348d28f16f132694c1444c119655e4dc7df1d"
+  },
+  "sourceHashesAfterCheck": {
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "a351d5c184e212e4347af06c2463a5b26baacb6bc2f020f0af5063d721679633",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "77a5730d5092705f5579f127fbea4cdbba6fc63ba3d64a7e4515f39f56b87cfa",
+    "scripts/lib/workspace-host-gcs-publication.mjs": "690419670be2935b05e8f4da2dd79a57616a5d0a6d41a7e900aaef5f8d320582",
+    "scripts/publish-workspace-host-artifacts.mjs": "96c81bf54b27cb817687f5b22a1082d3650e0b353a26ab56afead65e7397f589",
+    "apps/operator-public/wrangler.toml": "d2222364b70203ab5957080a51d348d28f16f132694c1444c119655e4dc7df1d"
+  },
+  "sourceCommitAtRead": "f087910539a66bf05c77d9629d7234f9cc6c03f4",
+  "limitations": [
+    "Current-build isolated Worker proof; final production cutover and independent acceptance remain separate.",
+    "Named source hashes are stable; this receipt does not assert a complete runtime import census.",
+    "Original publication was recovered byte-for-byte from admitted Google-backed objects; original task/operation unchanged."
+  ],
+  "operationalStartedAt": "2026-10-24T15:51:54.344Z",
+  "operationalVerifiedAt": "2026-10-24T15:54:41.273Z",
+  "instrument": {
+    "path": "scripts/lib/workspace-host-gcs-publication.mjs",
+    "testPath": "scripts/publish-workspace-host-artifacts.test.ts"
+  },
+  "instrumentHashes": {
+    "scripts/lib/workspace-host-gcs-publication.mjs": "690419670be2935b05e8f4da2dd79a57616a5d0a6d41a7e900aaef5f8d320582",
+    "scripts/publish-workspace-host-artifacts.test.ts": "dcce8808ac4cdd77acb61037c349cf5b8f19afba52959fcfd7a2decbe3d121dc"
+  },
+  "environmentFingerprint": "477e8cac3b7be05e9ee0bd813938235cb7924af7cae0da3b1bdbcc302bc09ea3",
+  "files": [
+    {
+      "name": "manifest.json",
+      "sha256": "5370e36a16d6c777b4bc6371bbf7790eb645420db1f03b7841d6415451073bc8",
+      "sizeBytes": 12555
+    },
+    {
+      "name": "server.tgz.minisig",
+      "sha256": "b5f807a758144e47571e62d9c01c7ecb40f2c8e9acf055c111b631126054fa54",
+      "sizeBytes": 295
+    },
+    {
+      "name": "sbom.cdx.json",
+      "sha256": "4da8c37595532e330653f551d4785190205a09a5c07a7e5959eeb744f12eff0d",
+      "sizeBytes": 800554
+    },
+    {
+      "name": "server.tgz",
+      "sha256": "7a9e83f6c5a72c4dd2607cbe20f86ecf7567d30eff63f91ed53df5359eca0948",
+      "sizeBytes": 2118168717
+    }
+  ],
+  "invalidDigestRejected": true,
+  "verificationTaskId": "0mvmku2wa1v36si1v0n"
+}

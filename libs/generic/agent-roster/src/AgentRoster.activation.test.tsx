@@ -66,6 +66,25 @@ describe('AgentRoster thinking indicators', () => {
 describe('AgentRoster stop outcome', () => {
   const nowMs = Date.parse('2026-08-31T19:01:00.000Z');
 
+  it('cancels without dispatching and requires a fresh confirmation for the retained selection', () => {
+    const kill = vi.fn().mockResolvedValue('Stop requested for 1 session');
+    render(<AgentRoster agents={[agent]} nowMs={nowMs} bulk={{ kill, killLabel: 'Stop' }} />);
+    fireEvent.click(screen.getByTestId('agent-select-su-portal-agent'));
+    fireEvent.click(screen.getByTestId('agents-bulk-kill'));
+
+    fireEvent.click(screen.getByTestId('agents-bulk-kill-cancel'));
+
+    expect(kill).not.toHaveBeenCalled();
+    expect((screen.getByTestId('agent-select-su-portal-agent') as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId('agents-bulk-kill-cancel')).toBeNull();
+    expect(screen.getByTestId('agents-bulk-kill').textContent).toBe('✕ Stop');
+
+    fireEvent.click(screen.getByTestId('agents-bulk-kill'));
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(screen.getByTestId('agents-bulk-kill-cancel')).toBeTruthy();
+  });
+
   it('keeps the successful receipt visible after clearing the completed selection', async () => {
     const kill = vi.fn().mockResolvedValue('Stop requested for 1 session');
     render(<AgentRoster agents={[agent]} nowMs={nowMs} bulk={{ kill, killLabel: 'Stop' }} />);

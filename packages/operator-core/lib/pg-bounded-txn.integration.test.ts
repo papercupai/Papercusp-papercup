@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { boundedOrgTxn, type BoundedOrgTxnOptions } from './pg-bounded-txn';
+import { boundedOrgTxn, OrgTxnTimeoutError, type BoundedOrgTxnOptions } from './pg-bounded-txn';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -19,6 +19,30 @@ describe('boundedOrgTxn (real PostgreSQL cancellation)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('bounds a dispatched transaction with savepoints, preserving identity and outer timeout settings', async () => {
+    await db.adminSql.begin(async rawTx => {
+      const tx = rawTx as unknown as BoundedOrgTxnOptions['client'];
+      await rawTx`SELECT set_config('app.workspace_id', 'nested-search-workspace', true),
+        set_config('statement_timeout', '12s', true), set_config('lock_timeout', '3s', true)`;
+      expect(typeof (rawTx as unknown as { begin?: unknown }).begin).toBe('undefined');
+      const result = await boundedOrgTxn(async scoped => {
+        const [row] = await scoped`SELECT current_setting('app.workspace_id') AS workspace,
+          current_setting('statement_timeout') AS timeout`;
+        return row;
+      }, { client: tx, statementTimeoutMs: 200, lockTimeoutMs: 100 });
+      expect(result).toMatchObject({ workspace: 'nested-search-workspace', timeout: '200ms' });
+      const [after] = await rawTx`SELECT current_setting('statement_timeout') AS statement,
+        current_setting('lock_timeout') AS lock`;
+      expect(after).toMatchObject({ statement: '12s', lock: '3s' });
+      await expect(boundedOrgTxn(async scoped => {
+        await scoped`SELECT pg_sleep(1)`;
+      }, { client: tx, statementTimeoutMs: 100, acquireRetries: 0 }))
+        .rejects.toBeInstanceOf(OrgTxnTimeoutError);
+      const [recovered] = await rawTx`SELECT 1 AS value, current_setting('statement_timeout') AS timeout`;
+      expect(recovered).toMatchObject({ value: 1, timeout: '12s' });
+    });
   });
 
   it('settles a lost reserved connection and reacquires on the same single-connection client', async () => {

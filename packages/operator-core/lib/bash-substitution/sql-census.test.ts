@@ -22,6 +22,8 @@ import {
   computeSqlCensus,
   evaluateDeliberateNoPairDrift,
   evaluateNoFallAfterShip,
+  evaluateSqlRepairOutcome,
+  type SqlRepairMeasurement,
   evaluateUncoveredDemand,
   evaluateVerdictDrift,
   type CensusCluster,
@@ -32,6 +34,52 @@ import { SQL_READ_PAIRS } from './pairs';
 import type { DeliberateNoPairDecision, SampledCommand, SqlSubstitutionPair } from './types';
 
 const atom = (sid: string, sql: string): SampledCommand => ({ sid, ts: '2026-08-12T00:00:00Z', atom: sql });
+
+describe('normalized repair feedback', () => {
+  const measurement = (): SqlRepairMeasurement => ({
+    baseline: { scopeRef: 'ws/h', shapesRef: 'fixed-shapes-v1', since: '2026-10-01T00:00:00Z',
+      until: '2026-10-08T00:00:00Z', rawAgents: 8, activeAgents: 10, toolAgents: 0, complete: true },
+    observation: { scopeRef: 'ws/h', shapesRef: 'fixed-shapes-v1', since: '2026-10-10T00:00:00Z',
+      until: '2026-10-17T00:00:00Z', rawAgents: 2, activeAgents: 10, toolAgents: 7, complete: true },
+    exposure: { build: 'a'.repeat(40), observedAt: '2026-10-09T00:00:00Z', evidenceRef: 'release:observed-fixture' },
+    coverage: 'pass',
+  });
+  it('healthy adoption requires normalized fall and observed tool use R7-CONTRACT OUTCOME-P-007', () => {
+    expect(evaluateSqlRepairOutcome(measurement())).toMatchObject({ status: 'healthy', disposition: 'adopted',
+      baselineRate: .8, observedRate: .2, adoptionRate: .7 });
+  });
+  it('lower fleet activity alone is a failed repair R7-CONTRACT OUTCOME-P-007', () => {
+    const m = measurement(); m.observation = { ...m.observation, rawAgents: 4, activeAgents: 5, toolAgents: 1 };
+    expect(evaluateSqlRepairOutcome(m)).toMatchObject({ status: 'failed', disposition: 'no-fall', normalizedFall: 0 });
+  });
+  it('raw demand falling without tool adoption is no-fall R7-CONTRACT', () => {
+    const m = measurement(); m.observation.toolAgents = 0;
+    expect(evaluateSqlRepairOutcome(m)).toMatchObject({ status: 'failed', disposition: 'no-fall' });
+  });
+  it('failed coverage has an explicit disposition R7-CONTRACT', () => {
+    expect(evaluateSqlRepairOutcome({ ...measurement(), coverage: 'fail' }))
+      .toMatchObject({ status: 'failed', disposition: 'coverage-failed' });
+  });
+  it.each(['denominator', 'window', 'cohort', 'scope', 'coverage', 'low-demand', 'exposure', 'partial', 'overlap', 'unequal', 'build', 'receipt', 'future', 'invalid-clock'])(
+    '%s evidence remains unknown R7-CONTRACT OUTCOME-P-007', defect => {
+      const m = measurement();
+      if (defect === 'denominator') m.observation.activeAgents = 0;
+      if (defect === 'window') m.observation.since = '';
+      if (defect === 'cohort') m.observation.shapesRef = 'other-shapes';
+      if (defect === 'scope') m.observation.scopeRef = 'other-workspace';
+      if (defect === 'coverage') m.coverage = 'unknown';
+      if (defect === 'low-demand') m.baseline.rawAgents = 1;
+      if (defect === 'exposure') m.exposure = null;
+      if (defect === 'partial') m.observation.complete = false;
+      if (defect === 'overlap') m.observation.since = '2026-10-07T00:00:00Z';
+      if (defect === 'unequal') m.observation.until = '2026-10-18T00:00:00Z';
+      if (defect === 'build') m.exposure!.build = 'not-a-build';
+      if (defect === 'receipt') m.exposure!.evidenceRef = ' ';
+      const measuredAt = defect === 'invalid-clock' ? NaN
+        : Date.parse(defect === 'future' ? '2026-10-15T00:00:00Z' : '2026-10-25T00:00:00Z');
+      expect(evaluateSqlRepairOutcome(m, measuredAt)).toMatchObject({ status: 'unknown', disposition: 'insufficient-evidence', normalizedFall: null });
+    });
+});
 
 /** A pair with no `sqlShape`, so it claims every plain read of its relation. */
 const WIDGET_PAIR: SqlSubstitutionPair = {

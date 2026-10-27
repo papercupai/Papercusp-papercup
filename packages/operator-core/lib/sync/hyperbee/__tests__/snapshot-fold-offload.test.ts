@@ -4,7 +4,7 @@
  * The inline fold of the tower's first papercusp compaction (7.76M ops from index 0)
  * held bg-host's event loop for 30+ minutes: lag p50 2.8s, every PG connect timed out,
  * routines and git-sync stalled. These tests pin the replacement:
- *  - the offloaded producer appends BYTE-IDENTICAL blocks to the inline producer, for a
+ *  - the offloaded producer preserves the inline producer's captured row bytes, for a
  *    fresh fold, a seeded fold (a prior set on the log) and deletes/tombstones — using
  *    the REAL worker thread, so the worker loading under this runtime is itself proven;
  *  - the raw read/append seam round-trips exactly what the json session stores;
@@ -40,6 +40,8 @@ import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { createHiveEpochCrypto } from '../hive-epoch-crypto-impl';
 import type { EpochKey } from '../hive-epoch-crypto';
 import { buildOpAAD } from '../hive-epoch-serving';
+import { isValidOpHlc } from '../hlc-stamp';
+import { encodeHlc, processHlc } from '@papercusp/locks-core';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -88,16 +90,25 @@ function history(count: number, salt = ''): PeerLogOp[] {
             ts: 10_000 + i,
             schema_version: CURRENT_SCHEMA_VERSION,
             author_pubkey: '',
-            ...(i % 7 === 0 ? { hlc: `${10_000 + i}:0000:${salt || 'n'}` } : {}),
           },
     );
   }
-  return ops;
+  // Every fixture replays one captured history into both independent logs.
+  return ops.map((op, i) => ({ ...op, hlc: `${String(10_000 + i).padStart(15, '0')}:00000` }));
 }
 
-async function rawRange(log: OwnLog, from: number, to: number): Promise<string[]> {
+/** Compare all stored bytes except newly allocated snapshot-envelope clocks. */
+async function comparableRange(log: OwnLog, from: number, to: number): Promise<string[]> {
   const out: string[] = [];
-  for (let i = from; i < to; i++) out.push(Buffer.from((await log.getRaw!(i))!).toString('hex'));
+  for (let i = from; i < to; i++) {
+    const raw = (await log.getRaw!(i))!;
+    const op = JSON.parse(Buffer.from(raw).toString()) as PeerLogOp;
+    if (op.table === '__snapshot__') {
+      expect(isValidOpHlc(op.hlc), `snapshot envelope ${i} has a canonical HLC`).toBe(true);
+      const { hlc: _hlc, ...rest } = op;
+      out.push(Buffer.from(JSON.stringify(rest)).toString('hex'));
+    } else out.push(Buffer.from(raw).toString('hex'));
+  }
   return out;
 }
 
@@ -129,6 +140,21 @@ const offloadOpts = {
 };
 
 describe('the raw block seam (OwnLog.getRaw / appendRawBatch)', () => {
+  it('stamps fresh worker envelopes on the producer clock without restamping captured rows', async () => {
+    const log = await freshLog();
+    const original = { ...history(1)[0]!, hlc: '000000000010000:00000' };
+    await log.append(original);
+    const before = encodeHlc(processHlc().peek());
+    const result = await produceLogSnapshot(log, offloadOpts);
+    const snapshot = (await log.get(result.coversUpTo))!;
+    expect(isValidOpHlc(snapshot.hlc)).toBe(true);
+    expect(snapshot.hlc! > before).toBe(true);
+    const { type: _type, ...capturedRow } = original;
+    expect((snapshot.value as SnapshotPayload).rows[0]).toEqual(capturedRow);
+    await log.append({ ...original, hlc: undefined });
+    expect((await log.get(log.length - 1))!.hlc! > snapshot.hlc!).toBe(true);
+  });
+
   it('reads the exact bytes the json session stores, and appends bytes that read back as the op', async () => {
     const log = await freshLog();
     const [op] = history(1);
@@ -156,7 +182,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline.appended).toBe(true);
     expect(inline.chunkCount).toBeGreaterThan(1); // the small chunk cap forces a multi-chunk set
-    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    expect(await comparableRange(b, 0, b.length)).toEqual(await comparableRange(a, 0, a.length));
   });
 
   it('WI-10005425: a filtered own-log set carries ownPrefix on every chunk on both paths, byte-identically', async () => {
@@ -172,7 +198,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
 
     expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline.chunkCount).toBeGreaterThan(1);
-    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    expect(await comparableRange(b, 0, b.length)).toEqual(await comparableRange(a, 0, a.length));
     for (let i = 0; i < offloaded.chunkCount; i++) {
       const v = (await b.get(offloaded.coversUpTo + i))?.value as SnapshotPayload;
       expect(v.excludeTables).toEqual(excludeTables);
@@ -189,6 +215,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
       ts: 20_000,
       schema_version: CURRENT_SCHEMA_VERSION,
       author_pubkey: '',
+      hlc: '000000000020000:00000',
     });
     const ops: PeerLogOp[] = [
       receipt('papercusp/WI-DEAD'),
@@ -210,7 +237,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline.droppedGovernorReceipts).toBe(1);
     expect(inline.rowCount).toBe(2);
-    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    expect(await comparableRange(b, 0, b.length)).toEqual(await comparableRange(a, 0, a.length));
     const rows = Array.from({ length: inline.chunkCount }, (_, i) => i)
       .map((i) => a.get(inline.coversUpTo + i))
       .reduce(
@@ -334,7 +361,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     const offloaded = await produceLogSnapshot(b, { ...offloadOpts, priorSnapshotHint: hint });
 
     expect(heldResult(offloaded)).toEqual(heldResult(inline));
-    expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
+    expect(await comparableRange(b, 0, b.length)).toEqual(await comparableRange(a, 0, a.length));
   });
 
   it('an empty log appends nothing on either path', async () => {

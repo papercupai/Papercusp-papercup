@@ -18,6 +18,13 @@ const env = (runId: string, version: number, openCards: unknown[], toolState?: u
   ({ runId, version, snapshot: { openCards, toolState } }) as SnapshotEnvelope;
 
 describe('reduceSnapshotEvent', () => {
+  it('discards a previous worker baseline before accepting a lower restarted version', () => {
+    const previous = new Map([['old-run', env('old-run', 100, [card('stale')])]]);
+    const reset = reduceSnapshotEvent(previous, { kind: 'reset' });
+    expect(reset.size).toBe(0);
+    expect(reduceSnapshotEvent(reset, { kind: 'snapshot', env: env('old-run', 1, [card('recovered')]) })
+      .get('old-run')?.snapshot.openCards).toEqual([card('recovered')]);
+  });
   it('adds a new run from a full snapshot', () => {
     const out = reduceSnapshotEvent(new Map(), { kind: 'snapshot', env: env('r1', 1, [card('a')]) });
     expect(out.get('r1')?.version).toBe(1);

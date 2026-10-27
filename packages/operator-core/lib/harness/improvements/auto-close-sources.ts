@@ -83,6 +83,12 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // signal STOPS firing immediately and unconditionally (not just recency-gated), so its
   // absence reliably means the underlying loop is gone/paused, not merely quiet.
   'loop-stalled',
+  // WI-6554700010029793: collectRoutineStarvationSignals re-derives its predicate from PG every
+  // tick and latches nothing. The signal stops when the routine fires again (next_fire_at
+  // advances past the bound), is deactivated, or parks. It also stops if the WHOLE engine
+  // dies (its EXISTS term needs another routine firing); routine-engine-death raises that case
+  // on its own key. Its registration declares source, so a thrown tick is never a quiet one.
+  'routine-starvation',
   // EI-1760: collectMigrationDriftSignals re-derives `missing` from a live DB query
   // EVERY tick (never caches/latches) and, unlike service-down's freshness-gated probe
   // skip, degrades LOUD not silent on failure — checkMigrationDrift's own internal

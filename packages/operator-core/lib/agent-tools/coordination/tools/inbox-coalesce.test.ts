@@ -436,10 +436,11 @@ describe("coord:inbox includeAmbient compatibility alias (EI-20224620909324295)"
   it("maps the alias to the canonical ambient filter and gives snake_case precedence", async () => {
     M.readInbox.mockImplementation(async () => [ambient]);
 
-    const alias = await callInbox({ includeAmbient: true });
+    // WI-6554700010029664: the alias folds in the schema's preprocess, so dispatch-parse first.
+    const alias = await callInbox(tool.args.parse({ includeAmbient: true }) as never);
     expect(alias.summary).toMatchObject({ ambient_excluded: 0, total: 1 });
 
-    const canonicalWins = await callInbox({ include_ambient: false, includeAmbient: true });
+    const canonicalWins = await callInbox(tool.args.parse({ include_ambient: false, includeAmbient: true }) as never);
     expect(canonicalWins.summary).toMatchObject({ ambient_excluded: 1, total: 0 });
   });
 });

@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemId": "WI-10005889",
+  "governingDecision": "get-feedback-reliability-usefulness-adoption-2026-10-03#D-006",
+  "scope": "Controlled real-Postgres plan-claim and ABA observer proof",
+  "commitSha": "834060867cda2f1cfc9416010b280bd215986088",
+  "command": "node scripts/with-test-pg.mjs -- node scripts/lint-as-committed.mjs test:file --any --keep --ref=834060867cda2f1cfc9416010b280bd215986088 -- packages/operator-core/lib/plan-items/claims.integration.test.ts",
+  "reporter": {
+    "sink": "Explicit PAPERCUSP_TEST_RUNS_DB_URL inherited from DATABASE_URL; secret omitted",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "runGroup": "gf-p002-d006-claims-20261026"
+  },
+  "canonicalRun": {
+    "id": 22120850,
+    "status": "pass",
+    "testLayer": "integration",
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "collectionFailed": false,
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "processExit": 0,
+    "cases": [
+      {
+        "caseKey": "D-006 plan-only claim isolation > answerer operations preserve raw source rows; release/reacquire is observable despite equal holders",
+        "occurrence": 1,
+        "status": "pass"
+      },
+      {
+        "caseKey": "D-006 plan-only claim isolation > system expiry and sweep leave empty endpoints but retain the intermediate claim transitions",
+        "occurrence": 1,
+        "status": "pass"
+      }
+    ]
+  },
+  "binding": {
+    "id": 70950,
+    "specId": "GF-P002-source",
+    "specRevision": 1,
+    "specFingerprint": "4a8b5f3cd71a46f2f9de2da251bcee11b44d6f945499f72679dc701c795eca07",
+    "bindingFingerprint": "8e741064ceb5ca545e99c086503122d677073ba172b12a2bc65f350c9ac32e37",
+    "independentCurrentness": {
+      "overall": "current",
+      "staleReasons": [],
+      "unknownReasons": []
+    },
+    "measurement": "Nine explicit source files, the integration test, five fixture/support paths including the inline test, and libs/papercusp/libs/db/sql/*.sql. Read binding70950 for the exact persisted recipe."
+  },
+  "observations": [
+    "A temporary row trigger records INSERT, UPDATE and DELETE transitions in the disposable fixture transaction.",
+    "Controlled answerer operations cannot acquire, heartbeat or release the occupied source claim; the answerer's own acquire/heartbeat/release positive control succeeds.",
+    "Source release/reacquire retains the same holder but changes claim_id; the observer records DELETE then INSERT.",
+    "A system force release/takeover using the old claim_id cannot mutate the replacement incarnation.",
+    "Source acquire followed by system expiry and sweep leaves empty endpoints while the observer retains INSERT, UPDATE and DELETE."
+  ],
+  "qualification": {
+    "priorEvidence": "The latest harness-scoped run returned by the bounded lookup,21361259, passed the same two D006 cases but was dirty. It was retained as dated evidence and was not relabelled clean.",
+    "newRunReason": "Qualify the existing maintained observer on a clean committed snapshot and bind its previously unbound P002 evidence. No test, timeout or oracle edit was made.",
+    "independentReadback": "testing:runs returned the exact clean run and both passing case identities; plans:get-spec-evidence independently measured70950 current before this artifact was written.",
+    "privateDatabase": "The maintained with-test-pg wrapper applied its migrated disposable schema and reported database shutdown after successful completion."
+  },
+  "limitations": [
+    "The observer and application_name actor labels are controlled fixture instrumentation, not trusted native actor attribution.",
+    "This does not establish exhaustive historical live source lease transitions, ABA absence in native execution, universal same-UID noninterference, custody, admission or approval.",
+    "Original operational28326/28545, retained69704/69782, native calibration21960506 and the native call census remain unchanged.",
+    "Native matrix cells, cohort limitations, independent acceptance and shipment remain open.",
+    "The separate source assessment at evaluator ae08f1e7ff failed traceability, execution-integrity, freshness and disclosed-gap before this supplementary binding. No new whole-clause PASS is claimed.",
+    "Focused consult conv-request-72404005840982bb45ca9ef69cef896a7d99ffd23919473d1da7aa7c11f0aa11 returned relevance_unmeasured/evidence_unavailable without dispatching an answerer."
+  ],
+  "evidenceRefs": [
+    "testing:runs testRunIds:[22120850] cases:true",
+    "plans:get-spec-evidence bindingIds:[70950] current:true",
+    "/tmp/gf-p002-d006-claims-20261026.log",
+    "/tmp/gf-p002-source-assessment-20261026.json"
+  ]
+}

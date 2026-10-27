@@ -372,6 +372,18 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.readFileSync(join(cache, "tu-grant.session"), "utf8")).toBe("s");
   });
 
+  it("grant with attribution_nudge → allow + the nudge as additionalContext, lock still cached (P-010 SPEC-P-010)", async () => {
+    const nudge = "Attribution: you hold no work item, so this edit is recorded unattributed.";
+    nextInner = { ok: true, lock_id: "lock-nudge", attribution_nudge: nudge };
+    const r = await run(editOf("sub/nudge.ts", "tu-nudge"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(out.hookSpecificOutput.additionalContext).toBe(nudge);
+    // The nudge never changes the lock bookkeeping: PostToolUse can still release it.
+    expect(fs.readFileSync(join(cache, "tu-nudge.lock"), "utf8")).toBe("lock-nudge");
+  });
+
   it("Codex multi-file apply_patch → caches and releases every touched path", async () => {
     const toolUseId = "tu-codex-five-paths";
     const paths = [

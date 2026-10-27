@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "r2gcs-live-worker-probe-v1",
+  "workItem": "WI-6554700010025563",
+  "observedAt": "2026-10-24T03:28:26.884Z",
+  "runtime": "Wrangler4.86 local workerd current staging source, isolated local D1/KV state, real private GCS",
+  "origin": "http://127.0.0.1:18879",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "bundleSha256": "8054eb67fd7fb1af9ccab63149006711f9a2b7d265a04d2a2604555731556036",
+  "checks": [
+    {
+      "name": "anonymous-write-denied",
+      "ok": true,
+      "detail": {
+        "status": 401
+      }
+    },
+    {
+      "name": "authenticated-GCS-create",
+      "ok": true,
+      "detail": {
+        "status": 201,
+        "result": {
+          "ok": true,
+          "file": "server.tgz",
+          "sha256": "8054eb67fd7fb1af9ccab63149006711f9a2b7d265a04d2a2604555731556036",
+          "bytes": 67,
+          "deduped": false
+        }
+      }
+    },
+    {
+      "name": "same-object-replay",
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "exact-GCS-bytes-and-metadata",
+      "ok": true,
+      "detail": {
+        "generation": "1792812508874352",
+        "sizeBytes": 67
+      }
+    },
+    {
+      "name": "unfinalized-public-download-denied",
+      "ok": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "private-creator-public-door-denied",
+      "ok": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "raw-bucket-anonymous-denied",
+      "ok": true,
+      "detail": {
+        "status": 403
+      }
+    }
+  ],
+  "sourceHashes": {
+    "apps/operator-public/src/index.ts": "1d0f4451635836dbab57b8d87a1b7dc9cc5184c11bb4f2b62d7f62b2fc6891b1",
+    "apps/operator-public/src/env.ts": "78c0f45e8b6a5de209b515c87ca29fe1bddf3e303cf03c37bed2fe54c83987d2",
+    "apps/operator-public/src/routes/workspace-host-artifacts.ts": "596bc7fecc81323e65d4a4c73620312d046454552a703fe722cefe5a2890c17c",
+    "apps/operator-public/src/routes/self-describing-artifacts.ts": "bea507dd7852497db1336c217973fa7625883c79dfd057431029f62443616256",
+    "apps/operator-public/src/routes/creator-drafts.ts": "4581b0639fdeb5ba5535d412497ec1dac5bba498a4761c88aee2007cb866695f",
+    "libs/generic/artifact-registry/src/object-store.ts": "620a588c0acd589252b48c7ccc56e9fd74a171c0c8cd5cf052aebd8667655443",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "661294bdf55e70d7c5c426b677c0047b9e14e353988292316125acc769873101",
+    "libs/generic/artifact-registry/src/gcs-credentials.ts": "68d401dcb656f008eaadacdb186686853d671d1de9f1b21f4dfa2c47376f66fc"
+  },
+  "result": "pass",
+  "cleanup": "only unique probe artifact keys deleted; original P544 and R2 untouched"
+}

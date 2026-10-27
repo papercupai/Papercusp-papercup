@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import {
+  authenticateGovernanceEvent,
+  governanceAuthorityHash,
+  governanceEventSigningBytes,
+  governanceVoteSigningBytes,
+  type GovernanceSigningAuthority,
+} from './governance-authentication';
 import {
   appendGovernanceVote,
   createGovernanceRound,
@@ -81,6 +89,143 @@ function permutations<T>(items: readonly T[]): T[][] {
   });
   return out;
 }
+
+/**
+ * Signed R-11 fixture closure: fresh in-memory Ed25519 keys, an injected local
+ * authority/round and a fixed clock. Both ballot and envelope signatures use the
+ * production signing domains and verifier. This measures authenticated ingest
+ * and projection; trusted-authority loading, transport and settlement are outside
+ * this fixture. Any first-bind proof recipe must declare these dependencies.
+ * The projection-only fixtures above deliberately retain their narrower scope.
+ */
+function signedRoundCorpus() {
+  const a = generateEd25519KeypairDer();
+  const b = generateEd25519KeypairDer();
+  const authority: GovernanceSigningAuthority = {
+    potId: POT,
+    policy: DEFAULT_PLAN_ADMISSION_POLICY,
+    members: [
+      { memberId: 'a', publicKey: a.pubkeyBase64, keyEpoch: 1, originPeerIds: [PEER_A],
+        roles: ['round-open', 'vote', 'finalize', 'pause', 'resume', 'revoke'] },
+      { memberId: 'b', publicKey: b.pubkeyBase64, keyEpoch: 1, originPeerIds: [PEER_B], roles: ['vote'] },
+    ],
+  };
+  const created = createGovernanceRound({ roundId: 'signed-round', planRevisionHash: 'signed-revision',
+    policyVersion: authority.policy.policyVersion, eligibleMemberIds: ['a', 'b'], createdAtMs: 1_000,
+    authorityHash: governanceAuthorityHash(authority) });
+  if (!created.ok) throw new Error(created.detail);
+  const round = created.value;
+  const votes = ([['a', a], ['b', b]] as const).map(([memberId, key]): GovernanceVoteEvent => {
+    const unsigned = { eventId: `signed-vote-${memberId}`, roundId: round.roundId, memberId,
+      choice: 'approve' as const, sequence: 1, keyEpoch: 1 };
+    return { ...unsigned, signature: signWithPrivateKeyDer(key.privateKeyDer,
+      governanceVoteSigningBytes(authority, round, unsigned)).toString('base64') };
+  });
+  const finalized = finalizeGovernanceRound({ round, events: votes, members: authority.members,
+    policy: authority.policy, nowMs: 2_000 });
+  if (!finalized.ok) throw new Error(finalized.detail);
+  const certificate = finalized.value;
+  function sign(body: GovernanceEventBody, eventId: string,
+    over: Partial<Omit<FederatedGovernanceEvent, 'signature'>> = {}, key = a): FederatedGovernanceEvent {
+    const unsigned = { eventId, potId: POT, roundId: round.roundId, originPeerId: PEER_A,
+      occurredAtMs: 2_000, body, authorization: { memberId: 'a', keyEpoch: 1 }, ...over };
+    return { ...unsigned, signature: signWithPrivateKeyDer(key.privateKeyDer,
+      governanceEventSigningBytes(unsigned)).toString('base64') };
+  }
+  const events = [
+    sign({ kind: 'round-open', round }, 'signed-open'),
+    sign({ kind: 'vote', vote: votes[0]! }, 'signed-envelope-a'),
+    sign({ kind: 'vote', vote: votes[1]! }, 'signed-envelope-b',
+      { originPeerId: PEER_B, authorization: { memberId: 'b', keyEpoch: 1 } }, b),
+    sign({ kind: 'finalize', certificate }, 'signed-finalize'),
+  ];
+  const authenticate = (record: FederatedGovernanceEvent) =>
+    authenticateGovernanceEvent({ authority, round, event: record, nowMs: 3_000 });
+  const ingest = (incoming: readonly FederatedGovernanceEvent[], known: readonly FederatedGovernanceEvent[] = [],
+    boundary: PotBoundary = shared) => ingestGovernanceEvents({ boundary, known, incoming,
+    verifySignature: record => authenticate(record).ok });
+  return { events, votes, round, certificate, sign, authenticate, ingest };
+}
+
+describe('governance federation — signed R-11 corpus calibration', () => {
+  it('preserves the valid corpus and certificate through authenticated ingest in every delivery order', () => {
+    const f = signedRoundCorpus();
+    const expected = projectionDigest(projectGovernanceFederation(POT, f.events));
+    const orders = permutations(f.events);
+    expect(orders).toHaveLength(24);
+    expect(f.certificate.admitted).toBe(true);
+    for (const order of orders) {
+      const result = f.ingest(order);
+      expect(result.accepted).toEqual(order);
+      expect(result.dropped).toEqual([]);
+      expect(projectionDigest(result.projection)).toBe(expected);
+      expect(admissibleCertificate(result.projection, f.round.roundId)).toEqual(f.certificate);
+    }
+  });
+
+  it('merges separately authenticated partitions and keeps signed redelivery idempotent', () => {
+    const f = signedRoundCorpus();
+    const left = f.ingest(f.events.filter((_, i) => i % 2 === 0));
+    const right = f.ingest(f.events.filter((_, i) => i % 2 === 1));
+    expect(left.dropped).toEqual([]);
+    expect(right.dropped).toEqual([]);
+    expect(admissibleCertificate(left.projection, f.round.roundId)).toBeNull();
+    expect(admissibleCertificate(right.projection, f.round.roundId)).toBeNull();
+    const a = f.ingest(right.accepted, left.accepted);
+    const b = f.ingest(left.accepted, right.accepted);
+    expect(a.dropped).toEqual([]);
+    expect(b.dropped).toEqual([]);
+    expect(projectionDigest(a.projection)).toBe(projectionDigest(b.projection));
+    expect(admissibleCertificate(a.projection, f.round.roundId)).toEqual(f.certificate);
+    const replay = f.ingest(f.events, [...left.accepted, ...right.accepted]);
+    expect(replay.accepted).toEqual([]);
+    expect(replay.dropped).toEqual([]);
+    expect(projectionDigest(replay.projection)).toBe(projectionDigest(a.projection));
+  });
+
+  it.each(['outer-signature', 'inner-ballot', 'origin-peer', 'key-epoch'] as const)(
+    'refuses the %s boundary while preserving the authentic corpus', (boundary) => {
+      const f = signedRoundCorpus();
+      const vote = f.votes[0]!;
+      const valid = f.sign({ kind: 'vote', vote }, `control-${boundary}`);
+      const [invalid, code] = boundary === 'outer-signature'
+        ? [{ ...valid, signature: 'forged' }, 'unverified-signature'] as const
+        : boundary === 'inner-ballot'
+          ? [f.sign({ kind: 'vote', vote: { ...vote, choice: 'reject' } }, valid.eventId), 'unverified-ballot'] as const
+          : boundary === 'origin-peer'
+            ? [f.sign({ kind: 'vote', vote }, valid.eventId, { originPeerId: PEER_B }), 'wrong-origin-peer'] as const
+            : [f.sign({ kind: 'vote', vote }, valid.eventId, { authorization: { memberId: 'a', keyEpoch: 2 } }), 'stale-key-epoch'] as const;
+      expect(f.authenticate(valid)).toEqual({ ok: true });
+      expect(f.authenticate(invalid)).toEqual({ ok: false, code });
+      const control = f.ingest([...f.events, valid]);
+      expect(control.dropped).toEqual([]);
+      expect(control.accepted).toContainEqual(valid);
+      const refused = f.ingest([...f.events, invalid]);
+      expect(refused.accepted).toEqual(f.events);
+      expect(refused.dropped).toMatchObject([{ eventId: invalid.eventId, reason: 'unverified-signature' }]);
+      expect(projectionDigest(refused.projection)).toBe(projectionDigest(f.ingest(f.events).projection));
+      expect(admissibleCertificate(refused.projection, f.round.roundId)).toEqual(f.certificate);
+    });
+
+  it('separates a valid signature from private membership and foreign-pot routing', () => {
+    const f = signedRoundCorpus();
+    const memberB = f.events[2]!;
+    expect(f.authenticate(memberB)).toEqual({ ok: true });
+    expect(f.ingest([memberB]).accepted).toEqual([memberB]);
+    const restricted = { ...priv, memberPeerIds: [PEER_A] };
+    const result = f.ingest(f.events, [], restricted);
+    expect(result.accepted).toEqual(f.events.filter(record => record !== memberB));
+    expect(result.dropped).toMatchObject([{ eventId: memberB.eventId, reason: 'non-member-peer' }]);
+    // Ingest excludes the ballot. This projection accessor does not reconstruct
+    // the certificate's committed ballot set; receiver validation is separate.
+    expect(result.projection.rounds.get(f.round.roundId)?.voteEventIds).toEqual([f.votes[0]!.eventId]);
+    const foreign = f.ingest(f.events, [], { ...shared, potId: 'pot-beta' });
+    expect(foreign.accepted).toEqual([]);
+    expect(foreign.dropped).toHaveLength(f.events.length);
+    expect(foreign.dropped.every(record => record.reason === 'foreign-pot')).toBe(true);
+    expect(foreign.projection.eventCount).toBe(0);
+  });
+});
 
 describe('governance federation — immutable events and offline convergence', () => {
   it('projects a ratified round as finalized and admissible', () => {

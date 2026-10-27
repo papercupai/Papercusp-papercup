@@ -2,13 +2,16 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { zstdDecompressSync } from 'node:zlib';
 import { getBuildInfo } from './build-info';
-import candidatePreregistration from './llm-testing/fixtures/tool-delivery-full-after-use-20261021.json';
 import { buildOracleSchemaIndex, r6PrimaryVerdict, type OracleToolCall } from './llm-testing/r6-malformed-call-oracle';
+import { validateToolDeliveryCleanBlocks, validateToolDeliveryCleanCensus, validateToolDeliveryBlockLedgerIdentity,
+  type ToolDeliveryCleanBlock, type ToolDeliveryCleanPin } from './tool-delivery-clean-runtime';
 
 export const TOOL_DELIVERY_PLAN = 'deterministic-tool-definition-delivery-2026-09-21';
 export const TOOL_DELIVERY_INSTRUMENTS = ['llm-test-su-tool-definition-tier-ab', 'tool-delivery-invalid-arg-evidence-ladder'] as const;
@@ -45,15 +48,97 @@ export interface ToolDeliveryExperiment {
 export const HISTORICAL_TOOL_DELIVERY_EXPERIMENT: ToolDeliveryExperiment = {
   id: 'session-tool-delivery-ab-20261021', arms: TOOL_DELIVERY_ARMS, scenarios: TOOL_DELIVERY_SCENARIOS,
 };
-/** Add a distinct candidate only AFTER transport proof and plan preregistration. */
-export const TOOL_DELIVERY_EXPERIMENTS: Readonly<Record<string, ToolDeliveryExperiment>> = {
-  [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
-  [candidatePreregistration.experiment.id]: { ...candidatePreregistration.experiment,
-    executionContract: { registeredAt: candidatePreregistration.createdAt, ...candidatePreregistration.configuration } } as unknown as ToolDeliveryExperiment,
-};
+interface Preregistration {
+  experiment: ToolDeliveryExperiment & { manifestContract: ToolDeliveryManifestContract };
+  createdAt: string;
+  configuration: Omit<NonNullable<ToolDeliveryExperiment['executionContract']>, 'registeredAt'>;
+  variants: Record<'compact' | 'full', { id: string; configDelta: Record<string, unknown>; systemPromptTextSha256: string }>;
+  sourcePins: { head: string; files: Record<string, string>; scenarioPaths: Record<string, string>; submodules?: Record<string, string> };
+  capture: { privateCapture: { originalSha256: string } };
+  custodyPaths?: { privateCaptureFile: string; receiptDirectory: string; catalogSource: 'current-build' };
+  executionPolicy?: { requireCleanRuntime?: boolean; launcherPath?: string; measurementController?: 'separate-root' };
+  measurementAmendment?: {
+    decisionRef: string; registeredAt: string;
+    sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
+    addedFiles: Record<string, string>;
+    /** Prospective measurement-only gitlinks; never changes frozen treatment pins. */
+    addedSubmodules?: Record<string, string>;
+  };
+}
+/**
+ * Preregistration fixtures, in registration order (the first is the default candidate custody).
+ * Add a distinct candidate only AFTER transport proof and plan preregistration.
+ *
+ * They are READ FROM DISK on first use, never imported: a static JSON import is inlined by
+ * esbuild into every host bundle that reaches this module (through scorecards.ts and
+ * rubric-instrument-registry.ts), which put ~5 MB of fixtures in the resident host bundle and
+ * pushed lint:host-bundle-builds over budget (WI-6554700010030028). The instrument already needs
+ * a source checkout (it reads committed source via `git rev-parse --show-toplevel`).
+ */
+export const TOOL_DELIVERY_PREREGISTRATION_FIXTURES = [
+  'tool-delivery-full-after-use-20261021.json',
+  'tool-delivery-diagnostic-candidate-20261023.json',
+  'tool-delivery-fidelity-candidate-20261023.json',
+  'tool-delivery-clean-runtime-candidate-20261023.json',
+  'tool-delivery-clean-source-v2-20261023.json',
+  'tool-delivery-clean-source-v3-20261024.json',
+] as const;
+
+/** Where the fixtures live: beside this module in a source run, else in the source checkout a bundled host runs from. */
+export function toolDeliveryPreregistrationFixtureDir(): string {
+  const candidates: string[] = [];
+  try { candidates.push(fileURLToPath(new URL('./llm-testing/fixtures/', import.meta.url))); } catch { /* not a file: URL */ }
+  const relative = 'packages/operator-core/lib/llm-testing/fixtures';
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
+    if (root) candidates.push(resolve(root, relative));
+  } catch { /* not inside a checkout */ }
+  candidates.push(resolve(process.cwd(), relative));
+  const found = candidates.find(dir => existsSync(resolve(dir, TOOL_DELIVERY_PREREGISTRATION_FIXTURES[0])));
+  if (!found) throw new Error(`tool-delivery preregistration fixtures not found; looked in: ${candidates.join(', ')}`);
+  return found;
+}
+
+interface LoadedPreregistrations {
+  byId: Readonly<Record<string, Preregistration>>;
+  candidateId: string;
+  experiments: Readonly<Record<string, ToolDeliveryExperiment>>;
+}
+let loadedPreregistrations: LoadedPreregistrations | null = null;
+function preregistrations(): LoadedPreregistrations {
+  if (loadedPreregistrations) return loadedPreregistrations;
+  const dir = toolDeliveryPreregistrationFixtureDir();
+  const ordered = TOOL_DELIVERY_PREREGISTRATION_FIXTURES.map(file =>
+    JSON.parse(readFileSync(resolve(dir, file), 'utf8')) as Preregistration);
+  const byId = Object.fromEntries(ordered.map(registration => [registration.experiment.id, registration]));
+  const experiments: Record<string, ToolDeliveryExperiment> = {
+    [HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id]: HISTORICAL_TOOL_DELIVERY_EXPERIMENT,
+    ...Object.fromEntries(ordered.map(registration => [registration.experiment.id, {
+      ...registration.experiment,
+      executionContract: { registeredAt: registration.createdAt, ...registration.configuration },
+    }])),
+  };
+  loadedPreregistrations = { byId, candidateId: ordered[0].experiment.id, experiments };
+  return loadedPreregistrations;
+}
+
+export function toolDeliveryPreregistration(id: string): Preregistration {
+  const registration = preregistrations().byId[id];
+  if (!registration) throw new Error(`Unregistered tool-delivery custody: ${id}`);
+  return registration;
+}
+/** The default candidate custody (the first preregistration). */
+function candidatePreregistration(): Preregistration {
+  return toolDeliveryPreregistration(preregistrations().candidateId);
+}
+/** Every registered experiment, keyed by id: the historical one plus one per preregistration. */
+export function toolDeliveryExperiments(): Readonly<Record<string, ToolDeliveryExperiment>> {
+  return preregistrations().experiments;
+}
 
 export function toolDeliveryExperiment(id = HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id): ToolDeliveryExperiment {
-  const experiment = TOOL_DELIVERY_EXPERIMENTS[id];
+  const experiment = id === HISTORICAL_TOOL_DELIVERY_EXPERIMENT.id
+    ? HISTORICAL_TOOL_DELIVERY_EXPERIMENT : toolDeliveryExperiments()[id];
   if (!experiment) throw new Error(`Unregistered tool-delivery experiment: ${id}`);
   return experiment;
 }
@@ -73,7 +158,8 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       row.scenario_hash !== contract.scenarioHashes[row.scenario_id]) return bad('preregistered model/scenario mismatch');
   if (!Array.isArray(row.raw_events)) return bad('missing persisted definition manifests');
   const used = new Set<string>();
-  const calls: Array<{ name: unknown; input: unknown }> = [];
+  const calls: Array<Array<{ name: unknown; input: unknown }>> = [];
+  let turnCalls: Array<{ name: unknown; input: unknown }> = [];
   const full = new Map(contract.fullDefinitions.map(tool => [tool.name, tool]));
   if (full.size !== contract.fullDefinitions.length || full.size !== contract.compactDefinitions.length ||
       new Set(contract.compactDefinitions.map(tool => tool.name)).size !== full.size ||
@@ -99,7 +185,7 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       bytes.push(Buffer.byteLength(serialized)); requests++; pendingCalls = false;
     } else if (event.name === 'tool_call') {
       if (!requests || typeof data.name !== 'string') return bad('tool call without a request manifest');
-      calls.push({ name: data.name, input: data.input });
+      turnCalls.push({ name: data.name, input: data.input });
       used.add(data.name);
       if (data.name === 'tools:invoke') {
         const nested = object(data.input).name;
@@ -108,16 +194,19 @@ export function validateToolDeliveryManifests(row: ToolDeliveryRun, experiment: 
       pendingCalls = true;
     } else if (event.name === 'done') {
       if (!requests || pendingCalls) return bad('completed turn lacks its final request manifest');
+      calls.push(turnCalls);
+      turnCalls = [];
       completedTurns++;
       responseIndex = 0;
     }
   }
-  const normalized = Array.isArray(row.transcript_norm_json) ? row.transcript_norm_json.flatMap(turn => {
+  const normalized = Array.isArray(row.transcript_norm_json) ? row.transcript_norm_json.map(turn => {
     const recorded = object(turn).toolCalls;
-    return Array.isArray(recorded) ? recorded.map(call => ({ name: object(call).name, input: object(call).input })) : [];
+    return Array.isArray(recorded) ? recorded.map(call => ({ name: object(call).name, input: object(call).input })) : null;
   }) : [];
-  if (!requests || pendingCalls || !Array.isArray(row.transcript_norm_json) ||
-      completedTurns !== row.transcript_norm_json.length || digest(calls) !== digest(normalized)) {
+  if (!requests || !completedTurns || turnCalls.length || pendingCalls || !Array.isArray(row.transcript_norm_json) ||
+      // JSONB changes object key order; turn/call/array order and argument values must still match.
+      completedTurns !== row.transcript_norm_json.length || !isDeepStrictEqual(calls, normalized)) {
     return bad('incomplete raw/normalized request and call coverage');
   }
   return { requests, initialBytes: bytes[0], maxBytes: Math.max(...bytes) };
@@ -190,11 +279,6 @@ function validateExecutionOrder(rows: readonly ToolDeliveryRun[], experiment: To
   }
 }
 
-type Preregistration = typeof candidatePreregistration & { measurementAmendment?: {
-  decisionRef: string; registeredAt: string;
-  sourceReplacements: Record<string, { originalSha256: string; sha256: string }>;
-  addedFiles: Record<string, string>;
-} };
 /** Private capture remains immutable. Only separately preregistered measurement source can be repinned. */
 export function verifyToolDeliverySourceCustody(input: {
   registration?: Preregistration;
@@ -202,7 +286,7 @@ export function verifyToolDeliverySourceCustody(input: {
   readSource: (path: string, ref?: string) => Buffer;
   buildSha: string | null;
 }): NonNullable<ToolDeliveryMeasurement['custody']> {
-  const registration: Preregistration = input.registration ?? candidatePreregistration;
+  const registration = input.registration ?? candidatePreregistration();
   const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
   const privateOriginalSha256 = sha(input.privateCapture);
   const sourceFiles: string[] = [];
@@ -224,26 +308,37 @@ export function verifyToolDeliverySourceCustody(input: {
       if (!String(frozen.sourcePins.scenarioPaths[scenario]).endsWith(`/${path}`) && frozen.sourcePins.scenarioPaths[scenario] !== path) {
         return bad('Portable scenario source differs from the private original.');
       }
-      if (sha(input.readSource(path)) !== registration.experiment.manifestContract.scenarioHashes[scenario as keyof typeof registration.experiment.manifestContract.scenarioHashes]) {
+      const expected = registration.experiment.manifestContract.scenarioHashes[scenario];
+      if (sha(input.readSource(path)) !== expected || (registration.custodyPaths &&
+          (!input.buildSha || sha(input.readSource(path, input.buildSha)) !== expected))) {
         return bad(`Scenario source custody mismatch: ${path}`);
       }
     }
     const amendment = registration.measurementAmendment;
-    const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts'];
-    if (!amendment || !amendment.addedFiles['packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts'] ||
+    const allowed = ['packages/operator-core/lib/tool-delivery-acceptance.ts', 'packages/operator-core/lib/scorecards.ts',
+      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts'];
+    const oraclePath = 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts';
+    const allowedAdditions = [oraclePath, 'packages/operator-core/lib/tool-delivery-acceptance.test.ts',
+      'packages/operator-core/lib/tool-delivery-fidelity-custody.test.ts',
+      'packages/operator-core/lib/tool-delivery-clean-runtime.ts', 'packages/operator-core/lib/tool-delivery-clean-runtime.test.ts',
+      'packages/operator-core/lib/llm-testing/test-run-ledger.ts', 'libs/test-config/src/execution-details.ts',
+      'libs/test-config/src/execution-details.test.ts', 'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs',
+      'packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.d.mts'];
+    if (!amendment || !(amendment.addedFiles[oraclePath] || (registration.custodyPaths && registration.sourcePins.files[oraclePath])) ||
         !amendment.sourceReplacements['packages/operator-core/lib/tool-delivery-acceptance.ts'] ||
         !/^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/.test(amendment.decisionRef) || !Number.isFinite(Date.parse(amendment.registeredAt)) ||
         Object.keys(amendment.sourceReplacements).some(path => !allowed.includes(path)) ||
-        Object.keys(amendment.addedFiles).some(path => path !== 'packages/operator-core/lib/llm-testing/r6-malformed-call-oracle.ts')) {
+        Object.keys(amendment.addedFiles).some(path => !allowedAdditions.includes(path))) {
       return bad('Missing or invalid measurement-only amendment; original treatment remains frozen.');
     }
+    toolDeliveryCommittedSubmodules(registration);
     if (!input.buildSha || !/^[a-f0-9]{7,40}$/.test(input.buildSha)) return bad('Loaded measurement build identity is unavailable.');
     for (const [path, originalSha256] of Object.entries(registration.sourcePins.files)) {
       const replacement = amendment?.sourceReplacements[path];
       if (replacement && replacement.originalSha256 !== originalSha256) return bad(`Original measurement source pin changed: ${path}`);
       const expected = replacement?.sha256 ?? originalSha256;
       // The runner's generated catalog is intentionally loaded from the frozen commit.
-      const frozenModule = path === 'apps/operator/scripts/tool-delivery.generated.mjs';
+      const frozenModule = !registration.custodyPaths && path === 'apps/operator/scripts/tool-delivery.generated.mjs';
       if (sha(input.readSource(path, frozenModule ? registration.sourcePins.head : undefined)) !== expected ||
           (!frozenModule && sha(input.readSource(path, input.buildSha)) !== expected)) return bad(`Source custody mismatch: ${path}`);
       sourceFiles.push(path);
@@ -256,9 +351,24 @@ export function verifyToolDeliverySourceCustody(input: {
   } catch { return bad('Private capture or pinned source could not be verified.'); }
 }
 
+/** The expanded reader must be deployed before recording the new optional custody field. */
+export function toolDeliveryCommittedSubmodules(registration: Preregistration): Record<string, string> {
+  const frozen = registration.sourcePins.submodules ?? {};
+  const added = registration.measurementAmendment?.addedSubmodules ?? {};
+  for (const [path, commit] of Object.entries(added)) {
+    if (path !== 'libs/test-config' || path in frozen || !/^[a-f0-9]{40}$/.test(commit))
+      throw new Error('Invalid added measurement gitlink; frozen treatment gitlinks cannot be replaced.');
+    if (!Object.keys(registration.measurementAmendment!.addedFiles).some(file => file.startsWith(`${path}/`)))
+      throw new Error('Added measurement gitlink has no registered source.');
+  }
+  if (Object.keys(registration.measurementAmendment?.addedFiles ?? {}).some(path => path.startsWith('libs/test-config/'))
+      && !added['libs/test-config']) throw new Error('Measurement contract has no committed test-config gitlink.');
+  return { ...frozen, ...added };
+}
+
 /** The once-only runner's durable marker and complete receipt bind this population to its first execution. */
 export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[], started: unknown, receipt: unknown,
-  registration: Preregistration = candidatePreregistration): string | undefined {
+  registration: Preregistration = candidatePreregistration()): string | undefined {
   const marker = object(started), amendment = registration.measurementAmendment;
   const markerAt = typeof marker.at === 'string' ? Date.parse(marker.at) : NaN;
   if (!amendment || !Number.isFinite(markerAt) || markerAt < Date.parse(amendment.registeredAt) ||
@@ -282,6 +392,17 @@ export function validateToolDeliveryBatchReceipt(rows: readonly ToolDeliveryRun[
   if (new Set(ids).size !== 30 || digest([...ids].sort()) !== digest(rows.map(row => row.id).sort())) return 'Candidate receipt omits or replaces attempts.';
 }
 
+/** A superproject gitlink selects the runner actually loaded, not the submodule's current HEAD. */
+export function readToolDeliveryCommittedSource(path: string, ref: string, submodules: Readonly<Record<string, string>>,
+  git: (args: string[], directory?: string) => Buffer): Buffer {
+  const submodule = Object.entries(submodules).find(([directory]) => path.startsWith(`${directory}/`));
+  if (!submodule) return git(['show', `${ref}:${path}`]);
+  const [directory, pinnedCommit] = submodule;
+  const loadedCommit = git(['rev-parse', `${ref}:${directory}`]).toString().trim();
+  if (loadedCommit !== pinnedCommit) throw new Error('Loaded submodule differs from the registered gitlink.');
+  return git(['show', `${loadedCommit}:${path.slice(directory.length + 1)}`], directory);
+}
+
 /** Unknown is deliberate: an empty, errored, asymmetric, or confounded sample cannot be green. */
 export function evaluateToolDeliveryRuns(rows: readonly ToolDeliveryRun[], schemas: ReadonlyMap<string, Record<string, unknown>>,
   experiment: ToolDeliveryExperiment = HISTORICAL_TOOL_DELIVERY_EXPERIMENT): ToolDeliveryMeasurement {
@@ -294,7 +415,7 @@ export function evaluateToolDeliveryRuns(rows: readonly ToolDeliveryRun[], schem
     runIds: measured.map(r => r.id), unmeasuredRunIds: rows.filter(r => !measured.includes(r)).map(r => r.id),
     limits: ['Persisted calls only: a pre-recording transport rejection is invisible.',
       'The malformed-call oracle cannot detect a call the agent omitted.',
-      'AJV format keywords are not validated without ajv-formats.',
+      'Current oracle: shared AJV 2020-12 with ajv-formats validates registered formats; unknown custom formats/keywords are ignored (strict:false). Historical measurements retain their recorded validator and limits.',
       ...(experiment.manifestContract ? [] : ['Historical rows lack enforced complete tool-definition manifests; arm fairness needs separate evidence.'])],
   };
   if (new Set(rows.map(r => r.id)).size !== rows.length) {
@@ -407,21 +528,88 @@ export async function measureToolDeliveryAcceptance(window: { workspaceId: strin
     const result = evaluateToolDeliveryRuns(rows, buildOracleSchemaIndex(tools, new Map(contract.canonicalBySanitized)), experiment);
     let receiptError: string | undefined;
     try {
+      const registration = toolDeliveryPreregistration(experiment.id);
       const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim();
       result.custody = verifyToolDeliverySourceCustody({
-        privateCapture: readFileSync(resolve(homedir(), '.papercusp/experiments/tool-delivery-full-after-use-original-20261021.json')),
+        registration,
+        privateCapture: readFileSync(resolve(homedir(), '.papercusp/experiments',
+          registration.custodyPaths?.privateCaptureFile ?? 'tool-delivery-full-after-use-original-20261021.json')),
         buildSha: getBuildInfo().sha,
-        readSource: (path, ref) => ref ? execFileSync('git', ['show', `${ref}:${path}`], { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }) : readFileSync(resolve(root, path)),
+        readSource: (path, ref) => {
+          if (!ref) return readFileSync(resolve(root, path));
+          const options = { cwd: root, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'] };
+          return readToolDeliveryCommittedSource(path, ref, toolDeliveryCommittedSubmodules(registration),
+            (args, directory) => execFileSync('git', args, { ...options, cwd: directory ? resolve(root, directory) : root }));
+        },
       });
-      const directory = resolve(homedir(), '.papercusp/experiments/d062-once-20261022');
+      const directory = resolve(homedir(), '.papercusp/experiments', registration.custodyPaths?.receiptDirectory ?? 'd062-once-20261022');
       receiptError = validateToolDeliveryBatchReceipt(rows, JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
-        JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')));
+        JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')), registration);
     } catch { result.custody = { verified: false, reason: 'Private original source custody is unavailable.' }; }
+    let cleanError: string | undefined;
+    const registration = toolDeliveryPreregistration(experiment.id);
+    if (registration.executionPolicy?.requireCleanRuntime === true) {
+      try {
+        const directory = resolve(homedir(), '.papercusp/experiments', registration.custodyPaths!.receiptDirectory);
+        const clean = JSON.parse(readFileSync(resolve(directory, 'clean-runtime-receipts.json'), 'utf8')) as {
+          pin: ToolDeliveryCleanPin; blocks: ToolDeliveryCleanBlock[];
+        };
+        const expectedBlocks = registration.configuration.armOrder.flatMap(block => block.arms.map(arm => ({
+          scenario: block.scenario, arm,
+          variantId: arm === 'compact' ? experiment.arms.compactArm : experiment.arms.fullArm,
+        })));
+        cleanError = validateToolDeliveryCleanBlocks({ ...clean, expectedBlocks, runIds: result.runIds,
+          ...(registration.executionPolicy.measurementController === 'separate-root' ? {
+            controllerRequired: true, sourceCommit: registration.sourcePins.head,
+            controllerLauncher: registration.executionPolicy.launcherPath,
+            controllerMarker: JSON.parse(readFileSync(resolve(directory, 'started.json'), 'utf8')),
+          } : {}),
+          judgedCells: result.oracle?.scenarioCoverage ?? [] });
+        const receipt = JSON.parse(readFileSync(resolve(directory, 'receipt.json'), 'utf8')) as Array<{
+          testRunId: number; scenario: string;
+        }>;
+        const testRunIds = receipt.map(block => block.testRunId);
+        if (testRunIds.length !== 10 || new Set(testRunIds).size !== 10 || testRunIds.some(id => !Number.isSafeInteger(id)))
+          cleanError = 'Clean cohort has no exact ten-block recorder ledger.';
+        else {
+          const recorded = await sql<{ id: number; framework: string; worktree_dirty: boolean;
+            commit_sha: string; execution_details: Record<string, unknown> }[]>`
+            SELECT id, framework, worktree_dirty, commit_sha, execution_details FROM harness_shared.test_runs
+             WHERE id = ANY(${testRunIds}) ORDER BY id`;
+          if (recorded.length !== 10 || receipt.some((block, index) => {
+            const row = recorded.find(row => Number(row.id) === block.testRunId);
+            const execution = object(row?.execution_details);
+            const before = object(execution.runtimeEnvironmentBefore), after = object(execution.runtimeEnvironmentAfter);
+            const unit = `llm-test-in-process-${clean.blocks[index]?.before.pid}`;
+            return !row || row.framework !== 'llm-test' || row.worktree_dirty !== false || execution.worktreeDirty !== false
+              || Boolean(validateToolDeliveryBlockLedgerIdentity(execution.llmBlockCustody, experiment.id, index, clean.blocks[index]!))
+              || row.commit_sha !== clean.pin.commit || execution.commitSha !== clean.pin.commit
+              || execution.scenarioId !== block.scenario || execution.testLayer !== 'llm'
+              || execution.passed !== 3 || execution.failed !== 0 || execution.skipped !== 0
+              || execution.collectionFailed !== false || digest(before.units) !== digest([unit])
+              || digest(after.units) !== digest([unit]) || typeof before.fingerprint !== 'string'
+              || before.fingerprint !== after.fingerprint;
+          })) cleanError = 'Original recorder ledger does not prove clean, stable in-process execution.';
+        }
+        for (const block of clean.blocks) {
+          for (const boundary of [block.before, block.after]) {
+            const error = validateToolDeliveryCleanCensus(boundary, registration);
+            if (error) cleanError = error;
+          }
+          const attempts = block.runIds.map(id => rows.find(row => row.id === id));
+          const manifests = attempts.map(row => ({ runId: row?.id,
+            manifests: (Array.isArray(row?.raw_events) ? row.raw_events : [])
+              .filter(event => object(event).name === 'tool_definition_manifest') }));
+          if (digest(manifests) !== block.requestManifestSha256)
+            cleanError = 'Clean boundary receipt differs from the original request manifests.';
+        }
+      } catch { cleanError = 'Clean-runtime boundary or recorder receipts are unavailable or invalid.'; }
+    }
     const outsideWindow = rows.some(row => !row.started_at || !row.finished_at ||
       new Date(row.started_at).getTime() < Date.parse(window.windowStart) || new Date(row.finished_at).getTime() > Date.parse(window.windowEnd));
-    if (!result.custody.verified || outsideWindow || receiptError) {
+    if (!result.custody.verified || outsideWindow || receiptError || cleanError) {
       result.comprehension = result.invalidArguments = { verdict: 'unknown',
-        reason: outsideWindow ? 'Observation window omits candidate attempts; the entire population was retained.' : receiptError ?? result.custody.reason };
+        reason: outsideWindow ? 'Observation window omits candidate attempts; the entire population was retained.' : receiptError ?? cleanError ?? result.custody.reason };
     }
     return result;
   }

@@ -176,6 +176,40 @@ describe('durable cascade acknowledgement and restart recovery', () => {
     expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
   });
 
+  it('revalidates an unreplaced dispatch lease after slow preflight', async () => {
+    const id = await queue();
+    let time = NOW;
+    expect(await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => time,
+      dispatch: (isCurrent) => async (opts) => {
+        time = new Date(NOW.getTime() + 300_000);
+        // The consultation is still open and no other continuation took its
+        // token. Slow capacity/transcript preparation must not impersonate a
+        // terminal consultation at the actual spawn boundary.
+        expect(await isCurrent()).toBe(true);
+        expect(new Date((await queuedRow(id)).routing.cascadeDispatch!.leaseUntil!).getTime())
+          .toBeGreaterThan(time.getTime());
+        await opts.onAnsweringOwner?.('slow-preflight-fork');
+        return { woke: 1, answeringOwnerId: 'slow-preflight-fork' };
+      },
+    })).toBe(true);
+    expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('slow-preflight-fork');
+  });
+
+  it('does not renew a dispatch lease after the consultation closes', async () => {
+    const id = await queue();
+    await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: (isCurrent) => async () => {
+        await rootSql`UPDATE harness_shared.consult_state SET state='closed_answered', closed_at=${NOW.toISOString()}::timestamptz
+          WHERE workspace_id=${WS} AND conversation_id=${id}`;
+        expect(await isCurrent()).toBe(false);
+        return { woke: 0 };
+      },
+    });
+    expect((await stateRow(id)).state).toBe('closed_answered');
+  });
+
   it('only one continuation acquires a live lease; the sweep cannot expire its launch', async () => {
     const id = await queue();
     let release!: () => void;
@@ -818,16 +852,16 @@ describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult
     expect(meta[0].kind).toBe('question');
   });
 
-  it('reroutes a requester follow-up only when the answering session is confirmed ended', async () => {
+  it.each([0, 1])('reroutes a confirmed-ended answering session with queued wake count %i', async (woke) => {
     const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const { deps, dispatchCalls } = makeDeps();
-    deps.reach = async () => ({ woke: 0, confirmedDead: true });
+    deps.reach = async () => ({ woke, confirmedDead: true });
     const r = await consultReplyCore(
       { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
       deps,
     );
     if ('error' in r) throw new Error(r.error);
-    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'advanced', to: 'resp-2' } });
+    expect(r.wake).toMatchObject({ attempted: true, woke, reroute: { status: 'advanced', to: 'resp-2' } });
     expect(r.cascade).toMatchObject({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
     expect(r.hint).toContain('advanced to reviewer resp-2');
     expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-2']);

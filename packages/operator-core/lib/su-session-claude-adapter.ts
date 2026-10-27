@@ -13,11 +13,14 @@ import { basename, join } from 'node:path';
 
 import {
   assertNeverSuSession,
+  SU_SESSION_INPUT_LIMITS,
   type OpenCardSnapshot,
   type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
+  type SuSessionExecutionKind,
+  type SuSessionInputPart,
   type SuSessionJsonValue,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
@@ -75,7 +78,7 @@ export type ClaudeNativeCommandVerdict =
 
 export interface ClaudeSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; input?: readonly SuSessionInputPart[]; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<ClaudeNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -88,6 +91,7 @@ export interface ClaudeSuSessionControls {
 
 export interface ClaudeSuSessionDescriptorOptions {
   agentChatId: string;
+  executionKind?: SuSessionExecutionKind;
   model?: string | null;
   /** D-026: the approvals mode the engine launched in, when it has one. */
   approvals?: SuApprovalsMode;
@@ -101,6 +105,8 @@ export interface ClaudeSuSessionDescriptorOptions {
 export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDescriptorOptions {
   host?: SuSessionHost<'claude'>;
   controls?: Partial<ClaudeSuSessionControls>;
+  /** Only an attached native content transport may advertise rich input. */
+  typedInput?: boolean;
   register?: boolean;
   /** Structured transports set this false until their identity handshake completes. */
   ready?: boolean;
@@ -238,8 +244,13 @@ function defaultControls(): ClaudeSuSessionControls {
  */
 export function claudeCapabilities(): SuSessionCapabilities {
   return {
+    version: 2,
+    input: { parts: [], origins: ['owner'] },
     commands: {
       owner_turn: { state: 'supported', implementation: 'native' },
+      queue: { state: 'unsupported', reason: 'explicit queue delivery is not attached to this runtime' },
+      steer: { state: 'unsupported', reason: 'active-turn steering is not attached to this runtime' },
+      handoff: { state: 'unsupported', reason: 'identity-safe execution transfer requires the managed handoff coordinator' },
       interrupt: { state: 'supported', implementation: 'native' },
       resume: {
         state: 'conditional',
@@ -342,6 +353,7 @@ function descriptorFor(
       harnessSlug: binding.harnessSlug,
     },
     lifecycle: 'starting',
+    executionKind: options.executionKind ?? 'pty',
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
@@ -448,7 +460,16 @@ export class ClaudeSuSessionAdapter {
     this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls ={ ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
-      descriptor: descriptorFor(binding, runtime, options),
+      descriptor: (() => {
+        const descriptor = descriptorFor(binding, runtime, options);
+        if (options.executionKind !== 'programmatic' || !options.controls?.ownerTurn) return descriptor;
+        return { ...descriptor, capabilities: { ...descriptor.capabilities,
+          ...(options.typedInput ? { input: { parts: ['text', 'image', 'file'] as const, origins: ['owner'] as const, limits: SU_SESSION_INPUT_LIMITS } } : {}),
+          commands: { ...descriptor.capabilities.commands,
+            queue: { state: 'supported' as const, implementation: 'host' as const },
+          },
+        } };
+      })(),
       executeCommand: (command: SuSessionCommand<'claude'>, context: SuSessionCommandContext<'claude'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor: SuSessionDescriptor<'claude'>) => {
@@ -751,9 +772,10 @@ export class ClaudeSuSessionAdapter {
     }
   }
 
-  async consumeTranscriptSnapshot({ preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): Promise<void> {
-    this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
-    if (!this.runtimeValue.transcriptPath) {
+  async consumeTranscriptSnapshot({ preserveLifecycle = false, path }: { preserveLifecycle?: boolean; path?: string } = {}): Promise<void> {
+    if (!path) this.runtimeValue.transcriptPath ??= await findClaudeTranscript(this.runtimeValue.nativeSession);
+    const transcriptPath = path ?? this.runtimeValue.transcriptPath;
+    if (!transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
     // Best-effort: without the saved receipts a restored prompt still gets its
@@ -761,7 +783,7 @@ export class ClaudeSuSessionAdapter {
     if (this.ownerTurnReceipts) {
       this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
     }
-    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
+    for await (const line of readClaudeTranscriptSnapshotLines(transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
   }
 
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The
@@ -805,11 +827,13 @@ export class ClaudeSuSessionAdapter {
     let verdict: ClaudeNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
+      case 'queue':
         if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
         verdict = await this.controls.ownerTurn({
           ownerId, turnId: command.turnId, content: command.content,
+          ...(command.input ? { input: command.input } : {}),
           ...(command.model ? { model: command.model } : {}),
           ...(command.approvals ? { approvals: command.approvals } : {}),
         });
@@ -841,6 +865,11 @@ export class ClaudeSuSessionAdapter {
           'Claude native fork must be created through the tracked launcher so it receives a new durable identity',
           true,
         ));
+      case 'steer':
+        return commandRefusal(refused('unsupported',
+          'Claude has no Codex same-turn steer; interrupt and queue a follow-up on the persistent session', false));
+      case 'handoff':
+        return commandRefusal(refused('unsupported', `${command.type} is not attached to this runtime`, false));
       default:
         return assertNeverSuSession(command);
     }

@@ -178,9 +178,15 @@ export function createRequireSpecifiers(fileName: string, text: string): CreateR
       || expression.kind === ts.SyntaxKind.NullKeyword;
   };
 
-  const handleArgument = (call: ts.CallExpression): void => {
+  const handleArgument = (call: ts.CallExpression, pathResolutionOnly = false): void => {
     const arg = call.arguments[0] ? unwrap(call.arguments[0]) : undefined;
     if (isLiteral(arg)) { specifiers.add(arg.text); return; }
+    // `.resolve()` returns a path; it does not execute the target. Its dynamic
+    // argument is therefore not an import-closure edge (for example, the CSS
+    // asset probe resolves a destructured `specifier` before handing the path
+    // to esbuild). Actual loader calls below still require a statically
+    // followable argument and remain fail-closed.
+    if (pathResolutionOnly) return;
     if (!arg || !ts.isIdentifier(arg)) { fail(call, 'createRequire loader called with a non-literal specifier'); return; }
     // One wrapper level: the argument is a parameter of an enclosing, named, unexported function.
     let fn: ts.Node | undefined = call.parent;
@@ -245,7 +251,7 @@ export function createRequireSpecifiers(fileName: string, text: string): CreateR
       if (ts.isCallExpression(parent) && parent.expression === node) { handleArgument(parent); return; }
       if (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'resolve'
         && parent.parent && ts.isCallExpression(parent.parent) && parent.parent.expression === parent) {
-        handleArgument(parent.parent);
+        handleArgument(parent.parent, true);
         return;
       }
       fail(node, 'createRequire loader escapes as a value');

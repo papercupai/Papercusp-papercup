@@ -49,14 +49,21 @@ import {
   newTaskId,
   scopeCgroupRelPath,
   scopeUnitForTask,
+  taskIdFromScopeUnit,
   sliceForClass,
   type TaskRow,
   type TaskSpec,
 } from './types';
 
 export interface ManagedSpawnOptions {
+  /** Cancel an awaited enrollment before it can turn into a late fork. */
+  signal?: AbortSignal;
+  /** Immutable caller cutoff, rechecked after enrollment and immediately before fork. */
+  deadlineEpochMs?: number;
   /** Metered executions require enrollment before any process can send. */
   requireRegistration?: boolean;
+  /** A caller that depends on an OS orphan fuse must refuse before spawn if no scope can enforce it. */
+  requireConfinement?: boolean;
   /** Optional tracer; observes spawn and awaited completion phases without secrets. */
   stage?: (name: string) => void;
   /** Observe the child synchronously before post-fork ledger writes can outlive it. */
@@ -170,15 +177,27 @@ let scopeProbe: Promise<{ ok: boolean; reason?: string }> | null = null;
 /**
  * Probe ONCE per operator process whether transient user scopes can be created.
  *
- * A probe beats the alternative — launch into a scope, watch for a launch-failure
+ * An existing kernel-observed task scope, attested by that same user manager,
+ * already proves support. Prefer that read to creating a redundant probe scope
+ * whose short lifetime can discard its resource counters before sampling.
+ * Otherwise a probe beats the alternative — launch into a scope, watch for a launch-failure
  * signature on stderr, then relaunch direct — because that alternative
  * double-spawns on every call on a host where it will never work, and because
  * "did the payload fail or did the SCOPE fail" is genuinely ambiguous to parse
  * (the existing seams carry a regex for exactly that ambiguity). One deterministic
  * probe answers it before any real work is at stake.
  */
-export function probeScopeSupport(spawnFn: typeof spawn = spawn): Promise<{ ok: boolean; reason?: string }> {
-  return scopeProbe ??= probeTransientScopeSupport({ spawnFn });
+export function probeScopeSupport(spawnFn: typeof spawn = spawn, fs: CgroupFs = nodeCgroupFs): Promise<{ ok: boolean; reason?: string }> {
+  if (scopeProbe) return scopeProbe;
+  const cgroupPath = readProcessCgroupPath(process.pid, fs);
+  const manager = deriveUserManagerRoot(cgroupPath);
+  const unit = cgroupPath?.split('/').at(-1);
+  const existingScope = process.platform === 'linux' && process.getuid && manager &&
+    manager.endsWith(`/user@${process.getuid()}.service`) && cgroupPath?.startsWith(`${manager}/papercusp.slice/`) &&
+    unit?.endsWith('.scope') && taskIdFromScopeUnit(unit) &&
+    readCgroupProcs(absCgroupDir(cgroupPath), fs).includes(process.pid)
+    ? { unit, cgroupPath } : undefined;
+  return scopeProbe = probeTransientScopeSupport({ spawnFn, existingScope });
 }
 
 /** Test seam — forget the cached probe. */
@@ -246,6 +265,13 @@ export async function managedSpawn(
   const spawnFn = opts.spawnFn ?? spawn;
   const fs = opts.fs ?? nodeCgroupFs;
   const taskId = opts.taskId ?? newTaskId();
+  const checkLaunch = () => {
+    opts.signal?.throwIfAborted();
+    if (opts.deadlineEpochMs !== undefined &&
+        (!Number.isSafeInteger(opts.deadlineEpochMs) || Date.now() >= opts.deadlineEpochMs))
+      throw new Error('Task launch deadline exhausted; no process started.');
+  };
+  checkLaunch();
   if (!isValidTaskId(taskId)) {
     throw new Error(
       `task-manager: invalid caller taskId ${JSON.stringify(taskId)} — must match /^[0-9a-z]{4,64}$/`,
@@ -258,7 +284,9 @@ export async function managedSpawn(
   // rather than a dashboard blanker.
   opts.stage?.('spawn-read-flag');
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    if (opts.requireConfinement) throw new Error('Required task confinement is disabled; no process started.');
     if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
+    checkLaunch();
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
     const completion = new Promise<ManagedSpawnCompletion>((resolve) => {
@@ -288,13 +316,16 @@ export async function managedSpawn(
       if (!scopeOk) skippedReason = 'confinement disabled by caller';
     } else {
       opts.stage?.('spawn-scope-probe');
-      const probe = await probeScopeSupport(spawnFn);
+      const probe = await probeScopeSupport(spawnFn, fs);
       scopeOk = probe.ok;
       skippedReason = probe.reason;
     }
   } else {
     skippedReason = 'confine: false';
   }
+
+  if (opts.requireConfinement && !scopeOk)
+    throw new Error(`Required task confinement is unavailable; no process started: ${skippedReason ?? 'unknown'}`);
 
   const argvSpec: TaskSpec = { ...spec, argv: [command, ...args] };
 
@@ -330,6 +361,10 @@ export async function managedSpawn(
   }
 
   const scopeUnit = scopeOk ? scopeUnitForTask(taskId) : null;
+  // Registration may have waited on the database. Bound the OS fuse to the
+  // original absolute cutoff rather than granting a new lifetime after that wait.
+  const runtimeMaxSec = opts.deadlineEpochMs === undefined ? spec.runtimeMaxSec :
+    Math.min(spec.runtimeMaxSec ?? Infinity, Math.floor((opts.deadlineEpochMs - Date.now()) / 1000) - 1);
 
   // WI-40906 — a caller-supplied env belongs to the PAYLOAD, never to the
   // `systemd-run` client. The client reaches the user manager over
@@ -359,7 +394,12 @@ export async function managedSpawn(
         swap: spec.swap ?? undefined,
         cpuWeight: spec.cpuWeight,
         tasksMax: spec.tasksMax,
-        runtimeMaxSec: spec.runtimeMaxSec,
+        runtimeMaxSec,
+        // A fixed cutoff includes escalation, rather than inheriting the user
+        // manager's much longer default stop timeout after RuntimeMaxSec expires.
+        ...(opts.deadlineEpochMs === undefined ? {} : {
+          extraProperties: ['TimeoutStopSec=1s', 'SendSIGKILL=yes'],
+        }),
         collectFailedUnit: false,
       })
     : null;
@@ -388,12 +428,15 @@ export async function managedSpawn(
     // invisible to the payload, which is how a bounded run gets SIGKILLed with no verdict.
     launchSpawnOptions = {
       ...launchSpawnOptions,
-      env: { ...process.env, ...taskDeadlineEnv(spec.runtimeMaxSec) },
+      env: { ...process.env, ...taskDeadlineEnv(spec.runtimeMaxSec, Date.now(), process.env) },
     };
   }
 
   let child: ChildProcess;
   try {
+    checkLaunch();
+    if (opts.deadlineEpochMs !== undefined && (!runtimeMaxSec || runtimeMaxSec < 1))
+      throw new Error('Task launch deadline has no OS fuse reserve; no process started.');
     opts.stage?.('spawn-fork');
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), launchSpawnOptions);
   } catch (e) {

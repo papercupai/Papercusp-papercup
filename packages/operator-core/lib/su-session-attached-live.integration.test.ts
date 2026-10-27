@@ -1,11 +1,15 @@
-/** Opt-in acceptance against the current source, real SU bootstrap and engine.
- * Creates one named test conversation in the selected project and archives it.
- * No UI/PTY is launched. Provider tokens are spent only with the explicit flag;
- * backend is Claude, model defaults to explicitly pinned `sonnet` (PUI D-012),
- * and account defaults to `auto` so the gateway can choose from its provider pool.
+/** Inventory integration uses an isolated real PTY with a controlled Node child.
+ * The separately opt-in live-engine group creates and archives a named test
+ * conversation. Provider tokens are spent only with that explicit flag;
+ * its backend is Claude, model defaults to pinned `sonnet` (PUI D-012), and
+ * account defaults to `auto` so the gateway can choose from its provider pool.
  */
-import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+// Establish the maintained PTY discovery isolation before either side of that
+// production seam is imported. These fake children must never look like fleet sessions.
+import { hermeticEnv } from '../../../apps/operator/vitest-shims/psu-pty-temp-dir';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAdaptorServer } from '@hono/node-server';
@@ -18,12 +22,123 @@ import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limi
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import { modelArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { eventLogPathForOwner, hostThroughPty, metaPathFor, socketPathFor } from '../../../apps/operator/scripts/psu-pty-host.mjs';
+import { findLiveHost, injectIntoHostWithConfirmation } from './events/await/psu-pty-discovery';
 import { redactSensitiveText } from './sensitive-text';
 import { buildClaudeMcpEntry } from './desktop-install/claude-integration';
 import { SuNativeCards } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
 import { approvalCardText } from './su-session-approval-display';
 import { resolveCardResponse } from '@papercusp/agent-mcp';
+import { SU_EXEC_COMBINATIONS, SU_EXEC_SCENARIOS, SU_EXEC_REQUEST_SCENARIOS, SU_EXEC_PTY_CONTROLS, suExecScenariosFor, suExecQualificationPopulation,
+  suExecQualificationDefects } from './__fixtures__/su-execution-parity';
+import { clockwisePngColors, imageSha256, quadrantPng, retainImageInput, type ImageColor } from './__fixtures__/su-image-qualification';
+
+/**
+ * Exercise the actual host -> discovery -> socket -> PTY child boundary that
+ * the inventory classifies. A controlled Node child avoids provider calls;
+ * this is transport/inventory integration, not native-provider qualification.
+ */
+async function observeInventoryPtyBoundary() {
+  const ownerId = 'su-exec-inventory-' + randomUUID();
+  const probe = randomUUID();
+  const root = mkdtempSync(join(tmpdir(), 'su-exec-inventory-'));
+  const inputLog = join(root, 'child-input');
+  const signalSource = new EventEmitter();
+  let captured = '';
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const io = {
+    stdout: { columns: 80, rows: 24, write: (data: Buffer | string) => { captured += data.toString(); }, on() {}, off() {} },
+    stdin,
+  };
+  const done = hostThroughPty({
+    command: process.execPath,
+    args: ['-e', [
+      "const fs=require('node:fs');",
+      "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('SU_EXEC_PTY_READY\\n');",
+      "let received='';process.stdin.on('data',data=>{fs.appendFileSync(process.env.SU_EXEC_INPUT_LOG,data);received+=data;if(received.includes(process.env.SU_EXEC_PROBE)){",
+      "process.stdout.write('SU_EXEC_CHILD_RECEIPT:'+process.env.SU_EXEC_PROBE+'\\n');process.exit(0);}});",
+      "setTimeout(()=>process.exit(19),12000);",
+    ].join('')],
+    cwd: root, env: hermeticEnv({ PAPERCUSP_SID: ownerId, SU_EXEC_PROBE: probe, SU_EXEC_INPUT_LOG: inputLog }),
+    ownerId, io, bridgeTty: false, signalSource,
+    onExit: () => undefined, emitCompacted: () => null,
+  });
+  const socket = socketPathFor(ownerId);
+  const metadata = metaPathFor(ownerId);
+  try {
+    await vi.waitFor(() => expect(captured).toContain('SU_EXEC_PTY_READY'), { timeout: 5000 });
+    // The host is in this Vitest worker; use the maintained exact-worker PID
+    // verifier, rather than asking the native launcher classifier to recognize Vitest.
+    const discovered = findLiveHost(ownerId, undefined, { verifyIdentity: pid => pid === process.pid });
+    expect(discovered).toMatchObject({ ownerId, pid: process.pid, sock: socket });
+    expect(existsSync(metadata)).toBe(true);
+    const admission = await injectIntoHostWithConfirmation(socket, { mode: 'compact', data: '', ownerId });
+    expect(admission).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+    // Admission acknowledges queue custody. Only the later production event
+    // proves semantic refusal; the child-input log below proves no JSON leaked.
+    const refusal = await vi.waitFor(() => {
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const dropped = events.find(event => event.kind === 'retired-mode-dropped');
+      expect(dropped).toMatchObject({ kind: 'retired-mode-dropped', mode: 'compact' });
+      return dropped;
+    }, { timeout: 5000 });
+    const delivery = await injectIntoHostWithConfirmation(socket, { mode: 'raw', data: probe, ownerId });
+    expect(delivery.ok).toBe(true);
+    await vi.waitFor(() => expect(captured).toContain('SU_EXEC_CHILD_RECEIPT:' + probe), { timeout: 5000 });
+    expect(await done, captured).toBe(0);
+    expect(readFileSync(inputLog, 'utf8')).toBe(probe);
+    expect(existsSync(socket)).toBe(false);
+    expect(existsSync(metadata)).toBe(false);
+    return { refusal, rawDelivered: captured.includes('SU_EXEC_CHILD_RECEIPT:' + probe),
+      discoveryRemoved: !existsSync(socket) && !existsSync(metadata) };
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done.catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe('SU execution live qualification inventory (P-001)', () => {
+  it('SU-EXEC R-1 acceptance contract', async () => {
+    const observed = await observeInventoryPtyBoundary();
+    expect(observed.rawDelivered).toBe(true);
+    expect(SU_EXEC_PTY_CONTROLS.find(control => control.mode === 'raw')?.classification).toBe('native-presentation');
+    expect(SU_EXEC_PTY_CONTROLS.find(control => control.mode === 'compact')?.classification).toBe('retired');
+    // Keep the native-provider drill population unknown: a real PTY transport
+    // receipt from a controlled child cannot qualify either provider backend.
+    const population = suExecQualificationPopulation();
+    for (const combination of SU_EXEC_COMBINATIONS) {
+      const rows = population.filter(row => row.provider === combination.provider && row.execution === combination.execution);
+      expect(rows.map(row => row.scenario)).toEqual(suExecScenariosFor(combination).map(scenario => scenario.id));
+      expect(rows.every(row => row.state === 'unknown')).toBe(true);
+      expect(rows.filter(row => row.scenario.startsWith('pty-control:')).map(row => row.scenario).sort())
+        .toEqual(SU_EXEC_PTY_CONTROLS.map(control => `pty-control:${control.mode}`).sort());
+      for (const request of SU_EXEC_REQUEST_SCENARIOS.filter(request => request.provider === combination.provider)) {
+        expect(rows.some(row => row.scenario === request.id)).toBe(true);
+      }
+    }
+    for (const id of ['assets', 'request-families', 'fork', 'wake-receipts', 'cold-carry', 'same-provider-handoff', 'provider-transfer']) {
+      expect(SU_EXEC_SCENARIOS.find(scenario => scenario.id === id)?.falsifier).toBeTruthy();
+    }
+    expect(suExecQualificationDefects(population).length).toBeGreaterThan(0);
+  }, 20_000);
+
+  it('SU-EXEC R-18 inventory preflight', async () => {
+    const observed = await observeInventoryPtyBoundary();
+    expect(observed.discoveryRemoved).toBe(true);
+    for (const row of suExecQualificationPopulation()) {
+      expect(row.ownerItem).toMatch(/^P-\d{3}$/);
+      expect(row.host).toBe('linux/x64/current-build');
+      expect(row.evidenceRefs).toEqual([]);
+      expect(row.negativeControlRefs).toEqual([]);
+    }
+    // No missing mandatory live proof may become a healthy/parity verdict.
+    const missing = suExecQualificationPopulation().filter(row => row.execution === 'pty');
+    expect(suExecQualificationDefects(missing)).toContainEqual(expect.stringContaining('missing'));
+  }, 20_000);
+});
 
 type StartedTool = Extract<SuSessionEventInput, { type: 'tool'; phase: 'started' }>;
 type OpenedCard = Extract<SuSessionEventInput, { type: 'card'; phase: 'opened' }>;
@@ -111,6 +226,21 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   let server: ReturnType<typeof createAdaptorServer> | undefined;
   let home: string | undefined;
   let previousEnv: Record<string, string | undefined> = {};
+  let startup = { stage: 'not-started', startedAt: Date.now(), finished: false };
+  async function setupStep<T>(stage: string, action: () => Promise<T>): Promise<T> {
+    startup = { stage, startedAt: Date.now(), finished: false };
+    console.info('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'started' }));
+    try {
+      const value = await action();
+      startup.finished = true;
+      console.info('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'completed', elapsedMs: Date.now() - startup.startedAt }));
+      return value;
+    } catch (error) {
+      console.error('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'failed', elapsedMs: Date.now() - startup.startedAt,
+        message: error instanceof Error ? error.message : String(error) }));
+      throw error;
+    }
+  }
 
   beforeAll(async () => {
     const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
@@ -128,10 +258,10 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     })() : [];
     home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
     previousEnv.PAPERCUSP_TEST_PG_ADMIN_URL = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-    pg = await startDedicatedNativePg({ baseDir: home,
-      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } });
+    pg = await setupStep('private-pg', () => startDedicatedNativePg({ baseDir: home!,
+      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } }));
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = pg.getConnectionUri();
-    db = await createOrgTestDb();
+    db = await setupStep('org-db', () => createOrgTestDb());
     expect(new URL(db.adminDsn).port, 'the org fixture must use this test-owned PG process')
       .toBe(new URL(pg.getConnectionUri()).port);
     if (account === 'auto') await db.adminSql`
@@ -158,26 +288,48 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       'PAPERCUSP_MCP_PROXY_BASE', 'OPERATOR_DEV_PORT'].map(key => [key, process.env[key]])));
     Object.assign(process.env, env);
     delete process.env.OPERATOR_DEV_PORT;
-    fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    fixture = await setupStep('coord-fixture', () => setupBaselineCoordFixture({ dsn: db!.adminDsn }));
     const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
-    const { insertHiveIfAbsent } = await import('./hive-store');
-    await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
-      pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db.adminSql);
-    const { setHiveSetting } = await import('./hive-settings-store');
-    await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
-      settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
-        '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db.adminSql);
-    const { saveHarnessRegistry } = await import('./harness-registry');
-    await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
-      harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
+    await setupStep('seed-harness', async () => {
+      const { insertHiveIfAbsent } = await import('./hive-store');
+      await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
+        pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db!.adminSql);
+      const { setHiveSetting } = await import('./hive-settings-store');
+      await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
+        settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
+          '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db!.adminSql);
+      const { saveHarnessRegistry } = await import('./harness-registry');
+      await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
+        harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
+    });
     const { scaffoldHarnessSchema } = await import('./scaffold-harness-schema');
-    await scaffoldHarnessSchema(harness);
-    const { app } = await import('../../../apps/operator/bin/host-app');
+    await setupStep('scaffold-harness-schema', () => scaffoldHarnessSchema(harness));
+    // Mount the production MCP definitions and auth/workspace stack without
+    // importing every unrelated HTTP route. Warm the real operator catalogue
+    // before initialize: its cold import otherwise consumes the client's MCP
+    // handshake deadline (r199), whereas the full host app warmed it incidentally.
+    const app = await setupStep('mount-private-mcp', async () => {
+      const [{ Hono }, { registerRoute }, { default: transportRoutes }, { default: cardResponseRoute },
+        { createWorkspaceContextMiddleware }, { createLocalMachineOperatorTransport }] = await Promise.all([
+        import('hono'), import('./endpoint-route/define-route'), import('./endpoint-route/routes/transport'),
+        import('./endpoint-route/routes/operator/card-response'),
+        import('./workspace-context-middleware'), import('./workspace-host/local-machine-operator-transport'),
+      ]);
+      const app = new Hono().basePath('/api');
+      app.use('*', createWorkspaceContextMiddleware(createLocalMachineOperatorTransport()));
+      for (const route of transportRoutes) registerRoute(app, route);
+      registerRoute(app, cardResponseRoute);
+      return app;
+    });
+    await setupStep('warm-private-mcp-catalogue', async () => {
+      const { ensureOperatorToolsLoaded } = await import('./endpoint-route/routes/transport/_mcp-host');
+      await ensureOperatorToolsLoaded();
+    });
     server = createAdaptorServer({ fetch: app.fetch });
-    await new Promise<void>((done, reject) => {
+    await setupStep('listen-private-operator', () => new Promise<void>((done, reject) => {
       server!.once('error', reject);
       server!.listen(0, '127.0.0.1', done);
-    });
+    }));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Private attached test operator has no port');
     expect([3070, 3170, 3271, 3278]).not.toContain(address.port);
@@ -194,17 +346,26 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       hasCompletedOnboarding: true, mcpServers: { 'papercusp-su': entry },
     }), { mode: 0o600 });
     const { ensureProjectTrust } = await import('./interactive-claude-config');
-    await ensureProjectTrust(claudeFixture.sourceHome, resolve(import.meta.dirname, '../../..'));
+    await setupStep('ensure-project-trust', () => ensureProjectTrust(claudeFixture.sourceHome!, resolve(import.meta.dirname, '../../..')));
     expect(entry.headers.Authorization === `Bearer ${token}`, 'MCP config must use the private operator bearer').toBe(true);
     const client = new Client({ name: 'attached-fixture-preflight', version: '1.0.0' });
     const mcpUrl = new URL('/api/mcp', origin);
     mcpUrl.search = new URLSearchParams({ superuser: '1', workspace: 'papercusp-workspace',
       tools: 'coord:whoami,tools:invoke' }).toString();
     try {
-      await client.connect(new StreamableHTTPClientTransport(mcpUrl, {
+      await setupStep('card-response-preflight', async () => {
+        const response = await fetch(`${origin}/api/operator/conversations/${randomUUID()}/card-response`, {
+          method: 'POST', headers: { ...entry.headers, 'content-type': 'application/json' }, body: '{}',
+        });
+        const body = await response.text();
+        expect(response.status, body).toBe(400);
+        expect(response.headers.get('content-type'), body).toContain('application/json');
+        expect(JSON.parse(body)).toMatchObject({ error: expect.stringContaining('correlationId, workspaceId, action required') });
+      });
+      await setupStep('mcp-connect', () => client.connect(new StreamableHTTPClientTransport(mcpUrl, {
         requestInit: { headers: entry.headers },
-      }));
-      const listed = await client.listTools({}, { timeout: 30_000 });
+      })));
+      const listed = await setupStep('mcp-list-tools', () => client.listTools({}, { timeout: 30_000 }));
       expect(listed.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['coord:whoami', 'tools:invoke']));
     } finally {
       await client.close();
@@ -212,6 +373,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   }, 180_000);
 
   afterAll(async () => {
+    if (!startup.finished) console.error('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage: startup.stage,
+      state: 'interrupted', elapsedMs: Date.now() - startup.startedAt }));
     try {
       if (server) await new Promise<void>((done, reject) => {
         server!.close(error => error ? reject(error) : done());
@@ -231,6 +394,131 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       }
     }
   }, 60_000);
+
+  it.each(['claude', 'codex'] as const)('P006 actual-image-dependent native result and durable reconnect (%s)', async backend => {
+    const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes },
+      { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }] = await Promise.all([
+      import('./agent-chats-data'), import('./endpoint-route/routes/adv/launch-su'),
+      import('./endpoint-route/routes/agent-chats/su-session'), import('./su-session-host'),
+      import('./superuser-token'), import('./workspace-registry'),
+    ]);
+    const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp', workspaceId = activeWorkspaceId();
+    const created = await createChat({ slug: harness, role: 'operator', title: `P006 image ${backend} ${randomUUID()}` });
+    if (!created.ok) throw new Error(created.error);
+    const chatId = created.data.id, key = { workspaceId, harnessSlug: harness, agentChatId: chatId };
+    const headers = { 'content-type': 'application/json', host: 'localhost', authorization: `Bearer ${readSuperuserToken()}` };
+    const context = { params: { slug: harness, chatId } } as never;
+    let host: ReturnType<typeof getRegisteredSuSessionHost>;
+    try {
+      let model: string | undefined = backend === 'claude' ? 'sonnet' : undefined;
+      const launch = await launchRoutes.find(route => route.method === 'POST')!.handler(new Request('http://localhost/api/adv/sessions/launch-su', {
+        method: 'POST', headers, body: JSON.stringify({ agent: backend, attached_engine: true, execution_kind: 'programmatic',
+          agent_chat_id: chatId, harness_slug: harness, model, account: 'auto', carry: 'warm' }),
+      }), context);
+      const launched = await launch.json() as { status: string; transport?: string; error?: string };
+      expect(launch.status, JSON.stringify(launched)).toBe(200);
+      host = getRegisteredSuSessionHost(key);
+      if (!host) throw new Error('Image acceptance did not attach a native host');
+      await vi.waitFor(() => {
+        expect(host!.snapshot().terminal, JSON.stringify(host!.recent.slice(-6))).toBe(false);
+        expect(host!.snapshot()).toMatchObject({ executorAttached: true, streamReady: true });
+      }, { timeout: 120_000, interval: 100 });
+      expect(host.descriptor().capabilities.input?.parts).toContain('image');
+      if (backend === 'codex') {
+        await vi.waitFor(() => expect(host!.descriptor().models?.length).toBeGreaterThan(0), { timeout: 30_000 });
+        const models = host.descriptor().models!;
+        model = (models.find(row => row.isDefault) ?? models[0]).id;
+      }
+      // Randomize the arrangement only in the bitmap; neither the prompt nor
+      // a filename contains the answer. This requires actual visual inference.
+      const palette: ImageColor[] = ['red', 'blue', 'green', 'yellow'];
+      for (let i = palette.length - 1; i > 0; i--) { const j = randomInt(i + 1); [palette[i], palette[j]] = [palette[j], palette[i]]; }
+      const png = quadrantPng(palette), image = png.toString('base64');
+      expect(clockwisePngColors(png), 'independent PNG calibration before native delivery').toEqual(palette);
+      const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'owner_turn',
+        commandId: `image-${randomUUID()}`, turnId: `image-turn-${randomUUID()}`, issuedAt: new Date().toISOString(),
+        target: host.descriptor().identity, model,
+        content: 'Read the attached image. Reply only with the four quadrant colors clockwise starting at top left, comma separated. Do not use tools or change anything.',
+        input: [{ type: 'image', mediaType: 'image/png', data: image }],
+      };
+      const evidenceRoot = process.env.PAPERCUSP_SU_IMAGE_EVIDENCE_DIR ?? join(tmpdir(), 'papercusp-su-image-evidence');
+      mkdirSync(evidenceRoot, { recursive: true, mode: 0o700 });
+      const evidence = mkdtempSync(join(evidenceRoot, `${backend}-`));
+      retainImageInput(evidence, command, png);
+      console.info('SU_EXEC_P006_NATIVE_IMAGE_EVIDENCE', JSON.stringify({ backend, evidence, imageSha256: imageSha256(png) }));
+      const route = suSessionRoutes.find(route => route.method === 'POST')!;
+      const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers, body: JSON.stringify(command) }), context);
+      const accepted = await post(); expect(accepted.status, JSON.stringify(await accepted.json())).toBe(202);
+      const saved = await getChat({ slug: harness, chatId });
+      expect(saved.ok && saved.data.transcript.some(turn => JSON.stringify(turn).includes(image))).toBe(true);
+      const stream = host.subscribe()[Symbol.asyncIterator]();
+      const observed = new Map(host.recent.map(row => [row.event.sequence, row.event]));
+      const deadline = Date.now() + 120_000;
+      let answer = '';
+      try {
+        while (true) {
+          const events = [...observed.values()];
+          const errors = events.flatMap(event => event.type === 'error' ? [`${event.code}: ${event.message}`] : []);
+          if (errors.length) throw new Error(errors.join('\n'));
+          answer = events.flatMap(event => event.type === 'transcript' && event.role === 'assistant'
+            && event.channel === 'text' && event.phase === 'completed' && event.turnId === command.turnId
+            ? [event.content ?? ''] : []).join(' ').toLowerCase();
+          if (host.descriptor().lifecycle === 'waiting-for-owner' && answer) break;
+          let timer: ReturnType<typeof setTimeout>;
+          try {
+            const next = await Promise.race([stream.next(), new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(`Native image result missing: ${JSON.stringify({ backend,
+                model, answer, lifecycle: host!.descriptor().lifecycle, eventTypes: events.slice(-8).map(event => event.type) })}`)),
+              Math.max(1, deadline - Date.now()));
+            })]);
+            if (next.done) throw new Error('Native image stream ended without a final result');
+            observed.set(next.value.event.sequence, next.value.event);
+          } finally { clearTimeout(timer!); }
+        }
+      } finally { await stream.return?.(); }
+      const result = { backend, model, answer, expectedColors: palette, imageSha256: imageSha256(png),
+        descriptor: host.descriptor(), nativeInput: 'not-inspected' };
+      writeFileSync(join(evidence, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+      if (backend === 'claude') {
+        const { findSessionTranscript } = await import('./claude-sessions');
+        const { readClaudeTranscriptSnapshotLines } = await import('./su-session-claude-adapter');
+        const descriptor = host.descriptor(), extension = descriptor.backendExtension;
+        const path = await findSessionTranscript(descriptor.identity.nativeSessionId, { owner: descriptor.identity.ownerId,
+          roots: extension.backend === 'claude' && extension.configDir ? [join(extension.configDir, 'projects')] : [] });
+        if (path) for await (const line of readClaudeTranscriptSnapshotLines(path)) {
+          const row = JSON.parse(line);
+          if (row.type !== 'user' || !Array.isArray(row.message?.content)
+            || !row.message.content.some((part: { type?: string; text?: string }) => part.type === 'text' && part.text === command.content)) continue;
+          writeFileSync(join(evidence, 'native-user-message.json'), JSON.stringify(row.message, null, 2) + '\n', { mode: 0o600 });
+          const nativeImages = row.message.content.filter((part: { type?: string }) => part.type === 'image');
+          result.nativeInput = 'retained';
+          writeFileSync(join(evidence, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+          expect(nativeImages).toHaveLength(1);
+          const nativePng = Buffer.from(nativeImages[0].source.data, 'base64');
+          expect(imageSha256(nativePng), 'native Claude transcript image must match submitted PNG').toBe(imageSha256(png));
+          expect(clockwisePngColors(nativePng)).toEqual(palette);
+          break;
+        }
+        expect(result.nativeInput, `Native input missing; retained evidence: ${evidence}`).toBe('retained');
+      }
+      console.info('SU_EXEC_P006_NATIVE_IMAGE_OBSERVED', JSON.stringify({ backend, model, answer,
+        expectedColors: palette, lifecycle: host.descriptor().lifecycle, evidence }));
+      expect(answer.match(/\b(?:red|blue|green|yellow)\b/g), `${answer}; retained evidence: ${evidence}`).toEqual(palette);
+      // A reconnect/retry reads the existing durable receipt. It never drops
+      // the image or sends this already delivered command a second time.
+      const reconnected = await post(); expect(await reconnected.json()).toMatchObject({ ok: true, replayed: true });
+      console.info('SU_EXEC_P006_NATIVE_IMAGE', JSON.stringify({ backend, model, ownerId: host.descriptor().identity.ownerId,
+        nativeSessionId: host.descriptor().identity.nativeSessionId, expectedColors: palette, answer,
+        persistedImage: true, reconnectReplayed: true }));
+    } finally {
+      host ??= getRegisteredSuSessionHost(key);
+      if (host && !host.snapshot().terminal) await host.startCommand({ schema: SU_SESSION_SCHEMA,
+        protocolVersion: SU_SESSION_PROTOCOL_VERSION, type: 'end', commandId: `end-${randomUUID()}`,
+        issuedAt: new Date().toISOString(), target: host.descriptor().identity }).terminal;
+      host?.dispose('P006 native image acceptance finished');
+      expect((await archiveChat({ slug: harness, chatId })).ok).toBe(true);
+    }
+  }, 240_000);
 
   it('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes }, { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }, { readDurableSuSession }] = await Promise.all([
@@ -364,7 +652,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
             method: 'POST', headers, body: JSON.stringify({ correlationId: event.card.correlationId,
               workspaceId, action: 'submit', payload: { picks: ['yes'] } }),
           });
-          expect(answered.status, JSON.stringify(await answered.json())).toBe(200);
+          expect(answered.status, await answered.text()).toBe(200);
         }
         if (event.type === 'error') {
           const rateLimit = confirmedProviderRateLimit(observedEvents);

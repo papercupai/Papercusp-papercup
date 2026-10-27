@@ -259,11 +259,14 @@ export async function spawnSubstrateSidecar(
   // via tsx. The old unconditional `npx tsx <.ts>` could not work off a bundle
   // (no tsx, no .ts on disk) — the other half of the P-006 finding.
   const selfPath = fileURLToPath(import.meta.url);
+  const nodeExecutable = process.versions.bun
+    ? await (await import('../../bundled-node')).resolveBundledNode() : process.execPath;
+  if (!nodeExecutable) throw new Error('Retained Node is required for the substrate sidecar');
   const plan = resolveSidecarSpawnPlan({
     selfPath,
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_SUBSTRATE_SIDECAR_MODE',
-    execPath: process.execPath,
+    execPath: nodeExecutable,
     spawnerPid: process.pid,
   });
 
@@ -525,7 +528,7 @@ export function getSubstrateSidecarProcess(): ChildProcess | null {
 }
 
 /** Test seam — inject a fake sidecar ChildProcess (for the handoff unit test)
- *  without spawning the real `npx tsx` child. Pass null to reset. */
+ *  without spawning the real Node/tsx child. Pass null to reset. */
 export function _setSubstrateSidecarProcessForTests(proc: ChildProcess | null): void {
   sidecarProcess = proc;
   sidecarReady = !!proc;

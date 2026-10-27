@@ -7,8 +7,10 @@
  * no-op — before this ledger there was no durable record of WHY each tick
  * withheld, and an always-gated Scout was indistinguishable from a dead one.
  * One row per tick, mirroring `watchdog_ticks` (migration 202): `gated` rows
- * name the self-gate that stopped the tick; `ran` rows carry the cycle's
- * generated/routed/deduped counts + spend; `error` rows carry the failure.
+ * name the self-gate that stopped a no-op or paid generation, `ran` rows carry
+ * the cycle's generated/routed/deduped counts + spend, `error` rows carry the
+ * failure. A generation-preflight gate may still run a zero-cost corpus path so
+ * observation reads and consumption stamps continue without LLM generation.
  *
  * Best-effort by contract: the scheduler swallows recording failures
  * (observability must never fail the tick). The recorder is injected into

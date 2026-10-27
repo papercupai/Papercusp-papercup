@@ -13,7 +13,7 @@ import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssig
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
 import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from './isolated-integration-proof';
 import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
-import { startFrontierSweLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
+import { startFrontierSweLaunchAdapter, type FrontierSweNativeLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
 import type { FrontierSweEnvHandle } from '../lib/external-bench/frontier-swe-seam';
@@ -26,6 +26,8 @@ import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-po
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
+
+const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
@@ -279,7 +281,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const ctx = { workspaceId: workspace, isSuperuser: true, uiClientId: `su-private-native-${randomUUID()}`,
     principal: { slug: 'system:superuser' } } as PapercuspUnifiedToolContext;
   const phase = (name: string) => { progress(name); console.log('CURRENT_SU_NATIVE_PHASE ' + name); };
-  let adapter: Awaited<ReturnType<typeof startFrontierSweLaunchAdapter>> | undefined;
+  let adapter: FrontierSweNativeLaunchAdapter | undefined;
   let bridge: CodexHookBridge | undefined;
   let handle: FrontierSweEnvHandle | undefined;
   try {
@@ -300,7 +302,14 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       }; },
     }, {
       startBridge: async options => { phase('bridge-start'); bridge = await startCodexHookBridge(options); phase('bridge-ready'); return bridge; },
-      startEgress: async options => { phase('egress-start'); const egress = await startBenchEgress(options); phase('egress-ready'); return egress; },
+      startEgress: async options => {
+        phase('egress-start');
+        writeFileSync(join(evidenceDir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), options.runId + '\n',
+          { mode: 0o600, flag: 'wx' });
+        const egress = await startBenchEgress(options);
+        phase('egress-ready');
+        return egress;
+      },
       sweep: sweepBenchEgress,
       createDriver: (options, context, observations) => {
         phase('driver-start');

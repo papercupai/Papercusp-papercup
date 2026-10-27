@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { delimiter, join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   extractIdentifierTokens,
   gitGrepSymbolResolver,
@@ -152,8 +152,22 @@ describe('gitGrepSymbolResolver', () => {
   });
 
   it('reports a timed-out lookup as unavailable', async () => {
-    const resolve = gitGrepSymbolResolver({ cwd: repo, timeoutMs: 1 });
-    const subjects = await resolveQuestionCodeSubjects('where is `routeThing` defined?', { resolveSymbol: resolve });
-    expect(subjects.resolver).toBe('unavailable');
+    // A real search over this tiny fixture can finish before a 1ms timeout.
+    // Exercise actual child cancellation with a controlled, nonterminating Git
+    // stand-in, and first prove the executable is runnable (not a spawn error).
+    const bin = mkdtempSync(join(tmpdir(), 'code-subject-timeout-'));
+    const git = join(bin, 'git');
+    writeFileSync(git, `#!${process.execPath}\nif (process.argv.includes('--ready')) process.stdout.write('ready'); else setInterval(() => {}, 1_000);\n`);
+    chmodSync(git, 0o755);
+    try {
+      expect(execFileSync(git, ['--ready'], { encoding: 'utf8', timeout: 5_000 })).toBe('ready');
+      vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH ?? ''}`);
+      const resolve = gitGrepSymbolResolver({ cwd: repo, timeoutMs: 1 });
+      const subjects = await resolveQuestionCodeSubjects('where is `routeThing` defined?', { resolveSymbol: resolve });
+      expect(subjects.resolver).toBe('unavailable');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 });

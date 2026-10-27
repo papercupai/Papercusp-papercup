@@ -25,6 +25,8 @@ const fakeProjected = {
   description: 'a low-risk test tool',
   inputSchema: {},
   capabilities: [] as string[],
+  skipWorkspaceTx: false,
+  needsWorkspaceTx: false,
 };
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
@@ -56,10 +58,55 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws1') }));
 
 const { invokeServerCapability } = await import('./invoke');
+const { withWorkspace } = await import('@papercusp/db-org');
 
 beforeEach(() => {
   capturedCtx = null;
+  fakeProjected.skipWorkspaceTx = false;
+  fakeProjected.needsWorkspaceTx = false;
+  vi.mocked(withWorkspace).mockClear();
   scope.registry.mockReset().mockResolvedValue({ projects: [{ slug: 'desktop-pot' }] });
+});
+
+describe('invokeServerCapability — declared transaction ownership', () => {
+  it('dispatches a transaction-free tool without opening an idle workspace transaction', async () => {
+    fakeProjected.skipWorkspaceTx = true;
+    vi.mocked(withWorkspace).mockRejectedValueOnce(new Error('idle workspace transaction expired'));
+    try {
+      const result = await invokeServerCapability({ name: 'graph:query', harness: 'desktop-pot' });
+      expect(result.ok).toBe(true);
+      expect(withWorkspace).not.toHaveBeenCalled();
+      expect(capturedCtx).toMatchObject({ workspaceId: 'ws1', harnessSlug: 'desktop-pot' });
+      expect(capturedCtx?.tx).toBeUndefined();
+    } finally {
+      vi.mocked(withWorkspace).mockReset().mockImplementation(async (_workspace, callback) => callback({} as never));
+    }
+  });
+
+  it('keeps workspace transaction scoping for a tool that requires it', async () => {
+    fakeProjected.needsWorkspaceTx = true;
+    await invokeServerCapability({ name: 't:x' });
+    expect(withWorkspace).toHaveBeenCalledOnce();
+    expect(capturedCtx?.tx).toBeDefined();
+  });
+
+  it('defaults to transaction-free dispatch without the retired opt-out flag', async () => {
+    await invokeServerCapability({ name: 't:x' });
+    expect(withWorkspace).not.toHaveBeenCalled();
+    expect(capturedCtx?.tx).toBeUndefined();
+  });
+
+  it('opens the nested target transaction according to the target declaration', async () => {
+    fakeProjected.skipWorkspaceTx = true;
+    await invokeServerCapability({ name: 'tools:invoke' });
+    const dispatch = capturedCtx?.dispatchTool;
+    expect(withWorkspace).not.toHaveBeenCalled();
+    fakeProjected.skipWorkspaceTx = false;
+    fakeProjected.needsWorkspaceTx = true;
+    await dispatch!('t:x', {});
+    expect(withWorkspace).toHaveBeenCalledOnce();
+    expect(capturedCtx?.tx).toBeDefined();
+  });
 });
 
 describe('invokeServerCapability — request cancellation', () => {

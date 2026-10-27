@@ -40,6 +40,11 @@ import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS } from '@papercusp/t
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 import { getForegroundRunVerdictAsync, type ForegroundRunVerdict } from '../../testing-run-store';
+import {
+  namedQueryStageTimings,
+  traceNamedQueryStage,
+  withNamedQueryDiagnosticContext,
+} from '../db-diagnostic-correlation-wiring';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
@@ -48,6 +53,93 @@ const OMITTED_SOURCE_RUN_IDS_LIMIT = 100;
 /** Inline budget for a bounded row's mutation diff; the full diff stays in the ledger row. */
 export const MUTANT_DIFF_INLINE_CHARS = 600;
 const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
+
+export const TESTING_RUNS_DIAGNOSTIC_STAGES = {
+  rollup: 'testing-runs-rollup',
+  latestRows: 'testing-runs-latest-rows',
+  historyRows: 'testing-runs-history-rows',
+  sourceOmissions: 'testing-runs-source-omissions',
+  foregroundRun: 'testing-runs-foreground-run',
+  caseResults: 'testing-runs-case-results',
+} as const;
+
+type TestingRunsDiagnosticStage =
+  (typeof TESTING_RUNS_DIAGNOSTIC_STAGES)[keyof typeof TESTING_RUNS_DIAGNOSTIC_STAGES];
+
+/**
+ * Keep a bounded phase snapshot attached to the tool invocation. Reuse one
+ * request ID across SQL legs and publish each phase before awaiting it so a
+ * caller timeout can still identify the pending operation.
+ */
+export function createTestingRunsDiagnosticRunner(ctx: {
+  metadata?: (metadata: Record<string, unknown>) => void;
+}) {
+  const handlerStartedAt = performance.now();
+  let requestId: string | undefined;
+  let omittedStages = 0;
+  const stages: Array<{
+    stage: TestingRunsDiagnosticStage;
+    elapsedMs: number;
+    outcome: 'pending' | 'fulfilled' | 'rejected';
+  }> = [];
+
+  const recordDiagnostics = () => {
+    if (!requestId) return;
+    try {
+      ctx.metadata?.({
+        testingRunsDiagnostics: {
+          schemaVersion: 'testing-runs-diagnostics-v1',
+          requestId,
+          handlerElapsedMs: Math.max(0, Math.round(performance.now() - handlerStartedAt)),
+          omittedStages,
+          stages: stages.map((stage) => ({ ...stage })),
+        },
+      });
+    } catch {
+      /* Observability must not change the ledger read result. */
+    }
+  };
+
+  return async function runDiagnosticQuery<T>(
+    stage: TestingRunsDiagnosticStage,
+    run: () => PromiseLike<T>,
+  ): Promise<T> {
+    return withNamedQueryDiagnosticContext('testing:runs', async (currentRequestId) => {
+      requestId ??= currentRequestId;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/testing/runs.ts#<module>/createTestingRunsDiagnosticRunner/runDiagnosticQuery/<callback>:785dfbce6d3b754f00c4:1","classification":"durable","reason":"The query callback wrapper can reach notification paths; retain their terminal delivery requirement without inferring a delivery guarantee.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      const pending = traceNamedQueryStage(stage, run);
+      const timing = namedQueryStageTimings()?.stages.at(-1);
+      let stageIndex: number | null = null;
+      if (stages.length < 32) {
+        stageIndex = stages.length;
+        stages.push({
+          stage,
+          elapsedMs: timing?.elapsedMs ?? 0,
+          outcome: timing?.outcome ?? 'pending',
+        });
+      } else {
+        omittedStages++;
+      }
+      recordDiagnostics();
+
+      try {
+        return await pending;
+      } finally {
+        if (stageIndex !== null) {
+          const completedTiming = namedQueryStageTimings()?.stages.at(-1);
+          if (completedTiming) {
+            stages[stageIndex] = {
+              stage,
+              elapsedMs: completedTiming.elapsedMs,
+              outcome: completedTiming.outcome,
+            };
+          }
+        }
+        recordDiagnostics();
+      }
+    }, requestId);
+  };
+}
 
 /**
  * An empty ledger result is not a clean test verdict. Keep this marker confined
@@ -628,8 +720,11 @@ export default defineTool({
     latestPerFile?: boolean;
     limit?: number;
     cases?: boolean;
-  }) {
+  }, ctx) {
     const { sql } = getOrgPg();
+    const runDiagnosticQuery = createTestingRunsDiagnosticRunner(
+      ctx as { metadata?: (metadata: Record<string, unknown>) => void },
+    );
     // Exact-ID lookups are evidence receipt reads: do not silently return only
     // the ordinary listing default when a caller names up to 100 receipts.
     const limit = args.limit ?? args.testRunIds?.length ?? DEFAULT_LIMIT;
@@ -693,7 +788,9 @@ export default defineTool({
                 FROM filtered
                ORDER BY ${keyCol}, file_path, finished_at DESC NULLS LAST, id DESC`
         : sql`SELECT * FROM filtered`;
-      const rows = await sql<
+      const rows = await runDiagnosticQuery(
+        TESTING_RUNS_DIAGNOSTIC_STAGES.rollup,
+        () => sql<
         Array<{
           key: string | null;
           commit_sha: string | null;
@@ -736,7 +833,8 @@ export default defineTool({
         SELECT g.*, (SELECT count(*) FROM grouped)::text AS group_count
           FROM grouped g
          ORDER BY g.last_finish DESC NULLS LAST
-         LIMIT ${limit}`;
+         LIMIT ${limit}`,
+      );
 
       const total = rows.length > 0 ? Number(rows[0]!.group_count) : 0;
       return {
@@ -765,10 +863,6 @@ export default defineTool({
       };
     }
 
-    const picked = latestPerFile
-      ? sql`SELECT DISTINCT ON (file_path) * FROM filtered ORDER BY file_path, finished_at DESC NULLS LAST, id DESC`
-      : sql`SELECT * FROM filtered`;
-
     // Keep the policy that protects ordinary browsing, but report how many
     // otherwise-matching rows it hid. Without this second count, a file-path
     // lookup that found only mutation-probe rows looked exactly like no runs
@@ -783,8 +877,7 @@ export default defineTool({
          AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
          AND (${sinceTs}::timestamptz IS NULL OR started_at >= ${sinceTs}::timestamptz)`;
 
-    const rows = await sql<
-      Array<{
+    type TestRunRow = {
         id: string;
         workspace_id: string | null;
         harness_slug: string | null;
@@ -805,34 +898,76 @@ export default defineTool({
         worktree_dirty: boolean;
         is_scratch_config: boolean;
         total: string;
-      }>
-    >`
-      WITH filtered AS (
-        SELECT * FROM harness_shared.test_runs
-        ${where}
-      ), picked AS (
-        ${picked}
-      )
-      SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
-             p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
-             CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
-                  THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
-             p.run_group_id, p.source, p.branch, p.commit_sha,
-             p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
-             (SELECT count(*) FROM picked)::text AS total
-        FROM picked p
-       ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
-       LIMIT ${limit}`;
+      };
+    let rows: TestRunRow[];
+    if (latestPerFile) {
+      // Keep the all-time/global winner set narrow through DISTINCT and the
+      // page sort. The partial covering index matches this exact predicate and
+      // order; fetch wide JSON/text columns only for the selected page.
+      rows = await runDiagnosticQuery(
+        TESTING_RUNS_DIAGNOSTIC_STAGES.latestRows,
+        () => sql<TestRunRow[]>`
+        WITH filtered AS NOT MATERIALIZED (
+          SELECT id, file_path, finished_at, started_at
+            FROM harness_shared.test_runs
+            ${where}
+        ), latest AS MATERIALIZED (
+          SELECT DISTINCT ON (file_path) id, file_path, finished_at, started_at
+            FROM filtered
+           ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
+        ), page AS MATERIALIZED (
+          SELECT id, count(*) OVER () AS total
+            FROM latest
+           ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
+           LIMIT ${limit}
+        )
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+               p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
+               CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               p.run_group_id, p.source, p.branch, p.commit_sha,
+               p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
+               page.total::text AS total
+          FROM page
+          JOIN harness_shared.test_runs AS p ON p.id = page.id
+         ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC, p.id DESC`,
+      );
+    } else {
+      const picked = sql`SELECT * FROM filtered`;
+      rows = await runDiagnosticQuery(
+        TESTING_RUNS_DIAGNOSTIC_STAGES.historyRows,
+        () => sql<TestRunRow[]>`
+        WITH filtered AS (
+          SELECT * FROM harness_shared.test_runs
+          ${where}
+        ), picked AS (
+          ${picked}
+        )
+        SELECT p.id::text, p.workspace_id, p.harness_slug, p.execution_details,
+               p.file_path, p.status, p.framework, p.duration_ms::text, p.started_at, p.finished_at,
+               CASE WHEN p.status = ANY(${RED_STATUSES as unknown as string[]}::text[])
+                    THEN left(p.output_tail, ${OUTPUT_TAIL_CHARS}) END AS output_tail,
+               p.run_group_id, p.source, p.branch, p.commit_sha,
+               p.loop_lag_p95_ms, p.rss_mb, p.worktree_dirty, p.is_scratch_config,
+               (SELECT count(*) FROM picked)::text AS total
+          FROM picked p
+         ORDER BY p.finished_at DESC NULLS LAST, p.started_at DESC
+         LIMIT ${limit}`,
+      );
+    }
 
     const omittedRows = shouldCountSourceOmissions
-      ? await sql<Array<{ id: string; omitted_by_source_filter: string }>>`
+      ? await runDiagnosticQuery(
+          TESTING_RUNS_DIAGNOSTIC_STAGES.sourceOmissions,
+          () => sql<Array<{ id: string; omitted_by_source_filter: string }>>`
           SELECT id::text,
                  count(*) OVER ()::text AS omitted_by_source_filter
             FROM harness_shared.test_runs
             ${whereWithoutSource}
              AND NOT COALESCE((${sourceFilter}), false)
            ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
-           LIMIT ${OMITTED_SOURCE_RUN_IDS_LIMIT}`
+           LIMIT ${OMITTED_SOURCE_RUN_IDS_LIMIT}`,
+        )
       : [];
     // A few lightweight SQL facades return their tagged fragment for an
     // auxiliary query they do not model. Treat that as an unavailable
@@ -848,8 +983,17 @@ export default defineTool({
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
     const foregroundRun = runGroup && rows.length === 0 && testRunIds == null
-      ? await foregroundRunMetadata(runGroup) : {};
-    const caseResults = args.cases ? await loadTestCaseResults(sql, rows.map((r) => Number(r.id))) : null;
+      ? await runDiagnosticQuery(
+          TESTING_RUNS_DIAGNOSTIC_STAGES.foregroundRun,
+          () => foregroundRunMetadata(runGroup),
+        )
+      : {};
+    const caseResults = args.cases
+      ? await runDiagnosticQuery(
+          TESTING_RUNS_DIAGNOSTIC_STAGES.caseResults,
+          () => loadTestCaseResults(sql, rows.map((r) => Number(r.id))),
+        )
+      : null;
     const casesFor = (id: number) => {
       if (!caseResults) return {};
       if (caseResults.notMigrated) return { cases: null, casesUnavailableReason: 'not-migrated' as const };

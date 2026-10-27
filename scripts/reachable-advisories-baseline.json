@@ -103,23 +103,34 @@
   "seededAt": "2026-09-05",
   "seededFrom": "npm audit --omit=dev --json (reachability/severity) + npm audit --json (fix feasibility, tree as installed) + npm ls --omit=dev --all --json, attributed by workspace",
   "accepted": [
+    "@azure/identity",
+    "@azure/msal-node",
     "@browserbasehq/stagehand",
     "@bundled-es-modules/glob",
     "@excalidraw/excalidraw",
     "@modelcontextprotocol/sdk",
+    "astro-robots-txt",
+    "body-parser",
     "chokidar",
     "d3",
     "d3-color",
+    "dompurify",
     "fast-glob",
     "find-yarn-workspace-root",
+    "follow-redirects",
     "js-yaml",
     "markmap-view",
     "mcp-handler",
+    "mem0ai",
     "micromatch",
     "nanoid",
+    "next",
+    "openai",
     "patch-package",
     "sass",
-    "style-dictionary"
+    "style-dictionary",
+    "undici",
+    "zod"
   ],
   "entries": {
     "@browserbasehq/stagehand": {
@@ -232,6 +243,72 @@
       "disposition": "deferred-semver-major",
       "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 1.51.0, range 1.6.0 - 1.78.0. npm routes the fix through @excalidraw/excalidraw@0.17.6, semver-major. Check on WI-10006989 whether the direct copy can move within ^1.",
       "owners": ["@papercup/marketplace-public-ui"]
+    },
+    "@azure/identity": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory published after frozen candidate 8c03b5dcd156 was cut; npm routes the fix through @azure/identity@4.13.0, semver-major. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "owners": ["@papercusp/web"]
+    },
+    "@azure/msal-node": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). Transitive of @azure/identity; the fix is the same @azure/identity@4.13.0 semver-major upgrade. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "owners": ["@papercusp/web"]
+    },
+    "astro-robots-txt": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory; the fix is astro-robots-txt@0.2.0, semver-major (0.x minor). The checker attributes no owner workspace. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "owners": []
+    },
+    "body-parser": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory, derived patch-eligible. The checker attributes no owner workspace. Accepted only to keep a lockfile change off the frozen-candidate repair; patch on staging and remove this entry.",
+      "owners": []
+    },
+    "dompurify": {
+      "severity": "critical",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). CRITICAL advisory published after the frozen candidate was cut; npm routes the fix through monaco-editor@0.57.0, semver-major. Accepted only to keep a dependency upgrade off the frozen-candidate repair; the CRITICAL severity makes WI-6554700010030253 the first upgrade to do on staging.",
+      "owners": ["@papercusp/operator-ui", "@papercusp/web"]
+    },
+    "follow-redirects": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). Gates only on the frozen lineage (8c03b5dcd156 lockfile); the staging lockfile already carries the fix, so the checker reports this entry STALE at tip. Remove it once main has advanced past the frozen lineage.",
+      "owners": ["@papercusp/web"]
+    },
+    "mem0ai": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory; the fix is mem0ai@1.0.39, semver-major. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "owners": ["@papercusp/web"]
+    },
+    "next": {
+      "severity": "critical",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). CRITICAL advisory, derived patch-eligible. A next bump on the frozen lineage drags wide lockfile drift (measured 2026-10-01: install:safe update next changed 213 non-target entries), so it is accepted only to keep that off the frozen-candidate repair; patch on staging first and remove this entry.",
+      "owners": ["@bug-drill/fixture", "@papercup/marketplace-public-ui", "@papercusp/operator-core", "@papercusp/the-swarm-site", "@papercusp/web"]
+    },
+    "openai": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory; npm routes the fix through mem0ai@1.0.39, semver-major. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "owners": ["@papercusp/testing-shell", "@papercusp/web"]
+    },
+    "undici": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory, derived patch-eligible. Accepted only to keep a lockfile change off the frozen-candidate repair; patch on staging and remove this entry.",
+      "owners": ["@papercusp/chat-cards", "@papercusp/operator-core", "@papercusp/test-config", "@papercusp/web"]
+    },
+    "zod": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory; npm routes the fix through mem0ai@1.0.39, semver-major. zod is depended on across many workspaces, so the upgrade needs its own verified change on staging. Accepted only to keep it off the frozen-candidate repair.",
+      "owners": ["@bug-drill/contracts", "@bug-drill/fixture", "@papercusp/agent-mcp", "@papercusp/cupboard-worker", "@papercusp/db-org", "@papercusp/operator-core", "@papercusp/orchestrator", "@papercusp/papercusp-shared", "@papercusp/rules"]
     }
   }
 }

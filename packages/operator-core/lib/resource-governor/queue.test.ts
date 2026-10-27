@@ -523,6 +523,45 @@ describe('resource-governor liveness-read deadline (EI-23122978932795934)', () =
 });
 
 describe('WorkItemAdmissionQueueDriver', () => {
+  it.each([
+    ['transaction setup', 'setup', 'resource-governor.cancel.transaction-setup'],
+    ['locked row lookup', 'lookup', 'resource-governor.cancel.locked-row-lookup'],
+    ['terminal update', 'update', 'resource-governor.cancel.terminal-update'],
+  ] as const)('attributes cancellation timeouts to the %s phase', async (_label, failAt, expectedPhase) => {
+    const memory = new MemoryAdmissionQueueStore();
+    const key = 'cancel-phase-attribution';
+    await governor(memory).governor.admit({ idempotencyKey: key, admissionClass: 'process' });
+    const stored = await memory.find('test', key);
+    expect(stored).not.toBeNull();
+
+    const timeout = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const tx = Object.assign((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      if (failAt === 'setup' && text.includes("set_config('lock_timeout'")) return Promise.reject(timeout());
+      if (failAt === 'lookup' && text.includes('FROM harness_shared.work_items')) return Promise.reject(timeout());
+      if (failAt === 'update' && text.includes('UPDATE harness_shared.work_items')) return Promise.reject(timeout());
+      if (text.includes('SELECT feature_id, payload, status, taken_by, created_ts')) {
+        return Promise.resolve([{
+          feature_id: stored!.receiptId,
+          payload: { resource_governor: stored!.record },
+          status: 'open',
+          taken_by: null,
+          created_ts: new Date(0),
+        }]);
+      }
+      return Promise.resolve([] as unknown[]);
+    }, {
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+      unsafe: async () => [],
+    }) as never;
+    const store = new PgWorkItemAdmissionQueueStore({ sql: tx, workspaceId: 'workspace-test' });
+
+    await expect(store.cancel('test', key, 'test cancellation', 2_000)).rejects.toMatchObject({
+      name: 'OrgTxnTimeoutError',
+      message: expect.stringContaining(`[phase: ${expectedPhase}]`),
+    });
+  });
+
   it('bounds PostgreSQL queue mutations with database-side lock and statement timeouts', async () => {
     const { client, queries } = recordingSqlClient();
     const store = new PgWorkItemAdmissionQueueStore({

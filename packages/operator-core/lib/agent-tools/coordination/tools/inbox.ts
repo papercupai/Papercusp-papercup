@@ -860,13 +860,41 @@ function internalDeliveryFloor(args: unknown): string | undefined {
   return typeof floor === "string" && floor.length > 0 ? floor : undefined;
 }
 
+/**
+ * WI-6554700010029664 — the camelCase compatibility spellings (`includeAmbient`,
+ * `unansweredOnly`, `unanswered`) are folded into the canonical snake_case keys BEFORE parse
+ * instead of being declared as sibling schema fields. Declared, they cost ~110 B of compact
+ * schema on every seeded turn (coord:inbox is a seed tool; the seed has a 100,000 B budget)
+ * while only ever meaning include_ambient / unanswered_only. Still accepted, never advertised
+ * — same pattern as plans:items' `normalizePlansItemsArgs`. Precedence is unchanged: the
+ * canonical key wins, then `unansweredOnly`, then `unanswered` (EI-20224620909324295,
+ * EI-21374977511049906, P-001).
+ */
+const INBOX_FOLDED_ALIASES: ReadonlyArray<readonly [alias: string, canonical: string]> = [
+  ["includeAmbient", "include_ambient"],
+  ["unansweredOnly", "unanswered_only"],
+  ["unanswered", "unanswered_only"],
+];
+
+export function normalizeInboxArgAliases(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (!INBOX_FOLDED_ALIASES.some(([alias]) => r[alias] !== undefined)) return raw;
+  const rest: Record<string, unknown> = { ...r };
+  for (const [alias, canonical] of INBOX_FOLDED_ALIASES) {
+    const value = rest[alias];
+    delete rest[alias];
+    if (rest[canonical] === undefined && value !== undefined) rest[canonical] = value;
+  }
+  return rest;
+}
+
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read messages, acks, and handoffs addressed to you or broadcast. `limit` bounds a priority-ranked window (not newest-first); `coord:orient.inboxLimit` maps to it. Default: what fits one result. Ambient broadcasts require include_ambient. Repeats collapse (`repeat_count`, `first_seen_ts`); ignore resolved:true alarms; follow superseded_by corrections. " +
       COORD_KIND_FILTER_DESCRIPTION +
-      " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
-      " This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      " `recent` holds msg_ids into `entries`. An inbox read (also via coord:orient) clears the unread-mail reminder; FYIs (expects:none) need no reply. Reading does not fulfill ack/answer/action requests. This is a VIEW: re-reading does not empty it.",
   guidance: {
     // EI-21600823435053404: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
     // a gate RED). Both cut sentences were redundant, not lost: the `limit` vs
@@ -1047,7 +1075,8 @@ export default defineTool({
   // The handler already bounds entry content; keep the transport body intact
   // for its machine-readable callers.
   skipResultDoor: "programmatic-caller",
-  args: z.object({
+  // WI-6554700010029664: includeAmbient / unansweredOnly / unanswered fold before parse (not advertised).
+  args: z.preprocess(normalizeInboxArgAliases, z.object({
     kinds: z.array(z.enum(COORD_KINDS)).optional(),
     from: z
       .string()
@@ -1070,12 +1099,6 @@ export default defineTool({
       .describe(
         "Include ambient system broadcasts (service-health, agent-governor, doc-drift) excluded by default.",
       ),
-    includeAmbient: z
-      .boolean()
-      .optional()
-      .describe(
-        "Compatibility alias for include_ambient; prefer the canonical snake_case key. If both are supplied, include_ambient wins.",
-      ),
     include_intents: z
       .boolean()
       .optional()
@@ -1096,25 +1119,13 @@ export default defineTool({
       .describe(
         "EI-13159: narrow to exactly the DIRECTED messages still awaiting your reply — the same unanswered-directed definition fleet:assignments' `unanswered_directed` counter and fleet:leader-brief use (a real correspondent's message, sender explicitly expects a reply, no ack/reply from you yet; excludes broadcasts, machine chatter, and reply-to-your-own-reply ping-pong). Applied after the ambient/intent/sender filters; summary.total reflects it. A lookup failure returns zero entries (never silently falls back to the unfiltered inbox) and sets summary.unanswered_lookup_failed:true.",
       ),
-    unansweredOnly: z
-      .boolean()
-      .optional()
-      .describe(
-        "Compatibility alias for `unanswered_only`; prefer the canonical snake_case key. If both are supplied, `unanswered_only` wins.",
-      ),
-    unanswered: z
-      .boolean()
-      .optional()
-      .describe(
-        "Compatibility alias for `unanswered_only`; prefer the canonical snake_case key. If several are supplied, `unanswered_only` wins.",
-      ),
     directed: z
       .boolean()
       .optional()
       .describe(
         "Narrow to entries addressed to a SPECIFIC recipient — i.e. drop entries broadcast to everyone (`to:['*']`); mixed `['*', you]` delivery counts as directed. Weaker than `unanswered_only`, which additionally requires that the sender expects a reply you have not sent: use `directed` for \"who wrote to ME\" (including messages you have already answered) and `unanswered_only` for \"what still needs my reply\". Applied after the ambient/intent/sender filters; summary.total reflects it and summary.broadcast_excluded counts what it dropped.",
       ),
-  }),
+  })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const internalCorrelationId = (args as typeof args & { __correlationId?: unknown }).__correlationId;
@@ -1141,14 +1152,13 @@ export default defineTool({
     // this option. Keep the snake_case key canonical while accepting the
     // explicitly-declared compatibility alias; an explicitly supplied
     // include_ambient value wins when both are present.
-    const includeAmbient = args.include_ambient ?? args.includeAmbient ?? false;
+    const includeAmbient = args.include_ambient ?? false;
     // EI-21374977511049906: older model-facing surfaces used camelCase for this
     // filter. Keep the snake_case spelling canonical while accepting the explicit
     // compatibility alias; an explicitly supplied `unanswered_only` wins.
     // P-001: `unanswered` joins `unansweredOnly` as a compatibility alias (16 filings).
     // Canonical snake_case still wins when several are supplied.
-    const unansweredOnly =
-      args.unanswered_only ?? args.unansweredOnly ?? args.unanswered ?? false;
+    const unansweredOnly = args.unanswered_only ?? false;
     // P-001: hoisted above the derive because it participates in the windowing
     // decision below, not just the post-read filtering.
     const directedOnly = args.directed === true;

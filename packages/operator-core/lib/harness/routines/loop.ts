@@ -1005,6 +1005,11 @@ export async function transferLoopOwnership(
 export interface LoopStatus {
   /** Durable native execution recovery verdict from the existing routine metadata. */
   executionRecovery?: import('./loop-execution-recovery').ExecutionRecoveryState;
+  /** WI-6554700010029492: the wake executor's last cold-wake disposition for this loop
+   *  (`metadata.lastColdDecision`) — cold mode taken, or WHY a cold-eligible fire stayed warm
+   *  (D-005 human presence, master gate off, no carry-note, resolution threw). Absent until a
+   *  cold-eligible fire has been decided. */
+  lastColdDecision?: import('../../su-cold-loop').LoopColdDecisionRecord;
   name: string;
   ownerId: string;
   harnessSlug: string;
@@ -2167,6 +2172,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeCreatedAt: r.last_wake_created_at ? new Date(r.last_wake_created_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
     ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
+    ...(r.metadata?.lastColdDecision ? { lastColdDecision: r.metadata.lastColdDecision } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
     lastSuppressedWakeLoopTurnAt: r.last_suppressed_wake_loop_turn_at
@@ -2370,7 +2376,16 @@ export async function getLoopStatuses(
                           WHEN start_stamp.detail->'loopFire'->>'wakeCount' ~ '^[0-9]+$'
                           THEN (start_stamp.detail->'loopFire'->>'wakeCount')::int
                         END = COALESCE((r.metadata->>'fire_count')::int, 0)
-                    AND u.ts >= start_stamp.created_at
+                    AND (
+                      (start_stamp.detail->>'source' = 'session-ingest'
+                        AND start_stamp.workspace_id = u.workspace_id
+                        AND start_stamp.detail->'indexedTurn'->>'workspaceId' = u.workspace_id
+                        AND start_stamp.detail->'indexedTurn'->>'sourceKind' = u.source_kind
+                        AND start_stamp.detail->'indexedTurn'->>'sessionId' = u.session_id
+                        AND start_stamp.detail->'indexedTurn'->>'turnIdx' = u.turn_idx::text)
+                      OR (start_stamp.detail->>'source' IS DISTINCT FROM 'session-ingest'
+                        AND u.ts >= start_stamp.created_at)
+                    )
                ))                                                    AS last_loop_turn_at,
            -- WI-6554700010012442: the earliest prompt after the arm proves the arming turn
            -- ended, which lifts fire-starvation's presence suppression past the floor.

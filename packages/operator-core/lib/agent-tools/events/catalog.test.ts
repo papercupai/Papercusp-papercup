@@ -288,9 +288,9 @@ describe('events:catalog — live_awaiters', () => {
   it('documents context-derived visibility instead of caller-supplied scope/pot filters', () => {
     expect(catalog.description).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
     expect(catalog.guidance?.notWhen ?? '').toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
-    expect(catalog.args.shape).not.toHaveProperty('scope');
-    expect(catalog.args.shape).not.toHaveProperty('pot');
-    expect(catalog.args.shape).not.toHaveProperty('harness');
+    expect(catalog.args.out.shape).not.toHaveProperty('scope');
+    expect(catalog.args.out.shape).not.toHaveProperty('pot');
+    expect(catalog.args.out.shape).not.toHaveProperty('harness');
   });
 
   it('advertises and applies q/limit family filters', async () => {
@@ -314,14 +314,15 @@ describe('events:catalog — live_awaiters', () => {
   it('accepts pattern as a compatibility alias for q', async () => {
     expect(catalog.args.safeParse({ pattern: 'deploy' }).success).toBe(true);
     const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
-    const alias = await call({ pattern: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    // WI-6554700010029664: the alias folds in the schema's preprocess, so dispatch-parse it first.
+    const alias = await call(catalog.args.parse({ pattern: 'deploy', announced: false, installed: false, liveAwaiters: false }) as never);
     expect(alias.families).toEqual(canonical.families);
   });
 
   it('accepts query as a compatibility alias for q', async () => {
     expect(catalog.args.safeParse({ query: 'deploy' }).success).toBe(true);
     const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
-    const alias = await call({ query: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    const alias = await call(catalog.args.parse({ query: 'deploy', announced: false, installed: false, liveAwaiters: false }) as never);
     expect(alias.families).toEqual(canonical.families);
   });
 

@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-6554700010025563",
+  "testStartedAt": "2026-10-24T06:21:13.462Z",
+  "scope": "local Worker maintained test execution; no production cutover or acceptance",
+  "configCommit": "3cce25dde1eadaa8d69b69fe2ad144cd3e229861",
+  "run": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=papercusp PC_EXECUTED_SOURCE_MAP_OUT=/tmp/f9dd6-worker-json-committed-executed.json npm run test:file -- apps/operator-public/src/routes/release-files.test.ts apps/operator-public/src/routes/gcs-storage.test.ts apps/operator-public/src/routes/workspace-host-artifacts.test.ts",
+    "log": "/tmp/f9dd6-worker-json-committed.log",
+    "executedSources": "/tmp/f9dd6-worker-json-committed-executed.json",
+    "head": "9528780dad78fc4e7b7e1ac63ca789ad55b53993",
+    "exitCode": 0,
+    "passed": 30,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "uncommittedPaths": "3/3",
+    "sourceEvidence": [
+      {
+        "testFile": "apps/operator-public/src/routes/gcs-storage.test.ts",
+        "status": "stable",
+        "reasons": [],
+        "inputsCaptured": true
+      },
+      {
+        "testFile": "apps/operator-public/src/routes/release-files.test.ts",
+        "status": "stable",
+        "reasons": [],
+        "inputsCaptured": true
+      },
+      {
+        "testFile": "apps/operator-public/src/routes/workspace-host-artifacts.test.ts",
+        "status": "stable",
+        "reasons": [],
+        "inputsCaptured": true
+      }
+    ]
+  },
+  "json": {
+    "path": "apps/operator-public/src/attestation-trusted-root.json",
+    "sha256": "6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66",
+    "basis": "vite-pre-transform",
+    "matchesCurrentDisk": true
+  },
+  "driftControl": {
+    "method": "Replay qualifyCollectedSources using the actual captured source fingerprints for the first Worker row; substitute only the JSON bytes through its readSource seam at completion. No on-disk source mutation.",
+    "unchanged": {
+      "status": "stable",
+      "reasons": []
+    },
+    "changed": {
+      "status": "changed",
+      "reasons": [
+        "source-changed:apps/operator-public/src/attestation-trusted-root.json"
+      ],
+      "currentSha256": "317698ee24deb113a578784a44228281e7811f6e761cdff7f9cb2adc24bdc6c2"
+    },
+    "passed": true
+  },
+  "limitations": [
+    "Run describes local dirty source, not a clean committed test population.",
+    "No production deployment or independent acceptance.",
+    "Canonical spec bindings and calibrated mutations remain required."
+  ]
+}

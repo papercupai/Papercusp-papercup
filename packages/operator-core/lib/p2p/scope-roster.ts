@@ -14,13 +14,9 @@
  *   per-user mapping out of the grant rows would bake a SECURITY-relevant
  *   membership bug (membership = who may read foreign work). So we don't guess.
  *
- * WHAT SHIPS NOW (FS-D5 tier 1 = SAME-OWNER machines only): a fleet scope's
- * roster is exactly its owner's numeric id — the owner and the owner's OWN other
- * attested machines all announce under that single github user id, which is the
- * whole tier-1 rig (tower + iMac). Cross-user membership (tier 2) is GATED on
- * 5.4 per-scope crypto (not built) alongside the X1 loopback boundary — so a
- * same-owner-only roster is not a stopgap, it is the correct enforcement for
- * everything that is allowed to replicate today.
+ * Membership requires a current, unrevoked attested hive device. The directory
+ * narrows that population to the scope's owner and publishers; directory membership
+ * alone cannot revive a revoked device. With no directory, only the owner qualifies.
  *
  * P-101 SLOT-IN: when the directory lands, implement {@link FleetDirectory} over
  * it and pass it to {@link GrantBackedScopeRoster}; the membership answer widens
@@ -33,8 +29,8 @@
  * statement ago is enforced on the very next disclose/serve check.
  */
 
-// LAZY on purpose — see the note at the `await import('@papercusp/db-org')`
-// call site below and plan harden-shared-hive-to-256-peers-2026-06-29 / D-024.
+// LAZY on purpose — the membership and epoch readers below load on demand
+// (harden-shared-hive-to-256-peers-2026-06-29 / D-024).
 // This module is reached from the substrate boot path via pot-git/serve-wiring;
 // a static edge here charges every peer process ~125MB of drizzle it never uses.
 import type { OrgSql } from '../work-items';
@@ -59,8 +55,8 @@ export interface ScopeRoster {
   isMember(scope: ScopeId, githubUserId: number): Promise<boolean>;
   /** The full member id set (disclosure/redisclosure inputs). */
   members(scope: ScopeId): Promise<number[]>;
-  /** X6: the scope's current epoch — the grantor(=owner) high-water, so a
-   *  revocation that bumped the owner's epoch advances every disclosure. */
+  /** The hive membership/re-key epoch, shared by disclosure and key distribution.
+   * Grant replay high-water is a separate authorization counter. */
   currentEpoch(scope: ScopeId): Promise<number>;
   /** The {@link IsScopeMember} predicate the §5.1/§5.3 layer consumes. */
   readonly predicate: IsScopeMember;
@@ -78,8 +74,8 @@ export interface ScopeRosterDeps {
 
 /**
  * The grant-store-backed roster. Membership = `{owner}` (tier-1) widened by the
- * injected {@link FleetDirectory} publisher set (tier-2/P-101). The epoch is the
- * owner's grantor high-water (X6), read live.
+ * injected {@link FleetDirectory} publisher set (tier-2/P-101), intersected with
+ * the current hive roster. Revocations and the hive epoch are read live.
  */
 export class GrantBackedScopeRoster implements ScopeRoster {
   private readonly deps: ScopeRosterDeps;
@@ -92,46 +88,40 @@ export class GrantBackedScopeRoster implements ScopeRoster {
   }
 
   async isMember(scope: ScopeId, githubUserId: number): Promise<boolean> {
-    // The owner is always in their own scope — no store read needed, and it
-    // holds even before any grant/directory row exists (bootstrap-safe).
-    if (githubUserId === scope.ownerGithubUserId) return true;
-    const dir = this.deps.directory;
-    if (!dir) return false; // tier-1: owner-only
-    const members = await dir.scopeMembers(scope);
-    if (members == null) return false; // directory has no record ⇒ owner-only
-    return members.includes(githubUserId);
+    try {
+      return (await this.members(scope)).includes(githubUserId);
+    } catch {
+      return false;
+    }
   }
 
   async members(scope: ScopeId): Promise<number[]> {
+    const ws = this.workspaceId();
+    const { listHiveMembersForLocalPot } = await import('../federated-pot-scope');
+    const roster = await listHiveMembersForLocalPot(ws, this.deps.potSlug, this.deps.sqlOverride);
+    const revoked = new Set(roster.flatMap(member => member.revokedPubkeys));
+    const active = new Set(roster.filter(member => member.deviceAttestations.some(
+      device => device.device_pubkey && !revoked.has(device.device_pubkey),
+    )).map(member => member.githubUserId));
     const dir = this.deps.directory;
-    if (!dir) return [scope.ownerGithubUserId];
-    const members = await dir.scopeMembers(scope);
-    if (members == null) return [scope.ownerGithubUserId];
-    // Owner is always in — de-dup in case the directory already lists them.
-    return members.includes(scope.ownerGithubUserId)
-      ? members
-      : [scope.ownerGithubUserId, ...members];
+    const members = await dir?.scopeMembers(scope) ?? [];
+    return [...new Set([scope.ownerGithubUserId, ...members])].filter(uid => active.has(uid));
+  }
+
+  private workspaceId(): string {
+    const ws = resolveP2pGrantWorkspace(this.deps.workspaceId);
+    if (!ws) throw new Error('Scope roster authority unavailable: unresolved workspace');
+    return ws;
   }
 
   /**
-   * X6: the scope epoch = the owner's high-water epoch in p2p_grantor_epochs,
-   * so leave/revoke (which bumps the grantor epoch, grant-store.ts) advances
-   * every disclosure of this scope. 0 when the owner has no epoch row yet
-   * (no grant/revocation has ever happened — a fresh, un-revoked scope).
-   * Cache-bypassing direct read (C6).
+   * Use the same live epoch as hive key distribution. An unavailable partition
+   * is an authority failure, not a synthetic baseline epoch.
    */
-  async currentEpoch(scope: ScopeId): Promise<number> {
-    const ws = resolveP2pGrantWorkspace(this.deps.workspaceId);
-    if (!ws) return 0; // unresolvable partition ⇒ epoch 0 (fail-closed: no disclosure widening)
-    const sql = this.deps.sqlOverride ?? (await import('@papercusp/db-org')).getOrgPg().sql;
-    const rows = (await sql`
-      SELECT high_water_epoch
-        FROM harness_shared.p2p_grantor_epochs
-       WHERE workspace_id = ${ws} AND harness_slug = ${this.deps.potSlug}
-         AND grantor_github_user_id = ${scope.ownerGithubUserId}
-       LIMIT 1`) as unknown as { high_water_epoch: string | number }[];
-    const e = rows[0]?.high_water_epoch;
-    return e == null ? 0 : Number(e);
+  async currentEpoch(_scope: ScopeId): Promise<number> {
+    const ws = this.workspaceId();
+    const { getHiveEpoch } = await import('../sync/hyperbee/hive-epoch-state');
+    return getHiveEpoch(ws, this.deps.potSlug, this.deps.sqlOverride);
   }
 }
 

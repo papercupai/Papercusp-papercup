@@ -88,9 +88,66 @@ function deps(overrides: Partial<WedgedIdentitySweepDeps> = {}): WedgedIdentityS
     resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
     escalateWedged: vi.fn(async () => {}),
     escalateNotMeasured: vi.fn(async () => {}),
+    loadDenialAttestations: async () => [],
     ...overrides,
   };
 }
+
+// WI-6554700010029612 — the ATTEST rung. Measured 2026-10-26: two owners whose activation record
+// read `applied` were refused stale-artifact 326 and 207 times in 24h by port-3070@d740fc3802,
+// and the sweep RECOVERED their condition every hour because the record classified healthy.
+describe('ATTEST rung: observed stale-artifact denials outrank a healthy-looking record', () => {
+  const attestation = (ownerId: string) => ({ ownerId, denials: 5, servedBy: ['port-3070@d740fc3802'] });
+
+  it('confirms (and never recovers) an owner the record calls healthy while its calls are being refused', async () => {
+    const healthy = row();
+    expect(classifyCandidate(healthy).wedged).toBe(false);
+    const key = identityActivationConditionKey('wedged', 'ws-a', healthy.ownerId);
+
+    // Control: with no denials the sweep recovers this owner's open condition.
+    const controlResolve = vi.fn(async () => true);
+    const control = await runWedgedIdentitySweepOnce(deps({
+      readOpenConditions: async () => [key],
+      rail: { broadcast: vi.fn(async () => true), resolve: controlResolve },
+    }));
+    expect(control.verdict).toBe('clean');
+    expect(controlResolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key }));
+
+    const resolve = vi.fn(async () => true);
+    const escalateWedged = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      readOpenConditions: async () => [key],
+      rail: { broadcast: vi.fn(async () => true), resolve },
+      escalateWedged,
+      loadDenialAttestations: async () => [attestation(healthy.ownerId)],
+    }));
+    expect(out.verdict).toBe('wedged');
+    if (out.verdict !== 'wedged') return;
+    expect(out.wedged.map((w) => w.ownerId)).toEqual([healthy.ownerId]);
+    expect(out.wedged[0]?.reason).toContain('port-3070@d740fc3802');
+    expect(resolve).not.toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key }));
+    expect(escalateWedged).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirms an attested owner the candidate read never returned', async () => {
+    const out = await runWedgedIdentitySweepOnce(deps({
+      loadDenialAttestations: async () => [attestation('su-no-brief')],
+    }));
+    expect(out.verdict).toBe('wedged');
+    if (out.verdict !== 'wedged') return;
+    expect(out.wedged.map((w) => w.ownerId)).toContain('su-no-brief');
+  });
+
+  it('fails closed (not-measured, never clean) when the denial ledger is unreadable', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      escalateNotMeasured,
+      loadDenialAttestations: async () => { throw new Error('ledger unavailable'); },
+    }));
+    expect(out.verdict).toBe('not-measured');
+    expect(escalateNotMeasured).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('classifyCandidate — the two measured regressions', () => {
   // WI-10002060 regression 1. The originally-proposed predicate was

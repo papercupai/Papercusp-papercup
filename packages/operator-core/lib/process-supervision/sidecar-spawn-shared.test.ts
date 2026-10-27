@@ -15,7 +15,8 @@ import {
   loopbackListenerOwnedBy,
 } from './sidecar-spawn-shared';
 import { createServer } from 'node:net';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -145,6 +146,28 @@ describe('verifySidecarFitness (EI-19314150478401738)', () => {
 });
 
 describe('resolveSidecarSpawnPlan (WI-3079)', () => {
+  it('runs development TypeScript under the explicit Node despite a different PATH interpreter', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'sidecar-runtime-boundary-'));
+    try {
+      const bin = join(directory, 'bin');
+      mkdirSync(bin);
+      // This models npx's PATH-node dependency without network or npm installs.
+      writeFileSync(join(bin, 'npx'), '#!/bin/sh\nshift\nexec node "$@"\n', { mode: 0o755 });
+      if (process.env.PAPERCUSP_RUNTIME_TEST_BUN) {
+        symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN, join(bin, 'node'));
+      } else writeFileSync(join(bin, 'node'), '#!/bin/sh\nexit 77\n', { mode: 0o755 });
+      const entry = join(directory, 'child.ts');
+      writeFileSync(entry, 'const value: number = 42;\nprocess.stdout.write("INTERPRETER "+JSON.stringify({name:process.versions.bun?"bun":"node",value})+"\\n");\n');
+      const plan = resolveSidecarSpawnPlan({ selfPath: '/source/parent.ts', devScriptPath: entry,
+        bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE', execPath: process.execPath, spawnerPid: process.pid });
+      const child = spawnSync(plan.cmd, plan.args, { cwd: directory, timeout: 15_000, encoding: 'utf8',
+        env: { ...process.env, ...plan.env, PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` } });
+      expect(child.status, child.stderr).toBe(0);
+      expect(JSON.parse(child.stdout.split('\n').find(line => line.startsWith('INTERPRETER '))!.slice(12)))
+        .toEqual({ name: 'node', value: 42 });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('uses a nonempty maintained sibling under the same node and parent declaration', () => {
     const directory = mkdtempSync(join(tmpdir(), 'spawner-bundle-plan-'));
     try {
@@ -184,7 +207,7 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('dev (real .ts on disk) → npx tsx <devScriptPath>', () => {
+  it('dev (real .ts on disk) uses the explicit Node with a resolved tsx loader', () => {
     const plan = resolveSidecarSpawnPlan({
       selfPath: '/repo/packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
       devScriptPath: '/repo/apps/operator/bin/spawner-sidecar.ts',
@@ -193,8 +216,8 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
       spawnerPid: 4242,
     });
     expect(plan).toEqual({
-      cmd: 'npx',
-      args: ['tsx', '/repo/apps/operator/bin/spawner-sidecar.ts'],
+      cmd: '/usr/bin/node',
+      args: ['--import', expect.stringContaining('tsx'), '/repo/apps/operator/bin/spawner-sidecar.ts'],
       env: { PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
       mode: 'dev-tsx',
     });

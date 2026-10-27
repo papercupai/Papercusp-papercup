@@ -1032,6 +1032,9 @@ export default defineTool({
       model: z.string().max(80).optional().describe('New model spec (e.g. "opus[1m]", "sonnet:high").'),
       effort: z.string().max(40).optional().describe('New reasoning effort (low|medium|high|xhigh|max) — composed onto the model spec.'),
       account: z.string().max(120).optional().describe('New account routing (default | auto | a pool account id).'),
+      mcpTarget: z.enum(['stable', 'spawn-host']).optional().describe(
+        "'spawn-host' binds this replacement's bootstrap and MCP to this operator for a bounded current-build check; omission keeps the stable proxy route.",
+      ),
       carry: z.enum(['warm', 'cold']).optional().describe('New warm/cold auto-mode carry for the relaunched member.'),
       contextSize: z.literal('trimmed').optional().describe('New psu --context-size for the relaunched member.'),
       agent: z.string().max(40).optional().describe('New agent CLI backing the member (e.g. claude | codex).'),
@@ -1509,6 +1512,7 @@ export default defineTool({
         harness: savedLaunchSpec.effective.harness,
         ...(savedLaunchSpec.effective.plan ? { plan: savedLaunchSpec.effective.plan } : {}),
         members: [spec],
+        ...(args.mcpTarget !== undefined ? { mcpTarget: args.mcpTarget } : {}),
         __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
         __respawnOwnerId: replacementOwner,
         // Net-zero headcount: the launcher's goal-ceiling check must not charge the seat of the

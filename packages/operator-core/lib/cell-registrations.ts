@@ -2242,6 +2242,12 @@ export const CAPACITY_VERDICT_CELL: CellSpec = {
         safeAction:
           'Decide whether to accept the burn or change the pacing policy. Do NOT wait it out and do NOT report a provider wall — treating a pacing projection as a measured wall is the specific error this cell exists to prevent.',
       },
+      'gateway-shed': {
+        meaning:
+          'No point-in-time term binds (no wall, admission open, no pacing), yet the gateway measurably REFUSED this provider\'s requests (shed + upstream 429) in the last 15 minutes, above the count and share floors. The reason names the dominant caller when the refusals are concentrated in one.',
+        safeAction:
+          'Do NOT read the lane as a measured green. When the reason names one caller, fix that caller\'s account routing (it is usually pinned to walled accounts) rather than shrinking the fleet. Otherwise check selected_account_id on the refused gateway_request_outcomes rows before launching more work. atCapacity is true only when nothing was served.',
+      },
       none: {
         meaning:
           'No term is measurably binding this provider. ⚠ Read capacityUnknown before acting: when it is non-empty this means "no measured blocker", NOT "measured clear".',
@@ -2719,6 +2725,108 @@ export const GATE_RETRIAGE_CELL: CellSpec = {
 };
 
 /**
+ * Cell 2i — IS THE GATE RUN ALIVE, AND WHAT IS IT DOING RIGHT NOW?
+ * WI-6554700010029556 (owner directive #2439).
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * On 2026-10-26 a gate-lane holder could not tell whether a 2h-old run was alive. The
+ * answer ("alive, past its tests, on its lint legs") had to be assembled by hand from
+ * `proc-guard`, a `pipeline_events` query and a raw read of `checkpointRunInFlight`.
+ * Every fact existed; no single read put liveness, pid, phase, leg, elapsed and the
+ * progress verdict side by side.
+ *
+ * ── WHY A SEPARATE CELL ─────────────────────────────────────────────────────────
+ * Different subject from `retriage` (D-014): that cell answers "may I act destructively";
+ * this one answers "is the run alive and advancing". They dissociate — a `running` run
+ * with no refire, and a `stalled` one inside the re-triage window, are both real.
+ *
+ * ── NO SECOND STALL RULE ────────────────────────────────────────────────────────
+ * The verdict is `certifyCheckpointProgress`'s, unchanged, so `stalled` is reachable only
+ * on a LIVE authority and the D-003 fallback collision stays `progress-unknown`.
+ */
+export const GATE_RUN_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.run',
+  registeredOn: '2026-10-26',
+  owner: 'su-96b7fe62-ee9a-4399-ad53-e30bc734d337',
+  headline: 'gate.run.active',
+  assessment: {
+    path: 'gate.run.code',
+    codes: {
+      'no-run-reading': {
+        meaning:
+          'Neither the run lock nor the cached run reading answered, so whether a gate run is in flight is UNKNOWN. This is NOT "no run".',
+        safeAction:
+          'Do not conclude the gate is idle and do not fire release:checkpoint-run on this reading. Re-read after the next routine tick.',
+      },
+      'no-run': {
+        meaning:
+          'No gate run is in flight — a measured negative. `lastManualRun` says how the most recent MANUAL run ended, when systemd recorded it.',
+        safeAction:
+          'Nothing is running to wait on. Before firing a run, read gate.greenCheckpoint.freezeDisposition and gate.greenCheckpoint.ownership: a frozen queue resumes its own lineage and a held gate has one fixer.',
+      },
+      running: {
+        meaning:
+          'A gate run is in flight, still deciding, and its heartbeat advanced within the stall threshold. `phase` / `activity` / `leg` say what it is doing.',
+        safeAction: 'Let it reach a verdict. Do not fire a second run beside it (it is refused as already_running).',
+      },
+      'decided-salvaging': {
+        meaning:
+          'A gate run is in flight but has ALREADY published its verdict and is continuing into re-triage / longest-clean-prefix salvage. Long elapsed time here is expected.',
+        safeAction:
+          'Read the verdict (gate.greenCheckpoint.verdict); do not treat the overdue-looking runtime as a wedge, and never fire a manual run into it.',
+      },
+      stalled: {
+        meaning:
+          'A LIVE authority sees the run, and its heartbeat has not advanced past the stall threshold.',
+        safeAction:
+          'Diagnose the run first (its current leg, its log, its process tree). If gate.greenCheckpoint.retriage says standDown, do NOT fire a manual run — that discards the rescue.',
+      },
+      'progress-unknown': {
+        meaning:
+          'A gate run is in flight, but whether it is advancing cannot be established from this reading (`progress.basis` says why: stale cache, no heartbeat, or the start-time fallback).',
+        safeAction:
+          'Not evidence of a stall. Re-read with a live authority (pidVerified) before acting; read `phase`/`leg` for what it last reported.',
+      },
+    },
+    evidence: [
+      'gate.run.unmeasured',
+      'gate.run.pidVerified',
+      'gate.run.pid',
+      'gate.run.phase',
+      'gate.run.activity',
+      'gate.run.leg',
+      'gate.run.elapsedSec',
+      'gate.run.progressAgeSec',
+      'gate.run.candidate',
+      'gate.run.summary',
+    ],
+    // P-012: `pid` is null when no run is in flight AND when only the cache answered;
+    // `pidVerified` is what tells those apart.
+    measuredBy: { 'gate.run.pid': 'gate.run.pidVerified' },
+  },
+  nullable: true,
+  unknownHoist: 'gate.run.unmeasured',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      'gate.checkpointRunInFlight — the leg gitPipelinePosition() already maps via mapCheckpointRunInFlight() from the live run lock (kill(pid,0)-verified pid), the process-authority probe and the cached run reading; projected by projectRunStatusCell(), which re-reads nothing and takes its progress verdict from certifyCheckpointProgress()',
+    liveExercised: true,
+    evidence:
+      'Read live 2026-10-26T19:07:48Z through the real gitPipelinePosition() (.papercusp/scratch/su96b7-runcell.mts): code "no-run", activeSource "run-lock", lastManualRun { abnormal: true, serviceResult: "exit-code", exitStatus: "1" }, summary "No gate run is in flight (the live run lock says so on this read). The most recent manual run ended ABNORMALLY (exit-code, exit status 1, 3h36m ago)." — the reading a lane holder needed at 17:44Z and had to assemble by hand.',
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.run.code',
+  },
+  shape:
+    '{ gate: { run: { code, unmeasured, active, activeSource, pid, pidVerified, phase, activity, leg: { label, index, total }, candidate, candidateSource, startedAtMs, elapsedSec, progressAtMs, progressAgeSec, progress: { verdict, basis, detail, evidenceAgeMs }, verdictWrittenAtMs, inRetriageWindow, asOfAgeMs, lastManualRun: { abnormal, serviceResult, exitStatus, observedAtMs }, summary } } }',
+};
+
+/**
  * workspace.workScope — WI-2145092 (plan workspace-work-scope-policy-2026-09-04, the D-003
  * residue). "Is this workspace confined to an allow-list of harnesses right now, and which?"
  * The headline is the stored MODE; the assessment folds mode + allow-list through the SAME
@@ -3024,6 +3132,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
+  GATE_RUN_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,

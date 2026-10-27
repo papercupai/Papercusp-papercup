@@ -279,13 +279,14 @@ export async function invokeServerCapability(opts: {
     return dispatchProjectedToolToMcp(projected, opts.name, opts.args ?? {}, ctx, PROJECTED_DEPS);
   };
 
-  // tools:invoke declares skipWorkspaceTx: the wrapper never reads `ctx.tx` and
-  // can outlive the 60s idle-transaction timeout. Every inner target re-enters
-  // `invokeServerCapability` above and receives its own transaction when needed.
+  // Match the tooldef/MCP contract: only handlers that explicitly consume
+  // `ctx.tx` retain a workspace transaction. Compiler/runtime reads can outlive
+  // the idle-transaction timeout without using that connection. Nested targets
+  // re-enter this chokepoint and apply their own transaction declaration.
   const body =
-    canonicalName === 'tools:invoke'
-      ? await dispatch()
-      : await withWorkspace(workspaceId, async (tx) => dispatch(tx));
+    projected.needsWorkspaceTx === true
+      ? await withWorkspace(workspaceId, async (tx) => dispatch(tx))
+      : await dispatch();
 
   return { ok: true, status: 200, body };
 }

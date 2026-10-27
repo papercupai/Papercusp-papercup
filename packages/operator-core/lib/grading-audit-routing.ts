@@ -138,8 +138,21 @@ export async function routeSourceGradingAudit(
         return null;
       }
     });
-  // The card reservation already serializes creation. On its TTL retry, reuse
-  // a still-active chain instead of recruiting a second auditor.
+  // An old epoch cannot emit against the current card lease. Retire its active
+  // consult before looking for a chain that may be reused by this epoch.
+  await sql`
+    UPDATE harness_shared.consult_state
+       SET state = 'expired', closed_at = now(), updated_at = now(),
+           outcome = jsonb_build_object(
+             'dispatch', 'stale-reservation-epoch',
+             'priorReservedAt', routing->'cascade'->>'reservationReservedAt',
+             'currentReservedAt', ${input.reservationReservedAt}::text
+           )
+     WHERE workspace_id = ${workspaceId}
+       AND routing->'cascade'->>'flavor' = 'grading-integrity'
+       AND routing->'cascade'->>'reservationKey' = ${input.reservationKey}
+       AND routing->'cascade'->>'reservationReservedAt' IS DISTINCT FROM ${input.reservationReservedAt}
+       AND state IN ('awaiting_responder', 'active')`;
   const active = await sql<{
     conversation_id: string;
     state: string;
@@ -151,6 +164,7 @@ export async function routeSourceGradingAudit(
     WHERE workspace_id = ${workspaceId}
       AND routing->'cascade'->>'flavor' = 'grading-integrity'
       AND routing->'cascade'->>'reservationKey' = ${input.reservationKey}
+      AND routing->'cascade'->>'reservationReservedAt' = ${input.reservationReservedAt}
     ORDER BY created_at DESC LIMIT 1`;
   if (active[0]?.dispatch === 'launch-fallback') return { state: 'fallback', reason: 'existing router: reuse reserved launch fallback' };
   let retiredStaleResponder = false;

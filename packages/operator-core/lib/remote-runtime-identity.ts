@@ -22,10 +22,12 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
 import { getPosthogConfigWithSource } from './posthog-config';
+import { readProcessIdentity } from './process-identity';
 
 /** Reads one control-plane document; resolves the raw stdout, or null on any failure. */
 export type RemoteDescribe = (argv: readonly string[]) => Promise<string | null>;
@@ -179,7 +181,52 @@ const cloudflarePages: RemoteRuntimeProvider = {
   },
 };
 
-const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages];
+// Reuse the external-runtime evaluator for the separately managed local daemon.
+// Its own read-only socket answer supplies boot-captured source/compiler bytes;
+// systemd selects the process and the kernel independently verifies its lifetime.
+const focusedTsc: RemoteRuntimeProvider = {
+  prefix: 'focused-tsc:',
+  describeArgv: unit => unit === 'focused-tsc:installed' ? ['focused-tsc', 'installed'] : null,
+  async describe() {
+    try {
+      const properties = await new Promise<string>((accept, reject) => execFile('systemctl',
+        ['--user', 'show', 'papercup-tsc-service.service', '-p', 'WorkingDirectory', '-p', 'MainPID'],
+        { timeout: 2_000, maxBuffer: 16_384 }, (error, stdout) => error ? reject(error) : accept(stdout)));
+      const fields = Object.fromEntries(properties.trim().split('\n').map(line => {
+        const split = line.indexOf('='); return [line.slice(0, split), line.slice(split + 1)];
+      }));
+      const root = fields.WorkingDirectory, pid = Number(fields.MainPID);
+      if (!root || !isAbsolute(root) || !Number.isSafeInteger(pid) || pid < 1) return null;
+      const processIdentity = readProcessIdentity(pid);
+      if (!processIdentity) return null;
+      const service = await import(pathToFileURL(resolve(root, 'scripts/lib/tsc-service.mjs')).href);
+      const request = { operation: 'identity', root, project: resolve(root, 'packages/operator-core/tsconfig.json'),
+        files: ['scripts/tsc-service/server.mjs'], scope: 'named' };
+      const result = await service.requestTscService({ socketPath: service.tscServiceSocketPath(), request, timeoutMs: 2_000 });
+      if (!result.ok || result.identityOnly !== true || result.runtime?.pid !== pid
+        || readProcessIdentity(pid) !== processIdentity) return null;
+      return JSON.stringify({ identity: result.identity, runtime: result.runtime, processIdentity });
+    } catch { return null; }
+  },
+  identity(_unit, doc) {
+    const identity = record(doc.identity), runtime = record(doc.runtime);
+    const pid = runtime?.pid;
+    if (!Number.isSafeInteger(pid) || Number(pid) < 1 || !Number.isFinite(runtime?.startedAt)
+      || Number(runtime?.startedAt) <= 0 || typeof doc.processIdentity !== 'string'
+      || readProcessIdentity(Number(pid)) !== doc.processIdentity
+      || !identity || typeof identity.root !== 'string' || !isAbsolute(identity.root)
+      || !/^[a-f0-9]{64}$/.test(String(identity.serviceSourceSha256))
+      || !/^[a-f0-9]{64}$/.test(String(identity.compilerArtifactsSha256))
+      || !/^[a-f0-9]{64}$/.test(String(identity.projectConfigSha256))
+      || !str(identity.compilerVersion) || !str(identity.compilerInstall)
+      || !Array.isArray(identity.namedSources) || identity.namedSources.length !== 1
+      || record(identity.namedSources[0])?.path !== 'scripts/tsc-service/server.mjs'
+      || !/^[a-f0-9]{64}$/.test(String(record(identity.namedSources[0])?.sha256))) return null;
+    return [identity, pid, runtime?.startedAt, doc.processIdentity];
+  },
+};
+
+const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages, focusedTsc];
 
 function providerFor(unit: string): RemoteRuntimeProvider | undefined {
   return PROVIDERS.find((provider) => unit.startsWith(provider.prefix));

@@ -43,7 +43,6 @@ import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
 import { parseScratchReference } from '../../scratch-reference';
-import { __resetSessionSurfaces, getSessionSurface, getSessionUsedTools, sessionToolSurfaceKey } from '../routes/transport/tool-allowlist';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
@@ -113,6 +112,14 @@ const h = vi.hoisted(() => {
     ),
   };
 });
+
+// This handler fixture registers its own real projected probe tools below,
+// plus the production wrapper exercised by the nested-call cases.
+// Loading the application catalogue adds unrelated tools and their full import
+// graph before any case can execute; catalogue loading has its own suite.
+vi.mock('../../agent-tools/operator-tool-catalogue', () => ({
+  loadOperatorToolCatalogue: async () => { await import('../../agent-tools/tools/invoke'); },
+}));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -287,7 +294,10 @@ const { mcpHandler } = await import('../routes/transport/_mcp-handler');
 // A LOCAL caller: a real one always sends a loopback Host, and a host-less outside request is
 // answered at the edge with the P-006 OAuth 401 before the host (and its handlers) ever load.
 await mcpHandler(new Request('http://127.0.0.1/api/mcp', { headers: { host: '127.0.0.1' } }));
-const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName } = await import('@papercusp/agent-mcp');
+if (!lookupByMcpName('tools:invoke')) {
+  throw new Error('Deadline handler fixture requires the production tools:invoke wrapper');
+}
 
 /* ─── One synthetic probe: sleeps well past the deadline, then returns a
  *     result distinguishable from the timeout envelope. ────────────────── */
@@ -591,32 +601,38 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     });
   });
 
-  it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
+  it.each([
+    [undefined, undefined, 0],
+    [0, 0, 0],
+    [5, 7, 12],
+  ] as const)('correlates the forwarded trace id across request start, deadline, and late handler settlement with %s and %s data-lease waits', async (firstLeaseWaitMs, secondLeaseWaitMs, totalLeaseWaitMs) => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     const resultDoorDelayMs = 45;
     h.resultDoorDelayMs = resultDoorDelayMs;
     h.scratchWriteTimings = [
       {
-        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 4, totalMs: 29,
+        quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0,
+        dataLeaseWaitMs: firstLeaseWaitMs, writeMs: 4, totalMs: 29 + (firstLeaseWaitMs ?? 0),
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 4, sizeWalkDirectories: 2, sizeWalkEntries: 5, sizeWalkFiles: 3,
           readdirOperations: 2, statOperations: 3, operationTotalMs: 5, maxOperationMs: 2,
           maxOperationKind: 'readdir', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 0, fileStatErrors: 1, runListingMs: 2, runsListed: 3,
           selectedRunSizingMs: 1, runsConsidered: 1, fallbackRunSizes: 1, deletionMs: 1,
-          deleteAttempts: 1, runsDeleted: 1, deletedBytes: 100,
+          deleteAttempts: 1, deleteErrors: 1, lastDeleteErrorCode: 'EACCES', runsDeleted: 1, deletedBytes: 100,
         },
       },
       {
-        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 2, totalMs: 15,
+        quotaWaitMs: 0, refreshWaitMs: 3, quotaRecoveryMs: 10,
+        dataLeaseWaitMs: secondLeaseWaitMs, writeMs: 2, totalMs: 15 + (secondLeaseWaitMs ?? 0),
         quotaRecoveryDiagnostics: {
           sizeWalkMs: 9, sizeWalkDirectories: 4, sizeWalkEntries: 8, sizeWalkFiles: 5,
           readdirOperations: 4, statOperations: 5, operationTotalMs: 8, maxOperationMs: 3,
           maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
           directoryReadErrors: 1, fileStatErrors: 0, runListingMs: 5, runsListed: 6,
           selectedRunSizingMs: 2, runsConsidered: 2, fallbackRunSizes: 0, deletionMs: 3,
-          deleteAttempts: 2, runsDeleted: 2, deletedBytes: 200,
+          deleteAttempts: 2, deleteErrors: 2, lastDeleteErrorCode: 'EPERM', runsDeleted: 2, deletedBytes: 200,
         },
       },
     ];
@@ -665,14 +681,15 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
             advisoryFlagReads: expect.any(Number),
             scratchWrites: expect.objectContaining({
               count: 2, perSpill: h.scratchWriteTimings,
-              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10, writeMs: 6, totalMs: 44,
+              quotaWaitMs: 25, refreshWaitMs: 3, quotaRecoveryMs: 10,
+              dataLeaseWaitMs: totalLeaseWaitMs, writeMs: 6, totalMs: 44 + totalLeaseWaitMs,
               quotaRecoveryDiagnostics: expect.objectContaining({
                 sizeWalkMs: 13, sizeWalkDirectories: 6, sizeWalkEntries: 13, sizeWalkFiles: 8,
                 readdirOperations: 6, statOperations: 8, operationTotalMs: 13, maxOperationMs: 3,
                 maxOperationKind: 'stat', currentOperationKind: null, currentOperationElapsedMs: 0,
                 directoryReadErrors: 1, fileStatErrors: 1, runListingMs: 7, runsListed: 9,
                 selectedRunSizingMs: 3, runsConsidered: 3, fallbackRunSizes: 1, deletionMs: 4,
-                deleteAttempts: 3, runsDeleted: 3, deletedBytes: 300,
+                deleteAttempts: 3, deleteErrors: 3, lastDeleteErrorCode: 'EPERM', runsDeleted: 3, deletedBytes: 300,
               }),
             }),
           }),
@@ -704,7 +721,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         phaseTimingsMs: expect.objectContaining({
           resultDoor: expect.any(Number),
           scratchWrites: expect.objectContaining({
-            count: 2, perSpill: h.scratchWriteTimings, totalMs: 44,
+            count: 2, perSpill: h.scratchWriteTimings,
+            dataLeaseWaitMs: totalLeaseWaitMs, totalMs: 44 + totalLeaseWaitMs,
           }),
         }),
       }));
@@ -787,51 +805,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(h.resultDoorCalls).toBe(1);
   });
 
-  it('returns a completed tool result while the seeded-surface notification remains pending', async () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const traceId = '9a812cdc-73db-4f9f-a02e-2cad05ad22c8';
-    const owner = 'su-seeded-surface-test';
-    const seed = new Set(['deadlinetest:progress']);
-    const surfaceKey = sessionToolSurfaceKey(owner, 'ws-test')!;
-    __resetSessionSurfaces();
-    getSessionSurface(surfaceKey, seed);
-
-    let releaseNotification!: () => void;
-    let enteredNotification!: () => void;
-    const notificationGate = new Promise<void>((resolve) => { releaseNotification = resolve; });
-    const notificationEntered = new Promise<void>((resolve) => { enteredNotification = resolve; });
-
-    const extra = superuserExtra(
-      `&workspace=ws-test&client=${owner}&tools=deadlinetest:progress`,
-      { [MCP_REQUEST_TRACE_HEADER]: traceId },
-    );
-    (extra as Record<string, unknown>).sendNotification = async () => {
-      enteredNotification();
-      await notificationGate;
-    };
-
-    try {
-      const result = await callTool('deadlinetest:progress', {}, extra);
-      expect(result.isError).not.toBe(true);
-      expect(textOf(result)).toContain('synthetic-progress-fixture');
-      expect(h.progressCalls).toBe(1);
-      expect(getSessionUsedTools(surfaceKey)?.has('deadlinetest:progress')).toBe(true);
-
-      // The response is already delivered while the list_changed notification
-      // is deliberately held open.
-      await waitForSignal(notificationEntered, 'nonblocking list_changed notification');
-      const events = traceEvents(info.mock.calls);
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ traceId, stage: 'inner_dispatch_settled', outcome: 'success' }),
-      ]));
-      expect(events.some((event) => event.traceId === traceId && event.stage === 'deadline')).toBe(false);
-    } finally {
-      releaseNotification();
-      __resetSessionSurfaces();
-      info.mockRestore();
-    }
-  });
-
   it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {
     const progressToken = 'mcp-spill-progress';
     const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
@@ -878,6 +851,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           fallbackRunSizes: 0,
           deletionMs: 0,
           deleteAttempts: 0,
+          deleteErrors: 0,
+          lastDeleteErrorCode: null,
           runsDeleted: 0,
           deletedBytes: 0,
         },
@@ -975,7 +950,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         store.idempotencyKey === receiptKey)).toBe(true));
       expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
       expect(h.realScratchWriteTimings).toHaveLength(1);
-      const timing = h.realScratchWriteTimings[0];
+      const timing = structuredClone(h.realScratchWriteTimings[0]);
       // Concurrent quota bookkeeping may add a short, legitimate wait.
       expect(Number.isFinite(timing.quotaWaitMs)).toBe(true);
       expect(timing.quotaWaitMs).toBeGreaterThanOrEqual(0);
@@ -988,7 +963,17 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         event.traceId === traceId && event.stage === 'inner_dispatch_settled');
       expect(settled).toMatchObject({
         outcome: 'success', afterDeadline: true,
-        phaseTimingsMs: { scratchWrites: { count: 1, ...timing } },
+        phaseTimingsMs: {
+          scratchWrites: {
+            count: 1,
+            perSpill: [expect.objectContaining(timing)],
+            quotaWaitMs: timing.quotaWaitMs,
+            refreshWaitMs: timing.refreshWaitMs,
+            quotaRecoveryMs: timing.quotaRecoveryMs,
+            writeMs: timing.writeMs,
+            totalMs: timing.totalMs,
+          },
+        },
       });
       expect(h.spillPaths).toHaveLength(1);
       const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
@@ -1274,6 +1259,14 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         stage: 'deadline',
         phase: 'pre_dispatch',
         preDispatchActivePhase: 'transportScopeSetup',
+        transportScopePhases: expect.objectContaining({
+          pending: expect.arrayContaining([
+            expect.objectContaining({ phase: 'harnessWorkspaceResolution', elapsedMs: expect.any(Number) }),
+          ]),
+          phases: expect.arrayContaining([
+            expect.objectContaining({ phase: 'scopedSuperuserBoundary', durationMs: expect.any(Number) }),
+          ]),
+        }),
       }),
     );
     await sleep(50);

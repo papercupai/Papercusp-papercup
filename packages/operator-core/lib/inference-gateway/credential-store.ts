@@ -749,7 +749,8 @@ export function claudeAuthModeForRef(credentialRef: string): ClaudeAuthMode {
  *  - `oauth` (subscription): `authorization: Bearer <token>` and the `oauth-2025-04-20` beta.
  *  - `api-key` (Console credits): `x-api-key: <key>`, NO `authorization`, and the OAuth beta
  *    REMOVED together with Claude Code's beta and CLI user-agent — a Console key carrying those
- *    subscription identity headers is rejected — while feature betas (context-1m, …) are kept.
+ *    subscription identity headers is rejected. The retired top-level effort beta is also removed;
+ *    active feature betas (context-1m, …) are kept.
  * Any `authorization` / `x-api-key` already in `base` is dropped first, so a caller can never
  * smuggle its own credential upstream (the gateway also strips them at intake; this is the
  * attempt-level backstop). Header names are matched case-insensitively.
@@ -778,6 +779,10 @@ export function claudeAttemptHeaders(
   if (authMode === 'api-key') {
     flags.delete(CLAUDE_OAUTH_BETA);
     flags.delete(CLAUDE_CODE_BETA);
+    // Top-level output_config.effort is GA and needs no beta header. Keep the body intact;
+    // per-message effort and other active/unknown betas still require their original flags.
+    // https://platform.claude.com/docs/en/build-with-claude/effort
+    flags.delete('effort-2025-11-24');
     out['x-api-key'] = token;
     if (anthropicWorkspaceId) out['anthropic-workspace-id'] = anthropicWorkspaceId;
   } else {

@@ -27,6 +27,7 @@ const h = vi.hoisted(() => {
     continueCascadeDispatchProd: vi.fn(async (_workspace: string, _conversation: string, _context: unknown, _options: unknown) => true),
     observeNativeConsultSource: vi.fn(async (_candidate: unknown, _constraint: unknown) => ({})),
     readConsultExpertRoutingSettings: vi.fn(async () => routingSettings),
+    resolveAcceptanceBarApproverScreen: vi.fn(),
   };
 });
 
@@ -36,6 +37,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
   acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
+vi.mock('../rubrics', () => ({ resolveAcceptanceBarApproverScreen: h.resolveAcceptanceBarApproverScreen }));
 // expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
 // lacked it, so the acceptance test failed at HEAD.
 vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: () => null }));
@@ -62,6 +64,42 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
 import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
+  it.each(['floor', 'minimum', 'lexical'])('screens the canonical METHOD target before %s selection, including recovery', async (via) => {
+    const saved = { workspaceId: 'ws-method', requesterId: 'applier', question: 'current method',
+      policy: 'method-review', methodReviewRubricRef: 'acceptance-native' };
+    h.resolveAcceptanceBarApproverScreen.mockResolvedValue({ check: async (ownerId: string) => ({
+      eligible: ownerId === 'unrelated', reason: ownerId === 'unrelated' ? 'eligible' : 'related_to_plan_implementer',
+    }) });
+    await continueFeedbackRequestProd(saved.workspaceId, 'method-conv');
+    const recovery = h.continueFeedbackRequestCore.mock.calls.at(-1)![2] as {
+      execute: (request: unknown, accepted: unknown) => Promise<unknown>;
+    };
+    await recovery.execute(saved, { conversation_id: 'method-conv', thread_id: 'thr-method', leaseToken: 'lease' });
+    expect(h.resolveAcceptanceBarApproverScreen).toHaveBeenCalledWith({ rubricId: 'acceptance-native', applierId: 'applier' });
+    const candidates = ['related', 'unrelated'].map(ownerId => ({ ownerId, score: 0.9,
+      ...(via === 'lexical' ? { fallback: 'lexical' as const } : {}) }));
+    h.routeConsult.mockResolvedValueOnce({ verdict: 'routed', qualified: via === 'floor' ? candidates : [],
+      snapshot: { candidates }, queryVec: null } as Awaited<ReturnType<typeof import('./relevance-router').routeConsult>>);
+    const deps = h.getFeedbackCore.mock.calls.at(-1)![1] as {
+      route: (params: unknown) => ReturnType<typeof import('./relevance-router').routeConsult>;
+    };
+    const route = await deps.route({});
+    const { selectResponders } = await vi.importActual<typeof import('./relevance-router')>('./relevance-router');
+    expect(selectResponders({ qualified: route.qualified, allCandidates: route.snapshot.candidates, min: 1, max: 1 })
+      .map(pick => pick.candidate.ownerId)).toEqual(['unrelated']);
+    expect(route.snapshot.candidates.map((c: { ownerId: string }) => c.ownerId)).toEqual(['unrelated']);
+  });
+
+  it('refuses missing context and unreadable canonical population before routing or dispatch', async () => {
+    const request = { workspaceId: 'ws-method', requesterId: 'applier', question: 'current method', policy: 'method-review' };
+    await expect(getFeedbackProd(request, { ownerId: 'applier' } as never)).rejects.toThrow('method_review_requires_acceptance_rubric');
+    h.resolveAcceptanceBarApproverScreen.mockRejectedValueOnce(new Error('implementer population unreadable'));
+    await expect(getFeedbackProd({ ...request, methodReviewRubricRef: 'acceptance-native' },
+      { ownerId: 'applier' } as never)).rejects.toThrow('implementer population unreadable');
+    expect(h.routeConsult).not.toHaveBeenCalled();
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+  });
+
   it('restores the native source constraint during durable recovery and filters the real ranked pool before selection', async () => {
     const nativeConsult = { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } as const;
     const saved = { workspaceId: 'workspace-native', requesterId: 'native-requester', question: 'native recovery',

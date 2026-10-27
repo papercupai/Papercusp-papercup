@@ -15,7 +15,7 @@ function violations(calls: Array<{ name: string; input: Record<string, unknown>;
       output: JSON.stringify(index < prefix.length ? (index === 0 ? { ok: true,slug: PROCEDURE_SLUG,surface: 'engineering' }
         : { results: [{ slug: PROCEDURE_REF,found: true,content: PROCEDURE_BODY }],surface: 'engineering' }) : outputs?.[index-prefix.length] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
         ? { ok: true, report_id: 'rpt_fixture', path: '/reports?sel=rpt_fixture' }
-        : { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'owner' } }] })) }))
+        : { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'workspace' } }] })) }))
   }] } as unknown as RunSummary;
   return SU_S38_REPORTS_CAPTURE.asserts.flatMap(assert => assert.kind === 'custom' ? assert.eval(run) : []);
 }
@@ -62,15 +62,15 @@ describe('S38 Reports capture contract', () => {
     expect(first?.text).not.toContain('docs/architecture-review.md');
   });
 
-  it('accepts exact private publication followed by read-back through either dispatch door', () => {
-    const calls = [{ name: 'reports:publish', input: { title: 'Architecture review', kind: 'review', body_md: REPORT_BODY, visibility: 'owner' } },
+  it('accepts exact workspace-public publication followed by read-back through either dispatch door', () => {
+    const calls = [{ name: 'reports:publish', input: { title: 'Architecture review', kind: 'review', body_md: REPORT_BODY, visibility: 'workspace' } },
       { name: 'reports:get', input: { id: 'rpt_fixture' } }];
     expect(violations(calls)).toEqual([]);
     expect(violations(calls.map(call => ({ name: 'tools:invoke', input: { name: call.name, args: call.input } })))).toEqual([]);
   });
 
   it('requires the final response to link the exact returned Reports route', () => {
-    const calls = [{ name: 'reports:publish', input: { title: 'Architecture review', body_md: REPORT_BODY, visibility: 'owner' } },
+    const calls = [{ name: 'reports:publish', input: { title: 'Architecture review', body_md: REPORT_BODY, visibility: 'workspace' } },
       { name: 'reports:get', input: { id: 'rpt_fixture' } }];
     expect(violations(calls, undefined, true, 'Saved the report for later.')).toEqual([
       expect.objectContaining({ assertKind: 'custom:final-report-citation-uses-returned-route' }),
@@ -78,10 +78,10 @@ describe('S38 Reports capture contract', () => {
     expect(violations(calls, undefined, true, 'Saved: [Architecture review](/reports?sel=rpt_fixture)')).toEqual([]);
   });
 
-  it('rejects a missing read-back, altered Markdown, or broader visibility', () => {
+  it('rejects a missing read-back, altered Markdown, or unrequested private visibility', () => {
     expect(violations([{ name: 'reports:publish', input: { title: 'Review', body_md: REPORT_BODY } }])).toHaveLength(1);
     for (const input of [{ title: 'Review', body_md: REPORT_BODY.replace('```mermaid', '```text') },
-      { title: 'Review', body_md: REPORT_BODY, visibility: 'workspace' },
+      { title: 'Review', body_md: REPORT_BODY, visibility: 'owner' },
       { title: 'Review', body_md: REPORT_BODY, kind: 'architecture-review' },
       { body_md: REPORT_BODY }, { title: '', body_md: REPORT_BODY }]) {
       expect(violations([{ name: 'reports:publish', input },
@@ -94,15 +94,15 @@ describe('S38 Reports capture contract', () => {
       { name: 'reports:publish', input: { title: 'Review', body_md: REPORT_BODY } }])).toHaveLength(1);
   });
 
-  it('requires successful publication and a complete private read-back across a tool-result boundary', () => {
+  it('requires successful publication and a complete public read-back across a tool-result boundary', () => {
     const calls = [{ name: 'reports:publish', input: { title: 'Review', body_md: REPORT_BODY } },
       { name: 'reports:get', input: { id: 'rpt_fixture' } }];
     expect(violations(calls)).toEqual([]);
     expect(violations(calls.map(call => ({ ...call, responseIndex: 0 })))).toHaveLength(1);
     expect(violations(calls, [{ ok: false, error: 'invalid_field' }])).toHaveLength(1);
     for (const output of [{ ok: false, error: 'not_found' },
-      { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: '# Altered', visibility: 'owner' } }] },
-      { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'workspace' } }] }]) {
+      { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: '# Altered', visibility: 'workspace' } }] },
+      { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'owner' } }] }]) {
       expect(violations(calls, [{ ok: true, report_id: 'rpt_fixture' }, output])).toHaveLength(1);
     }
   });
@@ -119,6 +119,16 @@ describe('S38 Reports capture contract', () => {
       const read = await world.override('reports:get', { id: 'rpt_fixture' });
       expect(JSON.parse((read as { content: [{ text: string }] }).content[0].text)).toMatchObject({
         ok: false, results: [{ id: 'rpt_fixture', ok: false, error: 'not_found' }], counts: { ok: 0, failed: 1 } });
+    }
+  });
+
+  it('defaults to workspace-public while preserving an explicit private choice', async () => {
+    for (const visibility of [undefined, 'owner']) {
+      const world = createReportsCaptureWorld();
+      await world.override('reports:publish', { title: 'Review', body_md: REPORT_BODY, ...(visibility ? { visibility } : {}) });
+      const read = await world.override('reports:get', { id: 'rpt_fixture' });
+      expect(JSON.parse((read as { content: [{ text: string }] }).content[0].text))
+        .toMatchObject({ results: [{ report: { visibility: visibility ?? 'workspace' } }] });
     }
   });
 

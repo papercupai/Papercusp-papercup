@@ -34,7 +34,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
@@ -50,7 +50,7 @@ function runScriptArgs(
   opts: { env?: Record<string, string> } = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync('bash', [SCRIPT_PATH, ...args], {
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: { ...process.env, STAGING_TRASH_DRAIN_MODE: 'inline', ...(opts.env ?? {}) },
     encoding: 'utf8',
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -60,19 +60,26 @@ function runScriptArgs(
 function runFn(
   fns: string[],
   call: string,
-  opts: { env?: Record<string, string>; input?: string } = {},
+  opts: { env?: NodeJS.ProcessEnv; input?: string } = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const sourced = fns
     .map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`)
     .join('\n');
   const wrapper = ['set -uo pipefail', sourced, call].join('\n');
   const r = spawnSync('bash', ['-c', wrapper], {
-    env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, ...(opts.env ?? {}) },
+    // Fixtures reclaim retired generations synchronously unless a test opts
+    // into the detached drain with its own systemd-run shim; a fixture must
+    // never launch a real transient unit (WI-6554700010029246).
+    env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, STAGING_TRASH_DRAIN_MODE: 'inline', ...(opts.env ?? {}) },
     input: opts.input,
     encoding: 'utf8',
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
+
+/** cleanup_staging_candidate plus the O(1) retire/drain helpers it calls (WI-6554700010029246). */
+const CLEANUP_FNS = ['retire_staging_generation_home', 'prune_staging_worktree_registrations',
+  'launch_staging_trash_drain', 'cleanup_staging_candidate'];
 
 /**
  * Run the real paths_require_restart() over `paths`.
@@ -425,6 +432,15 @@ describe('sync-staging-checkout.sh argument parsing', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('unknown argument: --not-an-option');
     expect(r.stderr).toContain('Usage: sync-staging-checkout.sh');
+    expect(r.stdout).toBe('');
+  });
+
+  it('rejects extra cleanup-only arguments before touching the live sync workflow', () => {
+    const r = runScriptArgs(['--cleanup-only', '--not-an-option'], {
+      env: { PAPERCUSP_INTEGRATION_ROOT: '/definitely/not-a-live-checkout' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--cleanup-only does not accept additional arguments');
     expect(r.stdout).toBe('');
   });
 });
@@ -916,6 +932,274 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
   });
 });
 
+describe('sync-staging-checkout.sh generation admission (EI-26746441745558411)', () => {
+  function keeperSource() {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
+    return script.slice(start, script.indexOf('staging_alias_bootstrap()', start));
+  }
+
+  it('runs cleanup-only under the exclusive lock and exits before preparation or restart', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-cleanup-only-'));
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Single-flight: a second timer tick');
+    const end = script.indexOf('# WI-5710 — SPA-only advance:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const driver = script.slice(start, end).replace(
+      'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"',
+      'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+    );
+    mkdirSync(join(root, '.git'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'trap staging_sync_lock_release EXIT',
+        'INTEGRATION_ROOT="$TEST_ROOT"; STAGING_SYNC_CLEANUP_ONLY=1',
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_lock_log() { :; }; staging_sync_checkpoint() { :; }',
+        'staging_lock_attempt_id() { echo fixture; }; staging_lock_now_ms() { echo 0; }',
+        'staging_alias_bootstrap() { :; }',
+        'prune_staging_generations() { if flock -s -n "$TEST_LOCK" -c true; then echo UNEXPECTED_UNLOCKED_GC; exit 91; fi; echo EXCLUSIVE_GC; }',
+        'staging_sync_lock_shared() { echo UNEXPECTED_PREPARATION; exit 92; }',
+        'prepare_staging_candidate() { echo UNEXPECTED_CANDIDATE; exit 93; }',
+        'systemctl() { echo UNEXPECTED_RESTART; exit 94; }',
+        driver,
+      ].join('\n')], {
+        env: { ...process.env, TEST_ROOT: root, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('EXCLUSIVE_GC');
+      expect(result.stdout).toContain('cleanup-only pass complete');
+      expect(result.stdout).not.toContain('UNEXPECTED_');
+      const released = spawnSync('flock', ['-n', join(root, 'generation.lock'), 'true']);
+      expect(released.status).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps preparation readable while GC and publication remain exclusive', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-workflow-'));
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('# Single-flight: a second timer tick');
+    const end = script.indexOf('# WI-5710 — SPA-only advance:', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const driver = script.slice(start, end).replace(
+      'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"',
+      'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+    );
+    mkdirSync(join(root, '.git'));
+    mkdirSync(join(root, 'published'));
+    mkdirSync(join(root, 'candidate/checkout/apps/operator/bin'), { recursive: true });
+    writeFileSync(join(root, 'candidate/checkout/apps/operator/bin/bundle-host.sh'), 'fixture');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'trap staging_sync_lock_release EXIT',
+        'INTEGRATION_ROOT="$TEST_ROOT"; STAGING_ROOT="$TEST_ROOT/published"',
+        'STAGING_CANDIDATE_ROOT=""; STAGING_CANDIDATE_HOME=""',
+        'STAGING_BUNDLE_SCRIPT=/unused; UNIT=fixture.service; BRANCH=staging; STAGING_PORT=12345',
+        'PAPERCUSP_PTOOL_BIN=/unused; MAX_STALE_SEC=1800',
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_lock_log() { :; }; staging_sync_checkpoint() { :; }',
+        'staging_lock_attempt_id() { echo fixture; }; staging_lock_now_ms() { echo 0; }',
+        'git() { case "$*" in *"diff --name-only"*) echo server.ts;; *"staging^{commit}"*) echo "$TEST_TARGET";; *HEAD*) echo "$TEST_CURRENT";; *) return 1;; esac; }',
+        'require_shared() { flock -s -n "$TEST_LOCK" -c true || { echo "reader refused during $1" >&2; return 91; }; echo "shared:$1"; }',
+        'require_exclusive() { if flock -s -n "$TEST_LOCK" -c true; then echo "barrier missing during $1" >&2; return 92; fi; echo "exclusive:$1"; }',
+        'staging_alias_bootstrap() { require_exclusive bootstrap; }',
+        'prune_staging_generations() { require_exclusive gc; }',
+        'forward_compat_review_warnings() { :; }; assert_staging_unit_loopback() { :; }; assert_staging_unit_checkout() { :; }; staging_preparation_has_headroom() { :; }',
+        'staging_health_source_sha() { echo "$TEST_CURRENT"; }; paths_require_restart() { return 0; }; staging_live_client_count() { echo 0; }',
+        'prepare_staging_candidate() { require_shared candidate; STAGING_CANDIDATE_ROOT="$TEST_ROOT/candidate/checkout"; STAGING_CANDIDATE_HOME="$TEST_ROOT/candidate"; }',
+        'preflight_staging_migrations() { require_shared migrations; }; prebuild_staging_host_bundle() { require_shared bundle; }; prepare_staging_schema() { require_shared schema; }',
+        'mark_staging_candidate_ready() { require_exclusive ready; }',
+        'publish_staging_generation() { require_exclusive publication; printf "%s" "$3" > "$TEST_ROOT/published-sha"; }',
+        'launch_staging_generation_measure() { :; }',
+        driver,
+      ].join('\n')], {
+        env: { ...process.env, TEST_ROOT: root, TEST_LOCK: join(root, 'generation.lock'),
+          TEST_TARGET: 'b'.repeat(40), TEST_CURRENT: 'a'.repeat(40) },
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      for (const phase of ['candidate', 'migrations', 'bundle', 'schema']) {
+        expect(result.stdout).toContain(`shared:${phase}`);
+      }
+      for (const phase of ['bootstrap', 'gc', 'ready', 'publication']) {
+        expect(result.stdout).toContain(`exclusive:${phase}`);
+      }
+      expect(readFileSync(join(root, 'published-sha'), 'utf8')).toBe('b'.repeat(40));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps writer single-flight across a failed upgrade and admits no publication through readers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-upgrade-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start; staging_sync_lock_shared',
+        'flock -s -n "$TEST_LOCK" -c true',
+        'exec 7>"$TEST_LOCK"; flock -s 7',
+        'if staging_sync_lock_exclusive 1; then echo unsafe_upgrade; exit 90; else status=$?; fi',
+        '[[ "$status" == 75 ]]',
+        // A failed flock conversion can drop fd 9's shared lock. Once the
+        // other reader exits, the independent writer lease must still hold.
+        'flock -u 7; exec 7>&-',
+        '(STAGING_SYNC_LOCK_OWNER_PID="$BASHPID"; STAGING_SYNC_LOCK_PROCESS_PID=""; if staging_sync_lock_start; then status=0; else status=$?; fi; staging_sync_lock_release; [[ "$status" == 75 ]])',
+        'staging_sync_lock_exclusive 1',
+        'if flock -s -n "$TEST_LOCK" -c true; then echo unsafe_reader; exit 91; fi',
+        'staging_sync_lock_release; staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo bounded_upgrade_and_writer_lease_passed',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('bounded_upgrade_and_writer_lease_passed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('releases both leases when the keeper cannot process its cleanup command', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-stopped-keeper-'));
+    const pidFile = join(root, 'keeper.pid');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'staging_sync_lock_start',
+        'printf "%s" "$STAGING_SYNC_LOCK_PROCESS_PID" > "$TEST_PID_FILE"',
+        'kill -STOP "$STAGING_SYNC_LOCK_PROCESS_PID"',
+        'staging_sync_lock_release; staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo cleanup_finished_and_both_leases_free',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock'), TEST_PID_FILE: pidFile },
+        encoding: 'utf8', timeout: 6_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('cleanup_finished_and_both_leases_free');
+    } finally {
+      if (existsSync(pidFile)) {
+        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it('preserves a command fragmented across the keeper liveness deadline', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-fragmented-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start',
+        'printf sha >&"$STAGING_SYNC_LOCK_WRITE_FD"',
+        'sleep 1.2',
+        'printf "red\\n" >&"$STAGING_SYNC_LOCK_WRITE_FD"',
+        'IFS= read -r -t 3 acknowledgement <&"$STAGING_SYNC_LOCK_READ_FD"',
+        '[[ "$acknowledgement" == shared ]]',
+        'flock -s -n "$TEST_LOCK" -c true',
+        'if flock -n "$TEST_LOCK.writer" -c true; then exit 90; fi',
+        'staging_sync_lock_exclusive 1',
+        'if flock -s -n "$TEST_LOCK" -c true; then exit 91; fi',
+        'staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo fragmented_command_acknowledged_and_leases_safe',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('fragmented_command_acknowledged_and_leases_safe');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['shared', 'exclusive'])('fails closed when a keeper stops acknowledging a %s transition', (transition) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-missing-ack-'));
+    const pidFile = join(root, 'keeper.pid');
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start',
+        'printf "%s" "$STAGING_SYNC_LOCK_PROCESS_PID" > "$TEST_PID_FILE"',
+        'if [[ "$TEST_TRANSITION" == exclusive ]]; then staging_sync_lock_shared; fi',
+        'kill -STOP "$STAGING_SYNC_LOCK_PROCESS_PID"',
+        'if [[ "$TEST_TRANSITION" == shared ]]; then',
+        '  if staging_sync_lock_shared; then echo UNSAFE_PREPARATION; exit 91; fi',
+        'else',
+        '  if staging_sync_lock_exclusive 1; then echo UNSAFE_PREPARATION; exit 92; fi',
+        'fi',
+        'staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo failed_closed_and_both_leases_free',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock'), TEST_PID_FILE: pidFile, TEST_TRANSITION: transition },
+        encoding: 'utf8', timeout: 12_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).not.toContain('UNSAFE_PREPARATION');
+      expect(result.stdout).toContain('failed_closed_and_both_leases_free');
+      expect(result.stderr).toContain(`${transition} acknowledgement unavailable`);
+    } finally {
+      if (existsSync(pidFile)) {
+        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('does not pass either lock descriptor to a long-lived preparation child', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-admission-child-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', keeperSource(),
+        'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+        'trap staging_sync_lock_release EXIT',
+        'staging_sync_lock_start; staging_sync_lock_shared',
+        'sleep 2 & child=$!',
+        'staging_sync_lock_release',
+        'flock -n "$TEST_LOCK" -c true',
+        'flock -n "$TEST_LOCK.writer" -c true',
+        'echo both_locks_free_before_child_exit',
+        'wait "$child"',
+      ].join('\n')], {
+        env: { ...process.env, TEST_LOCK: join(root, 'generation.lock') },
+        encoding: 'utf8', timeout: 5_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).toContain('both_locks_free_before_child_exit');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
   const effective = '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock /isolated/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
   const guarded = '{ path=/usr/bin/bash ; argv[]=/usr/bin/bash -c root="/isolated"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"; if [ -f "$$helper" ]; then exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"; fi; echo "[95-bundled-entry] $$helper is absent from this staging generation; bundling under the shared flock without attribution" >&2; exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh" ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
@@ -1049,9 +1333,159 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
 });
 
 describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
-  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence', 'prune_staging_generations'];
+  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence',
+    'retire_staging_generation_home', 'prune_staging_worktree_registrations', 'launch_staging_trash_drain', 'prune_staging_generations'];
 
-  it('defers slow retired-generation cleanup within its budget so runtime preparation can continue', () => {
+  it.each([
+    ['critical', '1000000', '0.000001', 75],
+    ['healthy', '0.000001', '0.000001', 0],
+  ] as const)('uses the shared writer reserve before preparing a %s-capacity candidate', (_state, gb, pct, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-'));
+    try {
+      const script = readFileSync(SCRIPT_PATH, 'utf8');
+      const start = script.indexOf('\nSYNC_ROOT="');
+      const end = script.indexOf('\nif [ "$restart_required" = 1 ]; then', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const allocation = join(root, 'candidate-allocated');
+      const result = runFn(['staging_preparation_has_headroom'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_sync_checkpoint() { :; }',
+        'prepare_staging_candidate() { touch "$TEST_ALLOCATION"; STAGING_CANDIDATE_ROOT="$STAGING_ROOT"; }',
+        'checkout_needs_advance=1; target=0123456789abcdef',
+        script.slice(start, end),
+      ].join('\n'), {
+        env: {
+          INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+          STAGING_GENERATIONS_ROOT: root,
+          STAGING_ROOT: root,
+          TEST_ALLOCATION: allocation,
+          PAPERCUSP_DISK_ALARM_CRITICAL_GB: gb,
+          PAPERCUSP_DISK_ALARM_CRITICAL_PCT: pct,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(allocation)).toBe(status === 0);
+      if (status === 75) {
+        expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+        expect(result.stdout).toContain('the next tick retries cleanup');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010029252: the reserve must still hold after the candidate lands,
+  // so the check adds the last measured generation size to it.
+  it.each([
+    // Larger than any real filesystem, but still a safe integer (an unsafe one is
+    // treated as unparseable, like the case below).
+    ['a measured generation that would breach the reserve defers', '9000000000000000', 75],
+    ['an unparseable measurement falls back to the reserve alone', 'not-a-number', 0],
+    ['a missing measurement falls back to the reserve alone', null, 0],
+  ] as const)('%s', (_name, stamp, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-measured-'));
+    try {
+      const bytesFile = join(root, '.generation-bytes');
+      if (stamp !== null) writeFileSync(bytesFile, `${stamp}\n`);
+      const result = runFn(['staging_preparation_has_headroom'],
+        'if staging_preparation_has_headroom; then echo HEADROOM_OK; else echo "HEADROOM_STATUS=$?"; fi', {
+          env: {
+            INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+            STAGING_GENERATIONS_ROOT: root,
+            STAGING_GENERATION_BYTES_FILE: bytesFile,
+            PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001',
+            PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+          },
+        });
+      expect(result.status, result.stderr).toBe(0);
+      if (status === 75) {
+        expect(result.stdout).toContain('HEADROOM_STATUS=75');
+        expect(result.stderr).toContain(`+ ${stamp} measured generation size`);
+        expect(result.stderr).toContain('retaining the serving generation while cleanup continues');
+      } else {
+        expect(result.stdout).toContain('HEADROOM_OK');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('records a published generation size atomically and keeps the previous value when the walk fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generation-measure-'));
+    const home = join(root, '.candidate-abc.x');
+    const bytesFile = join(root, '.generation-bytes');
+    const bin = join(root, 'bin');
+    try {
+      mkdirSync(join(home, 'checkout'), { recursive: true });
+      writeFileSync(join(home, 'checkout', 'payload'), Buffer.alloc(256 * 1024, 1));
+      // The walk body is a top-level assignment, not a function, so runFn's
+      // function extraction cannot source it: hand the live text in instead.
+      const body = /^STAGING_GENERATION_MEASURE_SCRIPT='([^']*)'$/m.exec(readFileSync(SCRIPT_PATH, 'utf8'))?.[1];
+      expect(body).toContain('du -sxB1');
+      const measure = (env: Record<string, string> = {}) => runFn(['launch_staging_generation_measure'],
+        `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
+        { env: { STAGING_GENERATION_MEASURE_MODE: 'inline', STAGING_GENERATION_MEASURE_SCRIPT: body, ...env } });
+
+      const first = measure();
+      expect(first.status, first.stderr).toBe(0);
+      const recorded = readFileSync(bytesFile, 'utf8').trim();
+      expect(recorded).toMatch(/^[0-9]+$/);
+      expect(Number(recorded)).toBeGreaterThanOrEqual(256 * 1024);
+      expect(first.stdout).toContain(`measured staging generation size inline: ${recorded} bytes`);
+
+      // A failing walk must not overwrite or delete the last good measurement.
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'du'), '#!/usr/bin/env bash\necho "1 $2"\nexit 1\n', { mode: 0o755 });
+      const failed = measure({ PATH: `${bin}:${process.env.PATH}` });
+      expect(failed.status, failed.stderr).toBe(0);
+      expect(failed.stdout).toContain('keeping the previous measurement');
+      expect(readFileSync(bytesFile, 'utf8').trim()).toBe(recorded);
+      expect(readdirSync(root).filter((n) => n.includes('.tmp.'))).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('launches the size measurement as a collected transient unit, and skips while one is already running', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generation-measure-unit-'));
+    const home = join(root, '.candidate-abc.x');
+    const bytesFile = join(root, '.generation-bytes');
+    const bin = join(root, 'bin');
+    const runs = join(root, 'systemd-run.log');
+    try {
+      mkdirSync(home, { recursive: true });
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'systemd-run'), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> ${JSON.stringify(runs)}\nexit 0\n`, { mode: 0o755 });
+      const launch = (active: boolean) => {
+        writeFileSync(join(bin, 'systemctl'), `#!/usr/bin/env bash\nexit ${active ? 0 : 3}\n`, { mode: 0o755 });
+        return runFn(['launch_staging_generation_measure'],
+          `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
+          { env: { PATH: `${bin}:${process.env.PATH}`, STAGING_GENERATION_MEASURE_MODE: 'detached', STAGING_GENERATION_MEASURE_SCRIPT: 'exit 0' } });
+      };
+      const busy = launch(true);
+      expect(busy.status, busy.stderr).toBe(0);
+      expect(busy.stdout).toContain('measurement already running');
+      expect(existsSync(runs)).toBe(false);
+
+      const started = launch(false);
+      expect(started.status, started.stderr).toBe(0);
+      expect(started.stdout).toContain('launched detached staging generation size measurement unit=');
+      const args = readFileSync(runs, 'utf8').split('\n');
+      expect(args).toContain('--user');
+      expect(args).toContain('--collect');
+      expect(args.find((a) => a.startsWith('--unit='))).toMatch(/^--unit=papercup-staging-generation-size-[0-9a-f]{12}$/);
+      expect(args).not.toContain('IOSchedulingClass=idle');
+      expect(args).toContain(home);
+      expect(args).toContain(bytesFile);
+      expect(existsSync(bytesFile)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('measures the generation it just published, after publication and outside the publication lock', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const publish = script.indexOf('\n  publish_staging_generation "$STAGING_CANDIDATE_ROOT"');
+    const measure = script.indexOf('\n  launch_staging_generation_measure "$STAGING_CANDIDATE_HOME"');
+    expect(publish).toBeGreaterThan(0);
+    expect(measure).toBeGreaterThan(publish);
+    expect(script.slice(publish, measure)).toContain('staging_sync_checkpoint "generation published"');
+  });
+
+  it('bounds a stalled git worktree prune so runtime preparation continues, with the generation already retired', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-prune-budget-'));
     const generations = join(root, 'generations');
     const candidate = join(generations, '.candidate-old.slow');
@@ -1059,50 +1493,143 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     const bin = join(root, 'bin');
     mkdirSync(checkout, { recursive: true });
     mkdirSync(bin);
-    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexec sleep 4\n', { mode: 0o755 });
+    // An unbounded git call would outlive the outer 20s deadline (status 137).
+    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexec sleep 60\n', { mode: 0o755 });
     try {
-      const result = runFn(PRUNE_FNS,
-        'log() { echo "$*"; }; prune_staging_generations 2; echo RUNTIME_PREPARATION_CONTINUES', {
-          env: { PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: join(root, 'absent-current'),
-            STAGING_GENERATIONS_ROOT: generations, STAGING_PROC_ROOT: join(root, 'absent-proc'),
-            INTEGRATION_ROOT: root },
-        });
-      expect(result.status).toBe(0);
-      expect(existsSync(checkout)).toBe(true);
+      const result = spawnSync('timeout', ['--signal=KILL', '20s', 'bash', '-c', [
+        'set -uo pipefail',
+        ...PRUNE_FNS.map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`),
+        'log() { echo "$*"; }; prune_staging_generations 2; echo RUNTIME_PREPARATION_CONTINUES',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH,
+        PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: join(root, 'absent-current'),
+        STAGING_GENERATIONS_ROOT: generations, STAGING_PROC_ROOT: join(root, 'absent-proc'),
+        INTEGRATION_ROOT: root, STAGING_TRASH_DRAIN_MODE: 'inline' } });
+      expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain('cleanup budget exhausted');
       expect(result.stdout).toContain('RUNTIME_PREPARATION_CONTINUES');
-      expect(result.stdout).not.toContain('pruned unused staging generation');
+      expect(result.stdout).toContain(`pruned unused staging generation ${checkout}`);
+      expect(existsSync(candidate)).toBe(false);
+      expect(readdirSync(generations)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+
+  // WI-6554700010029246: the 15s in-lock rm reclaimed a sliver of one ~25 GiB
+  // tree per tick, so idle generations outran deletion and filled /. Every
+  // idle generation must now leave the generation namespace in O(1) under the
+  // lock, however slow byte deletion is, and the bytes go to a detached drain.
+  it('retires every idle generation under the lock in O(1) and hands the bytes to a detached drain', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-trash-'));
+    const generations = join(root, 'generations');
+    const bin = join(root, 'bin');
+    const runs = join(root, 'systemd-run.log');
+    const current = join(generations, '.candidate-cur.serving', 'checkout');
+    mkdirSync(current, { recursive: true });
+    const idle = ['a', 'b', 'c', 'd', 'e'].map((id) => {
+      const home = join(generations, `.candidate-${id}${id}${id}.idle`);
+      mkdirSync(join(home, 'checkout', 'node_modules'), { recursive: true });
+      writeFileSync(join(home, 'checkout', 'node_modules', 'payload'), id);
+      return home;
+    });
+    // A legacy marker from the budgeted pruner: Git already detached the tree.
+    const legacy = join(generations, '.candidate-fff.legacy');
+    mkdirSync(join(legacy, 'partially-deleted'), { recursive: true });
+    writeFileSync(`${legacy}.prune-pending`, '');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    // Any in-lock recursive deletion of a generation would blow the deadline below.
+    writeFileSync(join(bin, 'rm'), [
+      '#!/usr/bin/env bash',
+      'rec=0; gen=0',
+      'for a; do [[ "$a" == -*r* ]] && rec=1; [[ "$a" == */generations/* ]] && gen=1; done',
+      'if ((rec && gen)); then exec sleep 30; fi',
+      'exec /bin/rm "$@"',
+    ].join('\n'), { mode: 0o755 });
+    writeFileSync(join(bin, 'systemctl'), '#!/usr/bin/env bash\nexit 3\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'systemd-run'), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> ${JSON.stringify(runs)}\nexit 0\n`, { mode: 0o755 });
+    try {
+      // The slow rm shim sleeps 30s, so any in-lock recursive delete is killed
+      // by this outer deadline (status 137) instead of passing.
+      const result = spawnSync('timeout', ['--signal=KILL', '20s', 'bash', '-c', [
+        'set -uo pipefail',
+        ...PRUNE_FNS.map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`),
+        'log() { echo "$*"; }; prune_staging_generations',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH,
+        PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: current, STAGING_GENERATIONS_ROOT: generations,
+        STAGING_PROC_ROOT: join(root, 'absent-proc'), INTEGRATION_ROOT: root, STAGING_TRASH_DRAIN_MODE: 'detached' } });
+      expect(result.status, result.stderr).toBe(0);
+      for (const home of [...idle, legacy]) expect(existsSync(home)).toBe(false);
+      expect(existsSync(`${legacy}.prune-pending`)).toBe(false);
+      expect(existsSync(current)).toBe(true);
+      const remaining = readdirSync(generations).sort();
+      const trash = remaining.filter((n) => n.startsWith('.trash-'));
+      expect(remaining.filter((n) => !n.startsWith('.trash-'))).toEqual(['.candidate-cur.serving']);
+      expect(trash).toHaveLength(6);
+      const args = readFileSync(runs, 'utf8').split('\n');
+      expect(args).toContain('--user');
+      expect(args).toContain('--collect');
+      const unitArg = args.find((a) => a.startsWith('--unit='));
+      expect(unitArg).toMatch(/^--unit=papercup-staging-trash-drain-[0-9a-f]{12}$/);
+      expect(args).not.toContain('IOSchedulingClass=idle');
+      for (const name of trash) expect(args).toContain(join(generations, name));
+      expect(result.stdout).toContain('launched detached retired staging generation drain');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('leaves an already-running drain to finish and falls back to a detached session when systemd-run fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-trash-drain-'));
+    const generations = join(root, 'generations');
+    const bin = join(root, 'bin');
+    const runs = join(root, 'systemd-run.log');
+    mkdirSync(join(generations, '.trash-candidate-old.x.1', 'checkout'), { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'systemd-run'), `#!/usr/bin/env bash\necho invoked >> ${JSON.stringify(runs)}\nexit 1\n`, { mode: 0o755 });
+    const drain = (active: boolean) => {
+      writeFileSync(join(bin, 'systemctl'), `#!/usr/bin/env bash\nexit ${active ? 0 : 3}\n`, { mode: 0o755 });
+      return runFn(['launch_staging_trash_drain'], 'log() { echo "$*"; }; launch_staging_trash_drain', {
+        env: { PATH: `${bin}:${process.env.PATH}`, STAGING_GENERATIONS_ROOT: generations, STAGING_TRASH_DRAIN_MODE: 'detached' },
+      });
+    };
+    try {
+      const busy = drain(true);
+      expect(busy.status, busy.stderr).toBe(0);
+      expect(busy.stdout).toContain('drain already running');
+      expect(existsSync(runs)).toBe(false);
+      expect(readdirSync(generations)).toHaveLength(1);
+
+      const fallback = drain(false);
+      expect(fallback.status, fallback.stderr).toBe(0);
+      expect(readFileSync(runs, 'utf8')).toContain('invoked');
+      expect(fallback.stdout).toContain('falling back to a detached session');
+      for (let i = 0; i < 50 && readdirSync(generations).length > 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(readdirSync(generations)).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('defers slow generation-directory deletion and retries it on the next tick', () => {
-    const root = mkdtempSync(join(tmpdir(), 'staging-prune-rm-budget-'));
+  it('alarms when more than two non-serving generations are retained by holders or pins', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-retained-alarm-'));
     const generations = join(root, 'generations');
-    const candidate = join(generations, '.candidate-old.rm-slow');
-    const checkout = join(candidate, 'checkout');
-    const bin = join(root, 'bin');
-    mkdirSync(checkout, { recursive: true });
-    mkdirSync(bin);
-    writeFileSync(join(bin, 'git'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(bin, 'rm'), '#!/usr/bin/env bash\nexec sleep 4\n', { mode: 0o755 });
-    const env = { PATH: `${bin}:${process.env.PATH}`, STAGING_ROOT: join(root, 'absent-current'),
-      STAGING_GENERATIONS_ROOT: generations, STAGING_PROC_ROOT: join(root, 'absent-proc'),
-      INTEGRATION_ROOT: root };
+    const expiry = `${Math.floor(Date.now() / 1000) + 600}\n`;
+    const pinned = (id: string) => {
+      const home = join(generations, `.candidate-${id}.pinned`);
+      mkdirSync(join(home, 'checkout'), { recursive: true });
+      mkdirSync(join(home, '.audit-runtime-pins'));
+      writeFileSync(join(home, '.audit-runtime-pins', 'owner'), expiry);
+    };
+    const env = { STAGING_ROOT: join(root, 'absent-current'), STAGING_GENERATIONS_ROOT: generations,
+      STAGING_PROC_ROOT: join(root, 'absent-proc'), INTEGRATION_ROOT: root };
     try {
-      const deferred = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations 2', { env });
-      expect(deferred.status).toBe(0);
-      expect(existsSync(candidate)).toBe(true);
-      expect(existsSync(`${candidate}.prune-pending`)).toBe(true);
-      expect(deferred.stdout).toContain('directory cleanup');
-
-      const collected = runFn(PRUNE_FNS,
-        'log() { echo "$*"; }; prune_staging_generations 2',
-        { env: { ...env, PATH: process.env.PATH } },
-      );
-      expect(collected.status).toBe(0);
-      expect(existsSync(candidate)).toBe(false);
-      expect(existsSync(`${candidate}.prune-pending`)).toBe(false);
-      expect(collected.stdout).toContain('completed deferred staging generation directory cleanup');
+      pinned('one');
+      pinned('two');
+      const quiet = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', { env });
+      expect(quiet.status, quiet.stderr).toBe(0);
+      expect(quiet.stdout).not.toContain('ALARM: ');
+      pinned('three');
+      const loud = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', { env });
+      expect(loud.status, loud.stderr).toBe(0);
+      expect(loud.stdout).toContain('ALARM: 3 non-serving staging generations retained');
+      expect(readdirSync(generations)).toHaveLength(3);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -1214,6 +1741,48 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       expect(result.stdout).toContain(`holder_pid=${holder.pid} holder_ppid=${process.pid} `);
       expect(result.stdout).toContain('reference=cwd');
       expect(realpathSync(cwdPinned)).toBeTruthy();
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a generation a process names only in argv — a release:cut orchestrator (WI-6554700010029679)', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'staging-prune-argv-')));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    const argvPinned = join(generationRoot, '.candidate-eeeeeeeeeeee.arg', 'checkout');
+    const unreferenced = join(generationRoot, '.candidate-ffffffffffff.old', 'checkout');
+    const orchestrator = join(argvPinned, 'papercusp-desktop/bin/release-local.sh');
+    mkdirSync(current, { recursive: true });
+    mkdirSync(unreferenced, { recursive: true });
+    mkdirSync(dirname(orchestrator), { recursive: true });
+    writeFileSync(orchestrator, '');
+    symlinkSync(current, alias);
+    // The cut's shape: cwd in the release root (outside every generation), no
+    // PAPERCUSP_INTEGRATION_ROOT, the generation present ONLY as a positional
+    // argument. `; true` stops bash exec-ing sleep, which would drop that argv.
+    const env = { ...process.env };
+    delete env.PAPERCUSP_INTEGRATION_ROOT;
+    const holder = spawn('bash', ['-c', 'sleep 60; true', join(root, 'release-root.sh'), orchestrator], {
+      cwd: root,
+      env,
+      stdio: 'ignore',
+    });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`retaining prior staging generation still referenced by a process: ${argvPinned}`);
+      expect(result.stdout).toContain(`holder_pid=${holder.pid} `);
+      expect(result.stdout).toContain('reference=argv');
+      expect(result.stdout).toContain(`pruned unused staging generation ${unreferenced}`);
+      expect(realpathSync(argvPinned)).toBe(argvPinned);
     } finally {
       holder.kill();
       rmSync(root, { recursive: true, force: true });
@@ -2128,6 +2697,7 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
       expect(r.stdout).toContain('lock_after_keeper_release=free');
     } finally {
       rmSync(lock, { force: true });
+      rmSync(`${lock}.writer`, { force: true });
     }
   });
 
@@ -2278,6 +2848,78 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
   });
 });
 
+describe('failed candidate cleanup deadline (EI-26814541123294753)', () => {
+  it.each(['git', 'rm'])('releases the publication lease when %s cleanup stalls and retries later', (slow) => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-failed-cleanup-'));
+    const candidate = join(fixture, '.candidate-failed');
+    const checkout = join(candidate, 'checkout');
+    const bin = join(fixture, 'bin');
+    const lock = join(fixture, 'publication.lock');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(join(checkout, 'retained-source'), 'source');
+    writeFileSync(join(bin, 'git'), '#!/bin/bash\nif [[ "$TEST_SLOW" == git ]]; then exec sleep 30; fi\nexit 0\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'rm'), [
+      '#!/bin/bash',
+      'rec=0; for arg; do [[ "$arg" == -*r* ]] && rec=1; done',
+      'if [[ "$TEST_SLOW" == rm ]] && ((rec)); then exec sleep 30; fi',
+      'exec /bin/rm "$@"',
+    ].join('\n'), { mode: 0o700 });
+    const runs = join(fixture, 'systemd-run.log');
+    writeFileSync(join(bin, 'systemctl'), '#!/bin/bash\nexit 3\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'systemd-run'), `#!/bin/bash\nprintf '%s\\n' "$@" >> ${JSON.stringify(runs)}\nexit 0\n`, { mode: 0o700 });
+    const env = {
+      ...process.env, PATH: bin + ':' + (process.env.PATH ?? ''), SYNC_SCRIPT: SCRIPT_PATH,
+      STAGING_CANDIDATE_HOME: candidate, STAGING_CANDIDATE_ROOT: checkout,
+      STAGING_CANDIDATE_PUBLISHED: '0', INTEGRATION_ROOT: fixture,
+      TEST_SLOW: slow, TEST_LOCK: lock, STAGING_TRASH_DRAIN_MODE: 'detached',
+    };
+    const sourced = CLEANUP_FNS.map((f) => `source <(sed -n "/^${f}()/,/^}/p" "$SYNC_SCRIPT")`).join('\n');
+    try {
+      // The outer deadline also kills the fixture's descendants on the broken
+      // implementation; the real cleanup has a one-second shared budget here.
+      const result = spawnSync('timeout', ['--signal=KILL', '6s', 'bash', '-c', [
+        'set -uo pipefail', sourced, 'log() { echo "$*"; }',
+        'exec 7>"$TEST_LOCK"; flock -x 7',
+        'cleanup_staging_candidate 1',
+        'flock -u 7; exec 7>&-',
+        'echo CLEANUP_RETURNED_AND_LEASE_RELEASED',
+      ].join('\n')], { env, encoding: 'utf8', timeout: 8_000 });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('CLEANUP_RETURNED_AND_LEASE_RELEASED');
+      // WI-6554700010029246: the failed candidate leaves the generation
+      // namespace immediately; its bytes go to the detached drain.
+      expect(existsSync(candidate)).toBe(false);
+      const trash = readdirSync(fixture).filter((n) => n.startsWith('.trash-candidate-failed.'));
+      expect(trash).toHaveLength(1);
+      expect(readFileSync(runs, 'utf8').split('\n')).toContain(join(fixture, trash[0]));
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+
+      const drained = runFn(['launch_staging_trash_drain'], 'log() { echo "$*"; }; launch_staging_trash_drain "$FIXTURE"',
+        { env: { FIXTURE: fixture } });
+      expect(drained.status, drained.stderr).toBe(0);
+      expect(readdirSync(fixture).filter((n) => n.startsWith('.trash-'))).toEqual([]);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('retains a published generation without invoking cleanup', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-published-cleanup-'));
+    const checkout = join(fixture, 'checkout');
+    mkdirSync(checkout);
+    try {
+      const result = runFn(['cleanup_staging_candidate'], [
+        'git() { echo UNEXPECTED_GIT; exit 91; }',
+        'rm() { echo UNEXPECTED_RM; exit 92; }',
+        'cleanup_staging_candidate 1',
+      ].join('\n'), { env: { STAGING_CANDIDATE_HOME: fixture,
+        STAGING_CANDIDATE_ROOT: checkout, STAGING_CANDIDATE_PUBLISHED: '1' } });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(existsSync(checkout)).toBe(true);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+});
+
 describe('staging setup failure evidence survives cleanup (EI-26150720787099786)', () => {
   it('retains the failed SPA phase status and raw output outside the removed candidate', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'staging-setup-evidence-'));
@@ -2298,7 +2940,7 @@ describe('staging setup failure evidence survives cleanup (EI-26150720787099786)
       'fi',
     ].join('\n'));
     try {
-      const result = runFn(['staging_sync_checkpoint', 'prepare_staging_candidate', 'cleanup_staging_candidate'], [
+      const result = runFn(['staging_sync_checkpoint', 'prepare_staging_candidate', ...CLEANUP_FNS], [
         'log() { printf "%s\\n" "$*"; }',
         'create_staging_candidate() { STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"; }',
         'STAGING_CANDIDATE_PUBLISHED=0; STAGING_ROOT=/absent-staging-test',
@@ -2337,7 +2979,7 @@ describe('staging bundle failure evidence survives cleanup (EI-25202900905730650
     expect(begin).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(begin);
     try {
-      const result = runFn(['prebuild_staging_host_bundle', 'cleanup_staging_candidate'], [
+      const result = runFn(['prebuild_staging_host_bundle', ...CLEANUP_FNS], [
         'log() { printf "%s\\n" "$*"; }',
         'SYNC_ROOT="$FIXTURE_ROOT"; bundle_script="$FIXTURE_BUNDLE"; UNIT=fixture.service',
         'STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"',

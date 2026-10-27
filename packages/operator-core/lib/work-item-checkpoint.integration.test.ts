@@ -246,6 +246,52 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
   });
 
+  it.each(['lease-release', 'forced-interrupt'] as const)(
+    'preserves the latest authored resume action through repeated %s flight captures', async (cause) => {
+      const { renderCarryNote, withCarryNoteChecks } = await import('./carry-note');
+      const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
+      const sessionBrief = await import('./session-brief');
+      const brief = vi.spyOn(sessionBrief, 'getSessionBrief').mockResolvedValue(null);
+      const { captureWorkItemFlightRecordsForItems } = await import('./work-item-flight-record');
+      const ref = { harness: HARNESS, workItemId: 'WI-flight-resume', workspaceId: 'default' };
+      const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
+      const deps = { checkpoint: getWorkItemCheckpointWithMeta,
+        freshness: async () => undefined, evidence: async () => [] };
+      const latest = renderCarryNote({ did: 'The native fixture run is complete.',
+        next: 'Reuse the saved proof; await the qualified hosted handoff.' });
+      try {
+        await setWorkItemCheckpoint(ref, renderCarryNote({ did: 'Historical detail '.repeat(1_800),
+          next: 'Run the old native fixture job.' }));
+        await setWorkItemCheckpointWithPrior(ref, latest, {
+          transform: prior => withCarryNoteChecks(`${prior}\n\n---\n${latest}`, [
+            { id: 'proof', claim: 'Retain the fixture boundary.', verified: 'saved-run' },
+          ]),
+        });
+        for (let capture = 0; capture < 4; capture += 1) {
+          expect(await captureWorkItemFlightRecordsForItems({ ownerId: 'successor',
+            workspaceId: 'default', cause, items: [{ id: ref.workItemId, harness: HARNESS }] }))
+            .toEqual({ capturedIds: [ref.workItemId] });
+          const resume = await readWorkItemResume(source, deps);
+          expect(resume.nextAction).toEqual({ status: 'available',
+            text: 'Reuse the saved proof; await the qualified hosted handoff.', source: 'next-action' });
+          expect(resume.checks.rows).toHaveLength(1);
+        }
+
+        // A newer authored update without Next must still supersede the old action.
+        const insight = renderCarryNote({ insight: 'The remaining step needs account authority.' });
+        await setWorkItemCheckpointWithPrior(ref, insight, {
+          transform: prior => `${prior}\n\n---\n${insight}`,
+        });
+        await captureWorkItemFlightRecordsForItems({ ownerId: 'successor', workspaceId: 'default',
+          cause, items: [{ id: ref.workItemId, harness: HARNESS }] });
+        expect((await readWorkItemResume(source, deps)).nextAction)
+          .toEqual({ status: 'unknown', text: null });
+      } finally {
+        brief.mockRestore();
+      }
+    },
+  );
+
   it('resumes the latest durable next action after a successor boundary without historical paging', async () => {
     const { renderCarryNote } = await import('./carry-note');
     const { readWorkItemResume } = await import('./agent-tools/work_items/resume');

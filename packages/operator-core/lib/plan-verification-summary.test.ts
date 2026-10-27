@@ -38,6 +38,17 @@ describe('summarizePlanVerification', () => {
     expect(s.defaultModules).toEqual(['generic-core', 'code']);
   });
 
+  it('includes namespaced built-ins with the same modules as their aliases', () => {
+    const s = summarizePlanVerification({ verificationProfile: 'general' }, [
+      { id: 'P-001', deliverable: 'papercusp/doc' },
+      { id: 'P-002', deliverable: 'papercusp/code' },
+    ]);
+    expect(s.overrides).toEqual([
+      { id: 'P-001', deliverable: 'papercusp/doc', modules: ['generic-core'] },
+      { id: 'P-002', deliverable: 'papercusp/code', modules: ['generic-core', 'code'] },
+    ]);
+  });
+
   it('ignores an unknown profile, source or deliverable word instead of inventing a checklist', () => {
     const s = summarizePlanVerification({ verificationProfile: 'lenient', verificationProfileSource: 'declared' }, [
       { id: 'P-001', deliverable: 'vibes' },

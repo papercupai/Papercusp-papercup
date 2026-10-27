@@ -68,6 +68,7 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 import GitClient, { kindLabel } from './GitClient';
+import { buildTestPassReuseHealth } from '@papercusp/operator-core/lib/release/test-pass-reuse-report';
 
 afterEach(() => cleanup());
 
@@ -160,6 +161,36 @@ describe('GitClient', () => {
     expect(cell.textContent).toContain('797 of 810 candidate file(s) reused');
     expect(cell.textContent).toContain('c5865549');
     expect(screen.getByText('1 reuse alarm(s)')).toBeTruthy();
+  });
+
+  it('gate card: reuse exclusions show bounded examples, the omitted count and the full-record journal; legacy and zero stay distinct (WI-6554700010026699 R-5)', () => {
+    const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+    const reuseLine = 'TEST_PASS_REUSE ws=@papercusp/operator-core::test candidates=12 reused=9 noProof=1 otherContext=0 ' +
+      'otherRunner=0 notCaptured=0 opaque=0 unknownDrift=2 globalInput=0 inputChanged=0 audited=0';
+    const sampleLine = (total: number, examples: unknown[]) => `TEST_PASS_REUSE_EXCLUSIONS ${JSON.stringify({ version: 1,
+      ws: '@papercusp/operator-core::test', total, examples, journal: '/logs/affected-tests-run.log', runGroupId: 'rg-7' })}`;
+    // The fixture is the real producer's output (A8), not a hand-shaped health object.
+    const cell = (sample: string | null) => {
+      cleanup();
+      const testPassReuse = buildTestPassReuseHealth([reuseLine, ...(sample ? [sample] : [])].join('\n'), sha, 120);
+      expect(testPassReuse).not.toBeNull();
+      mockResult = { data: [{ ...snapshot, gate: { ...snapshot.gate, testPassReuse } }], loading: false, fetching: false,
+        error: null, invalidate: vi.fn(), transport: 'POLL' };
+      render(<GitClient />);
+      return screen.getByTestId('gate-test-pass-reuse-exclusions');
+    };
+    const populated = cell(sampleLine(3, [
+      { file: 'packages/operator-core/lib/a.test.ts', reason: 'unknownDrift', recordedSha: 'a1b2c3d4e5', judgedSha: sha },
+      { file: 'packages/operator-core/lib/b.test.ts', reason: 'globalInput', recordedSha: 'a1b2c3d4e5', judgedSha: sha,
+        evidence: { path: 'package-lock.json' } },
+    ]));
+    expect(populated.textContent).toContain('3 excluded, 1 omitted');
+    expect(populated.textContent).toContain('@papercusp/operator-core::test packages/operator-core/lib/a.test.ts: unknownDrift (a1b2c3d4 \u2192 c5865549)');
+    expect(populated.textContent).toContain('globalInput (a1b2c3d4 \u2192 c5865549) {"path":"package-lock.json"}');
+    expect(screen.getByTestId('gate-test-pass-reuse-exclusion-artifact').textContent)
+      .toBe(' full records: /logs/affected-tests-run.log \u00b7 run group rg-7');
+    expect(cell(sampleLine(0, [])).textContent).toBe('0 excluded, 0 omitted full records: /logs/affected-tests-run.log \u00b7 run group rg-7');
+    expect(cell(null).textContent).toBe('not measured');
   });
 
   it('gate card: round time reads "not measured" without a breakdown, and shows it when present (P-013)', () => {

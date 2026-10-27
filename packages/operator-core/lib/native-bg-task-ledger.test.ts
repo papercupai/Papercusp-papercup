@@ -321,6 +321,66 @@ describe.each([
 ])('openWriterPidsMany (WI-10005283) $label', ({ procIo, direct }) => {
   const openWriterPidsMany = (paths: readonly string[], opts: NonNullable<Parameters<typeof scanOpenWriters>[1]> = {}) =>
     scanOpenWriters(paths, { ...opts, procIo });
+  it('finds mappings with closed descriptors and exact run environments outside the tree', async () => {
+    const proc = fakeProc({ '10': [], '20': [], '30': [], '40': [] });
+    try {
+      for (const pid of ['10', '20', '30', '40']) {
+        writeFileSync(join(proc, pid, 'maps'), '');
+        writeFileSync(join(proc, pid, 'environ'), '');
+      }
+      writeFileSync(join(proc, '10', 'maps'), '100-200 r-xp 0000 00:01 1 /tmp/source\\040tree/lib.so (deleted)\n');
+      writeFileSync(join(proc, '20', 'environ'), 'OTHER=value\0PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact\0');
+      writeFileSync(join(proc, '30', 'environ'), 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact-successor\0');
+      writeFileSync(join(proc, '40', 'maps'), '100-200 r-xp 0000 00:01 1 /tmp/source tree-other/lib.so\n');
+      const scan = await openWriterPidsMany(['/tmp/source tree', '/tmp/work'], {
+        procRoot: proc, descendants: true, failClosed: true, includeMappedFiles: true,
+        environmentByPath: { '/tmp/work': 'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=run:exact' },
+      });
+      expect(scan.complete).toBe(true);
+      expect([...scan.byPath]).toEqual([['/tmp/source tree', ['10']], ['/tmp/work', ['20']]]);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it.each(['maps', 'environ'])('refuses missing %s evidence for a still-present process', async (name) => {
+    const proc = fakeProc({ '10': [] });
+    try {
+      const scan = await openWriterPidsMany(['/tmp/work'], {
+        procRoot: proc, failClosed: true, includeMappedFiles: name === 'maps',
+        ...(name === 'environ' ? { environmentByPath: { '/tmp/work': 'RUN=exact' } } : {}),
+      });
+      expect(scan.complete).toBe(false);
+      expect(scan.diagnostics?.failureSamples).toContainEqual({ operation: name, path: join(proc, '10', name), code: 'MISSING_PROCESS_EVIDENCE' });
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it.each(['kernel', 'zombie', 'userspace', 'missing-stat', 'malformed-stat', 'wrong-pid', 'permission-denied', 'zombie-permission-denied'])
+    ('accepts address-space ESRCH only for verified kernel threads or zombies (%s)', async (variant) => {
+    const proc = fakeProc({ '10': ['/tmp/work'] });
+    try {
+      const read = (path: string): string => {
+        if (path === join(proc, '10', 'environ')) {
+          throw Object.assign(new Error('no environment'), { code: variant.endsWith('permission-denied') ? 'EACCES' : 'ESRCH' });
+        }
+        if (path === join(proc, '10', 'stat')) {
+          if (variant === 'missing-stat') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+          if (variant === 'malformed-stat') return 'unreadable identity';
+          // Linux stat field 9 is flags. PF_KTHREAD is 0x00200000.
+          const state = variant.startsWith('zombie') ? 'Z' : 'I';
+          const flags = variant === 'userspace' || state === 'Z' ? '0' : '2097152';
+          return `${variant === 'wrong-pid' ? '99' : '10'} (worker with ) paren) ${state} 1 2 3 4 5 ${flags} 0 0\n`;
+        }
+        return readFileSync(path, 'utf8');
+      };
+      const scan = await scanOpenWriters(['/tmp/work'], {
+        procRoot: proc, failClosed: true, environmentByPath: { '/tmp/work': 'RUN=exact' },
+        procIo: { readdir: procIo?.readdir ?? readdir, readlink: procIo?.readlink ?? readlink,
+          readFile: direct ? read : async (path) => read(path) },
+      });
+      expect(scan.complete).toBe(variant === 'kernel' || variant === 'zombie');
+      expect(scan.byPath.get('/tmp/work')).toEqual(['10']);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
   it.runIf(process.platform === 'linux')('detects path-only descriptors that Linux write leases do not exclude', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-opath-'));
     const path = join(root, 'file'); writeFileSync(path, 'live path owner');

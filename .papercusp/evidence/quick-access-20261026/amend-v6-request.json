@@ -1,0 +1,194 @@
+{
+  "rubricRef": "acceptance-quick-access-search-launcher-2026-10-26",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "Independent entry",
+      "intent": {
+        "request": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut."
+      },
+      "model": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+      "bar": "Native Quick Panel defaults to the A search launcher outside regular app chrome while retaining existing tools and the configured opt-in shortcut.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass.",
+      "driftMarkers": "The native shortcut opens a regular app route, duplicates the popup, or defaults to Prompts.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '8361237bd65531b14a1ffdb2d413d25c6d065b9d' AND started_at > TIMESTAMPTZ '2026-10-26T18:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      }
+    },
+    {
+      "key": "r-2",
+      "title": "Discovery",
+      "intent": {
+        "request": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation."
+      },
+      "model": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+      "bar": "Plans, agents and reports remain independently searchable by scope with canonical selection, errors and keyboard navigation.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable.",
+      "driftMarkers": "A large plan list hides people or reports, selection targets the wrong identity, or errors appear as empty success.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/quick-panel/quick-access-model.test.ts",
+          "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx"
+        ]
+      }
+    },
+    {
+      "key": "r-3",
+      "title": "Preview and access",
+      "intent": {
+        "request": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place."
+      },
+      "model": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+      "bar": "The popup displays selected plan progress and people, reads an authorized report and opens the exact owner conversation in place.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass.",
+      "driftMarkers": "Report content or conversation belongs to a different result, or reading requires leaving the popup.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '8361237bd65531b14a1ffdb2d413d25c6d065b9d' AND started_at > TIMESTAMPTZ '2026-10-26T18:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      }
+    },
+    {
+      "key": "r-4",
+      "title": "Exact window",
+      "intent": {
+        "request": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets."
+      },
+      "model": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+      "bar": "Focus targets the selected live local agent through canonical native or launch-record actions and explains unavailable targets.",
+      "barKey": "R-4",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable.",
+      "driftMarkers": "Focus uses a guessed/shared PID, targets a different owner or claims success after an unavailable window.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx",
+          "apps/operator/app/quick-panel/quick-access-model.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-5",
+      "title": "Verified UX",
+      "intent": {
+        "request": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size."
+      },
+      "model": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+      "bar": "The current-build native popup supports keyboard dismissal and keeps its search, preview and conversation usable at its default size.",
+      "barKey": "R-5",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "requiredTestLayers": [
+        "e2e",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Run the registered checks and inspect the current-build native route, selected identity and nested dismissal where applicable. Execute the registered isolated native suite and the named unit checks; bind both unit and e2e evidence to the clause. The read-only results-ledger probe verifies the frozen native acceptance run passed; it never substitutes for running the tests. Do not dispatch native Playwright through the Vitest-only tests check router. Required unit check: apps/operator/lib/quick-panel-escape.test.tsx. The latest recorded native run at the pinned commit must pass and have worktree_dirty=false; a later failure or dirty run invalidates an earlier pass. Evidence runtime: desktop-shell, exercised by the isolated current-build native harness.",
+      "driftMarkers": "Escape closes the parent before a nested dialog or the default native layout obscures its primary controls.",
+      "check": {
+        "kind": "probe",
+        "probe": {
+          "sql": "SELECT COALESCE((SELECT status = 'pass' AND worktree_dirty = FALSE FROM harness_shared.test_runs WHERE harness_slug = 'papercusp' AND framework = 'playwright' AND source = 'local' AND file_path LIKE '%quick-access.native.spec.mts' AND commit_sha = '8361237bd65531b14a1ffdb2d413d25c6d065b9d' AND started_at > TIMESTAMPTZ '2026-10-26T18:00:00Z' ORDER BY finished_at DESC, id DESC LIMIT 1), FALSE) AS passed",
+          "kind": "sql",
+          "expect": {
+            "op": "eq",
+            "path": "$.rows[0].passed",
+            "value": true
+          },
+          "maxRows": 1,
+          "schemaRevision": "live"
+        }
+      },
+      "evidenceRuntime": "desktop-shell"
+    }
+  ],
+  "dryRun": true,
+  "requestReview": {
+    "workItemId": "WI-6554700010029565",
+    "harness": "papercusp"
+  },
+  "reason": "The first native run booted successfully but stopped before product assertions on an xdotool fixture startup check; the registered correction is committed at 8361237bd65531b14a1ffdb2d413d25c6d065b9d. Pin the next clean native run to that commit, exclude mutation/CI rows with source=local as outside review advised, and explicitly declare desktop-shell for the existing live UX BAR. Preserve all outcomes, scopes, unit/e2e layers and latest-run semantics.",
+  "expectedRubricRevision": 2,
+  "expectedSubjectPlanRevision": 5,
+  "idempotencyKey": "quick-access-native-ledger-check-v6-20261026"
+}

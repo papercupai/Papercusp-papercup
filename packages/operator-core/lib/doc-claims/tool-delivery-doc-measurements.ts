@@ -183,6 +183,46 @@ export function judgeToolDeliveryDoc(body: string): DocMeasurementVerdict {
     violations.push('missing-token-provenance');
   }
 
+  const schemaBytes = lineScoped(body, 'SCHEMA_BYTES');
+  const schemaFull = pick(schemaBytes, 'full');
+  const schemaCompact = pick(schemaBytes, 'compact');
+  const schemaSaved = pick(schemaBytes, 'savedByCompact');
+  if (schemaFull === null || schemaCompact === null || schemaSaved === null) {
+    violations.push('missing-schema-bytes-measurement');
+  } else if (schemaFull - schemaCompact !== schemaSaved) {
+    violations.push('schema-bytes-do-not-reconcile');
+  }
+
+  // R-7 names both halves independently. A total token triple, or a byte
+  // ratio relabelled as tokens, supplies neither measurement. Keep their
+  // subjects and tokenizer explicit; the total need not equal their sum.
+  const componentSubjects: Array<{ tokenizer: string | undefined; scope: string | undefined }> = [];
+  for (const [marker, after, saved, label, serialization] of [
+    ['SCHEMA_TOKENS', 'compact', 'savedByCompact', 'schema', 'JSON.stringify'],
+    ['GUIDANCE_TOKENS', 'summary', 'savedBySummary', 'guidance', 'raw-description'],
+  ] as const) {
+    const line = body.split('\n').find((l) => l.includes(marker)) ?? '';
+    const values = pairsOf(line);
+    const full = pick(values, 'full');
+    const reduced = pick(values, after);
+    const saving = pick(values, saved);
+    if (full === null || reduced === null || saving === null) {
+      violations.push(`missing-${label}-token-measurement`);
+    } else if (full <= 0 || reduced < 0 || ![full, reduced, saving].every(Number.isSafeInteger) || full - reduced !== saving) {
+      violations.push(`${label}-tokens-do-not-reconcile`);
+    }
+    if (!/\bprovenance=measured\b/.test(line) || !/\btokenizer=\S+/.test(line) || !/\bscope=\S+/.test(line)) {
+      violations.push(`missing-${label}-token-provenance`);
+    }
+    if (!line.split(/\s+/).includes(`serialization=${serialization}`)) {
+      violations.push(`${label}-token-measurement-method-mismatch`);
+    }
+    componentSubjects.push({ tokenizer: line.match(/\btokenizer=(\S+)/)?.[1], scope: line.match(/\bscope=(\S+)/)?.[1] });
+  }
+  if (componentSubjects[0].tokenizer !== componentSubjects[1].tokenizer || componentSubjects[0].scope !== componentSubjects[1].scope) {
+    violations.push('component-token-subject-mismatch');
+  }
+
   // ── The $defs/$ref N=1 net loss — the saving's own boundary condition ─────────────
   //
   // WHY THIS RULE EXISTS, AND WHY IT IS ARITHMETIC. R-7 requires the `$defs` N=1 net loss

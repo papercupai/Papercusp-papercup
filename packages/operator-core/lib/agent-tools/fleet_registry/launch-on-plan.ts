@@ -164,6 +164,7 @@ import {
   verifyFreshLaunchStarted,
   modelEffortFromSpec,
   resolveLaunchMode,
+  launchModeFromFleetRecipe,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
   type LaunchMode,
@@ -190,6 +191,7 @@ import {
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 /**
  * Apply one already-resolved GOAL launch profile to command defaults.
  *
@@ -235,6 +237,24 @@ export function resolveFleetLaunchMode(opts: {
     modeRows: opts.modeRows,
     instructionsFact: instructions?.body,
   });
+}
+
+/**
+ * WI-6554700010029298: the launch overlay for one wave. The caller's own durable
+ * DRAIN row wins (it carries the caller's subject when the caller leads); a caller
+ * without one still launches the fleet's declared recipe mode, so a leader
+ * succession no longer drops a drain fleet's mode.
+ */
+export function resolveWaveLaunchMode(opts: {
+  callerMode: LaunchMode | null;
+  recipe: { mode?: unknown } | null | undefined;
+}): LaunchMode | null {
+  return opts.callerMode ?? launchModeFromFleetRecipe(opts.recipe);
+}
+
+/** The recipe field a fresh fleet persists so its mode outlives the founding caller. */
+export function recipeModeField(launchMode: LaunchMode | null): { mode?: 'drain' } {
+  return launchMode?.mode === 'drain' ? { mode: 'drain' } : {};
 }
 
 /** Read the caller's launch mode once per fleet launch; failures stay fail-soft
@@ -2202,13 +2222,13 @@ export default defineTool({
         "WI-4272 (demo/recording): open EVERY member terminal on this X display (e.g. ':110' — a computer:provision_desktop sandbox stage being recorded) instead of the owner's desktop seat. Linux only; requires a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm) and the display's X socket to be alive (loud-fail otherwise). Ignored for `headless: true` (headless members have no window). Omit for normal visible-desktop use.",
       ),
     claimKinds: z
-      .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
+      .array(z.enum(['feature', 'chunk', ...ISSUE_FAMILY_ROUTE_KINDS]))
       .min(1)
       .max(5)
       .optional()
       .describe(
         "EI-7671: restrict every member's scheduler:get_next self-pull to these work-item kinds — e.g. " +
-          '["bug","change","task"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
+          '["bug","change"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
           'BEFORE any member terminal opens, closing the boot-race where members start pulling under the ' +
           'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
           "leader gets around to calling scheduler:set_claim_spec by hand. A member's own later per-bee " +
@@ -2572,7 +2592,13 @@ export default defineTool({
     // DRAIN is a durable caller overlay, not a fleet argument. Read the mode row and
     // its owner-scoped instruction fact once, then thread the bounded result through
     // every member/leader composer below so no launch path silently drops the mode.
-    const launchMode = await readCallerLaunchMode(workspaceId, ownerId);
+    // A successor leader, or any caller without the founding caller's DRAIN row,
+    // still launches the fleet's declared mode from its saved recipe
+    // (WI-6554700010029298).
+    const launchMode = resolveWaveLaunchMode({
+      callerMode: await readCallerLaunchMode(workspaceId, ownerId),
+      recipe: persistedHeadcountProfile?.config,
+    });
     // `agent` and `model` are COUPLED: a local/gateway model (ollama-cc/…ornith) only runs on
     // the omp backend. Infer omp from such a model when agent is unspecified, and reject an
     // explicit claude/codex pairing outright — otherwise psu launches that backend with an
@@ -4849,6 +4875,8 @@ export default defineTool({
         ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
         // R5: an explicit supervise grant/revoke rides the fresh-recipe persist.
         ...(args.supervise != null ? { supervise: args.supervise } : {}),
+        // The fleet's mode outlives the founding caller (WI-6554700010029298).
+        ...recipeModeField(launchMode),
       });
       try {
         await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });

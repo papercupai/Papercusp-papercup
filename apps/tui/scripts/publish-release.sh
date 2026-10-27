@@ -14,12 +14,12 @@ Usage: apps/tui/scripts/publish-release.sh --archive <pui-*.tar.gz> [options]
   --acceptance <f>  exact archive acceptance report (default: <archive>.acceptance.json)
   --sums <f>        published digest file (default: SHA256SUMS beside archive)
   --work <dir>      keep generated publication files in this directory
-  --previous <f>   previous latest.json (offline preview only; live publication reads R2)
+  --previous <f>   previous latest.json (offline preview only; live publication reads GCS)
 
 Environment:
   DRY_RUN=1                  validate + render, upload nothing
   PUI_RELEASE_HOST_ENV       release-host env (default ~/.papercusp/release-host.env)
-  PUI_R2_ENV                 R2 credential env (default ~/.papercusp/r2.env)
+  PAPERCUSP_RELEASE_STORAGE_ENV  GCS config (default ~/.papercusp/release-storage.env)
   PUI_PORTAL_LINKS_ENV       durable Portal build env written after publish
   PUI_SKIP_PORTAL_CONFIG=1   do not update the Portal build env
 EOF
@@ -181,23 +181,14 @@ VERSION_BASE="$PUI_BASE/$VERSION/$DIGEST"
 
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
   [[ -z "$PREVIOUS" ]] || die "--previous is only for offline DRY_RUN previews"
-  command -v aws >/dev/null || die "missing required tool: aws"
-  R2_ENV="${PUI_R2_ENV:-$HOME/.papercusp/r2.env}"
-  [[ -f "$R2_ENV" ]] || die "$R2_ENV not found — R2 credentials are not configured"
-  set -a; . "$R2_ENV"; set +a
-  : "${R2_ACCOUNT_ID:?set R2_ACCOUNT_ID in $R2_ENV}"
-  : "${R2_BUCKET:?set R2_BUCKET in $R2_ENV}"
-  : "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in $R2_ENV}"
-  : "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in $R2_ENV}"
-  ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-  export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-  export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
-  if aws s3api get-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" \
-    --key "$KEY_PREFIX/pui/latest.json" "$WORK/previous.json" \
-    >"$WORK/previous-output.log" 2>"$WORK/previous-error.log"; then
+  HERE="$(cd "$(dirname "$0")" && pwd)"
+  . "$HERE/../../../papercusp-desktop/bin/lib/release-storage.sh"
+  release_storage_init
+  if release_storage_get "$KEY_PREFIX/pui/latest.json" "$WORK/previous.json"; then
     PREVIOUS="$WORK/previous.json"
-  elif ! rg -q '\(404\)|\(NoSuchKey\)|\(NotFound\)' "$WORK/previous-error.log"; then
-    die "previous platform releases could not be read; refusing to erase them"
+  else
+    rc=$?
+    [[ "$rc" == 44 ]] || die "previous platform releases could not be read; refusing to erase them"
   fi
 fi
 
@@ -272,47 +263,14 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
-for tool in aws curl cmp; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
-
-s3() {
-  aws s3 --endpoint-url "$ENDPOINT" "$@" >"$WORK/storage-output.log" 2>"$WORK/storage-error.log" \
-    || die "storage write failed (details retained in work directory)"
-}
-remote_sha() {
-  local value
-  if value="$(aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$1" \
-    --query 'Metadata.sha256' --output text 2>"$WORK/head-error.log")"; then
-    printf '%s\n' "${value:-metadata-missing}"
-  elif rg -q '\(404\)|\(NoSuchKey\)|\(NotFound\)' "$WORK/head-error.log"; then
-    printf 'absent\n'
-  else
-    die "remote object lookup failed; absence was not established"
-  fi
-}
+for tool in curl cmp; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
 preflight_versioned() {
-  local file="$1" key="$2" existing sha
-  sha="$(sha256sum "$file" | cut -d' ' -f1)"
-  existing="$(remote_sha "$key")"
-  [[ "$existing" == absent || "$existing" == "$sha" ]] && return 0
-  if [[ "$existing" == None || "$existing" == metadata-missing ]]; then
-    aws s3api get-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" \
-      "$WORK/remote-object" >"$WORK/get-output.log" 2>"$WORK/get-error.log" \
-      || die "could not verify an existing object without digest metadata"
-    cmp -s "$file" "$WORK/remote-object" && return 0
-  fi
-  die "refusing to replace different bytes at immutable key ${key##*/}"
+  local state
+  state="$(release_storage_state "$2" "$1")"
+  [[ "$state" == absent || "$state" == identical ]] || die "immutable object differs or could not be verified"
 }
 upload_versioned() {
-  local file="$1" key="$2" type="$3" sha existing
-  sha="$(sha256sum "$file" | cut -d' ' -f1)"
-  existing="$(remote_sha "$key")"
-  preflight_versioned "$file" "$key"
-  if [[ "$existing" == "$sha" ]]; then
-    echo "==> already uploaded and content-bound: ${key##*/}"
-    return
-  fi
-  s3 cp "$file" "s3://${R2_BUCKET}/${key}" --only-show-errors --content-type "$type" \
-    --cache-control 'public, max-age=31536000, immutable' --metadata "sha256=$sha"
+  release_storage_put "$1" "$2" "$3" 'public, max-age=31536000, immutable' immutable
 }
 
 VERSION_PREFIX="$KEY_PREFIX/pui/$VERSION/$DIGEST"
@@ -324,7 +282,7 @@ upload_versioned "$ACCEPTANCE" "$VERSION_PREFIX/$(basename "$ACCEPTANCE")" 'appl
 upload_versioned "$SUMS" "$VERSION_PREFIX/$SUMS_NAME" 'text/plain; charset=utf-8'
 for pair in "$ARCHIVE|$VERSION_PREFIX/$NAME" "$ACCEPTANCE|$VERSION_PREFIX/$(basename "$ACCEPTANCE")" "$SUMS|$VERSION_PREFIX/$SUMS_NAME"; do
   file="${pair%%|*}"; key="${pair#*|}"; expected="$(sha256sum "$file" | cut -d' ' -f1)"
-  [[ "$(remote_sha "$key")" == "$expected" ]] || die "R2 metadata did not bind ${key##*/} to its local SHA-256"
+  [[ "$(release_storage_state "$key" "$file")" == identical ]] || die "GCS bytes did not match the admitted file"
 done
 
 VERIFY="$WORK/public-verify"
@@ -340,10 +298,8 @@ curl_public "$VERSION_BASE/$SUMS_NAME" "$VERIFY/$SUMS_NAME"
 cmp -s "$ACCEPTANCE" "$VERIFY/$(basename "$ACCEPTANCE")" || die "public acceptance report differs"
 cmp -s "$SUMS" "$VERIFY/$SUMS_NAME" || die "public SHA256SUMS differs"
 # Advertise only after verifying every versioned file through its public path.
-s3 cp "$WORK/latest.json" "s3://${R2_BUCKET}/${KEY_PREFIX}/pui/latest.json" --only-show-errors \
-  --content-type 'application/json' --cache-control 'no-cache, max-age=0'
-s3 cp "$WORK/index.html" "s3://${R2_BUCKET}/${KEY_PREFIX}/pui/index.html" --only-show-errors \
-  --content-type 'text/html; charset=utf-8' --cache-control 'no-cache, max-age=0'
+release_storage_put "$WORK/latest.json" "${KEY_PREFIX}/pui/latest.json" application/json
+release_storage_put "$WORK/index.html" "${KEY_PREFIX}/pui/index.html" 'text/html; charset=utf-8'
 curl_public "$PUI_BASE/latest.json?v=$DIGEST" "$VERIFY/latest.json"
 curl_public "$PUI_BASE/index.html?v=$DIGEST" "$VERIFY/index.html"
 cmp -s "$WORK/latest.json" "$VERIFY/latest.json" || die "public latest.json differs"

@@ -310,8 +310,56 @@ describe('rerenderAmendedRequirementBlocks', () => {
       requirementBars: parsed.bars, nextCriteria: amended(), changedBars: ['R-1'],
     });
     expect(after).toEqual({ inSync: true, entries: [], action: null });
-    // Intent is the plan's own record of the request; the amendment never rewrites it.
+    // A legacy criterion that omits Intent preserves the plan's recorded request.
     expect(parsed.bars[0]!.criterion?.intent).toEqual(sections.intent);
+  });
+
+  it.each([
+    { request: 'Export only the explicitly selected customers.' },
+    { rationale: 'Keep the original request visible to reviewers.' },
+    { constraints: ['Never retire the requirement automatically.'] },
+    { sourceRefs: ['session_turn:export', 'decision:D-006'] },
+  ])('selects, detects and projects an Intent-only amendment: %j', (patch) => {
+    const prior = inSyncCriteria();
+    prior[0]!.intent = structuredClone(sections.intent);
+    const criteria = inSyncCriteria();
+    criteria[0]!.intent = { ...structuredClone(sections.intent), ...patch };
+    const changedBars = amendedRequirementBarKeys(prior, criteria);
+    expect(changedBars).toEqual(['R-1']);
+    const before = diffAmendedCriteriaAgainstRequirements({ requirementBars: bars(), nextCriteria: criteria, changedBars });
+    expect(before.inSync).toBe(false);
+    expect(before.entries).toEqual([{ barKey: 'R-1', kind: 'text-differs', changedByAmendment: true, fields: ['intent'] }]);
+    expect(before.rerenderedOnApply).toEqual(['R-1']);
+    const rendered = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: criteria, changedBars });
+    expect(rendered.rerendered).toEqual(['R-1']);
+    const parsed = parseRequirementBars(rendered.content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    expect(parsed.bars[0]!.criterion?.intent).toEqual(criteria[0]!.intent);
+    expect(parsed.bars[0]!.model).toBe(sections.acceptance.condition);
+    expect(parsed.bars[0]!.criterion?.method).toBe(sections.verification.method);
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars }).inSync).toBe(true);
+    expect(rerenderAmendedRequirementBlocks(rendered.content, { nextCriteria: criteria, changedBars }))
+      .toEqual({ content: rendered.content, rerendered: [] });
+  });
+
+  it('projects the complete supplied Intent together with amended Acceptance and Verification', () => {
+    const criteria = amended();
+    criteria[0]!.intent = {
+      request: 'Keep candidate policy and require an explicit retirement decision.',
+      rationale: 'The amended request is the canonical provenance.',
+      constraints: ['No automatic retirement.'],
+      sourceRefs: ['session_turn:export', 'decision:D-006'],
+    };
+    const rendered = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: criteria, changedBars: ['R-1'] });
+    const parsed = parseRequirementBars(rendered.content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    expect(parsed.bars[0]!.criterion).toMatchObject({
+      intent: criteria[0]!.intent, method: criteria[0]!.method, check: criteria[0]!.check,
+      driftMarkers: criteria[0]!.driftMarkers,
+    });
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars: ['R-1'] }).inSync).toBe(true);
+    expect(rerenderAmendedRequirementBlocks(planContent, { nextCriteria: criteria, changedBars: [] }))
+      .toEqual({ content: planContent, rerendered: [] });
   });
 
   it('leaves legacy prose, unchanged BARs and every other line byte-identical', () => {

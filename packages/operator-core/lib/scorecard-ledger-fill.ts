@@ -37,6 +37,7 @@ import {
 } from './check-results-ledger';
 import { evaluateContinuityPredicate, type ContinuityPredicate } from './continuity-probes';
 import { getRegisteredInstrument, isManualInstrumentKey } from './rubric-instrument-registry';
+import { measurementProvenanceStatus } from './measurement-provenance';
 
 export interface LedgerFillCriterion {
   key: string;
@@ -228,11 +229,17 @@ function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, 
   const detail = verdict !== 'pass' && row.detail
     ? `; measured: ${row.detail.length > LEDGER_EVIDENCE_DETAIL_CHARS ? `${row.detail.slice(0, LEDGER_EVIDENCE_DETAIL_CHARS)}…` : row.detail}`
     : '';
-  return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}`;
+  const p = row.check.provenance;
+  const context = p
+    ? `; provenance ${measurementProvenanceStatus(p)}, original window ${p.startedAt}..${p.finishedAt}, procedure sha256 ${p.procedure.sha256}${p.transactionAt ? `, transaction ${p.transactionAt}` : ''}`
+    : '; provenance legacy-missing (original diagnostics/window not retained)';
+  return `${binding.id}=${shown} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})${detail}${context}`;
 }
 
 function ledgerResultOf(row: LatestRubricCheckResult): ObservationLedgerResult {
-  return { testRunId: row.testRunId, value: row.check.value, unit: row.check.unit };
+  return { testRunId: row.testRunId, value: row.check.value, unit: row.check.unit,
+    ...(row.check.provenance ? { provenance: row.check.provenance } : {}),
+    provenanceStatus: measurementProvenanceStatus(row.check.provenance) };
 }
 
 /** Grader-owned fields a caller may add to a ledger-filled rating that agrees with the ledger. */

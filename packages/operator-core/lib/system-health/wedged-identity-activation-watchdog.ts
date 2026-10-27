@@ -293,6 +293,45 @@ export interface WedgedIdentitySweepDeps extends IdentityConditionDeps {
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
   escalateWedged: (wedged: WedgedSession[]) => Promise<void>;
   escalateNotMeasured: (info: { reason: string }) => Promise<void>;
+  /** WI-6554700010029612 ATTEST rung — see {@link loadDenialAttestationsFromLedger}. */
+  loadDenialAttestations: (workspaceId: string) => Promise<DenialAttestation[]>;
+}
+
+/**
+ * WI-6554700010029612 — the ATTEST rung. Every candidate signal above (the activation record,
+ * this process's own kernel resolver) describes the identity as THIS build sees it. A serving
+ * build that disagrees refuses every call `stale-artifact` while the record reads healthy, and
+ * the sweep then RECOVERED that owner's condition each hour. Measured 2026-10-26 23:21Z: two
+ * owners with activation=applied had 326 and 207 stale-artifact denials in 24h, all on
+ * port-3070@d740fc3802, with no alarm. The denials themselves are the ground truth, so an owner
+ * with at least {@link ATTESTED_DENIAL_THRESHOLD} of them in the last
+ * {@link ATTESTED_DENIAL_WINDOW_MS} is confirmed wedged regardless of what the record says.
+ */
+export type DenialAttestation = { ownerId: string; denials: number; servedBy: string[] };
+export const ATTESTED_DENIAL_WINDOW_MS = 60 * 60_000;
+export const ATTESTED_DENIAL_THRESHOLD = 3;
+
+export function attestedWedgeReason(a: DenialAttestation): string {
+  return `the kernel refused ${a.denials} tool call(s) stale-artifact in the last hour ` +
+    `(served by ${a.servedBy.length > 0 ? a.servedBy.join(', ') : 'an unrecorded build'}), ` +
+    'whatever the activation record says — the serving build disagrees with it';
+}
+
+export async function loadDenialAttestationsFromLedger(workspaceId: string): Promise<DenialAttestation[]> {
+  const { sql } = getOrgPg();
+  const since = new Date(Date.now() - ATTESTED_DENIAL_WINDOW_MS);
+  const rows = await sql<Array<{ owner: string; denials: number; served_by: string[] | null }>>`
+    SELECT coord_owner_id AS owner, count(*)::int AS denials,
+           array_agg(DISTINCT COALESCE(serving_host, '?') || '@' || left(COALESCE(serving_build_sha, '?'), 10))
+             AS served_by
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${workspaceId}
+       AND invoked_at > ${since}
+       AND coord_owner_id IS NOT NULL
+       AND error_message LIKE '%stale-artifact%'
+     GROUP BY coord_owner_id
+    HAVING count(*) >= ${ATTESTED_DENIAL_THRESHOLD}`;
+  return rows.map((r) => ({ ownerId: r.owner, denials: Number(r.denials), servedBy: r.served_by ?? [] }));
 }
 
 /**
@@ -511,6 +550,7 @@ function sweepDeps(overrides: Partial<WedgedIdentitySweepDeps>): WedgedIdentityS
     resolveLiveness: defaultResolveLiveness,
     escalateWedged: defaultEscalateWedged,
     escalateNotMeasured: defaultEscalateNotMeasured,
+    loadDenialAttestations: loadDenialAttestationsFromLedger,
     ...overrides,
   };
 }
@@ -606,6 +646,25 @@ export async function runWedgedIdentitySweepOnce(
 
   // Recovery follows only a complete scan and an exact acknowledged, reconciled
   // owner row. Retirement, removal and loss of an activation are not recovery.
+  // ATTEST rung (WI-6554700010029612): observed denials outrank a healthy-looking record, and
+  // must veto the healthy-recovery below. An unreadable ledger fails closed like a failed
+  // candidate read: unknown, never "clean".
+  let attested: DenialAttestation[];
+  try {
+    attested = await deps.loadDenialAttestations(workspaceId);
+  } catch (e) {
+    const reason = `denial attestation read failed: ${e instanceof Error ? e.message : String(e)}`;
+    await raiseIdentityCondition('wedged-coverage', workspaceId, '', reason, deps);
+    await deps.escalateNotMeasured({ reason });
+    return { verdict: 'not-measured', reason, escalated: 1 };
+  }
+  const confirmedOwners = new Set(confirmed.map((c) => c.ownerId));
+  for (const attestation of attested) {
+    if (confirmedOwners.has(attestation.ownerId)) continue;
+    confirmedOwners.add(attestation.ownerId);
+    confirmed.push({ ownerId: attestation.ownerId, reason: attestedWedgeReason(attestation) });
+  }
+
   const stillWedged = new Set(confirmed.map(candidate => candidate.ownerId));
   for (const ownerId of healthy) {
     if (!stillWedged.has(ownerId)) await recoverIdentityCondition('wedged', workspaceId, ownerId, episodes, deps);

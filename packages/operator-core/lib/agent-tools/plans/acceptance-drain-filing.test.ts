@@ -95,6 +95,31 @@ describe('acceptanceDrainObservationSignals — P-027 durable age contract', () 
     expect(signals.escalation).toBe('none');
   });
 
+  it('keeps an unchanged blocker overdue when only the serving build changes', () => {
+    const first = new Date(at.getTime() - ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS - 1).toISOString();
+    const prior = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited', buildProvenance: { sha: 'old-build' } },
+      null, new Date(first), 'plan',
+    );
+    const next = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited', buildProvenance: { sha: 'new-build' } },
+      { ...prior }, at, 'plan',
+    );
+    expect(next.sourceGeneration).not.toBe(prior.sourceGeneration);
+    expect(next).toMatchObject({ firstObservedAt: first, ageBand: 'overdue', escalation: 'due' });
+  });
+
+  it('starts a new blocker episode when the previous repair is cleared', () => {
+    const prior = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_unaudited' },
+      null, new Date(at.getTime() - ACCEPTANCE_DRAIN_ESCALATE_AFTER_MS - 1), 'plan',
+    );
+    const next = acceptanceDrainObservationSignals(
+      { satisfied: false, code: 'acceptance_ungraded' }, { ...prior }, at, 'plan',
+    );
+    expect(next).toMatchObject({ firstObservedAt: at.toISOString(), ageMs: 0, escalation: 'none' });
+  });
+
   it('does not create a fabricated blocker for an unknown/read failure', async () => {
     M.sql.mockResolvedValueOnce([]);
     await expect(ensureAcceptanceDrainFiling({

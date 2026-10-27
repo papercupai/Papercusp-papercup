@@ -16,7 +16,8 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -611,6 +612,46 @@ describe('turn-start delivery ledger (P-005)', () => {
     await turnStart(env);
     await turnStart(env);
     expect(op.received[1].body.confirmedDelivery).toBeNull();
+    expect(existsSync(path.join(env.PAPERCUSP_HOME, 'state', 'turn-start-delivery', 'sid-silent.emissions'))).toBe(false);
+  });
+
+  it('retains exact original emission proof across compaction and a new native turn', async () => {
+    const owner = 'sid-carry-proof';
+    const desired = { specificationRevision: '1'.repeat(64), stateRevision: '2'.repeat(64) };
+    const applied = { ...desired, stateRevision: '3'.repeat(64) };
+    const control = { targetOwnerId: owner, generation: 18, stateHash: '4'.repeat(64),
+      state: { activation: { status: 'prepared', desired, prepared: desired, applied } } };
+    const opts = { text: `⟦CTRL:transition⟧ ${JSON.stringify(control)}\n\nPRIVATE-CONTEXT`, deliveryToken: 'token-18' };
+    const op = fakeOperator(opts);
+    const base = await op.start();
+    running = op;
+    const env = { PAPERCUSP_SID: owner, PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: isolatedHome() };
+    const turn = (native: string) => runCli(['--client=codex', '--event=UserPromptSubmit'],
+      JSON.stringify({ prompt: 'measure', session_id: native }), env);
+    const first = await turn('native-before');
+    expect(first.code).toBe(0);
+    expect(first.stdout).toContain('PRIVATE-CONTEXT');
+    const receipts = path.join(env.PAPERCUSP_HOME, 'state', 'turn-start-delivery', `${owner}.emissions`);
+    const originalPath = path.join(receipts, readdirSync(receipts)[0]);
+    const original = readFileSync(originalPath, 'utf8');
+    expect(JSON.parse(original)).toMatchObject({ token: 'token-18', stage: 'stdout-emitted',
+      nativeSessionId: 'native-before', payloadSha256: createHash('sha256').update(first.stdout).digest('hex'),
+      control: { generation: 18, desired, prepared: desired, applied } });
+    expect(original).not.toContain('PRIVATE-CONTEXT');
+    opts.deliveryToken = 'compaction-only-token';
+    await runCli(['--client=codex', '--event=SessionStart'], JSON.stringify({ source: 'compact' }), env);
+    expect(readdirSync(receipts)).toHaveLength(1);
+    opts.deliveryToken = 'token-19';
+    opts.text = `⟦CTRL:transition⟧ ${JSON.stringify({ ...control, generation: 19 })}\n\nSUCCESSOR`;
+    const successor = await turn('native-after');
+    expect(successor.code).toBe(0);
+    expect(op.received[2].body.confirmedDelivery).toBe('token-18');
+    expect(readFileSync(originalPath, 'utf8')).toBe(original);
+    expect(readdirSync(receipts)).toHaveLength(2);
+    expect(readFileSync(path.join(path.dirname(receipts), `${owner}.token`), 'utf8')).toBe('token-19');
+    const newest = readdirSync(receipts).map(name => JSON.parse(readFileSync(path.join(receipts, name), 'utf8')))
+      .find(receipt => receipt.token === 'token-19');
+    expect(newest).toMatchObject({ nativeSessionId: 'native-after', control: { generation: 19 } });
   });
 
   it('mid-turn never carries a confirmation — the ledger is turn-start only', async () => {

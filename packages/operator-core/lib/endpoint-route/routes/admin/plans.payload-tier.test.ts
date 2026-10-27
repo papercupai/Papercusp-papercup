@@ -95,6 +95,14 @@ describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078
     expect(H.calls.every((c) => c.body.payloadTier === 'full')).toBe(true);
   });
 
+  it('reads a run transcript without injecting an unsupported harness argument', async () => {
+    await dispatchRead(new Request('http://localhost/api/admin/plans/run-transcript?runId=42'), ctxFor('run-transcript'));
+    expect(H.calls).toHaveLength(1);
+    expect(H.calls[0].pathname).toBe('/api/agent-tools/plans/run-transcript');
+    expect(H.calls[0].body).toMatchObject({ runId: '42', payloadTier: 'full' });
+    expect(H.calls[0].body).not.toHaveProperty('harness');
+  });
+
   it('omits unused descendant history on the actual popup REST path while preserving the document', async () => {
     const res = await dispatchRead(reqFor('get'), ctxFor('get'));
     expect(H.calls[0].body).toMatchObject({

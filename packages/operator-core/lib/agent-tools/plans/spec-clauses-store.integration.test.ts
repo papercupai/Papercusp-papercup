@@ -124,6 +124,8 @@ beforeAll(async () => {
       content text NOT NULL DEFAULT '',
       content_hash text NOT NULL DEFAULT '',
       template text,
+      verification_profile text,
+      verification_profile_source text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
     CREATE TABLE harness_shared.plan_revisions (
